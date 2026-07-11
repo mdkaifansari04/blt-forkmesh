@@ -613,11 +613,38 @@ async def edge_cache_match(cache_key):
 
 async def edge_cache_put(cache_key, response):
     # cache.put consumes the body it is handed, so store a clone and return the
-    # original to the caller. Best-effort: a cache failure must not fail the read.
+    # original to the caller. Accepts both the workers.Response wrapper and a
+    # raw JS Response (the binary media endpoints build the latter).
+    # Best-effort: a cache failure must not fail the read.
     try:
-        await js_caches.default.put(cache_key, response.js_object.clone())
+        js_resp = getattr(response, "js_object", None) or response
+        await js_caches.default.put(cache_key, js_resp.clone())
     except Exception:
         pass
+
+
+async def edge_cache_match_media(cache_key, fallback_type):
+    # Binary edge-cache read for the media endpoints, which respond with raw
+    # JS Responses rather than the workers.Response wrapper the JSON helpers
+    # return. Rebuilt like git_advert_cache_get so the body streams cleanly.
+    try:
+        hit = await js_caches.default.match(cache_key)
+    except Exception:
+        hit = None
+    if hit is None:
+        return None
+    try:
+        ctype = hit.headers.get("content-type")
+        ccontrol = hit.headers.get("cache-control")
+    except Exception:
+        ctype, ccontrol = None, None
+    return JsResponse.new(hit.body, to_js({
+        "status": 200,
+        "headers": {
+            "content-type": ctype or fallback_type,
+            "cache-control": ccontrol or "public, max-age=86400",
+        },
+    }))
 
 
 async def edge_cache_delete(cache_key):
@@ -9293,6 +9320,14 @@ async def ap_object_media_handler(env, request, object_uuid, index):
     # attachment URLs directly and can't resolve a data: URI.
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
+    # Every remote server that receives the Note fetches its attachment URLs,
+    # and the bytes are immutable — serve the burst from the colo cache.
+    idx = int(index)
+    cache_key = "%s/ap/o/%s/media/%d" % (
+        _ap_origin(env, request), object_uuid, idx)
+    cached = await edge_cache_match_media(cache_key, "image/png")
+    if cached is not None:
+        return cached
     await ensure_schema(env)
     if not await _ap_enabled(env):
         return _ap_disabled_response()
@@ -9300,7 +9335,6 @@ async def ap_object_media_handler(env, request, object_uuid, index):
         env, "SELECT data FROM ap_objects WHERE object_uuid=?", object_uuid)
     rec = await decrypt_row(env, row.get("data")) if row else None
     media = (rec or {}).get("media") or []
-    idx = int(index)
     if idx < 0 or idx >= len(media):
         return json_response({"error": "not_found"}, status=404)
     item = media[idx]
@@ -9308,13 +9342,15 @@ async def ap_object_media_handler(env, request, object_uuid, index):
         raw = base64.b64decode(item.get("data", ""), validate=True)
     except Exception:
         return json_response({"error": "not_found"}, status=404)
-    return JsResponse.new(_to_js(bytes(raw)), to_js({
+    resp = JsResponse.new(_to_js(bytes(raw)), to_js({
         "status": 200,
         "headers": {
             "content-type": item.get("mediaType", "image/png"),
             "cache-control": "public, max-age=31536000, immutable",
         },
     }))
+    await edge_cache_put(cache_key, resp)
+    return resp
 
 
 # --- Outbound HTTP: signed fetch, remote actors, delivery ---------------------
@@ -9612,10 +9648,23 @@ async def _ap_handle_follow(env, request, activity, remote):
         "actor": remote["actor_id"],
         "object": actor_url,
     }
-    accept = ap.accept_activity(actor_url, follow_ref)
-    await _ap_deliver_body(
-        env, actor_url, local["privkey"], remote.get("inbox", ""),
-        json.dumps(accept))
+    accept_body = json.dumps(ap.accept_activity(actor_url, follow_ref))
+    inbox_url = (remote.get("inbox") or "").strip()
+    status = await _ap_deliver_body(
+        env, actor_url, local["privkey"], inbox_url, accept_body)
+    if inbox_url and not (200 <= status < 400) and status not in (404, 410):
+        # The remote server keeps the follow "pending" (spinner) until the
+        # Accept lands, and it does NOT retry a Follow we already 202'd — so
+        # a lost Accept used to leave the follow stuck forever. Queue it for
+        # the cron drain, which retries with the normal backoff.
+        out_data = await encrypt_row(env, {
+            "body": accept_body, "actorKind": kind, "actorHandle": handle,
+            "actorUrl": actor_url})
+        await d1_run(
+            env,
+            "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
+            " created_at) VALUES (?,?,1,?,?)",
+            inbox_url, out_data, now, now)
     follower_label = remote.get("handle") or remote.get("actor_id", "")
     await _best_effort_inbox_side_effect(enqueue_notification(
         env, recipient, "subscribed", "New fediverse follower",
@@ -9748,9 +9797,37 @@ async def ap_inbox_handler(env, request):
     # Actor self-delete: the remote document is already gone, so the key can
     # no longer be fetched. Clean up local edges without a wasted subrequest —
     # a spoofed self-delete can at worst drop a follower edge that re-follows.
+    # Mastodon broadcasts every account deletion to every instance it has ever
+    # seen, so nearly all of these are for actors we don't know: check first
+    # (two indexed reads) instead of always issuing two D1 writes.
     if activity_type == "Delete" and object_id == actor_id:
-        await _ap_forget_remote(env, actor_id)
+        known = await d1_first(
+            env, "SELECT actor_id FROM ap_remote_actors WHERE actor_id=?",
+            actor_id)
+        if not known:
+            known = await d1_first(
+                env, "SELECT follower_id FROM ap_followers WHERE follower_id=?",
+                actor_id)
+        if known:
+            await _ap_forget_remote(env, actor_id)
         return json_response({"ok": True}, status=202)
+
+    # Anything we'd acknowledge-and-drop after verifying (Like/Announce/
+    # Update/Accept/...) is dropped before the signature dance instead: the
+    # verify path costs a signed GET back to the sender's server (plus D1
+    # reads/writes to cache its actor), so fediverse-wide Like/boost floods
+    # both melted our origin AND hammered Mastodon with actor refetches —
+    # the "too many requests" loop of issue #416.
+    if activity_type not in ("Follow", "Undo", "Create", "Delete"):
+        return json_response({"ok": True}, status=202)
+    if activity_type == "Create":
+        # Only replies to our own /ap/o/<uuid> objects become federated
+        # comments; mentions and unrelated statuses are dropped here, before
+        # the remote-actor fetch (the handler re-checks after verification).
+        note = ap.note_essentials(activity.get("object"))
+        if not note or not ap.parse_local_object_url(
+                origin, note["inReplyTo"]):
+            return json_response({"ok": True}, status=202)
 
     parsed_sig = ap.parse_signature_header(
         request.headers.get("signature") or "")
@@ -9828,6 +9905,16 @@ async def repo_media_handler(env, request, owner, repo, media_kind):
     # the actor itself.
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
+    # The repo actor's avatar/header: every remote server resolving the actor
+    # fetches both images, so a federated post fans out into a burst here.
+    # Key includes the ?v=<updated_at> buster from the actor document, so a
+    # branding change starts a fresh entry immediately.
+    parts = urlparse(request.url)
+    cache_key = (_ap_origin(env, request) + parts.path
+                 + (("?" + parts.query) if parts.query else ""))
+    cached = await edge_cache_match_media(cache_key, "image/png")
+    if cached is not None:
+        return cached
     await ensure_schema(env)
     if await _repo_is_private(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
@@ -9845,13 +9932,15 @@ async def repo_media_handler(env, request, owner, repo, media_kind):
         return json_response({"error": "not_found"}, status=404)
     # The actor document busts caches via ?v=<updated_at>, so long edge/browser
     # caching here is safe.
-    return JsResponse.new(_to_js(bytes(raw)), to_js({
+    resp = JsResponse.new(_to_js(bytes(raw)), to_js({
         "status": 200,
         "headers": {
             "content-type": "image/png",
             "cache-control": "public, max-age=86400",
         },
     }))
+    await edge_cache_put(cache_key, resp)
+    return resp
 
 
 async def repo_star_handler(env, request, owner, repo):
