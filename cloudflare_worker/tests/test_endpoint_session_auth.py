@@ -129,6 +129,8 @@ def _harness(accounts, notifications=None, repositories=None):
             return [dict(r) for r in rows[:limit]]
         if "FROM repositories" in sql:
             return [dict(r) for r in repositories]
+        if "FROM repo_media" in sql:
+            return []
         raise AssertionError("unexpected d1_all: " + sql)
 
     async def d1_first(_env, sql, *args):
@@ -162,6 +164,8 @@ def _harness(accounts, notifications=None, repositories=None):
                     r["data"] = data
                     r["is_private"] = is_private
             return
+        if "repo_media" in sql:
+            return
         raise AssertionError("unexpected d1_run: " + sql)
 
     ns = _load_functions({
@@ -189,6 +193,11 @@ def _harness(accounts, notifications=None, repositories=None):
         "MAX_NOTIFICATIONS_FETCH": 200,
         "ADMIN_SESSION_TTL_MS": 12 * 60 * 60 * 1000,
         "MAX_REPO_SEGMENT": 80,
+        # Repo branding (fediverse actor images) rides through repo_about;
+        # the auth tests never upload one, so the validator is a pass-through.
+        "MAX_REPO_LOGO_BYTES": 256 * 1024,
+        "MAX_REPO_BANNER_BYTES": 1024 * 1024,
+        "clean_media_png": lambda value, max_bytes: ("", ""),
     })
     ns["_notifications"] = notifications
     ns["_repositories"] = repositories

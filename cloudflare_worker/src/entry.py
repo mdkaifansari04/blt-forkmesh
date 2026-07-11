@@ -258,6 +258,7 @@ from urls import (  # noqa: E402
     AP_OBJECT_RE,
     REPO_FEDI_COMMENTS_RE,
     REPO_AP_PUBLISH_RE,
+    REPO_MEDIA_RE,
 )
 
 # Static route ownership rules: repo shortcuts are Python-owned so hard refresh
@@ -452,6 +453,11 @@ LINK_CODE_RE = re.compile(r"^[0-9]{6}$")
 MAX_AVATAR_BYTES = 256 * 1024
 MAX_AVATAR_B64 = 4 * ((MAX_AVATAR_BYTES + 2) // 3)
 PNG_HEADER = b"\x89PNG\r\n\x1a\n"
+# Repo branding (fediverse actor avatar/header). Each image lives in its own
+# encrypted repo_media row, so the caps only need to keep ONE image (b64 +
+# AES-GCM + b64 again ≈ 1.8x raw) under D1's 2 MB per-value limit.
+MAX_REPO_LOGO_BYTES = 256 * 1024
+MAX_REPO_BANNER_BYTES = 1024 * 1024
 
 
 def valid_node_name(value):
@@ -2201,6 +2207,29 @@ def room_key_from_path(pathname):
     }
 
 
+def clean_media_png(value, max_bytes):
+    """clean_avatar_png generalized for repo branding: accepts a bare-base64 or
+    data-URL PNG up to max_bytes raw, returns (normalized_b64, error)."""
+    if not isinstance(value, str):
+        return "", "bad_image"
+    image = value.strip()
+    if image.startswith("data:image/png;base64,"):
+        image = image.split(",", 1)[1].strip()
+    if not image:
+        return "", ""
+    if len(image) > 4 * ((max_bytes + 2) // 3):
+        return "", "image_too_large"
+    try:
+        raw = base64.b64decode(image, validate=True)
+    except Exception:
+        return "", "bad_image"
+    if len(raw) > max_bytes:
+        return "", "image_too_large"
+    if not raw.startswith(PNG_HEADER):
+        return "", "bad_image"
+    return base64.b64encode(raw).decode(), ""
+
+
 def clean_avatar_png(value):
     if not isinstance(value, str):
         return "", "bad_avatar"
@@ -3129,6 +3158,20 @@ async def repo_about_handler(env, request, owner, repo):
         return json_response({"error": "account_required"}, status=403)
 
     description = clean_string(data.get("description", ""), 240)
+    # Optional repo branding for the fediverse actor (and anything else that
+    # wants it): PNG logo (avatar) + banner (profile header). Absent field =
+    # leave unchanged; empty string = remove. Validated before any write so a
+    # bad image never half-applies the About edit.
+    media_updates = {}
+    for field, kind, cap in (("logoPng", "logo", MAX_REPO_LOGO_BYTES),
+                             ("bannerPng", "banner", MAX_REPO_BANNER_BYTES)):
+        if field not in data:
+            continue
+        png_b64, media_error = clean_media_png(data.get(field), cap)
+        if media_error:
+            return json_response({"error": media_error, "field": field},
+                                 status=400)
+        media_updates[kind] = png_b64
     rows = await d1_all(
         env, "SELECT key_bi, data, is_private FROM repositories")
     updated = 0
@@ -3151,13 +3194,33 @@ async def repo_about_handler(env, request, owner, repo):
             first = record
     if not updated:
         return json_response({"error": "not_found"}, status=404)
+    media_bi = await blind_index(env, str(owner).lower() + "/" + repo)
+    for kind, png_b64 in media_updates.items():
+        if not png_b64:
+            await d1_run(
+                env, "DELETE FROM repo_media WHERE repo_bi=? AND kind=?",
+                media_bi, kind)
+            continue
+        await d1_run(
+            env,
+            "INSERT INTO repo_media (repo_bi, kind, data, updated_at)"
+            " VALUES (?,?,?,?)"
+            " ON CONFLICT(repo_bi, kind) DO UPDATE SET data=excluded.data,"
+            " updated_at=excluded.updated_at",
+            media_bi, kind, await encrypt_row(env, {"png": png_b64}),
+            int(Date.now()))
     await purge_catalog_related_caches()
     # Return only the fields the caller just set — never the full decrypted
     # catalog record (which carries private-repo cloneUrl/visibility/stateHash).
+    media_rows = await d1_all(
+        env, "SELECT kind FROM repo_media WHERE repo_bi=?", media_bi)
+    media_kinds = {r.get("kind") for r in (media_rows or [])}
     return json_response({
         "ok": True,
         "description": description,
         "updated": updated,
+        "hasLogo": "logo" in media_kinds,
+        "hasBanner": "banner" in media_kinds,
         "isPrivate": bool(first and first.get("visibility") == "private"),
     })
 
@@ -8568,6 +8631,10 @@ AP_DATE_SKEW_MS = 12 * 60 * 60 * 1000
 AP_IMMEDIATE_DELIVERIES = 5
 AP_CRON_DELIVERIES = 20
 AP_FEDI_KINDS = ("issue", "pull", "discussion", "commit", "release")
+# Brand images served from Static Assets, shown as every actor's avatar and
+# profile header on Mastodon-compatible servers.
+AP_AVATAR_PATH = "/assets/fediverse-avatar.png"
+AP_BANNER_PATH = "/assets/fediverse-banner.png"
 
 _AP_RSA_ALG = {"name": "RSASSA-PKCS1-v1_5", "hash": "SHA-256"}
 
@@ -8718,14 +8785,17 @@ async def _ap_local_actor(env, kind, handle, create=False):
 
 
 async def _ap_user_federates(env, name):
-    # Mirror the public-profile/follow rules: only active, public user accounts
-    # are visible to the fediverse.
+    # Any active, non-private account federates as a Person — node-owner
+    # accounts included, not just login ("user"-kind) accounts: the node name
+    # is the public authoring identity on issues/PRs, so it is what fediverse
+    # followers expect to find at @name@<domain>. (The web follow API stays
+    # stricter — user-kind targets only — but that gates a login feature, not
+    # public visibility.)
     name = (name or "").strip().lower()
     if not valid_node_name(name):
         return False
     _, rec = await _account_row(env, name)
     return bool(rec and rec.get("status") == "active"
-                and _account_kind(rec) == "user"
                 and not rec.get("profile_private"))
 
 
@@ -8800,32 +8870,67 @@ async def _ap_actor_doc_response(env, request, kind, handle):
     if not await _ap_enabled(env):
         return _ap_disabled_response()
     origin = _ap_origin(env, request)
+    # Brand defaults; repos with uploaded branding override below.
+    icon_url = origin + AP_AVATAR_PATH
+    image_url = origin + AP_BANNER_PATH
     if kind == AP_ACTOR_USER:
         if not await _ap_user_federates(env, handle):
             return json_response({"error": "not_found"}, status=404)
         actor_type, display = "Person", handle
         profile_url = origin + "/@" + handle
-        summary = "ForkMesh profile of @%s." % handle
+        # Surface the account's own bio as the fediverse summary so the
+        # Mastodon profile card mirrors the /@name page.
+        _, account_rec = await _account_row(env, handle)
+        bio = clean_string(
+            (account_rec or {}).get("profile_bio", "") or "", 500).strip()
+        summary = (ap.note_html_from_text(bio) if bio
+                   else "ForkMesh profile of @%s." % handle)
     elif kind == AP_ACTOR_REPO:
         owner, _, repo = handle.partition(".")
-        if not await _ap_repo_federates(env, owner, repo):
+        key_bi = await blind_index(env, owner + "/" + repo)
+        repo_row = await d1_first(
+            env, "SELECT is_private, data FROM repositories WHERE key_bi=?",
+            key_bi)
+        if not repo_row or int(repo_row.get("is_private") or 0):
             return json_response({"error": "not_found"}, status=404)
         actor_type, display = "Group", owner + "/" + repo
         profile_url = origin + repo_web_href(owner, repo)
-        summary = ("ForkMesh repository %s/%s. Follow for new issues, pull "
-                   "requests, discussions and releases.") % (owner, repo)
+        # Owner-set About description becomes the fediverse bio.
+        catalog_rec = await decrypt_row(env, repo_row.get("data"))
+        description = clean_string(
+            (catalog_rec or {}).get("description", "") or "", 240).strip()
+        summary = (ap.note_html_from_text(description) if description
+                   else ("ForkMesh repository %s/%s. Follow for new issues, "
+                         "pull requests, discussions and releases.")
+                   % (owner, repo))
+        # Owner-uploaded branding (repo About tab): logo = avatar, banner =
+        # header. updated_at rides along as a cache-buster so Mastodon
+        # refetches when the image changes.
+        media_rows = await d1_all(
+            env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?",
+            key_bi)
+        for media in media_rows or []:
+            media_url = "%s/api/repo/%s/%s/media/%s.png?v=%d" % (
+                origin, quote(owner), quote(repo), media.get("kind", ""),
+                int(media.get("updated_at") or 0))
+            if media.get("kind") == "logo":
+                icon_url = media_url
+            elif media.get("kind") == "banner":
+                image_url = media_url
     rec = await _ap_local_actor(env, kind, handle, create=True)
     if not rec:
         return json_response({"error": "unavailable"}, status=503)
     if kind == AP_ACTOR_INSTANCE:
         doc = ap.instance_actor_doc(
-            origin, _ap_domain_of(origin), rec["pubkeyPem"])
+            origin, _ap_domain_of(origin), rec["pubkeyPem"],
+            icon_url=icon_url, image_url=image_url)
     else:
         doc = ap.actor_doc(
             _ap_actor_url(origin, kind, handle), actor_type, handle, display,
             summary, profile_url, rec["pubkeyPem"],
             shared_inbox=origin + "/ap/inbox",
-            published_ms=rec.get("createdAt"))
+            published_ms=rec.get("createdAt"),
+            icon_url=icon_url, image_url=image_url)
     return json_response(doc, cache_seconds=300, extra_headers={
         "content-type": ap.ACTIVITY_CONTENT_TYPE})
 
@@ -9371,6 +9476,38 @@ async def ap_inbox_handler(env, request):
 
 
 # --- Client-facing endpoints ----------------------------------------------------
+
+async def repo_media_handler(env, request, owner, repo, media_kind):
+    # Owner-uploaded repo branding, served publicly (it is the repo's fediverse
+    # avatar/header, fetched by every remote server). Same visibility gate as
+    # the actor itself.
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    if await _repo_is_private(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    row = await d1_first(
+        env, "SELECT data FROM repo_media WHERE repo_bi=? AND kind=?",
+        repo_bi, media_kind)
+    rec = await decrypt_row(env, row.get("data")) if row else None
+    png_b64 = (rec or {}).get("png", "")
+    if not png_b64:
+        return json_response({"error": "not_found"}, status=404)
+    try:
+        raw = base64.b64decode(png_b64)
+    except Exception:
+        return json_response({"error": "not_found"}, status=404)
+    # The actor document busts caches via ?v=<updated_at>, so long edge/browser
+    # caching here is safe.
+    return JsResponse.new(_to_js(bytes(raw)), to_js({
+        "status": 200,
+        "headers": {
+            "content-type": "image/png",
+            "cache-control": "public, max-age=86400",
+        },
+    }))
+
 
 async def fedi_comments_handler(env, request, owner, repo):
     # Remote fediverse replies for one thread, shown alongside (never inside)
@@ -14512,6 +14649,15 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await ap_publish_handler(self.env, request, owner, repo)
+
+        repo_media_match = REPO_MEDIA_RE.match(url.path)
+        if repo_media_match:
+            owner = safe_segment(repo_media_match.group(1))
+            repo = safe_segment(repo_media_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_media_handler(
+                self.env, request, owner, repo, repo_media_match.group(3))
 
         subscribe_match = REPO_SUBSCRIBE_RE.match(url.path)
         if subscribe_match:

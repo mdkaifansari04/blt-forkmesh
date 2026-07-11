@@ -444,6 +444,16 @@ SCHEMA_STATEMENTS = [
         k TEXT PRIMARY KEY, v TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS ap_blocked_domains (
         domain TEXT PRIMARY KEY, added_by TEXT, added_at INTEGER NOT NULL)""",
+    # Per-repo branding (migration 0030): owner-uploaded logo/banner PNGs shown
+    # on the repo's fediverse actor (and anywhere else that wants them).
+    # repo_bi = blind_index("owner/repo") (== repositories.key_bi); kind is
+    # 'logo' or 'banner'; data = encrypted {png: <base64>}. One row per image
+    # so a large banner never pushes the combined row past D1's 2 MB cap, and
+    # existence checks (SELECT kind, updated_at) never decrypt the blob.
+    """CREATE TABLE IF NOT EXISTS repo_media (
+        repo_bi TEXT NOT NULL, kind TEXT NOT NULL,
+        data TEXT NOT NULL, updated_at INTEGER NOT NULL,
+        PRIMARY KEY (repo_bi, kind))""",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the
