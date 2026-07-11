@@ -240,6 +240,18 @@ void MainWindow::scanActionSpool()
                 if (!r.previewOnly && r.publishToNetwork &&
                     !r.mirrorPath.trimmed().isEmpty())
                     publishRepository(idx, false);
+                // Tell connected peers that also mirror this repo that it just
+                // advanced, the same ephemeral "mirror-update" frame
+                // syncRepository broadcasts for a fetch-detected change (see
+                // MainWindow::syncRepository/onPeerMirrorUpdated). A push that
+                // lands directly on this served bare mirror never goes through
+                // syncRepository, so without this, peers would only notice at
+                // their next 5-minute auto-sync tick instead of converging in
+                // seconds.
+                if (!r.previewOnly && m_backend)
+                    m_backend->notifyMirrorUpdated(
+                        catalogOwner(r) + "/" +
+                        repoSegment(r.name, QStringLiteral("repository")));
             }
         }
         // Skip events with no branch update or a branch deletion (all-zero SHA).
