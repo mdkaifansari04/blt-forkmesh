@@ -96,3 +96,6 @@ REPO_FEDI_COMMENTS_RE = re.compile(
 # Owner-node push of canonical repo announcements (releases, merged PRs) into
 # the fediverse — events the relay never observes through the signed inboxes.
 REPO_AP_PUBLISH_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/ap-publish$")
+# Owner-uploaded repo branding (logo/banner PNG) served publicly — referenced
+# by the repo's fediverse actor document as its avatar/header.
+REPO_MEDIA_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/media/(logo|banner)\.png$")
