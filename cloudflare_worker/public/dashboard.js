@@ -7518,7 +7518,7 @@
 		                ${renderRepoBranchToolbar(repo, branch)}
 		                <button type="button" data-repo-file-finder-open class="inline-flex h-9 min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-left text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"><i data-lucide="search" class="h-3.5 w-3.5 shrink-0"></i><span class="min-w-0 truncate">Go to file</span><span class="ml-auto hidden rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline">T</span></button>
 		                <button type="button" aria-disabled="true" class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background"><i data-lucide="plus" class="h-3.5 w-3.5 text-muted-foreground"></i>Add file<i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i></button>
-		                <button data-dashboard-copy="git clone ${escapeHtml(cloneUrl(repo))}" aria-label="Copy clone" class="copy-button inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i><span>Code</span><i data-lucide="chevron-down" class="h-3 w-3"></i></button>
+		                ${renderRepoCodeButton(repo, false)}
 		              </div>
 		              <div data-repo-pathbar class="my-3 flex min-w-0 flex-col gap-2 md:flex-row md:items-center md:justify-between">
 			                <div class="flex min-w-0 items-center gap-2">
@@ -7528,7 +7528,7 @@
 		                <div data-repo-focus-actions class="hidden flex shrink-0 flex-wrap items-center gap-2">
 		                  <button type="button" data-repo-file-finder-open class="inline-flex h-8 min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-left text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"><i data-lucide="search" class="h-3.5 w-3.5 shrink-0"></i><span class="min-w-0 truncate">Go to file</span><span class="ml-auto rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">T</span></button>
 		                  <button type="button" aria-disabled="true" class="inline-flex h-8 items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background"><i data-lucide="plus" class="h-3.5 w-3.5 text-muted-foreground"></i>Add file</button>
-		                  <button data-dashboard-copy="git clone ${escapeHtml(cloneUrl(repo))}" aria-label="Copy clone" class="copy-button inline-flex h-8 items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i><span>Code</span></button>
+		                  ${renderRepoCodeButton(repo, true)}
 		                </div>
 		              </div>
 		              <div data-repo-code-workspace class="min-w-0 gap-4">
@@ -7679,6 +7679,44 @@
     loadRepoFeaturePanels(repo);
     loadRepoPendingCounts(repo);
     loadRepoStarState(repo, $("[data-repo-action-star]"));
+  }
+
+  // GitHub-style "Code" button: a green trigger that opens a popover with the
+  // clone info instead of silently copying on click. Shows the HTTPS clone URL
+  // (readonly, selectable, with a copy button) and the ready-to-paste
+  // `git clone` command. Used both in the code toolbar and the compact
+  // scroll-pinned focus bar (compact=true), each self-contained in its own
+  // relative wrapper so the toggle handler can scope to the clicked one.
+  function renderRepoCodeButton(repo, compact = false) {
+    const url = cloneUrl(repo);
+    const gitCmd = `git clone ${url}`;
+    const btnHeight = compact ? "h-8" : "h-9";
+    const copyBtn = (value, label) =>
+      `<button type="button" data-dashboard-copy="${escapeHtml(value)}" aria-label="${label}" class="copy-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i></button>`;
+    return `
+      <div data-repo-code-wrap class="relative">
+        <button type="button" data-repo-code-button aria-haspopup="true" aria-expanded="false" class="inline-flex ${btnHeight} items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
+          <i data-lucide="code" class="h-3.5 w-3.5"></i><span>Code</span><i data-lucide="chevron-down" class="h-3 w-3"></i>
+        </button>
+        <div data-repo-code-menu class="absolute right-0 z-40 mt-1 hidden w-80 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-background p-3 text-left shadow-xl">
+          <div class="flex items-center justify-between gap-2">
+            <span class="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground"><i data-lucide="terminal" class="h-3.5 w-3.5 text-muted-foreground"></i>Clone</span>
+            <span class="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">HTTPS</span>
+          </div>
+          <p class="mt-1 text-[11px] leading-4 text-muted-foreground">Clone this repository from its live ForkMesh mirror over HTTPS.</p>
+          <div class="mt-2 flex items-center gap-2">
+            <input data-repo-clone-url type="text" readonly value="${escapeHtml(url)}" aria-label="Clone URL" class="min-w-0 flex-1 rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[11px] text-foreground outline-none focus:border-primary" />
+            ${copyBtn(url, "Copy clone URL")}
+          </div>
+          <div class="mt-3 border-t border-border pt-2">
+            <span class="text-[11px] font-medium text-muted-foreground">Command line</span>
+            <div class="mt-1 flex items-center gap-2">
+              <code class="min-w-0 flex-1 truncate rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[11px] text-foreground">${escapeHtml(gitCmd)}</code>
+              ${copyBtn(gitCmd, "Copy git clone command")}
+            </div>
+          </div>
+        </div>
+      </div>`;
   }
 
   function findRepository(key) {
@@ -8544,6 +8582,27 @@
       }
       if (!event.target.closest("[data-repo-watch-wrap]")) {
         $("[data-repo-watch-menu]")?.classList.add("hidden");
+      }
+
+      // GitHub-style Code dropdown: toggle the clone popover scoped to the
+      // clicked button; a click anywhere outside a code wrapper closes them.
+      const codeButton = event.target.closest("[data-repo-code-button]");
+      if (codeButton) {
+        const wrap = codeButton.closest("[data-repo-code-wrap]");
+        const menu = wrap?.querySelector("[data-repo-code-menu]");
+        const willOpen = Boolean(menu?.classList.contains("hidden"));
+        $$("[data-repo-code-menu]").forEach((m) => m.classList.add("hidden"));
+        $$("[data-repo-code-button]").forEach((b) => b.setAttribute("aria-expanded", "false"));
+        if (menu && willOpen) {
+          menu.classList.remove("hidden");
+          codeButton.setAttribute("aria-expanded", "true");
+          // Pre-select the URL so Ctrl/Cmd+C works immediately, like GitHub.
+          wrap.querySelector("[data-repo-clone-url]")?.select?.();
+        }
+        return;
+      }
+      if (!event.target.closest("[data-repo-code-wrap]")) {
+        $$("[data-repo-code-menu]").forEach((m) => m.classList.add("hidden"));
       }
 
       const aboutEditButton = event.target.closest("[data-repo-about-edit]");
