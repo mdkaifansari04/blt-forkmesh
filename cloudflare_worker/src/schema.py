@@ -454,7 +454,15 @@ SCHEMA_STATEMENTS = [
         repo_bi TEXT NOT NULL, kind TEXT NOT NULL,
         data TEXT NOT NULL, updated_at INTEGER NOT NULL,
         PRIMARY KEY (repo_bi, kind))""",
-    # Repo stars (migration 0031): which accounts starred which repo. Keyed by
+    # Web edits of the repo About card queued for the owner's desktop node
+    # (migration 0031): the node drains this via GET /api/sync (same
+    # drain-on-read semantics as agent_prompts) and writes the change into the
+    # repo's committed .forkmesh/info.json — the single source of truth the
+    # desktop app shows. One row per repo; the latest web edit wins.
+    """CREATE TABLE IF NOT EXISTS about_inbox (
+        repo_bi TEXT PRIMARY KEY, data TEXT NOT NULL,
+        queued_at INTEGER NOT NULL)""",
+    # Repo stars (migration 0032): which accounts starred which repo. Keyed by
     # blind indexes only (no signing needed - a star is a plain per-account
     # preference, same trust level as profile_follows), so the count and the
     # caller's own starred state are cheap membership checks.
