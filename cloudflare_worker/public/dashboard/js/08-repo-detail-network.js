@@ -65,9 +65,11 @@
     };
     const canSeeAgentsTab = sessionCanAssignAgent(repo);
     const actionSeed = repoKey(repo);
-    const watchCount = stableMockNumber(`${actionSeed}:watch`, 0, 18);
     const forkCount = stableMockNumber(`${actionSeed}:fork`, 0, 12);
     const starCount = stableMockNumber(`${actionSeed}:star`, 0, 84);
+    // Watch is real: it is the repo's fediverse follower count (see
+    // loadRepoFediverse), and the button opens the follow-from-Mastodon card.
+    const fediHandle = `@${(repo.owner || "").toLowerCase()}.${(repo.name || "").toLowerCase()}@${location.host}`;
     detail.innerHTML = `
       <div data-repo-layout="github-like" class="min-w-0">
         <div data-repo-github-header class="rounded-t-lg border border-border bg-background">
@@ -82,12 +84,23 @@
               <p class="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
             </div>
             <div aria-label="Repository facts" class="flex flex-wrap items-start gap-2 lg:justify-end">
-              <button type="button" data-repo-action-watch class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
-                <i data-lucide="eye" class="h-3.5 w-3.5 text-muted-foreground"></i>
-                Watch
-                <span class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(watchCount)}</span>
-                <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
-              </button>
+              <div data-repo-watch-wrap class="relative">
+                <button type="button" data-repo-action-watch class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
+                  <i data-lucide="eye" class="h-3.5 w-3.5 text-muted-foreground"></i>
+                  Watch
+                  <span data-repo-watch-count class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">–</span>
+                  <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
+                </button>
+                <div data-repo-watch-menu class="absolute right-0 z-30 mt-1 hidden w-72 rounded-lg border border-border bg-background p-3 text-left shadow-xl">
+                  <p class="text-xs font-semibold text-foreground">Watch on the fediverse</p>
+                  <p class="mt-1 text-[11px] leading-5 text-muted-foreground">Follow this repository from Mastodon (or any ActivityPub app) to get new issues, pull requests, discussions and releases in your feed.</p>
+                  <div class="mt-2 flex items-center gap-2">
+                    <code data-repo-watch-handle class="min-w-0 flex-1 truncate rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[11px] text-foreground">${escapeHtml(fediHandle)}</code>
+                    <button type="button" data-dashboard-copy="${escapeHtml(fediHandle)}" aria-label="Copy fediverse handle" class="copy-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i></button>
+                  </div>
+                  <p class="mt-2 text-[11px] text-muted-foreground"><span data-repo-watch-followers class="font-mono text-foreground">–</span> fediverse watchers</p>
+                </div>
+              </div>
               <button type="button" data-repo-action-fork class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
                 <i data-lucide="git-fork" class="h-3.5 w-3.5 text-muted-foreground"></i>
                 Fork
@@ -208,6 +221,17 @@
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
           </div>
           <aside data-repo-about data-repo-about-rail class="min-w-0 rounded-lg border border-border bg-background p-4">
+            ${repo.isPrivate ? "" : `
+            <div data-repo-social-badge class="-mx-4 -mt-4 mb-4 overflow-hidden rounded-t-lg border-b border-border">
+              <div data-repo-social-banner class="h-20 w-full bg-secondary bg-cover bg-center" style="background-image:url('/assets/fediverse-banner.png')"></div>
+              <div class="flex items-end gap-3 px-4 pb-3">
+                <img data-repo-social-logo src="/assets/fediverse-avatar.png" alt="Repository logo" class="-mt-7 h-14 w-14 shrink-0 rounded-xl border-2 border-background bg-background object-cover shadow" />
+                <div class="min-w-0 pb-0.5">
+                  <div data-repo-social-handle title="${escapeHtml(fediHandle)}" class="min-w-0 truncate font-mono text-[11px] text-foreground">${escapeHtml(fediHandle)}</div>
+                  <div class="text-[11px] text-muted-foreground"><span data-repo-social-followers class="font-mono text-foreground">–</span> fediverse watchers</div>
+                </div>
+              </div>
+            </div>`}
             <div class="flex items-center justify-between gap-3">
               <h3 class="text-sm font-semibold text-foreground">About</h3>
               ${canEditAbout
@@ -215,8 +239,19 @@
                 : `<i data-lucide="settings" class="h-3.5 w-3.5 text-muted-foreground"></i>`}
             </div>
             <p data-repo-about-description class="mt-3 text-sm leading-6 text-foreground">${escapeHtml(repo.description || "No description published.")}</p>
+            <a data-repo-about-website href="#" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-1 hidden min-w-0 items-center gap-1.5 text-xs hover:underline"><i data-lucide="globe" class="h-3.5 w-3.5 shrink-0"></i><span data-repo-about-website-label class="min-w-0 truncate"></span></a>
             <form data-repo-about-form class="mt-3 hidden grid gap-2">
               <textarea data-repo-about-input rows="4" maxlength="240" class="min-h-24 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary">${escapeHtml(repo.description || "")}</textarea>
+              <label class="grid gap-1 text-[11px] text-muted-foreground">Logo — square PNG, up to 256 KB (fediverse avatar)
+                <input data-repo-about-logo type="file" accept="image/png" class="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-secondary file:px-2 file:py-1 file:text-xs file:text-foreground" />
+              </label>
+              <label class="grid gap-1 text-[11px] text-muted-foreground">Banner — 1500×500 PNG, up to 1 MB (fediverse header)
+                <input data-repo-about-banner type="file" accept="image/png" class="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-secondary file:px-2 file:py-1 file:text-xs file:text-foreground" />
+              </label>
+              <span class="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+                <label class="inline-flex items-center gap-1.5"><input data-repo-about-logo-clear type="checkbox" class="h-3 w-3" />Remove logo</label>
+                <label class="inline-flex items-center gap-1.5"><input data-repo-about-banner-clear type="checkbox" class="h-3 w-3" />Remove banner</label>
+              </span>
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <span data-repo-about-status class="text-[11px] text-muted-foreground"></span>
                 <span class="inline-flex items-center gap-2">
@@ -230,24 +265,30 @@
               <a href="${escapeHtml(readmeHref)}" data-repo-readme-link data-repo-readme-path="${escapeHtml(readmePath)}" class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="book-open" class="h-3.5 w-3.5"></i><span>Readme</span></a>
               <a href="${escapeHtml(`${repoPathUrl(repo)}/insights`)}" data-repo-activity-link class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="activity" class="h-3.5 w-3.5"></i><span>Activity</span></a>
             </div>
-            <div class="mt-5 border-t border-border pt-4">
-	              <h4 class="text-xs font-semibold text-foreground">Repository metadata</h4>
-	              <dl class="mt-3 grid gap-3 text-xs">
-	                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Channel</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(repo.channel || "general")}</dd></div>
-	                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Source</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(repo.source || "desktop")}</dd></div>
-	                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Maintainer</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(repo.maintainer || repo.owner || "unknown")}</dd></div>
-	                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Updated</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(updatedAt)}</dd></div>
-	              </dl>
-	            </div>
-		            <div data-repo-live-summary class="mt-5 border-t border-border pt-4">
-		              <h4 class="text-xs font-semibold text-foreground">Live mirror</h4>
-		              <dl class="mt-3 grid gap-3 text-xs">
-		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Mirrors</dt><dd data-dashboard-repo-count="mirrors" class="min-w-0 truncate text-right text-foreground font-mono">${tabCountLabel(mirrorsCount)}</dd></div>
-		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Data</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(formatSize(repo.sizeBytes))}</dd></div>
-		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Clone</dt><dd class="min-w-0 truncate text-right font-mono ${live ? "text-foreground" : "text-muted-foreground"}">${viaMirror ? "via mirror" : live ? "available" : "offline"}</dd></div>
-		              </dl>
-		              <div data-repo-live-mirror-list class="mt-3 overflow-hidden rounded-md border border-border"></div>
-		            </div>
+            <div data-repo-about-release class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Latest release</h4>
+              <div data-repo-about-release-body class="mt-2 text-xs text-muted-foreground"></div>
+            </div>
+            <div data-repo-about-langs class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Languages</h4>
+              <div data-repo-about-langs-bar class="mt-2 flex h-2 w-full overflow-hidden rounded-full bg-secondary"></div>
+              <div data-repo-about-langs-legend class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground"></div>
+            </div>
+            <div data-repo-about-files class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Files</h4>
+              <p data-repo-about-files-count class="mt-2 text-xs text-muted-foreground"></p>
+            </div>
+            <div data-repo-about-contribs class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contributors <span data-repo-about-contribs-count class="font-mono text-foreground"></span></h4>
+              <div data-repo-about-contribs-list class="mt-2 flex flex-wrap gap-1.5"></div>
+            </div>
+            <div data-repo-live-summary class="mt-5 border-t border-border pt-4">
+              <h4 class="text-xs font-semibold text-foreground">Live mirror</h4>
+              <dl class="mt-3 grid gap-3 text-xs">
+                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Mirrors</dt><dd data-dashboard-repo-count="mirrors" class="min-w-0 truncate text-right text-foreground font-mono">${tabCountLabel(mirrorsCount)}</dd></div>
+              </dl>
+              <div data-repo-live-mirror-list class="mt-3 overflow-hidden rounded-md border border-border"></div>
+            </div>
           </aside>
         </div>
       </div>`;
@@ -259,6 +300,7 @@
     if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo);
     loadRepoPendingCounts(repo);
+    loadRepoAboutRail(repo);
   }
 
   function findRepository(key) {
@@ -1107,6 +1149,17 @@
         return;
       }
 
+      // Watch popover: the button shows the repo's fediverse follower count
+      // and opens the follow-from-Mastodon card; any click outside closes it.
+      const watchButton = event.target.closest("[data-repo-action-watch]");
+      if (watchButton) {
+        $("[data-repo-watch-menu]")?.classList.toggle("hidden");
+        return;
+      }
+      if (!event.target.closest("[data-repo-watch-wrap]")) {
+        $("[data-repo-watch-menu]")?.classList.add("hidden");
+      }
+
       const aboutEditButton = event.target.closest("[data-repo-about-edit]");
       if (aboutEditButton && state.selectedRepo && sessionOwnsRepo(state.selectedRepo)) {
         setRepoAboutStatus("");
@@ -1323,15 +1376,40 @@
       if (submit) submit.disabled = true;
       setRepoAboutStatus("Saving...");
       try {
-        const body = await saveRepoAboutFromWeb(state.selectedRepo, description);
+        // Optional branding uploads ride along with the description: a chosen
+        // file becomes a data-URL PNG, a checked "Remove" sends "" (clear),
+        // and an untouched image is simply omitted (left unchanged).
+        const media = {};
+        const readAsDataUrl = (file) => new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ""));
+          reader.onerror = () => reject(new Error("image_read_failed"));
+          reader.readAsDataURL(file);
+        });
+        const logoFile = aboutForm.querySelector("[data-repo-about-logo]")?.files?.[0];
+        const bannerFile = aboutForm.querySelector("[data-repo-about-banner]")?.files?.[0];
+        if (logoFile && logoFile.size > 256 * 1024) throw new Error("logo_too_large");
+        if (bannerFile && bannerFile.size > 1024 * 1024) throw new Error("banner_too_large");
+        if (aboutForm.querySelector("[data-repo-about-logo-clear]")?.checked) media.logoPng = "";
+        else if (logoFile) media.logoPng = await readAsDataUrl(logoFile);
+        if (aboutForm.querySelector("[data-repo-about-banner-clear]")?.checked) media.bannerPng = "";
+        else if (bannerFile) media.bannerPng = await readAsDataUrl(bannerFile);
+        const body = await saveRepoAboutFromWeb(state.selectedRepo, description, media);
         applyRepoAboutDescription(state.selectedRepo, body.description ?? description);
         setRepoAboutStatus("Saved.", "good");
         setRepoAboutEditing(false);
+        // Refresh the badge header + watch count so the new logo/banner (and
+        // the ?v= cache-buster) show immediately.
+        loadRepoFediverse(state.selectedRepo);
       } catch (error) {
         const code = String(error?.message || "");
         setRepoAboutStatus(
           code === "not_authorized" ? "Only the source node owner can edit About."
             : code === "account_required" ? "Sign in as the source node owner first."
+            : code === "logo_too_large" ? "Logo must be a PNG up to 256 KB."
+            : code === "banner_too_large" ? "Banner must be a PNG up to 1 MB."
+            : code === "image_too_large" ? "Image too large (logo ≤256 KB, banner ≤1 MB)."
+            : code === "bad_image" ? "Images must be PNG files."
             : "Could not save About.",
           "bad");
       } finally {

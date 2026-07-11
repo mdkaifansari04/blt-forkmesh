@@ -182,10 +182,11 @@ def test_repo_detail_reflects_mirror_serving():
     ]
     assert "const live = repoIsLive(repo);" in detail
     assert "const viaMirror = repoServedByMirror(repo);" in detail
-    # Header badge, Host fact, and Clone availability all key off the group verdict.
+    # Header badge and Host fact key off the group verdict. (The About rail's
+    # Clone-availability row was removed with the metadata cleanup — the
+    # header Host chip is the remaining availability surface.)
     assert "viaMirror ? \"served by mirror\" : live ? \"host online\" : \"host offline\"" in detail
     assert "viaMirror ? \"via mirror\" : live ? \"online\" : \"offline\"" in detail
-    assert "viaMirror ? \"via mirror\" : live ? \"available\" : \"offline\"" in detail
 
 
 def test_served_by_badge_includes_serving_node_counters():
