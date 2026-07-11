@@ -46,6 +46,10 @@ def _load_functions(extra_globals):
     assert {node.name for node in selected} == FUNCS, "missing claim/link functions"
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals)
+    # Per-isolate hot-path memos the heartbeat path references (module-level
+    # in entry.py); fresh per load for test isolation.
+    namespace.setdefault("_MIRRORED_ACCOUNT_BIS", set())
+    namespace.setdefault("_HEARTBEAT_BALANCE_PROBES", {})
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace
 

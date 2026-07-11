@@ -24,6 +24,9 @@ def _load(extra):
     assert {n.name for n in selected} == FUNCS, "missing functions"
     mod = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
     ns = dict(extra)
+    # Per-isolate memo the hot-path helpers reference (module-level in
+    # entry.py; a fresh one per load keeps tests isolated).
+    ns.setdefault("_MIRRORED_ACCOUNT_BIS", set())
     exec(compile(mod, str(ENTRY), "exec"), ns)
     return ns
 

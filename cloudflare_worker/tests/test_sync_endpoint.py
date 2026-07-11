@@ -92,15 +92,18 @@ def _harness():
             owner_bi = args[0]
             return [{"key_bi": r["key_bi"], "data": r["data"]}
                     for r in repositories if r["owner_bi"] == owner_bi]
+        # sync_handler now selects each inbox table once across all of the
+        # owner's repos with `repo_bi IN (?,...)`, returning repo_bi + data.
+        want = set(args)
         for table, rows in inboxes.items():
             if "FROM " + table in sql:
-                repo_bi = args[0]
-                return [{"data": r["data"]} for r in rows
-                        if r["repo_bi"] == repo_bi]
+                return [{"repo_bi": r["repo_bi"], "data": r["data"]}
+                        for r in rows if r["repo_bi"] in want]
         if "FROM agent_prompts" in sql:
-            repo_bi = args[0]
-            return [{"data": r["data"]} for r in agent_prompts
-                    if r["repo_bi"] == repo_bi]
+            return [{"repo_bi": r["repo_bi"], "data": r["data"]}
+                    for r in agent_prompts if r["repo_bi"] in want]
+        if "FROM about_inbox" in sql:
+            return []
         raise AssertionError("unexpected d1_all: " + sql)
 
     async def d1_run(_env, sql, *args):
@@ -114,10 +117,6 @@ def _harness():
         raise AssertionError("unexpected d1_run: " + sql)
 
     async def d1_first(_env, sql, *args):
-        # Web About edits (about_inbox) are exercised end-to-end elsewhere;
-        # these tests run with an empty queue.
-        if "FROM about_inbox" in sql:
-            return None
         raise AssertionError("unexpected d1_first: " + sql)
 
     def safe_segment(value, max_length=100):
