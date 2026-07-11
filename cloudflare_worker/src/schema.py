@@ -290,10 +290,12 @@ SCHEMA_STATEMENTS = [
     # the Releases tab can show a per-artifact download count and the admin
     # dashboard has a plain event log of them (same treatment as install_diag).
     # repo_bi is the blind index of "<owner>/<repo>"; sha256 is the content
-    # address of the asset. No account/IP is recorded.
+    # address of the asset. ua is the raw User-Agent header, shown as-is in the
+    # admin list so operators can spot scripted/bot download traffic. No
+    # account/IP is recorded.
     """CREATE TABLE IF NOT EXISTS release_downloads (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
-        sha256 TEXT NOT NULL, ts INTEGER NOT NULL)""",
+        sha256 TEXT NOT NULL, ts INTEGER NOT NULL, ua TEXT)""",
     "CREATE INDEX IF NOT EXISTS idx_release_downloads_repo_sha "
     "ON release_downloads(repo_bi, sha256)",
     # Private vulnerability reports submitted via /api/security/report. The body
