@@ -7962,7 +7962,12 @@ async def _account_reset_password(env, request):
 
 
 def _verify_email_page(message, status):
-    body = ("<!doctype html><meta charset=utf-8><title>ForkMesh email</title>"
+    # color-scheme: light dark lets the browser render its default light or
+    # dark canvas to match the visitor's OS preference (no site CSS needed on
+    # this one-line confirmation page).
+    body = ("<!doctype html><meta charset=utf-8>"
+            "<meta name=\"color-scheme\" content=\"light dark\">"
+            "<title>ForkMesh email</title>"
             "<body style=\"font-family:system-ui,sans-serif;max-width:32rem;"
             "margin:4rem auto;padding:0 1rem;line-height:1.5\">" + message +
             "</body>")
@@ -13690,57 +13695,70 @@ def _admin_href(admin_query, **params):
 
 
 ADMIN_STYLE = """
+ /* Palette: GitHub-dark by default, GitHub-light when the site theme engine
+    (site-header.js, shared localStorage keys + OS preference) stamps
+    html.light. All rules below use only these variables. */
+ :root{color-scheme:dark;
+   --ab-bg:#0d1117;--ab-fg:#c9d1d9;--ab-muted:#8b949e;--ab-border:#21262d;
+   --ab-border-2:#30363d;--ab-card:#161b22;--ab-link:#58a6ff;
+   --ab-danger:#f85149;--ab-btn:#238636;--ab-btn-hover:#2ea043;
+   --ab-btn-fg:#ffffff;--ab-ok-bg:#11251a;--ab-ok-fg:#aff5c2}
+ html.light{color-scheme:light;
+   --ab-bg:#ffffff;--ab-fg:#1f2328;--ab-muted:#59636e;--ab-border:#d1d9e0;
+   --ab-border-2:#d1d9e0;--ab-card:#f6f8fa;--ab-link:#0969da;
+   --ab-danger:#cf222e;--ab-btn:#1f883d;--ab-btn-hover:#1a7f37;
+   --ab-btn-fg:#ffffff;--ab-ok-bg:#dafbe1;--ab-ok-fg:#116329}
  *{box-sizing:border-box}
- body{font:14px/1.5 system-ui,sans-serif;margin:0;background:#0d1117;color:#c9d1d9}
- header{padding:16px 24px;border-bottom:1px solid #21262d}
+ body{font:14px/1.5 system-ui,sans-serif;margin:0;background:var(--ab-bg);color:var(--ab-fg)}
+ header{padding:16px 24px;border-bottom:1px solid var(--ab-border)}
  h1{font-size:18px;margin:0}
- .meta{color:#8b949e;font-size:13px;margin-top:4px}
- a{color:#58a6ff;text-decoration:none}
+ .meta{color:var(--ab-muted);font-size:13px;margin-top:4px}
+ a{color:var(--ab-link);text-decoration:none}
  a:hover{text-decoration:underline}
  .cards{display:flex;gap:12px;flex-wrap:wrap;padding:16px 24px 0}
- .card{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px 18px;min-width:120px}
+ .card{background:var(--ab-card);border:1px solid var(--ab-border);border-radius:8px;padding:12px 18px;min-width:120px}
  .card .n{font-size:24px;font-weight:600}
- .card .l{color:#8b949e;font-size:12px;margin-top:2px}
- .card.warn .n{color:#f85149}
+ .card .l{color:var(--ab-muted);font-size:12px;margin-top:2px}
+ .card.warn .n{color:var(--ab-danger)}
  .tools{padding:12px 24px;display:flex;gap:12px;align-items:center}
- button{background:#238636;color:#fff;border:1px solid #2ea043;border-radius:6px;
+ button{background:var(--ab-btn);color:var(--ab-btn-fg);border:1px solid var(--ab-btn-hover);border-radius:6px;
         padding:8px 14px;font:600 13px system-ui;cursor:pointer}
- button:hover{background:#2ea043}
- button[disabled]{background:#30363d;border-color:#30363d;color:#8b949e;cursor:not-allowed}
- .banner{margin:0 24px 8px;padding:10px 14px;border-radius:6px;border:1px solid #2ea043;
-         background:#11251a;color:#aff5c2;white-space:pre-wrap;font:13px ui-monospace,monospace}
+ button:hover{background:var(--ab-btn-hover)}
+ button[disabled]{background:var(--ab-border-2);border-color:var(--ab-border-2);color:var(--ab-muted);cursor:not-allowed}
+ .banner{margin:0 24px 8px;padding:10px 14px;border-radius:6px;border:1px solid var(--ab-btn-hover);
+         background:var(--ab-ok-bg);color:var(--ab-ok-fg);white-space:pre-wrap;font:13px ui-monospace,monospace}
  .layout{display:flex;align-items:flex-start}
- nav{width:220px;flex:none;border-right:1px solid #21262d;min-height:60vh;padding:8px 0}
- nav a{display:block;padding:7px 20px;color:#c9d1d9}
- nav a.active{background:#161b22;border-left:3px solid #58a6ff;font-weight:600}
- nav .sec{padding:10px 20px 4px;color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+ nav{width:220px;flex:none;border-right:1px solid var(--ab-border);min-height:60vh;padding:8px 0}
+ nav a{display:block;padding:7px 20px;color:var(--ab-fg)}
+ nav a.active{background:var(--ab-card);border-left:3px solid var(--ab-link);font-weight:600}
+ nav .sec{padding:10px 20px 4px;color:var(--ab-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
  nav .navsort{float:right;text-transform:none;letter-spacing:normal;font-size:11px}
  main{flex:1;min-width:0;overflow-x:auto;padding:8px 0 40px}
  table{border-collapse:collapse;width:100%}
- th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #21262d;vertical-align:top}
- th{position:sticky;top:0;background:#161b22;color:#8b949e;font-weight:600}
+ th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--ab-border);vertical-align:top}
+ th{position:sticky;top:0;background:var(--ab-card);color:var(--ab-muted);font-weight:600}
  td{font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;max-width:560px}
- .s5{color:#f85149;font-weight:600}
- tr:hover{background:#161b22}
- .empty{padding:32px 24px;color:#8b949e}
+ .s5{color:var(--ab-danger);font-weight:600}
+ tr:hover{background:var(--ab-card)}
+ .empty{padding:32px 24px;color:var(--ab-muted)}
  .title{padding:14px 24px 4px;font-weight:600}
- .navcount{color:#8b949e;font-size:11px;font-weight:400}
- .navlink{color:#58a6ff}
+ .navcount{color:var(--ab-muted);font-size:11px;font-weight:400}
+ .navlink{color:var(--ab-link)}
  nav a .navcount{float:right}
  .rowform{padding:8px 24px;max-width:760px}
  .rowfield{display:block;margin:10px 0}
- .rowfield span{display:block;color:#8b949e;font-size:12px;margin-bottom:4px}
- .rowfield input,.rowfield textarea{width:100%;background:#0d1117;color:#c9d1d9;
-        border:1px solid #30363d;border-radius:6px;padding:8px;
+ .rowfield span{display:block;color:var(--ab-muted);font-size:12px;margin-bottom:4px}
+ .rowfield input,.rowfield textarea{width:100%;background:var(--ab-bg);color:var(--ab-fg);
+        border:1px solid var(--ab-border-2);border-radius:6px;padding:8px;
         font:13px ui-monospace,monospace}
  .tools .navlink{padding:8px 4px}
  .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:180px}
  .account-kind button{padding:4px 8px;font-size:12px}
- .kindpill{border:1px solid #30363d;border-radius:999px;padding:3px 8px;
-        color:#c9d1d9;background:#161b22;font:600 12px system-ui,sans-serif}
+ .kindpill{border:1px solid var(--ab-border-2);border-radius:999px;padding:3px 8px;
+        color:var(--ab-fg);background:var(--ab-card);font:600 12px system-ui,sans-serif}
  .diaggrid{display:flex;gap:24px;flex-wrap:wrap;padding:4px 24px 12px;align-items:flex-start}
  .diagcol{min-width:240px}
- .diagcol h3{font-size:13px;color:#8b949e;margin:8px 0 4px;font-weight:600}
+ .diagcol h3{font-size:13px;color:var(--ab-muted);margin:8px 0 4px;font-weight:600}
  .diagcol table{width:auto;min-width:220px}
 """
 
@@ -14215,9 +14233,12 @@ def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=
         cls = ' class="active"' if t == active else ""
         n = counts.get(t)
         suffix = (' <span class="navcount">%d</span>' % n) if n is not None else ""
+        # Carry the active sort along: sort state lives only in the URL, so a
+        # table link that dropped it would silently reset the nav to A–Z.
         links.append('<a href="%s"%s>%s%s</a>'
-                     % (_admin_href(admin_query, table=t), cls,
-                        _html_escape(label), suffix))
+                     % (_admin_href(admin_query, table=t,
+                                    sort=("records" if sort_records else "")),
+                        cls, _html_escape(label), suffix))
     return "<nav>" + "".join(links) + "</nav>"
 
 
@@ -14227,7 +14248,18 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<title>forkmesh · admin</title><style>" + ADMIN_STYLE + "</style></head><body>"
+        "<meta name=\"color-scheme\" content=\"light dark\">"
+        "<title>forkmesh · admin</title>"
+        # The universal site header (brand, nav, account chip) + the theme
+        # engine it carries: site-header.js stamps html.light/html.dark from
+        # the visitor's saved choice or OS preference, which ADMIN_STYLE's
+        # variable palette keys off. styles.css supplies the header's own
+        # tokens; ADMIN_STYLE loads after it so the admin rules win.
+        "<link rel=\"stylesheet\" href=\"/styles.css\">"
+        "<link rel=\"stylesheet\" href=\"/site-header.css\">"
+        "<script src=\"/site-header.js\" defer></script>"
+        "<style>" + ADMIN_STYLE + "</style></head><body>"
+        "<div data-forkmesh-header=\"simple\"></div>"
         "<header><h1>forkmesh · admin</h1>"
         "<div class=\"meta\">Live Durable Object load, every D1 table, and "
         "Solana payment-reference status.</div></header>"
