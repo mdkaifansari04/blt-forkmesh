@@ -1,0 +1,1217 @@
+diff --git a/cloudflare_worker/migrations/0035_email_admin.sql b/cloudflare_worker/migrations/0035_email_admin.sql
+new file mode 100644
+index 00000000..8829b531
+--- /dev/null
++++ b/cloudflare_worker/migrations/0035_email_admin.sql
+@@ -0,0 +1,70 @@
++-- ForkMesh D1 migration 0028 - encrypted email operations console.
++-- Private recipient and message fields live in encrypted data blobs.
++
++CREATE TABLE IF NOT EXISTS email_recipients (
++  id INTEGER PRIMARY KEY AUTOINCREMENT,
++  email_bi TEXT NOT NULL UNIQUE,
++  data TEXT NOT NULL,
++  created_at INTEGER NOT NULL,
++  updated_at INTEGER NOT NULL
++);
++
++CREATE TABLE IF NOT EXISTS email_categories (
++  id INTEGER PRIMARY KEY AUTOINCREMENT,
++  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
++  created_at INTEGER NOT NULL,
++  updated_at INTEGER NOT NULL
++);
++
++CREATE TABLE IF NOT EXISTS email_category_memberships (
++  category_id INTEGER NOT NULL,
++  recipient_id INTEGER NOT NULL,
++  created_at INTEGER NOT NULL,
++  PRIMARY KEY (category_id, recipient_id),
++  FOREIGN KEY (category_id) REFERENCES email_categories(id) ON DELETE CASCADE,
++  FOREIGN KEY (recipient_id) REFERENCES email_recipients(id) ON DELETE CASCADE
++);
++
++CREATE INDEX IF NOT EXISTS idx_email_memberships_recipient
++  ON email_category_memberships(recipient_id);
++
++CREATE TABLE IF NOT EXISTS email_templates (
++  id INTEGER PRIMARY KEY AUTOINCREMENT,
++  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
++  data TEXT NOT NULL,
++  is_seeded INTEGER NOT NULL DEFAULT 0,
++  created_at INTEGER NOT NULL,
++  updated_at INTEGER NOT NULL
++);
++
++CREATE TABLE IF NOT EXISTS email_campaigns (
++  id TEXT NOT NULL PRIMARY KEY,
++  status TEXT NOT NULL,
++  data TEXT NOT NULL,
++  created_at INTEGER NOT NULL,
++  reviewed_at INTEGER NOT NULL DEFAULT 0,
++  queued_at INTEGER NOT NULL DEFAULT 0,
++  completed_at INTEGER NOT NULL DEFAULT 0
++);
++
++CREATE INDEX IF NOT EXISTS idx_email_campaigns_created
++  ON email_campaigns(created_at DESC);
++
++CREATE TABLE IF NOT EXISTS email_deliveries (
++  id TEXT NOT NULL PRIMARY KEY,
++  campaign_id TEXT NOT NULL,
++  recipient_id INTEGER,
++  status TEXT NOT NULL,
++  data TEXT NOT NULL,
++  attempts INTEGER NOT NULL DEFAULT 0,
++  last_error TEXT NOT NULL DEFAULT '',
++  queued_at INTEGER NOT NULL DEFAULT 0,
++  sent_at INTEGER NOT NULL DEFAULT 0,
++  updated_at INTEGER NOT NULL,
++  UNIQUE (campaign_id, recipient_id),
++  FOREIGN KEY (campaign_id) REFERENCES email_campaigns(id) ON DELETE CASCADE,
++  FOREIGN KEY (recipient_id) REFERENCES email_recipients(id) ON DELETE SET NULL
++);
++
++CREATE INDEX IF NOT EXISTS idx_email_deliveries_campaign_status
++  ON email_deliveries(campaign_id, status);
+diff --git a/cloudflare_worker/src/email_admin.py b/cloudflare_worker/src/email_admin.py
+new file mode 100644
+index 00000000..6730a643
+--- /dev/null
++++ b/cloudflare_worker/src/email_admin.py
+@@ -0,0 +1,268 @@
++import html
++import json
++import re
++import unicodedata
++
++
++EMAIL_LOCAL_RE = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+", re.ASCII)
++EMAIL_DOMAIN_LABEL_RE = re.compile(r"[A-Za-z0-9-]+", re.ASCII)
++PLACEHOLDER_RE = re.compile(r"{{([^{}]*)}}")
++UNSAFE_SEPARATOR_CATEGORIES = frozenset(("Zl", "Zp"))
++ALLOWED_PLACEHOLDERS = frozenset(("name", "company", "email"))
++MAX_RECIPIENT_JSON_CHARS = 1_000_000
++MAX_RECIPIENTS = 5_000
++DEFAULT_CATEGORIES = ("following", "confirmed", "not-responding")
++DEFAULT_TEMPLATES = (
++    {
++        "name": "Sponsorship introduction",
++        "subject": "Partner with ForkMesh",
++        "body": (
++            "Hi {{name}},\n\n"
++            "We are building ForkMesh, an open collaboration network for developers, "
++            "and would love to explore a sponsorship with {{company}}.\n\n"
++            "Would you be open to a short conversation?\n\n"
++            "Best,\nThe ForkMesh founders"
++        ),
++    },
++    {
++        "name": "Partnership outreach",
++        "subject": "A potential ForkMesh partnership",
++        "body": (
++            "Hi {{name}},\n\n"
++            "ForkMesh helps developers collaborate through a distributed network. "
++            "We see a potential partnership with {{company}}.\n\n"
++            "Could we schedule a short introduction?\n\n"
++            "Best,\nThe ForkMesh founders"
++        ),
++    },
++    {
++        "name": "Follow-up",
++        "subject": "Following up on ForkMesh",
++        "body": (
++            "Hi {{name}},\n\n"
++            "We wanted to follow up on our note about ForkMesh and {{company}}. "
++            "If this is relevant, we would be happy to share more context.\n\n"
++            "Best,\nThe ForkMesh founders"
++        ),
++    },
++)
++
++
++def _has_unsafe_text_character(value):
++    for character in value:
++        category = unicodedata.category(character)
++        if category.startswith("C") or category in UNSAFE_SEPARATOR_CATEGORIES:
++            return True
++    return False
++
++
++def normalize_email(value):
++    if not isinstance(value, str):
++        return ""
++    email = value.strip().lower()
++    if (
++        _has_unsafe_text_character(value)
++        or not email.isascii()
++        or len(email) > 254
++        or email.count("@") != 1
++    ):
++        return ""
++
++    local, domain = email.split("@")
++    if (
++        not 1 <= len(local) <= 64
++        or not EMAIL_LOCAL_RE.fullmatch(local)
++        or local.startswith(".")
++        or local.endswith(".")
++        or ".." in local
++        or not 1 <= len(domain) <= 253
++        or "." not in domain
++    ):
++        return ""
++
++    labels = domain.split(".")
++    if any(
++        not 1 <= len(label) <= 63
++        or not EMAIL_DOMAIN_LABEL_RE.fullmatch(label)
++        or label.startswith("-")
++        or label.endswith("-")
++        for label in labels
++    ):
++        return ""
++    return email
++
++
++def _clean_field(value, limit):
++    if value is None:
++        return ""
++    if not isinstance(value, str) or _has_unsafe_text_character(value):
++        return ""
++    return value.strip()[:limit]
++
++
++def _valid_metadata(value):
++    return value is None or (
++        isinstance(value, str) and not _has_unsafe_text_character(value)
++    )
++
++
++def _render_field(value, limit):
++    if not isinstance(value, str):
++        return ""
++    if _has_unsafe_text_character(value):
++        return value
++    return value.strip()[:limit]
++
++
++def dedupe_recipients(recipients):
++    ordered = []
++    by_email = {}
++    for raw in recipients:
++        if not isinstance(raw, dict):
++            continue
++        email = normalize_email(raw.get("email"))
++        if not email:
++            continue
++
++        current = by_email.get(email)
++        if current is None:
++            current = {
++                "email": email,
++                "name": _clean_field(raw.get("name"), 120),
++                "company": _clean_field(raw.get("company"), 160),
++            }
++            by_email[email] = current
++            ordered.append(current)
++            continue
++
++        if not current["name"]:
++            current["name"] = _clean_field(raw.get("name"), 120)
++        if not current["company"]:
++            current["company"] = _clean_field(raw.get("company"), 160)
++    return ordered
++
++
++def _reject_json_constant(_value):
++    raise ValueError("non-finite JSON constant")
++
++
++def parse_recipient_array(raw):
++    if not isinstance(raw, str):
++        return {
++            "recipients": [],
++            "errors": [{"index": -1, "error": "invalid_json"}],
++        }
++    if len(raw) > MAX_RECIPIENT_JSON_CHARS:
++        return {
++            "recipients": [],
++            "errors": [{"index": -1, "error": "payload_too_large"}],
++        }
++
++    try:
++        payload = json.loads(raw, parse_constant=_reject_json_constant)
++    except (TypeError, ValueError):
++        return {
++            "recipients": [],
++            "errors": [{"index": -1, "error": "invalid_json"}],
++        }
++
++    if not isinstance(payload, list):
++        return {
++            "recipients": [],
++            "errors": [{"index": -1, "error": "array_required"}],
++        }
++    if len(payload) > MAX_RECIPIENTS:
++        return {
++            "recipients": [],
++            "errors": [{"index": -1, "error": "recipient_limit_exceeded"}],
++        }
++
++    recipients = []
++    errors = []
++    for index, item in enumerate(payload):
++        if isinstance(item, str):
++            candidate = {"email": item, "name": "", "company": ""}
++        elif isinstance(item, dict):
++            candidate = {
++                "email": item.get("email", ""),
++                "name": item.get("name", ""),
++                "company": item.get("company", ""),
++            }
++        else:
++            errors.append(
++                {
++                    "index": index,
++                    "error": "recipient_must_be_string_or_object",
++                }
++            )
++            continue
++
++        email = normalize_email(candidate["email"])
++        if not email:
++            errors.append({"index": index, "error": "invalid_email"})
++            continue
++
++        metadata_errors = [
++            {"index": index, "error": "invalid_" + field}
++            for field in ("name", "company")
++            if not _valid_metadata(candidate[field])
++        ]
++        if metadata_errors:
++            errors.extend(metadata_errors)
++            continue
++
++        candidate["email"] = email
++        recipients.append(candidate)
++
++    return {"recipients": dedupe_recipients(recipients), "errors": errors}
++
++
++def _replace_placeholders(value, recipient):
++    text = value or ""
++    values = {
++        "name": _render_field(recipient.get("name"), 120) or "there",
++        "company": _render_field(recipient.get("company"), 160) or "your team",
++        "email": normalize_email(recipient.get("email")),
++    }
++    placeholder_names = set()
++    cursor = 0
++    for match in PLACEHOLDER_RE.finditer(text):
++        unmatched = text[cursor : match.start()]
++        if "{{" in unmatched or "}}" in unmatched:
++            raise ValueError("malformed placeholder")
++        placeholder_names.add(match.group(1).strip())
++        cursor = match.end()
++    unmatched = text[cursor:]
++    if "{{" in unmatched or "}}" in unmatched:
++        raise ValueError("malformed placeholder")
++    unknown = sorted(placeholder_names - ALLOWED_PLACEHOLDERS)
++    if unknown:
++        raise ValueError("unknown placeholder: " + unknown[0])
++    return PLACEHOLDER_RE.sub(lambda match: values[match.group(1).strip()], text)
++
++
++def _text_to_html(value):
++    value = value.replace("\r\n", "\n").replace("\r", "\n")
++    paragraphs = []
++    for paragraph in re.split(r"\n\s*\n", value.strip()):
++        escaped = html.escape(paragraph).replace("\n", "<br>")
++        paragraphs.append("<p>" + escaped + "</p>")
++    return "".join(paragraphs)
++
++
++def render_message(subject, body, recipient):
++    rendered_subject = _replace_placeholders(subject, recipient)
++    has_line_boundary = bool(rendered_subject) and rendered_subject.splitlines() != [
++        rendered_subject
++    ]
++    if _has_unsafe_text_character(rendered_subject) or has_line_boundary:
++        raise ValueError("subject must be a single line")
++    rendered_subject = rendered_subject.strip()
++    rendered_text = _replace_placeholders(body, recipient).strip()
++    if not rendered_subject or not rendered_text:
++        raise ValueError("subject and body are required")
++    return {
++        "subject": rendered_subject,
++        "text": rendered_text,
++        "html": _text_to_html(rendered_text),
++    }
+diff --git a/cloudflare_worker/src/schema.py b/cloudflare_worker/src/schema.py
+index 8b462615..768724a4 100644
+--- a/cloudflare_worker/src/schema.py
++++ b/cloudflare_worker/src/schema.py
+@@ -390,6 +390,7 @@ SCHEMA_STATEMENTS = [
+     # desktop's real count over time.
+     """CREATE TABLE IF NOT EXISTS issue_seq (
+         repo_bi TEXT PRIMARY KEY, next_number INTEGER NOT NULL)""",
++
+     # --- ActivityPub federation (migration 0028) -----------------------------
+     # Local fediverse actors: one row per user/repo/instance actor that has
+     # actually been looked up from the fediverse (rows are minted lazily on the
+@@ -481,6 +482,63 @@ SCHEMA_STATEMENTS = [
+     # recipient email stays only in the encrypted account record.
+     """CREATE TABLE IF NOT EXISTS feedback_email_sends (
+         account_bi TEXT PRIMARY KEY, name TEXT, sent_at INTEGER NOT NULL)""",
++
++    # Dedicated email operations data. Recipient details, templates, campaigns,
++    # and delivery snapshots remain encrypted in their respective data blobs.
++    """CREATE TABLE IF NOT EXISTS email_recipients (
++        id INTEGER PRIMARY KEY AUTOINCREMENT,
++        email_bi TEXT NOT NULL UNIQUE,
++        data TEXT NOT NULL,
++        created_at INTEGER NOT NULL,
++        updated_at INTEGER NOT NULL)""",
++    """CREATE TABLE IF NOT EXISTS email_categories (
++        id INTEGER PRIMARY KEY AUTOINCREMENT,
++        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
++        created_at INTEGER NOT NULL,
++        updated_at INTEGER NOT NULL)""",
++    """CREATE TABLE IF NOT EXISTS email_category_memberships (
++        category_id INTEGER NOT NULL,
++        recipient_id INTEGER NOT NULL,
++        created_at INTEGER NOT NULL,
++        PRIMARY KEY (category_id, recipient_id),
++        FOREIGN KEY (category_id) REFERENCES email_categories(id) ON DELETE CASCADE,
++        FOREIGN KEY (recipient_id) REFERENCES email_recipients(id) ON DELETE CASCADE)""",
++    "CREATE INDEX IF NOT EXISTS idx_email_memberships_recipient "
++    "ON email_category_memberships(recipient_id)",
++    """CREATE TABLE IF NOT EXISTS email_templates (
++        id INTEGER PRIMARY KEY AUTOINCREMENT,
++        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
++        data TEXT NOT NULL,
++        is_seeded INTEGER NOT NULL DEFAULT 0,
++        created_at INTEGER NOT NULL,
++        updated_at INTEGER NOT NULL)""",
++    """CREATE TABLE IF NOT EXISTS email_campaigns (
++        id TEXT NOT NULL PRIMARY KEY,
++        status TEXT NOT NULL,
++        data TEXT NOT NULL,
++        created_at INTEGER NOT NULL,
++        reviewed_at INTEGER NOT NULL DEFAULT 0,
++        queued_at INTEGER NOT NULL DEFAULT 0,
++        completed_at INTEGER NOT NULL DEFAULT 0)""",
++    "CREATE INDEX IF NOT EXISTS idx_email_campaigns_created "
++    "ON email_campaigns(created_at DESC)",
++    """CREATE TABLE IF NOT EXISTS email_deliveries (
++        id TEXT NOT NULL PRIMARY KEY,
++        campaign_id TEXT NOT NULL,
++        recipient_id INTEGER,
++        status TEXT NOT NULL,
++        data TEXT NOT NULL,
++        attempts INTEGER NOT NULL DEFAULT 0,
++        last_error TEXT NOT NULL DEFAULT '',
++        queued_at INTEGER NOT NULL DEFAULT 0,
++        sent_at INTEGER NOT NULL DEFAULT 0,
++        updated_at INTEGER NOT NULL,
++        UNIQUE (campaign_id, recipient_id),
++        FOREIGN KEY (campaign_id) REFERENCES email_campaigns(id) ON DELETE CASCADE,
++        FOREIGN KEY (recipient_id) REFERENCES email_recipients(id) ON DELETE SET NULL)""",
++    "CREATE INDEX IF NOT EXISTS idx_email_deliveries_campaign_status "
++    "ON email_deliveries(campaign_id, status)",
++
+     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
+     # the DDL that has already been applied to this database. A cold isolate
+     # reads this one row instead of replaying all ~90 statements above — the
+diff --git a/cloudflare_worker/tests/test_email_admin_domain.py b/cloudflare_worker/tests/test_email_admin_domain.py
+new file mode 100644
+index 00000000..a81a66b2
+--- /dev/null
++++ b/cloudflare_worker/tests/test_email_admin_domain.py
+@@ -0,0 +1,511 @@
++import json
++import time
++
++import pytest
++
++from src import email_admin
++from src.email_admin import (
++    ALLOWED_PLACEHOLDERS,
++    DEFAULT_CATEGORIES,
++    DEFAULT_TEMPLATES,
++    dedupe_recipients,
++    normalize_email,
++    parse_recipient_array,
++    render_message,
++)
++
++
++def test_normalize_email_trims_and_lowercases():
++    assert (
++        normalize_email("  User.Tag+News@Sub.Example.COM  ")
++        == "user.tag+news@sub.example.com"
++    )
++
++
++def test_normalize_email_accepts_local_and_total_length_boundaries():
++    longest_local = "A" * 64 + "@Example.com"
++    longest_domain = ".".join(("a" * 63, "b" * 63, "c" * 63, "d" * 60))
++    longest_address = "x@" + longest_domain
++
++    assert len(longest_domain) == 252
++    assert len(longest_address) == 254
++    assert normalize_email(longest_local) == longest_local.lower()
++    assert normalize_email(longest_address) == longest_address
++
++
++@pytest.mark.parametrize(
++    "value",
++    (
++        "",
++        None,
++        "missing-at.example",
++        "a@b",
++        "a b@example.com",
++        "a@b@example.com",
++        "a" * 250 + "@x.io",
++        "a" * 65 + "@example.com",
++        ".person@example.com",
++        "person.@example.com",
++        "first..last@example.com",
++        "person@.example.com",
++        "person@example.com.",
++        "person@example..com",
++        "person@-example.com",
++        "person@example-.com",
++        "person@exa_mple.com",
++        "person@" + "a" * 64 + ".com",
++        "person@example." + "a" * 64,
++        "person\x00@example.com",
++        "person\x7f@example.com",
++        "person@exam\x00ple.com",
++        "t\N{LATIN SMALL LETTER E WITH ACUTE}st@example.com",
++        "person@ex\N{LATIN SMALL LETTER A WITH DIAERESIS}mple.com",
++    ),
++)
++def test_normalize_email_rejects_invalid_values(value):
++    assert normalize_email(value) == ""
++
++
++def test_parse_recipient_array_accepts_mixed_strings_and_objects():
++    parsed = parse_recipient_array(
++        json.dumps(
++            [
++                " A@Example.com ",
++                {
++                    "email": "b@example.com",
++                    "name": "  Bea  ",
++                    "company": "  Orbit  ",
++                },
++            ]
++        )
++    )
++
++    assert parsed == {
++        "recipients": [
++            {"email": "a@example.com", "name": "", "company": ""},
++            {"email": "b@example.com", "name": "Bea", "company": "Orbit"},
++        ],
++        "errors": [],
++    }
++
++
++def test_parse_recipient_array_trims_metadata_to_field_limits():
++    parsed = parse_recipient_array(
++        json.dumps(
++            [
++                {
++                    "email": "person@example.com",
++                    "name": " " + "N" * 125 + " ",
++                    "company": " " + "C" * 165 + " ",
++                }
++            ]
++        )
++    )
++
++    assert parsed["errors"] == []
++    assert parsed["recipients"] == [
++        {
++            "email": "person@example.com",
++            "name": "N" * 120,
++            "company": "C" * 160,
++        }
++    ]
++
++
++@pytest.mark.parametrize(
++    ("field", "value", "error"),
++    (
++        ("name", {"nested": "value"}, "invalid_name"),
++        ("name", ["Pat"], "invalid_name"),
++        ("name", True, "invalid_name"),
++        ("name", 42, "invalid_name"),
++        ("company", {"nested": "value"}, "invalid_company"),
++        ("company", ["Acme"], "invalid_company"),
++        ("company", False, "invalid_company"),
++        ("company", 42, "invalid_company"),
++        ("name", "Pat\r\nBcc: victim@example.com", "invalid_name"),
++        ("name", "Pat\x7f", "invalid_name"),
++        ("company", "Acme\x00Labs", "invalid_company"),
++        ("company", "Acme\nLabs", "invalid_company"),
++    ),
++)
++def test_parse_recipient_array_rejects_invalid_metadata(field, value, error):
++    recipient = {"email": "person@example.com", "name": None, "company": None}
++    recipient[field] = value
++
++    assert parse_recipient_array(json.dumps([recipient])) == {
++        "recipients": [],
++        "errors": [{"index": 0, "error": error}],
++    }
++
++
++@pytest.mark.parametrize("field", ("name", "company"))
++@pytest.mark.parametrize("separator", ("\u0085", "\u2028", "\u2029"))
++def test_parse_recipient_array_rejects_unicode_metadata_controls(field, separator):
++    recipient = {
++        "email": "person@example.com",
++        "name": "Renée",
++        "company": "ForkMesh",
++    }
++    recipient[field] += separator + "injected"
++
++    assert parse_recipient_array(json.dumps([recipient])) == {
++        "recipients": [],
++        "errors": [{"index": 0, "error": "invalid_" + field}],
++    }
++
++
++def test_parse_recipient_array_preserves_valid_unicode_metadata():
++    parsed = parse_recipient_array(
++        json.dumps(
++            [
++                {
++                    "email": "person@example.com",
++                    "name": "Renée 😀",
++                    "company": "Café ForkMesh 🚀",
++                }
++            ]
++        )
++    )
++
++    assert parsed == {
++        "recipients": [
++            {
++                "email": "person@example.com",
++                "name": "Renée 😀",
++                "company": "Café ForkMesh 🚀",
++            }
++        ],
++        "errors": [],
++    }
++
++
++def test_parse_recipient_array_accepts_null_metadata_as_empty():
++    assert parse_recipient_array(
++        '[{"email":"person@example.com","name":null,"company":null}]'
++    ) == {
++        "recipients": [{"email": "person@example.com", "name": "", "company": ""}],
++        "errors": [],
++    }
++
++
++@pytest.mark.parametrize(
++    ("raw", "error"),
++    (
++        ("not-json", "invalid_json"),
++        ('{"email":"person@example.com"}', "array_required"),
++        ('"person@example.com"', "array_required"),
++    ),
++)
++def test_parse_recipient_array_reports_top_level_errors(raw, error):
++    assert parse_recipient_array(raw) == {
++        "recipients": [],
++        "errors": [{"index": -1, "error": error}],
++    }
++
++
++@pytest.mark.parametrize("constant", ("NaN", "Infinity", "-Infinity"))
++def test_parse_recipient_array_rejects_non_finite_json_constants(constant):
++    assert parse_recipient_array("[" + constant + "]") == {
++        "recipients": [],
++        "errors": [{"index": -1, "error": "invalid_json"}],
++    }
++
++
++def test_parse_recipient_array_reports_indexed_invalid_entries():
++    parsed = parse_recipient_array(
++        '["valid@example.com", "broken", 42, {"name":"No email"}]'
++    )
++
++    assert parsed["recipients"] == [
++        {"email": "valid@example.com", "name": "", "company": ""}
++    ]
++    assert parsed["errors"] == [
++        {"index": 1, "error": "invalid_email"},
++        {"index": 2, "error": "recipient_must_be_string_or_object"},
++        {"index": 3, "error": "invalid_email"},
++    ]
++
++
++def test_dedupe_recipients_preserves_order_and_merges_empty_metadata():
++    rows = [
++        {"email": " PERSON@example.com ", "name": "", "company": "Acme"},
++        {"email": "second@example.com", "name": "Sam", "company": ""},
++        {"email": "person@EXAMPLE.com", "name": "Pat", "company": "Other"},
++        {"email": "SECOND@example.com", "name": "Ignored", "company": "Orbit"},
++        {"email": "person@example.com", "name": "Ignored", "company": "Ignored"},
++    ]
++
++    assert dedupe_recipients(rows) == [
++        {"email": "person@example.com", "name": "Pat", "company": "Acme"},
++        {"email": "second@example.com", "name": "Sam", "company": "Orbit"},
++    ]
++
++
++def test_dedupe_recipients_does_not_stringify_invalid_metadata():
++    rows = [
++        {
++            "email": "person@example.com",
++            "name": {"unexpected": "Pat"},
++            "company": ["Acme"],
++        },
++        {"email": "PERSON@example.com", "name": "Pat", "company": "Acme"},
++        {
++            "email": "other@example.com",
++            "name": True,
++            "company": "Line one\nLine two",
++        },
++    ]
++
++    assert dedupe_recipients(rows) == [
++        {"email": "person@example.com", "name": "Pat", "company": "Acme"},
++        {"email": "other@example.com", "name": "", "company": ""},
++    ]
++
++
++def test_render_message_uses_fallbacks_and_generates_safe_html():
++    rendered = render_message(
++        "Hello {{ name }}",
++        (
++            "Hi {{name}},\n"
++            "A second line.\n\n"
++            "Talk with {{company}} at {{email}}.\n"
++            '<script>alert("unsafe")</script>'
++        ),
++        {"email": " P@Example.com ", "name": "", "company": ""},
++    )
++
++    assert rendered["subject"] == "Hello there"
++    assert rendered["text"] == (
++        "Hi there,\n"
++        "A second line.\n\n"
++        "Talk with your team at p@example.com.\n"
++        '<script>alert("unsafe")</script>'
++    )
++    assert rendered["html"] == (
++        "<p>Hi there,<br>A second line.</p>"
++        "<p>Talk with your team at p@example.com.<br>"
++        "&lt;script&gt;alert(&quot;unsafe&quot;)&lt;/script&gt;</p>"
++    )
++
++
++def test_render_message_escapes_dynamically_interpolated_html():
++    rendered = render_message(
++        "Hello {{name}}",
++        "Hi {{name}} from {{company}}.",
++        {
++            "email": "person@example.com",
++            "name": '<img src=x onerror="alert(1)">',
++            "company": "R&D <script>alert(2)</script>",
++        },
++    )
++
++    assert '<img src=x onerror="alert(1)">' in rendered["text"]
++    assert "R&D <script>alert(2)</script>" in rendered["text"]
++    assert "<img" not in rendered["html"]
++    assert "<script>" not in rendered["html"]
++    assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in rendered["html"]
++    assert "R&amp;D &lt;script&gt;alert(2)&lt;/script&gt;" in rendered["html"]
++
++
++@pytest.mark.parametrize("placeholder", ("role", "foo-bar", "123", "name.first"))
++def test_render_message_rejects_unknown_placeholders(placeholder):
++    with pytest.raises(ValueError) as error:
++        render_message(
++            "Hello {{" + placeholder + "}}",
++            "Body",
++            {"email": "p@example.com", "name": "Pat", "company": "Orbit"},
++        )
++
++    assert str(error.value) == "unknown placeholder: " + placeholder
++
++
++@pytest.mark.parametrize(
++    "subject",
++    (
++        "Hello {{nmae}",
++        "Hello {{name",
++        "Hello name}}",
++        "Hello {{name}} }}",
++    ),
++)
++def test_render_message_rejects_malformed_subject_placeholders(subject):
++    with pytest.raises(ValueError) as error:
++        render_message(
++            subject,
++            "Body",
++            {"email": "p@example.com", "name": "Pat", "company": "Orbit"},
++        )
++
++    assert str(error.value) == "malformed placeholder"
++
++
++def test_render_message_rejects_malformed_body_placeholders():
++    with pytest.raises(ValueError) as error:
++        render_message(
++            "Subject",
++            "Body {{company",
++            {"email": "p@example.com", "name": "Pat", "company": "Orbit"},
++        )
++
++    assert str(error.value) == "malformed placeholder"
++
++
++def test_render_message_rejects_long_malformed_placeholder_input_promptly():
++    body = "{{" * 16_000
++    started = time.perf_counter()
++
++    with pytest.raises(ValueError) as error:
++        render_message(
++            "Subject",
++            body,
++            {"email": "p@example.com", "name": "Pat", "company": "Orbit"},
++        )
++
++    elapsed = time.perf_counter() - started
++    assert str(error.value) == "malformed placeholder"
++    assert elapsed < 2.0
++
++
++@pytest.mark.parametrize(
++    "subject",
++    (
++        "Hello\r\nBcc: victim@example.com",
++        "Hello\nworld",
++        "Hello\tworld",
++        "Hello\x00world",
++        "Hello\x7fworld",
++    ),
++)
++def test_render_message_rejects_subject_controls(subject):
++    with pytest.raises(ValueError) as error:
++        render_message(
++            subject,
++            "Body",
++            {"email": "p@example.com", "name": "Pat", "company": "Orbit"},
++        )
++
++    assert str(error.value) == "subject must be a single line"
++
++
++@pytest.mark.parametrize(
++    ("placeholder", "value"),
++    (
++        ("name", "Pat\r\nBcc: victim@example.com"),
++        ("company", "Acme\x00Labs"),
++    ),
++)
++def test_render_message_rejects_subject_controls_from_placeholders(placeholder, value):
++    recipient = {
++        "email": "p@example.com",
++        "name": "Pat",
++        "company": "Orbit",
++    }
++    recipient[placeholder] = value
++
++    with pytest.raises(ValueError) as error:
++        render_message("Hello {{" + placeholder + "}}", "Body", recipient)
++
++    assert str(error.value) == "subject must be a single line"
++
++
++@pytest.mark.parametrize("separator", ("\u0085", "\u2028", "\u2029"))
++def test_render_message_rejects_unicode_subject_separators_from_placeholder(
++    separator,
++):
++    with pytest.raises(ValueError) as error:
++        render_message(
++            "Hello {{name}}",
++            "Body",
++            {
++                "email": "p@example.com",
++                "name": "Pat" + separator + "Bcc: victim@example.com",
++                "company": "Orbit",
++            },
++        )
++
++    assert str(error.value) == "subject must be a single line"
++
++
++def test_render_message_normalizes_html_newlines():
++    rendered = render_message(
++        "Subject",
++        "First line\r\nSecond line\r\n\r\nThird line\rFourth line",
++        {"email": "p@example.com", "name": "Pat", "company": "Orbit"},
++    )
++
++    assert rendered["html"] == (
++        "<p>First line<br>Second line</p><p>Third line<br>Fourth line</p>"
++    )
++
++
++@pytest.mark.parametrize(
++    ("subject", "body"),
++    (("", "Body"), ("Subject", " \n "), ("{{email}}", "Body")),
++)
++def test_render_message_requires_non_empty_rendered_subject_and_body(subject, body):
++    with pytest.raises(ValueError) as error:
++        render_message(subject, body, {"email": "", "name": "", "company": ""})
++
++    assert str(error.value) == "subject and body are required"
++
++
++def test_recipient_import_bounds_are_explicit():
++    assert email_admin.MAX_RECIPIENT_JSON_CHARS == 1_000_000
++    assert email_admin.MAX_RECIPIENTS == 5_000
++
++
++def test_parse_recipient_array_rejects_oversized_payload():
++    raw = "[" + " " * 1_000_000 + "]"
++
++    assert parse_recipient_array(raw) == {
++        "recipients": [],
++        "errors": [{"index": -1, "error": "payload_too_large"}],
++    }
++
++
++def test_parse_recipient_array_rejects_excessive_item_count():
++    raw = json.dumps(["person@example.com"] * 5_001)
++
++    assert parse_recipient_array(raw) == {
++        "recipients": [],
++        "errors": [{"index": -1, "error": "recipient_limit_exceeded"}],
++    }
++
++
++def test_parse_recipient_array_accepts_maximum_item_count():
++    raw = json.dumps(["person@example.com"] * 5_000)
++    parsed = parse_recipient_array(raw)
++
++    assert parsed == {
++        "recipients": [{"email": "person@example.com", "name": "", "company": ""}],
++        "errors": [],
++    }
++
++
++def test_defaults_are_template_dicts_and_render_with_allowed_placeholders():
++    assert ALLOWED_PLACEHOLDERS == frozenset(("name", "company", "email"))
++    assert DEFAULT_CATEGORIES == ("following", "confirmed", "not-responding")
++    assert [template["name"] for template in DEFAULT_TEMPLATES] == [
++        "Sponsorship introduction",
++        "Partnership outreach",
++        "Follow-up",
++    ]
++
++    for template in DEFAULT_TEMPLATES:
++        assert isinstance(template, dict)
++        assert template["subject"].strip()
++        assert template["body"].strip()
++        assert chr(0x2014) not in template["subject"] + template["body"]
++        rendered = render_message(
++            template["subject"],
++            template["body"],
++            {
++                "email": "founders@example.com",
++                "name": "ForkMesh",
++                "company": "Example",
++            },
++        )
++        assert rendered["subject"]
++        assert rendered["text"]
++        assert rendered["html"]
+diff --git a/cloudflare_worker/tests/test_email_admin_schema.py b/cloudflare_worker/tests/test_email_admin_schema.py
+new file mode 100644
+index 00000000..2e7699e8
+--- /dev/null
++++ b/cloudflare_worker/tests/test_email_admin_schema.py
+@@ -0,0 +1,268 @@
++import re
++import runpy
++import sqlite3
++from pathlib import Path
++
++import pytest
++
++
++ROOT = Path(__file__).resolve().parents[1]
++MIGRATION = ROOT / "migrations" / "0035_email_admin.sql"
++SCHEMA = runpy.run_path(str(ROOT / "src" / "schema.py"))["SCHEMA_STATEMENTS"]
++
++
++TABLES = (
++    "email_recipients",
++    "email_categories",
++    "email_category_memberships",
++    "email_templates",
++    "email_campaigns",
++    "email_deliveries",
++)
++INDEXES = (
++    "idx_email_memberships_recipient",
++    "idx_email_campaigns_created",
++    "idx_email_deliveries_campaign_status",
++)
++PRIVACY_TABLES = (
++    "email_recipients",
++    "email_templates",
++    "email_campaigns",
++    "email_deliveries",
++)
++INDEX_DEFINITIONS = (
++    (
++        "idx_email_memberships_recipient",
++        "email_category_memberships",
++        ("recipient_id",),
++    ),
++    ("idx_email_campaigns_created", "email_campaigns", ("created_at",)),
++    (
++        "idx_email_deliveries_campaign_status",
++        "email_deliveries",
++        ("campaign_id", "status"),
++    ),
++)
++
++
++_CREATE_STATEMENT = re.compile(
++    r"\bCREATE\s+(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\b.*?;",
++    re.IGNORECASE | re.DOTALL,
++)
++_CREATE_NAME = re.compile(
++    r"\bCREATE\s+(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([A-Za-z_]\w*)\b",
++    re.IGNORECASE,
++)
++_SQL_TOKEN = re.compile(
++    r"'(?:''|[^'])*'"
++    r'|"(?:""|[^"])*"'
++    r"|[(),;]"
++    r'''|[^\s(),;'\"]+'''
++)
++
++
++def _normalize_sql(statement):
++    sql = statement.strip()
++    if sql.endswith(";"):
++        sql = sql[:-1].rstrip()
++    return " ".join(_SQL_TOKEN.findall(sql))
++
++
++def _statements_by_name(statements, required_names):
++    required = set(required_names)
++    found = {}
++    for statement in statements:
++        match = _CREATE_NAME.search(statement)
++        if match is None or match.group(1) not in required:
++            continue
++        name = match.group(1)
++        assert name not in found, f"duplicate schema statement for {name}"
++        found[name] = _normalize_sql(statement)
++
++    missing = required - found.keys()
++    assert not missing, f"missing schema statements: {sorted(missing)}"
++    return found
++
++
++def _assert_schema_parity(migration_statements, runtime_statements, required_names):
++    migration = _statements_by_name(migration_statements, required_names)
++    runtime = _statements_by_name(runtime_statements, required_names)
++
++    for name in required_names:
++        assert migration[name] == runtime[name], (
++            f"{name} differs between migration and runtime schema:\n"
++            f"migration: {migration[name]}\n"
++            f"runtime: {runtime[name]}"
++        )
++
++
++@pytest.fixture
++def migrated_db():
++    database = sqlite3.connect(":memory:")
++    database.execute("PRAGMA foreign_keys = ON")
++    database.executescript(MIGRATION.read_text(encoding="utf-8"))
++    try:
++        yield database
++    finally:
++        database.close()
++
++
++def _table_columns(database, table):
++    return {
++        row[1]: row
++        for row in database.execute(f"PRAGMA table_info({table})").fetchall()
++    }
++
++
++@pytest.mark.parametrize(
++    "runtime_statement",
++    (
++        "CREATE TABLE IF NOT EXISTS email_recipients "
++        "(data TEXT NOT NULL, id INTEGER PRIMARY KEY)",
++        "CREATE TABLE IF NOT EXISTS email_recipients "
++        "(id INTEGER PRIMARY KEY, data TEXT)",
++    ),
++)
++def test_schema_parity_checker_rejects_synthetic_drift(runtime_statement):
++    migration_statement = (
++        "CREATE TABLE IF NOT EXISTS email_recipients "
++        "(id INTEGER PRIMARY KEY, data TEXT NOT NULL);"
++    )
++
++    with pytest.raises(AssertionError, match="email_recipients"):
++        _assert_schema_parity(
++            (migration_statement,),
++            (runtime_statement,),
++            ("email_recipients",),
++        )
++
++
++def test_email_admin_migration_and_runtime_schema_match():
++    sql = MIGRATION.read_text(encoding="utf-8")
++    migration_statements = _CREATE_STATEMENT.findall(sql)
++
++    _assert_schema_parity(migration_statements, SCHEMA, TABLES + INDEXES)
++
++
++@pytest.mark.parametrize("table", ("email_campaigns", "email_deliveries"))
++def test_email_text_primary_keys_are_declared_not_null(migrated_db, table):
++    id_column = _table_columns(migrated_db, table)["id"]
++
++    assert id_column[2].upper() == "TEXT"
++    assert id_column[3] == 1
++    assert id_column[5] == 1
++
++
++@pytest.mark.parametrize(
++    ("setup_sql", "insert_sql"),
++    (
++        (
++            "",
++            "INSERT INTO email_campaigns (id,status,data,created_at) "
++            "VALUES (NULL,'draft','encrypted-campaign',1)",
++        ),
++        (
++            """INSERT INTO email_recipients
++                 (email_bi,data,created_at,updated_at)
++                 VALUES ('recipient-bi','encrypted-recipient',1,1);
++               INSERT INTO email_campaigns (id,status,data,created_at)
++                 VALUES ('campaign-1','draft','encrypted-campaign',1);""",
++            """INSERT INTO email_deliveries
++                 (id,campaign_id,recipient_id,status,data,updated_at)
++                 VALUES (NULL,'campaign-1',1,'draft','encrypted-delivery',1)""",
++        ),
++    ),
++)
++def test_email_text_primary_keys_reject_null_inserts(
++    migrated_db, setup_sql, insert_sql
++):
++    migrated_db.executescript(setup_sql)
++
++    with pytest.raises(sqlite3.IntegrityError):
++        migrated_db.execute(insert_sql)
++
++
++def test_delivery_recipient_foreign_key_sets_null_on_delete(migrated_db):
++    recipient_foreign_keys = [
++        row
++        for row in migrated_db.execute(
++            "PRAGMA foreign_key_list(email_deliveries)"
++        ).fetchall()
++        if row[2] == "email_recipients" and row[3] == "recipient_id"
++    ]
++
++    assert _table_columns(migrated_db, "email_deliveries")["recipient_id"][3] == 0
++    assert len(recipient_foreign_keys) == 1
++    assert recipient_foreign_keys[0][6] == "SET NULL"
++
++
++def test_deleting_recipient_retains_delivery_snapshot(migrated_db):
++    recipient_id = migrated_db.execute(
++        """INSERT INTO email_recipients
++             (email_bi,data,created_at,updated_at)
++             VALUES ('recipient-bi','encrypted-recipient',1,1)"""
++    ).lastrowid
++    migrated_db.execute(
++        """INSERT INTO email_campaigns (id,status,data,created_at)
++             VALUES ('campaign-1','draft','encrypted-campaign',1)"""
++    )
++    migrated_db.execute(
++        """INSERT INTO email_deliveries
++             (id,campaign_id,recipient_id,status,data,updated_at)
++             VALUES ('delivery-1','campaign-1',?,'draft','encrypted-delivery',1)""",
++        (recipient_id,),
++    )
++
++    migrated_db.execute(
++        "DELETE FROM email_recipients WHERE id=?", (recipient_id,)
++    )
++
++    delivery = migrated_db.execute(
++        """SELECT id,campaign_id,recipient_id,data
++             FROM email_deliveries WHERE id='delivery-1'"""
++    ).fetchone()
++    assert delivery == (
++        "delivery-1",
++        "campaign-1",
++        None,
++        "encrypted-delivery",
++    )
++
++
++@pytest.mark.parametrize("table", PRIVACY_TABLES)
++def test_privacy_tables_require_encrypted_data(migrated_db, table):
++    data_column = _table_columns(migrated_db, table).get("data")
++
++    assert data_column is not None
++    assert data_column[2].upper() == "TEXT"
++    assert data_column[3] == 1
++
++
++@pytest.mark.parametrize(
++    ("index_name", "table", "expected_columns"), INDEX_DEFINITIONS
++)
++def test_email_admin_indexes_cover_expected_columns(
++    migrated_db, index_name, table, expected_columns
++):
++    index_table = migrated_db.execute(
++        "SELECT tbl_name FROM sqlite_master WHERE type='index' AND name=?",
++        (index_name,),
++    ).fetchone()
++    index_columns = tuple(
++        row[2]
++        for row in migrated_db.execute(
++            f"PRAGMA index_info({index_name})"
++        ).fetchall()
++    )
++
++    assert index_table == (table,)
++    assert index_columns == expected_columns
++
++
++def test_email_admin_schema_has_privacy_and_deduplication_constraints():
++    sql = MIGRATION.read_text(encoding="utf-8")
++    assert "email_bi TEXT NOT NULL UNIQUE" in sql
++    assert "data TEXT NOT NULL" in sql
++    assert "PRIMARY KEY (category_id, recipient_id)" in sql
++    assert "UNIQUE (campaign_id, recipient_id)" in sql
++    assert "idx_email_deliveries_campaign_status" in sql
