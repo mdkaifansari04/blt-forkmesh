@@ -1169,10 +1169,9 @@ void MainWindow::startSession()
         // profiles keep using this machine's node identity.
         updateChatIdentity();
         // Fixed shared channels for the whole network — no per-repo rooms. Every
-        // node joins #general, both split welcome rooms, and #random.
+        // node joins #general, #welcome, and #random.
         m_backend->addChannel(QStringLiteral("general"));
-        m_backend->addChannel(kWelcomeNodesChannel);
-        m_backend->addChannel(kWelcomeUsersChannel);
+        m_backend->addChannel(kWelcomeChannel);
         m_backend->addChannel(QStringLiteral("random"));
         // Re-create any invite-only rooms this node owned or was invited to; the
         // backend clears its channel set each session, so they'd vanish otherwise.
@@ -1820,6 +1819,12 @@ void MainWindow::applyAccountEmailVerified(const QString &accountName, bool veri
     if (!normalized.isEmpty() && verified)
         QSettings().setValue(emailVerifiedSettingKey(normalized), true);
     refreshSettingsEmailVerifiedBadge();
+    // Verifying the email is the gate for the #welcome greeting; if this is the
+    // signed-in user and the room link is already live, greet now instead of
+    // waiting for the next roster tick.
+    if (verified && !normalized.isEmpty() &&
+        normalized == settingsAccountName())
+        maybeAnnounceWelcome();
 }
 
 void MainWindow::refreshSettingsEmailVerifiedBadge()

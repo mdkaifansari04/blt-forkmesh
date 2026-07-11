@@ -681,11 +681,18 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
 #logDock { background-color: #010409; border-top: 1px solid #30363d; }
 #logDock QLabel { background: transparent; }
 #composerBar { background-color: #0d1117; border-top: 1px solid #30363d; }
-#messageInput {
-    background-color: #0d1117; border: 1px solid #30363d;
-    border-radius: 6px; padding: 10px 12px; font-size: 14px;
+#composerInputRow {
+    background-color: #010409; border: 1px solid #30363d; border-radius: 10px;
 }
-#messageInput:focus { border-color: #58a6ff; }
+#messageInput {
+    background-color: transparent; border: none;
+    padding: 9px 4px; font-size: 14px;
+}
+#emojiPickerButton {
+    border: none; background: transparent; font-size: 18px;
+    padding: 3px; border-radius: 6px;
+}
+#emojiPickerButton:hover { background-color: #21262d; }
 
 QScrollBar:vertical {
     background: transparent; width: 10px; margin: 0;
@@ -1827,11 +1834,18 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
 #logDock QLabel { background: transparent; }
 #composerBar { background-color: #ffffff; border-top: 1px solid #d0d7de; }
-#messageInput {
-    background-color: #ffffff; border: 1px solid #d0d7de;
-    border-radius: 6px; padding: 10px 12px; font-size: 14px;
+#composerInputRow {
+    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
 }
-#messageInput:focus { border-color: #0969da; }
+#messageInput {
+    background-color: transparent; border: none;
+    padding: 9px 4px; font-size: 14px;
+}
+#emojiPickerButton {
+    border: none; background: transparent; font-size: 18px;
+    padding: 3px; border-radius: 6px;
+}
+#emojiPickerButton:hover { background-color: #eaeef2; }
 
 QScrollBar:vertical {
     background: transparent; width: 10px; margin: 0;

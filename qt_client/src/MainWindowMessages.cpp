@@ -592,11 +592,9 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
 
 QString MainWindow::welcomeChannelForIdentity() const
 {
-    // User accounts and nodes linked under one are considered users for the
-    // split welcome flow; standalone/child nodes go to #welcome-nodes.
-    if (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty())
-        return kWelcomeUsersChannel;
-    return kWelcomeNodesChannel;
+    // One shared welcome room for everyone now (see maybeAnnounceWelcome for who
+    // actually posts a greeting).
+    return kWelcomeChannel;
 }
 
 void MainWindow::maybeAnnounceWelcome()
@@ -609,6 +607,15 @@ void MainWindow::maybeAnnounceWelcome()
         return;
     const QString id = m_profileIdentity.publicKey();
     if (id.isEmpty())
+        return;
+    // Only new *users* with a verified email greet the network. Plain nodes and
+    // accounts whose email isn't confirmed never post — this is what stops the
+    // stream of node/unverified "just joined" lines the old #welcome-nodes /
+    // #welcome-users rooms collected. Checked before the one-time flag is
+    // touched so an account that verifies its email later this session still
+    // gets to greet on a subsequent roster tick.
+    if (!m_profileIsUserAccount ||
+        !accountEmailVerified(settingsAccountName()))
         return;
     // The flag lives next to the identity key itself (not QSettings, which can
     // live in a separate, less-persistent config location on some deployments —
@@ -631,7 +638,7 @@ void MainWindow::maybeAnnounceWelcome()
     m_profileIdentity.markWelcomeAnnounced();
     m_welcomeAnnounced = true;
     m_backend->sendChat(
-        welcomeChannelForIdentity(),
+        kWelcomeChannel,
         QString::fromUtf8("\xF0\x9F\x91\x8B Just joined ForkMesh \xE2\x80\x94 hello!"));
 }
 
@@ -1064,6 +1071,42 @@ void MainWindow::promptInviteToPrivateChannel()
     menu.exec(QCursor::pos());
 }
 
+void MainWindow::promptDeleteRoom(const QString &channel)
+{
+    if (!m_backend || channel.isEmpty() || isDirectConversation(channel))
+        return;
+    const bool priv = m_privateChannels.contains(channel);
+    const QString what = priv ? QStringLiteral("private room")
+                              : QStringLiteral("channel");
+    const auto choice = QMessageBox::question(
+        this, QStringLiteral("Delete room"),
+        QStringLiteral("Delete the %1 %2?\n\nIt's removed from this device only — "
+                       "other people keep it. You won't see new messages in it "
+                       "unless you re-create or are re-invited to it.")
+            .arg(what, channel),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (choice != QMessageBox::Yes)
+        return;
+
+    m_backend->removeChannel(channel);
+    m_privateChannels.remove(channel);
+    persistPrivateChannels();
+    m_unread.remove(channel);
+    m_unreadCounts.remove(channel);
+    // Leaving the room we're viewing: fall back to the first remaining channel
+    // (or clear the view if none are left).
+    if (m_currentConversation == channel) {
+        m_currentConversation.clear();
+        const QString fallback = m_channels.value(0);
+        if (!fallback.isEmpty())
+            switchConversation(fallback);
+        else
+            m_channelTitle->setText(QString());
+    }
+    scheduleChatSave();
+    logSystem(QStringLiteral("Deleted %1 %2 (this device only).").arg(what, channel));
+}
+
 void MainWindow::restorePrivateChannels()
 {
     if (!m_backend)
@@ -1097,6 +1140,67 @@ void MainWindow::sendCurrentMessage()
         maybeAskForkbot(m_currentConversation, text);
     }
     m_messageInput->clear();
+}
+
+void MainWindow::insertEmojiIntoComposer(const QString &emoji)
+{
+    if (!m_messageInput || emoji.isEmpty())
+        return;
+    m_messageInput->insert(emoji);
+    m_messageInput->setFocus();
+}
+
+void MainWindow::showEmojiPicker(QWidget *anchor)
+{
+    if (!m_messageInput)
+        return;
+    // A curated grid of common emoji, encoded as UTF-8 (the codebase's
+    // convention — a color-emoji font is bundled so these render in color).
+    static const char *const kEmoji[] = {
+        "\xF0\x9F\x98\x80" /*😀*/, "\xF0\x9F\x98\x81", "\xF0\x9F\x98\x82",
+        "\xF0\x9F\xA4\xA3", "\xF0\x9F\x98\x8A", "\xF0\x9F\x98\x8D",
+        "\xF0\x9F\x98\x8E", "\xF0\x9F\x98\x89", "\xF0\x9F\x99\x82",
+        "\xF0\x9F\x98\xA2", "\xF0\x9F\x98\xAD", "\xF0\x9F\x98\xA1",
+        "\xF0\x9F\x98\xB1", "\xF0\x9F\xA4\x94", "\xF0\x9F\x98\xB4",
+        "\xF0\x9F\xA4\xAF", "\xF0\x9F\x91\x8D", "\xF0\x9F\x91\x8E",
+        "\xF0\x9F\x91\x8F", "\xF0\x9F\x99\x8F", "\xF0\x9F\x92\xAA",
+        "\xF0\x9F\x99\x8C", "\xF0\x9F\x91\x8B", "\xF0\x9F\xA4\x9D",
+        "\xF0\x9F\x94\xA5", "\xE2\x9C\xA8", "\xF0\x9F\x8E\x89",
+        "\xF0\x9F\x92\xAF", "\xE2\x9D\xA4\xEF\xB8\x8F", "\xF0\x9F\x92\x94",
+        "\xE2\xAD\x90", "\xE2\x9C\x85", "\xE2\x9D\x8C", "\xF0\x9F\x91\x80",
+        "\xF0\x9F\x9A\x80", "\xF0\x9F\x90\x9B", "\xF0\x9F\x92\xA1",
+        "\xF0\x9F\x93\x8C", "\xE2\x98\x95", "\xF0\x9F\x8D\x95",
+        "\xF0\x9F\x8E\x82", "\xF0\x9F\xA5\xB3",
+    };
+
+    QMenu menu(this);
+    auto *grid = new QWidget(&menu);
+    auto *gridLayout = new QGridLayout(grid);
+    gridLayout->setContentsMargins(6, 6, 6, 6);
+    gridLayout->setSpacing(2);
+    constexpr int kColumns = 7;
+    int index = 0;
+    for (const char *utf8 : kEmoji) {
+        const QString emoji = QString::fromUtf8(utf8);
+        auto *button = new QToolButton(grid);
+        button->setObjectName("emojiPickerButton");
+        button->setText(emoji);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setAutoRaise(true);
+        connect(button, &QToolButton::clicked, &menu, [this, emoji, &menu] {
+            insertEmojiIntoComposer(emoji);
+            menu.close();
+        });
+        gridLayout->addWidget(button, index / kColumns, index % kColumns);
+        ++index;
+    }
+    auto *action = new QWidgetAction(&menu);
+    action->setDefaultWidget(grid);
+    menu.addAction(action);
+    if (anchor)
+        menu.exec(anchor->mapToGlobal(QPoint(0, -menu.sizeHint().height())));
+    else
+        menu.exec(QCursor::pos());
 }
 
 void MainWindow::maybeAskForkbot(const QString &conversation, const QString &text)

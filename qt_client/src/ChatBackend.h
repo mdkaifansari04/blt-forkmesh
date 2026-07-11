@@ -152,6 +152,10 @@ public:
     // Tell peers we started/stopped typing in a conversation.
     virtual void sendTyping(const QString &conversation, bool active) = 0;
     virtual void addChannel(const QString &channel) = 0;
+    // Remove a room from this node: forget its membership and hide it so peer
+    // hellos / re-broadcasts don't resurrect it. Local only — it doesn't delete
+    // the room for anyone else. No-op for backends without rooms.
+    virtual void removeChannel(const QString &channel) { Q_UNUSED(channel); }
     // Create an invite-only room. Unlike addChannel it is NOT advertised to the
     // whole network (no hello/channel broadcast), so it only appears for peers
     // who are explicitly invited via inviteToChannel — the same honour-model as

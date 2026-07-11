@@ -2608,6 +2608,13 @@ private:
     void promptAddPrivateChannel();
     // Offer the online members as invitees for the current private room.
     void promptInviteToPrivateChannel();
+    // Confirm, then delete a room from this node (right-click a room in the
+    // sidebar). Local only — the room stays for everyone else.
+    void promptDeleteRoom(const QString &channel);
+    // Pop a small emoji grid under `anchor`; picking one inserts it into the
+    // composer at the caret.
+    void showEmojiPicker(QWidget *anchor);
+    void insertEmojiIntoComposer(const QString &emoji);
     // Re-create the private rooms we own/were invited to after a fresh connect,
     // since the backend clears its channel set each session.
     void restorePrivateChannels();

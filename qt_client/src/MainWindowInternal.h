@@ -2215,15 +2215,14 @@ const QString kEmailNotifyCreditsRefilledSetting = QStringLiteral("notifications
 const QString kEmailNotifyGeneralChatSetting = QStringLiteral("notifications/email/generalChat");
 const QString kEmailNotifyHostOnlineSetting = QStringLiteral("notifications/email/hostOnline");
 const QString kEmailNotifyHostOfflineSetting = QStringLiteral("notifications/email/hostOffline");
-// Split welcome rooms by identity type:
-// - #welcome-users for user-account nodes
-// - #welcome-nodes for regular nodes
-// Each identity posts its one-time "just joined" greeting to one of these
-// channels (issue #192), based on local account-linking state.
-const QString kWelcomeUsersChannel = QStringLiteral("#welcome-users");
-const QString kWelcomeNodesChannel = QStringLiteral("#welcome-nodes");
+// A single #welcome channel. The old split #welcome-nodes / #welcome-users
+// rooms filled with node churn and unverified-account noise, so the one-time
+// "just joined" greeting now goes to one room and ONLY for new user accounts
+// whose email is verified — plain nodes and unverified users stay silent, so
+// #welcome reads as a genuine roll-call of real people.
+const QString kWelcomeChannel = QStringLiteral("#welcome");
 // Legacy QSettings migration prefix retained for installs that already posted to
-// the old shared room before #welcome-* split.
+// an older welcome room.
 const QString kLegacyWelcomeAnnouncedSettingPrefix =
     QStringLiteral("chat/welcomeAnnounced/");
 
