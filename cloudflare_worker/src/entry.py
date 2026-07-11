@@ -2424,7 +2424,6 @@ CENTRAL_FUND_DISTRIBUTION_INTERVAL_MS = 60 * 60 * 1000  # distribute hourly
 CENTRAL_FUND_MIN_DISTRIBUTION_LAMPORTS = 100_000
 
 _schema_ready = False
-_schema_lock = None  # serializes the per-isolate schema apply (lazy-created)
 _stale_node_purge = {"ts": 0}
 
 # Derived WebCrypto keys are pure functions of the DATA_KEY secret, which is
@@ -2464,21 +2463,18 @@ _SCHEMA_FINGERPRINT = hashlib.sha256(
 
 
 async def ensure_schema(env):
-    # Single-flight: a Worker isolate serves many requests concurrently on one
-    # event loop, and before this guard every request arriving on a cold
-    # isolate ran its own full DDL apply in parallel. Under fediverse-crawler
-    # bursts (nodeinfo/inbox) that meant dozens of simultaneous ~110-statement
-    # replays, which is exactly what overloaded D1 ("requests queued for too
-    # long") and made the AP endpoints error-and-retry in a loop.
-    global _schema_lock
+    # A Worker isolate serves many requests concurrently on one event loop, so
+    # this must never block on a cross-request coordination primitive: an
+    # asyncio.Lock shared between concurrently-running requests here used to
+    # let one request's await resume inside another request's I/O context,
+    # which Cloudflare rejects ("Cannot perform I/O on behalf of a different
+    # request") on the very next await in the waiting request. Every request
+    # instead takes the cheap fingerprint SELECT fast path independently
+    # (schema.py's CREATE statements are all IF NOT EXISTS / idempotent), so
+    # concurrent cold-isolate requests never touch a shared awaitable.
     if _schema_ready:
         return
-    if _schema_lock is None:
-        _schema_lock = asyncio.Lock()
-    async with _schema_lock:
-        if _schema_ready:
-            return
-        await _apply_schema(env)
+    await _apply_schema(env)
 
 
 async def _apply_schema(env):
