@@ -5,6 +5,65 @@
 // logged-in visitor sees their account chip (Dashboard / Profile / Log out)
 // instead of the old hardcoded "Sign Up / Log In" links.
 (() => {
+  // ---- Site-wide light/dark theme -----------------------------------------
+  // The header is the one script every page already loads, so it doubles as
+  // the theme engine: stamp html.light / html.dark from the visitor's saved
+  // choice (same localStorage keys the dashboard and docs use) or, absent a
+  // choice, their OS preference. styles.css keys its palettes off these
+  // classes; pages without JavaScript simply stay dark.
+  const THEME_KEYS = ["forkmesh.dashboard.theme", "forkmesh.theme"];
+
+  function storedTheme() {
+    try {
+      for (const key of THEME_KEYS) {
+        const value = localStorage.getItem(key);
+        if (value === "light" || value === "dark") return value;
+      }
+    } catch (_) {}
+    return "";
+  }
+
+  function resolveTheme() {
+    const saved = storedTheme();
+    if (saved) return saved;
+    try {
+      if (window.matchMedia("(prefers-color-scheme: light)").matches) return "light";
+    } catch (_) {}
+    return "dark";
+  }
+
+  function applySiteTheme(theme) {
+    const light = theme === "light";
+    const root = document.documentElement;
+    root.classList.toggle("light", light);
+    root.classList.toggle("dark", !light);
+    root.style.colorScheme = light ? "light" : "dark";
+    document.querySelectorAll(".fm-header-theme").forEach((button) => {
+      button.textContent = light ? "☾" : "☀";
+      button.setAttribute("aria-label",
+                          light ? "Switch to dark mode" : "Switch to light mode");
+      button.title = light ? "Switch to dark mode" : "Switch to light mode";
+    });
+  }
+
+  function saveTheme(theme) {
+    try {
+      THEME_KEYS.forEach((key) => localStorage.setItem(key, theme));
+    } catch (_) {}
+    applySiteTheme(theme);
+  }
+
+  // Apply immediately at parse time (the script loads early on every page) so
+  // light-mode visitors don't get a dark flash, and follow OS changes live
+  // while the visitor hasn't made an explicit choice.
+  applySiteTheme(resolveTheme());
+  try {
+    window.matchMedia("(prefers-color-scheme: light)")
+      .addEventListener("change", () => {
+        if (!storedTheme()) applySiteTheme(resolveTheme());
+      });
+  } catch (_) {}
+
   const NAV_HTML = `
     <nav class="forkmesh-simple-header-nav" aria-label="Primary">
       <a href="/docs">Docs</a>
@@ -39,6 +98,7 @@
       </a>
       ${NAV_HTML}
       <div class="fm-header-right">
+        <button type="button" class="fm-header-theme" aria-label="Switch color theme">☀</button>
         <div class="fm-header-account"></div>
         <button type="button" class="fm-header-burger" aria-label="Open menu" aria-expanded="false">
           <span></span><span></span><span></span>
@@ -206,6 +266,13 @@
     markCurrentPage(header);
     markCurrentPage(mobile);
     header.querySelectorAll(".fm-header-menu").forEach(wireDropdown);
+
+    const themeButton = header.querySelector(".fm-header-theme");
+    themeButton.addEventListener("click", () => {
+      saveTheme(document.documentElement.classList.contains("light")
+                ? "dark" : "light");
+    });
+    applySiteTheme(resolveTheme()); // sync the freshly-rendered button's icon
 
     const burger = header.querySelector(".fm-header-burger");
     burger.addEventListener("click", (event) => {

@@ -210,6 +210,25 @@
 }
 
 /* ── mobile ── */
+.fm-header-theme {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 34px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--foreground, #f5f5f5);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.fm-header-theme:hover {
+  border-color: var(--muted, #a3a3a3);
+}
+
 .fm-header-burger {
   display: inline-flex;
   flex-direction: column;
