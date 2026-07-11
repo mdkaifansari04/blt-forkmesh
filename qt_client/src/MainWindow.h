@@ -2989,6 +2989,7 @@ private:
     QTableWidget *m_networkDiagnosticsTable = nullptr;
     QPushButton *m_networkDiagnosticsRefreshButton = nullptr;
     bool m_networkEndpointFadeScheduled = false;
+    bool m_networkEndpointsUserSorted = false;
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     QPushButton *m_repoPushButton = nullptr; // "Publish N" button shown above the tab bar
     QPushButton *m_repoPushEyeButton = nullptr; // eye icon beside Sync -> commits panel
