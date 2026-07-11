@@ -4543,6 +4543,8 @@ def _public_profile_html(profile, host):
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>@%s - ForkMesh</title>
   <link rel="canonical" href="%s">
+  <link rel="me" href="%s">
+  <link rel="alternate" type="application/activity+json" href="%s">
   <style>
     :root { color-scheme: dark light; --bg:#09090b; --card:#111113; --fg:#f4f4f5; --muted:#a1a1aa; --border:#27272a; --accent:#4ade80; }
     @media (prefers-color-scheme: light) { :root { --bg:#f6f8fb; --card:#fff; --fg:#0f172a; --muted:#64748b; --border:#e2e8f0; --accent:#16a34a; } }
@@ -4620,7 +4622,14 @@ def _public_profile_html(profile, host):
   </script>
 </body>
 </html>""" % (
-        _html_escape(name), _html_escape(canonical), avatar_html,
+        _html_escape(name), _html_escape(canonical),
+        # rel="me": the reciprocal half of the fediverse Person actor's
+        # verified profile link (the actor's `url` is this very page); the
+        # alternate link lets fediverse software discover the actor from the
+        # page URL.
+        _html_escape(canonical),
+        _html_escape("https://" + host + "/ap/users/" + quote(name)),
+        avatar_html,
         _html_escape(name), _html_escape(canonical), mastodon_html,
         _html_escape(followers), _html_escape(following), _html_escape(mirror_count),
         "".join(meta_rows),
@@ -9215,12 +9224,23 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
                 icon_url = media_url
             elif media.get("kind") == "banner":
                 image_url = media_url
+    # Profile metadata rows: the canonical page link (VERIFIABLE — the served
+    # page carries a reciprocal rel="me" back to this same URL, which is also
+    # the actor's `url`, so Mastodon's link verification turns it green) and
+    # the relay this actor lives on (origin-derived, so self-hosted relays
+    # advertise their own domain).
+    attachments = [
+        ap.property_value(
+            "Repository" if kind == AP_ACTOR_REPO else "Profile", profile_url),
+        ap.property_value("Relay", origin),
+    ]
     return ap.actor_doc(
         _ap_actor_url(origin, kind, handle), actor_type, handle, display,
         summary, profile_url, rec["pubkeyPem"],
         shared_inbox=origin + "/ap/inbox",
         published_ms=rec.get("createdAt"),
-        icon_url=icon_url, image_url=image_url)
+        icon_url=icon_url, image_url=image_url,
+        attachments=attachments)
 
 
 async def _ap_actor_doc_response(env, request, kind, handle):
@@ -15646,9 +15666,12 @@ class Default(WorkerEntrypoint):
             return json_response({"error": "unavailable"}, status=503)
 
         # Repo shortcut URLs (/owner/repo and tab/tree/blob deep links) all
-        # serve the prebuilt repo-detail page; its JS resolves the path.
+        # serve the prebuilt repo-detail page; its JS resolves the path. The
+        # per-repo rel="me" head tags are injected at serve time so Mastodon
+        # can verify the repo actor's profile link (green check) against this
+        # very page — a static shared asset can't carry a per-repo link.
         if looks_like_repo_route(url.path):
-            return await self._serve_dashboard_asset(url, DASHBOARD_REPO_ASSET)
+            return await self._serve_repo_page(url)
 
         if url.path == "/dashboard" or url.path.startswith("/dashboard/"):
             # Legacy /dashboard?section=X links 308 to the per-page paths.
@@ -15688,6 +15711,37 @@ class Default(WorkerEntrypoint):
             status=404,
             headers={"content-type": "text/html; charset=utf-8"},
         )
+
+    async def _serve_repo_page(self, url):
+        # The shared repo-detail document, plus per-repo head tags:
+        #  - <link rel="me" href="<canonical repo URL>"> — the reciprocal half
+        #    of the repo actor's verified profile link (the actor's `url` IS
+        #    this page, so Mastodon's verifier finds the page vouching for
+        #    itself and marks the profile row verified);
+        #  - <link rel="alternate" type="application/activity+json"> — lets
+        #    fediverse software discover the actor straight from the page URL.
+        base = url.scheme + "://" + url.netloc + "/"
+        try:
+            resp = await self.env.ASSETS.fetch(base + DASHBOARD_REPO_ASSET)
+            body = await resp.text()
+        except Exception:
+            body = "<!doctype html><title>ForkMesh Dashboard</title>"
+        parts = [p for p in url.path.split("/") if p]
+        owner = safe_segment(unquote(parts[0])) if len(parts) >= 2 else ""
+        repo = safe_segment(unquote(parts[1])) if len(parts) >= 2 else ""
+        if owner and repo and "</head>" in body:
+            origin = url.scheme + "://" + url.netloc
+            tags = (
+                "<link rel=\"me\" href=\"%s/%s/%s\">"
+                "<link rel=\"alternate\" type=\"application/activity+json\" "
+                "href=\"%s/ap/repos/%s/%s\">"
+                % (origin, quote(owner), quote(repo),
+                   origin, quote(owner), quote(repo)))
+            body = body.replace("</head>", tags + "</head>", 1)
+        return Response(body, status=200, headers={
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "public, max-age=300",
+        })
 
     async def _serve_dashboard_asset(self, url, asset_rel):
         # The per-page dashboard documents are generated by
