@@ -189,7 +189,7 @@ def _run_blobs_fetch(n_paths, per_blob_delay_s):
         return payload
 
     fetch = _load_method(
-        "ForkMeshHost", "fetch",
+        "ForkMeshHost", "_fetch_inner",
         extra_globals={
             "urlparse": urlparse,
             "parse_qs": parse_qs,
