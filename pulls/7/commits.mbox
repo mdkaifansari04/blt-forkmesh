@@ -1,0 +1,951 @@
+From 56337bd2ffd7394ad9466ace9447ea70a243ba4e Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Sun, 12 Jul 2026 00:38:17 +0530
+Subject: [PATCH] style(worker): polish outreach console visuals
+
+---
+ .../public/assets/email-admin.js              |  90 ++++
+ cloudflare_worker/src/email_admin.py          | 388 +++++++++++++-----
+ .../tests/test_email_admin_client.py          |  88 ++++
+ .../tests/test_email_admin_frontend.py        | 169 +++++++-
+ 4 files changed, 621 insertions(+), 114 deletions(-)
+
+diff --git a/cloudflare_worker/public/assets/email-admin.js b/cloudflare_worker/public/assets/email-admin.js
+index edc64bec..cd6242a2 100644
+--- a/cloudflare_worker/public/assets/email-admin.js
++++ b/cloudflare_worker/public/assets/email-admin.js
+@@ -5,7 +5,13 @@
+   } else {
+     root.ForkMeshEmailAdmin = api;
+     if (root.document) {
++      let storage = null;
++      try {
++        storage = root.localStorage;
++      } catch (_) {}
++      api.applyTheme(root.document, api.readTheme(storage));
+       root.document.addEventListener("DOMContentLoaded", function () {
++        api.bindTheme(root.document, storage);
+         api.bindRecipientImport(root.document);
+         api.bindRecipientSelection(root.document);
+         api.bindDialogs(root.document);
+@@ -20,6 +26,84 @@
+   const EMAIL_LOCAL = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$/;
+   const EMAIL_DOMAIN_LABEL = /^[A-Za-z0-9-]+$/;
+   const UNSAFE_TEXT = /[\p{C}\p{Zl}\p{Zp}]/u;
++  const DASHBOARD_THEME_KEY = "forkmesh.dashboard.theme";
++  const SITE_THEME_KEY = "forkmesh.theme";
++
++  function normalizeTheme(value) {
++    return value === "light" ? "light" : "dark";
++  }
++
++  function readTheme(storage) {
++    try {
++      if (!storage) return "dark";
++      return normalizeTheme(
++        storage.getItem(DASHBOARD_THEME_KEY) || storage.getItem(SITE_THEME_KEY)
++      );
++    } catch (_) {
++      return "dark";
++    }
++  }
++
++  function applyTheme(document, value) {
++    const theme = normalizeTheme(value);
++    if (!document || !document.documentElement) return theme;
++
++    document.documentElement.dataset.emailAdminTheme = theme;
++    document.documentElement.style.colorScheme = theme;
++
++    const meta = document.querySelector('meta[name="theme-color"]');
++    if (meta) {
++      meta.setAttribute(
++        "content",
++        theme === "light" ? "#f6f8fb" : "#090909"
++      );
++    }
++
++    const button = document.querySelector("[data-theme-toggle]");
++    if (button) {
++      const label =
++        theme === "light" ? "Switch to dark mode" : "Switch to light mode";
++      button.dataset.theme = theme;
++      button.setAttribute("aria-label", label);
++      button.setAttribute("aria-pressed", theme === "light" ? "true" : "false");
++      button.title = label;
++    }
++    return theme;
++  }
++
++  function saveTheme(storage, document, value) {
++    const theme = normalizeTheme(value);
++    try {
++      if (storage) {
++        storage.setItem(DASHBOARD_THEME_KEY, theme);
++        storage.setItem(SITE_THEME_KEY, theme);
++      }
++    } catch (_) {}
++    return applyTheme(document, theme);
++  }
++
++  function toggleTheme(storage, document) {
++    const current =
++      document && document.documentElement
++        ? normalizeTheme(document.documentElement.dataset.emailAdminTheme)
++        : readTheme(storage);
++    return saveTheme(
++      storage,
++      document,
++      current === "light" ? "dark" : "light"
++    );
++  }
++
++  function bindTheme(document, storage) {
++    if (!document || !document.documentElement) return false;
++    applyTheme(document, readTheme(storage));
++    const button = document.querySelector("[data-theme-toggle]");
++    if (!button) return false;
++    button.addEventListener("click", function () {
++      toggleTheme(storage, document);
++    });
++    return true;
++  }
+ 
+   function normalizeEmail(value) {
+     if (typeof value !== "string" || UNSAFE_TEXT.test(value)) return "";
+@@ -388,6 +472,12 @@
+   }
+ 
+   return {
++    normalizeTheme: normalizeTheme,
++    readTheme: readTheme,
++    applyTheme: applyTheme,
++    saveTheme: saveTheme,
++    toggleTheme: toggleTheme,
++    bindTheme: bindTheme,
+     validateRecipientArray: validateRecipientArray,
+     normalizeEmail: normalizeEmail,
+     createImportState: createImportState,
+diff --git a/cloudflare_worker/src/email_admin.py b/cloudflare_worker/src/email_admin.py
+index 00384e38..68d22551 100644
+--- a/cloudflare_worker/src/email_admin.py
++++ b/cloudflare_worker/src/email_admin.py
+@@ -346,137 +346,259 @@ def render_message(subject, body, recipient):
+     }
+ 
+ 
++EMAIL_ADMIN_ICON_PATHS = {
++    "network": (
++        '<circle cx="6" cy="6" r="2.25"></circle>'
++        '<circle cx="18" cy="6" r="2.25"></circle>'
++        '<circle cx="12" cy="18" r="2.25"></circle>'
++        '<path d="M8 7.2 11 16M16 7.2 13 16M8.4 6h7.2"></path>'
++    ),
++    "recipients": (
++        '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>'
++        '<circle cx="9" cy="7" r="4"></circle>'
++        '<path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"></path>'
++    ),
++    "categories": (
++        '<path d="M20.59 13.41 11 3.83V3H4v7h.83l9.59 9.59a2 2 0 0 0 2.82 0l3.35-3.35a2 2 0 0 0 0-2.83Z"></path>'
++        '<circle cx="7.5" cy="6.5" r="1.25"></circle>'
++    ),
++    "templates": (
++        '<path d="M4 4h16v16H4z"></path>'
++        '<path d="M8 8h8M8 12h8M8 16h5"></path>'
++    ),
++    "compose": (
++        '<path d="m22 2-7 20-4-9-9-4Z"></path>'
++        '<path d="M22 2 11 13"></path>'
++    ),
++    "jobs": (
++        '<path d="M3 3v18h18"></path>'
++        '<path d="m7 16 4-5 4 3 5-7"></path>'
++    ),
++    "sun": (
++        '<circle cx="12" cy="12" r="4"></circle>'
++        '<path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"></path>'
++    ),
++    "moon": (
++        '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"></path>'
++    ),
++}
++
++
++def _email_admin_icon(name):
++    path = EMAIL_ADMIN_ICON_PATHS.get(name, "")
++    return (
++        '<svg class="icon icon-'
++        + html.escape(str(name), quote=True)
++        + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
++        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" '
++        'aria-hidden="true">'
++        + path
++        + "</svg>"
++    )
++
++
++def _theme_toggle():
++    return (
++        '<button class="theme-toggle secondary" data-theme-toggle type="button" '
++        'aria-label="Switch to light mode" aria-pressed="false" '
++        'title="Switch to light mode"><span class="theme-icon theme-icon-sun">'
++        + _email_admin_icon("sun")
++        + '</span><span class="theme-icon theme-icon-moon">'
++        + _email_admin_icon("moon")
++        + '</span><span class="theme-toggle-label">Theme</span></button>'
++    )
++
++
++def _outreach_identity(class_name="identity"):
++    return (
++        '<div class="'
++        + html.escape(str(class_name), quote=True)
++        + '"><span class="brand-mark">'
++        + _email_admin_icon("network")
++        + '</span><span class="identity-copy"><strong>ForkMesh Outreach</strong>'
++        '<small>founders@forkmesh.com</small></span></div>'
++    )
++
++
+ EMAIL_ADMIN_STYLE = """
+ *{box-sizing:border-box}
+-:root{color-scheme:dark}
+-body{margin:0;min-height:100vh;overflow-x:hidden;background:#010409;color:#f0f6fc;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+-a{color:#58a6ff;text-decoration:none}
+-a:hover{text-decoration:underline}
++:root,[data-email-admin-theme="dark"]{color-scheme:dark;--admin-background:#010409;--admin-sidebar:#0d1117;--admin-surface:#0d1117;--admin-surface-raised:#161b22;--admin-surface-hover:#21262d;--admin-foreground:#f0f6fc;--admin-muted-foreground:#8b949e;--admin-border:#30363d;--admin-border-subtle:#21262d;--admin-primary:#238636;--admin-primary-hover:#1f7a35;--admin-primary-foreground:#fff;--admin-primary-soft:#11251a;--admin-primary-text:#4ade80;--admin-danger:#da3633;--admin-danger-hover:#f85149;--admin-danger-soft:#2a1215;--admin-danger-text:#ffa198;--admin-warning:#d29922;--admin-warning-soft:#201a09;--admin-warning-text:#f2cc60;--admin-ring:#4ade80;--admin-selected:#111f16;--admin-shadow:0 14px 35px #0005;--admin-backdrop:#010409c7}
++[data-email-admin-theme="light"]{color-scheme:light;--admin-background:#f6f8fb;--admin-sidebar:#fff;--admin-surface:#fff;--admin-surface-raised:#f8fafc;--admin-surface-hover:#f1f5f9;--admin-foreground:#0f172a;--admin-muted-foreground:#64748b;--admin-border:#e2e8f0;--admin-border-subtle:#edf2f7;--admin-primary:#15803d;--admin-primary-hover:#166534;--admin-primary-foreground:#fff;--admin-primary-soft:#dcfce7;--admin-primary-text:#15803d;--admin-danger:#dc2626;--admin-danger-hover:#b91c1c;--admin-danger-soft:#fef2f2;--admin-danger-text:#b91c1c;--admin-warning:#b7791f;--admin-warning-soft:#fffbeb;--admin-warning-text:#92400e;--admin-ring:#16a34a;--admin-selected:#edfdf2;--admin-shadow:0 12px 30px #0f172a12;--admin-backdrop:#0f172a80}
++html{min-height:100%;background:var(--admin-background)}
++body{margin:0;min-height:100vh;overflow-x:hidden;background:var(--admin-background);color:var(--admin-foreground);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
++a{color:var(--admin-primary-text);text-decoration:none}
++a:hover{text-decoration:none}
+ button,input,textarea,select{font:inherit}
+-button{border:1px solid #2ea043;border-radius:6px;background:#238636;color:#fff;padding:8px 12px;font-weight:600;cursor:pointer}
+-button:hover{background:#2ea043}
+-button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid #58a6ff;outline-offset:2px}
+-input,textarea,select{width:100%;border:1px solid #30363d;border-radius:6px;background:#0d1117;color:#f0f6fc;padding:8px}
+-label{display:grid;gap:5px;margin:12px 0;color:#c9d1d9;font-weight:600}
+-.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 20px;border-bottom:1px solid #21262d;background:#010409}
++button{min-height:36px;border:1px solid var(--admin-primary);border-radius:7px;background:var(--admin-primary);color:var(--admin-primary-foreground);padding:7px 12px;font-weight:650;cursor:pointer;transition:background-color .15s ease,border-color .15s ease,box-shadow .15s ease,transform .15s ease}
++button:hover:not(:disabled){border-color:var(--admin-primary-hover);background:var(--admin-primary-hover)}
++button:active:not(:disabled){transform:translateY(1px)}
++button:disabled{cursor:not-allowed;opacity:.48}
++button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--admin-ring);outline-offset:2px}
++input,textarea,select{width:100%;border:1px solid var(--admin-border);border-radius:7px;background:var(--admin-surface);color:var(--admin-foreground);padding:9px 10px;transition:border-color .15s ease,box-shadow .15s ease}
++input::placeholder,textarea::placeholder{color:var(--admin-muted-foreground)}
++input:focus,textarea:focus,select:focus{border-color:var(--admin-ring);box-shadow:0 0 0 3px color-mix(in srgb,var(--admin-ring) 12%,transparent)}
++textarea{resize:vertical}
++label{display:grid;gap:6px;margin:13px 0;color:var(--admin-foreground);font-size:13px;font-weight:650}
++[hidden]{display:none!important}
++.icon{display:block;width:17px;height:17px;flex:0 0 auto}
++.topbar{position:sticky;top:0;z-index:20;display:flex;min-height:64px;align-items:center;justify-content:space-between;gap:18px;padding:10px 20px;border-bottom:1px solid var(--admin-border-subtle);background:var(--admin-surface);box-shadow:0 1px 0 var(--admin-border-subtle)}
++.topbar-actions{display:flex;align-items:center;gap:8px}
+ .topbar form{margin:0}
+-.identity{display:grid;gap:2px}
+-.identity span{color:#8b949e;font-size:12px}
+-.layout{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:calc(100vh - 66px)}
+-.sidebar{min-width:0;border-right:1px solid #21262d;padding:14px 10px;background:#0d1117}
+-.sidebar a{display:block;padding:8px 10px;border-radius:6px;color:#c9d1d9}
+-.sidebar a.active{background:#21262d;color:#fff;font-weight:700}
+-.content{min-width:0;overflow-x:auto;padding:20px}
+-.panel{min-width:0;overflow:hidden;border:1px solid #30363d;border-radius:8px;background:#0d1117}
+-.panel h2{margin:0;padding:14px 16px;border-bottom:1px solid #30363d;font-size:16px}
+-.toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid #30363d}
++.identity{display:flex;min-width:0;align-items:center;gap:10px}
++.identity-copy{display:grid;min-width:0;line-height:1.25}
++.identity-copy strong{font-size:14px;letter-spacing:-.01em}
++.identity-copy small{overflow:hidden;color:var(--admin-muted-foreground);font-size:11px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}
++.brand-mark{display:grid;width:35px;height:35px;place-items:center;flex:0 0 auto;border-radius:10px;background:var(--admin-primary);color:var(--admin-primary-foreground);box-shadow:0 8px 20px color-mix(in srgb,var(--admin-primary) 24%,transparent)}
++.brand-mark .icon{width:20px;height:20px}
++.theme-toggle{display:inline-flex;align-items:center;gap:7px}
++.theme-icon{display:grid;place-items:center}
++.theme-toggle .icon{width:15px;height:15px}
++.theme-icon-moon{display:none}
++[data-email-admin-theme="light"] .theme-icon-sun{display:none}
++[data-email-admin-theme="light"] .theme-icon-moon{display:block}
++.layout{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:calc(100vh - 64px)}
++.sidebar{position:sticky;top:64px;align-self:start;display:grid;min-width:0;max-height:calc(100vh - 64px);gap:4px;overflow-y:auto;border-right:1px solid var(--admin-border-subtle);padding:19px 12px;background:var(--admin-sidebar)}
++.sidebar-label{margin:0 10px 8px;color:var(--admin-muted-foreground);font-size:10px;font-weight:750;letter-spacing:.12em;text-transform:uppercase}
++.sidebar a{position:relative;display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:7px;color:var(--admin-muted-foreground);font-size:13px;font-weight:600;transition:background-color .15s ease,color .15s ease}
++.sidebar a:hover{background:var(--admin-surface-hover);color:var(--admin-foreground)}
++.sidebar a.active{background:var(--admin-primary-soft);color:var(--admin-primary-text);font-weight:750}
++.sidebar a.active::before{position:absolute;top:8px;bottom:8px;left:-12px;width:3px;border-radius:0 3px 3px 0;background:var(--admin-primary);content:""}
++.nav-icon{display:grid;width:18px;place-items:center}
++.content{min-width:0;width:100%;max-width:1540px;overflow-x:hidden;padding:26px 28px 48px}
++.page-heading{margin:0 0 20px}
++.page-heading h1{margin:2px 0 4px;font-size:26px;line-height:1.2;letter-spacing:-.035em}
++.page-eyebrow{margin:0;color:var(--admin-primary-text);font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
++.page-description{margin:0;color:var(--admin-muted-foreground);font-size:13px}
++.panel{min-width:0;overflow:hidden;border:1px solid var(--admin-border);border-radius:10px;background:var(--admin-surface);box-shadow:var(--admin-shadow)}
++.panel+.panel,.template-list{margin-top:16px}
++.panel h2{margin:0;padding:15px 17px;border-bottom:1px solid var(--admin-border-subtle);font-size:16px;letter-spacing:-.015em}
++.toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 17px;border-bottom:1px solid var(--admin-border-subtle)}
+ .toolbar h2{padding:0;border:0}
+-.form-section{padding:16px;border-bottom:1px solid #30363d}
++.form-section{padding:17px;border-bottom:1px solid var(--admin-border-subtle)}
++.form-section:last-child{border-bottom:0}
+ .form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+ .form-grid label{margin:0}
+ .check-list{display:flex;flex-wrap:wrap;gap:8px 16px}
+-label.check{display:flex;align-items:center;gap:7px;margin:6px 0;font-weight:500}
+-input[type="checkbox"]{width:auto;flex:0 0 auto}
+-fieldset{min-width:0;margin:12px 0;padding:10px 12px;border:1px solid #30363d;border-radius:6px}
+-legend{padding:0 5px;color:#c9d1d9;font-weight:600}
++label.check{display:flex;align-items:center;gap:8px;margin:7px 0;font-weight:550}
++input[type="checkbox"]{width:16px;height:16px;flex:0 0 auto;accent-color:var(--admin-primary)}
++fieldset{min-width:0;margin:13px 0;padding:12px 13px;border:1px solid var(--admin-border);border-radius:8px;background:var(--admin-surface-raised)}
++legend{padding:0 6px;color:var(--admin-foreground);font-weight:700}
+ .table-wrap{max-width:100%;overflow-x:auto}
+ table{width:100%;border-collapse:collapse}
+-th,td{padding:10px 12px;border-bottom:1px solid #21262d;text-align:left;vertical-align:top}
+-th{color:#8b949e;background:#161b22;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
++th,td{padding:11px 13px;border-bottom:1px solid var(--admin-border-subtle);text-align:left;vertical-align:top}
++th{color:var(--admin-muted-foreground);background:var(--admin-surface-raised);font-size:10px;font-weight:750;letter-spacing:.075em;text-transform:uppercase;white-space:nowrap}
++tbody tr{transition:background-color .12s ease}
++tbody tr:hover{background:var(--admin-surface-raised)}
+ tbody tr:last-child td{border-bottom:0}
+ .badges{display:flex;flex-wrap:wrap;gap:5px}
+-.badge{display:inline-block;border:1px solid #30363d;border-radius:999px;padding:2px 7px;background:#161b22;color:#c9d1d9;font-size:12px}
+-.row-actions{display:grid;min-width:220px;gap:8px}
+-details{border:1px solid #30363d;border-radius:6px;padding:7px 9px;background:#161b22}
+-summary{cursor:pointer;color:#58a6ff;font-weight:600}
+-details form{padding-top:6px}
+-.secondary{border-color:#30363d;background:#21262d;color:#f0f6fc}
+-.secondary:hover{background:#30363d}
+-.danger{border-color:#da3633;background:#b62324}
+-.danger:hover{background:#da3633}
+-.compact-button{padding:7px 10px}
++.badge{display:inline-flex;align-items:center;border:1px solid var(--admin-border);border-radius:999px;padding:2px 7px;background:var(--admin-surface-raised);color:var(--admin-muted-foreground);font-size:11px;font-weight:700;line-height:1.4}
++.badge-success{border-color:var(--admin-primary);background:var(--admin-primary-soft);color:var(--admin-primary-text)}
++.badge-warning,.system-badge{border-color:var(--admin-warning);background:var(--admin-warning-soft);color:var(--admin-warning-text)}
++.badge-danger{border-color:var(--admin-danger);background:var(--admin-danger-soft);color:var(--admin-danger-text)}
++.row-actions{display:flex;min-width:330px;align-items:flex-end;flex-wrap:wrap;gap:8px;margin-top:8px}
++.row-actions>form{display:flex;align-items:flex-end;gap:8px;margin:0}
++.row-actions>form label{min-width:190px;margin:0}
++details{border:1px solid var(--admin-border);border-radius:8px;padding:8px 10px;background:var(--admin-surface-raised)}
++summary{cursor:pointer;color:var(--admin-primary-text);font-weight:700}
++details form{padding-top:7px}
++.secondary{border-color:var(--admin-border);background:var(--admin-surface);color:var(--admin-foreground)}
++.secondary:hover:not(:disabled){border-color:var(--admin-border);background:var(--admin-surface-hover)}
++.danger{border-color:var(--admin-danger);background:var(--admin-danger);color:#fff}
++.danger:hover:not(:disabled){border-color:var(--admin-danger-hover);background:var(--admin-danger-hover)}
++.compact-button{min-height:32px;padding:5px 9px}
+ .dialog-trigger{white-space:nowrap}
+-dialog{width:min(460px,calc(100% - 32px));padding:0;border:1px solid #484f58;border-radius:10px;background:#161b22;color:#f0f6fc;box-shadow:0 20px 60px #000a}
+-dialog::backdrop{background:#010409b8;backdrop-filter:blur(2px)}
+-.dialog-card{padding:20px}
+-.dialog-card h3{margin:0 0 8px;font-size:18px}
+-.dialog-card p{margin:0;color:#b1bac4}
++dialog{width:min(460px,calc(100% - 32px));padding:0;border:1px solid var(--admin-border);border-radius:12px;background:var(--admin-surface);color:var(--admin-foreground);box-shadow:0 24px 70px #0008}
++dialog::backdrop{background:var(--admin-backdrop);backdrop-filter:blur(3px)}
++.dialog-card{padding:22px}
++.dialog-card h3{margin:0 0 8px;font-size:19px;letter-spacing:-.02em}
++.dialog-card p{margin:0;color:var(--admin-muted-foreground)}
+ .dialog-card form{margin:0}
+-.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+-.help{margin:8px 0;color:#8b949e;font-size:12px}
+-[hidden]{display:none!important}
+-.import-panel{margin:14px 16px;border-color:#30363d;background:#161b22}
+-.import-panel>summary{padding:3px;color:#f0f6fc;font-size:14px}
+-.import-panel>.form-section{margin-top:8px;padding:14px 3px 3px;border-top:1px solid #30363d;border-bottom:0}
++.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:22px}
++.help{margin:8px 0;color:var(--admin-muted-foreground);font-size:12px}
++.import-panel{margin:14px 16px;border-color:var(--admin-border);background:var(--admin-surface-raised)}
++.import-panel>summary{padding:3px;color:var(--admin-foreground);font-size:13px}
++.import-panel>.form-section{margin-top:8px;padding:14px 3px 3px;border-top:1px solid var(--admin-border-subtle);border-bottom:0}
+ .import-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:10px}
+-.validation-status{min-height:20px;margin-top:8px;color:#8b949e;font-size:12px}
+-.validation-success{color:#aff5b4}
+-.import-errors{padding:9px 11px;border:1px solid #da3633;border-radius:6px;background:#2a1215;color:#ffa198}
++.validation-status{min-height:20px;margin-top:8px;color:var(--admin-muted-foreground);font-size:12px}
++.validation-success{color:var(--admin-primary-text)}
++.import-errors{padding:10px 12px;border:1px solid var(--admin-danger);border-radius:8px;background:var(--admin-danger-soft);color:var(--admin-danger-text)}
+ .import-errors ul{margin:0;padding-left:18px}
+-.system-badge{border-color:#9e6a03;background:#201a09;color:#f2cc60}
+ .recipient-editor>.toolbar{padding:0 0 12px;border:0}
+ .recipient-editor h3{margin:0;font-size:14px}
+ .recipient-editor>button{margin-top:12px}
+ .recipient-bulk-form{min-width:0}
+-.bulk-actions{display:none;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 12px;border-top:1px solid #30363d;border-bottom:1px solid #30363d;background:#111d2e}
++.bulk-actions{display:none;align-items:center;flex-wrap:wrap;gap:8px;padding:11px 13px;border-top:1px solid var(--admin-border-subtle);border-bottom:1px solid var(--admin-border-subtle);background:var(--admin-primary-soft)}
+ .recipient-bulk-form:has(.recipient-select:checked) .bulk-actions{display:flex}
+ .bulk-actions>strong{margin-right:auto;white-space:nowrap}
+ .bulk-actions label{display:flex;align-items:center;gap:6px;margin:0;font-size:12px}
+-.bulk-actions select{width:auto;min-width:150px;padding:7px}
+-.bulk-actions button{padding:7px 10px}
+-.recipient-select,[data-select-all]{width:16px!important;height:16px;accent-color:#58a6ff}
+-.selected-row{background:#111d2e}
+-.edit-link{font-weight:700}
+-.pagination{display:flex;align-items:center;justify-content:flex-end;gap:12px;padding:12px 16px;border-top:1px solid #30363d}
++.bulk-actions select{width:auto;min-width:160px;padding:7px 9px}
++.bulk-actions button{min-height:33px;padding:6px 10px}
++.recipient-select,[data-select-all]{width:16px!important;height:16px!important;accent-color:var(--admin-primary)}
++.selected-row,.selected-row:hover{background:var(--admin-selected)}
++.edit-link{font-weight:750}
++.pagination{display:flex;align-items:center;justify-content:flex-end;gap:12px;padding:12px 16px;border-top:1px solid var(--admin-border-subtle)}
+ .pagination a,.page-disabled{min-width:72px;text-align:center}
+-.page-disabled{color:#6e7681}
+-.page-size{color:#8b949e;font-size:12px}
+-.filter-context{color:#c9d1d9;font-size:12px}
++.page-disabled{color:var(--admin-muted-foreground);opacity:.65}
++.page-size,.filter-context{color:var(--admin-muted-foreground);font-size:12px}
+ .filter-context a{margin-left:6px}
+-.template-list{display:grid;gap:16px;margin-top:16px}
+-.template-card{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,.7fr);gap:16px;padding:16px}
++.template-list{display:grid;gap:16px}
++.template-card{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,.7fr);gap:18px;padding:17px}
+ .template-card h3{margin:0}
+ .template-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+-.preview-frame{width:100%;min-height:300px;border:1px solid #30363d;border-radius:6px;background:#fff;color:#0d1117}
++.preview-frame{width:100%;min-height:300px;border:1px solid var(--admin-border);border-radius:8px;background:#fff;color:#0d1117}
+ .actions-inline{display:flex;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-top:10px}
+ .actions-inline form{margin:0}
+-.review-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,.8fr);gap:16px;padding:16px}
+-.stat-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}
+-.stat{border:1px solid #30363d;border-radius:6px;padding:10px;background:#161b22}
+-.stat strong{display:block;font-size:20px}
+-pre{max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:#c9d1d9}
+-.empty{margin:0;padding:28px 16px;color:#8b949e}
+-.banner{margin:0 0 14px;padding:10px 12px;border:1px solid #2ea043;border-radius:6px;background:#11251a;color:#aff5b4}
+-.login{width:min(420px,calc(100% - 32px));margin:10vh auto;padding:22px;border:1px solid #30363d;border-radius:10px;background:#0d1117}
+-.login h1{margin:0 0 4px;font-size:22px}
+-.muted{margin:0;color:#8b949e}
+-@media(max-width:760px){.topbar{align-items:flex-start;flex-direction:column}.layout{grid-template-columns:minmax(0,1fr)}.sidebar{display:flex;overflow-x:auto;border-right:0;border-bottom:1px solid #21262d}.sidebar a{white-space:nowrap}.content{padding:12px}.form-grid,.template-card,.review-grid,.stat-grid{grid-template-columns:minmax(0,1fr)}.import-panel{margin:12px}.bulk-actions{align-items:stretch}.bulk-actions>strong{width:100%}.bulk-actions label{align-items:stretch;flex:1 1 180px;flex-direction:column}.bulk-actions select{width:100%}}
++.review-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,.8fr);gap:18px;padding:17px}
++.stat-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:13px 0}
++.stat{border:1px solid var(--admin-border);border-radius:8px;padding:11px;background:var(--admin-surface-raised);color:var(--admin-muted-foreground)}
++.stat strong{display:block;color:var(--admin-foreground);font-size:21px;letter-spacing:-.025em}
++pre{max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--admin-foreground)}
++.empty{margin:0;padding:32px 17px;color:var(--admin-muted-foreground);text-align:center}
++.banner{margin:0 0 15px;padding:11px 13px;border:1px solid var(--admin-primary);border-radius:8px;background:var(--admin-primary-soft);color:var(--admin-primary-text);font-weight:600}
++.banner-error{border-color:var(--admin-danger);background:var(--admin-danger-soft);color:var(--admin-danger-text)}
++.muted{margin:0;color:var(--admin-muted-foreground)}
++.login{width:min(460px,calc(100% - 32px));margin:9vh auto;padding:24px;border:1px solid var(--admin-border);border-radius:14px;background:var(--admin-surface);box-shadow:var(--admin-shadow)}
++.login-brand{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:20px;border-bottom:1px solid var(--admin-border-subtle)}
++.login-heading{padding:22px 0 5px}
++.login h1{margin:2px 0 5px;font-size:27px;letter-spacing:-.035em}
++.login form>button[type="submit"]{width:100%;margin-top:4px}
++.login-sender{margin:18px 0 0;color:var(--admin-muted-foreground);font-size:11px;text-align:center}
++@media(max-width:760px){.topbar{position:static;align-items:flex-start;flex-direction:column;padding:12px}.topbar-actions{width:100%;justify-content:space-between}.layout{grid-template-columns:minmax(0,1fr)}.sidebar{position:static;display:flex;max-height:none;overflow-x:auto;border-right:0;border-bottom:1px solid var(--admin-border-subtle);padding:9px 10px}.sidebar-label{display:none}.sidebar a{flex:0 0 auto;white-space:nowrap}.sidebar a.active::before{inset:auto 9px -9px;height:3px;width:auto;border-radius:3px 3px 0 0}.content{padding:19px 12px 36px}.page-heading h1{font-size:23px}.form-grid,.template-card,.review-grid,.stat-grid{grid-template-columns:minmax(0,1fr)}.import-panel{margin:12px}.bulk-actions{align-items:stretch}.bulk-actions>strong{width:100%}.bulk-actions label{align-items:stretch;flex:1 1 180px;flex-direction:column}.bulk-actions select{width:100%}.dialog-actions{align-items:stretch;flex-direction:column-reverse}.dialog-actions button{width:100%}.theme-toggle-label{display:none}}
++@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
+ """
+ 
+ 
+ def _document(body):
+     return (
+-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
++        '<!doctype html><html lang="en" data-email-admin-theme="dark"><head>'
++        '<meta charset="utf-8">'
+         '<meta name="viewport" content="width=device-width,initial-scale=1">'
+-        '<meta name="color-scheme" content="dark">'
+-        '<title>ForkMesh email admin</title><style>'
++        '<meta name="color-scheme" content="light dark">'
++        '<meta name="theme-color" content="#090909">'
++        '<title>ForkMesh Outreach</title>'
++        '<script src="/assets/email-admin.js"></script><style>'
+         + EMAIL_ADMIN_STYLE
+         + "</style></head><body>"
+         + body
+-        + '<script src="/assets/email-admin.js" defer></script>'
+         + "</body></html>"
+     )
+ 
+ 
+ def render_login_page(login_csrf, bucket, error=""):
+     error_html = (
+-        '<p class="banner" role="alert">' + html.escape(str(error)) + "</p>"
++        '<p class="banner banner-error" role="alert">'
++        + html.escape(str(error))
++        + "</p>"
+         if error
+         else ""
+     )
+     body = (
+-        '<main class="login"><h1>Email admin</h1>'
+-        '<p class="muted">Sign in to send from founders@forkmesh.com.</p>'
++        '<main class="login"><div class="login-brand">'
++        + _outreach_identity("identity")
++        + _theme_toggle()
++        + '</div><div class="login-heading"><p class="page-eyebrow">Secure console</p>'
++        '<h1>Welcome back</h1>'
++        '<p class="muted">Sign in to manage sponsorship outreach.</p></div>'
+         + error_html
+         + '<form method="post" action="/outreach?action=login">'
+         '<input type="hidden" name="login_csrf" value="'
+@@ -485,7 +607,8 @@ def render_login_page(login_csrf, bucket, error=""):
+         + html.escape(str(bucket), quote=True)
+         + '"><label>Username<input name="username" autocomplete="username" required></label>'
+         '<label>Password<input name="password" type="password" autocomplete="current-password" required></label>'
+-        '<button type="submit">Sign in</button></form></main>'
++        '<button type="submit">Sign in</button></form>'
++        '<p class="login-sender">Sending identity: founders@forkmesh.com</p></main>'
+     )
+     return _document(body)
+ 
+@@ -1259,14 +1382,32 @@ def _status_label(value):
+     )
+ 
+ 
++def _status_badge(value):
++    normalized = str(value or "unknown").strip().lower()
++    if normalized in ("sent", "completed", "active"):
++        tone = "success"
++    elif normalized in ("failed", "partially_failed"):
++        tone = "danger"
++    elif normalized in ("sending", "retrying"):
++        tone = "warning"
++    else:
++        tone = "neutral"
++    return (
++        '<span class="badge badge-'
++        + tone
++        + '">'
++        + html.escape(_status_label(value))
++        + "</span>"
++    )
++
++
+ def _campaign_history_row(campaign):
+     if not isinstance(campaign, dict):
+         return ""
+     campaign_id = str(campaign.get("id", ""))
+     subject = str(campaign.get("subject", ""))
+-    status = _status_label(campaign.get("status"))
+     warning = (
+-        '<br><span class="badge">Queue publication failed</span>'
++        '<br><span class="badge badge-warning">Queue publication failed</span>'
+         if campaign.get("publication_error")
+         else ""
+     )
+@@ -1280,7 +1421,7 @@ def _campaign_history_row(campaign):
+         + "</span>"
+         + warning
+         + "</td><td>"
+-        + html.escape(status)
++        + _status_badge(campaign.get("status"))
+         + "</td><td>"
+         + str(_nonnegative_int(campaign.get("total")))
+         + " total</td><td>"
+@@ -1331,7 +1472,7 @@ def _render_job_detail(job, csrf):
+             "<tr><td>"
+             + html.escape(str(delivery.get("email", "")))
+             + "</td><td>"
+-            + html.escape(_status_label(delivery.get("status")))
++            + _status_badge(delivery.get("status"))
+             + "</td><td>"
+             + str(_nonnegative_int(delivery.get("attempts")))
+             + "</td><td>"
+@@ -1347,9 +1488,8 @@ def _render_job_detail(job, csrf):
+     )
+     return (
+         '<section class="panel"><div class="toolbar"><h2>Delivery detail</h2>'
+-        '<span class="badge">'
+-        + html.escape(_status_label(job.get("status")))
+-        + "</span></div><div class=\"form-section\"><h3>"
++        + _status_badge(job.get("status"))
++        + '</div><div class="form-section"><h3>'
+         + html.escape(str(job.get("subject", "")) or "Untitled campaign")
+         + '</h3><div class="actions-inline">'
+         + "".join(actions)
+@@ -1387,12 +1527,19 @@ def _render_jobs_view(model, csrf):
+ 
+ 
+ def render_console_page(view, csrf, model, banner=""):
+-    labels = {
+-        "recipients": "Recipients",
+-        "categories": "Categories",
+-        "templates": "Templates",
+-        "compose": "Compose",
+-        "jobs": "Send jobs",
++    navigation = (
++        ("recipients", "Recipients", "recipients"),
++        ("categories", "Categories", "categories"),
++        ("templates", "Templates", "templates"),
++        ("compose", "Compose", "compose"),
++        ("jobs", "Send jobs", "jobs"),
++    )
++    descriptions = {
++        "recipients": "Manage sponsorship contacts and their current category.",
++        "categories": "Organize contacts into focused outreach audiences.",
++        "templates": "Build reusable messages and preview personalization.",
++        "compose": "Review the exact audience and message before queueing.",
++        "jobs": "Monitor delivery progress and retry failed sends.",
+     }
+     renderers = {
+         "recipients": _render_recipients_view,
+@@ -1402,16 +1549,23 @@ def render_console_page(view, csrf, model, banner=""):
+         "jobs": _render_jobs_view,
+     }
+     active = view if view in renderers else "recipients"
+-    links = "".join(
+-        '<a href="/outreach?view='
+-        + key
+-        + '" class="'
+-        + ("active" if key == active else "")
+-        + '">'
+-        + label
+-        + "</a>"
+-        for key, label in labels.items()
+-    )
++    labels = {key: label for key, label, _icon_name in navigation}
++    links = []
++    for key, label, icon_name in navigation:
++        current = key == active
++        links.append(
++            '<a href="/outreach?view='
++            + key
++            + '" class="'
++            + ("active" if current else "")
++            + '"'
++            + (' aria-current="page"' if current else "")
++            + '><span class="nav-icon">'
++            + _email_admin_icon(icon_name)
++            + "</span><span>"
++            + label
++            + "</span></a>"
++        )
+     banner_html = (
+         '<div class="banner" role="status">'
+         + html.escape(str(banner))
+@@ -1423,15 +1577,23 @@ def render_console_page(view, csrf, model, banner=""):
+         '<form method="post" action="/outreach?action=logout">'
+         '<input type="hidden" name="csrf" value="'
+         + html.escape(str(csrf), quote=True)
+-        + '"><button type="submit">Sign out</button></form>'
++        + '"><button class="secondary" type="submit">Sign out</button></form>'
+     )
+     body = (
+-        '<header class="topbar"><div class="identity"><strong>ForkMesh email admin</strong>'
+-        "<span>founders@forkmesh.com</span></div>"
++        '<header class="topbar">'
++        + _outreach_identity()
++        + '<div class="topbar-actions">'
++        + _theme_toggle()
+         + logout
+-        + '</header><div class="layout"><nav class="sidebar" aria-label="Email admin">'
+-        + links
+-        + '</nav><main class="content">'
++        + '</div></header><div class="layout"><nav class="sidebar" '
++        'aria-label="Email admin"><p class="sidebar-label">Workspace</p>'
++        + "".join(links)
++        + '</nav><main class="content"><header class="page-heading">'
++        '<p class="page-eyebrow">Outreach console</p><h1>'
++        + labels[active]
++        + '</h1><p class="page-description">'
++        + descriptions[active]
++        + "</p></header>"
+         + banner_html
+         + renderers[active](model or {}, csrf)
+         + "</main></div>"
+diff --git a/cloudflare_worker/tests/test_email_admin_client.py b/cloudflare_worker/tests/test_email_admin_client.py
+index 709e41d9..0eb76b00 100644
+--- a/cloudflare_worker/tests/test_email_admin_client.py
++++ b/cloudflare_worker/tests/test_email_admin_client.py
+@@ -174,3 +174,91 @@ def test_client_includes_shared_native_dialog_binding():
+     assert 'querySelectorAll("[data-dialog-close]")' in source
+     assert "dialog.showModal()" in source
+     assert "dialog.close()" in source
++
++
++def test_client_theme_normalization_and_storage_fallback():
++    result = run_client(
++        "(()=>{"
++        "const primary={values:{'forkmesh.dashboard.theme':'light'},"
++        "getItem(key){return this.values[key]||null;}};"
++        "const fallback={values:{'forkmesh.theme':'light'},"
++        "getItem(key){return this.values[key]||null;}};"
++        "const broken={getItem(){throw new Error('blocked');}};"
++        "return [api.normalizeTheme('light'),api.normalizeTheme('system'),"
++        "api.readTheme(primary),api.readTheme(fallback),api.readTheme(broken),"
++        "api.readTheme(null)];"
++        "})()"
++    )
++
++    assert result == ["light", "dark", "light", "light", "dark", "dark"]
++
++
++def test_client_applies_saves_and_toggles_theme_contract():
++    result = run_client(
++        "(()=>{"
++        "const meta={attrs:{},setAttribute(key,value){this.attrs[key]=value;}};"
++        "const button={dataset:{},attrs:{},title:'',"
++        "setAttribute(key,value){this.attrs[key]=value;}};"
++        "const document={documentElement:{dataset:{},style:{}},"
++        "querySelector(selector){"
++        "if(selector==='meta[name=\"theme-color\"]')return meta;"
++        "if(selector==='[data-theme-toggle]')return button;"
++        "return null;}};"
++        "const storage={values:{},getItem(key){return this.values[key]||null;},"
++        "setItem(key,value){this.values[key]=value;}};"
++        "const applied=api.applyTheme(document,'light');"
++        "const toggled=api.toggleTheme(storage,document);"
++        "return {applied,toggled,root:document.documentElement,meta:meta.attrs,"
++        "button:{dataset:button.dataset,attrs:button.attrs,title:button.title},"
++        "stored:storage.values};"
++        "})()"
++    )
++
++    assert result == {
++        "applied": "light",
++        "toggled": "dark",
++        "root": {
++            "dataset": {"emailAdminTheme": "dark"},
++            "style": {"colorScheme": "dark"},
++        },
++        "meta": {"content": "#090909"},
++        "button": {
++            "dataset": {"theme": "dark"},
++            "attrs": {
++                "aria-label": "Switch to light mode",
++                "aria-pressed": "false",
++            },
++            "title": "Switch to light mode",
++        },
++        "stored": {
++            "forkmesh.dashboard.theme": "dark",
++            "forkmesh.theme": "dark",
++        },
++    }
++
++
++def test_client_theme_binding_is_optional_and_uses_one_click_handler():
++    result = run_client(
++        "(()=>{"
++        "const handlers={};"
++        "const button={dataset:{},attrs:{},title:'',"
++        "setAttribute(key,value){this.attrs[key]=value;},"
++        "addEventListener(name,handler){handlers[name]=handler;}};"
++        "const meta={setAttribute(){}};"
++        "const document={documentElement:{dataset:{},style:{}},"
++        "querySelector(selector){"
++        "if(selector==='meta[name=\"theme-color\"]')return meta;"
++        "if(selector==='[data-theme-toggle]')return button;"
++        "return null;}};"
++        "const storage={values:{'forkmesh.dashboard.theme':'dark'},"
++        "getItem(key){return this.values[key]||null;},"
++        "setItem(key,value){this.values[key]=value;}};"
++        "const bound=api.bindTheme(document,storage);handlers.click();"
++        "return [bound,document.documentElement.dataset.emailAdminTheme,"
++        "storage.values['forkmesh.dashboard.theme'],"
++        "api.bindTheme({documentElement:{dataset:{},style:{}},"
++        "querySelector(){return null;}},storage)];"
++        "})()"
++    )
++
++    assert result == [True, "light", "light", False]
+diff --git a/cloudflare_worker/tests/test_email_admin_frontend.py b/cloudflare_worker/tests/test_email_admin_frontend.py
+index 76dfcc19..587723b5 100644
+--- a/cloudflare_worker/tests/test_email_admin_frontend.py
++++ b/cloudflare_worker/tests/test_email_admin_frontend.py
+@@ -1,3 +1,5 @@
++import re
++
+ from src.email_admin import render_console_page, render_login_page
+ 
+ 
+@@ -26,6 +28,13 @@ def test_login_page_has_dedicated_credentials_and_escaped_feedback():
+     assert "&lt;b&gt;Invalid&lt;/b&gt;" in page
+ 
+ 
++def test_login_error_uses_danger_feedback_without_changing_message():
++    page = render_login_page("csrf", 12, "Invalid username or password.")
++
++    assert 'class="banner banner-error" role="alert"' in page
++    assert "Invalid username or password." in page
++
++
+ def test_console_page_renders_operations_navigation_and_logout():
+     page = render_console_page("templates", "csrf-token", EMPTY_MODEL, "Saved")
+ 
+@@ -62,6 +71,127 @@ def test_console_css_is_responsive_focus_visible_and_overflow_safe():
+     assert "<main" in page
+ 
+ 
++def test_console_css_has_quiet_operations_tokens_and_both_themes():
++    page = render_console_page("recipients", "csrf", RECIPIENT_MODEL)
++    compact = page.replace(" ", "")
++
++    for token in (
++        "--admin-background:",
++        "--admin-surface:",
++        "--admin-foreground:",
++        "--admin-muted-foreground:",
++        "--admin-primary:",
++        "--admin-danger:",
++        "--admin-warning:",
++        "--admin-ring:",
++        "--admin-shadow:",
++    ):
++        assert token in page
++    assert '[data-email-admin-theme="dark"]' in page
++    assert '[data-email-admin-theme="light"]' in page
++    assert ".theme-icon-sun" in page
++    assert ".theme-icon-moon" in page
++    assert ".selected-row" in page
++    assert "dialog::backdrop" in page
++    assert "@media(max-width:760px)" in compact
++    assert "@media(prefers-reduced-motion:reduce)" in compact
++
++
++def _contrast_ratio(foreground, background):
++    def luminance(color):
++        if len(color) == 4:
++            color = "#" + "".join(channel * 2 for channel in color[1:])
++        channels = [
++            int(color[index : index + 2], 16) / 255 for index in (1, 3, 5)
++        ]
++        linear = [
++            channel / 12.92
++            if channel <= 0.04045
++            else ((channel + 0.055) / 1.055) ** 2.4
++            for channel in channels
++        ]
++        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
++
++    foreground_luminance = luminance(foreground)
++    background_luminance = luminance(background)
++    lighter = max(foreground_luminance, background_luminance)
++    darker = min(foreground_luminance, background_luminance)
++    return (lighter + 0.05) / (darker + 0.05)
++
++
++def test_primary_buttons_meet_wcag_aa_contrast_in_both_themes():
++    page = render_console_page("recipients", "csrf", EMPTY_MODEL)
++    theme_rules = [
++        re.search(
++            r':root,\[data-email-admin-theme="dark"\]\{([^}]*)\}', page
++        ).group(1),
++        re.search(
++            r'\[data-email-admin-theme="light"\]\{([^}]*)\}', page
++        ).group(1),
++    ]
++
++    assert len(theme_rules) == 2
++    for rule in theme_rules:
++        colors = dict(
++            re.findall(
++                r"(--admin-[\w-]+):(#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?)",
++                rule,
++            )
++        )
++        foreground = colors["--admin-primary-foreground"]
++        assert _contrast_ratio(foreground, colors["--admin-primary"]) >= 4.5
++        assert _contrast_ratio(foreground, colors["--admin-primary-hover"]) >= 4.5
++
++
++def test_form_controls_keep_a_visible_keyboard_focus_outline():
++    page = render_console_page("recipients", "csrf", EMPTY_MODEL)
++
++    assert "outline:0" not in page
++    assert "outline:2px solid var(--admin-ring)" in page
++
++
++def test_document_bootstraps_dark_theme_before_rendering_body():
++    page = render_console_page("recipients", "csrf", EMPTY_MODEL)
++    head = page.split("</head>", 1)[0]
++
++    assert '<html lang="en" data-email-admin-theme="dark">' in page
++    assert '<meta name="color-scheme" content="light dark">' in head
++    assert '<meta name="theme-color" content="#090909">' in head
++    assert '<script src="/assets/email-admin.js"></script>' in head
++    assert "defer" not in head
++    assert page.count('data-theme-toggle type="button"') == 1
++    assert 'aria-label="Switch to light mode"' in page
++    assert 'aria-pressed="false"' in page
++
++
++def test_login_uses_the_shared_outreach_identity_and_theme_control():
++    page = render_login_page("csrf", 12)
++
++    assert 'class="login-brand"' in page
++    assert "ForkMesh Outreach" in page
++    assert 'class="icon icon-network"' in page
++    assert page.count('data-theme-toggle type="button"') == 1
++    assert 'action="/outreach?action=login"' in page
++
++
++def test_console_navigation_has_icons_current_page_and_page_context():
++    page = render_console_page("templates", "csrf", EMPTY_MODEL)
++
++    assert (
++        'href="/outreach?view=templates" class="active" '
++        'aria-current="page"' in page
++    )
++    assert 'href="/outreach?view=recipients" class=""' in page
++    assert 'class="icon icon-recipients"' in page
++    assert 'class="icon icon-categories"' in page
++    assert 'class="icon icon-templates"' in page
++    assert 'class="icon icon-compose"' in page
++    assert 'class="icon icon-jobs"' in page
++    assert '<p class="page-eyebrow">Outreach console</p>' in page
++    assert "<h1>Templates</h1>" in page
++    assert "Build reusable messages and preview personalization." in page
++
++
+ RECIPIENT_MODEL = {
+     "recipients": [
+         {
+@@ -121,7 +251,7 @@ def test_recipient_view_uses_validated_import_and_contextual_bulk_actions():
+     assert "Manage categories" not in page
+     assert "<summary>Delete recipient</summary>" not in page
+     assert 'class="badge system-badge"' in page
+-    assert '<script src="/assets/email-admin.js" defer></script>' in page
++    assert '<script src="/assets/email-admin.js"></script>' in page
+     assert "pat@example.com" in page
+     assert "Pat" in page
+     assert "Orbit" in page
+@@ -242,6 +372,15 @@ def test_category_view_protects_default_and_manages_custom_categories():
+     assert "Each recipient belongs to one category" in page
+ 
+ 
++def test_category_actions_use_compact_inline_layout():
++    page = render_console_page("categories", "csrf", RECIPIENT_MODEL)
++    compact = page.replace(" ", "")
++
++    assert ".row-actions{display:flex" in compact
++    assert ".row-actions>form{display:flex" in compact
++    assert ".row-actions>formlabel{min-width:190px;margin:0" in compact
++
++
+ def test_recipient_and_category_empty_tables_have_clear_empty_states():
+     page = render_console_page("recipients", "csrf", EMPTY_MODEL)
+     categories = render_console_page("categories", "csrf", EMPTY_MODEL)
+@@ -533,6 +672,34 @@ def test_jobs_view_renders_campaign_counts_and_delivery_detail():
+     assert "/outreach?view=jobs&amp;campaign=campaign-id" in page
+ 
+ 
++def test_job_statuses_use_semantic_badges_without_changing_labels():
++    page = render_console_page("jobs", "csrf", JOBS_MODEL)
++
++    assert 'class="badge badge-danger">Partially failed</span>' in page
++    assert 'class="badge badge-danger">Failed</span>' in page
++    assert 'class="badge badge-warning">Queue publication failed</span>' in page
++    assert "8 sent" in page
++    assert "2 failed" in page
++
++
++def test_queued_job_status_uses_neutral_badge():
++    model = {
++        **JOBS_MODEL,
++        "campaigns": [{**JOBS_MODEL["campaigns"][0], "status": "queued"}],
++        "job": {
++            **JOBS_MODEL["job"],
++            "status": "queued",
++            "deliveries": [
++                {**JOBS_MODEL["job"]["deliveries"][0], "status": "queued"}
++            ],
++        },
++    }
++
++    page = render_console_page("jobs", "csrf", model)
++
++    assert page.count('class="badge badge-neutral">Queued</span>') == 3
++
++
+ def test_jobs_history_never_renders_stored_message_content_or_ciphertext():
+     model = {
+         **JOBS_MODEL,
+-- 
+2.50.1 (Apple Git-155)
+
