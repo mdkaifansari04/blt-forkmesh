@@ -46,7 +46,7 @@
     const commitsCount = repoCount(repo, ["commits", "commitCount", "commitHistory"]);
     const mirrorsCount = repoCount(repo, ["mirrors", "mirrorCount", "hosts"]);
     const commitId = String(repo.rootCommit || repo.latestCommit || repo.commit || "").slice(0, 7) || "live";
-    const updatedAt = formatDate(repo.updatedAt || repo.lastSync);
+    const updatedAt = formatTimeAgo(repo.updatedAt || repo.lastSync);
     const live = repoIsLive(repo);
     const viaMirror = repoServedByMirror(repo);
     const canEditAbout = sessionOwnsRepo(repo);

@@ -215,18 +215,46 @@
     return new Intl.NumberFormat().format(number);
   }
 
-  function formatDate(value) {
-    if (value === undefined || value === null || value === "") return "unknown";
+  function parseFlexibleDate(value) {
+    if (value === undefined || value === null || value === "") return null;
     const numeric = Number(value);
     const date = Number.isFinite(numeric) && numeric > 0
       ? new Date(numeric < 1000000000000 ? numeric * 1000 : numeric)
       : new Date(value);
-    if (Number.isNaN(date.getTime())) return "unknown";
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function formatDate(value) {
+    const date = parseFlexibleDate(value);
+    if (!date) return "unknown";
     return date.toLocaleDateString(undefined, {
       month: "short",
       day: "numeric",
       year: "numeric",
     });
+  }
+
+  // GitHub-style relative timestamp ("3 days ago") for the repo detail page's
+  // commit/file dates - absolute dates there made every mirrored commit look
+  // identically stale ("Jul 10, 2026") instead of showing recency at a glance.
+  function formatTimeAgo(value) {
+    const date = parseFlexibleDate(value);
+    if (!date) return "unknown";
+    const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+    if (seconds < 45) return "just now";
+    const units = [
+      ["year", 31536000],
+      ["month", 2592000],
+      ["week", 604800],
+      ["day", 86400],
+      ["hour", 3600],
+      ["minute", 60],
+    ];
+    for (const [name, secs] of units) {
+      const count = Math.floor(seconds / secs);
+      if (count >= 1) return `${count} ${name}${count === 1 ? "" : "s"} ago`;
+    }
+    return "just now";
   }
 
   function formatSize(bytes) {
@@ -4270,7 +4298,7 @@
     if (authorNode) authorNode.textContent = author;
     if (messageNode) messageNode.textContent = subject || "published latest mirror metadata";
     if (hashNode) hashNode.textContent = hash ? hash.slice(0, 7) : "live";
-    if (dateNode) dateNode.textContent = formatDate(date);
+    if (dateNode) dateNode.textContent = formatTimeAgo(date);
   }
 
   async function loadRepositoryTree(repo, path = "") {
@@ -4314,7 +4342,7 @@
         const childPath = repoChildPath(path, entry.name);
         const isTree = entry.type === "tree";
         const message = entry.message || entry.commitMessage || entry.subject || "mirrored repository object";
-        const date = formatDate(entry.updatedAt || entry.committedAt || entry.commitDate || entry.mtime || repo.updatedAt || repo.lastSync);
+        const date = formatTimeAgo(entry.date || entry.updatedAt || entry.committedAt || entry.commitDate || entry.mtime || repo.updatedAt || repo.lastSync);
         return `
             <button data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-2.5 text-left text-sm hover:bg-secondary/40 transition-colors sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
               <i data-lucide="${isTree ? "folder" : "file"}" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
@@ -7162,7 +7190,7 @@
     const commitsCount = repoCount(repo, ["commits", "commitCount", "commitHistory"]);
     const mirrorsCount = repoCount(repo, ["mirrors", "mirrorCount", "hosts"]);
     const commitId = String(repo.rootCommit || repo.latestCommit || repo.commit || "").slice(0, 7) || "live";
-    const updatedAt = formatDate(repo.updatedAt || repo.lastSync);
+    const updatedAt = formatTimeAgo(repo.updatedAt || repo.lastSync);
     const live = repoIsLive(repo);
     const viaMirror = repoServedByMirror(repo);
     const canEditAbout = sessionOwnsRepo(repo);
