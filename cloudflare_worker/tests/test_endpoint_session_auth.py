@@ -74,6 +74,23 @@ class _Request:
         return self._body
 
 
+async def _swallow_side_effect(awaitable):
+    try:
+        await awaitable
+    except Exception:
+        pass
+
+
+async def _ap_broadcast_stub(_env, _request, _kind, _handle):
+    return None
+
+
+class _ApStub:
+    @staticmethod
+    def repo_handle(owner, repo):
+        return "%s.%s" % (owner, repo)
+
+
 def _harness(accounts, notifications=None, repositories=None):
     notifications = list(notifications or [])   # {recipient_bi, dedupe_bi, ts, read_at, data}
     repositories = list(repositories or [])     # {key_bi, data(dict), is_private}
@@ -194,10 +211,15 @@ def _harness(accounts, notifications=None, repositories=None):
         "ADMIN_SESSION_TTL_MS": 12 * 60 * 60 * 1000,
         "MAX_REPO_SEGMENT": 80,
         # Repo branding (fediverse actor images) rides through repo_about;
-        # the auth tests never upload one, so the validator is a pass-through.
+        # the auth tests never upload one, so the validator is a pass-through
+        # and the follower Update broadcast is a no-op.
         "MAX_REPO_LOGO_BYTES": 256 * 1024,
         "MAX_REPO_BANNER_BYTES": 1024 * 1024,
         "clean_media_png": lambda value, max_bytes: ("", ""),
+        "AP_ACTOR_REPO": "repo",
+        "_best_effort_inbox_side_effect": _swallow_side_effect,
+        "_ap_broadcast_actor_update": _ap_broadcast_stub,
+        "ap": _ApStub,
     })
     ns["_notifications"] = notifications
     ns["_repositories"] = repositories

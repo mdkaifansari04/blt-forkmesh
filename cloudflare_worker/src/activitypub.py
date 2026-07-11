@@ -444,6 +444,21 @@ def create_activity(note):
     }
 
 
+def update_activity(actor_url, actor_doc_obj, published_ms):
+    """Update(actor) broadcast after a profile/branding change: remote servers
+    replace their cached copy (avatar, header, bio) on receipt instead of
+    waiting out their refresh interval."""
+    return {
+        "@context": [AS_CONTEXT, SECURITY_CONTEXT],
+        "id": actor_url + "#updates/" + str(int(published_ms)),
+        "type": "Update",
+        "actor": actor_url,
+        "published": iso_utc(published_ms),
+        "to": [AS_PUBLIC],
+        "object": actor_doc_obj,
+    }
+
+
 def accept_activity(actor_url, follow_activity):
     follow_id = follow_activity.get("id") or ""
     suffix = hashlib.sha256(follow_id.encode()).hexdigest()[:16]
