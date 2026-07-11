@@ -73,6 +73,21 @@ Cost while unused is near zero: actor rows are minted lazily on the first
 WebFinger lookup, so an unfollowed repo's publish path is two indexed
 SELECT misses.
 
+## Branding
+
+Every actor ships an avatar (`icon`) and profile header (`image`):
+
+* Defaults: the brand images at `/assets/fediverse-avatar.png` (400×400) and
+  `/assets/fediverse-banner.png` (1500×500 — Mastodon's exact header size).
+* Per-repo overrides: the repo owner uploads `logoPng` / `bannerPng` (base64
+  PNG, ≤256 KB / ≤1 MB) through the existing About endpoint
+  (`POST /api/repo/{o}/{r}/about`, session-auth, `""` clears). They are stored
+  encrypted in `repo_media` (one row per image so a banner never nears D1's
+  2 MB value cap) and served at `/api/repo/{o}/{r}/media/{logo|banner}.png`
+  with a `?v=<updated_at>` cache-buster in the actor document. The About
+  `description` doubles as the repo actor's fediverse bio, and a user actor's
+  bio comes from their profile `profile_bio`.
+
 ## Configuration
 
 Operator config is admin-managed (signed admin API, same gate as the relay

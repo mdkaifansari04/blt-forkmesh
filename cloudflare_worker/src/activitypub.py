@@ -345,9 +345,13 @@ def nodeinfo_doc(version, user_count, post_count):
     }
 
 
+def image_object(url, media_type="image/png"):
+    return {"type": "Image", "mediaType": media_type, "url": url}
+
+
 def actor_doc(actor_url, actor_type, preferred_username, display_name,
               summary, profile_url, pubkey_pem, shared_inbox=None,
-              published_ms=None):
+              published_ms=None, icon_url=None, image_url=None):
     doc = {
         "@context": [AS_CONTEXT, SECURITY_CONTEXT],
         "id": actor_url,
@@ -372,10 +376,15 @@ def actor_doc(actor_url, actor_type, preferred_username, display_name,
         doc["endpoints"] = {"sharedInbox": shared_inbox}
     if published_ms:
         doc["published"] = iso_utc(published_ms)
+    if icon_url:
+        doc["icon"] = image_object(icon_url)     # avatar
+    if image_url:
+        doc["image"] = image_object(image_url)   # profile header/banner
     return doc
 
 
-def instance_actor_doc(origin, domain, pubkey_pem):
+def instance_actor_doc(origin, domain, pubkey_pem, icon_url=None,
+                       image_url=None):
     # The service-level actor used to sign outbound GETs (Mastodon "secure mode"
     # requires signed fetches). preferredUsername is the domain itself, which a
     # local user name can never collide with (names cannot contain dots).
@@ -384,7 +393,8 @@ def instance_actor_doc(origin, domain, pubkey_pem):
         actor_url, "Application", domain, "ForkMesh relay",
         "Service actor for %s. Follow individual users or repositories "
         "instead." % domain,
-        origin, pubkey_pem, shared_inbox=origin + "/ap/inbox")
+        origin, pubkey_pem, shared_inbox=origin + "/ap/inbox",
+        icon_url=icon_url, image_url=image_url)
     doc["inbox"] = origin + "/ap/inbox"
     return doc
 
