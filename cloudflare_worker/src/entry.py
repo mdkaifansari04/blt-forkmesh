@@ -13770,6 +13770,8 @@ ADMIN_STYLE = """
  .ab-root .account-kind button{padding:3px 8px;font-size:12px}
  .ab-root .kindpill{border:1px solid var(--ab-border-2);border-radius:999px;padding:2px 8px;
         color:var(--ab-fg);background:var(--ab-card);font:600 12px system-ui,sans-serif}
+ .ab-root .inpill{border:1px solid #1a7f37;border-radius:999px;padding:1px 7px;
+        color:#1a7f37;background:transparent;font:600 11px system-ui,sans-serif;white-space:nowrap}
  .ab-root .diaggrid{display:flex;gap:24px;flex-wrap:wrap;padding:4px 24px 12px;align-items:flex-start}
  .ab-root .diagcol{min-width:240px}
  .ab-root .diagcol h3{font-size:13px;color:var(--ab-muted);margin:8px 0 4px;font-weight:600}
@@ -13857,7 +13859,7 @@ def _admin_row_checkbox(rowid):
             % _html_escape(rowid))
 
 
-def _admin_account_migration_cell(row, rec, admin_query=""):
+async def _admin_account_migration_cell(env, row, rec, admin_query=""):
     rec = rec if isinstance(rec, dict) else {}
     name = clean_string(rec.get("name") or row.get("name") or "",
                         MAX_NODE_NAME).strip().lower()
@@ -13865,18 +13867,27 @@ def _admin_account_migration_cell(row, rec, admin_query=""):
         return '<td><span class="meta">no account name</span></td>'
     kind = _account_kind(rec)
     action = _admin_href(admin_query, table="accounts", action="migrate_account")
+    # We are phasing out the accounts table. "Move to users/nodes" pins the
+    # record as that kind, (re)mirrors it into the authoritative users/nodes
+    # table, and drains the legacy accounts row — so both buttons stay active
+    # even for the current kind (it recreates the mirror if it went missing).
+    name_bi = row.get("name_bi") or await blind_index(env, name)
+    in_users = bool(await d1_first(
+        env, "SELECT 1 FROM users WHERE user_bi=?", name_bi))
+    in_nodes = bool(await d1_first(
+        env, "SELECT 1 FROM nodes WHERE node_bi=?", name_bi))
+    present = {"user": in_users, "node": in_nodes}
     buttons = []
-    for target, label in (("user", "Make user"), ("node", "Make node")):
-        disabled = ' disabled aria-disabled="true"' if target == kind else ""
-        onclick = (
-            ' onclick="return confirm(\'Migrate account %s to %s?\')"'
-            % (_html_escape(name), target)
-        ) if not disabled else ""
+    for target, table, label in (("user", "users", "Move to users"),
+                                 ("node", "nodes", "Move to nodes")):
+        indicator = (' <span class="inpill" title="Already exists in the %s '
+                     'table">in %s</span>' % (table, table)) if present[target] else ""
         buttons.append(
             '<button type="submit" formmethod="post" formaction="%s" '
-            'name="account_migration" value="%s"%s%s>%s</button>'
-            % (action, _html_escape(name + ":" + target), disabled, onclick,
-               label)
+            'name="account_migration" value="%s" '
+            'onclick="return confirm(\'Move account %s to %s?\')">%s</button>%s'
+            % (action, _html_escape(name + ":" + target), _html_escape(name),
+               table, label, indicator)
         )
     return (
         '<td><div class="account-kind"><span class="kindpill">%s</span>%s</div></td>'
@@ -14236,7 +14247,8 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
                  '<td><a class="navlink" href="%s">Edit</a></td>'
                  % _admin_href(admin_query, table=table, action="edit", rowid=rid)]
         if table == "accounts":
-            cells.append(_admin_account_migration_cell(r, decoded_data, admin_query))
+            cells.append(await _admin_account_migration_cell(
+                env, r, decoded_data, admin_query))
         for col in columns:
             value = r.get(col)
             if col == "data" and decoded_data is not None:
