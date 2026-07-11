@@ -79,3 +79,20 @@ GIT_RECEIVE_RE = re.compile(r"^/([^/]+)/([^/]+)/git-receive-pack$")
 ACCOUNTS_RE = re.compile(r"^/api/accounts/([^/]+)$")
 # Follow/unfollow a public profile: /api/accounts/{name}/follow
 ACCOUNT_FOLLOW_RE = re.compile(r"^/api/accounts/([^/]+)/follow$")
+# --- ActivityPub federation ---------------------------------------------------
+# User actor document + its inbox/outbox/followers/following collections.
+AP_USER_RE = re.compile(r"^/ap/users/([^/]+)$")
+AP_USER_SUB_RE = re.compile(
+    r"^/ap/users/([^/]+)/(inbox|outbox|followers|following)$")
+# Repository actor (followed as @owner.repo@<domain> from the fediverse).
+AP_REPO_RE = re.compile(r"^/ap/repos/([^/]+)/([^/]+)$")
+AP_REPO_SUB_RE = re.compile(
+    r"^/ap/repos/([^/]+)/([^/]+)/(inbox|outbox|followers|following)$")
+# Local ActivityPub object (a published Note), 32-hex uuid.
+AP_OBJECT_RE = re.compile(r"^/ap/o/([0-9a-f]{32})$")
+# Remote fediverse replies attached to a repo thread, readable by clients.
+REPO_FEDI_COMMENTS_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/fedi-comments$")
+# Owner-node push of canonical repo announcements (releases, merged PRs) into
+# the fediverse — events the relay never observes through the signed inboxes.
+REPO_AP_PUBLISH_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/ap-publish$")
