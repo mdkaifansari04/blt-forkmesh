@@ -117,12 +117,13 @@ def test_digest_html_escapes_the_actor_name():
     assert "&lt;script&gt;" in html
 
 
-def test_digest_html_adapts_to_light_mode_clients():
-    # The card is dark-by-default (inline styles) for clients that ignore
-    # <style>, but must declare support for both schemes and ship a
-    # prefers-color-scheme:light override so clients that do honor it (Apple
-    # Mail, Gmail apps, Outlook.com, ...) don't force a dark card on a
-    # light-mode inbox.
+def test_digest_html_is_dark_only():
+    # The card is dark, always: painted with inline dark styles AND declared
+    # dark-only via <meta name="color-scheme" content="dark">, so clients
+    # neither auto-invert it nor repaint it to a light theme. An earlier
+    # "light dark" + prefers-color-scheme:light override rendered the card
+    # glaringly white in readers whose dark theme doesn't set the OS
+    # prefers-color-scheme (e.g. Gmail's dark theme), so it was removed.
     ns = _load()
     _subject, _text, html = ns["_notification_digest_email"]("alice", [{
         "kind": "mention",
@@ -133,10 +134,13 @@ def test_digest_html_adapts_to_light_mode_clients():
         "ts": 1783607520000,
         "meta": {"number": 7},
     }])
-    assert 'name="color-scheme" content="light dark"' in html
-    assert "@media (prefers-color-scheme: light)" in html
+    assert 'name="color-scheme" content="dark"' in html
+    assert 'name="supported-color-schemes" content="dark"' in html
+    # No light-mode override may reintroduce a white background.
+    assert "prefers-color-scheme" not in html
+    assert "#ffffff" not in html
     assert 'class="fm-card"' in html
-    assert "background:#ffffff !important" in html
+    assert "background:#090909" in html
 
 
 def test_notify_mentions_accepts_an_optional_number_for_the_digest():

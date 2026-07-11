@@ -57,6 +57,29 @@ QString endpointDisplay(const QUrl &url)
     return url.toString(QUrl::RemoveUserInfo);
 }
 
+// Bucket a requester's User-Agent into a short, human-readable class for the
+// served-request log (adhoc #19), so the node operator can tell at a glance
+// which kind of agent hit their repo — a git client, a web browser, or a
+// bot/scraper/tool — instead of parsing the raw string. The raw UA is still
+// logged alongside the label. Order matters: git clients and bots frequently
+// also carry a "Mozilla"-style token, so match the more specific classes first.
+QString userAgentClass(const QString &ua)
+{
+    const QString s = ua.toLower();
+    if (s.contains("git/") || s.contains("libgit2") || s.contains("jgit") ||
+        s.contains("git-lfs"))
+        return QStringLiteral("git client");
+    if (s.contains("bot") || s.contains("crawl") || s.contains("spider") ||
+        s.contains("scrape") || s.contains("curl") || s.contains("wget") ||
+        s.contains("python-requests") || s.contains("go-http") ||
+        s.contains("okhttp") || s.contains("java/"))
+        return QStringLiteral("bot/tool");
+    if (s.contains("mozilla") || s.contains("chrome") || s.contains("safari") ||
+        s.contains("firefox") || s.contains("edg/") || s.contains("webkit"))
+        return QStringLiteral("browser");
+    return QStringLiteral("client");
+}
+
 // Reject paths that try to escape the repository tree.
 bool isSafeRepoPath(const QString &path)
 {
@@ -966,13 +989,16 @@ void RepoHost::handleRequest(const QJsonObject &request)
         action = op.isEmpty() ? QStringLiteral("request") : op;
     // The relay forwards the requester's User-Agent (worker-truncated to 256
     // chars) so the operator can tell a real git client/browser from a bot or
-    // scraper straight from the node log, without the worker storing it.
-    const QString userAgent = request.value("ua").toString().left(200);
+    // scraper straight from the node log, without the worker storing it. Show
+    // the full forwarded UA (the worker's 256-char cap already bounds it) plus
+    // a one-word class (adhoc #19) so the agent is legible at a glance.
+    const QString userAgent = request.value("ua").toString().left(256);
     emit log(userAgent.isEmpty()
                  ? QStringLiteral("Host: served %1 for %2/%3.")
                        .arg(action, m_owner, m_name)
-                 : QStringLiteral("Host: served %1 for %2/%3. [User-Agent: %4]")
-                       .arg(action, m_owner, m_name, userAgent));
+                 : QStringLiteral("Host: served %1 for %2/%3. [User-Agent (%4): %5]")
+                       .arg(action, m_owner, m_name)
+                       .arg(userAgentClass(userAgent), userAgent));
 
     // A clone is two requests: info/refs (ref advertisement) then the
     // git-upload-pack POST that negotiates `want <oid>` against those refs. On a
