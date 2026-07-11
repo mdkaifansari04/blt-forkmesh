@@ -7462,6 +7462,9 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
     makeColumnsResizable(m_networkEndpointsTable);
     connect(m_networkEndpointsTable, &QTableWidget::cellClicked, this,
             &MainWindow::showEndpointRequestDetails);
+    connect(m_networkEndpointsTable->horizontalHeader(),
+            &QHeaderView::sortIndicatorChanged, this,
+            [this] { m_networkEndpointsUserSorted = true; });
     endpointsLayout->addWidget(m_networkEndpointsTable, 1);
     tabs->addTab(endpointsPage, QStringLiteral("Endpoints"));
 
@@ -7644,6 +7647,10 @@ void MainWindow::refreshNetworkDiagnostics()
 
     if (m_networkEndpointsTable) {
         TableRepaintGuard repaintGuard(m_networkEndpointsTable);
+        const int sortColumn =
+            m_networkEndpointsTable->horizontalHeader()->sortIndicatorSection();
+        const Qt::SortOrder sortOrder =
+            m_networkEndpointsTable->horizontalHeader()->sortIndicatorOrder();
         m_networkEndpointsTable->setSortingEnabled(false);
         m_networkEndpointsTable->setRowCount(0);
 
@@ -7745,7 +7752,10 @@ void MainWindow::refreshNetworkDiagnostics()
                 m_networkEndpointsTable, row, lastMs, nowMs);
         }
         m_networkEndpointsTable->setSortingEnabled(true);
-        m_networkEndpointsTable->sortItems(6, Qt::DescendingOrder);
+        if (m_networkEndpointsUserSorted)
+            m_networkEndpointsTable->sortItems(sortColumn, sortOrder);
+        else
+            m_networkEndpointsTable->sortItems(6, Qt::DescendingOrder);
         m_networkEndpointsTable->resizeColumnsToContents();
         m_networkEndpointsTable->resizeRowsToContents();
     }
