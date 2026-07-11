@@ -1,0 +1,315 @@
+From a4d51c20704c3dd0019c7a62e0dfbf662aed8f4f Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Sun, 12 Jul 2026 00:38:18 +0530
+Subject: [PATCH] fix(worker): polish outreach prepare and queue flow
+
+---
+ cloudflare_worker/src/email_admin.py          | 41 ++++++++---------
+ cloudflare_worker/src/entry.py                | 10 +----
+ .../tests/test_email_admin_frontend.py        | 39 +++++++++++++---
+ .../tests/test_email_admin_worker.py          | 44 ++++++++++---------
+ 4 files changed, 81 insertions(+), 53 deletions(-)
+
+diff --git a/cloudflare_worker/src/email_admin.py b/cloudflare_worker/src/email_admin.py
+index 0d6bc927..68ab3c53 100644
+--- a/cloudflare_worker/src/email_admin.py
++++ b/cloudflare_worker/src/email_admin.py
+@@ -469,7 +469,7 @@ label{display:grid;gap:6px;margin:13px 0;color:var(--admin-foreground);font-size
+ [data-email-admin-theme="light"] .theme-icon-sun{display:none}
+ [data-email-admin-theme="light"] .theme-icon-moon{display:block}
+ .layout{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:calc(100vh - 64px)}
+-.sidebar{position:sticky;top:64px;align-self:start;display:grid;min-width:0;max-height:calc(100vh - 64px);gap:4px;overflow-y:auto;border-right:1px solid var(--admin-border-subtle);padding:19px 12px;background:var(--admin-sidebar)}
++.sidebar{position:sticky;top:64px;align-self:start;align-content:start;display:grid;min-width:0;height:calc(100vh - 64px);max-height:calc(100vh - 64px);gap:4px;overflow-y:auto;border-right:1px solid var(--admin-border-subtle);padding:19px 12px;background:var(--admin-sidebar)}
+ .sidebar-label{margin:0 10px 8px;color:var(--admin-muted-foreground);font-size:10px;font-weight:750;letter-spacing:.12em;text-transform:uppercase}
+ .sidebar a{position:relative;display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:7px;color:var(--admin-muted-foreground);font-size:13px;font-weight:600;transition:background-color .15s ease,color .15s ease}
+ .sidebar a:hover{background:var(--admin-surface-hover);color:var(--admin-foreground)}
+@@ -586,7 +586,7 @@ pre{max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;col
+ .login h1{margin:2px 0 5px;font-size:27px;letter-spacing:-.035em}
+ .login form>button[type="submit"]{width:100%;margin-top:4px}
+ .login-sender{margin:18px 0 0;color:var(--admin-muted-foreground);font-size:11px;text-align:center}
+-@media(max-width:760px){.topbar{position:static;align-items:flex-start;flex-direction:column;padding:12px}.topbar-actions{width:100%;justify-content:space-between}.layout{grid-template-columns:minmax(0,1fr)}.sidebar{position:static;display:flex;max-height:none;overflow-x:auto;border-right:0;border-bottom:1px solid var(--admin-border-subtle);padding:9px 10px}.sidebar-label{display:none}.sidebar a{flex:0 0 auto;white-space:nowrap}.sidebar a.active::before{inset:auto 9px -9px;height:3px;width:auto;border-radius:3px 3px 0 0}.content{padding:19px 12px 36px}.page-heading h1{font-size:23px}.form-grid,.template-card,.review-grid,.stat-grid{grid-template-columns:minmax(0,1fr)}.import-panel{margin:12px}.bulk-actions{align-items:stretch}.bulk-actions>strong{width:100%}.bulk-actions label{align-items:stretch;flex:1 1 180px;flex-direction:column}.bulk-actions select{width:100%}.dialog-actions{align-items:stretch;flex-direction:column-reverse}.dialog-actions button{width:100%}.theme-toggle-label{display:none}}
++@media(max-width:760px){.topbar{position:static;align-items:flex-start;flex-direction:column;padding:12px}.topbar-actions{width:100%;justify-content:space-between}.layout{grid-template-columns:minmax(0,1fr)}.sidebar{position:static;display:flex;height:auto;max-height:none;overflow-x:auto;border-right:0;border-bottom:1px solid var(--admin-border-subtle);padding:9px 10px}.sidebar-label{display:none}.sidebar a{flex:0 0 auto;white-space:nowrap}.sidebar a.active::before{inset:auto 9px -9px;height:3px;width:auto;border-radius:3px 3px 0 0}.content{padding:19px 12px 36px}.page-heading h1{font-size:23px}.form-grid,.template-card,.review-grid,.stat-grid{grid-template-columns:minmax(0,1fr)}.import-panel{margin:12px}.bulk-actions{align-items:stretch}.bulk-actions>strong{width:100%}.bulk-actions label{align-items:stretch;flex:1 1 180px;flex-direction:column}.bulk-actions select{width:100%}.dialog-actions{align-items:stretch;flex-direction:column-reverse}.dialog-actions button{width:100%}.theme-toggle-label{display:none}}
+ @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
+ """
+ 
+@@ -1284,12 +1284,14 @@ def _render_campaign_review(draft, csrf):
+     preview_html = str(preview.get("html", "<p>Preview unavailable.</p>"))
+     common = _hidden_csrf(csrf) + _hidden("campaign_id", campaign_id)
+     test_form = (
++        '<details class="optional-test"><summary>Send optional test email</summary>'
+         '<form method="post" action="/outreach?view=compose">'
+         + common
+         + _hidden("action", "send_test")
+         + '<label>Test recipient<input type="email" name="test_email" '
+         'maxlength="254" autocomplete="email" required></label>'
+-        '<button class="secondary" type="submit">Send test email</button></form>'
++        '<button class="secondary" type="submit">Send test email</button>'
++        "</form></details>"
+     )
+     test_sent_at = _nonnegative_int(draft.get("test_sent_at"))
+     if status != "draft":
+@@ -1300,30 +1302,29 @@ def _render_campaign_review(draft, csrf):
+             + " and cannot be edited.</p>"
+         )
+         confirm = ""
+-    elif test_sent_at:
+-        test_email = normalize_email(draft.get("test_email"))
+-        test_status = (
+-            '<p class="banner">Test sent to '
+-            + html.escape(test_email or "the test recipient")
+-            + " at "
+-            + html.escape(_format_timestamp(test_sent_at))
+-            + ".</p>"
+-        )
++    else:
+         confirm = (
+             '<form method="post" action="/outreach?view=compose">'
+             + common
+             + _hidden("action", "confirm_campaign")
+             + '<label class="check"><input type="checkbox" name="confirm_send" '
+             'value="1" required> I confirm this reviewed audience and message.</label>'
+-            '<button class="danger" type="submit">Start queued outreach to '
++            '<button class="danger" type="submit">Queue outreach to '
+             + str(unique_count)
+-            + " recipients</button></form>"
+-        )
+-    else:
+-        test_status = (
+-            '<p class="help">Send a successful test before final confirmation.</p>'
++            + (" recipient" if unique_count == 1 else " recipients")
++            + "</button></form>"
+         )
+-        confirm = ""
++        if test_sent_at:
++            test_email = normalize_email(draft.get("test_email"))
++            test_status = (
++                '<p class="banner">Test sent to '
++                + html.escape(test_email or "the test recipient")
++                + " at "
++                + html.escape(_format_timestamp(test_sent_at))
++                + ".</p>"
++            )
++        else:
++            test_status = ""
+     return (
+         '<section class="panel"><div class="toolbar"><h2>Final review</h2>'
+         '<span class="badge">'
+@@ -1350,9 +1351,9 @@ def _render_campaign_review(draft, csrf):
+         + "</h3><details><summary>Reviewed plain-text body</summary><pre>"
+         + html.escape(body)
+         + "</pre></details>"
+-        + test_form
+         + test_status
+         + confirm
++        + test_form
+         + '</div><div><p class="muted">Personalized sample: '
+         + html.escape(preview_subject)
+         + '</p><iframe sandbox title="Campaign preview" class="preview-frame" srcdoc="'
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index 574a8dc2..fcd1a759 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -14759,7 +14759,7 @@ async def _email_admin_send_test(env, campaign_id, destination):
+         raise ValueError("valid test recipient email is required")
+     row = await d1_first(
+         env,
+-        "SELECT id,status,data FROM email_campaigns WHERE id=?",
++        "SELECT id,status FROM email_campaigns WHERE id=?",
+         record_id,
+     )
+     if not row:
+@@ -15093,13 +15093,6 @@ async def _email_admin_confirm_campaign(env, campaign_id):
+         raise ValueError("campaign not found")
+     if row.get("status") != "draft":
+         return False
+-    snapshot = await decrypt_row(env, row.get("data"))
+-    try:
+-        test_sent_at = int(snapshot.get("test_sent_at") or 0)
+-    except (AttributeError, TypeError, ValueError):
+-        test_sent_at = 0
+-    if not isinstance(snapshot, dict) or test_sent_at <= 0:
+-        raise ValueError("send a successful test before confirming the campaign")
+     if not getattr(env, "EMAIL_QUEUE", None):
+         raise ValueError("Email queue is not configured.")
+     now = int(Date.now())
+@@ -15219,6 +15212,7 @@ async def _email_admin_campaign_summaries(env):
+         "SUM(CASE WHEN d.status='failed' THEN 1 ELSE 0 END) AS failed "
+         "FROM email_campaigns c LEFT JOIN email_deliveries d "
+         "ON d.campaign_id=c.id "
++        "WHERE c.status!='draft' "
+         "GROUP BY c.id,c.status,c.created_at,c.data "
+         "ORDER BY c.created_at DESC,c.id DESC LIMIT 100",
+     )
+diff --git a/cloudflare_worker/tests/test_email_admin_frontend.py b/cloudflare_worker/tests/test_email_admin_frontend.py
+index 82f9924a..8f92baac 100644
+--- a/cloudflare_worker/tests/test_email_admin_frontend.py
++++ b/cloudflare_worker/tests/test_email_admin_frontend.py
+@@ -71,6 +71,29 @@ def test_console_css_is_responsive_focus_visible_and_overflow_safe():
+     assert "<main" in page
+ 
+ 
++def test_sidebar_fills_desktop_viewport_but_stays_compact_on_mobile():
++    page = render_console_page("recipients", "csrf", EMPTY_MODEL)
++    desktop_rule = re.search(r"\.sidebar\{([^}]*)\}", page).group(1)
++    mobile_rule = re.search(
++        r"@media\(max-width:760px\)\{.*?\.sidebar\{([^}]*)\}", page
++    ).group(1)
++
++    desktop_declarations = dict(
++        declaration.split(":", 1)
++        for declaration in desktop_rule.split(";")
++        if ":" in declaration
++    )
++    mobile_declarations = dict(
++        declaration.split(":", 1)
++        for declaration in mobile_rule.split(";")
++        if ":" in declaration
++    )
++
++    assert desktop_declarations["height"] == "calc(100vh - 64px)"
++    assert desktop_declarations["align-content"] == "start"
++    assert mobile_declarations["height"] == "auto"
++
++
+ def test_console_css_has_quiet_operations_tokens_and_both_themes():
+     page = render_console_page("recipients", "csrf", RECIPIENT_MODEL)
+     compact = page.replace(" ", "")
+@@ -535,7 +558,7 @@ def test_compose_view_preserves_and_summarizes_selected_recipients():
+     assert "fills {{name}}, {{company}}, and {{email}}" in page
+ 
+ 
+-def test_compose_review_shows_exact_counts_preview_and_test_gate():
++def test_compose_review_can_queue_without_sending_a_test():
+     model = {
+         **COMPOSE_MODEL,
+         "draft": {
+@@ -563,15 +586,19 @@ def test_compose_review_shows_exact_counts_preview_and_test_gate():
+     assert "2 selected people" in page
+     assert "2 duplicates removed" in page
+     assert "0 invalid recipients excluded" in page
++    assert '<details class="optional-test">' in page
++    assert "Send optional test email" in page
+     assert 'name="action" value="send_test"' in page
+     assert 'name="test_email"' in page
+     assert '<iframe sandbox title="Campaign preview"' in page
+     assert "Hi Preview" in page
+-    assert "Send a successful test before final confirmation." in page
+-    assert 'name="action" value="confirm_campaign"' not in page
++    assert 'name="confirm_send" value="1" required' in page
++    assert 'name="action" value="confirm_campaign"' in page
++    assert "Queue outreach to 8 recipients" in page
++    assert "Send a successful test before final confirmation." not in page
+ 
+ 
+-def test_successful_test_unlocks_explicit_final_confirmation():
++def test_successful_optional_test_keeps_final_confirmation_available():
+     model = {
+         **COMPOSE_MODEL,
+         "draft": {
+@@ -595,7 +622,7 @@ def test_successful_test_unlocks_explicit_final_confirmation():
+     assert "Test sent to operator@example.com" in page
+     assert 'name="confirm_send" value="1" required' in page
+     assert 'name="action" value="confirm_campaign"' in page
+-    assert "Start queued outreach to 8 recipients" in page
++    assert "Queue outreach to 8 recipients" in page
+ 
+ 
+ def test_compose_review_escapes_campaign_values_and_preview_srcdoc():
+@@ -625,6 +652,8 @@ def test_compose_review_escapes_campaign_values_and_preview_srcdoc():
+     assert "unsafe&lt;script&gt;" in page
+     assert 'campaign&quot;&gt;&lt;script&gt;' in page
+     assert 'srcdoc="&lt;p&gt;&amp;lt;script&amp;gt;' in page
++    assert "Queue outreach to 1 recipient" in page
++    assert "Queue outreach to 1 recipients" not in page
+ 
+ 
+ def test_queued_campaign_is_locked_without_test_or_confirmation_controls():
+diff --git a/cloudflare_worker/tests/test_email_admin_worker.py b/cloudflare_worker/tests/test_email_admin_worker.py
+index c84afda8..0c5a9211 100644
+--- a/cloudflare_worker/tests/test_email_admin_worker.py
++++ b/cloudflare_worker/tests/test_email_admin_worker.py
+@@ -2190,19 +2190,15 @@ def test_campaign_test_send_uses_snapshot_without_mutating_deliveries():
+     assert runs[0][1][0]["test_email"] == "operator@example.com"
+ 
+ 
+-def test_confirmation_requires_test_and_publishes_only_once():
++def test_confirmation_queues_without_test_and_publishes_only_once():
+     campaign_id = "b" * 24
+     runs = []
+     publishes = []
+-    state = {"status": "draft", "tested": False}
++    state = {"status": "draft"}
+ 
+     async def d1_first(_env, sql, *_args):
+-        if sql.startswith("SELECT id,status,data"):
+-            return {
+-                "id": campaign_id,
+-                "status": state["status"],
+-                "data": {"test_sent_at": 10 if state["tested"] else 0},
+-            }
++        if sql.startswith("SELECT id,status"):
++            return {"id": campaign_id, "status": state["status"]}
+         if sql.startswith("UPDATE email_campaigns"):
+             if state["status"] != "draft":
+                 return None
+@@ -2215,9 +2211,6 @@ def test_confirmation_requires_test_and_publishes_only_once():
+     async def d1_run(_env, sql, *args):
+         runs.append((sql, args))
+ 
+-    async def decrypt_row(_env, value):
+-        return dict(value)
+-
+     async def publish(_env, value):
+         publishes.append(value)
+         return 2
+@@ -2226,20 +2219,11 @@ def test_confirmation_requires_test_and_publishes_only_once():
+         {
+             "d1_first": d1_first,
+             "d1_run": d1_run,
+-            "decrypt_row": decrypt_row,
+             "_email_admin_publish_deliveries": publish,
+         }
+     )
+     env = SimpleNamespace(EMAIL_QUEUE=object())
+ 
+-    with pytest.raises(ValueError, match="successful test"):
+-        asyncio.run(
+-            campaigns["_email_admin_confirm_campaign"](env, campaign_id)
+-        )
+-    assert runs == []
+-    assert publishes == []
+-
+-    state["tested"] = True
+     with pytest.raises(ValueError, match="queue is not configured"):
+         asyncio.run(
+             campaigns["_email_admin_confirm_campaign"](
+@@ -2795,6 +2779,26 @@ def test_send_jobs_use_grouped_delivery_counts_and_retry_actions():
+     assert "LIMIT 500" in ENTRY_TEXT
+ 
+ 
++def test_campaign_summaries_exclude_unconfirmed_drafts():
++    captured = []
++
++    async def d1_all(_env, sql, *_args):
++        captured.append(sql)
++        return []
++
++    history = _load_email_admin_history(
++        {"d1_all": d1_all, "decrypt_row": None}
++    )
++
++    assert asyncio.run(
++        history["_email_admin_campaign_summaries"](SimpleNamespace())
++    ) == []
++    assert "WHERE c.status!='draft'" in captured[0]
++    assert captured[0].index("WHERE c.status!='draft'") < captured[0].index(
++        "GROUP BY"
++    )
++
++
+ def test_campaign_summaries_decrypt_only_safe_history_fields():
+     async def d1_all(_env, sql, *_args):
+         assert "GROUP BY c.id,c.status,c.created_at,c.data" in sql
+-- 
+2.50.1 (Apple Git-155)
+
