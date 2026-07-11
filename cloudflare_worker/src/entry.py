@@ -14841,6 +14841,21 @@ class Default(WorkerEntrypoint):
         cron_started_ms = int(Date.now())
         cron_failures = []
         minute = int(cron_started_ms // 60000)
+        # Send the "in_progress" check-in FIRST, before any D1/decrypt work,
+        # so Sentry has proof this tick started even if the platform kills
+        # the isolate later (cold Pyodide isolate blowing the invocation's
+        # CPU/wall-clock budget - the same failure mode documented above for
+        # /status samples). Without this, a killed tick sends nothing at all
+        # and Sentry reports it as a "missed check-in" instead of a runtime
+        # error, which is what actually happened; dropping the closing
+        # ok/error check-in on the same check_in_id still only costs one
+        # extra Sentry round trip per tick.
+        try:
+            await capture_sentry_cron_check_in(
+                self.env, "in_progress", check_in_id=cron_check_in_id,
+                cron=cron_expression)
+        except BaseException:
+            pass
         # The /status health sample runs FIRST: it is the cheapest job (no
         # row decryption) and the one whose absence shows publicly as fake
         # downtime, so a tick that dies partway (cold Pyodide isolate blowing
@@ -14964,9 +14979,8 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/feedback-emails",
                     "_send_feedback_emails failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # One Sentry check-in per tick (the closing ok/error): the opening
-        # in-progress check-in doubled the outbound Sentry traffic for no
-        # alerting value on a one-minute schedule.
+        # Closing check-in for the same check_in_id sent above, so Sentry
+        # resolves the "in_progress" marker to a final ok/error result.
         final_cron_status = "error" if cron_failures else "ok"
         await capture_sentry_cron_check_in(
             self.env, final_cron_status, check_in_id=cron_check_in_id,
