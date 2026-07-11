@@ -132,7 +132,17 @@ without ever exposing local filesystem paths.
 The desktop client starts with no setup input and connects to the ForkMesh
 mainnode automatically.
 
+Prefer a prebuilt binary over building from source? Use the sha256-verified
+one-line installer instead:
+
+```sh
+curl -fsSL https://forkmesh.com/install.sh | bash
+```
+
 ### Cloudflare Relay
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://forkmesh.com/forkmesh/forkmesh)
+
 
 The relay hosts encrypted room WebSockets and the signed repository catalog:
 
