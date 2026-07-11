@@ -3054,7 +3054,6 @@
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
     const language = repoLanguage(origin);
-    const stars = stableMockNumber(key, 0, 40);
     return `
       <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link" tabindex="0" aria-label="Open ${escapeHtml(key)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
         <div class="repo-layout grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(10rem,12rem)] md:items-center">
@@ -3066,10 +3065,10 @@
               <span class="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${statusClass}">
                 ${statusText}
               </span>
-              <button data-repo-star-button type="button" aria-label="Star ${escapeHtml(key)}" class="ml-auto hidden shrink-0 items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-foreground hover:bg-background sm:inline-flex">
-                <i data-lucide="star" class="h-3.5 w-3.5 text-muted-foreground"></i>
-                <span>Star</span>
-                <span class="font-mono text-muted-foreground">${formatCount(stars)}</span>
+              <button data-repo-star-button data-repo-key="${escapeHtml(key)}" type="button" aria-pressed="false" aria-label="Star ${escapeHtml(key)}" class="ml-auto hidden shrink-0 items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-foreground hover:bg-background sm:inline-flex">
+                <i data-lucide="star" data-repo-star-icon class="h-3.5 w-3.5 text-muted-foreground"></i>
+                <span data-repo-star-label>Star</span>
+                <span data-repo-star-count class="font-mono text-muted-foreground">${formatCount(0)}</span>
               </button>
             </div>
             <p class="mt-1 truncate text-xs text-muted-foreground">${escapeHtml(repo.description || origin.description || "No description published.")}</p>
@@ -3101,7 +3100,6 @@
     const visibility = repo.isPrivate ? "Private" : "Public";
     const language = repoLanguage(repo);
     const license = repoLicense(repo);
-    const stars = stableMockNumber(key, 0, 80);
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
     return `<article data-profile-repository-row class="grid gap-3 px-4 py-5 md:grid-cols-[minmax(0,1fr)_12rem]">
@@ -3119,10 +3117,10 @@
         </span>
       </a>
       <div class="grid content-center gap-3">
-        <button data-repo-star-button type="button" aria-label="Star ${escapeHtml(key)}" class="justify-self-end inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-background">
-          <i data-lucide="star" class="h-3.5 w-3.5 text-muted-foreground"></i>
-          Star
-          <span class="font-mono text-muted-foreground">${formatCount(stars)}</span>
+        <button data-repo-star-button data-repo-key="${escapeHtml(key)}" type="button" aria-pressed="false" aria-label="Star ${escapeHtml(key)}" class="justify-self-end inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-background">
+          <i data-lucide="star" data-repo-star-icon class="h-3.5 w-3.5 text-muted-foreground"></i>
+          <span data-repo-star-label>Star</span>
+          <span data-repo-star-count class="font-mono text-muted-foreground">${formatCount(0)}</span>
         </button>
         ${repoActivitySparkline(activityWeeks, { totalHint: commitTotal })}
       </div>
@@ -3197,6 +3195,7 @@
     }
 
     window.lucide?.createIcons();
+    hydrateRepoStarButtons(list);
   }
 
   function renderSidebarRepositories(session) {
@@ -3334,6 +3333,7 @@
       ? groups.map((group) => profileRepositoryRow(group)).join("")
       : '<div class="px-4 py-8 text-sm text-muted-foreground">No repositories match this filter.</div>';
     window.lucide?.createIcons();
+    hydrateRepoStarButtons(container);
   }
 
   function renderProfileRepositoryCount(count = groupRepositories(state.repositories || []).length) {
@@ -5272,6 +5272,88 @@
     }
   }
 
+  // Star/unstar a repo (GET/POST/DELETE /api/repo/o/r/star). A star is a
+  // plain per-account preference, not part of the owner-signed catalog
+  // record, so it's fetched and toggled separately from the rest of the
+  // repo's data.
+  function setRepoStarButtonState(button, starred, count) {
+    if (!button) return;
+    button.setAttribute("aria-pressed", starred ? "true" : "false");
+    const icon = button.querySelector("[data-repo-star-icon]");
+    if (icon) {
+      icon.classList.toggle("fill-yellow-400", starred);
+      icon.classList.toggle("text-yellow-400", starred);
+      icon.classList.toggle("text-muted-foreground", !starred);
+    }
+    const label = button.querySelector("[data-repo-star-label]");
+    if (label) label.textContent = starred ? "Starred" : "Star";
+    const countEl = button.querySelector("[data-repo-star-count]");
+    if (countEl) countEl.textContent = formatCount(Number(count) || 0);
+  }
+
+  async function loadRepoStarState(repo, button) {
+    if (!button) return;
+    try {
+      const headers = { accept: "application/json" };
+      if (state.session?.sessionToken) headers.authorization = "Bearer " + state.session.sessionToken;
+      const response = await fetch(`${repoApiBase(repo)}/star`, { headers });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false || !document.body.contains(button)) return;
+      setRepoStarButtonState(button, Boolean(data.starred), data.count);
+    } catch (_) {
+      /* offline relay — star count stays at its initial placeholder */
+    }
+  }
+
+  // Hydrates every rendered star button in `root` (repo list cards, profile
+  // rows) with its real starred state + count, one request per distinct repo.
+  async function hydrateRepoStarButtons(root) {
+    const buttons = Array.from((root || document).querySelectorAll("[data-repo-star-button][data-repo-key]"));
+    const byKey = new Map();
+    buttons.forEach((button) => {
+      const key = button.dataset.repoKey || "";
+      if (!key) return;
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push(button);
+    });
+    await Promise.all(Array.from(byKey.entries()).map(async ([key, els]) => {
+      const repo = findRepository(key);
+      if (!repo) return;
+      await loadRepoStarState(repo, els[0]);
+      const applied = els[0] && document.body.contains(els[0])
+        ? { starred: els[0].getAttribute("aria-pressed") === "true", count: els[0].querySelector("[data-repo-star-count]")?.textContent }
+        : null;
+      if (applied) els.slice(1).forEach((el) => setRepoStarButtonState(el, applied.starred, applied.count));
+    }));
+  }
+
+  async function toggleRepoStar(button) {
+    const key = button.dataset.repoKey || "";
+    const repo = findRepository(key)
+      || (state.selectedRepo && repoKey(state.selectedRepo) === key ? state.selectedRepo : null);
+    if (!repo) return;
+    if (!state.session?.sessionToken) {
+      location.href = "/login";
+      return;
+    }
+    const nextStarred = button.getAttribute("aria-pressed") !== "true";
+    button.disabled = true;
+    try {
+      const response = await fetch(`${repoApiBase(repo)}/star`, {
+        method: nextStarred ? "POST" : "DELETE",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ sessionToken: state.session.sessionToken }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+      setRepoStarButtonState(button, Boolean(data.starred), data.count);
+    } catch (_) {
+      /* best-effort — button keeps its last known state */
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   // Content-free pending-inbox tallies (GET /api/repo/o/r/pending). Plain
   // fetch, not the caching fetchJson — the counts change as the owner node
   // drains its inbox and must refresh on every repo open. Best-effort: a miss
@@ -7182,7 +7264,6 @@
     const canSeeAgentsTab = sessionCanAssignAgent(repo);
     const actionSeed = repoKey(repo);
     const forkCount = stableMockNumber(`${actionSeed}:fork`, 0, 12);
-    const starCount = stableMockNumber(`${actionSeed}:star`, 0, 84);
     // Watch is real: it is the repo's fediverse follower count (see
     // loadRepoFediverse), and the button opens the follow-from-Mastodon card.
     const fediHandle = `@${(repo.owner || "").toLowerCase()}.${(repo.name || "").toLowerCase()}@${location.host}`;
@@ -7223,11 +7304,10 @@
                 <span class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(forkCount)}</span>
                 <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
               </button>
-              <button type="button" data-repo-action-star class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
-                <i data-lucide="star" class="h-3.5 w-3.5 text-muted-foreground"></i>
-                Star
-                <span class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(starCount)}</span>
-                <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
+              <button type="button" data-repo-action-star data-repo-key="${escapeHtml(actionSeed)}" aria-pressed="false" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
+                <i data-lucide="star" data-repo-star-icon class="h-3.5 w-3.5 text-muted-foreground"></i>
+                <span data-repo-star-label>Star</span>
+                <span data-repo-star-count class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(0)}</span>
               </button>
               <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="radio" class="h-3.5 w-3.5"></i>Mirrors <span data-dashboard-repo-count="mirrors" class="font-mono text-foreground">${tabCountLabel(mirrorsCount)}</span></span>
               <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="hard-drive" class="h-3.5 w-3.5"></i>Data <span class="font-mono text-foreground">${escapeHtml(formatSize(repo.sizeBytes))}</span></span>
@@ -7416,7 +7496,7 @@
     if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo);
     loadRepoPendingCounts(repo);
-    loadRepoAboutRail(repo);
+    loadRepoStarState(repo, $("[data-repo-action-star]"));
   }
 
   function findRepository(key) {
@@ -8237,6 +8317,14 @@
       if (globalSearchResult) {
         event.preventDefault();
         selectGlobalSearchResult(globalSearchResult.dataset.dashboardOpenRepo || "");
+        return;
+      }
+
+      const starTrigger = event.target.closest("[data-repo-action-star], [data-repo-star-button]");
+      if (starTrigger) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleRepoStar(starTrigger);
         return;
       }
 

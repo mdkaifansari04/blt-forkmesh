@@ -454,6 +454,16 @@ SCHEMA_STATEMENTS = [
         repo_bi TEXT NOT NULL, kind TEXT NOT NULL,
         data TEXT NOT NULL, updated_at INTEGER NOT NULL,
         PRIMARY KEY (repo_bi, kind))""",
+    # Repo stars (migration 0031): which accounts starred which repo. Keyed by
+    # blind indexes only (no signing needed - a star is a plain per-account
+    # preference, same trust level as profile_follows), so the count and the
+    # caller's own starred state are cheap membership checks.
+    """CREATE TABLE IF NOT EXISTS repo_stars (
+        repo_bi TEXT NOT NULL, account_bi TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (repo_bi, account_bi))""",
+    "CREATE INDEX IF NOT EXISTS idx_repo_stars_repo ON repo_stars(repo_bi, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_repo_stars_account ON repo_stars(account_bi, created_at)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the
