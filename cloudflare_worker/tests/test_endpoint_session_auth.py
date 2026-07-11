@@ -85,6 +85,10 @@ async def _ap_broadcast_stub(_env, _request, _kind, _handle):
     return None
 
 
+async def _notify_repo_host_stub(_env, _owner, _repo, _topic):
+    return None
+
+
 class _ApStub:
     @staticmethod
     def repo_handle(owner, repo):
@@ -181,7 +185,7 @@ def _harness(accounts, notifications=None, repositories=None):
                     r["data"] = data
                     r["is_private"] = is_private
             return
-        if "repo_media" in sql:
+        if "repo_media" in sql or "about_inbox" in sql:
             return
         raise AssertionError("unexpected d1_run: " + sql)
 
@@ -219,6 +223,7 @@ def _harness(accounts, notifications=None, repositories=None):
         "AP_ACTOR_REPO": "repo",
         "_best_effort_inbox_side_effect": _swallow_side_effect,
         "_ap_broadcast_actor_update": _ap_broadcast_stub,
+        "notify_repo_host": _notify_repo_host_stub,
         "ap": _ApStub,
     })
     ns["_notifications"] = notifications

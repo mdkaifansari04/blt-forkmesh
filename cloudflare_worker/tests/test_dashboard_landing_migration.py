@@ -1031,10 +1031,12 @@ def test_dashboard_repository_metadata_constrains_long_values_without_fake_langu
     ]
 
     assert 'grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3' in render
-    assert 'class="min-w-0 truncate text-right text-foreground font-mono"' in render
     assert "flex justify-between gap-3" not in render
     assert "data-repo-live-summary" in render
-    assert "formatSize(repo.sizeBytes)" in render
+    # The Data size chip/row and the Repository metadata block were removed in
+    # the About-rail cleanup; languages now render from the REAL live file
+    # index (loadRepoAboutFilesAndLanguages), never a hardcoded mock mix.
+    assert "formatSize(repo.sizeBytes)" not in render
     assert "TypeScript" not in render
     assert "CSS" not in render
     assert "JavaScript" not in render
@@ -1274,10 +1276,8 @@ def test_dashboard_repository_record_chips_and_sidebar_links_use_neutral_github_
     assert 'number === page ? "bg-primary text-primary-foreground border-primary"' not in pagination
     assert 'data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link"' in dashboard_js
     assert "browse-repo-button inline-flex items-center gap-1 text-xs font-medium text-foreground transition-colors" not in dashboard_js
-    # The Clone availability chip keys off the group-liveness verdict (`live`,
-    # which folds in an online mirror serving in place - adhoc #61) but keeps the
-    # neutral GitHub-like foreground/muted colors, never the accent primary.
-    assert '${live ? "text-foreground" : "text-muted-foreground"}' in render
+    # The About rail's Clone-availability row was removed with the metadata
+    # cleanup; the accent-primary variant must stay gone regardless.
     assert '${live ? "text-primary" : "text-muted-foreground"}">${live ? "available" : "offline"}</dd>' not in render
 
 

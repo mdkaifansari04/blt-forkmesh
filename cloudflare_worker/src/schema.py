@@ -454,6 +454,14 @@ SCHEMA_STATEMENTS = [
         repo_bi TEXT NOT NULL, kind TEXT NOT NULL,
         data TEXT NOT NULL, updated_at INTEGER NOT NULL,
         PRIMARY KEY (repo_bi, kind))""",
+    # Web edits of the repo About card queued for the owner's desktop node
+    # (migration 0031): the node drains this via GET /api/sync (same
+    # drain-on-read semantics as agent_prompts) and writes the change into the
+    # repo's committed .forkmesh/info.json — the single source of truth the
+    # desktop app shows. One row per repo; the latest web edit wins.
+    """CREATE TABLE IF NOT EXISTS about_inbox (
+        repo_bi TEXT PRIMARY KEY, data TEXT NOT NULL,
+        queued_at INTEGER NOT NULL)""",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the
