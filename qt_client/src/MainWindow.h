@@ -1988,6 +1988,11 @@ private:
     void editRepoAbout();
     bool saveRepoAboutMetadata(const QString &about, const QString &websiteInput,
                                QString *error = nullptr);
+    // Index-based core shared with the relay-sync path (website gear-icon
+    // edits arriving as aboutUpdate in GET /api/sync).
+    bool applyRepoAboutMetadataAt(int index, const QString &about,
+                                  const QString &websiteInput,
+                                  QString *error = nullptr);
     void loadCommits();
     // Fill the Files/+/− columns of the commit list from `git log --numstat`,
     // which diffs every commit in the window and is the slow part of a load. Runs
