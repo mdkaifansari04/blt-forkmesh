@@ -214,6 +214,9 @@ def _harness(accounts):
 
     ns = _load_functions({
         "Date": _DateStub,
+        "json": __import__("json"),
+        "hashlib": __import__("hashlib"),
+        "_AGENT_PUSH_DIGESTS": {},
         "json_response": json_response,
         "ensure_schema": ensure_schema,
         "blind_index": blind_index,

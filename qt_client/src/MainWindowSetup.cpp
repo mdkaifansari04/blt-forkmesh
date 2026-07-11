@@ -1330,7 +1330,11 @@ void MainWindow::sendNodeHeartbeat()
         if (m_isAdmin) {
             if (!m_adminPollTimer) {
                 m_adminPollTimer = new QTimer(this);
-                m_adminPollTimer->setInterval(90000);
+                // 5 min: newly-joined users needing verification are not time
+                // critical, and the host-wide network backoff now guards this
+                // poll during a relay overload. (Was 90s with no backoff — a
+                // steady contributor to baseline relay load.)
+                m_adminPollTimer->setInterval(300000);
                 connect(m_adminPollTimer, &QTimer::timeout, this,
                         &MainWindow::pollPendingUsers);
             }

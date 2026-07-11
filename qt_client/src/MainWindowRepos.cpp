@@ -36,7 +36,12 @@ QString catalogPublishOwnerFromKey(const QString &key)
 
 qint64 catalogPublishRetryDelayMs(const QNetworkReply *reply, int status)
 {
-    if (status != 429)
+    // 429 (rate limit) AND 5xx (Worker overload — Cloudflare 1101/1102) both
+    // warrant a cooldown before re-queuing. Previously only 429 delayed the
+    // retry, so during the 2026-07-11 outage every 500/503 rescheduled with
+    // zero delay and the desktop re-POSTed the catalog every ~30s for 100
+    // minutes straight, amplifying the very overload it was hitting.
+    if (status != 429 && !(status >= 500 && status <= 599))
         return 0;
     qint64 delay = kCatalogPublishRateLimitRetryMs;
     const QByteArray retryAfter = reply ? reply->rawHeader("Retry-After") : QByteArray();
