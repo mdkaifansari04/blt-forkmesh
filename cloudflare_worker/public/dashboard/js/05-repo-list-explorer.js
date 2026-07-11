@@ -518,11 +518,25 @@
     `).join("");
   }
 
+  // The repo groups the profile pages list: the whole catalog on the
+  // session's own dashboard, but ONLY the viewed account's repos in
+  // public-profile mode (/@name).
+  function profileRepositoryGroups() {
+    let groups = groupRepositories(state.repositories || []);
+    if (state.publicProfile) {
+      const aliases = profileContributionAliases(state.publicProfile);
+      groups = groups.filter((group) =>
+        repoBelongsToProfile(sourceOfTruth(group), aliases) ||
+        (group.members || []).some((member) => repoBelongsToProfile(member, aliases)));
+    }
+    return groups;
+  }
+
   function renderProfileRepositories() {
     const container = $("[data-profile-repo-list]");
     if (!container) return;
     const query = ($("[data-profile-repo-search]")?.value || "").trim().toLowerCase();
-    const groups = groupRepositories(state.repositories || []).filter((group) => {
+    const groups = profileRepositoryGroups().filter((group) => {
       return repositoryMatchesQuery(sourceOfTruth(group), query);
     });
     container.innerHTML = groups.length
@@ -532,7 +546,7 @@
     hydrateRepoStarButtons(container);
   }
 
-  function renderProfileRepositoryCount(count = groupRepositories(state.repositories || []).length) {
+  function renderProfileRepositoryCount(count = profileRepositoryGroups().length) {
     $$("[data-profile-repo-count]").forEach((element) => {
       element.textContent = formatCount(count);
     });
