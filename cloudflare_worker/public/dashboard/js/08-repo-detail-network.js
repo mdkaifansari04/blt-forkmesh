@@ -114,8 +114,6 @@
                 <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
               </button>
               <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="radio" class="h-3.5 w-3.5"></i>Mirrors <span data-dashboard-repo-count="mirrors" class="font-mono text-foreground">${tabCountLabel(mirrorsCount)}</span></span>
-              <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="hard-drive" class="h-3.5 w-3.5"></i>Data <span class="font-mono text-foreground">${escapeHtml(formatSize(repo.sizeBytes))}</span></span>
-              <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="activity" class="h-3.5 w-3.5"></i>Host <span class="font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "via mirror" : live ? "online" : "offline"}</span></span>
             </div>
           </div>
           <div class="flex min-w-0 overflow-x-auto px-3" role="tablist">
@@ -242,6 +240,9 @@
             <a data-repo-about-website href="#" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-1 hidden min-w-0 items-center gap-1.5 text-xs hover:underline"><i data-lucide="globe" class="h-3.5 w-3.5 shrink-0"></i><span data-repo-about-website-label class="min-w-0 truncate"></span></a>
             <form data-repo-about-form class="mt-3 hidden grid gap-2">
               <textarea data-repo-about-input rows="4" maxlength="240" class="min-h-24 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary">${escapeHtml(repo.description || "")}</textarea>
+              <label class="grid gap-1 text-[11px] text-muted-foreground">Website
+                <input data-repo-about-website-input type="url" maxlength="240" placeholder="https://example.com" class="h-8 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
+              </label>
               <label class="grid gap-1 text-[11px] text-muted-foreground">Logo — square PNG, up to 256 KB (fediverse avatar)
                 <input data-repo-about-logo type="file" accept="image/png" class="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-secondary file:px-2 file:py-1 file:text-xs file:text-foreground" />
               </label>
@@ -252,6 +253,7 @@
                 <label class="inline-flex items-center gap-1.5"><input data-repo-about-logo-clear type="checkbox" class="h-3 w-3" />Remove logo</label>
                 <label class="inline-flex items-center gap-1.5"><input data-repo-about-banner-clear type="checkbox" class="h-3 w-3" />Remove banner</label>
               </span>
+              <p class="text-[10px] leading-4 text-muted-foreground">Saved to the relay now and written into the repo's committed <span class="font-mono">.forkmesh/info.json</span> (what the desktop app shows) the next time the owner's node syncs.</p>
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <span data-repo-about-status class="text-[11px] text-muted-foreground"></span>
                 <span class="inline-flex items-center gap-2">
@@ -1394,8 +1396,12 @@
         else if (logoFile) media.logoPng = await readAsDataUrl(logoFile);
         if (aboutForm.querySelector("[data-repo-about-banner-clear]")?.checked) media.bannerPng = "";
         else if (bannerFile) media.bannerPng = await readAsDataUrl(bannerFile);
+        const website = String(
+          aboutForm.querySelector("[data-repo-about-website-input]")?.value || "").trim();
+        media.website = website;
         const body = await saveRepoAboutFromWeb(state.selectedRepo, description, media);
         applyRepoAboutDescription(state.selectedRepo, body.description ?? description);
+        applyRepoAboutWebsite(website);
         setRepoAboutStatus("Saved.", "good");
         setRepoAboutEditing(false);
         // Refresh the badge header + watch count so the new logo/banner (and

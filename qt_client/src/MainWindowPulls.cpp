@@ -7226,6 +7226,26 @@ void MainWindow::performRelaySync()
             applyCommitInboxPayload(repo, entry.value("commits").toArray(),
                                     /*interactive=*/false);
             applyAgentPromptsPayload(repo, entry.value("agentPrompts").toArray());
+            // About edit made on the website (gear icon): write it into the
+            // repo's committed .forkmesh/info.json via the same code path as
+            // the in-app About dialog, so web and desktop show one truth.
+            const QJsonObject aboutUpdate = entry.value("aboutUpdate").toObject();
+            if (!aboutUpdate.isEmpty()) {
+                QString aboutError;
+                if (applyRepoAboutMetadataAt(
+                        idx, aboutUpdate.value("about").toString(),
+                        aboutUpdate.value("website").toString(), &aboutError)) {
+                    logSystem(QStringLiteral(
+                                  "Applied About details edited on the website "
+                                  "for %1/%2.")
+                                  .arg(entryOwner, entryName));
+                } else {
+                    logSystem(QStringLiteral(
+                                  "Could not apply the website About edit for "
+                                  "%1/%2: %3")
+                                  .arg(entryOwner, entryName, aboutError));
+                }
+            }
         }
     });
 }

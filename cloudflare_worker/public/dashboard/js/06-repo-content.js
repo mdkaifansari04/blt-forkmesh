@@ -1398,6 +1398,26 @@
     SVG: "#ff9900",
   };
 
+  function applyRepoAboutWebsite(website) {
+    // Sync the About rail's website link + the gear form's input. Empty value
+    // hides the link.
+    const value = String(website || "").trim();
+    const link = $("[data-repo-about-website]");
+    const label = $("[data-repo-about-website-label]");
+    const input = $("[data-repo-about-website-input]");
+    if (input && document.activeElement !== input) input.value = value;
+    if (!link || !label) return;
+    if (value && /^https?:\/\//i.test(value)) {
+      link.href = value;
+      label.textContent = value.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+      link.classList.remove("hidden");
+      link.classList.add("inline-flex");
+    } else {
+      link.classList.add("hidden");
+      link.classList.remove("inline-flex");
+    }
+  }
+
   function repoAboutStillCurrent(repo) {
     return state.selectedRepo
       && repoKey(state.selectedRepo).toLowerCase() === repoKey(repo).toLowerCase();
@@ -1445,6 +1465,10 @@
       if (body.description && !repo.description) {
         applyRepoAboutDescription(repo, body.description);
       }
+      // Relay-known website seeds the link/form; the committed
+      // .forkmesh/info.json (loadRepoAboutInfo) overrides it when the live
+      // mirror is reachable.
+      if (body.website) applyRepoAboutWebsite(body.website);
     } catch (_) { /* fediverse card is an adornment, never an error */ }
   }
 
@@ -1458,20 +1482,10 @@
       let info;
       try { info = JSON.parse(blobText(blob)); } catch (_) { return; }
       const about = String(info?.about || "").trim();
-      if (about) {
-        $$("[data-repo-about-description]").forEach((el) => { el.textContent = about; });
-      }
-      const website = String(info?.website || "").trim();
-      if (website && /^https?:\/\//i.test(website)) {
-        const link = $("[data-repo-about-website]");
-        const label = $("[data-repo-about-website-label]");
-        if (link && label) {
-          link.href = website;
-          label.textContent = website.replace(/^https?:\/\//i, "").replace(/\/$/, "");
-          link.classList.remove("hidden");
-          link.classList.add("inline-flex");
-        }
-      }
+      // The committed file is canonical, so it also seeds the gear editor —
+      // editing starts from exactly what the page (and the desktop app) show.
+      if (about) applyRepoAboutDescription(repo, about);
+      applyRepoAboutWebsite(String(info?.website || ""));
     } catch (_) { /* host offline — keep catalog description */ }
   }
 
