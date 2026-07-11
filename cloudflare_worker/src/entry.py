@@ -1207,12 +1207,17 @@ async def network_overview(env):
 #   - website / api / realtime: unhandled/5xx errors logged this minute
 #     (log_error, see Default.fetch) bucketed by the path they hit, so an
 #     incident in one area doesn't paint the whole site down.
+#   - durable_objects: room requests killed by Cloudflare's free-tier DO
+#     duration cap (log_durable_object_abort), tracked separately from the
+#     rest of "realtime" so plan-limit aborts have their own visible history
+#     instead of being buried in general realtime noise.
 STATUS_SYSTEMS = [
     ("website", "Website"),
     ("api", "API"),
     ("database", "Database"),
     ("git_hosting", "Git hosting network"),
     ("realtime", "Realtime sync (chat & tunnels)"),
+    ("durable_objects", "Durable Objects (free-tier duration limit)"),
 ]
 STATUS_HISTORY_DAYS = 30
 STATUS_HISTORY_RETAIN_MS = STATUS_HISTORY_DAYS * 24 * 60 * 60 * 1000
@@ -1336,15 +1341,29 @@ async def record_status_sample(env):
             env, "SELECT path, status, message FROM error_log WHERE ts >= ?",
             now - STATUS_SAMPLE_WINDOW_MS,
         )
-        failed = {"website": False, "api": False, "realtime": False}
-        first_hit = {"website": None, "api": None, "realtime": None}
-        hit_count = {"website": 0, "api": 0, "realtime": 0}
+        failed = {"website": False, "api": False, "realtime": False, "durable_objects": False}
+        first_hit = {"website": None, "api": None, "realtime": None, "durable_objects": None}
+        hit_count = {"website": 0, "api": 0, "realtime": 0, "durable_objects": 0}
         for row in rows:
             path = str(row.get("path") or "")
+            message = str(row.get("message") or "")
             try:
                 row_status = int(row.get("status") or 0)
             except (TypeError, ValueError):
                 row_status = 0
+            # A DO duration-cap abort is a real room failure, so it still
+            # counts toward "realtime" below — but it also gets its own
+            # bucket so free-tier plan-limit aborts have a dedicated, visible
+            # history instead of being buried among other realtime incidents.
+            # Matches both the tagged 503s log_durable_object_abort records
+            # and the raw AbortError tracebacks capture_worker_exception logs
+            # for DO calls that aren't wrapped in a retry (same substring the
+            # doDurationAborts24h snapshot below keys on).
+            if "Exceeded allowed duration" in message:
+                failed["durable_objects"] = True
+                hit_count["durable_objects"] += 1
+                if first_hit["durable_objects"] is None:
+                    first_hit["durable_objects"] = (row.get("status"), path, message.strip())
             # 502/503/504 on a host-tunnel content path (release blob, repo
             # browse, git clone) means the one desktop node holding that
             # content is unreachable — node availability, which host_presence
@@ -1366,11 +1385,12 @@ async def record_status_sample(env):
             failed[bucket] = True
             hit_count[bucket] += 1
             if first_hit[bucket] is None:
-                first_hit[bucket] = (row.get("status"), path, str(row.get("message") or "").strip())
+                first_hit[bucket] = (row.get("status"), path, message.strip())
         ok["website"] = not failed["website"]
         ok["api"] = not failed["api"]
         ok["realtime"] = not failed["realtime"]
-        for bucket in ("website", "api", "realtime"):
+        ok["durable_objects"] = not failed["durable_objects"]
+        for bucket in ("website", "api", "realtime", "durable_objects"):
             if failed[bucket] and first_hit[bucket]:
                 status_code, path, message = first_hit[bucket]
                 text = (str(status_code) + " on " + path) if status_code else path
@@ -1382,7 +1402,7 @@ async def record_status_sample(env):
     except Exception:
         # A query hiccup here is not itself evidence of an outage — don't
         # fabricate a false incident from it.
-        ok["website"] = ok["api"] = ok["realtime"] = True
+        ok["website"] = ok["api"] = ok["realtime"] = ok["durable_objects"] = True
 
     # One multi-row upsert per table (3 statements total) instead of the old
     # 3-statements-per-system loop (15): the per-minute cron runs in a Pyodide
