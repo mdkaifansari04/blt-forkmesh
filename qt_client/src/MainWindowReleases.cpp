@@ -556,7 +556,7 @@ void MainWindow::pruneReleaseTagsForCurrentRepo(const QString &keepTag)
 
     // Deleting only changes the tag refs in the working copy; propagate that
     // into the served bare mirror now (syncRepository fetches heads+tags with
-    // --prune) instead of waiting on the 5-minute auto-sync — the same
+    // --prune) instead of waiting on the 15-minute auto-sync — the same
     // immediacy propagateRepoUpdate already gives freshly committed issues/PRs.
     propagateRepoUpdate(m_repoDetailIndex);
 }
@@ -2153,7 +2153,7 @@ void MainWindow::replicateReleaseArtifacts(int index)
             if (QFile::exists(mirrorReleaseBlobPath(mirrorPath, hash)))
                 continue; // already hosting this artifact
             // A blob whose only source node is offline (relay answers 503)
-            // used to be re-requested on every roster flicker and 5-minute
+            // used to be re-requested on every roster flicker and periodic
             // auto-sync, forever — hammering the relay with predictable
             // failures. Back failing hashes off exponentially instead; a
             // successful download clears the streak.

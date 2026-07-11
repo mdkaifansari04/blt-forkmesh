@@ -100,17 +100,20 @@ def _harness():
                 return [{"repo_bi": r["repo_bi"], "data": r["data"]}
                         for r in rows if r["repo_bi"] in want]
         if "FROM agent_prompts" in sql:
-            return [{"repo_bi": r["repo_bi"], "data": r["data"]}
+            # The drain path selects row ids too (aliased drain_id) so the
+            # delete can target exactly the rows it read.
+            return [{"repo_bi": r["repo_bi"], "data": r["data"],
+                     "drain_id": r["id"]}
                     for r in agent_prompts if r["repo_bi"] in want]
         if "FROM about_inbox" in sql:
             return []
         raise AssertionError("unexpected d1_all: " + sql)
 
     async def d1_run(_env, sql, *args):
-        if sql.startswith("DELETE FROM agent_prompts"):
-            repo_bi = args[0]
+        if sql.startswith("DELETE FROM agent_prompts WHERE id IN"):
+            drained = set(args)
             agent_prompts[:] = [r for r in agent_prompts
-                                if r["repo_bi"] != repo_bi]
+                                if r["id"] not in drained]
             return
         if "about_inbox" in sql:
             return

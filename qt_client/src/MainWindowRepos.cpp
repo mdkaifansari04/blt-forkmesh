@@ -2915,6 +2915,16 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 logSystem(message);
                 if (showDialogOnError)
                     flashMessage(message, /*error=*/true);
+                // A retryable failure (429/5xx -> retryDelayMs > 0) must
+                // self-retry even when no follow-up edit queued another
+                // publish: otherwise a lone failed publish silently waits
+                // for the next unrelated change (or the 6h refresh).
+                if (retryDelayMs > 0 && !publishQueued) {
+                    scheduleCatalogPublish(publishKey,
+                                           /*showDialogOnError=*/false,
+                                           retryDelayMs);
+                    return;
+                }
                 publishQueuedUpdate(retryDelayMs);
             });
 }
@@ -3009,6 +3019,26 @@ bool isTransientSyncError(const QString &errors)
 
 } // namespace
 
+void MainWindow::autoSyncMirrorsIfRelayHealthy()
+{
+    // Periodic safety-net path only — the explicit "sync now" action
+    // (headlessSyncNow) calls autoSyncMirrors() directly and stays ungated.
+    // The git fetch/clone subprocesses below never pass through
+    // BackoffNetworkAccessManager, so honour its host-wide 429/5xx cooldown
+    // here: when the relay's daily Cloudflare quota is already exhausted,
+    // a fleet-wide fetch round would only burn more of the missing budget.
+    const auto *network =
+        qobject_cast<BackoffNetworkAccessManager *>(m_networkAccess);
+    const QString relayHost = catalogApiUrl().host();
+    if (network && !relayHost.isEmpty() && network->hostInCooldown(relayHost)) {
+        logSystem(QStringLiteral("Mirror: skipping periodic auto-sync — relay "
+                                 "%1 is in rate-limit cooldown.")
+                      .arg(relayHost));
+        return;
+    }
+    autoSyncMirrors();
+}
+
 void MainWindow::autoSyncMirrors()
 {
     // Retry the flagship-repo bootstrap here too, not just the one-shot timer
@@ -3040,7 +3070,7 @@ void MainWindow::syncMirrorsBehindRoster()
 {
     // A peer just (re-)advertised its mirror set via hello. For every repo we
     // mirror, if any online peer advertises a commit our bare mirror does not
-    // contain, pull it now rather than waiting for the 5-minute auto-sync. This
+    // contain, pull it now rather than waiting for the 15-minute auto-sync. This
     // backstops notifyMirrorUpdated (which is ephemeral and missed if we were
     // offline/just connected): the moment the roster shows the source moved, we
     // converge. syncRepository fetches refs/heads/* + refs/tags/*, so issue/PR
@@ -3119,7 +3149,7 @@ void MainWindow::propagateRepoUpdate(int index)
     // just-committed issue/PR lands in the mirror. On a detected change it
     // refreshes the open detail (updating the Issues/PR counts) and broadcasts
     // notifyMirrorUpdated, which mirroring peers act on via onPeerMirrorUpdated —
-    // converging everyone in seconds rather than at the next 5-minute tick.
+    // converging everyone in seconds rather than at the next 15-minute tick.
     syncRepository(index, /*quiet=*/true);
     // The mirror fetch above is asynchronous; until it finishes our working copy
     // is ahead of the bare mirror we serve. Refresh the Mirror nodes panel now so
@@ -3170,7 +3200,7 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
     flashMessage(msg);
 
     // Converge promptly: pull the peer's advance into our own mirror now instead
-    // of waiting for the next 5-minute auto-sync. This fetches refs/heads/* and
+    // of waiting for the next 15-minute auto-sync. This fetches refs/heads/* and
     // refs/tags/*, so issues and pull requests (which live on refs/heads) come
     // along with the code. Quiet so it doesn't spam unless something changed.
     if (!m_syncingRepos.contains(matchIndex))

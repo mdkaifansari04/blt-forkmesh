@@ -283,6 +283,13 @@ BackoffNetworkAccessManager::endpointRequests(const QString &method,
     return rows;
 }
 
+bool BackoffNetworkAccessManager::hostInCooldown(const QString &host) const
+{
+    // Same channel key createRequest() uses: the lowercased URL host.
+    return !m_backoff.ready(normalizedHost(host),
+                            QDateTime::currentMSecsSinceEpoch());
+}
+
 QString BackoffNetworkAccessManager::normalizedHost(const QString &host)
 {
     return host.trimmed().toLower();
