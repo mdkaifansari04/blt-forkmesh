@@ -4487,6 +4487,7 @@ async def _account_users_directory(env, request):
 
 def _public_profile_html(profile, host):
     name = clean_string(profile.get("name", ""), MAX_NODE_NAME).lower()
+    kind = profile.get("kind", "user")
     bio = profile.get("profileBio", "")
     about = profile.get("profileAbout", "")
     location = profile.get("profileLocation", "")
@@ -4495,6 +4496,10 @@ def _public_profile_html(profile, host):
     mastodon = profile.get("mastodon", "")
     mastodon_url = profile.get("mastodonUrl", "")
     avatar = profile.get("avatarPng", "")
+    logo_url = profile.get("logoUrl", "")
+    repos = profile.get("repos") or []
+    fediverse = profile.get("fediverse") or {}
+    follower_names = profile.get("followerNames") or []
     social = profile.get("social", {})
     followers = int(social.get("followers", 0) or 0)
     following = int(social.get("following", 0) or 0)
@@ -4520,11 +4525,20 @@ def _public_profile_html(profile, host):
             '<a class="mastodon" href="' + _html_escape(mastodon_url) +
             '" rel="me noopener" target="_blank">' + _html_escape(mastodon) + '</a>'
         )
-    avatar_html = (
-        '<img class="avatar" src="data:image/png;base64,' + _html_escape(avatar) +
-        '" alt="' + _html_escape(name) + ' avatar">'
-        if avatar else '<div class="avatar avatar-fallback">' + _html_escape(initial) + '</div>'
-    )
+    if avatar:
+        avatar_html = (
+            '<img class="avatar" src="data:image/png;base64,' + _html_escape(avatar) +
+            '" alt="' + _html_escape(name) + ' avatar">'
+        )
+    elif logo_url:
+        # No account avatar: fall back to the owner-uploaded logo of one of the
+        # node's source-of-truth repos so org pages still get their branding.
+        avatar_html = (
+            '<img class="avatar" src="' + _html_escape(logo_url) +
+            '" alt="' + _html_escape(name) + ' logo">'
+        )
+    else:
+        avatar_html = '<div class="avatar avatar-fallback">' + _html_escape(initial) + '</div>'
     canonical = "https://" + host + "/@" + quote(name)
     meta_rows = []
     if location:
@@ -4536,6 +4550,68 @@ def _public_profile_html(profile, host):
         _html_escape(about).replace("\n", "<br>") + '</p></section>'
         if about else ""
     )
+    kind_badge_html = (
+        '<span class="kind-badge">Source-of-truth node</span>'
+        if kind != "user" else "")
+    fedi_stats_html = (
+        '<span><strong>' + str(int(fediverse.get("followers", 0) or 0)) +
+        '</strong> fediverse followers</span>'
+        if fediverse else "")
+    followed_by_html = ""
+    if follower_names:
+        followed_by_html = (
+            '<div class="followed-by">Followed by ' +
+            ", ".join(
+                '<a href="/@' + _html_escape(quote(n)) + '">@' + _html_escape(n) + '</a>'
+                for n in follower_names) + '</div>')
+    fedi_follow_html = ""
+    if fediverse:
+        fedi_follow_html = (
+            '<section class="fedi"><h2>Follow on Mastodon</h2>'
+            '<p>Follow <code>' + _html_escape(fediverse.get("handle", "")) +
+            '</code> from Mastodon (or any ActivityPub app) to get this ' +
+            ("node's" if kind != "user" else "profile's") +
+            ' activity in your feed.</p>'
+            '<form data-remote-follow data-handle="' +
+            _html_escape(fediverse.get("handle", "")) + '">'
+            '<div class="follow-row">'
+            '<input type="text" autocomplete="off" '
+            'placeholder="you@mastodon.social" aria-label="Your fediverse handle">'
+            '<button type="submit">Follow</button></div>'
+            '<small data-remote-follow-status>Enter your fediverse handle and '
+            'your own server will ask you to confirm the follow.</small>'
+            '</form></section>')
+    repo_rows = []
+    for repo in repos:
+        repo_badge = (
+            '<span class="verified">Source of truth</span>'
+            if repo.get("isSource") else '<span class="unverified">Mirror</span>')
+        facts = []
+        if repo.get("commitCount"):
+            facts.append(_html_escape(repo["commitCount"]) + " commits")
+        if repo.get("issueCount"):
+            facts.append(_html_escape(repo["issueCount"]) + " open issues")
+        if repo.get("website"):
+            facts.append(
+                '<a href="' + _html_escape(repo["website"]) +
+                '" rel="noopener" target="_blank">' +
+                _html_escape(_profile_link_domain(repo["website"]) or "website") +
+                '</a>')
+        repo_rows.append(
+            '<article class="repo-row"><div class="repo-head">'
+            '<a class="repo-name" href="' +
+            _html_escape(repo_web_href(repo.get("owner", ""), repo.get("name", ""))) +
+            '">' + _html_escape(repo.get("owner", "") + "/" + repo.get("name", "")) +
+            '</a>' + repo_badge + '</div>' +
+            ('<small>' + _html_escape(repo.get("description", "")) + '</small>'
+             if repo.get("description") else "") +
+            ('<div class="repo-facts">' + " · ".join(facts) + '</div>' if facts else "") +
+            '</article>')
+    repos_html = (
+        '<section class="repos"><h2>Repositories (' +
+        str(len(repo_rows)) + ')</h2>' + "".join(repo_rows) +
+        '</section>'
+        if repo_rows else "")
     return """<!doctype html>
 <html lang="en">
 <head>
@@ -4569,6 +4645,20 @@ def _public_profile_html(profile, host):
     .profile-link strong, .profile-link small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .verified, .unverified { flex-shrink:0; border:1px solid var(--border); border-radius:999px; padding:2px 8px; font-size:11px; color:var(--muted); }
     .verified { border-color:color-mix(in srgb, var(--accent) 45%%, var(--border)); color:var(--accent); }
+    .kind-badge { align-self:center; border:1px solid color-mix(in srgb, var(--accent) 45%%, var(--border)); border-radius:999px; padding:2px 8px; font-size:11px; color:var(--accent); white-space:nowrap; }
+    .followed-by { margin-top:10px; color:var(--muted); font-size:12px; }
+    .followed-by a { color:var(--fg); text-decoration:none; }
+    .repos { display:grid; gap:10px; margin-top:24px; }
+    .repos h2, .fedi h2 { margin:0; font-size:14px; }
+    .repo-row { display:grid; gap:6px; border:1px solid var(--border); border-radius:8px; padding:12px; }
+    .repo-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+    .repo-name { color:var(--accent); font-weight:700; text-decoration:none; overflow:hidden; text-overflow:ellipsis; }
+    .repo-row small { color:var(--muted); }
+    .repo-facts { display:flex; flex-wrap:wrap; gap:10px; color:var(--muted); font-size:12px; }
+    .repo-facts a { color:var(--accent); }
+    .fedi { display:grid; gap:8px; margin-top:24px; border:1px solid var(--border); border-radius:8px; padding:12px; }
+    .fedi p { margin:0; color:var(--muted); }
+    .fedi code { color:var(--fg); background:color-mix(in srgb, var(--accent) 10%%, transparent); border-radius:6px; padding:1px 6px; }
     .follow { display:grid; gap:8px; margin-top:20px; border:1px solid var(--border); border-radius:8px; padding:12px; }
     .follow-row { display:flex; flex-wrap:wrap; gap:8px; }
     input { min-width:0; flex:1 1 11rem; border:1px solid var(--border); border-radius:8px; background:transparent; color:var(--fg); padding:8px 10px; }
@@ -4579,13 +4669,16 @@ def _public_profile_html(profile, host):
 </head>
 <body>
   <main>
-    <header>%s<div><h1>@%s</h1><div class="handle">%s</div>%s</div></header>
-    <div class="stats"><span><strong>%s</strong> followers</span><span><strong>%s</strong> following</span><span><strong>%s</strong> mirrors</span></div>
+    <header>%s<div><h1>@%s</h1><div class="handle">%s</div>%s</div>%s</header>
+    <div class="stats"><span><strong>%s</strong> followers</span><span><strong>%s</strong> following</span><span><strong>%s</strong> mirrors</span>%s</div>
     <div class="meta">%s</div>
     %s
     %s
+    %s
     <section class="links">%s</section>
-    <form class="follow" data-follow-form>
+    %s
+    %s
+    <form class="follow" data-follow-form data-name="%s">
       <strong>Follow @%s</strong>
       <div class="follow-row">
         <button type="submit">Follow</button>
@@ -4598,10 +4691,11 @@ def _public_profile_html(profile, host):
     (() => {
       const form = document.querySelector("[data-follow-form]");
       const status = document.querySelector("[data-follow-status]");
+      const name = (form && form.dataset.name) || "";
       let session = null;
       try {
         session = JSON.parse(localStorage.getItem("forkmesh.session") || "null");
-        if (session && session.nodeName === "%s") form.hidden = true;
+        if (session && session.nodeName === name) form.hidden = true;
       } catch (_) {}
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -4610,14 +4704,30 @@ def _public_profile_html(profile, host):
           return;
         }
         status.textContent = "Saving follow...";
-        const response = await fetch("/api/accounts/%s/follow", {
+        const response = await fetch("/api/accounts/" + encodeURIComponent(name) + "/follow", {
           method: "POST",
           headers: { "content-type": "application/json", accept: "application/json" },
           body: JSON.stringify({ sessionToken: session.sessionToken }),
         });
         const body = await response.json().catch(() => ({}));
-        status.textContent = response.ok ? "Following @" + "%s" + "." : (body.error || "Could not follow this profile.");
+        status.textContent = response.ok ? "Following @" + name + "." : (body.error || "Could not follow this profile.");
       });
+      const remote = document.querySelector("[data-remote-follow]");
+      if (remote) {
+        remote.addEventListener("submit", (event) => {
+          event.preventDefault();
+          const input = remote.querySelector("input");
+          const out = remote.querySelector("[data-remote-follow-status]");
+          const handle = String((input && input.value) || "").trim().replace(/^@/, "");
+          const domain = handle.split("@")[1];
+          if (!domain) {
+            out.textContent = "Enter your handle like you@mastodon.social.";
+            return;
+          }
+          const uri = String(remote.dataset.handle || "").replace(/^@/, "");
+          window.open("https://" + domain + "/authorize_interaction?uri=" + encodeURIComponent(uri), "_blank", "noopener");
+        });
+      }
     })();
   </script>
 </body>
@@ -4631,13 +4741,17 @@ def _public_profile_html(profile, host):
         _html_escape("https://" + host + "/ap/users/" + quote(name)),
         avatar_html,
         _html_escape(name), _html_escape(canonical), mastodon_html,
-        _html_escape(followers), _html_escape(following), _html_escape(mirror_count),
+        kind_badge_html,
+        str(followers), str(following), str(mirror_count),
+        fedi_stats_html,
         "".join(meta_rows),
         ('<p class="bio">' + _html_escape(bio) + '</p>') if bio else "",
+        followed_by_html,
         about_html,
         "".join(link_rows),
-        _html_escape(name), _html_escape(name), _html_escape(quote(name)),
-        _html_escape(name),
+        fedi_follow_html,
+        repos_html,
+        _html_escape(name), _html_escape(name),
     )
 
 
@@ -4656,16 +4770,115 @@ async def _public_profile_payload(env, rec, request):
     }
 
 
+async def _profile_public_repos(env, name):
+    """Public catalog repos for a profile page: every public record published
+    under the profile name or one of its linked nodes. Source-of-truth records
+    (source == local-node) sort first so the page leads with the repos this
+    owner actually holds the working copy for, ahead of mirrors it serves."""
+    repos = []
+    seen = set()
+    for owner in await _profile_catalog_owner_names(env, name):
+        owner_bi = await blind_index(env, owner)
+        rows = await d1_all(
+            env,
+            "SELECT key_bi, data FROM repositories WHERE owner_bi=? AND is_private = 0",
+            owner_bi)
+        for row in rows or []:
+            rec = await decrypt_row(env, row.get("data", ""))
+            if not rec:
+                continue
+            repo_name = clean_string(rec.get("name", ""), MAX_REPO_SEGMENT)
+            repo_owner = clean_string(
+                rec.get("owner", "") or owner, MAX_NODE_NAME).lower()
+            if not repo_name:
+                continue
+            key = repo_owner + "/" + repo_name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            repos.append({
+                "owner": repo_owner,
+                "name": repo_name,
+                "keyBi": row.get("key_bi"),
+                "description": clean_string(rec.get("description", "") or "", 240),
+                "website": clean_string(rec.get("website", "") or "", 240),
+                "isSource": str(rec.get("source") or "local-node") == "local-node",
+                "issueCount": clean_string(rec.get("issueCount", ""), 12),
+                "commitCount": clean_string(rec.get("commitCount", ""), 12),
+            })
+    repos.sort(key=lambda r: (not r["isSource"], r["owner"], r["name"].lower()))
+    return repos[:100]
+
+
+async def _profile_fediverse(env, request, name):
+    """Mastodon-follow facts for a profile page, or {} when the fediverse
+    layer is off or the account does not federate (missing/private)."""
+    if not await _ap_enabled(env) or not await _ap_user_federates(env, name):
+        return {}
+    origin = _ap_origin(env, request)
+    row = await d1_first(
+        env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
+        await _ap_actor_bi(env, AP_ACTOR_USER, name))
+    return {
+        "handle": "@%s@%s" % (name, _ap_domain_of(origin)),
+        "actorUrl": _ap_actor_url(origin, AP_ACTOR_USER, name),
+        "followers": int((row or {}).get("c", 0) or 0),
+    }
+
+
+async def _profile_follower_names(env, name, limit=12):
+    # Follower names are public catalog-adjacent data (they are written
+    # plaintext next to the blind indexes precisely so profiles can show them).
+    target_bi = await blind_index(env, name)
+    rows = await d1_all(
+        env,
+        "SELECT follower_name FROM profile_follows WHERE target_bi=?"
+        " ORDER BY created_at DESC LIMIT ?",
+        target_bi, limit)
+    return [row.get("follower_name") for row in rows or []
+            if row.get("follower_name")]
+
+
+async def _profile_repo_logo_url(env, repos):
+    """Owner-uploaded logo of the first source-of-truth repo that has one —
+    the org page's avatar fallback when the account has no uploaded avatar."""
+    for repo in [r for r in repos if r.get("isSource")][:4]:
+        row = await d1_first(
+            env,
+            "SELECT updated_at FROM repo_media WHERE repo_bi=? AND kind='logo'",
+            repo.get("keyBi"))
+        if row:
+            return "/api/repo/%s/%s/media/logo.png?v=%d" % (
+                quote(repo["owner"]), quote(repo["name"]),
+                int(row.get("updated_at") or 0))
+    return ""
+
+
 async def public_profile_handler(env, request, username):
     name = clean_string(username, MAX_NODE_NAME).lower()
     if not valid_node_name(name):
         return json_response({"error": "not_found"}, status=404)
     _, rec = await _account_row(env, name)
-    if (not rec or rec.get("status") != "active" or
-            _account_kind(rec) != "user" or bool(rec.get("profile_private"))):
+    if rec and (rec.get("status") != "active" or
+                bool(rec.get("profile_private"))):
+        return json_response({"error": "not_found"}, status=404)
+    repos = await _profile_public_repos(env, name)
+    is_user = bool(rec) and _account_kind(rec) == "user"
+    # Beyond login ("user") profiles, a public user-or-org page exists only
+    # for source-of-truth nodes: the /owner of /owner/repo gets a page when it
+    # is the working-copy holder (source == local-node) of at least one public
+    # repo. Mirror-only namespaces and unknown names keep 404ing.
+    if not is_user and not any(r["isSource"] for r in repos):
         return json_response({"error": "not_found"}, status=404)
     host = clean_string(urlparse(request.url).netloc, 253)
+    rec = rec or {"name": name}
     profile = await _public_profile_payload(env, rec, request)
+    profile["kind"] = "user" if is_user else "node"
+    profile["repos"] = repos
+    profile["fediverse"] = await _profile_fediverse(env, request, name)
+    profile["followerNames"] = await _profile_follower_names(env, name)
+    if not profile.get("avatarPng"):
+        profile["logoUrl"] = await _profile_repo_logo_url(env, repos)
     return Response(
         _public_profile_html(profile, host),
         status=200,
@@ -4898,9 +5111,11 @@ async def _account_follow(env, request, target_name, method):
     target = clean_string(target_name, MAX_NODE_NAME).lower()
     if not valid_node_name(target):
         return json_response({"error": "not_found"}, status=404)
+    # Any active, non-private account is followable — node accounts included,
+    # matching the fediverse layer (_ap_user_federates) and the public
+    # user-or-org page, which both treat the node name as a public identity.
     target_bi, target_rec = await _account_row(env, target)
     if (not target_rec or target_rec.get("status") != "active" or
-            _account_kind(target_rec) != "user" or
             bool(target_rec.get("profile_private"))):
         return json_response({"error": "not_found"}, status=404)
 
@@ -9094,9 +9309,8 @@ async def _ap_user_federates(env, name):
     # Any active, non-private account federates as a Person — node-owner
     # accounts included, not just login ("user"-kind) accounts: the node name
     # is the public authoring identity on issues/PRs, so it is what fediverse
-    # followers expect to find at @name@<domain>. (The web follow API stays
-    # stricter — user-kind targets only — but that gates a login feature, not
-    # public visibility.)
+    # followers expect to find at @name@<domain>. The web follow API
+    # (_account_follow) accepts the same targets.
     name = (name or "").strip().lower()
     if not valid_node_name(name):
         return False
