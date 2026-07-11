@@ -243,6 +243,7 @@ def test_repo_shortcuts_are_worker_owned_without_hijacking_static_assets():
 
     assert static_routes.looks_like_repo_route("/kaif/forkmesh")
     assert static_routes.looks_like_repo_route("/kaif/forkmesh/issues")
+    assert static_routes.looks_like_repo_route("/kaif/forkmesh/insights")
     assert static_routes.looks_like_repo_route("/kaif/forkmesh/tree/src/main.py")
     assert static_routes.looks_like_repo_route("/kaif/forkmesh/blob/README.md")
 
