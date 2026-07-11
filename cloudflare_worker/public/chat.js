@@ -17,7 +17,7 @@ const ROOM_NAME = "general";
 // can obtain it. Fetched once and cached here.
 const ROOM_KEY_ENDPOINT = "/api/chat/room-key";
 let roomPassphrase = null;
-const DEFAULT_CHANNELS = ["#general", "#welcome-users", "#welcome-nodes"];
+const DEFAULT_CHANNELS = ["#general", "#welcome", "#random"];
 const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
 const FORKBOT_ENDPOINT = "/api/forkbot/chat";
 const FORKBOT_SENDER_ID = "forkbot";
