@@ -124,6 +124,9 @@ MAX_PENDING_DISCUSSIONS = 500
 # Agent-session sync (adhoc #182): desktop -> website push of Claude Code agent
 # sessions for a repo, and website -> desktop queued prompts for a running one.
 MAX_AGENT_SESSIONS = 300
+# Per-isolate digest of the last stored agent-session snapshot per repo, so a
+# byte-identical safety-net push skips the full DELETE + re-encrypt + reinsert.
+_AGENT_PUSH_DIGESTS = {}
 MAX_AGENT_STRING = 300
 MAX_AGENT_TITLE = 240
 MAX_AGENT_PROMPT_TEXT = 8000
@@ -595,7 +598,11 @@ def json_response(data, status=200, cache_seconds=None, cache_control=None,
         headers["cache-control"] = "public, max-age=%d" % cache_seconds
     if extra_headers:
         headers.update(extra_headers)
-    return Response(json.dumps(data, indent=2), status=status, headers=headers)
+    # Compact separators: pretty-printing every API reply cost measurable
+    # Pyodide CPU and bytes on hot paths (/api/sync, catalog) — a real factor
+    # in the 2026-07-11 free-plan 1102 overload.
+    return Response(json.dumps(data, separators=(",", ":")),
+                    status=status, headers=headers)
 
 
 # --- Edge cache (Cache API) helpers -----------------------------------------
@@ -712,20 +719,26 @@ async def git_advert_cache_put(cache_key, response, ttl=GIT_ADVERT_CACHE_TTL):
 
 
 async def purge_catalog_related_caches():
-    for key in (
-        CATALOG_CACHE_KEY,
-        NETWORK_STATS_CACHE_KEY,
-        NETWORK_LEADERBOARDS_CACHE_KEY,
-        NETWORK_OVERVIEW_CACHE_KEY,
-    ):
-        await edge_cache_delete(key)
+    # One concurrent sweep instead of four sequential awaits — this runs on
+    # every catalog write, inside the request's critical path.
+    await asyncio.gather(*(
+        edge_cache_delete(key)
+        for key in (
+            CATALOG_CACHE_KEY,
+            NETWORK_STATS_CACHE_KEY,
+            NETWORK_LEADERBOARDS_CACHE_KEY,
+            NETWORK_OVERVIEW_CACHE_KEY,
+        )), return_exceptions=True)
 
 
 CATALOG_CACHE_KEY = "https://forkmesh.internal/api/repositories"
 NETWORK_STATS_CACHE_KEY = "https://forkmesh.internal/api/network/stats"
 NETWORK_LEADERBOARDS_CACHE_KEY = "https://forkmesh.internal/api/network/leaderboards"
 NETWORK_OVERVIEW_CACHE_KEY = "https://forkmesh.internal/api/network/overview"
-CATALOG_TTL = 10  # seconds the repositories list is cached at the edge
+# Seconds the repositories list is cached at the edge. Every write path calls
+# purge_catalog_related_caches, so a longer TTL only delays third-party edits;
+# 10s meant a full (purge + multi-table) rebuild every 10s per colo under load.
+CATALOG_TTL = 30
 
 
 async def touch_host_presence(env, repo_bi):
@@ -832,6 +845,12 @@ async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
         rec = row.get("data") or {}
         key = str(row.get("key_bi") or "")
         if not key or not repo_mirror_same_group(target, rec):
+            continue
+        # Fresh D1 presence (heartbeat within the last 30s) is trustworthy —
+        # skip the per-mirror Durable Object probe subrequest for those. Only
+        # stale/missing entries get the ground-truth DO check; this bounded
+        # the N-subrequest fan-out that ran on every /mirrors request.
+        if now - int(presence.get(key, 0) or 0) < 30 * 1000:
             continue
         hosts = await repo_live_host_count(
             env, rec.get("owner"), rec.get("name"))
@@ -2503,6 +2522,11 @@ SOLANA_SWEEP_FEE_RESERVE_LAMPORTS = 5000
 # window (reuses the host-presence staleness window).
 ACCOUNT_PRESENCE_STALE_MS = 10 * 60 * 1000
 HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS = 1500
+# Per-isolate throttle for the heartbeat's external Solana balance probe:
+# wallet -> last probe ms. 5 minutes keeps donation detection prompt without
+# an RPC subrequest on every single 60s heartbeat.
+HEARTBEAT_SOLANA_BALANCE_MIN_MS = 5 * 60 * 1000
+_HEARTBEAT_BALANCE_PROBES = {}
 # Central donation fund (issue #308): a single worker-custodied Solana wallet
 # that anyone can donate to. A cron sweeps its whole balance out to the
 # currently-online nodes once an hour, so one donation address fans out to every
@@ -2970,15 +2994,13 @@ async def catalog_handler(env, request):
         # replaying a burst of DELETEs plus host-offline notifications inline on
         # every catalog load held the single Worker event loop long enough for
         # the runtime to cancel the request as hung ("Cannot enter into task").
-        if not authed_viewer:
-            try:
-                await purge_blocked_catalog(env)
-            except Exception:
-                pass
-            try:
-                await purge_stale_registered_nodes(env)
-            except Exception:
-                pass
+        # Housekeeping moved off the request path entirely (2026-07-11): the
+        # staggered cron already runs purge_blocked_catalog (minute%15==9) and
+        # purge_stale_registered_nodes (minute%15==4), and the response is
+        # correct without them — blocked entries are skipped by
+        # _is_blocked_catalog_identity and stale ones by the active-node
+        # filter below. Running purges on every 10s cache miss helped melt
+        # the free plan during the 2026-07-11 overload.
         try:
             active_nodes = await active_registered_node_bis(env)
         except Exception:
@@ -3074,7 +3096,11 @@ async def catalog_handler(env, request):
         # key holder may write its namespace. This ties repo identity to the
         # account (fixes duplicate forks) and prevents impersonation. A registered
         # account is REQUIRED — there is no self-asserted-maintainer fallback.
-        owner_pub = await _owner_pubkey(env, owner)
+        # One account fetch serves both the pubkey check and the node touch
+        # below (the old code fetched + decrypted the same record twice).
+        _, publish_owner_rec = await _account_row(env, owner)
+        owner_pub = (publish_owner_rec.get("pubkey", "")
+                     if publish_owner_rec else "")
         if not owner_pub:
             return json_response({"error": "account_required"}, status=403)
         if record["maintainer"] != owner_pub:
@@ -3086,8 +3112,7 @@ async def catalog_handler(env, request):
             return json_response({"error": "bad_signature"}, status=401)
         owner_bi = await blind_index(env, owner)
         try:
-            _, owner_rec = await _account_row(env, owner)
-            await touch_registered_node(env, owner_bi, owner_rec)
+            await touch_registered_node(env, owner_bi, publish_owner_rec)
         except Exception:
             pass
 
@@ -3168,9 +3193,13 @@ async def catalog_handler(env, request):
                 )
             except Exception:
                 pass
-        # Cap: keep only the most-recent MAX_CATALOG_REPOS.
-        rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
-        if len(rows) > MAX_CATALOG_REPOS:
+        # Cap: keep only the most-recent MAX_CATALOG_REPOS. COUNT first — the
+        # old unconditional fetch-and-decrypt of EVERY catalog blob on every
+        # publish was pure per-request overhead (the cap is almost never hit).
+        total_row = await d1_first(
+            env, "SELECT COUNT(*) AS c FROM repositories")
+        if total_row and (total_row.get("c", 0) or 0) > MAX_CATALOG_REPOS:
+            rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
             decoded = []
             for r in rows:
                 rec2 = await decrypt_row(env, r["data"])
@@ -3443,6 +3472,13 @@ async def repo_mirrors_handler(env, request, owner, repo):
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
     await ensure_schema(env)
+    # Public, poll-heavy payload (repo page + desktop mirror panel): serve
+    # from the edge for a few seconds so a burst of viewers costs one build.
+    cache_key = ("https://forkmesh.internal/api/repo/%s/%s/mirrors"
+                 % (quote(str(owner or "")), quote(str(repo or ""))))
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
     rows = await d1_all(
         env,
         "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0"
@@ -3483,12 +3519,20 @@ async def repo_mirrors_handler(env, request, owner, repo):
     }
     # Recent owner-attested state pins, so the payload can mark which mirrors
     # the clone integrity gate is rejecting (same gathering as _state_pins).
+    # Scoped to this request's catalog group — the old full-table scan read
+    # every repo's pin history on every /mirrors poll.
     history = {}
-    hist_rows = await d1_all(
-        env, "SELECT key_bi, state_hash FROM repo_state_history")
-    for r in hist_rows:
-        history.setdefault(str(r.get("key_bi") or ""), []).append(
-            r.get("state_hash"))
+    group_keys = [str(r.get("key_bi") or "") for r in catalog_rows
+                  if r.get("key_bi")]
+    if group_keys:
+        hist_rows = await d1_all(
+            env,
+            "SELECT key_bi, state_hash FROM repo_state_history"
+            " WHERE key_bi IN (%s)" % ",".join("?" for _ in group_keys),
+            *group_keys)
+        for r in hist_rows:
+            history.setdefault(str(r.get("key_bi") or ""), []).append(
+                r.get("state_hash"))
     payload = build_repo_mirrors_payload(
         owner,
         repo,
@@ -3502,7 +3546,9 @@ async def repo_mirrors_handler(env, request, owner, repo):
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
-    return json_response(payload)
+    response = json_response(payload, cache_seconds=10)
+    await edge_cache_put(cache_key, response)
+    return response
 
 
 # --- Release download counts -------------------------------------------------
@@ -3640,10 +3686,18 @@ async def touch_registered_node(env, name_bi, rec=None):
     # merely browsing stale profiles would keep abandoned nodes alive forever.
     if not name_bi:
         return
-    if rec and clean_string(rec.get("pubkey", ""), 120):
+    if (rec and clean_string(rec.get("pubkey", ""), 120)
+            and name_bi not in _MIRRORED_ACCOUNT_BIS):
+        # First touch this isolate: full mirror repair (also stamps last_seen).
         await _mirror_account_identity_tables(
             env, name_bi, rec, touch_seen=True)
+        if len(_MIRRORED_ACCOUNT_BIS) < 10000:
+            _MIRRORED_ACCOUNT_BIS.add(name_bi)
         return
+    # Mirror already repaired this isolate (or no rec): the 1-statement
+    # last_seen stamp is all a heartbeat/connect needs — the full mirror
+    # rewrite (2 encrypts + 2 upserts) on every beat helped melt the free
+    # plan on 2026-07-11.
     await d1_run(
         env, "UPDATE nodes SET last_seen=? WHERE node_bi=?",
         int(Date.now()), name_bi)
@@ -3666,6 +3720,17 @@ async def _account_identity_rec_by_bi(env, name_bi):
     return await decrypt_row(env, row.get("data"))
 
 
+# name_bis whose users/nodes mirror this isolate already repaired. The mirror
+# rewrite costs 1-2 encrypt_row + 2 upserts, and hot handlers reach
+# _account_row 2-3x per request (_owner_pubkey, _authorize_owner,
+# touch_registered_node) — repeating it on every READ was a top contributor
+# to the 2026-07-11 free-plan CPU overload. Write paths call
+# _mirror_account_identity_tables directly (via _save_account), so a stale
+# entry here can never mask a real update; a recycled isolate simply repairs
+# once more.
+_MIRRORED_ACCOUNT_BIS = set()
+
+
 async def _account_row(env, name):
     name_bi = await blind_index(env, name)
     row = await d1_first(
@@ -3677,11 +3742,13 @@ async def _account_row(env, name):
         # users/nodes tables its accounts row is deleted, so fall back to those.
         return name_bi, await _account_identity_rec_by_bi(env, name_bi)
     rec = await decrypt_row(env, row["data"])
-    if rec:
+    if rec and name_bi not in _MIRRORED_ACCOUNT_BIS:
         try:
             await _mirror_account_identity_tables(
                 env, name_bi, rec, email_bi=row.get("email_bi"),
                 ip_bi=row.get("ip_bi"), is_admin=row.get("is_admin", 0))
+            if len(_MIRRORED_ACCOUNT_BIS) < 10000:
+                _MIRRORED_ACCOUNT_BIS.add(name_bi)
         except Exception:
             # Public account reads must not fail just because the derived
             # users/nodes mirror table needs repair; the encrypted accounts row
@@ -6490,7 +6557,16 @@ async def _account_heartbeat(env, request):
     wallet = rec.get("solana", "")
     balance_lamports = None
     donation_received = False
-    if wallet and SOLANA_RE.match(wallet):
+    # Throttle the external Solana RPC to once per wallet per 5 minutes per
+    # isolate: one subrequest on EVERY 60s heartbeat from every node was pure
+    # overhead (donations are surfaced within minutes either way).
+    now_ms = int(Date.now())
+    last_probe = _HEARTBEAT_BALANCE_PROBES.get(wallet, 0)
+    if (wallet and SOLANA_RE.match(wallet)
+            and now_ms - last_probe >= HEARTBEAT_SOLANA_BALANCE_MIN_MS):
+        _HEARTBEAT_BALANCE_PROBES[wallet] = now_ms
+        if len(_HEARTBEAT_BALANCE_PROBES) > 5000:
+            _HEARTBEAT_BALANCE_PROBES.clear()
         try:
             balance_lamports = await asyncio.wait_for(
                 _solana_balance_lamports(env, wallet),
@@ -12612,12 +12688,41 @@ async def sync_handler(env, request):
     owner_bi = await blind_index(env, owner)
     rows = await d1_all(
         env, "SELECT key_bi, data FROM repositories WHERE owner_bi=?", owner_bi)
+    repo_bis = [row["key_bi"] for row in rows]
+    # One query per table across ALL of the owner's repos (IN-list) instead of
+    # six queries per repo: /api/sync fires on every pushed event frame AND
+    # the fallback poll, and the old 6N sequential D1 roundtrips were a top
+    # contributor to the 2026-07-11 free-plan overload. Table names are fixed
+    # literals (same convention as _inbox_author_over_quota); inbox items are
+    # NOT deleted here — the node acks a merged inbox with its per-repo DELETE.
+    marks = ",".join("?" for _ in repo_bis)
+    by_repo = {}   # repo_bi -> {topic: [decrypted rows...]}
+    if repo_bis:
+        for topic, table, ordered in (
+                ("issues", "issue_inbox", True),
+                ("pulls", "pull_inbox", True),
+                ("discussions", "discussion_inbox", True),
+                ("commits", "commit_inbox", True),
+                ("agentPrompts", "agent_prompts", True),
+                ("aboutUpdate", "about_inbox", False)):
+            order = " ORDER BY id ASC" if ordered else ""
+            table_rows = await d1_all(
+                env,
+                f"SELECT repo_bi, data FROM {table} WHERE repo_bi IN ({marks})"
+                + order,
+                *repo_bis)
+            for r in table_rows or []:
+                item = await decrypt_row(env, r.get("data"))
+                if item:
+                    by_repo.setdefault(r.get("repo_bi"), {}) \
+                        .setdefault(topic, []).append(item)
     repos = []
     for row in rows:
         rec = await decrypt_row(env, row["data"])
         if not rec:
             continue
         repo_bi = row["key_bi"]
+        pending = by_repo.get(repo_bi, {})
         entry = {
             "name": clean_string(rec.get("name", ""), 120),
             "owner": clean_string(rec.get("owner", owner), 120),
@@ -12626,39 +12731,21 @@ async def sync_handler(env, request):
             "stateHash": rec.get("stateHash", ""),
             "updatedAt": rec.get("updatedAt", ""),
             "source": rec.get("source", ""),
+            "issues": pending.get("issues", []),
+            "pulls": pending.get("pulls", []),
+            "discussions": pending.get("discussions", []),
+            "commits": pending.get("commits", []),
         }
-        # Table names are fixed literals, safe to interpolate (same convention
-        # as _inbox_author_over_quota). Inbox items are NOT deleted here — the
-        # node still acknowledges a merged inbox with its per-repo DELETE.
-        for topic, table in (("issues", "issue_inbox"),
-                             ("pulls", "pull_inbox"),
-                             ("discussions", "discussion_inbox"),
-                             ("commits", "commit_inbox")):
-            inbox_rows = await d1_all(
-                env, f"SELECT data FROM {table} WHERE repo_bi=? ORDER BY id ASC",
-                repo_bi)
-            entry[topic] = [
-                x for x in
-                [await decrypt_row(env, r["data"]) for r in inbox_rows] if x]
-        prompt_rows = await d1_all(
-            env,
-            "SELECT data FROM agent_prompts WHERE repo_bi=? ORDER BY id ASC",
-            repo_bi)
-        prompts = [
-            x for x in
-            [await decrypt_row(env, r["data"]) for r in prompt_rows] if x]
+        prompts = pending.get("agentPrompts", [])
         if prompts:
             await d1_run(
                 env, "DELETE FROM agent_prompts WHERE repo_bi=?", repo_bi)
         entry["agentPrompts"] = prompts
         # Web About edits, drained on read like agent prompts: the node writes
         # the change into the repo's committed .forkmesh/info.json.
-        about_row = await d1_first(
-            env, "SELECT data FROM about_inbox WHERE repo_bi=?", repo_bi)
-        if about_row:
-            about_update = await decrypt_row(env, about_row.get("data"))
-            if about_update:
-                entry["aboutUpdate"] = about_update
+        abouts = pending.get("aboutUpdate", [])
+        if abouts:
+            entry["aboutUpdate"] = abouts[0]
             await d1_run(
                 env, "DELETE FROM about_inbox WHERE repo_bi=?", repo_bi)
         repos.append(entry)
@@ -12741,17 +12828,41 @@ async def agents_handler(env, request, owner, repo):
         for session in sessions:
             by_id[session["id"]] = session
         sessions = list(by_id.values())
+        # No-op short-circuit: the desktop's 30s safety-net timer mostly
+        # re-pushes an identical snapshot. Re-encrypting and rewriting up to
+        # MAX_AGENT_SESSIONS rows (hundreds of AES-GCM ops + inserts) for a
+        # byte-identical payload was the single strongest CPU spike in the
+        # 2026-07-11 free-plan overload. The digest memo is per-isolate: a
+        # cold isolate rewrites once, then skips.
+        digest = hashlib.sha256(
+            json.dumps(sessions, sort_keys=True,
+                       separators=(",", ":")).encode()).hexdigest()
+        if _AGENT_PUSH_DIGESTS.get(repo_bi) == digest:
+            return json_response({"ok": True, "unchanged": True})
         # Full-replace semantics: the desktop always pushes its whole current
         # view of this repo's sessions, so the stored set is exactly that.
         await d1_run(env, "DELETE FROM repo_agents WHERE repo_bi=?", repo_bi)
         now = int(Date.now())
+        # Multi-row INSERT (chunked under D1's bound-parameter limit) instead
+        # of one awaited roundtrip per session.
+        encrypted = []
         for session in sessions:
+            encrypted.append(
+                (str(session["id"]), await encrypt_row(env, session)))
+        for start in range(0, len(encrypted), 20):
+            chunk = encrypted[start:start + 20]
+            placeholders = ",".join("(?,?,?,?)" for _ in chunk)
+            args = []
+            for agent_id, enc in chunk:
+                args.extend((repo_bi, agent_id, enc, now))
             await d1_run(
                 env,
-                "INSERT INTO repo_agents (repo_bi, agent_id, data, updated_at) "
-                "VALUES (?,?,?,?)",
-                repo_bi, str(session["id"]), await encrypt_row(env, session), now,
-            )
+                "INSERT INTO repo_agents (repo_bi, agent_id, data, updated_at)"
+                " VALUES " + placeholders,
+                *args)
+        _AGENT_PUSH_DIGESTS[repo_bi] = digest
+        if len(_AGENT_PUSH_DIGESTS) > 2000:
+            _AGENT_PUSH_DIGESTS.clear()
         return json_response({"ok": True})
 
     if method == "GET":
