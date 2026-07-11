@@ -2450,6 +2450,8 @@ SCHEMA_ALTER_STATEMENTS = [
     "ALTER TABLE discussion_inbox ADD COLUMN submitter_bi TEXT",
     # Blind index of the signup IP for duplicate-signup detection (migration 0015).
     "ALTER TABLE accounts ADD COLUMN ip_bi TEXT",
+    # Raw User-Agent of each release download, shown in the admin list (migration 0034).
+    "ALTER TABLE release_downloads ADD COLUMN ua TEXT",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -3387,7 +3389,7 @@ async def repo_mirrors_handler(env, request, owner, repo):
 
 # --- Release download counts -------------------------------------------------
 
-async def record_release_download(env, repo_bi, sha256):
+async def record_release_download(env, repo_bi, sha256, ua=""):
     """Log one completed release-asset download. Best-effort; never raises —
     called fire-and-forget from the streaming DO response, so a D1 hiccup must
     never fail or delay the download itself."""
@@ -3395,8 +3397,8 @@ async def record_release_download(env, repo_bi, sha256):
         await ensure_schema(env)
         await d1_run(
             env,
-            "INSERT INTO release_downloads (repo_bi, sha256, ts) VALUES (?, ?, ?)",
-            repo_bi, sha256, int(Date.now()),
+            "INSERT INTO release_downloads (repo_bi, sha256, ts, ua) VALUES (?, ?, ?, ?)",
+            repo_bi, sha256, int(Date.now()), ua,
         )
     except Exception:
         pass
@@ -17130,7 +17132,7 @@ class ForkMeshHost(DurableObject):
                 # Fire-and-forget: log the download without delaying the
                 # already-streaming response on a D1 round-trip.
                 _fire_and_forget(
-                    record_release_download(self.env, repo_bi, sha256.lower()),
+                    record_release_download(self.env, repo_bi, sha256.lower(), ua),
                     "release download log")
             return response
         status = 404 if str(err.get("error", "")) in (
