@@ -1109,6 +1109,9 @@
         : (base.notificationPreferences || {}),
       kind: body.kind || base.kind || "",
       owner: body.owner ?? base.owner ?? "",
+      online: Object.prototype.hasOwnProperty.call(body, "online")
+        ? Boolean(body.online)
+        : Boolean(base.online),
       nodes: Array.isArray(body.nodes) ? body.nodes : (base.nodes || []),
       at: Date.now(),
     };
@@ -1639,6 +1642,11 @@
 
   function defaultProfileAbout(session = profileSubject()) {
     const name = String(session?.nodeName || session?.email || "ForkMesh").trim() || "ForkMesh";
+    if (session?.kind === "node") {
+      const owner = String(session?.owner || "").trim();
+      return `# ${name} is a ForkMesh node\n\nIt mirrors Git repositories and helps serve them to the network.` +
+        (owner ? `\n\nOperated by @${owner}.` : "");
+    }
     return `# Hi, I'm ${name}\n\nPinned profile content and public activity live here.`;
   }
 
@@ -1718,9 +1726,11 @@
   function renderProfileAbout(session) {
     if (profileMarkupOwnedByPublicProfile(session)) return;
     const owner = $("[data-profile-about-owner]");
+    const label = $("[data-profile-about-label]");
     const body = $("[data-profile-about-body]");
     const name = String(session?.nodeName || session?.email || "forkmesh").trim() || "forkmesh";
     if (owner) owner.textContent = name;
+    if (label) label.textContent = session?.kind === "node" ? "About this node" : "About yourself";
     if (body) {
       body.className = "grid gap-4 p-5 text-sm leading-6 text-foreground";
       body.innerHTML = renderProfileMarkdown(profileAboutMarkdown(session));
@@ -2274,12 +2284,21 @@
     const publicUrl = $("[data-profile-public-url]");
     const txtValue = $("[data-profile-txt-value]");
 
+    const isNode = session?.kind === "node";
     avatars.forEach((avatar) => applyAvatar(avatar, session));
     nameEls.forEach((nameEl) => {
       nameEl.textContent = name;
     });
     emailEls.forEach((emailEl) => {
       emailEl.textContent = email;
+    });
+    $$("[data-profile-kind-badge]").forEach((badge) => {
+      badge.classList.toggle("hidden", !isNode);
+    });
+    $$("[data-profile-node-status]").forEach((row) => {
+      row.classList.toggle("hidden", !isNode);
+      const text = row.querySelector("[data-profile-node-status-text]");
+      if (text) text.textContent = session?.online ? "Online" : "Offline";
     });
     bioEls.forEach((bioEl) => {
       bioEl.textContent = session?.profileBio || "No bio yet.";
