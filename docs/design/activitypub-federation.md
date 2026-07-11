@@ -87,6 +87,10 @@ Every actor ships an avatar (`icon`) and profile header (`image`):
   with a `?v=<updated_at>` cache-buster in the actor document. The About
   `description` doubles as the repo actor's fediverse bio, and a user actor's
   bio comes from their profile `profile_bio`.
+* Change propagation: saving the repo About (or a user profile) broadcasts an
+  `Update(actor)` activity to all existing followers, so remote servers
+  refetch the avatar/header/bio immediately instead of waiting out their
+  actor-cache TTL.
 
 ## Configuration
 
