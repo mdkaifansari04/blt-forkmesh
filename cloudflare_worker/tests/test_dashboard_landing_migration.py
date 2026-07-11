@@ -975,7 +975,7 @@ def test_dashboard_about_links_readme_activity_and_owner_edit():
     ):
         assert marker in click_handler
     for marker in (
-        "saveRepoAboutFromWeb(state.selectedRepo, description)",
+        "saveRepoAboutFromWeb(state.selectedRepo, description, media)",
         "applyRepoAboutDescription(state.selectedRepo, body.description ?? description)",
         "Only the source node owner can edit About.",
     ):
@@ -1274,10 +1274,8 @@ def test_dashboard_repository_record_chips_and_sidebar_links_use_neutral_github_
     assert 'number === page ? "bg-primary text-primary-foreground border-primary"' not in pagination
     assert 'data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link"' in dashboard_js
     assert "browse-repo-button inline-flex items-center gap-1 text-xs font-medium text-foreground transition-colors" not in dashboard_js
-    # The Clone availability chip keys off the group-liveness verdict (`live`,
-    # which folds in an online mirror serving in place - adhoc #61) but keeps the
-    # neutral GitHub-like foreground/muted colors, never the accent primary.
-    assert '${live ? "text-foreground" : "text-muted-foreground"}' in render
+    # The About rail's Clone-availability row was removed with the metadata
+    # cleanup; the accent-primary variant must stay gone regardless.
     assert '${live ? "text-primary" : "text-muted-foreground"}">${live ? "available" : "offline"}</dd>' not in render
 
 

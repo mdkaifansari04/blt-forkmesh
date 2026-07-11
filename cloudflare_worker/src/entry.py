@@ -3140,8 +3140,61 @@ def _catalog_record_matches_identity(record, owner, repo):
     return clone_owner.lower() == owner_l and clone_repo.lower() == repo_l
 
 
+async def _repo_about_public(env, request, owner, repo):
+    # Public About/branding card + fediverse stats: the repo page's social
+    # badge header and Watch button read this. No auth — same visibility as
+    # the catalog entry itself.
+    if await _repo_is_private(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
+    key_bi = await blind_index(env, owner + "/" + repo)
+    repo_row = await d1_first(
+        env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
+    if not repo_row:
+        return json_response({"error": "not_found"}, status=404)
+    rec = await decrypt_row(env, repo_row.get("data"))
+    origin = _ap_origin(env, request)
+    handle = ap.repo_handle(str(owner).lower(), str(repo).lower())
+    logo_url = ""
+    banner_url = ""
+    media_rows = await d1_all(
+        env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?", key_bi)
+    for media in media_rows or []:
+        media_url = "/api/repo/%s/%s/media/%s.png?v=%d" % (
+            quote(owner), quote(repo), media.get("kind", ""),
+            int(media.get("updated_at") or 0))
+        if media.get("kind") == "logo":
+            logo_url = media_url
+        elif media.get("kind") == "banner":
+            banner_url = media_url
+    followers = 0
+    fedi_enabled = await _ap_enabled(env)
+    if fedi_enabled:
+        actor_bi = await _ap_actor_bi(env, AP_ACTOR_REPO, handle)
+        row = await d1_first(
+            env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
+            actor_bi)
+        followers = (row or {}).get("c", 0) or 0
+    return json_response({
+        "ok": True,
+        "description": clean_string(
+            (rec or {}).get("description", "") or "", 240),
+        "logoUrl": logo_url,
+        "bannerUrl": banner_url,
+        "defaultLogoUrl": AP_AVATAR_PATH,
+        "defaultBannerUrl": AP_BANNER_PATH,
+        "fediverse": {
+            "enabled": fedi_enabled,
+            "handle": "@%s@%s" % (handle, _ap_domain_of(origin)),
+            "actorUrl": _ap_actor_url(origin, AP_ACTOR_REPO, handle),
+            "followers": followers,
+        },
+    }, cache_control="public, max-age=30")
+
+
 async def repo_about_handler(env, request, owner, repo):
     await ensure_schema(env)
+    if method_name(request) == "GET":
+        return await _repo_about_public(env, request, owner, repo)
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
