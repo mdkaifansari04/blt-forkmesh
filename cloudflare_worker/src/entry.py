@@ -8699,7 +8699,7 @@ async def accounts_handler(env, request):
     match = ACCOUNTS_RE.match(url.path)
     if match and method == "GET":
         name = clean_string(match.group(1), MAX_NODE_NAME).lower()
-        _, rec = await _account_row(env, name)
+        name_bi, rec = await _account_row(env, name)
         if not rec:
             return json_response(
                 {"ok": True, "exists": False, "available": True, "name": name})
@@ -8717,6 +8717,16 @@ async def accounts_handler(env, request):
         # periodic self-profile poll (refreshPublicProfile, which reuses this
         # same lookup) can pick up a verification that happened in another
         # tab instead of showing "verify your email" forever (issue #320).
+        kind = _account_kind(rec)
+        online = False
+        if kind == "node":
+            # account_presence is the same heartbeat table the network page
+            # uses for online/offline; the /@name node page shows it as
+            # node-specific info the way a user page shows followers.
+            presence = await d1_first(
+                env, "SELECT ts FROM account_presence WHERE name_bi=?", name_bi)
+            online = bool(presence and int(presence.get("ts") or 0) >=
+                          int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS)
         payload = {"ok": True, "exists": True, "available": not taken,
                    "name": rec.get("name", name), "status": rec.get("status", ""),
                    "pubkey": rec.get("pubkey", ""),
@@ -8725,7 +8735,8 @@ async def accounts_handler(env, request):
                    "avatarPng": rec.get("avatar_png", ""),
                    "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
                    "createdAt": rec.get("created_at", 0),
-                   "kind": _account_kind(rec),
+                   "kind": kind,
+                   "online": online,
                    "owner": rec.get("owner", ""),
                    "nodes": _owned_nodes(rec)}
         # viewer=<name> lets the public-profile page show the caller's own
