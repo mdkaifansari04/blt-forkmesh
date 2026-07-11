@@ -247,9 +247,32 @@ def test_receive_pack_request_body_streams_and_is_never_buffered():
     assert "git-req-end" in pump
     assert "GIT_REQ_CHUNK" in pump
     # The DO's receive-pack POST leg forwards to _git without buffering the body.
-    fetch = _method_source("ForkMeshHost", "fetch")
+    fetch = _method_source("ForkMeshHost", "_fetch_inner")
     assert "'/git-receive-pack'" in fetch
     assert "self._git(request, 'git-receive-pack')" in fetch
+
+
+def test_host_do_fetch_captures_exceptions_instead_of_error_1101():
+    # An exception escaping ForkMeshHost.fetch never reaches Default.fetch's
+    # Sentry capture (the router awaits a DO *stub*), so Cloudflare logged only
+    # a bare "outcome: exception" with no traceback anywhere — adhoc #17: a
+    # git-upload-pack POST dying opaquely with Error 1101. fetch must stay a
+    # guard around _fetch_inner: capture the real stack to Sentry, then answer
+    # a retryable 503 the router's mirror fallback already understands.
+    src = _method_source("ForkMeshHost", "fetch")
+    assert "await self._fetch_inner(request)" in src
+    assert "capture_worker_exception" in src
+    assert "status=503" in src
+
+
+def test_mark_present_never_fails_the_request_it_rides_on():
+    # _mark_present is documented best-effort ("never fails the call") and runs
+    # ahead of every git/browse request AND inside the WebSocket heartbeat
+    # handler (where the fetch guard can't help). The blind-index derivation it
+    # awaits (crypto + D1) must not be able to take the request down with it.
+    src = _method_source("ForkMeshHost", "_mark_present")
+    assert "try:" in src
+    assert "_repo_blind_index" in src.split("try:", 1)[1]
 
 
 def test_git_advertises_receive_pack_without_the_clone_integrity_gate():
@@ -274,6 +297,6 @@ def test_blobs_batch_endpoint_reads_many_files_in_one_request():
     assert 'if action == "blobs":' in entry
     assert "MAX_BLOB_BATCH" in entry
     assert "asyncio.gather" in entry
-    src = _method_source("ForkMeshHost", "fetch")
+    src = _method_source("ForkMeshHost", "_fetch_inner")
     assert "_tunnel_result('blob', p, ref, ua)" in src
     assert "503 if 503 in stats else 504 if 504 in stats else 502" in src
