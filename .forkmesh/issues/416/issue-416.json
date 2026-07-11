@@ -63,6 +63,18 @@
             "status": "closed",
             "ts": 1783784473319,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "7ac70a63-ab07-403c-96a1-53b3adebc028",
+            "sig": "uD6QL5Og5xdp84WIiZ0H1_shurZ5AaOP8cjaWOMFVRMIOb3dJphJ19fQIMK31G7rtV8qwGBTId06ckKOMnyFCA",
+            "ts": 1783784679932,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -74,6 +86,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "closed",
     "title": "Still getting too many requests on the federated repo",
-    "updatedAt": 1783784473319,
+    "updatedAt": 1783784679932,
     "votes": 0
 }
