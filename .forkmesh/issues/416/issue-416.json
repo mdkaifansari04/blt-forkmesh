@@ -19,6 +19,18 @@
             "title": "Still getting too many requests on the federated repo",
             "ts": 1783783429,
             "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 18,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "6d327e4d-8167-4218-987c-3a803b3459d9",
+            "sig": "QMkBBLu3BIQyja9gn4aOg8FfnnZmk209UGN-4g9-xF0-iIFafr7hxKokCoZYepN6XYsIj8A4YSNcIA_SAAo3CQ",
+            "ts": 1783783457683,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -30,6 +42,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "Still getting too many requests on the federated repo",
-    "updatedAt": 1783783429,
+    "updatedAt": 1783783457683,
     "votes": 0
 }
