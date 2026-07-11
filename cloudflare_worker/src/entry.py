@@ -258,6 +258,7 @@ from urls import (  # noqa: E402
     AP_OBJECT_RE,
     REPO_FEDI_COMMENTS_RE,
     REPO_AP_PUBLISH_RE,
+    REPO_MEDIA_RE,
 )
 
 # Static route ownership rules: repo shortcuts are Python-owned so hard refresh
@@ -452,6 +453,11 @@ LINK_CODE_RE = re.compile(r"^[0-9]{6}$")
 MAX_AVATAR_BYTES = 256 * 1024
 MAX_AVATAR_B64 = 4 * ((MAX_AVATAR_BYTES + 2) // 3)
 PNG_HEADER = b"\x89PNG\r\n\x1a\n"
+# Repo branding (fediverse actor avatar/header). Each image lives in its own
+# encrypted repo_media row, so the caps only need to keep ONE image (b64 +
+# AES-GCM + b64 again ≈ 1.8x raw) under D1's 2 MB per-value limit.
+MAX_REPO_LOGO_BYTES = 256 * 1024
+MAX_REPO_BANNER_BYTES = 1024 * 1024
 
 
 def valid_node_name(value):
@@ -1978,20 +1984,24 @@ async def _wallet_name_map(env):
     # Build wallet -> friendly node name from local accounts and federated
     # presence, so funds-received boards can label payout wallets. Best-effort.
     mapping = {}
-    try:
-        rows = await d1_all(env, "SELECT name, data FROM accounts")
-        for row in rows:
-            rec = await decrypt_row(env, row.get("data"))
-            if not rec:
-                continue
-            wallet = (rec.get("solana") or "").strip()
-            if not wallet:
-                continue
-            name = clean_string(row.get("name") or rec.get("name", ""), MAX_NODE_NAME)
-            if name:
-                mapping.setdefault(wallet, name)
-    except Exception:
-        pass
+    # The accounts table is legacy and drains into users/nodes, so read the
+    # payout-bearing records from both accounts and the nodes table.
+    for source in ("SELECT name, data FROM accounts",
+                   "SELECT name, data FROM nodes"):
+        try:
+            rows = await d1_all(env, source)
+            for row in rows:
+                rec = await decrypt_row(env, row.get("data"))
+                if not rec:
+                    continue
+                wallet = (rec.get("solana") or "").strip()
+                if not wallet:
+                    continue
+                name = clean_string(row.get("name") or rec.get("name", ""), MAX_NODE_NAME)
+                if name:
+                    mapping.setdefault(wallet, name)
+        except Exception:
+            pass
     try:
         fed = await d1_all(env, "SELECT wallet, name FROM federated_presence")
         for row in fed:
@@ -2199,6 +2209,29 @@ def room_key_from_path(pathname):
         "room": room,
         "compat": True,
     }
+
+
+def clean_media_png(value, max_bytes):
+    """clean_avatar_png generalized for repo branding: accepts a bare-base64 or
+    data-URL PNG up to max_bytes raw, returns (normalized_b64, error)."""
+    if not isinstance(value, str):
+        return "", "bad_image"
+    image = value.strip()
+    if image.startswith("data:image/png;base64,"):
+        image = image.split(",", 1)[1].strip()
+    if not image:
+        return "", ""
+    if len(image) > 4 * ((max_bytes + 2) // 3):
+        return "", "image_too_large"
+    try:
+        raw = base64.b64decode(image, validate=True)
+    except Exception:
+        return "", "bad_image"
+    if len(raw) > max_bytes:
+        return "", "image_too_large"
+    if not raw.startswith(PNG_HEADER):
+        return "", "bad_image"
+    return base64.b64encode(raw).decode(), ""
 
 
 def clean_avatar_png(value):
@@ -3111,8 +3144,62 @@ def _catalog_record_matches_identity(record, owner, repo):
     return clone_owner.lower() == owner_l and clone_repo.lower() == repo_l
 
 
+async def _repo_about_public(env, request, owner, repo):
+    # Public About/branding card + fediverse stats: the repo page's social
+    # badge header and Watch button read this. No auth — same visibility as
+    # the catalog entry itself.
+    if await _repo_is_private(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
+    key_bi = await blind_index(env, owner + "/" + repo)
+    repo_row = await d1_first(
+        env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
+    if not repo_row:
+        return json_response({"error": "not_found"}, status=404)
+    rec = await decrypt_row(env, repo_row.get("data"))
+    origin = _ap_origin(env, request)
+    handle = ap.repo_handle(str(owner).lower(), str(repo).lower())
+    logo_url = ""
+    banner_url = ""
+    media_rows = await d1_all(
+        env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?", key_bi)
+    for media in media_rows or []:
+        media_url = "/api/repo/%s/%s/media/%s.png?v=%d" % (
+            quote(owner), quote(repo), media.get("kind", ""),
+            int(media.get("updated_at") or 0))
+        if media.get("kind") == "logo":
+            logo_url = media_url
+        elif media.get("kind") == "banner":
+            banner_url = media_url
+    followers = 0
+    fedi_enabled = await _ap_enabled(env)
+    if fedi_enabled:
+        actor_bi = await _ap_actor_bi(env, AP_ACTOR_REPO, handle)
+        row = await d1_first(
+            env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
+            actor_bi)
+        followers = (row or {}).get("c", 0) or 0
+    return json_response({
+        "ok": True,
+        "description": clean_string(
+            (rec or {}).get("description", "") or "", 240),
+        "website": clean_string((rec or {}).get("website", "") or "", 240),
+        "logoUrl": logo_url,
+        "bannerUrl": banner_url,
+        "defaultLogoUrl": AP_AVATAR_PATH,
+        "defaultBannerUrl": AP_BANNER_PATH,
+        "fediverse": {
+            "enabled": fedi_enabled,
+            "handle": "@%s@%s" % (handle, _ap_domain_of(origin)),
+            "actorUrl": _ap_actor_url(origin, AP_ACTOR_REPO, handle),
+            "followers": followers,
+        },
+    }, cache_control="public, max-age=30")
+
+
 async def repo_about_handler(env, request, owner, repo):
     await ensure_schema(env)
+    if method_name(request) == "GET":
+        return await _repo_about_public(env, request, owner, repo)
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
@@ -3129,6 +3216,28 @@ async def repo_about_handler(env, request, owner, repo):
         return json_response({"error": "account_required"}, status=403)
 
     description = clean_string(data.get("description", ""), 240)
+    # Optional project website shown under the description (and written into
+    # the repo's .forkmesh/info.json by the owner's node). Absent = unchanged;
+    # empty string = remove. Only http(s) URLs are accepted.
+    website_provided = "website" in data
+    website = clean_string(data.get("website", ""), 240).strip()
+    if website_provided and website and not re.match(
+            r"^https?://[^\s]+$", website):
+        return json_response({"error": "invalid_website"}, status=400)
+    # Optional repo branding for the fediverse actor (and anything else that
+    # wants it): PNG logo (avatar) + banner (profile header). Absent field =
+    # leave unchanged; empty string = remove. Validated before any write so a
+    # bad image never half-applies the About edit.
+    media_updates = {}
+    for field, kind, cap in (("logoPng", "logo", MAX_REPO_LOGO_BYTES),
+                             ("bannerPng", "banner", MAX_REPO_BANNER_BYTES)):
+        if field not in data:
+            continue
+        png_b64, media_error = clean_media_png(data.get(field), cap)
+        if media_error:
+            return json_response({"error": media_error, "field": field},
+                                 status=400)
+        media_updates[kind] = png_b64
     rows = await d1_all(
         env, "SELECT key_bi, data, is_private FROM repositories")
     updated = 0
@@ -3138,6 +3247,8 @@ async def repo_about_handler(env, request, owner, repo):
         if not _catalog_record_matches_identity(record, owner, repo):
             continue
         record["description"] = description
+        if website_provided:
+            record["website"] = website
         enc = await encrypt_row(env, record)
         await d1_run(
             env,
@@ -3151,13 +3262,58 @@ async def repo_about_handler(env, request, owner, repo):
             first = record
     if not updated:
         return json_response({"error": "not_found"}, status=404)
+    media_bi = await blind_index(env, str(owner).lower() + "/" + repo)
+    for kind, png_b64 in media_updates.items():
+        if not png_b64:
+            await d1_run(
+                env, "DELETE FROM repo_media WHERE repo_bi=? AND kind=?",
+                media_bi, kind)
+            continue
+        await d1_run(
+            env,
+            "INSERT INTO repo_media (repo_bi, kind, data, updated_at)"
+            " VALUES (?,?,?,?)"
+            " ON CONFLICT(repo_bi, kind) DO UPDATE SET data=excluded.data,"
+            " updated_at=excluded.updated_at",
+            media_bi, kind, await encrypt_row(env, {"png": png_b64}),
+            int(Date.now()))
+    # Queue the edit for the owner's desktop node, which writes it into the
+    # repo's committed .forkmesh/info.json (the same file the desktop app's
+    # own About editor maintains) on its next sync. Latest edit wins.
+    about_update = {
+        "about": description,
+        "website": website if website_provided
+        else clean_string((first or {}).get("website", "") or "", 240),
+        "ts": int(Date.now()),
+        "editor": actor,
+        "source": "web",
+    }
+    await d1_run(
+        env,
+        "INSERT INTO about_inbox (repo_bi, data, queued_at) VALUES (?,?,?)"
+        " ON CONFLICT(repo_bi) DO UPDATE SET data=excluded.data,"
+        " queued_at=excluded.queued_at",
+        media_bi, await encrypt_row(env, about_update), about_update["ts"])
+    await _best_effort_inbox_side_effect(
+        notify_repo_host(env, owner, repo, "about"))
     await purge_catalog_related_caches()
+    # Tell existing fediverse followers the profile changed (Update activity),
+    # so the new logo/banner/description shows up on remote servers now, not
+    # whenever their actor cache happens to expire.
+    await _best_effort_inbox_side_effect(_ap_broadcast_actor_update(
+        env, request, AP_ACTOR_REPO,
+        ap.repo_handle(str(owner).lower(), str(repo).lower())))
     # Return only the fields the caller just set — never the full decrypted
     # catalog record (which carries private-repo cloneUrl/visibility/stateHash).
+    media_rows = await d1_all(
+        env, "SELECT kind FROM repo_media WHERE repo_bi=?", media_bi)
+    media_kinds = {r.get("kind") for r in (media_rows or [])}
     return json_response({
         "ok": True,
         "description": description,
         "updated": updated,
+        "hasLogo": "logo" in media_kinds,
+        "hasBanner": "banner" in media_kinds,
         "isPrivate": bool(first and first.get("visibility") == "private"),
     })
 
@@ -3372,6 +3528,23 @@ async def touch_registered_node(env, name_bi, rec=None):
         int(Date.now()), name_bi)
 
 
+async def _account_identity_rec_by_bi(env, name_bi):
+    # Authoritative-store fallback for a name_bi lookup once the legacy accounts
+    # row has been drained into the users/nodes tables (admin "make user/node"
+    # and the verified-email migration delete the accounts row after mirroring
+    # the full encrypted record into users/nodes). user_bi and node_bi are both
+    # blind_index(name) — the same value as an account's name_bi — so one key
+    # resolves either table. Returns the decrypted record, or None.
+    if not name_bi:
+        return None
+    row = await d1_first(env, "SELECT data FROM users WHERE user_bi=?", name_bi)
+    if not row:
+        row = await d1_first(env, "SELECT data FROM nodes WHERE node_bi=?", name_bi)
+    if not row:
+        return None
+    return await decrypt_row(env, row.get("data"))
+
+
 async def _account_row(env, name):
     name_bi = await blind_index(env, name)
     row = await d1_first(
@@ -3379,7 +3552,9 @@ async def _account_row(env, name):
         "SELECT data, email_bi, ip_bi, is_admin FROM accounts WHERE name_bi=?",
         name_bi)
     if not row:
-        return name_bi, None
+        # The accounts table is legacy: once a record has been migrated into the
+        # users/nodes tables its accounts row is deleted, so fall back to those.
+        return name_bi, await _account_identity_rec_by_bi(env, name_bi)
     rec = await decrypt_row(env, row["data"])
     if rec:
         try:
@@ -3840,6 +4015,11 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
     account_row = await d1_first(
         env, "SELECT data, email_bi, ip_bi, is_admin FROM accounts WHERE name_bi=?",
         name_bi)
+    if not account_row:
+        # Legacy accounts row already drained into the users table.
+        account_row = await d1_first(
+            env, "SELECT data, email_bi, ip_bi, is_admin FROM users WHERE user_bi=?",
+            name_bi)
     if not account_row:
         return name_bi, rec, "invalid_credentials"
 
@@ -4602,6 +4782,9 @@ async def _account_signup(env, request):
 
     email_bi = await blind_index(env, email)
     dup = await d1_first(env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
+    if not dup:
+        dup = await d1_first(
+            env, "SELECT user_bi AS name_bi FROM users WHERE email_bi=?", email_bi)
     if dup and dup.get("name_bi") != name_bi:
         return json_response({"error": "email_taken"}, status=409)
 
@@ -4648,6 +4831,10 @@ async def _account_password_record(env, data):
     if "@" in identifier:
         email_bi = await blind_index(env, identifier)
         row = await d1_first(env, "SELECT name_bi, data FROM accounts WHERE email_bi=?", email_bi)
+        if not row:
+            row = await d1_first(
+                env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
+                email_bi)
         if row:
             name_bi = row.get("name_bi", "")
             rec = await decrypt_row(env, row.get("data"))
@@ -5180,6 +5367,10 @@ async def _account_finalize(env, request):
         email_bi = await blind_index(env, email)
         dup = await d1_first(
             env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
+        if not dup:
+            dup = await d1_first(
+                env, "SELECT user_bi AS name_bi FROM users WHERE email_bi=?",
+                email_bi)
         if dup and dup.get("name_bi") != name_bi:
             return json_response({"error": "email_taken"}, status=409)
         salt, phash = await hash_password(password)
@@ -5257,6 +5448,10 @@ async def _account_profile(env, request):
         if "@" in identifier:
             email_bi = await blind_index(env, identifier)
             row = await d1_first(env, "SELECT name_bi, data FROM accounts WHERE email_bi=?", email_bi)
+            if not row:
+                row = await d1_first(
+                    env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
+                    email_bi)
             if row:
                 name_bi = row.get("name_bi", "")
                 rec = await decrypt_row(env, row.get("data"))
@@ -5432,6 +5627,11 @@ async def _account_profile(env, request):
 
     if changed:
         await _save_account(env, name_bi, rec)
+        # Fediverse followers of this profile get an Update(Person) so bio
+        # changes propagate to remote servers immediately.
+        await _best_effort_inbox_side_effect(_ap_broadcast_actor_update(
+            env, request, AP_ACTOR_USER,
+            clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()))
     payload = await _account_public_payload(env, rec)
     payload["verificationSent"] = bool(verification_sent)
     payload["verificationQueued"] = bool(verification_queued)
@@ -5505,6 +5705,10 @@ async def _resolve_user_by_password(env, data):
         email_bi = await blind_index(env, identifier)
         row = await d1_first(
             env, "SELECT name_bi, data FROM accounts WHERE email_bi=?", email_bi)
+        if not row:
+            row = await d1_first(
+                env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
+                email_bi)
         if row:
             name_bi = row.get("name_bi", "")
             rec = await decrypt_row(env, row.get("data"))
@@ -6027,6 +6231,9 @@ async def _account_login(env, request):
         email_bi = await blind_index(env, identifier)
         row = await d1_first(
             env, "SELECT data FROM accounts WHERE email_bi=?", email_bi)
+        if not row:
+            row = await d1_first(
+                env, "SELECT data FROM users WHERE email_bi=?", email_bi)
         if row:
             rec = await decrypt_row(env, row["data"])
     elif valid_node_name(identifier):
@@ -6411,6 +6618,9 @@ async def _online_payout_addresses(env):
     for r in rows:
         row = await d1_first(
             env, "SELECT name, data FROM accounts WHERE name_bi=?", r["name_bi"])
+        if not row:
+            row = await d1_first(
+                env, "SELECT name, data FROM nodes WHERE node_bi=?", r["name_bi"])
         if not row:
             continue
         rec = await decrypt_row(env, row["data"])
@@ -7182,8 +7392,11 @@ async def shares_handler(env, request, owner, repo):
 # until an email service (e.g. SES) is wired up.
 
 async def _is_admin(env, name):
-    # Admin status lives entirely in the accounts table's is_admin column. Grant
-    # it directly in the DB: UPDATE accounts SET is_admin=1 WHERE name='<node>'.
+    # Admin status lives in the is_admin column, on the legacy accounts row while
+    # it exists and mirrored onto the authoritative users row. Grant it directly
+    # in the DB: UPDATE accounts SET is_admin=1 WHERE name='<node>' (or the same
+    # on users once the account has migrated). Falls back to users so a migrated
+    # admin keeps their grant.
     name = (name or "").strip().lower()
     if not name:
         return False
@@ -7191,6 +7404,9 @@ async def _is_admin(env, name):
     try:
         row = await d1_first(
             env, "SELECT is_admin FROM accounts WHERE name_bi=?", name_bi)
+        if not row:
+            row = await d1_first(
+                env, "SELECT is_admin FROM users WHERE user_bi=?", name_bi)
     except Exception:
         return False  # column may predate migration 0006
     return bool(row and int(row.get("is_admin", 0) or 0))
@@ -7671,6 +7887,9 @@ async def _account_forgot_password(env, request):
             email_bi = await blind_index(env, identifier)
             row = await d1_first(
                 env, "SELECT data FROM accounts WHERE email_bi=?", email_bi)
+            if not row:
+                row = await d1_first(
+                    env, "SELECT data FROM users WHERE email_bi=?", email_bi)
             if row:
                 rec = await decrypt_row(env, row.get("data"))
         elif valid_node_name(identifier):
@@ -8192,6 +8411,9 @@ async def _federation_report_nodes(env):
         row = await d1_first(
             env, "SELECT data FROM accounts WHERE name_bi=?", r["name_bi"])
         if not row:
+            row = await d1_first(
+                env, "SELECT data FROM nodes WHERE node_bi=?", r["name_bi"])
+        if not row:
             continue
         rec = await decrypt_row(env, row["data"])
         if not rec or rec.get("status") != "active":
@@ -8568,6 +8790,10 @@ AP_DATE_SKEW_MS = 12 * 60 * 60 * 1000
 AP_IMMEDIATE_DELIVERIES = 5
 AP_CRON_DELIVERIES = 20
 AP_FEDI_KINDS = ("issue", "pull", "discussion", "commit", "release")
+# Brand images served from Static Assets, shown as every actor's avatar and
+# profile header on Mastodon-compatible servers.
+AP_AVATAR_PATH = "/assets/fediverse-avatar.png"
+AP_BANNER_PATH = "/assets/fediverse-banner.png"
 
 _AP_RSA_ALG = {"name": "RSASSA-PKCS1-v1_5", "hash": "SHA-256"}
 
@@ -8718,14 +8944,17 @@ async def _ap_local_actor(env, kind, handle, create=False):
 
 
 async def _ap_user_federates(env, name):
-    # Mirror the public-profile/follow rules: only active, public user accounts
-    # are visible to the fediverse.
+    # Any active, non-private account federates as a Person — node-owner
+    # accounts included, not just login ("user"-kind) accounts: the node name
+    # is the public authoring identity on issues/PRs, so it is what fediverse
+    # followers expect to find at @name@<domain>. (The web follow API stays
+    # stricter — user-kind targets only — but that gates a login feature, not
+    # public visibility.)
     name = (name or "").strip().lower()
     if not valid_node_name(name):
         return False
     _, rec = await _account_row(env, name)
     return bool(rec and rec.get("status") == "active"
-                and _account_kind(rec) == "user"
                 and not rec.get("profile_private"))
 
 
@@ -8793,6 +9022,69 @@ async def ap_nodeinfo_handler(env, request, index):
     return json_response(doc, cache_seconds=3600)
 
 
+async def _ap_build_actor_doc(env, origin, kind, handle, rec):
+    """The actor document, shared by the GET endpoint and the Update
+    broadcast (profile/branding changes). Returns None when the actor does
+    not federate (missing/private/blocked account or repo)."""
+    # Brand defaults; repos with uploaded branding override below.
+    icon_url = origin + AP_AVATAR_PATH
+    image_url = origin + AP_BANNER_PATH
+    if kind == AP_ACTOR_INSTANCE:
+        return ap.instance_actor_doc(
+            origin, _ap_domain_of(origin), rec["pubkeyPem"],
+            icon_url=icon_url, image_url=image_url)
+    if kind == AP_ACTOR_USER:
+        if not await _ap_user_federates(env, handle):
+            return None
+        actor_type, display = "Person", handle
+        profile_url = origin + "/@" + handle
+        # Surface the account's own bio as the fediverse summary so the
+        # Mastodon profile card mirrors the /@name page.
+        _, account_rec = await _account_row(env, handle)
+        bio = clean_string(
+            (account_rec or {}).get("profile_bio", "") or "", 500).strip()
+        summary = (ap.note_html_from_text(bio) if bio
+                   else "ForkMesh profile of @%s." % handle)
+    else:
+        owner, _, repo = handle.partition(".")
+        key_bi = await blind_index(env, owner + "/" + repo)
+        repo_row = await d1_first(
+            env, "SELECT is_private, data FROM repositories WHERE key_bi=?",
+            key_bi)
+        if not repo_row or int(repo_row.get("is_private") or 0):
+            return None
+        actor_type, display = "Group", owner + "/" + repo
+        profile_url = origin + repo_web_href(owner, repo)
+        # Owner-set About description becomes the fediverse bio.
+        catalog_rec = await decrypt_row(env, repo_row.get("data"))
+        description = clean_string(
+            (catalog_rec or {}).get("description", "") or "", 240).strip()
+        summary = (ap.note_html_from_text(description) if description
+                   else ("ForkMesh repository %s/%s. Follow for new issues, "
+                         "pull requests, discussions and releases.")
+                   % (owner, repo))
+        # Owner-uploaded branding (repo About tab): logo = avatar, banner =
+        # header. updated_at rides along as a cache-buster so Mastodon
+        # refetches when the image changes.
+        media_rows = await d1_all(
+            env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?",
+            key_bi)
+        for media in media_rows or []:
+            media_url = "%s/api/repo/%s/%s/media/%s.png?v=%d" % (
+                origin, quote(owner), quote(repo), media.get("kind", ""),
+                int(media.get("updated_at") or 0))
+            if media.get("kind") == "logo":
+                icon_url = media_url
+            elif media.get("kind") == "banner":
+                image_url = media_url
+    return ap.actor_doc(
+        _ap_actor_url(origin, kind, handle), actor_type, handle, display,
+        summary, profile_url, rec["pubkeyPem"],
+        shared_inbox=origin + "/ap/inbox",
+        published_ms=rec.get("createdAt"),
+        icon_url=icon_url, image_url=image_url)
+
+
 async def _ap_actor_doc_response(env, request, kind, handle):
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -8800,34 +9092,61 @@ async def _ap_actor_doc_response(env, request, kind, handle):
     if not await _ap_enabled(env):
         return _ap_disabled_response()
     origin = _ap_origin(env, request)
-    if kind == AP_ACTOR_USER:
-        if not await _ap_user_federates(env, handle):
+    if kind != AP_ACTOR_INSTANCE:
+        # Cheap federation gate before minting keys for a 404.
+        parsed = await _ap_resolve_local_target(
+            env, origin, _ap_actor_url(origin, kind, handle))
+        if not parsed:
             return json_response({"error": "not_found"}, status=404)
-        actor_type, display = "Person", handle
-        profile_url = origin + "/@" + handle
-        summary = "ForkMesh profile of @%s." % handle
-    elif kind == AP_ACTOR_REPO:
-        owner, _, repo = handle.partition(".")
-        if not await _ap_repo_federates(env, owner, repo):
-            return json_response({"error": "not_found"}, status=404)
-        actor_type, display = "Group", owner + "/" + repo
-        profile_url = origin + repo_web_href(owner, repo)
-        summary = ("ForkMesh repository %s/%s. Follow for new issues, pull "
-                   "requests, discussions and releases.") % (owner, repo)
     rec = await _ap_local_actor(env, kind, handle, create=True)
     if not rec:
         return json_response({"error": "unavailable"}, status=503)
-    if kind == AP_ACTOR_INSTANCE:
-        doc = ap.instance_actor_doc(
-            origin, _ap_domain_of(origin), rec["pubkeyPem"])
-    else:
-        doc = ap.actor_doc(
-            _ap_actor_url(origin, kind, handle), actor_type, handle, display,
-            summary, profile_url, rec["pubkeyPem"],
-            shared_inbox=origin + "/ap/inbox",
-            published_ms=rec.get("createdAt"))
+    doc = await _ap_build_actor_doc(env, origin, kind, handle, rec)
+    if not doc:
+        return json_response({"error": "not_found"}, status=404)
     return json_response(doc, cache_seconds=300, extra_headers={
         "content-type": ap.ACTIVITY_CONTENT_TYPE})
+
+
+async def _ap_broadcast_actor_update(env, request, kind, handle):
+    """Push an Update(actor) to every follower so remote servers refetch the
+    profile (avatar/banner/bio) immediately instead of waiting out their
+    cache — this is how a repo's uploaded logo actually appears on Mastodon
+    next to existing followers' timelines."""
+    if not await _ap_enabled(env):
+        return
+    actor_bi = await _ap_actor_bi(env, kind, handle)
+    rec = await _ap_local_actor(env, kind, handle)
+    if not rec:
+        return  # never followed / fetched — nothing to update
+    followers = await d1_all(
+        env, "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
+        actor_bi)
+    if not followers:
+        return
+    origin = _ap_origin(env, request)
+    doc = await _ap_build_actor_doc(env, origin, kind, handle, rec)
+    if not doc:
+        return
+    actor_url = _ap_actor_url(origin, kind, handle)
+    now = int(Date.now())
+    body_str = json.dumps(ap.update_activity(actor_url, doc, now))
+    out_data = await encrypt_row(env, {
+        "body": body_str, "actorKind": kind, "actorHandle": handle,
+        "actorUrl": actor_url})
+    seen = set()
+    for follower in followers:
+        inbox = ((follower.get("shared_inbox") or "").strip()
+                 or (follower.get("inbox") or "").strip())
+        if not inbox or inbox in seen:
+            continue
+        seen.add(inbox)
+        await d1_run(
+            env,
+            "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
+            " created_at) VALUES (?,?,0,?,?)",
+            inbox, out_data, now, now)
+    await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
 
 
 async def ap_collection_handler(env, request, kind, handle, which):
@@ -9371,6 +9690,38 @@ async def ap_inbox_handler(env, request):
 
 
 # --- Client-facing endpoints ----------------------------------------------------
+
+async def repo_media_handler(env, request, owner, repo, media_kind):
+    # Owner-uploaded repo branding, served publicly (it is the repo's fediverse
+    # avatar/header, fetched by every remote server). Same visibility gate as
+    # the actor itself.
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    if await _repo_is_private(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    row = await d1_first(
+        env, "SELECT data FROM repo_media WHERE repo_bi=? AND kind=?",
+        repo_bi, media_kind)
+    rec = await decrypt_row(env, row.get("data")) if row else None
+    png_b64 = (rec or {}).get("png", "")
+    if not png_b64:
+        return json_response({"error": "not_found"}, status=404)
+    try:
+        raw = base64.b64decode(png_b64)
+    except Exception:
+        return json_response({"error": "not_found"}, status=404)
+    # The actor document busts caches via ?v=<updated_at>, so long edge/browser
+    # caching here is safe.
+    return JsResponse.new(_to_js(bytes(raw)), to_js({
+        "status": 200,
+        "headers": {
+            "content-type": "image/png",
+            "cache-control": "public, max-age=86400",
+        },
+    }))
+
 
 async def fedi_comments_handler(env, request, owner, repo):
     # Remote fediverse replies for one thread, shown alongside (never inside)
@@ -9993,6 +10344,12 @@ async def send_notification_digests(env):
         acct = await d1_first(
             env, "SELECT data FROM accounts WHERE name_bi=?", recipient_bi)
         if not acct:
+            acct = await d1_first(
+                env, "SELECT data FROM users WHERE user_bi=?", recipient_bi)
+        if not acct:
+            acct = await d1_first(
+                env, "SELECT data FROM nodes WHERE node_bi=?", recipient_bi)
+        if not acct:
             continue
         rec = await decrypt_row(env, acct.get("data", ""))
         if not rec or rec.get("status") != "active":
@@ -10063,9 +10420,12 @@ async def send_general_chat_digests(env):
         return
     await ensure_schema(env)
     now = int(Date.now())
+    # Recipients come from the authoritative users table (accounts is legacy and
+    # is drained as records migrate); it only holds user-kind records, exactly
+    # the population eligible for this digest.
     rows = await d1_all(
         env,
-        "SELECT name_bi, data FROM accounts ORDER BY name LIMIT ?",
+        "SELECT user_bi AS name_bi, data FROM users ORDER BY username LIMIT ?",
         GENERAL_CHAT_EMAIL_MAX_RECIPIENTS,
     )
     for row in rows or []:
@@ -11874,6 +12234,16 @@ async def sync_handler(env, request):
             await d1_run(
                 env, "DELETE FROM agent_prompts WHERE repo_bi=?", repo_bi)
         entry["agentPrompts"] = prompts
+        # Web About edits, drained on read like agent prompts: the node writes
+        # the change into the repo's committed .forkmesh/info.json.
+        about_row = await d1_first(
+            env, "SELECT data FROM about_inbox WHERE repo_bi=?", repo_bi)
+        if about_row:
+            about_update = await decrypt_row(env, about_row.get("data"))
+            if about_update:
+                entry["aboutUpdate"] = about_update
+            await d1_run(
+                env, "DELETE FROM about_inbox WHERE repo_bi=?", repo_bi)
         repos.append(entry)
     return json_response(
         {"ok": True, "serverTime": int(Date.now()), "repos": repos})
@@ -13541,6 +13911,21 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             '(PBKDF2-hashed); email and payout address are left unchanged.</span>'
             '</div>'
         ) % _admin_href(admin_query, table="accounts", action="set_password")
+        prefix += (
+            '<div class="tools">'
+            '<form method="post" action="%s" '
+            'onsubmit="return confirm(\'Migrate every account with a verified '
+            'email into the users table and remove it from accounts?\')">'
+            + csrf_field +
+            '<button type="submit">Migrate all verified-email users into users</button>'
+            '</form>'
+            '<span class="meta">One-click: pins every account whose email is '
+            'verified as a user, mirrors it into the authoritative users table, '
+            'and deletes its legacy accounts row. Unverified rows are left in '
+            'place.</span>'
+            '</div>'
+        ) % _admin_href(admin_query, table="accounts",
+                        action="migrate_verified_users")
 
     if table == "telemetry":
         # Purpose-built crash/stall dashboard + recent events, newest first.
@@ -13808,12 +14193,18 @@ async def _admin_migrate_account_kind(env, name, kind):
         return "Account migration failed: no account named '%s'." % name
     old_kind = _account_kind(rec)
     already_pinned = old_kind == kind and rec.get("kind") == kind
-    if already_pinned:
-        return "Account '%s' is already pinned as a %s." % (name, kind)
     rec["kind"] = kind
+    # Persist (mirrors the record into the authoritative users/nodes tables),
+    # then drain the legacy accounts row: making a user or a node moves it out of
+    # the accounts table entirely (adhoc #20).
     await _save_account(env, name_bi, rec)
+    await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
+    if already_pinned:
+        return ("Account '%s' was already a %s; removed its legacy accounts row."
+                % (name, kind))
     verb = "Pinned" if old_kind == kind else "Migrated"
-    msg = "%s account '%s' as %s." % (verb, name, kind)
+    msg = "%s account '%s' as %s (removed from the accounts table)." % (
+        verb, name, kind)
     notes = []
     if kind == "user" and not rec.get("pass_hash"):
         notes.append("Set a password before this user can log in.")
@@ -13821,6 +14212,44 @@ async def _admin_migrate_account_kind(env, name, kind):
         notes.append("Linked nodes on this record were left unchanged; transfer them separately if needed.")
     if notes:
         msg += " " + " ".join(notes)
+    return msg
+
+
+async def _admin_migrate_verified_users(env):
+    # Bulk one-click migration (adhoc #20): every legacy accounts row whose
+    # encrypted record has a verified email is pinned as a user, mirrored into
+    # the authoritative users table, and then removed from the accounts table.
+    rows = await d1_all(env, "SELECT name_bi, data FROM accounts")
+    migrated = 0
+    skipped = 0
+    errors = []
+    for row in rows or []:
+        name_bi = row.get("name_bi")
+        if not name_bi:
+            continue
+        rec = await decrypt_row(env, row.get("data", ""))
+        if not rec or not rec.get("email") or not rec.get("email_verified"):
+            skipped += 1
+            continue
+        try:
+            rec["kind"] = "user"
+            email_bi = await blind_index(
+                env, clean_string(rec.get("email", ""), 254).lower())
+            # _save_account mirrors into users; then drop the legacy row.
+            await _save_account(env, name_bi, rec, email_bi=email_bi)
+            await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
+            migrated += 1
+        except Exception as error:
+            errors.append(clean_string(rec.get("name", "unknown"), MAX_NODE_NAME)
+                          + ": " + _safe_error_text(error))
+    if migrated == 0 and not errors:
+        return ("No accounts with verified emails to migrate "
+                "(%d account row(s) checked)." % skipped)
+    msg = ("Migrated %d verified-email account(s) into the users table and "
+           "removed them from accounts (%d without a verified email left in "
+           "place)." % (migrated, skipped))
+    if errors:
+        msg += " Errors: " + "; ".join(errors[:5])
     return msg
 
 
@@ -14141,6 +14570,11 @@ class Default(WorkerEntrypoint):
                         self.env, name, kind)
                 except Exception as error:
                     banner = "Account migration failed: " + repr(error)
+            elif action == "migrate_verified_users":
+                try:
+                    banner = await _admin_migrate_verified_users(self.env)
+                except Exception as error:
+                    banner = "Verified-user migration failed: " + repr(error)
             elif action == "request_ownership":
                 try:
                     banner = await _admin_console_request_ownership(
@@ -14521,6 +14955,15 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await ap_publish_handler(self.env, request, owner, repo)
+
+        repo_media_match = REPO_MEDIA_RE.match(url.path)
+        if repo_media_match:
+            owner = safe_segment(repo_media_match.group(1))
+            repo = safe_segment(repo_media_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_media_handler(
+                self.env, request, owner, repo, repo_media_match.group(3))
 
         subscribe_match = REPO_SUBSCRIBE_RE.match(url.path)
         if subscribe_match:

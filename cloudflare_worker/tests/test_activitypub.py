@@ -235,6 +235,20 @@ def test_actor_doc_shape():
     assert doc["manuallyApprovesFollowers"] is False
 
 
+def test_actor_doc_icon_and_banner():
+    doc = ap.actor_doc(
+        "https://f.c/ap/repos/o/r", "Group", "o.r", "o/r", "", "https://f.c/o/r",
+        "PEM", icon_url="https://f.c/api/repo/o/r/media/logo.png?v=5",
+        image_url="https://f.c/assets/fediverse-banner.png")
+    assert doc["icon"] == {"type": "Image", "mediaType": "image/png",
+                           "url": "https://f.c/api/repo/o/r/media/logo.png?v=5"}
+    assert doc["image"]["url"] == "https://f.c/assets/fediverse-banner.png"
+    # Absent URLs must not emit empty icon/image blocks.
+    bare = ap.actor_doc("https://f.c/ap/users/a", "Person", "a", "a", "",
+                        "https://f.c/@a", "PEM")
+    assert "icon" not in bare and "image" not in bare
+
+
 def test_instance_actor_doc():
     doc = ap.instance_actor_doc("https://forkmesh.com", "forkmesh.com", "PEM")
     assert doc["id"] == "https://forkmesh.com/ap/actor"
