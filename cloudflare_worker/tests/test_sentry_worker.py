@@ -367,18 +367,13 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "case 1: // Commits list\n        loadCommits();" not in MAIN_WINDOW_ACTIONS_CPP_TEXT
 
 
-def test_worker_observability_exports_logs_and_traces_to_sentry_destinations():
-    observability = WRANGLER_DATA["observability"]
-    assert observability["enabled"] is True
-    assert observability["head_sampling_rate"] == 1
-
-    logs = observability["logs"]
-    assert logs["enabled"] is True
-    assert logs["head_sampling_rate"] == 1
-    assert logs["invocation_logs"] is True
-    assert logs["destinations"] == ["sentry-logs"]
-
-    traces = observability["traces"]
-    assert traces["enabled"] is True
-    assert traces["head_sampling_rate"] == 1
-    assert traces["destinations"] == ["sentry-traces"]
+def test_worker_observability_config_stays_commented_out():
+    # Cloudflare observability export was deliberately disabled ("Comment out
+    # Cloudflare observability config in worker") — commented out rather than
+    # deleted so it can be re-enabled later. It must stay out of the parsed
+    # config while the commented block remains in the file.
+    assert "observability" not in WRANGLER_DATA
+    wrangler_text = WRANGLER.read_text(encoding="utf-8")
+    assert "# [observability]" in wrangler_text
+    assert "# [observability.logs]" in wrangler_text
+    assert "# [observability.traces]" in wrangler_text
