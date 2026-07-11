@@ -353,9 +353,11 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
     fingerprint = "fp-current"
     d1_runs = []
 
-    def make_globals(stored_fingerprint):
+    def make_globals(stored_fingerprint, select_error=None):
         async def d1_first(_env, sql, *args):
             assert "schema_meta" in sql
+            if select_error is not None:
+                raise RuntimeError(select_error)
             if stored_fingerprint is None:
                 raise RuntimeError("no such table: schema_meta")
             return {"v": stored_fingerprint}
@@ -364,16 +366,22 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
             d1_runs.append((sql, args))
 
         return {
+            "asyncio": asyncio,
             "SCHEMA_STATEMENTS": fake_statements,
             "SCHEMA_ALTER_STATEMENTS": fake_alters,
             "_SCHEMA_FINGERPRINT": fingerprint,
             "_schema_ready": False,
+            "_schema_lock": None,
             "d1_first": d1_first,
             "d1_run": d1_run,
         }
 
+    def load_ensure_schema(**kwargs):
+        return _load("ensure_schema", "_apply_schema",
+                     extra_globals=make_globals(**kwargs))
+
     # Fingerprint matches: one SELECT, zero DDL statements replayed.
-    g = _load("ensure_schema", extra_globals=make_globals(fingerprint))
+    g = load_ensure_schema(stored_fingerprint=fingerprint)
     asyncio.run(g["ensure_schema"](_Env()))
     assert prepared == []
     assert d1_runs == []
@@ -381,7 +389,7 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
     # No schema_meta yet (first run): full DDL replay + fingerprint recorded.
     prepared.clear()
     d1_runs.clear()
-    g = _load("ensure_schema", extra_globals=make_globals(None))
+    g = load_ensure_schema(stored_fingerprint=None)
     asyncio.run(g["ensure_schema"](_Env()))
     assert prepared == fake_statements + fake_alters
     assert len(d1_runs) == 1 and "schema_meta" in d1_runs[0][0]
@@ -390,8 +398,36 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
     # Stale fingerprint (schema changed since): replay + re-record.
     prepared.clear()
     d1_runs.clear()
-    g = _load("ensure_schema", extra_globals=make_globals("fp-older"))
+    g = load_ensure_schema(stored_fingerprint="fp-older")
     asyncio.run(g["ensure_schema"](_Env()))
+    assert prepared == fake_statements + fake_alters
+    assert len(d1_runs) == 1
+
+    # Transient D1 failure (overload / internal error) on the fingerprint
+    # SELECT must propagate — NOT fall through to the full DDL replay, which
+    # would pile ~110 more statements onto an already-overloaded database.
+    prepared.clear()
+    d1_runs.clear()
+    g = load_ensure_schema(stored_fingerprint=fingerprint,
+                           select_error="D1_ERROR: D1 DB is overloaded.")
+    try:
+        asyncio.run(g["ensure_schema"](_Env()))
+        raise AssertionError("expected the transient D1 error to propagate")
+    except RuntimeError as exc:
+        assert "overloaded" in str(exc)
+    assert prepared == []
+    assert d1_runs == []
+
+    # Concurrent requests on a cold isolate share ONE apply (single-flight)
+    # instead of each replaying the full DDL in parallel.
+    prepared.clear()
+    d1_runs.clear()
+    g = load_ensure_schema(stored_fingerprint=None)
+
+    async def _concurrent():
+        await asyncio.gather(*(g["ensure_schema"](_Env()) for _ in range(5)))
+
+    asyncio.run(_concurrent())
     assert prepared == fake_statements + fake_alters
     assert len(d1_runs) == 1
 
