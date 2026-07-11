@@ -1031,10 +1031,12 @@ def test_dashboard_repository_metadata_constrains_long_values_without_fake_langu
     ]
 
     assert 'grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3' in render
-    assert 'class="min-w-0 truncate text-right text-foreground font-mono"' in render
     assert "flex justify-between gap-3" not in render
     assert "data-repo-live-summary" in render
-    assert "formatSize(repo.sizeBytes)" in render
+    # The Data size chip/row and the Repository metadata block were removed in
+    # the About-rail cleanup; languages now render from the REAL live file
+    # index (loadRepoAboutFilesAndLanguages), never a hardcoded mock mix.
+    assert "formatSize(repo.sizeBytes)" not in render
     assert "TypeScript" not in render
     assert "CSS" not in render
     assert "JavaScript" not in render
@@ -1405,13 +1407,15 @@ def test_dashboard_repository_tab_counts_wait_for_live_data_and_update_mirrors()
 def test_dashboard_formats_catalog_millisecond_timestamps():
     dashboard_js = _read(PUBLIC / "dashboard.js")
     formatter = dashboard_js[
-        dashboard_js.index("function formatDate")
+        dashboard_js.index("function parseFlexibleDate")
         : dashboard_js.index("function formatSize")
     ]
 
     assert "const numeric = Number(value);" in formatter
     assert "1000000000000" in formatter
     assert "new Date(numeric" in formatter
+    assert "function formatDate(value) {" in formatter
+    assert "function formatTimeAgo(value) {" in formatter
 
 
 def test_worker_routes_public_history_through_live_host_not_commit_inbox():
