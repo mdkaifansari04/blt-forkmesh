@@ -13237,6 +13237,7 @@ ADMIN_STYLE = """
  nav a{display:block;padding:7px 20px;color:#c9d1d9}
  nav a.active{background:#161b22;border-left:3px solid #58a6ff;font-weight:600}
  nav .sec{padding:10px 20px 4px;color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+ nav .navsort{float:right;text-transform:none;letter-spacing:normal;font-size:11px}
  main{flex:1;min-width:0;overflow-x:auto;padding:8px 0 40px}
  table{border-collapse:collapse;width:100%}
  th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #21262d;vertical-align:top}
@@ -13708,9 +13709,15 @@ def _render_admin_stats(stats):
     return '<div class="cards">' + "".join(out) + "</div>"
 
 
-def _render_admin_nav(tables, active, counts=None, admin_query=""):
+def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=False):
     counts = counts or {}
-    links = ['<div class="sec">Tables</div>']
+    if sort_records:
+        tables = sorted(tables, key=lambda t: counts.get(t, 0), reverse=True)
+    toggle_label = "A–Z" if sort_records else "Sort by records"
+    toggle_href = _admin_href(admin_query, table=active,
+                              sort=("" if sort_records else "records"))
+    links = ['<div class="sec">Tables <a class="navsort" href="%s">%s</a></div>'
+             % (toggle_href, toggle_label)]
     for t in tables:
         label = "Error logs" if t == "error_log" else t
         cls = ' class="active"' if t == active else ""
@@ -13723,7 +13730,7 @@ def _render_admin_nav(tables, active, counts=None, admin_query=""):
 
 
 def render_admin_html(env_stats, tables, active_table, table_html, banner="",
-                      counts=None, csrf_field="", admin_query=""):
+                      counts=None, csrf_field="", admin_query="", sort_records=False):
     banner_html = ('<div class="banner">%s</div>' % _html_escape(banner)) if banner else ""
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -13755,7 +13762,7 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
           'owner approves the confirmation prompt on its own client.</span></div>'
         + banner_html
         + '<div class="layout">'
-        + _render_admin_nav(tables, active_table, counts, admin_query)
+        + _render_admin_nav(tables, active_table, counts, admin_query, sort_records)
         + "<main>" + table_html + "</main>"
         + "</div>"
         "<script>for (const el of document.querySelectorAll('[data-ts]')){"
@@ -14215,9 +14222,11 @@ class Default(WorkerEntrypoint):
             except Exception:
                 counts[t] = 0
         stats = await admin_stats(self.env)
+        sort_records = params.get("sort", [""])[0] == "records"
         return Response(
             render_admin_html(stats, tables, active, table_html, banner, counts,
-                              csrf_field=csrf_field, admin_query=admin_query),
+                              csrf_field=csrf_field, admin_query=admin_query,
+                              sort_records=sort_records),
             status=200,
             headers={"content-type": "text/html; charset=utf-8"},
         )
