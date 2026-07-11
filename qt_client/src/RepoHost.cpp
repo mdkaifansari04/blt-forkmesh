@@ -724,6 +724,7 @@ void RepoHost::onReadyRead()
         }
         m_wsReady = true;
         m_wsConnectedAtMs = QDateTime::currentMSecsSinceEpoch();
+        m_reconnectAttempts = 0;  // healthy again: reset the backoff ramp
         m_pingTimer->start();
         emit log("Host: serving " + m_owner + "/" + m_name + " live to the web.");
         emit networkDiagnosticsChanged();
@@ -1585,6 +1586,15 @@ void RepoHost::scheduleReconnect()
     m_wsReady = false;
     m_wsConnectedAtMs = 0;
     emit networkDiagnosticsChanged();
-    if (!m_reconnect->isActive())
-        m_reconnect->start(5000);
+    if (m_reconnect->isActive())
+        return;
+    // Exponential backoff with jitter (mirrors ServerNode::scheduleReconnect):
+    // 1s, 2s, 4s … capped at 5 min. A relay redeploy reconnects promptly;
+    // a sustained outage (or a Cloudflare quota 429/5xx) ramps down instead
+    // of every hosted repo re-dialing every fixed 5s and amplifying the load.
+    const int shift = qMin(m_reconnectAttempts, 9);
+    ++m_reconnectAttempts;
+    int delay = qMin(1000 << shift, 300000);
+    delay += int(QRandomGenerator::global()->bounded(delay / 4 + 250));
+    m_reconnect->start(delay);
 }
