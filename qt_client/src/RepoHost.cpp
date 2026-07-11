@@ -444,8 +444,13 @@ QJsonObject rootCountsFor(const QString &mirrorPath, const QString &ref)
 QJsonObject commitSummaryForPath(const QString &mirrorPath, const QString &ref,
                                  const QString &path = QString())
 {
+    // %cd (committer date), not %ad (author date): a mirror that self-merges or
+    // rebases agent branches keeps each commit's original author date, so the
+    // website's "recent commit" banner and last-commit column looked perpetually
+    // stale (weeks old) even right after a fresh sync. The committer date is when
+    // the commit actually landed in the tree, which is the recency GitHub shows.
     QStringList args{"log", "-1", "--date=format:%Y-%m-%d",
-                     "--format=%H%x1f%an%x1f%ad%x1f%s", ref};
+                     "--format=%H%x1f%an%x1f%cd%x1f%s", ref};
     if (!path.isEmpty())
         args << "--" << path;
 
