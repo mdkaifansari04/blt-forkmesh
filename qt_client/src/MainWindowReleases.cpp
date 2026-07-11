@@ -2454,6 +2454,9 @@ void MainWindow::promptNewRelease()
     const QString notes = notesEdit->toPlainText().trimmed();
     if (message.isEmpty())
         message = tag;
+    // Keep the bare title for the fediverse announcement before the notes are
+    // folded into the tag message below.
+    const QString releaseTitle = message;
     if (!notes.isEmpty())
         message += "\n\n" + notes;
 
@@ -2482,6 +2485,7 @@ void MainWindow::promptNewRelease()
     }
     logSystem(QStringLiteral("Git: tagged release %1 at %2.").arg(tag, targetRef));
     setRepoDetailNotice(QStringLiteral("Published release %1.").arg(tag));
+    announceReleaseOnFediverse(tag, releaseTitle, notes);
     loadBranchesAndTags();
     if (pruneArtifactsCheck->isChecked())
         pruneReleaseArtifactsForCurrentRepo(tag);
@@ -2524,6 +2528,51 @@ void MainWindow::promptNewRelease()
             }
         }
     }
+}
+
+// Announce a freshly published release to the repo's fediverse followers.
+// Releases never pass through the relay's signed inboxes (they are canonical
+// on this node), so the relay can only federate them when the owner node
+// pushes the announcement itself: POST /api/repo/<o>/<r>/ap-publish, gated by
+// the same forkmesh-issues-pull-v1 signed token as the inbox drains.
+// Best-effort fire-and-forget — a relay hiccup must never affect the release.
+void MainWindow::announceReleaseOnFediverse(const QString &tag,
+                                            const QString &title,
+                                            const QString &notes)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    if (!repo.publishToNetwork)
+        return; // unpublished repos have no public fediverse actor
+    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    QUrl url = catalogApiUrl();
+    url.setPath("/api/repo/" + owner + "/" +
+                repoSegment(repo.name, QStringLiteral("repository")) +
+                "/ap-publish");
+    url.setQuery(signedInboxQuery(owner));
+    QJsonObject body;
+    body.insert(QStringLiteral("kind"), QStringLiteral("release"));
+    body.insert(QStringLiteral("eventType"), QStringLiteral("publish"));
+    body.insert(QStringLiteral("tag"), tag);
+    body.insert(QStringLiteral("title"), title);
+    body.insert(QStringLiteral("body"), notes.left(4000));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, tag] {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError)
+            logSystem(
+                QStringLiteral("Fediverse: announced release %1 to followers.")
+                    .arg(tag));
+        else
+            logSystem(
+                QStringLiteral("Fediverse: could not announce release %1 (%2).")
+                    .arg(tag, reply->errorString()));
+    });
 }
 
 void MainWindow::showReleaseDetail(const QString &tag)
@@ -2658,11 +2707,21 @@ void MainWindow::showReleaseDetail(const QString &tag)
     auto *buttons = new QDialogButtonBox;
     auto *browseBtn = buttons->addButton(QStringLiteral("Browse repo at this tag"),
                                          QDialogButtonBox::ActionRole);
+    // Retro-announce: releases published before the automatic ap-publish hook
+    // existed (or while the relay was unreachable) can be pushed to fediverse
+    // followers from here at any time.
+    auto *fediBtn = buttons->addButton(QStringLiteral("Announce on fediverse"),
+                                       QDialogButtonBox::ActionRole);
     buttons->addButton(QDialogButtonBox::Close);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(browseBtn, &QPushButton::clicked, &dialog, [this, &dialog, tag] {
         dialog.accept();
         setRepoBranch(tag); // browse the repo's files at this tag
+    });
+    connect(fediBtn, &QPushButton::clicked, &dialog,
+            [this, tag, subject, body, fediBtn] {
+        fediBtn->setEnabled(false);
+        announceReleaseOnFediverse(tag, subject, body);
     });
     layout->addWidget(buttons);
 
