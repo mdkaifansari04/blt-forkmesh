@@ -1853,6 +1853,11 @@ private:
     // above: logs and surfaces a notice on partial failure rather than
     // aborting the whole publish.
     void pruneReleaseTagsForCurrentRepo(const QString &keepTag);
+    // Push a just-published release to the repo's fediverse followers via the
+    // relay's owner-signed POST /ap-publish (releases never pass through the
+    // signed inboxes, so the relay can't federate them on its own).
+    void announceReleaseOnFediverse(const QString &tag, const QString &title,
+                                    const QString &notes);
     // Open a release's full notes + the diff since the previous release.
     void showReleaseDetail(const QString &tag);
     // Per-repo Artifacts tab (adhoc #98): the release binaries this node hosts in
