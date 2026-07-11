@@ -146,10 +146,9 @@
     viewer?.classList.add("hidden");
     readmePanel?.classList.toggle("hidden", Boolean(path));
     setRepoExplorerFocusMode(Boolean(path));
-    // Browsing into a subdirectory already goes full-width via focus mode
-    // above; only the root/README view needs to override its two-column
-    // default separately.
-    if (!path) setRepoContentFullWidth(true);
+    // The root/README view keeps the two-column layout: the About rail is a
+    // permanent right-hand column (the old full-width README override that
+    // dropped it below the content was removed, owner decision 2026-07-11).
     renderRepoBreadcrumb(repo, path);
 
     treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading tree...</div>';
