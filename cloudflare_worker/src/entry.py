@@ -7613,6 +7613,123 @@ async def _send_verification_email(env, request, name, email):
     return await _send_email(env, email, subject, text, html)
 
 
+# --- "How are we doing?" founder feedback email -------------------------------
+#
+# Sent ONCE per user account, ~24h after signup, from founders@forkmesh.com so
+# a plain reply lands with the founders. The feedback_email_sends row is both
+# the once-only guard and the admin-visible send log; it is claimed BEFORE the
+# send (and released on a definite failure) so a crash can never double-send.
+# Existing accounts older than 24h are naturally back-filled by the same
+# eligibility rule on the first runs after deploy.
+
+FEEDBACK_EMAIL_DELAY_MS = 24 * 60 * 60 * 1000
+FEEDBACK_EMAIL_BATCH = 8            # per hourly cron tick, bounds subrequests
+FEEDBACK_EMAIL_SCAN = 200           # accounts examined per tick
+FEEDBACK_EMAIL_FROM = "founders@forkmesh.com"
+FEEDBACK_EMAIL_FROM_NAME = "ForkMesh Founders"
+
+
+def _feedback_email_content(name):
+    subject = "How's ForkMesh treating you, %s?" % name
+    text = (
+        "Hey %s,\n\n"
+        "You joined ForkMesh yesterday — thank you for giving it a shot. "
+        "We're a small team building this in the open, and honest answers "
+        "from real users steer what we build next.\n\n"
+        "Three quick questions (one-line answers are perfect):\n\n"
+        "1. What brought you to ForkMesh — and did it do the thing you came for?\n"
+        "2. What's been confusing, broken, or slower than it should be?\n"
+        "3. If we could build or fix ONE thing for you next, what would it be?\n\n"
+        "Anything else on your mind — rough edges, wild ideas, dealbreakers — "
+        "we want that too.\n\n"
+        "Just hit reply; this address goes straight to the founders and we "
+        "read and answer every message.\n\n"
+        "— the ForkMesh founders\n" % name)
+    intro = (
+        "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#d4d4d8;font-size:14px\">"
+        "Hey <strong class=\"fm-strong\" style=\"color:#f5f5f5\">@" + _html_escape(name) +
+        "</strong> — you joined ForkMesh yesterday. Thank you for giving it a "
+        "shot. We're a small team building this in the open, and honest answers "
+        "from real users steer what we build next.</p>")
+    body_html = (
+        "<div class=\"fm-item\" style=\"background:#141416;border:1px solid #313134;"
+        "border-radius:10px;padding:16px 18px\">"
+        "<p class=\"fm-item-title\" style=\"margin:0 0 12px;color:#f5f5f5;font-size:14px;"
+        "font-weight:700\">Three quick questions (one-line answers are perfect)</p>"
+        "<p class=\"fm-item-body\" style=\"margin:0 0 10px;color:#d4d4d8;font-size:14px\">"
+        "1. What brought you to ForkMesh — and did it do the thing you came for?</p>"
+        "<p class=\"fm-item-body\" style=\"margin:0 0 10px;color:#d4d4d8;font-size:14px\">"
+        "2. What's been confusing, broken, or slower than it should be?</p>"
+        "<p class=\"fm-item-body\" style=\"margin:0;color:#d4d4d8;font-size:14px\">"
+        "3. If we could build or fix ONE thing for you next, what would it be?</p>"
+        "</div>"
+        "<p class=\"fm-text\" style=\"margin:18px 0 0;color:#d4d4d8;font-size:14px\">"
+        "Anything else on your mind — rough edges, wild ideas, dealbreakers — "
+        "we want that too.</p>"
+        "<p class=\"fm-text\" style=\"margin:12px 0 0;color:#d4d4d8;font-size:14px\">"
+        "<strong class=\"fm-strong\" style=\"color:#f5f5f5\">Just hit reply</strong> — "
+        "this address goes straight to the founders and we read and answer "
+        "every message.</p>")
+    footer_html = (
+        "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">"
+        "— the ForkMesh founders</p>")
+    html = _forkmesh_email_card_html("How are we doing?", intro, body_html,
+                                     footer_html)
+    return subject, text, html
+
+
+async def _send_feedback_emails(env):
+    now = int(Date.now())
+    # Accounts with no send row yet; the LEFT JOIN keeps re-scans cheap as the
+    # sent set grows. Eligibility (user kind, active, verified email, 24h old)
+    # lives in the encrypted record, so decrypt a bounded batch per tick.
+    rows = await d1_all(
+        env,
+        "SELECT a.name_bi, a.data FROM accounts a"
+        " LEFT JOIN feedback_email_sends f ON f.account_bi = a.name_bi"
+        " WHERE f.account_bi IS NULL LIMIT ?",
+        FEEDBACK_EMAIL_SCAN)
+    sent = 0
+    for row in rows or []:
+        if sent >= FEEDBACK_EMAIL_BATCH:
+            break
+        rec = await decrypt_row(env, row.get("data"))
+        if not rec or rec.get("status") != "active":
+            continue
+        if _account_kind(rec) != "user":
+            continue
+        email = clean_string(rec.get("email", "") or "", 254).strip()
+        if not email or not rec.get("email_verified"):
+            continue
+        try:
+            created = int(rec.get("created_at") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not created or now - created < FEEDBACK_EMAIL_DELAY_MS:
+            continue
+        name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+        if not name:
+            continue
+        # Claim first so a crash mid-send can never double-send; release the
+        # claim on a definite send failure so the next tick retries.
+        await d1_run(
+            env,
+            "INSERT OR IGNORE INTO feedback_email_sends"
+            " (account_bi, name, sent_at) VALUES (?,?,?)",
+            row.get("name_bi"), name, now)
+        subject, text, html = _feedback_email_content(name)
+        ok = await _send_email(env, email, subject, text, html,
+                               from_email=FEEDBACK_EMAIL_FROM,
+                               from_name=FEEDBACK_EMAIL_FROM_NAME)
+        if ok:
+            sent += 1
+        else:
+            await d1_run(
+                env, "DELETE FROM feedback_email_sends WHERE account_bi=?",
+                row.get("name_bi"))
+    return sent
+
+
 async def _password_reset_token(env, name, email, pass_hash, expires):
     # Stateless, deterministic reset token bound to (name, email, current
     # password hash, expiry). Only the server can compute it (keyed by DATA_KEY
@@ -14640,6 +14757,17 @@ class Default(WorkerEntrypoint):
                 await log_cron_error(
                     self.env, "/cron/chat-history-prune-expired",
                     "chat_history_prune_expired failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
+        # Hourly: the once-per-user "How are we doing?" founder feedback email
+        # for accounts that crossed the 24h-after-signup mark (batched; also
+        # back-fills accounts that signed up before this feature shipped).
+        if minute % 60 == 22:
+            try:
+                await _send_feedback_emails(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/feedback-emails",
+                    "_send_feedback_emails failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
         # One Sentry check-in per tick (the closing ok/error): the opening
         # in-progress check-in doubled the outbound Sentry traffic for no

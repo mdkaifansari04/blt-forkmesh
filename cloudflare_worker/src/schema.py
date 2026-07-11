@@ -472,6 +472,13 @@ SCHEMA_STATEMENTS = [
         PRIMARY KEY (repo_bi, account_bi))""",
     "CREATE INDEX IF NOT EXISTS idx_repo_stars_repo ON repo_stars(repo_bi, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_repo_stars_account ON repo_stars(account_bi, created_at)",
+    # "How are we doing?" founder feedback email, sent once per user account
+    # ~24h after signup (migration 0033). One row per send is both the
+    # once-only guard and the admin's send log (the admin table browser lists
+    # every D1 table): `name` is the public node name, nothing else — the
+    # recipient email stays only in the encrypted account record.
+    """CREATE TABLE IF NOT EXISTS feedback_email_sends (
+        account_bi TEXT PRIMARY KEY, name TEXT, sent_at INTEGER NOT NULL)""",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the
