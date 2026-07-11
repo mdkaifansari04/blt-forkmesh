@@ -43,6 +43,26 @@
             "sig": "idYrM0wyaeRjjT7Je6lUILfuExvU-UBzYNton0a4aXAeO2Fgv1mZLveTLi18toqhFCdZBxA2VivKRss9s3i0Aw",
             "ts": 1783783457752,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-416-still-getting-too-many-requests-on-the-federated\".",
+            "id": "580a72d9-ef80-4ada-895c-8c17b461b6a0",
+            "sig": "_nbOBxDExtTjGYyvBR9D6OMALhKz0Ow4BA0yCYPhAxp5W83KzaVAlfoNVq1bFDVOwwQsnup6nTR2672XeWbqCQ",
+            "ts": 1783784473245,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "f58c9be9-765a-4f93-81bd-0b1b5d65082a",
+            "sig": "cpTMtKhB8vTAaSi_JbLc6EfjV5OK7MSZ1pF-YdAt4vgOGznD1KgvH7olVri2XanJJJ4kjWBswieRhR-kudOICA",
+            "status": "closed",
+            "ts": 1783784473319,
+            "type": "status"
         }
     ],
     "labels": [
@@ -52,8 +72,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "Still getting too many requests on the federated repo",
-    "updatedAt": 1783783457752,
+    "updatedAt": 1783784473319,
     "votes": 0
 }
