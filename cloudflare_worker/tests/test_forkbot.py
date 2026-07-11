@@ -55,7 +55,7 @@ FUNCS = {
     "_forkbot_enqueue_agent_request",
     "_forkbot_context_text",
     "js_nullish",
-    "_console_error",
+    "log_error",
     "_safe_error_text",
     "_forkbot_issue_title",
     "_forkbot_fallback_issue_fields",
@@ -255,6 +255,15 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=()):
     async def is_admin(_env, name):
         return str(name or "").lower() in {str(a).lower() for a in admins}
 
+    # log_error's real implementation from entry.py fans out to these two;
+    # stubbed here (like _load_capture_worker_exception in
+    # test_sentry_worker.py) so AI-failure logging doesn't need a live DSN/D1.
+    async def capture_sentry_error(*_args, **_kwargs):
+        return False
+
+    async def write_error_log(*_args, **_kwargs):
+        return None
+
     ns = _load_forkbot({
         "_is_admin": is_admin,
         "Date": _Date,
@@ -270,6 +279,8 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=()):
         "_inbox_author_over_quota": inbox_author_over_quota,
         "notify_pending_inbox": notify_pending_inbox,
         "notify_mentions": notify_mentions,
+        "capture_sentry_error": capture_sentry_error,
+        "_write_error_log": write_error_log,
     })
     return _Env(), calls, ns
 
