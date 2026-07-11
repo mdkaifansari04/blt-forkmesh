@@ -90,6 +90,9 @@ AP_REPO_SUB_RE = re.compile(
     r"^/ap/repos/([^/]+)/([^/]+)/(inbox|outbox|followers|following)$")
 # Local ActivityPub object (a published Note), 32-hex uuid.
 AP_OBJECT_RE = re.compile(r"^/ap/o/([0-9a-f]{32})$")
+# An image embedded in that Note's body, re-served from its stored base64 so
+# remote servers (which cannot fetch data: URLs) have a real URL to attach.
+AP_OBJECT_MEDIA_RE = re.compile(r"^/ap/o/([0-9a-f]{32})/media/([0-9]+)$")
 # Remote fediverse replies attached to a repo thread, readable by clients.
 REPO_FEDI_COMMENTS_RE = re.compile(
     r"^/api/repo/([^/]+)/([^/]+)/fedi-comments$")
