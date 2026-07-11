@@ -70,6 +70,22 @@ def test_admin_accounts_table_can_migrate_account_kind():
     assert "event.submitter" in ENTRY_TEXT
 
 
+def test_admin_accounts_table_move_buttons_and_presence_indicator():
+    # Phasing out the accounts table: "Move to users/nodes" (re)mirror the record
+    # into the authoritative table and drain the legacy accounts row. Both buttons
+    # stay active and an indicator shows when the record already lives there.
+    assert "Move to users" in ENTRY_TEXT
+    assert "Move to nodes" in ENTRY_TEXT
+    # Presence indicators query the authoritative tables.
+    assert "SELECT 1 FROM users WHERE user_bi=?" in ENTRY_TEXT
+    assert "SELECT 1 FROM nodes WHERE node_bi=?" in ENTRY_TEXT
+    assert 'class="inpill"' in ENTRY_TEXT
+    # Buttons are always active — no disabled state on the migration buttons.
+    cell = ENTRY_TEXT.split("async def _admin_account_migration_cell", 1)[1]
+    cell = cell.split("\nasync def ", 1)[0]
+    assert "disabled" not in cell
+
+
 def test_admin_accounts_table_has_migrate_verified_users_button():
     # One-click bulk migration of verified-email accounts into the users table.
     assert "def _admin_migrate_verified_users" in ENTRY_TEXT
