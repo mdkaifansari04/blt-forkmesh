@@ -14,6 +14,9 @@
     repoBranchQueries: {},
     repoCollectionPages: {},
     session: null,
+    // Public-profile mode (/@name): the FOREIGN account whose profile the
+    // page is showing, or null when the profile pages show the session user.
+    publicProfile: null,
     repoFileFinder: {
       repoKey: "",
       files: [],

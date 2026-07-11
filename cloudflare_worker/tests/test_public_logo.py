@@ -118,7 +118,7 @@ def test_brand_logo_size_comes_from_shared_stylesheet():
 def test_dashboard_assets_are_root_relative_for_deep_links():
     html = (PUBLIC_DIR / "dashboard" / "index.html").read_text(encoding="utf-8")
 
-    assert 'src="/dashboard.js?v=about-rail-column"' in html
+    assert 'src="/dashboard.js?v=public-profiles"' in html
     assert 'href="styles.css"' not in html
     assert 'src="dashboard.js"' not in html
 

@@ -4485,410 +4485,6 @@ async def _account_users_directory(env, request):
     return json_response({"ok": True, "users": out})
 
 
-def _public_profile_html(profile, host):
-    name = clean_string(profile.get("name", ""), MAX_NODE_NAME).lower()
-    kind = profile.get("kind", "user")
-    bio = profile.get("profileBio", "")
-    about = profile.get("profileAbout", "")
-    location = profile.get("profileLocation", "")
-    timezone = profile.get("profileTimezone", "")
-    links = profile.get("profileLinks", [])
-    mastodon = profile.get("mastodon", "")
-    mastodon_url = profile.get("mastodonUrl", "")
-    avatar = profile.get("avatarPng", "")
-    logo_url = profile.get("logoUrl", "")
-    repos = profile.get("repos") or []
-    fediverse = profile.get("fediverse") or {}
-    follower_names = profile.get("followerNames") or []
-    social = profile.get("social", {})
-    followers = int(social.get("followers", 0) or 0)
-    following = int(social.get("following", 0) or 0)
-    mirror_count = int(social.get("mirrorCount", 0) or 0)
-    initial = (name[:1] or "F").upper()
-    link_rows = []
-    for link in links:
-        badge = (
-            '<span class="verified">Verified</span>'
-            if link.get("verified") else
-            '<span class="unverified">Unverified</span>'
-        )
-        label = link.get("label") or link.get("domain") or link.get("url")
-        link_rows.append(
-            '<a class="profile-link" href="' + _html_escape(link.get("url", "")) +
-            '" rel="me noopener" target="_blank"><span><strong>' +
-            _html_escape(label) + '</strong><small>' +
-            _html_escape(link.get("domain", "")) + '</small></span>' + badge + '</a>'
-        )
-    mastodon_html = ""
-    if mastodon and mastodon_url:
-        mastodon_html = (
-            '<a class="mastodon" href="' + _html_escape(mastodon_url) +
-            '" rel="me noopener" target="_blank">' + _html_escape(mastodon) + '</a>'
-        )
-    if avatar:
-        avatar_html = (
-            '<img class="avatar" src="data:image/png;base64,' + _html_escape(avatar) +
-            '" alt="' + _html_escape(name) + ' avatar">'
-        )
-    elif logo_url:
-        # No account avatar: fall back to the owner-uploaded logo of one of the
-        # node's source-of-truth repos so org pages still get their branding.
-        avatar_html = (
-            '<img class="avatar" src="' + _html_escape(logo_url) +
-            '" alt="' + _html_escape(name) + ' logo">'
-        )
-    else:
-        avatar_html = '<div class="avatar avatar-fallback">' + _html_escape(initial) + '</div>'
-    canonical = "https://" + host + "/@" + quote(name)
-    meta_rows = []
-    if location:
-        meta_rows.append('<span>' + _html_escape(location) + '</span>')
-    if timezone:
-        meta_rows.append('<span data-timezone="' + _html_escape(timezone) + '">' + _html_escape(timezone) + '</span>')
-    about_html = (
-        '<section class="about"><h2>About yourself</h2><p>' +
-        _html_escape(about).replace("\n", "<br>") + '</p></section>'
-        if about else ""
-    )
-    kind_badge_html = (
-        '<span class="kind-badge">Source-of-truth node</span>'
-        if kind != "user" else "")
-    fedi_stats_html = (
-        '<span><strong>' + str(int(fediverse.get("followers", 0) or 0)) +
-        '</strong> fediverse followers</span>'
-        if fediverse else "")
-    followed_by_html = ""
-    if follower_names:
-        followed_by_html = (
-            '<div class="followed-by">Followed by ' +
-            ", ".join(
-                '<a href="/@' + _html_escape(quote(n)) + '">@' + _html_escape(n) + '</a>'
-                for n in follower_names) + '</div>')
-    fedi_follow_html = ""
-    if fediverse:
-        fedi_follow_html = (
-            '<section class="fedi"><h2>Follow on Mastodon</h2>'
-            '<p>Follow <code>' + _html_escape(fediverse.get("handle", "")) +
-            '</code> from Mastodon (or any ActivityPub app) to get this ' +
-            ("node's" if kind != "user" else "profile's") +
-            ' activity in your feed.</p>'
-            '<form data-remote-follow data-handle="' +
-            _html_escape(fediverse.get("handle", "")) + '">'
-            '<div class="follow-row">'
-            '<input type="text" autocomplete="off" '
-            'placeholder="you@mastodon.social" aria-label="Your fediverse handle">'
-            '<button type="submit">Follow</button></div>'
-            '<small data-remote-follow-status>Enter your fediverse handle and '
-            'your own server will ask you to confirm the follow.</small>'
-            '</form></section>')
-    repo_rows = []
-    for repo in repos:
-        repo_badge = (
-            '<span class="verified">Source of truth</span>'
-            if repo.get("isSource") else '<span class="unverified">Mirror</span>')
-        facts = []
-        if repo.get("commitCount"):
-            facts.append(_html_escape(repo["commitCount"]) + " commits")
-        if repo.get("issueCount"):
-            facts.append(_html_escape(repo["issueCount"]) + " open issues")
-        if repo.get("website"):
-            facts.append(
-                '<a href="' + _html_escape(repo["website"]) +
-                '" rel="noopener" target="_blank">' +
-                _html_escape(_profile_link_domain(repo["website"]) or "website") +
-                '</a>')
-        repo_rows.append(
-            '<article class="repo-row"><div class="repo-head">'
-            '<a class="repo-name" href="' +
-            _html_escape(repo_web_href(repo.get("owner", ""), repo.get("name", ""))) +
-            '">' + _html_escape(repo.get("owner", "") + "/" + repo.get("name", "")) +
-            '</a>' + repo_badge + '</div>' +
-            ('<small>' + _html_escape(repo.get("description", "")) + '</small>'
-             if repo.get("description") else "") +
-            ('<div class="repo-facts">' + " · ".join(facts) + '</div>' if facts else "") +
-            '</article>')
-    repos_html = (
-        '<section class="repos"><h2>Repositories (' +
-        str(len(repo_rows)) + ')</h2>' + "".join(repo_rows) +
-        '</section>'
-        if repo_rows else "")
-    return """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>@%s - ForkMesh</title>
-  <link rel="canonical" href="%s">
-  <link rel="me" href="%s">
-  <link rel="alternate" type="application/activity+json" href="%s">
-  <style>
-    :root { color-scheme: dark light; --bg:#09090b; --card:#111113; --fg:#f4f4f5; --muted:#a1a1aa; --border:#27272a; --accent:#4ade80; }
-    @media (prefers-color-scheme: light) { :root { --bg:#f6f8fb; --card:#fff; --fg:#0f172a; --muted:#64748b; --border:#e2e8f0; --accent:#16a34a; } }
-    body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    main { width:min(46rem, calc(100vw - 32px)); border:1px solid var(--border); background:var(--card); border-radius:12px; padding:28px; box-shadow:0 20px 60px rgba(0,0,0,.22); }
-    header { display:flex; gap:16px; align-items:center; }
-    .avatar { width:72px; height:72px; border-radius:18px; object-fit:cover; border:1px solid color-mix(in srgb, var(--accent) 40%%, var(--border)); }
-    .avatar-fallback { display:grid; place-items:center; background:color-mix(in srgb, var(--accent) 14%%, transparent); color:var(--accent); font-weight:700; font-size:28px; }
-    h1 { margin:0; font-size:28px; line-height:1.1; letter-spacing:0; }
-    .handle, .bio, small { color:var(--muted); }
-    .bio { margin:22px 0 0; white-space:pre-wrap; font-size:15px; }
-    .stats, .meta { display:flex; flex-wrap:wrap; gap:12px; margin-top:16px; color:var(--muted); }
-    .stats strong { color:var(--fg); }
-    .about { margin-top:24px; border:1px solid var(--border); border-radius:8px; padding:16px; }
-    .about h2 { margin:0 0 10px; font-size:14px; }
-    .about p { margin:0; white-space:pre-wrap; color:var(--fg); }
-    .mastodon { display:inline-flex; margin-top:8px; color:var(--accent); text-decoration:none; }
-    .links { display:grid; gap:10px; margin-top:24px; }
-    .profile-link { display:flex; align-items:center; justify-content:space-between; gap:14px; border:1px solid var(--border); border-radius:8px; padding:12px; color:var(--fg); text-decoration:none; }
-    .profile-link:hover { border-color:color-mix(in srgb, var(--accent) 48%%, var(--border)); }
-    .profile-link span { display:grid; min-width:0; }
-    .profile-link strong, .profile-link small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .verified, .unverified { flex-shrink:0; border:1px solid var(--border); border-radius:999px; padding:2px 8px; font-size:11px; color:var(--muted); }
-    .verified { border-color:color-mix(in srgb, var(--accent) 45%%, var(--border)); color:var(--accent); }
-    .kind-badge { align-self:center; border:1px solid color-mix(in srgb, var(--accent) 45%%, var(--border)); border-radius:999px; padding:2px 8px; font-size:11px; color:var(--accent); white-space:nowrap; }
-    .followed-by { margin-top:10px; color:var(--muted); font-size:12px; }
-    .followed-by a { color:var(--fg); text-decoration:none; }
-    .repos { display:grid; gap:10px; margin-top:24px; }
-    .repos h2, .fedi h2 { margin:0; font-size:14px; }
-    .repo-row { display:grid; gap:6px; border:1px solid var(--border); border-radius:8px; padding:12px; }
-    .repo-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
-    .repo-name { color:var(--accent); font-weight:700; text-decoration:none; overflow:hidden; text-overflow:ellipsis; }
-    .repo-row small { color:var(--muted); }
-    .repo-facts { display:flex; flex-wrap:wrap; gap:10px; color:var(--muted); font-size:12px; }
-    .repo-facts a { color:var(--accent); }
-    .fedi { display:grid; gap:8px; margin-top:24px; border:1px solid var(--border); border-radius:8px; padding:12px; }
-    .fedi p { margin:0; color:var(--muted); }
-    .fedi code { color:var(--fg); background:color-mix(in srgb, var(--accent) 10%%, transparent); border-radius:6px; padding:1px 6px; }
-    .follow { display:grid; gap:8px; margin-top:20px; border:1px solid var(--border); border-radius:8px; padding:12px; }
-    .follow-row { display:flex; flex-wrap:wrap; gap:8px; }
-    input { min-width:0; flex:1 1 11rem; border:1px solid var(--border); border-radius:8px; background:transparent; color:var(--fg); padding:8px 10px; }
-    button { border:1px solid color-mix(in srgb, var(--accent) 48%%, var(--border)); border-radius:8px; background:color-mix(in srgb, var(--accent) 16%%, transparent); color:var(--fg); padding:8px 12px; font-weight:700; cursor:pointer; }
-    footer { margin-top:24px; color:var(--muted); font-size:12px; }
-    footer a { color:var(--muted); }
-  </style>
-</head>
-<body>
-  <main>
-    <header>%s<div><h1>@%s</h1><div class="handle">%s</div>%s</div>%s</header>
-    <div class="stats"><span><strong>%s</strong> followers</span><span><strong>%s</strong> following</span><span><strong>%s</strong> mirrors</span>%s</div>
-    <div class="meta">%s</div>
-    %s
-    %s
-    %s
-    <section class="links">%s</section>
-    %s
-    %s
-    <form class="follow" data-follow-form data-name="%s">
-      <strong>Follow @%s</strong>
-      <div class="follow-row">
-        <button type="submit">Follow</button>
-      </div>
-      <small data-follow-status>Log in to ForkMesh to follow this profile.</small>
-    </form>
-    <footer><a href="/">ForkMesh</a></footer>
-  </main>
-  <script>
-    (() => {
-      const form = document.querySelector("[data-follow-form]");
-      const status = document.querySelector("[data-follow-status]");
-      const name = (form && form.dataset.name) || "";
-      let session = null;
-      try {
-        session = JSON.parse(localStorage.getItem("forkmesh.session") || "null");
-        if (session && session.nodeName === name) form.hidden = true;
-      } catch (_) {}
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        if (!session || !session.sessionToken) {
-          status.textContent = "Log in before following this profile.";
-          return;
-        }
-        status.textContent = "Saving follow...";
-        const response = await fetch("/api/accounts/" + encodeURIComponent(name) + "/follow", {
-          method: "POST",
-          headers: { "content-type": "application/json", accept: "application/json" },
-          body: JSON.stringify({ sessionToken: session.sessionToken }),
-        });
-        const body = await response.json().catch(() => ({}));
-        status.textContent = response.ok ? "Following @" + name + "." : (body.error || "Could not follow this profile.");
-      });
-      const remote = document.querySelector("[data-remote-follow]");
-      if (remote) {
-        remote.addEventListener("submit", (event) => {
-          event.preventDefault();
-          const input = remote.querySelector("input");
-          const out = remote.querySelector("[data-remote-follow-status]");
-          const handle = String((input && input.value) || "").trim().replace(/^@/, "");
-          const domain = handle.split("@")[1];
-          if (!domain) {
-            out.textContent = "Enter your handle like you@mastodon.social.";
-            return;
-          }
-          const uri = String(remote.dataset.handle || "").replace(/^@/, "");
-          window.open("https://" + domain + "/authorize_interaction?uri=" + encodeURIComponent(uri), "_blank", "noopener");
-        });
-      }
-    })();
-  </script>
-</body>
-</html>""" % (
-        _html_escape(name), _html_escape(canonical),
-        # rel="me": the reciprocal half of the fediverse Person actor's
-        # verified profile link (the actor's `url` is this very page); the
-        # alternate link lets fediverse software discover the actor from the
-        # page URL.
-        _html_escape(canonical),
-        _html_escape("https://" + host + "/ap/users/" + quote(name)),
-        avatar_html,
-        _html_escape(name), _html_escape(canonical), mastodon_html,
-        kind_badge_html,
-        str(followers), str(following), str(mirror_count),
-        fedi_stats_html,
-        "".join(meta_rows),
-        ('<p class="bio">' + _html_escape(bio) + '</p>') if bio else "",
-        followed_by_html,
-        about_html,
-        "".join(link_rows),
-        fedi_follow_html,
-        repos_html,
-        _html_escape(name), _html_escape(name),
-    )
-
-
-async def _public_profile_payload(env, rec, request):
-    url = urlparse(request.url)
-    viewer = clean_string(parse_qs(url.query).get("viewer", [""])[0], MAX_NODE_NAME).lower()
-    name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
-    fields = _account_profile_fields(rec)
-    social = await _account_social_counts(env, name, viewer)
-    return {
-        "name": name,
-        "avatarPng": rec.get("avatar_png", ""),
-        "social": social,
-        **social,
-        **fields,
-    }
-
-
-async def _profile_public_repos(env, name):
-    """Public catalog repos for a profile page: every public record published
-    under the profile name or one of its linked nodes. Source-of-truth records
-    (source == local-node) sort first so the page leads with the repos this
-    owner actually holds the working copy for, ahead of mirrors it serves."""
-    repos = []
-    seen = set()
-    for owner in await _profile_catalog_owner_names(env, name):
-        owner_bi = await blind_index(env, owner)
-        rows = await d1_all(
-            env,
-            "SELECT key_bi, data FROM repositories WHERE owner_bi=? AND is_private = 0",
-            owner_bi)
-        for row in rows or []:
-            rec = await decrypt_row(env, row.get("data", ""))
-            if not rec:
-                continue
-            repo_name = clean_string(rec.get("name", ""), MAX_REPO_SEGMENT)
-            repo_owner = clean_string(
-                rec.get("owner", "") or owner, MAX_NODE_NAME).lower()
-            if not repo_name:
-                continue
-            key = repo_owner + "/" + repo_name.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            repos.append({
-                "owner": repo_owner,
-                "name": repo_name,
-                "keyBi": row.get("key_bi"),
-                "description": clean_string(rec.get("description", "") or "", 240),
-                "website": clean_string(rec.get("website", "") or "", 240),
-                "isSource": str(rec.get("source") or "local-node") == "local-node",
-                "issueCount": clean_string(rec.get("issueCount", ""), 12),
-                "commitCount": clean_string(rec.get("commitCount", ""), 12),
-            })
-    repos.sort(key=lambda r: (not r["isSource"], r["owner"], r["name"].lower()))
-    return repos[:100]
-
-
-async def _profile_fediverse(env, request, name):
-    """Mastodon-follow facts for a profile page, or {} when the fediverse
-    layer is off or the account does not federate (missing/private)."""
-    if not await _ap_enabled(env) or not await _ap_user_federates(env, name):
-        return {}
-    origin = _ap_origin(env, request)
-    row = await d1_first(
-        env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
-        await _ap_actor_bi(env, AP_ACTOR_USER, name))
-    return {
-        "handle": "@%s@%s" % (name, _ap_domain_of(origin)),
-        "actorUrl": _ap_actor_url(origin, AP_ACTOR_USER, name),
-        "followers": int((row or {}).get("c", 0) or 0),
-    }
-
-
-async def _profile_follower_names(env, name, limit=12):
-    # Follower names are public catalog-adjacent data (they are written
-    # plaintext next to the blind indexes precisely so profiles can show them).
-    target_bi = await blind_index(env, name)
-    rows = await d1_all(
-        env,
-        "SELECT follower_name FROM profile_follows WHERE target_bi=?"
-        " ORDER BY created_at DESC LIMIT ?",
-        target_bi, limit)
-    return [row.get("follower_name") for row in rows or []
-            if row.get("follower_name")]
-
-
-async def _profile_repo_logo_url(env, repos):
-    """Owner-uploaded logo of the first source-of-truth repo that has one —
-    the org page's avatar fallback when the account has no uploaded avatar."""
-    for repo in [r for r in repos if r.get("isSource")][:4]:
-        row = await d1_first(
-            env,
-            "SELECT updated_at FROM repo_media WHERE repo_bi=? AND kind='logo'",
-            repo.get("keyBi"))
-        if row:
-            return "/api/repo/%s/%s/media/logo.png?v=%d" % (
-                quote(repo["owner"]), quote(repo["name"]),
-                int(row.get("updated_at") or 0))
-    return ""
-
-
-async def public_profile_handler(env, request, username):
-    name = clean_string(username, MAX_NODE_NAME).lower()
-    if not valid_node_name(name):
-        return json_response({"error": "not_found"}, status=404)
-    _, rec = await _account_row(env, name)
-    if rec and (rec.get("status") != "active" or
-                bool(rec.get("profile_private"))):
-        return json_response({"error": "not_found"}, status=404)
-    repos = await _profile_public_repos(env, name)
-    is_user = bool(rec) and _account_kind(rec) == "user"
-    # Beyond login ("user") profiles, a public user-or-org page exists only
-    # for source-of-truth nodes: the /owner of /owner/repo gets a page when it
-    # is the working-copy holder (source == local-node) of at least one public
-    # repo. Mirror-only namespaces and unknown names keep 404ing.
-    if not is_user and not any(r["isSource"] for r in repos):
-        return json_response({"error": "not_found"}, status=404)
-    host = clean_string(urlparse(request.url).netloc, 253)
-    rec = rec or {"name": name}
-    profile = await _public_profile_payload(env, rec, request)
-    profile["kind"] = "user" if is_user else "node"
-    profile["repos"] = repos
-    profile["fediverse"] = await _profile_fediverse(env, request, name)
-    profile["followerNames"] = await _profile_follower_names(env, name)
-    if not profile.get("avatarPng"):
-        profile["logoUrl"] = await _profile_repo_logo_url(env, repos)
-    return Response(
-        _public_profile_html(profile, host),
-        status=200,
-        headers={
-            "content-type": "text/html; charset=utf-8",
-            "cache-control": "no-store",
-        },
-    )
-
-
 def _donation_expiry_fields(rec, now):
     try:
         created = int(rec.get("donation_created_at") or rec.get("created_at") or now)
@@ -9106,7 +8702,14 @@ async def accounts_handler(env, request):
                    "kind": _account_kind(rec),
                    "owner": rec.get("owner", ""),
                    "nodes": _owned_nodes(rec)}
-        social = await _account_social_counts(env, rec.get("name", name))
+        # viewer=<name> lets the public-profile page show the caller's own
+        # Follow/Following state. Display-only: a spoofed viewer can only see
+        # a wrong button label; actual follow writes are session-token gated.
+        viewer = clean_string(
+            parse_qs(urlparse(request.url).query).get("viewer", [""])[0],
+            MAX_NODE_NAME).lower()
+        social = await _account_social_counts(
+            env, rec.get("name", name), viewer)
         payload = {**payload, "social": social, **social}
         payload = {**payload, **_account_profile_fields(rec)}
         return json_response(payload)
@@ -14168,6 +13771,8 @@ ADMIN_STYLE = """
  .ab-root .account-kind button{padding:3px 8px;font-size:12px}
  .ab-root .kindpill{border:1px solid var(--ab-border-2);border-radius:999px;padding:2px 8px;
         color:var(--ab-fg);background:var(--ab-card);font:600 12px system-ui,sans-serif}
+ .ab-root .inpill{border:1px solid #1a7f37;border-radius:999px;padding:1px 7px;
+        color:#1a7f37;background:transparent;font:600 11px system-ui,sans-serif;white-space:nowrap}
  .ab-root .diaggrid{display:flex;gap:24px;flex-wrap:wrap;padding:4px 24px 12px;align-items:flex-start}
  .ab-root .diagcol{min-width:240px}
  .ab-root .diagcol h3{font-size:13px;color:var(--ab-muted);margin:8px 0 4px;font-weight:600}
@@ -14255,7 +13860,7 @@ def _admin_row_checkbox(rowid):
             % _html_escape(rowid))
 
 
-def _admin_account_migration_cell(row, rec, admin_query=""):
+async def _admin_account_migration_cell(env, row, rec, admin_query=""):
     rec = rec if isinstance(rec, dict) else {}
     name = clean_string(rec.get("name") or row.get("name") or "",
                         MAX_NODE_NAME).strip().lower()
@@ -14263,18 +13868,27 @@ def _admin_account_migration_cell(row, rec, admin_query=""):
         return '<td><span class="meta">no account name</span></td>'
     kind = _account_kind(rec)
     action = _admin_href(admin_query, table="accounts", action="migrate_account")
+    # We are phasing out the accounts table. "Move to users/nodes" pins the
+    # record as that kind, (re)mirrors it into the authoritative users/nodes
+    # table, and drains the legacy accounts row — so both buttons stay active
+    # even for the current kind (it recreates the mirror if it went missing).
+    name_bi = row.get("name_bi") or await blind_index(env, name)
+    in_users = bool(await d1_first(
+        env, "SELECT 1 FROM users WHERE user_bi=?", name_bi))
+    in_nodes = bool(await d1_first(
+        env, "SELECT 1 FROM nodes WHERE node_bi=?", name_bi))
+    present = {"user": in_users, "node": in_nodes}
     buttons = []
-    for target, label in (("user", "Make user"), ("node", "Make node")):
-        disabled = ' disabled aria-disabled="true"' if target == kind else ""
-        onclick = (
-            ' onclick="return confirm(\'Migrate account %s to %s?\')"'
-            % (_html_escape(name), target)
-        ) if not disabled else ""
+    for target, table, label in (("user", "users", "Move to users"),
+                                 ("node", "nodes", "Move to nodes")):
+        indicator = (' <span class="inpill" title="Already exists in the %s '
+                     'table">in %s</span>' % (table, table)) if present[target] else ""
         buttons.append(
             '<button type="submit" formmethod="post" formaction="%s" '
-            'name="account_migration" value="%s"%s%s>%s</button>'
-            % (action, _html_escape(name + ":" + target), disabled, onclick,
-               label)
+            'name="account_migration" value="%s" '
+            'onclick="return confirm(\'Move account %s to %s?\')">%s</button>%s'
+            % (action, _html_escape(name + ":" + target), _html_escape(name),
+               table, label, indicator)
         )
     return (
         '<td><div class="account-kind"><span class="kindpill">%s</span>%s</div></td>'
@@ -14634,7 +14248,8 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
                  '<td><a class="navlink" href="%s">Edit</a></td>'
                  % _admin_href(admin_query, table=table, action="edit", rowid=rid)]
         if table == "accounts":
-            cells.append(_admin_account_migration_cell(r, decoded_data, admin_query))
+            cells.append(await _admin_account_migration_cell(
+                env, r, decoded_data, admin_query))
         for col in columns:
             value = r.get(col)
             if col == "data" and decoded_data is not None:
@@ -15498,7 +15113,7 @@ class Default(WorkerEntrypoint):
         # (an encoded @) or /@Name, and both used to fall through to the 404
         # page instead of the profile.
         public_profile = re.match(
-            r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)/?$",
+            r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)(/repositories)?/?$",
             unquote(url.path).lower())
         if public_profile:
             # Fediverse clients resolve profile URLs with an ActivityPub
@@ -15507,11 +15122,9 @@ class Default(WorkerEntrypoint):
                 return await _ap_actor_doc_response(
                     self.env, request, AP_ACTOR_USER,
                     public_profile.group(1))
-            profile_response = await public_profile_handler(
-                self.env, request, public_profile.group(1))
-            if int(profile_response.status) == 404:
-                return await self._serve_not_found_page(url)
-            return profile_response
+            return await self._serve_profile_page(
+                url, public_profile.group(1),
+                repositories=bool(public_profile.group(2)))
 
         issues_match = REPO_ISSUES_RE.match(url.path)
         if issues_match:
@@ -15925,6 +15538,50 @@ class Default(WorkerEntrypoint):
             status=404,
             headers={"content-type": "text/html; charset=utf-8"},
         )
+
+    async def _serve_profile_page(self, url, name, repositories=False):
+        # /@name — the FULL public profile: the same prebuilt dashboard
+        # profile document (sidebar, contribution heatmap, activity feed,
+        # repositories tab) with per-user head tags injected at serve time.
+        # dashboard.js detects the /@name path and renders the named account's
+        # public data instead of the logged-in session (public-profile mode).
+        # Eligibility mirrors the fediverse actor: active + not private —
+        # node-owner accounts get pages too, matching _ap_user_federates.
+        await ensure_schema(self.env)
+        _, rec = await _account_row(self.env, name)
+        if (not rec or rec.get("status") != "active"
+                or rec.get("profile_private")):
+            return await self._serve_not_found_page(url)
+        asset = DASHBOARD_PAGE_ASSETS[
+            "/dashboard/profile/repositories" if repositories
+            else "/dashboard/profile"]
+        base = url.scheme + "://" + url.netloc + "/"
+        try:
+            resp = await self.env.ASSETS.fetch(base + asset)
+            body = await resp.text()
+        except Exception:
+            body = "<!doctype html><title>ForkMesh</title>"
+        origin = url.scheme + "://" + url.netloc
+        canonical = "%s/@%s" % (origin, quote(name))
+        # rel="me" is the reciprocal half of the fediverse Person actor's
+        # verified profile link (the actor's `url` is this page); the
+        # alternate link lets fediverse software discover the actor from the
+        # page URL.
+        tags = (
+            "<link rel=\"canonical\" href=\"%s\">"
+            "<link rel=\"me\" href=\"%s\">"
+            "<link rel=\"alternate\" type=\"application/activity+json\" "
+            "href=\"%s/ap/users/%s\">"
+            % (canonical, canonical, origin, quote(name)))
+        if "</head>" in body:
+            body = body.replace("</head>", tags + "</head>", 1)
+        body = re.sub(r"<title>[^<]*</title>",
+                      "<title>@%s · ForkMesh</title>" % _html_escape(name),
+                      body, count=1)
+        return Response(body, status=200, headers={
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "public, max-age=300",
+        })
 
     async def _serve_repo_page(self, url):
         # The shared repo-detail document, plus per-repo head tags:

@@ -533,7 +533,9 @@ def test_dashboard_profile_repository_count_uses_loaded_repository_groups():
     assert "function renderProfileRepositoryCount" in dashboard_js
     assert '$$("[data-profile-repo-count]").forEach' in dashboard_js
     assert "renderProfileRepositoryCount();" in dashboard_js
-    assert "groupRepositories(state.repositories || []).length" in dashboard_js
+    # Counts follow the same source as the list: the whole catalog on the
+    # dashboard, scoped to the viewed account in public-profile mode.
+    assert "profileRepositoryGroups().length" in dashboard_js
 
 
 def test_dashboard_home_uses_github_dark_typography_and_blue_links():
