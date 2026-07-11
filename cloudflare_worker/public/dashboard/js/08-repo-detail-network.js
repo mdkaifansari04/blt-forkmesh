@@ -905,6 +905,15 @@
   }
 
   function initProfileOverviewPage() {
+    // /@name serves this same document in public-profile mode: render the
+    // named account's public data instead of the logged-in session (viewing
+    // your own /@name keeps the full owner view).
+    const publicName = publicProfileNameFromPath();
+    const own = String(state.session?.nodeName || "").toLowerCase();
+    if (publicName && publicName !== own) {
+      loadPublicProfile(publicName);
+      return;
+    }
     renderProfilePage(state.session);
     refreshPublicProfile(state.session);
   }
