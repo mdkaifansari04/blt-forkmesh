@@ -7805,10 +7805,14 @@
           </aside>
         </div>
       </div>`;
-    window.lucide?.createIcons();
     // Restore whichever tab the URL points at (e.g. a refresh on
-    // /owner/repo/issues) instead of always defaulting back to Code.
+    // /owner/repo/issues) instead of always defaulting back to Code. This
+    // runs right after painting the DOM, before anything else that could
+    // throw (icon rendering, feature-panel loads) — otherwise a later error
+    // would leave the page stuck showing Code even though the URL (and the
+    // markup underneath) is already on the right tab.
     setRepoTab(repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code");
+    window.lucide?.createIcons();
     loadRepositoryTree(repo, routeKind === "tree" ? routePath : "");
     if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo);
