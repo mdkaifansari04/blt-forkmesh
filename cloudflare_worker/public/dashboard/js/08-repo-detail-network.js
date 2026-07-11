@@ -66,7 +66,6 @@
     const canSeeAgentsTab = sessionCanAssignAgent(repo);
     const actionSeed = repoKey(repo);
     const forkCount = stableMockNumber(`${actionSeed}:fork`, 0, 12);
-    const starCount = stableMockNumber(`${actionSeed}:star`, 0, 84);
     // Watch is real: it is the repo's fediverse follower count (see
     // loadRepoFediverse), and the button opens the follow-from-Mastodon card.
     const fediHandle = `@${(repo.owner || "").toLowerCase()}.${(repo.name || "").toLowerCase()}@${location.host}`;
@@ -107,11 +106,10 @@
                 <span class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(forkCount)}</span>
                 <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
               </button>
-              <button type="button" data-repo-action-star class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
-                <i data-lucide="star" class="h-3.5 w-3.5 text-muted-foreground"></i>
-                Star
-                <span class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(starCount)}</span>
-                <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
+              <button type="button" data-repo-action-star data-repo-key="${escapeHtml(actionSeed)}" aria-pressed="false" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
+                <i data-lucide="star" data-repo-star-icon class="h-3.5 w-3.5 text-muted-foreground"></i>
+                <span data-repo-star-label>Star</span>
+                <span data-repo-star-count class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(0)}</span>
               </button>
               <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="radio" class="h-3.5 w-3.5"></i>Mirrors <span data-dashboard-repo-count="mirrors" class="font-mono text-foreground">${tabCountLabel(mirrorsCount)}</span></span>
             </div>
@@ -302,7 +300,7 @@
     if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo);
     loadRepoPendingCounts(repo);
-    loadRepoAboutRail(repo);
+    loadRepoStarState(repo, $("[data-repo-action-star]"));
   }
 
   function findRepository(key) {
@@ -1123,6 +1121,14 @@
       if (globalSearchResult) {
         event.preventDefault();
         selectGlobalSearchResult(globalSearchResult.dataset.dashboardOpenRepo || "");
+        return;
+      }
+
+      const starTrigger = event.target.closest("[data-repo-action-star], [data-repo-star-button]");
+      if (starTrigger) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleRepoStar(starTrigger);
         return;
       }
 

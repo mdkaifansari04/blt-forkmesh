@@ -99,3 +99,7 @@ REPO_AP_PUBLISH_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/ap-publish$")
 # Owner-uploaded repo branding (logo/banner PNG) served publicly — referenced
 # by the repo's fediverse actor document as its avatar/header.
 REPO_MEDIA_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/media/(logo|banner)\.png$")
+# Star/unstar a repo: GET returns the public count (+ the caller's own starred
+# state when a session is supplied); POST/DELETE toggle it for the logged-in
+# account (session-token authenticated, same as ACCOUNT_FOLLOW_RE).
+REPO_STAR_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/star$")
