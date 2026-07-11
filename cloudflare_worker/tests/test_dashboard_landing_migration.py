@@ -975,7 +975,7 @@ def test_dashboard_about_links_readme_activity_and_owner_edit():
     ):
         assert marker in click_handler
     for marker in (
-        "saveRepoAboutFromWeb(state.selectedRepo, description)",
+        "saveRepoAboutFromWeb(state.selectedRepo, description, media)",
         "applyRepoAboutDescription(state.selectedRepo, body.description ?? description)",
         "Only the source node owner can edit About.",
     ):
