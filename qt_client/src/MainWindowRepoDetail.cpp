@@ -7069,12 +7069,37 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
                 "Open a repository with a local working copy to edit its About details.");
         return false;
     }
+    if (!applyRepoAboutMetadataAt(m_repoDetailIndex, about, websiteInput, error))
+        return false;
+    setRepoDetailNotice(QStringLiteral("Updated repository details."));
+    return true;
+}
+
+// Index-based core of the About editor, shared with the relay-sync path that
+// applies website gear-icon edits (aboutUpdate in GET /api/sync). Writes the
+// canonical .forkmesh/info.json exactly like the in-app dialog does.
+bool MainWindow::applyRepoAboutMetadataAt(int index, const QString &about,
+                                          const QString &websiteInput,
+                                          QString *error)
+{
+    if (index < 0 || index >= m_repositories.size()) {
+        if (error)
+            *error = QStringLiteral("Unknown repository.");
+        return false;
+    }
+    if (m_repositories.at(index).localPath.isEmpty() ||
+        !QDir(m_repositories.at(index).localPath)
+             .exists(QStringLiteral(".git"))) {
+        if (error)
+            *error = QStringLiteral(
+                "This repository has no local working copy on this node.");
+        return false;
+    }
 
     const QString website = normalizedRepoWebsite(websiteInput, error);
     if (!websiteInput.trimmed().isEmpty() && website.isEmpty())
         return false;
 
-    const int index = m_repoDetailIndex;
     RepositoryRecord &repo = m_repositories[index];
     const QDir repoDir(repo.localPath);
     const QString infoPath = repoDir.filePath(kRepoInfoPath);
@@ -7132,15 +7157,18 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
 
     repo.description = aboutText;
     saveRepositories();
-    m_repoInfo.about = aboutText;
-    m_repoInfo.website = website;
-    loadAboutSidebar();
+    if (index == m_repoDetailIndex) {
+        // Only refresh the detail sidebar when this repo is the one on
+        // screen — the relay-sync path can touch any repository.
+        m_repoInfo.about = aboutText;
+        m_repoInfo.website = website;
+        loadAboutSidebar();
+    }
     refreshRepositoryList();
     if (repo.publishToNetwork)
         publishRepositoryAfterMirrorRefresh(index, false);
     logSystem(QStringLiteral("Updated About details for %1/%2.")
                   .arg(repo.owner, repo.name));
-    setRepoDetailNotice(QStringLiteral("Updated repository details."));
     return true;
 }
 

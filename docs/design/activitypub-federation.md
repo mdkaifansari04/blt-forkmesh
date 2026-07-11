@@ -91,6 +91,14 @@ Every actor ships an avatar (`icon`) and profile header (`image`):
   `Update(actor)` activity to all existing followers, so remote servers
   refetch the avatar/header/bio immediately instead of waiting out their
   actor-cache TTL.
+* Web surface: `GET /api/repo/{o}/{r}/about` (public) returns the description,
+  logo/banner URLs and `{handle, followers}` for the repo actor. The dashboard
+  repo page uses it for the social badge header above About and the Watch
+  button, whose count IS the fediverse follower count (the button opens a
+  follow-from-Mastodon card with the copyable handle). The gear editor
+  uploads/removes the logo and banner and edits the description; the page's
+  displayed About text prefers the repo's committed `.forkmesh/info.json`
+  (about + website), matching the desktop app.
 
 ## Configuration
 
