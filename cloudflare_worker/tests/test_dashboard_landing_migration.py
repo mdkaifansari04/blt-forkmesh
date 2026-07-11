@@ -1031,10 +1031,12 @@ def test_dashboard_repository_metadata_constrains_long_values_without_fake_langu
     ]
 
     assert 'grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3' in render
-    assert 'class="min-w-0 truncate text-right text-foreground font-mono"' in render
     assert "flex justify-between gap-3" not in render
     assert "data-repo-live-summary" in render
-    assert "formatSize(repo.sizeBytes)" in render
+    # The Data size chip/row and the Repository metadata block were removed in
+    # the About-rail cleanup; languages now render from the REAL live file
+    # index (loadRepoAboutFilesAndLanguages), never a hardcoded mock mix.
+    assert "formatSize(repo.sizeBytes)" not in render
     assert "TypeScript" not in render
     assert "CSS" not in render
     assert "JavaScript" not in render

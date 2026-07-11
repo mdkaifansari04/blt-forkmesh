@@ -3178,6 +3178,7 @@ async def _repo_about_public(env, request, owner, repo):
         "ok": True,
         "description": clean_string(
             (rec or {}).get("description", "") or "", 240),
+        "website": clean_string((rec or {}).get("website", "") or "", 240),
         "logoUrl": logo_url,
         "bannerUrl": banner_url,
         "defaultLogoUrl": AP_AVATAR_PATH,
@@ -3211,6 +3212,14 @@ async def repo_about_handler(env, request, owner, repo):
         return json_response({"error": "account_required"}, status=403)
 
     description = clean_string(data.get("description", ""), 240)
+    # Optional project website shown under the description (and written into
+    # the repo's .forkmesh/info.json by the owner's node). Absent = unchanged;
+    # empty string = remove. Only http(s) URLs are accepted.
+    website_provided = "website" in data
+    website = clean_string(data.get("website", ""), 240).strip()
+    if website_provided and website and not re.match(
+            r"^https?://[^\s]+$", website):
+        return json_response({"error": "invalid_website"}, status=400)
     # Optional repo branding for the fediverse actor (and anything else that
     # wants it): PNG logo (avatar) + banner (profile header). Absent field =
     # leave unchanged; empty string = remove. Validated before any write so a
@@ -3234,6 +3243,8 @@ async def repo_about_handler(env, request, owner, repo):
         if not _catalog_record_matches_identity(record, owner, repo):
             continue
         record["description"] = description
+        if website_provided:
+            record["website"] = website
         enc = await encrypt_row(env, record)
         await d1_run(
             env,
@@ -3262,6 +3273,25 @@ async def repo_about_handler(env, request, owner, repo):
             " updated_at=excluded.updated_at",
             media_bi, kind, await encrypt_row(env, {"png": png_b64}),
             int(Date.now()))
+    # Queue the edit for the owner's desktop node, which writes it into the
+    # repo's committed .forkmesh/info.json (the same file the desktop app's
+    # own About editor maintains) on its next sync. Latest edit wins.
+    about_update = {
+        "about": description,
+        "website": website if website_provided
+        else clean_string((first or {}).get("website", "") or "", 240),
+        "ts": int(Date.now()),
+        "editor": actor,
+        "source": "web",
+    }
+    await d1_run(
+        env,
+        "INSERT INTO about_inbox (repo_bi, data, queued_at) VALUES (?,?,?)"
+        " ON CONFLICT(repo_bi) DO UPDATE SET data=excluded.data,"
+        " queued_at=excluded.queued_at",
+        media_bi, await encrypt_row(env, about_update), about_update["ts"])
+    await _best_effort_inbox_side_effect(
+        notify_repo_host(env, owner, repo, "about"))
     await purge_catalog_related_caches()
     # Tell existing fediverse followers the profile changed (Update activity),
     # so the new logo/banner/description shows up on remote servers now, not
@@ -12130,6 +12160,16 @@ async def sync_handler(env, request):
             await d1_run(
                 env, "DELETE FROM agent_prompts WHERE repo_bi=?", repo_bi)
         entry["agentPrompts"] = prompts
+        # Web About edits, drained on read like agent prompts: the node writes
+        # the change into the repo's committed .forkmesh/info.json.
+        about_row = await d1_first(
+            env, "SELECT data FROM about_inbox WHERE repo_bi=?", repo_bi)
+        if about_row:
+            about_update = await decrypt_row(env, about_row.get("data"))
+            if about_update:
+                entry["aboutUpdate"] = about_update
+            await d1_run(
+                env, "DELETE FROM about_inbox WHERE repo_bi=?", repo_bi)
         repos.append(entry)
     return json_response(
         {"ok": True, "serverTime": int(Date.now()), "repos": repos})
