@@ -4287,6 +4287,9 @@ void MainWindow::reviewCurrentPullWithAi()
     session = m_agentStore->createSession(session);
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
     m_agentStore->saveSession(session);
+    // Refresh the in-memory list now so the session shows up on the Agents
+    // tab immediately, without yanking the user away from this PR view.
+    reloadAgents();
 
     m_aiReview = new AiPullReview;
     m_aiReview->number = number;
