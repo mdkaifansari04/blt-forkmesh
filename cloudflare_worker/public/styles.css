@@ -2449,6 +2449,60 @@ button.issue-row {
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 10px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.status-row-head:hover .status-row-chevron,
+.status-row-head:focus-visible .status-row-chevron {
+  color: var(--foreground);
+}
+
+.status-row-head:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 2px;
+}
+
+.status-row-chevron {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.status-row-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.status-row-detail-panel {
+  margin: -4px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--card) 60%, transparent);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+
+.status-row-detail-panel p {
+  margin: 0 0 8px;
+}
+
+.status-row-detail-panel p:last-child {
+  margin-bottom: 0;
+}
+
+.status-row-detail-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.status-row-detail-note {
+  color: var(--muted);
 }
 
 .status-row-name {
@@ -2470,6 +2524,7 @@ button.issue-row {
 .status-dot.is-operational { background: var(--accent-bright); }
 .status-dot.is-degraded { background: var(--warning); }
 .status-dot.is-down { background: var(--danger); }
+.status-dot.is-unknown { background: var(--border); }
 
 .status-row-meta,
 .status-row-metrics {
@@ -2523,6 +2578,13 @@ button.issue-row {
 .status-row-reason.is-down {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+/* "Unknown" is a monitoring gap, not an incident — neutral, not alarming. */
+.status-row-reason.is-unknown {
+  background: color-mix(in srgb, var(--border) 30%, transparent);
+  border-color: var(--border);
+  color: var(--muted);
 }
 
 .status-days {
