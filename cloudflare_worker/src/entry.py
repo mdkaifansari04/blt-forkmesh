@@ -1254,6 +1254,41 @@ STATUS_SYSTEMS = [
     ("realtime", "Realtime sync (chat & tunnels)"),
     ("durable_objects", "Durable Objects (free-tier duration limit)"),
 ]
+# What each per-minute health sample actually verifies, shown when a /status
+# visitor expands a system row. These must describe the real check
+# record_status_sample runs — the systems share one sampler cron but each has
+# its own signal, and the page must never imply a probe that doesn't exist.
+STATUS_SYSTEM_CHECKS = {
+    "website": (
+        "Scans the last minute of the worker error log for unhandled "
+        "exceptions or 5xx responses on page routes (anything outside "
+        "/api/*). Passes when no page-serving errors were logged. This is a "
+        "server-side error-log signal, not an external HTTP probe."),
+    "api": (
+        "Scans the last minute of the worker error log for unhandled "
+        "exceptions or 5xx responses on /api/* routes. 502/503/504 on "
+        "host-tunnel content paths (release blobs, repo browse, git clone) "
+        "are excluded — those mean one desktop node is offline, which the "
+        "Git hosting network check tracks instead."),
+    "database": (
+        "Runs a real SELECT round trip against the D1 database once a "
+        "minute. Passes when the query returns a row; fails on any query "
+        "error."),
+    "git_hosting": (
+        "Checks the host_presence table for at least one desktop host "
+        "tunnel heartbeat within the last 10 minutes. Passes while any "
+        "host is live; fails when no host has checked in."),
+    "realtime": (
+        "Scans the last minute of the worker error log for failures on "
+        "chat room / WebSocket paths and git smart-HTTP paths (info/refs, "
+        "upload-pack, receive-pack). Passes when none were logged."),
+    "durable_objects": (
+        "Counts requests killed by Cloudflare's free-tier Durable Object "
+        "duration cap (\"Exceeded allowed duration\") in the last minute. "
+        "Passes when none were killed. Tracked as its own system so "
+        "plan-limit aborts stay visible instead of hiding inside the "
+        "realtime row."),
+}
 STATUS_HISTORY_DAYS = 30
 STATUS_HISTORY_RETAIN_MS = STATUS_HISTORY_DAYS * 24 * 60 * 60 * 1000
 STATUS_SAMPLE_WINDOW_MS = 60 * 1000  # one cron tick
@@ -1282,36 +1317,48 @@ def _status_expected_checks_for_hour(hour_ts, now):
 
 
 def _status_effective_hour(hour_ts, now, row):
+    """Fold one hourly bucket into what the /status page shows.
+
+    Only recorded samples decide the color and the uptime math. A missing
+    sample means the sampling cron itself didn't run that minute (free-tier
+    limits regularly kill ticks) — a monitoring gap, not evidence the system
+    was down, so it's reported as missingChecks / "unknown" instead of being
+    folded into the failure count. Counting gaps as downtime is what used to
+    paint every system with the same fabricated ~50% uptime while the site
+    was actually up (the gaps are shared: one dead cron tick "fails" all six
+    systems at once).
+    """
     checks, failures, reason = row or (0, 0, None)
     checks = max(0, int(checks or 0))
-    failures = max(0, int(failures or 0))
+    failures = max(0, min(int(failures or 0), checks))
     expected = max(_status_expected_checks_for_hour(hour_ts, now), checks)
     if expected <= 0:
         return {
             "hourTs": hour_ts, "status": "future", "checks": checks,
             "failures": failures, "expectedChecks": 0, "missingChecks": 0,
-            "effectiveFailures": failures, "reason": None,
+            "reason": None,
         }
     missing = max(0, expected - checks)
-    effective_failures = min(expected, failures + missing)
-    if effective_failures <= 0:
+    if checks <= 0:
+        status = "unknown"
+    elif failures <= 0:
         status = "operational"
-    elif effective_failures >= expected:
+    elif failures >= checks:
         status = "down"
     else:
         status = "degraded"
-    hour_reason = reason if status != "operational" else None
-    if missing and status != "operational":
-        missing_reason = (
-            "No status sample recorded for %d expected minute%s; treated as downtime."
-            % (missing, "" if missing == 1 else "s")
-        )
-        hour_reason = (str(hour_reason) + " " + missing_reason) if hour_reason else missing_reason
+    if status == "unknown":
+        hour_reason = (
+            "No health samples were recorded this hour — the sampling cron "
+            "didn't run (monitoring gap), which is not evidence of an outage.")
+    elif status == "operational":
+        hour_reason = None
+    else:
+        hour_reason = reason
     return {
         "hourTs": hour_ts, "status": status,
         "checks": checks, "failures": failures,
         "expectedChecks": expected, "missingChecks": missing,
-        "effectiveFailures": effective_failures,
         "reason": hour_reason,
     }
 
@@ -1330,8 +1377,10 @@ def _status_minute(minute_ts, current_minute_ts, row):
         return {"minuteTs": minute_ts, "status": "future", "reason": None}
     if row is None:
         return {
-            "minuteTs": minute_ts, "status": "down",
-            "reason": "No status sample recorded for this minute; treated as downtime.",
+            "minuteTs": minute_ts, "status": "unknown",
+            "reason": "No health sample was recorded for this minute — the "
+                      "sampling cron didn't run (monitoring gap), which is "
+                      "not evidence of an outage.",
         }
     ok = bool(row.get("ok"))
     return {
@@ -1509,19 +1558,10 @@ async def status_history(env):
     now = int(Date.now())
     cur_day = (now // 86400000) * 86400000
     start = cur_day - (STATUS_HISTORY_DAYS - 1) * 86400000
-    rows = await d1_all(
-        env,
-        "SELECT day_ts, system, checks, failures FROM system_status_daily "
-        "WHERE day_ts >= ?",
-        start,
-    )
-    by_system = {}
-    for row in rows:
-        system_id = str(row.get("system") or "")
-        by_system.setdefault(system_id, {})[int(row["day_ts"])] = (
-            int(row.get("checks") or 0), int(row.get("failures") or 0),
-        )
-
+    # Day cells, uptime and coverage all come from the hourly buckets (which
+    # sum to the same recorded counts the daily table holds, with per-hour
+    # granularity the 24h window needs); the daily table remains as the
+    # cron's cheap long-term aggregate.
     hour_rows = await d1_all(
         env,
         "SELECT hour_ts, system, checks, failures, reason FROM system_status_hourly "
@@ -1553,15 +1593,17 @@ async def status_history(env):
 
     systems = []
     for system_id, label in STATUS_SYSTEMS:
+        # Uptime is computed over RECORDED samples only; expected-but-missing
+        # samples (the sampling cron didn't run) are reported separately as
+        # coverage, never counted as downtime. See _status_effective_hour.
         days = []
-        total_expected = total_effective_failures = 0
-        total_24h_expected = total_24h_effective_failures = 0
+        total_checks = total_failures = total_expected = 0
+        checks_24h = failures_24h = expected_24h = 0
         current_hour = (now // STATUS_HOUR_MS) * STATUS_HOUR_MS
         uptime_24h_start = current_hour - 23 * STATUS_HOUR_MS
         for i in range(STATUS_HISTORY_DAYS):
             this_day = start + i * STATUS_DAY_MS
-            checks, failures = by_system.get(system_id, {}).get(this_day, (0, 0))
-            day_expected = day_effective_failures = 0
+            day_checks = day_failures = day_expected = 0
             hours = []
             for h in range(24):
                 hour_ts = this_day + h * STATUS_HOUR_MS
@@ -1570,63 +1612,80 @@ async def status_history(env):
                 hour = _status_effective_hour(
                     hour_ts, now, by_system_hour.get(system_id, {}).get(hour_ts),
                 )
-                if hour["expectedChecks"] > 0:
-                    day_expected += hour["expectedChecks"]
-                    day_effective_failures += hour["effectiveFailures"]
-                    total_expected += hour["expectedChecks"]
-                    total_effective_failures += hour["effectiveFailures"]
-                    if hour_ts >= uptime_24h_start:
-                        total_24h_expected += hour["expectedChecks"]
-                        total_24h_effective_failures += hour["effectiveFailures"]
+                day_expected += hour["expectedChecks"]
+                day_checks += hour["checks"]
+                day_failures += hour["failures"]
+                if hour_ts >= uptime_24h_start:
+                    expected_24h += hour["expectedChecks"]
+                    checks_24h += hour["checks"]
+                    failures_24h += hour["failures"]
                 hours.append(hour)
+            total_expected += day_expected
+            total_checks += day_checks
+            total_failures += day_failures
             uptime = (
-                round(((day_expected - day_effective_failures) / day_expected) * 100, 2)
+                round(((day_checks - day_failures) / day_checks) * 100, 2)
+                if day_checks else None
+            )
+            coverage = (
+                round((min(day_checks, day_expected) / day_expected) * 100, 2)
                 if day_expected else None
             )
             days.append({
-                "dayTs": this_day, "checks": checks, "failures": failures,
+                "dayTs": this_day, "checks": day_checks,
+                "failures": day_failures,
                 "expectedChecks": day_expected,
-                "effectiveFailures": day_effective_failures,
-                "uptimePct": uptime, "hours": hours,
-                "hoursElapsed": len(hours),
+                "missingChecks": max(0, day_expected - day_checks),
+                "uptimePct": uptime, "coveragePct": coverage,
+                "hours": hours, "hoursElapsed": len(hours),
             })
-        # Current status comes from the most recent HOUR with any data, not
-        # the whole current day's aggregate — otherwise an incident that was
-        # resolved an hour ago keeps the badge red/yellow for the rest of the
-        # day even once every recent check has gone back to green.
+        # Current status comes from the most recent HOUR with recorded
+        # samples, not the whole current day's aggregate — otherwise an
+        # incident that was resolved an hour ago keeps the badge red/yellow
+        # for the rest of the day even once every recent check is green.
+        # And if the newest recorded sample is over an hour stale, the honest
+        # badge is "unknown": we have no current evidence either way, and
+        # claiming operational (or down) from old data would be false info.
         latest_hour = None
         for d in reversed(days):
             for h in reversed(d["hours"]):
-                if h.get("expectedChecks") or h["checks"]:
+                if h["checks"]:
                     latest_hour = h
                     break
             if latest_hour:
                 break
-        if latest_hour is not None:
+        reason_text = reason_ts = None
+        if latest_hour is not None and (
+                latest_hour["hourTs"] >= current_hour - STATUS_HOUR_MS):
             status = latest_hour["status"]
+            if status != "operational":
+                reason_text = latest_hour.get("reason")
+                reason_ts = latest_hour.get("hourTs")
+        elif latest_hour is not None:
+            status = "unknown"
+            reason_text = (
+                "No health samples have been recorded since the sampling "
+                "cron's last run — monitoring gap; the current state is "
+                "unknown, not a confirmed outage.")
+            reason_ts = latest_hour.get("hourTs")
         else:
-            # No hourly rows at all (e.g. pre-migration data) — fall back to
-            # the most recent day's aggregate so the badge isn't stuck unknown.
-            latest_day = next((d for d in reversed(days) if d["checks"]), None)
-            if latest_day is None:
-                status = "unknown"
-            elif latest_day["failures"] == 0:
-                status = "operational"
-            elif latest_day["failures"] >= latest_day["checks"]:
-                status = "down"
-            else:
-                status = "degraded"
+            # No recorded samples anywhere in the 30-day window.
+            status = "unknown"
         overall_uptime = (
-            round(((total_expected - total_effective_failures) / total_expected) * 100, 2)
-            if total_expected else None
+            round(((total_checks - total_failures) / total_checks) * 100, 2)
+            if total_checks else None
         )
         uptime_24h = (
-            round(
-                ((total_24h_expected - total_24h_effective_failures) /
-                 total_24h_expected) * 100,
-                2,
-            )
-            if total_24h_expected else None
+            round(((checks_24h - failures_24h) / checks_24h) * 100, 2)
+            if checks_24h else None
+        )
+        coverage_30d = (
+            round((min(total_checks, total_expected) / total_expected) * 100, 2)
+            if total_expected else None
+        )
+        coverage_24h = (
+            round((min(checks_24h, expected_24h) / expected_24h) * 100, 2)
+            if expected_24h else None
         )
         minutes = [
             _status_minute(
@@ -1638,10 +1697,14 @@ async def status_history(env):
 
         systems.append({
             "id": system_id, "label": label, "status": status,
+            "checkDescription": STATUS_SYSTEM_CHECKS.get(system_id, ""),
             "uptimePct": overall_uptime, "uptime24hPct": uptime_24h,
+            "coveragePct": coverage_30d, "coverage24hPct": coverage_24h,
+            "checks24h": checks_24h, "failures24h": failures_24h,
+            "missing24h": max(0, expected_24h - checks_24h),
             "days": days, "minutes": minutes,
-            "reason": (latest_hour or {}).get("reason") if status != "operational" else None,
-            "reasonTs": (latest_hour or {}).get("hourTs") if status != "operational" else None,
+            "reason": reason_text,
+            "reasonTs": reason_ts,
         })
 
     # Current-state snapshot (issue #356): the headline health metrics rendered
@@ -7968,6 +8031,7 @@ def _verify_email_page(message, status):
     # this one-line confirmation page).
     body = ("<!doctype html><meta charset=utf-8>"
             "<meta name=\"color-scheme\" content=\"light dark\">"
+            "<script src=\"/posthog.js\"></script>"
             "<title>ForkMesh email</title>"
             "<body style=\"font-family:system-ui,sans-serif;max-width:32rem;"
             "margin:4rem auto;padding:0 1rem;line-height:1.5\">" + message +
@@ -14549,6 +14613,7 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         # tokens; ADMIN_STYLE loads after it so the admin rules win.
         "<link rel=\"stylesheet\" href=\"/styles.css\">"
         "<link rel=\"stylesheet\" href=\"/site-header.css\">"
+        "<script src=\"/posthog.js\"></script>"
         "<script src=\"/site-header.js\" defer></script>"
         "<style>" + ADMIN_STYLE + "</style></head><body>"
         "<div data-forkmesh-header=\"simple\"></div>"
@@ -14776,6 +14841,21 @@ class Default(WorkerEntrypoint):
         cron_started_ms = int(Date.now())
         cron_failures = []
         minute = int(cron_started_ms // 60000)
+        # Send the "in_progress" check-in FIRST, before any D1/decrypt work,
+        # so Sentry has proof this tick started even if the platform kills
+        # the isolate later (cold Pyodide isolate blowing the invocation's
+        # CPU/wall-clock budget - the same failure mode documented above for
+        # /status samples). Without this, a killed tick sends nothing at all
+        # and Sentry reports it as a "missed check-in" instead of a runtime
+        # error, which is what actually happened; dropping the closing
+        # ok/error check-in on the same check_in_id still only costs one
+        # extra Sentry round trip per tick.
+        try:
+            await capture_sentry_cron_check_in(
+                self.env, "in_progress", check_in_id=cron_check_in_id,
+                cron=cron_expression)
+        except BaseException:
+            pass
         # The /status health sample runs FIRST: it is the cheapest job (no
         # row decryption) and the one whose absence shows publicly as fake
         # downtime, so a tick that dies partway (cold Pyodide isolate blowing
@@ -14899,9 +14979,8 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/feedback-emails",
                     "_send_feedback_emails failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # One Sentry check-in per tick (the closing ok/error): the opening
-        # in-progress check-in doubled the outbound Sentry traffic for no
-        # alerting value on a one-minute schedule.
+        # Closing check-in for the same check_in_id sent above, so Sentry
+        # resolves the "in_progress" marker to a final ok/error result.
         final_cron_status = "error" if cron_failures else "ok"
         await capture_sentry_cron_check_in(
             self.env, final_cron_status, check_in_id=cron_check_in_id,

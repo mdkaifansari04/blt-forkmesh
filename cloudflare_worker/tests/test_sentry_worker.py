@@ -146,12 +146,15 @@ def test_cron_failures_emit_sentry_cron_monitor_checkins():
     scheduled = ENTRY_TEXT.split("async def scheduled", 1)[1] \
         .split("async def fetch", 1)[0]
     assert 'await capture_sentry_cron_check_in(' in scheduled
-    # Exactly one check-in per tick (the closing ok/error): the opening
-    # "in_progress" check-in was dropped — it doubled the outbound Sentry
-    # traffic on a one-minute schedule for no alerting value, and every await
-    # in the cron counts against the invocation's resource limits.
-    assert '"in_progress"' not in scheduled
-    assert scheduled.count("await capture_sentry_cron_check_in(") == 1
+    # Two check-ins per tick, same check_in_id: an opening "in_progress" sent
+    # before any D1/decrypt work, and a closing ok/error. The opening
+    # check-in guarantees Sentry sees this tick even if the isolate is later
+    # killed by the platform's resource limits — without it, a killed tick
+    # sends nothing at all and shows up as a "missed check-in" instead of a
+    # runtime error.
+    assert '"in_progress"' in scheduled
+    assert scheduled.count("await capture_sentry_cron_check_in(") == 2
+    assert scheduled.count("check_in_id=cron_check_in_id") == 2
     assert 'final_cron_status = "error" if cron_failures else "ok"' in scheduled
     assert "duration=(int(Date.now()) - cron_started_ms) / 1000" in scheduled
     assert "await log_cron_error(" in scheduled
