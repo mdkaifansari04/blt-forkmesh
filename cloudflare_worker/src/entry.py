@@ -10586,32 +10586,22 @@ async def send_general_chat_digests(env):
 
 
 def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
-    # The card design below is dark-by-default (inline styles), with a
-    # prefers-color-scheme:light override layer applied via classes +
-    # !important so mail clients that honor CSS media queries (Apple Mail,
-    # iOS/Android Gmail, Outlook.com, Fastmail, ...) repaint it to match the
-    # recipient's OS/client theme instead of always forcing a dark card.
-    # Clients that ignore <style> fall back to the inline dark styles,
-    # matching the prior (dark-only) behavior.
-    scheme_style = (
-        "@media (prefers-color-scheme: light){"
-        ".fm-bg{background:#f4f4f5 !important}"
-        ".fm-card{background:#ffffff !important;border-color:#e4e4e7 !important}"
-        ".fm-item{background:#f4f4f5 !important;border-color:#e4e4e7 !important}"
-        ".fm-border{border-color:#e4e4e7 !important}"
-        ".fm-brand,.fm-muted{color:#71717a !important}"
-        ".fm-h1,.fm-strong,.fm-item-title{color:#111114 !important}"
-        ".fm-text,.fm-item-body{color:#3f3f46 !important}"
-        ".fm-link{color:#15803d !important}"
-        "}"
-    )
+    # The card is dark, always. It is painted with inline dark styles AND
+    # declares itself dark-only via <meta name="color-scheme" content="dark">,
+    # so mail clients neither auto-invert it (the way they darken plain light
+    # emails in dark mode) nor repaint it to a light theme. An earlier version
+    # advertised "light dark" with a prefers-color-scheme:light override, but
+    # that override fired in readers whose dark theme doesn't set the OS
+    # prefers-color-scheme (e.g. Gmail's dark theme), leaving ForkMesh mail
+    # glaringly white while every other email showed dark. Forcing dark keeps
+    # the brand card consistent with the rest of a dark inbox.
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        "<meta name=\"color-scheme\" content=\"light dark\">"
-        "<meta name=\"supported-color-schemes\" content=\"light dark\">"
-        "<style>" + scheme_style + "</style></head>"
-        "<body style=\"margin:0;padding:0\">"
+        "<meta name=\"color-scheme\" content=\"dark\">"
+        "<meta name=\"supported-color-schemes\" content=\"dark\">"
+        "</head>"
+        "<body style=\"margin:0;padding:0;background:#090909\">"
         "<div class=\"fm-bg\" style=\"margin:0;padding:28px 16px;background:#090909;"
         "font-family:'ForkMesh Lato',-apple-system,BlinkMacSystemFont,"
         "Segoe UI,Helvetica,Arial,sans-serif;color:#f5f5f5;line-height:1.55\">"
