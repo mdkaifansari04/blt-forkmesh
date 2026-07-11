@@ -2423,6 +2423,7 @@ CENTRAL_FUND_DISTRIBUTION_INTERVAL_MS = 60 * 60 * 1000  # distribute hourly
 CENTRAL_FUND_MIN_DISTRIBUTION_LAMPORTS = 100_000
 
 _schema_ready = False
+_schema_lock = None  # serializes the per-isolate schema apply (lazy-created)
 _stale_node_purge = {"ts": 0}
 
 # Derived WebCrypto keys are pure functions of the DATA_KEY secret, which is
@@ -2460,11 +2461,27 @@ _SCHEMA_FINGERPRINT = hashlib.sha256(
 
 
 async def ensure_schema(env):
-    global _schema_ready
+    # Single-flight: a Worker isolate serves many requests concurrently on one
+    # event loop, and before this guard every request arriving on a cold
+    # isolate ran its own full DDL apply in parallel. Under fediverse-crawler
+    # bursts (nodeinfo/inbox) that meant dozens of simultaneous ~110-statement
+    # replays, which is exactly what overloaded D1 ("requests queued for too
+    # long") and made the AP endpoints error-and-retry in a loop.
+    global _schema_lock
     if _schema_ready:
         return
+    if _schema_lock is None:
+        _schema_lock = asyncio.Lock()
+    async with _schema_lock:
+        if _schema_ready:
+            return
+        await _apply_schema(env)
+
+
+async def _apply_schema(env):
+    global _schema_ready
     # Fast path: the deploy's migrate.sh (and any prior isolate's full apply)
-    # records the applied DDL's fingerprint. One SELECT replaces the ~90
+    # records the applied DDL's fingerprint. One SELECT replaces the ~110
     # sequential statements below — which, replayed on every cold isolate, were
     # the dominant startup cost for both requests and the per-minute cron (the
     # cron routinely blew its resource limits and the /status page recorded the
@@ -2475,8 +2492,14 @@ async def ensure_schema(env):
         if row and row.get("v") == _SCHEMA_FINGERPRINT:
             _schema_ready = True
             return
-    except Exception:
-        pass  # schema_meta doesn't exist yet — first run against this DB
+    except Exception as exc:
+        # Only a genuinely absent schema_meta table means "first run against
+        # this DB". A transient D1 failure (overload / internal error) must
+        # propagate instead: falling through here made every request replay
+        # the full DDL right when the DB was already struggling, amplifying
+        # the overload into a death spiral.
+        if "no such table" not in str(exc).lower():
+            raise
     for sql in SCHEMA_STATEMENTS:
         await env.DB.prepare(sql).run()
     for sql in SCHEMA_ALTER_STATEMENTS:
@@ -8971,6 +8994,14 @@ async def ap_webfinger_handler(env, request):
     })
 
 
+# NodeInfo usage counts, cached per isolate. Every fediverse server that hears
+# about this instance polls /nodeinfo/2.1, and each hit ran two COUNT(*) table
+# scans — pure statistics that don't need to be fresher than the cache TTL,
+# and one of the first things to fall over when D1 is under pressure.
+_NODEINFO_CACHE = {"ts": 0, "users": 0, "posts": 0}
+NODEINFO_CACHE_TTL_MS = 10 * 60 * 1000
+
+
 async def ap_nodeinfo_handler(env, request, index):
     await ensure_schema(env)
     if not await _ap_enabled(env):
@@ -8978,11 +9009,18 @@ async def ap_nodeinfo_handler(env, request, index):
     origin = _ap_origin(env, request)
     if index:
         return json_response(ap.nodeinfo_index(origin), cache_seconds=3600)
-    users = await d1_first(env, "SELECT COUNT(*) AS c FROM accounts")
-    posts = await d1_first(env, "SELECT COUNT(*) AS c FROM ap_objects")
+    now = int(Date.now())
+    if now - _NODEINFO_CACHE["ts"] >= NODEINFO_CACHE_TTL_MS:
+        users = await d1_first(env, "SELECT COUNT(*) AS c FROM accounts")
+        posts = await d1_first(env, "SELECT COUNT(*) AS c FROM ap_objects")
+        _NODEINFO_CACHE.update({
+            "ts": now,
+            "users": (users or {}).get("c", 0) or 0,
+            "posts": (posts or {}).get("c", 0) or 0,
+        })
     doc = ap.nodeinfo_doc(
-        _build_rev(env)[:12], (users or {}).get("c", 0) or 0,
-        (posts or {}).get("c", 0) or 0)
+        _build_rev(env)[:12], _NODEINFO_CACHE["users"],
+        _NODEINFO_CACHE["posts"])
     return json_response(doc, cache_seconds=3600)
 
 
