@@ -2451,7 +2451,6 @@ CENTRAL_FUND_DISTRIBUTION_INTERVAL_MS = 60 * 60 * 1000  # distribute hourly
 CENTRAL_FUND_MIN_DISTRIBUTION_LAMPORTS = 100_000
 
 _schema_ready = False
-_schema_lock = None  # serializes the per-isolate schema apply (lazy-created)
 _stale_node_purge = {"ts": 0}
 
 # Derived WebCrypto keys are pure functions of the DATA_KEY secret, which is
@@ -2491,21 +2490,18 @@ _SCHEMA_FINGERPRINT = hashlib.sha256(
 
 
 async def ensure_schema(env):
-    # Single-flight: a Worker isolate serves many requests concurrently on one
-    # event loop, and before this guard every request arriving on a cold
-    # isolate ran its own full DDL apply in parallel. Under fediverse-crawler
-    # bursts (nodeinfo/inbox) that meant dozens of simultaneous ~110-statement
-    # replays, which is exactly what overloaded D1 ("requests queued for too
-    # long") and made the AP endpoints error-and-retry in a loop.
-    global _schema_lock
+    # A Worker isolate serves many requests concurrently on one event loop, so
+    # this must never block on a cross-request coordination primitive: an
+    # asyncio.Lock shared between concurrently-running requests here used to
+    # let one request's await resume inside another request's I/O context,
+    # which Cloudflare rejects ("Cannot perform I/O on behalf of a different
+    # request") on the very next await in the waiting request. Every request
+    # instead takes the cheap fingerprint SELECT fast path independently
+    # (schema.py's CREATE statements are all IF NOT EXISTS / idempotent), so
+    # concurrent cold-isolate requests never touch a shared awaitable.
     if _schema_ready:
         return
-    if _schema_lock is None:
-        _schema_lock = asyncio.Lock()
-    async with _schema_lock:
-        if _schema_ready:
-            return
-        await _apply_schema(env)
+    await _apply_schema(env)
 
 
 async def _apply_schema(env):
@@ -2902,16 +2898,24 @@ async def catalog_handler(env, request):
             cached = await edge_cache_match(CATALOG_CACHE_KEY)
             if cached is not None:
                 return cached
-        # Drop any blocked phantom entries from D1 before listing (idempotent,
-        # only runs on a cache miss).
-        try:
-            await purge_blocked_catalog(env)
-        except Exception:
-            pass
-        try:
-            await purge_stale_registered_nodes(env)
-        except Exception:
-            pass
+        # Best-effort D1 housekeeping (drop blocked phantoms, prune stale nodes)
+        # only on the cheap, edge-cached anonymous miss. The response is already
+        # correct without it — blocked entries are skipped by
+        # _is_blocked_catalog_identity and stale ones by the active-node filter
+        # below — and the staggered cron sweeps D1 on its own schedule. An
+        # authenticated (per-viewer, never-cached) request must NOT run these:
+        # replaying a burst of DELETEs plus host-offline notifications inline on
+        # every catalog load held the single Worker event loop long enough for
+        # the runtime to cancel the request as hung ("Cannot enter into task").
+        if not authed_viewer:
+            try:
+                await purge_blocked_catalog(env)
+            except Exception:
+                pass
+            try:
+                await purge_stale_registered_nodes(env)
+            except Exception:
+                pass
         try:
             active_nodes = await active_registered_node_bis(env)
         except Exception:
