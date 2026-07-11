@@ -246,7 +246,7 @@ def _follow_env(log, deliver_status):
 
     async def _ap_deliver_body(env, actor_url, priv, inbox, body):
         log.append(("deliver", inbox, body))
-        return deliver_status
+        return deliver_status, 0
 
     async def encrypt_row(env, rec):
         return json.dumps(rec)

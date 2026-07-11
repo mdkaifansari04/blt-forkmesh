@@ -375,10 +375,21 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     QTimer::singleShot(0, this, [this] { startDiagnostics(); });
 
     // Keep mirrors fresh: periodically fetch each repo so a mirror tracks the
-    // owner's repo as it updates. A first pass runs shortly after startup.
+    // owner's repo as it updates. Push events are the primary signal now —
+    // since bf6323d0 mirror peers are notified the instant a push lands on the
+    // source's bare mirror — so this timer is only a safety net for dropped
+    // events. 15 minutes (kMirrorSyncIntervalMs) with ±15% jitter so a fleet
+    // of nodes doesn't fetch from the relay in lockstep, and gated on relay
+    // health (autoSyncMirrorsIfRelayHealthy) because the git subprocesses
+    // never pass through BackoffNetworkAccessManager's 429 cooldown. A first
+    // pass runs shortly after startup to catch up on pushes missed offline.
     m_mirrorSyncTimer = new QTimer(this);
-    connect(m_mirrorSyncTimer, &QTimer::timeout, this, &MainWindow::autoSyncMirrors);
-    m_mirrorSyncTimer->start(5 * 60 * 1000);
+    connect(m_mirrorSyncTimer, &QTimer::timeout, this,
+            &MainWindow::autoSyncMirrorsIfRelayHealthy);
+    const int mirrorJitterSpanMs = int(kMirrorSyncIntervalMs * 15 / 100);
+    m_mirrorSyncTimer->start(int(kMirrorSyncIntervalMs) +
+                             QRandomGenerator::global()->bounded(
+                                 -mirrorJitterSpanMs, mirrorJitterSpanMs + 1));
     QTimer::singleShot(15000, this, &MainWindow::autoSyncMirrors);
     // Source-of-truth nodes pick up issues/PRs/comments/agent-prompts filed by
     // other nodes through the relay's event push: a minimal frame on the repo's

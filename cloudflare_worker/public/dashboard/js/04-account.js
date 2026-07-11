@@ -571,7 +571,39 @@
   const CONTRIBUTION_GRID_COLUMNS = "2.25rem repeat(53, 0.75rem)";
   const CONTRIBUTION_GRID_GAP = "0.1875rem";
   const PROFILE_HISTORY_CONCURRENCY = 3;
-  const PROFILE_HISTORY_REPO_LIMIT = 24;
+  const PROFILE_HISTORY_REPO_LIMIT = 12;
+  // Per-repo /history responses feed only the contribution graph and change
+  // slowly, so they are cached in sessionStorage: navigating back to a profile
+  // page must not refetch every repo (request budget, free-tier Worker).
+  const PROFILE_HISTORY_CACHE_TTL_MS = 10 * 60 * 1000;
+  const PROFILE_HISTORY_CACHE_PREFIX = "forkmesh.profileHistory:";
+
+  function profileHistoryCacheKey(repo, session = profileSubject()) {
+    const subject = String(session?.nodeName || session?.email || "guest").trim().toLowerCase();
+    return `${PROFILE_HISTORY_CACHE_PREFIX}${subject}:${repoKey(repo)}`;
+  }
+
+  function readProfileHistoryCache(repo) {
+    try {
+      const parsed = JSON.parse(sessionStorage.getItem(profileHistoryCacheKey(repo)) || "null");
+      if (!parsed || !Array.isArray(parsed.commits)) return null;
+      if (!(Number(parsed.expiresAt) > Date.now())) return null;
+      return parsed.commits;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeProfileHistoryCache(repo, commits) {
+    try {
+      sessionStorage.setItem(profileHistoryCacheKey(repo), JSON.stringify({
+        commits,
+        expiresAt: Date.now() + PROFILE_HISTORY_CACHE_TTL_MS,
+      }));
+    } catch (_) {
+      /* best-effort: quota/private mode just means a refetch later */
+    }
+  }
 
   function contributionDateMs(value) {
     if (value === undefined || value === null || value === "") return null;
@@ -857,14 +889,30 @@
   }
 
   async function loadProfileContributionHistories(year = state.profileContributions.year) {
+    // The shared-chrome catalog load renders the contribution graph on EVERY
+    // page, but only the profile documents actually ship the grid — never fan
+    // out per-repo history fetches anywhere else (request budget).
+    if (!$("[data-contribution-cells]")) return;
     const groups = profileContributionGroups();
+    let hydratedFromCache = 0;
     const repos = groups.map((group) => sourceOfTruth(group))
       .filter((repo) => repoIsLive(repo))
-      .filter((repo) => !Array.isArray(state.profileContributions.liveHistory[
-        profileContributionHistoryKey(repo, year)
-      ]))
+      .filter((repo) => {
+        const key = profileContributionHistoryKey(repo, year);
+        if (Array.isArray(state.profileContributions.liveHistory[key])) return false;
+        const cached = readProfileHistoryCache(repo);
+        if (cached) {
+          state.profileContributions.liveHistory[key] = cached;
+          hydratedFromCache += 1;
+          return false;
+        }
+        return true;
+      })
       .slice(0, PROFILE_HISTORY_REPO_LIMIT);
-    if (!repos.length || state.profileContributions.loadedYears[year]) return;
+    if (!repos.length || state.profileContributions.loadedYears[year]) {
+      if (hydratedFromCache) renderProfileContributionGraph();
+      return;
+    }
     state.profileContributions.loading = true;
     renderProfileContributionGraph();
     let index = 0;
@@ -875,7 +923,9 @@
         const key = profileContributionHistoryKey(repo, year);
         try {
           const data = await fetchJson(repoLiveUrl(repo, "history"));
-          state.profileContributions.liveHistory[key] = Array.isArray(data.commits) ? data.commits : [];
+          const commits = Array.isArray(data.commits) ? data.commits : [];
+          state.profileContributions.liveHistory[key] = commits;
+          writeProfileHistoryCache(repo, commits);
         } catch (_) {
           state.profileContributions.liveHistory[key] = null;
         }

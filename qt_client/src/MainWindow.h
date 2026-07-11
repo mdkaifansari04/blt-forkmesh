@@ -2696,12 +2696,17 @@ private:
                         const QStringList &args, const QString &beforeDigest,
                         const QString &beforeHeadCommit);
     void autoSyncMirrors();
+    // Periodic-timer wrapper for autoSyncMirrors(): skips the round while the
+    // relay host sits in BackoffNetworkAccessManager's 429/5xx cooldown, since
+    // the git fetch subprocesses bypass that manager entirely. Explicit "sync
+    // now" paths (headlessSyncNow) call autoSyncMirrors() directly, ungated.
+    void autoSyncMirrorsIfRelayHealthy();
     // Roster-driven catch-up: when a peer advertises a commit our mirror lacks,
     // pull it immediately instead of waiting for the next auto-sync tick.
     void syncMirrorsBehindRoster();
     // After a local change to a repo (new/updated issue, PR, comment, merge),
     // push it to the bare mirror and tell peers immediately instead of waiting
-    // for the 5-minute auto-sync, so counts and content converge right away.
+    // for the 15-minute auto-sync, so counts and content converge right away.
     void propagateRepoUpdate(int index);
     // A peer announced it refreshed "owner/name" from source; notify if we
     // mirror the same repo.
