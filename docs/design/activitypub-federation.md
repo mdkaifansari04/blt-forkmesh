@@ -29,6 +29,13 @@ on the owner's node), so the owner-signed `POST
 /api/repo/{owner}/{repo}/ap-publish` endpoint lets the desktop push those
 announcements; until the desktop adopts it they simply don't federate.
 
+Images attached to an issue/comment travel as inline `![name](data:...)`
+markdown in the body (there is no separate upload channel). Since remote
+servers can't fetch a `data:` URL, `ap.extract_body_images` pulls up to 4 of
+them out of the body before it becomes note text, and each is re-served at
+`/ap/o/{uuid}/media/{n}` (from the same encrypted `ap_objects` row) so it can
+be listed as a proper `Image` `attachment` on the Note.
+
 Inbound: `Follow` (auto-accepted), `Undo(Follow)`, `Create(Note)` replies to
 our objects, `Delete`. Remote replies become **federated comments** — stored
 in `ap_comments`, surfaced via `GET
