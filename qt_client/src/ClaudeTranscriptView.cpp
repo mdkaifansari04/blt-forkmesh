@@ -1086,17 +1086,28 @@ void ClaudeTranscriptView::finalizeThinking(const QString &fullText)
 {
     if (!m_liveThinking)
         return;
-    const QString text = !fullText.isEmpty() ? fullText : m_thinkingText;
-    if (m_thinkingBody)
-        m_thinkingBody->setText(text.isEmpty() ? QStringLiteral("(thinking)") : text);
     m_liveThinking->setPulsing(false);
     const qint64 secs = m_thinkingStartMs > 0
         ? (QDateTime::currentMSecsSinceEpoch() - m_thinkingStartMs) / 1000
         : 0;
-    m_liveThinking->setHeaderText(secs > 0
-                                      ? QStringLiteral("Thought for %1s").arg(secs)
-                                      : QStringLiteral("Thought"));
-    m_liveThinking->setExpanded(false);
+    const QString label = secs > 0
+        ? QStringLiteral("Thought for %1s").arg(secs)
+        : QStringLiteral("Thought");
+
+    // Remove the collapsible from the layout and replace with a simple label
+    for (int i = 0; i < m_col->count(); ++i) {
+        QWidget *w = m_col->itemAt(i)->widget();
+        if (w == m_liveThinking) {
+            m_col->removeWidget(w);
+            w->deleteLater();
+            break;
+        }
+    }
+
+    auto *l = new CacheLabel(label);
+    l->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.muted));
+    addRow(l);
+
     m_liveThinking = nullptr;
     m_thinkingBody = nullptr;
     m_thinkingText.clear();
