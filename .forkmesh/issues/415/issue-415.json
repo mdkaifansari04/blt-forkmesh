@@ -1,0 +1,35 @@
+{
+    "assignees": [
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783744795,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783744795",
+            "sig": "u4g4EXMbN6u6paAGAiT5kSIOMEZ4j2dFbu4DaZi27Oaj6n69T0zP22QXZNn8u1Pd14MQW_EX4OZYzoaA6IHjCw",
+            "title": "testing new issue federate",
+            "ts": 1783744795,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 415,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "testing new issue federate",
+    "updatedAt": 1783744795,
+    "votes": 0
+}
