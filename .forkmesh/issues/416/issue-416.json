@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "EjpaV9jUAqZopbAe25jStWyS9By8Z700iZwZNfy7Ah4",
     "authorName": "jett",
@@ -31,6 +32,17 @@
             "sig": "QMkBBLu3BIQyja9gn4aOg8FfnnZmk209UGN-4g9-xF0-iIFafr7hxKokCoZYepN6XYsIj8A4YSNcIA_SAAo3CQ",
             "ts": 1783783457683,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "53720df0-28f6-49e1-b3c5-1b5a611eaafa",
+            "sig": "idYrM0wyaeRjjT7Je6lUILfuExvU-UBzYNton0a4aXAeO2Fgv1mZLveTLi18toqhFCdZBxA2VivKRss9s3i0Aw",
+            "ts": 1783783457752,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -42,6 +54,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "Still getting too many requests on the federated repo",
-    "updatedAt": 1783783457683,
+    "updatedAt": 1783783457752,
     "votes": 0
 }
