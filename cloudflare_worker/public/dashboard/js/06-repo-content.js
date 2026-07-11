@@ -28,7 +28,7 @@
     if (authorNode) authorNode.textContent = author;
     if (messageNode) messageNode.textContent = subject || "published latest mirror metadata";
     if (hashNode) hashNode.textContent = hash ? hash.slice(0, 7) : "live";
-    if (dateNode) dateNode.textContent = formatDate(date);
+    if (dateNode) dateNode.textContent = formatTimeAgo(date);
   }
 
   function mdSafeUrl(url) {
@@ -177,7 +177,7 @@
         const childPath = repoChildPath(path, entry.name);
         const isTree = entry.type === "tree";
         const message = entry.message || entry.commitMessage || entry.subject || "mirrored repository object";
-        const date = formatDate(entry.updatedAt || entry.committedAt || entry.commitDate || entry.mtime || repo.updatedAt || repo.lastSync);
+        const date = formatTimeAgo(entry.date || entry.updatedAt || entry.committedAt || entry.commitDate || entry.mtime || repo.updatedAt || repo.lastSync);
         return `
             <button data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-2.5 text-left text-sm hover:bg-secondary/40 transition-colors sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
               <i data-lucide="${isTree ? "folder" : "file"}" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
