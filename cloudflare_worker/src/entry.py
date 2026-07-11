@@ -10842,6 +10842,25 @@ def _forkbot_parse_list_command(command):
     return {"count": max(1, min(count, FORKBOT_LIST_MAX))}
 
 
+def _forkbot_parse_count_command(command):
+    """Offline fast path for "how many issues are there" phrasings. These ask
+    for a total, not a listing, so they must not fall through to the list
+    parser above (which would hand back a few issues and never say how many
+    exist in total). Returns True or None."""
+    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
+    if not text:
+        return None
+    match = re.match(
+        r"(?is)^" + _forkbot_polite_prefix() +
+        r"(?:how\s+many\s+issues\b(?:\s+are\s+there|\s+exist|"
+        r"\s+do\s+we\s+have)?|"
+        r"(?:what(?:'s|\s+is)\s+the\s+)?(?:number|count)\s+of\s+issues|"
+        r"issue\s+count)\s*[?.!]*$",
+        text,
+    )
+    return {} if match else None
+
+
 def _forkbot_parse_search_command(command):
     """Offline fast path for "search issues for X" phrasings. Requires the
     word issue(s) so a bare "find the bug" still flows to the create/AI paths.
@@ -10929,10 +10948,11 @@ def _forkbot_help_message():
     return (
         "I can open an issue from the conversation (\"forkbot open an issue "
         "for the flaky login test\"), list recent issues (\"forkbot list the "
-        "last 5 issues\" - up to %d), search issues (\"forkbot search issues "
-        "for relay retries\"), show one issue (\"forkbot show issue #12\"), "
-        "and - for the repo owner - start a coding agent (\"forkbot start an "
-        "agent on the latest issue\")." % FORKBOT_LIST_MAX
+        "last 5 issues\" - up to %d), say how many issues there are "
+        "(\"forkbot how many issues are there?\"), search issues (\"forkbot "
+        "search issues for relay retries\"), show one issue (\"forkbot show "
+        "issue #12\"), and - for the repo owner - start a coding agent "
+        "(\"forkbot start an agent on the latest issue\")." % FORKBOT_LIST_MAX
     )
 
 
@@ -11094,8 +11114,8 @@ FORKBOT_INTENT_SCHEMA = {
     "type": "object",
     "properties": {
         "intent": {"type": "string", "enum": [
-            "create_issue", "list_issues", "search_issues", "show_issue",
-            "start_agent", "help", "none"]},
+            "create_issue", "list_issues", "count_issues", "search_issues",
+            "show_issue", "start_agent", "help", "none"]},
         "title": {"type": "string"},
         "body": {"type": "string"},
         "count": {"type": "integer"},
@@ -11136,6 +11156,7 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
     Returns one of:
       {"intent": "create_issue", "title", "body"}
       {"intent": "list_issues", "count"}
+      {"intent": "count_issues"}
       {"intent": "search_issues", "query"}
       {"intent": "show_issue", "issueNumber"}   (0 = the most recent issue)
       {"intent": "start_agent", "issueNumber"}  (0 = the most recent issue)
@@ -11149,7 +11170,8 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
         '{"intent":"create_issue","title":"short summary","body":"the problem '
         'or task, with detail from the conversation"}; list recent issues -> '
         '{"intent":"list_issues","count":N} (how many they asked for, 5 if '
-        "unspecified); search existing issues for a topic -> "
+        "unspecified); asking for a TOTAL count of issues rather than a list "
+        '-> {"intent":"count_issues"}; search existing issues for a topic -> '
         '{"intent":"search_issues","query":"the search words"}; show one '
         'existing issue -> {"intent":"show_issue","issueNumber":N} (0 for the '
         "most recent); start a coding agent working on an issue -> "
@@ -11160,7 +11182,8 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
         '{"intent":"none"}. Examples: "issue to add dark mode" -> '
         '{"intent":"create_issue","title":"Add dark mode","body":"Add dark '
         'mode."}; "what came in this week?" -> '
-        '{"intent":"list_issues","count":5}; "anything about relay retries?" '
+        '{"intent":"list_issues","count":5}; "how many issues are there?" -> '
+        '{"intent":"count_issues"}; "anything about relay retries?" '
         '-> {"intent":"search_issues","query":"relay retries"}; "get an '
         'agent going on that new issue" -> '
         '{"intent":"start_agent","issueNumber":0}; "hello!" -> '
@@ -11188,6 +11211,8 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
             count = FORKBOT_LIST_DEFAULT
         return {"intent": "list_issues",
                 "count": max(1, min(count, FORKBOT_LIST_MAX))}
+    if intent == "count_issues":
+        return {"intent": "count_issues"}
     if intent == "search_issues":
         query = clean_string(parsed.get("query", ""), 100).strip()
         if not query:
@@ -11569,6 +11594,26 @@ def _forkbot_host_offline_reply(owner, repo):
     })
 
 
+async def _forkbot_action_count(env, owner, repo):
+    # A "how many" question wants a total, not a capped listing — reusing
+    # _forkbot_action_list here would silently truncate at FORKBOT_LIST_MAX
+    # and never actually answer the question asked.
+    numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
+    if numbers is None:
+        return _forkbot_host_offline_reply(owner, repo)
+    total = len(numbers)
+    if not total:
+        message = "No issues have been filed in %s/%s yet." % (owner, repo)
+    else:
+        message = "There %s %d issue%s in %s/%s." % (
+            "is" if total == 1 else "are", total,
+            "" if total == 1 else "s", owner, repo)
+    return json_response({
+        "ok": True, "action": "issues_counted", "count": total,
+        "botMessage": message,
+    })
+
+
 async def _forkbot_action_list(env, owner, repo, count):
     numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
     if numbers is None:
@@ -11760,12 +11805,13 @@ async def forkbot_chat_handler(env, request):
     #     work-recording signal at all gets the help hint.
     action = None
     for intent_name, parser in (
+            ("count_issues", _forkbot_parse_count_command),
             ("list_issues", _forkbot_parse_list_command),
             ("search_issues", _forkbot_parse_search_command),
             ("start_agent", _forkbot_parse_agent_command),
             ("show_issue", _forkbot_parse_show_command)):
         parsed_intent = parser(command)
-        if parsed_intent:
+        if parsed_intent is not None:
             action = {"intent": intent_name, **parsed_intent}
             break
     if action is None and _forkbot_parse_help_command(command):
@@ -11793,6 +11839,8 @@ async def forkbot_chat_handler(env, request):
                 fields = _forkbot_fallback_issue_fields(command)
 
     intent = (action or {}).get("intent", "")
+    if intent == "count_issues":
+        return await _forkbot_action_count(env, owner, repo)
     if intent == "list_issues":
         return await _forkbot_action_list(env, owner, repo, action["count"])
     if intent == "search_issues":

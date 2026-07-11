@@ -30,6 +30,7 @@ FUNCS = {
     "_forkbot_parse_issue_command",
     "_forkbot_command_hints_issue",
     "_forkbot_polite_prefix",
+    "_forkbot_parse_count_command",
     "_forkbot_parse_list_command",
     "_forkbot_parse_search_command",
     "_forkbot_parse_agent_command",
@@ -46,6 +47,7 @@ FUNCS = {
     "_forkbot_search_issues",
     "_forkbot_issue_lines",
     "_forkbot_host_offline_reply",
+    "_forkbot_action_count",
     "_forkbot_action_list",
     "_forkbot_action_search",
     "_forkbot_action_show",
@@ -662,6 +664,59 @@ def test_forkbot_parses_list_commands():
     assert parse("issues are piling up") is None
 
 
+def test_forkbot_parses_count_commands():
+    ns = _load_forkbot()
+    parse = ns["_forkbot_parse_count_command"]
+    assert parse("how many issues are there?") == {}
+    assert parse("how many issues are there") == {}
+    assert parse("how many issues exist") == {}
+    assert parse("how many issues do we have") == {}
+    assert parse("how many issues") == {}
+    assert parse("what is the number of issues") == {}
+    assert parse("issue count?") == {}
+    assert parse("please how many issues are there") == {}
+    # Not count requests.
+    assert parse("how many issues are there about relay retries") is None
+    assert parse("list the last 5 issues") is None
+    assert parse("create an issue to fix retries") is None
+
+
+def test_forkbot_counts_issues_from_live_mirror():
+    host = _FakeHost(tree=_issue_tree([1, 2, 3, 4, 5, 6, 7, 8]))
+    env, calls, ns = _env_and_calls(host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot how many issues are there?", "sender": "jett",
+    })))
+    assert response["status"] == 200
+    assert response["data"]["action"] == "issues_counted"
+    assert response["data"]["count"] == 8
+    assert response["data"]["botMessage"] == (
+        "There are 8 issues in forkmesh/forkmesh.")
+    assert calls["inserted"] == []
+    # Only a tree listing was needed — no per-issue blob reads for a count.
+    assert any("/tree?" in url for url in host.urls)
+    assert not any("/blobs?" in url for url in host.urls)
+
+
+def test_forkbot_count_reports_zero_issues_and_offline_host():
+    host = _FakeHost(tree=_issue_tree([]))
+    env, _calls, ns = _env_and_calls(host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot how many issues are there?",
+    })))
+    assert response["data"]["action"] == "issues_counted"
+    assert response["data"]["count"] == 0
+    assert response["data"]["botMessage"] == (
+        "No issues have been filed in forkmesh/forkmesh yet.")
+
+    env, _calls, ns = _env_and_calls()  # no FORKMESH_HOST binding at all
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot how many issues are there?",
+    })))
+    assert response["data"]["action"] == "issues_unavailable"
+    assert "live host" in response["data"]["botMessage"]
+
+
 def test_forkbot_parses_search_commands():
     ns = _load_forkbot()
     parse = ns["_forkbot_parse_search_command"]
@@ -916,6 +971,14 @@ def test_forkbot_ai_intent_routes_list_search_and_agent():
     assert [i["number"] for i in response["data"]["issues"]] == [3, 2]
 
     env, _calls, ns = _env_and_calls(
+        ai=_AI({"intent": "count_issues"}), host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot so how many total issues do we have logged?",
+    })))
+    assert response["data"]["action"] == "issues_counted"
+    assert response["data"]["count"] == 3
+
+    env, _calls, ns = _env_and_calls(
         ai=_AI({"intent": "search_issues", "query": "relay"}), host=host)
     response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
         "message": "forkbot anything on file about the relay?",
@@ -940,7 +1003,8 @@ def test_forkbot_help_lists_every_capability():
     })))
     assert response["data"]["action"] == "help"
     message = response["data"]["botMessage"]
-    for capability in ("open an issue", "list recent issues", "search issues",
+    for capability in ("open an issue", "list recent issues",
+                       "how many issues there are", "search issues",
                        "start a coding agent"):
         assert capability in message
 
