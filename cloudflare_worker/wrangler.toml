@@ -26,6 +26,12 @@ not_found_handling = "404-page"
 # handled in code rather than served as a static asset.
 run_worker_first = [
   "/api/*",
+  # ActivityPub federation: WebFinger/NodeInfo discovery plus every /ap/*
+  # actor, inbox, object and collection endpoint must reach the worker (the
+  # static-asset layer would otherwise 404 the deeper /ap/users/x/inbox paths).
+  "/.well-known/*",
+  "/ap/*",
+  "/nodeinfo/*",
   # / is worker-owned so logged-in visitors get an instant server-side 302 to
   # /dashboard (keyed off the forkmesh_session presence cookie) instead of the
   # old paint-the-homepage-then-redirect client script.
@@ -90,7 +96,9 @@ NODE_SOLANA_ADDRESS = ""
 # parseable; the code default (FORKBOT_AI_DEFAULT_MODEL) stays llama-3.1-8b as
 # a conservative fallback when this var is unset.
 FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
-# Relay federation. Leave MAIN_RELAY_URL UNSET on the main relay (forkmesh.com) —
+# Payout relay mesh (canonical routes /api/relay-mesh/*, legacy alias
+# /api/federation/* — unrelated to the ActivityPub fediverse layer at /ap/*).
+# Leave MAIN_RELAY_URL UNSET on the main relay (forkmesh.com) —
 # that is what makes a deployment "the main relay": it custodies federated signup
 # deposits and disburses to every node on every approved relay.
 #
