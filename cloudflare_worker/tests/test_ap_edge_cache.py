@@ -9,7 +9,9 @@ the collapse behaviour:
 
   * a cold hit computes the document, stores it under its canonical public
     URL, and a warm hit is served from the edge cache without touching D1;
-  * error responses (404 for a non-federating actor) are never stored;
+  * not-found responses (a non-federating actor) are parked briefly under the
+    same key, so probe storms for dead handles collapse too; transient
+    errors (503) are never stored;
   * webfinger keys on the parsed acct resource, so different spellings of
     the same handle share one entry;
   * the Update(actor) broadcast drops the cached actor doc so follower
@@ -23,7 +25,7 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
@@ -152,7 +154,8 @@ def _collection_env(edge, d1_log, federates=True):
                 "id": url, "totalItems": total},
             ACTIVITY_CONTENT_TYPE="application/activity+json"),
     })
-    return _load("ap_collection_handler", extra_globals=globs)
+    return _load("ap_collection_handler", "_ap_negative_response",
+                 extra_globals=globs)
 
 
 def test_collection_cold_hit_computes_and_stores_by_canonical_url():
@@ -180,14 +183,19 @@ def test_collection_warm_hit_is_served_without_touching_d1():
     assert d1_log == []  # no schema check, no COUNT(*)
 
 
-def test_collection_not_found_is_not_cached():
+def test_collection_not_found_is_negative_cached():
     edge, d1_log = FakeEdgeCache(), []
     ns = _collection_env(edge, d1_log, federates=False)
+    url = "https://forkmesh.com/ap/users/ghost/followers"
     resp = _run(ns["ap_collection_handler"](
-        None, _fake_request("https://forkmesh.com/ap/users/ghost/followers"),
-        "user", "ghost", "followers"))
+        None, _fake_request(url), "user", "ghost", "followers"))
     assert resp.status == 404
-    assert edge.store == {}
+    assert edge.puts == [url]  # parked at the edge under the canonical key…
+    d1_log.clear()
+    second = _run(ns["ap_collection_handler"](
+        None, _fake_request(url), "user", "ghost", "followers"))
+    assert second is resp  # …and the probe storm replays from it
+    assert d1_log == []
 
 
 # --- Actor documents -------------------------------------------------------------
@@ -213,7 +221,8 @@ def _actor_env(edge, d1_log, resolves=True):
         "ap": SimpleNamespace(
             ACTIVITY_CONTENT_TYPE="application/activity+json"),
     })
-    return _load("_ap_actor_doc_response", extra_globals=globs)
+    return _load("_ap_actor_doc_response", "_ap_negative_response",
+                 extra_globals=globs)
 
 
 def test_actor_doc_cold_hit_stores_under_actor_url_and_warm_hit_skips_d1():
@@ -229,14 +238,19 @@ def test_actor_doc_cold_hit_stores_under_actor_url_and_warm_hit_skips_d1():
     assert d1_log == []
 
 
-def test_actor_doc_404_is_not_cached():
+def test_actor_doc_404_is_negative_cached():
     edge, d1_log = FakeEdgeCache(), []
     ns = _actor_env(edge, d1_log, resolves=False)
+    url = "https://forkmesh.com/ap/users/ghost"
     resp = _run(ns["_ap_actor_doc_response"](
-        None, _fake_request("https://forkmesh.com/ap/users/ghost"),
-        "user", "ghost"))
+        None, _fake_request(url), "user", "ghost"))
     assert resp.status == 404
-    assert edge.store == {}
+    assert edge.puts == [url]
+    d1_log.clear()
+    second = _run(ns["_ap_actor_doc_response"](
+        None, _fake_request(url), "user", "ghost"))
+    assert second is resp  # Mastodon's re-resolve on follow costs no D1
+    assert d1_log == []
 
 
 # --- WebFinger --------------------------------------------------------------------
@@ -306,11 +320,14 @@ def test_webfinger_invalid_resource_is_rejected_without_caching():
 
 # --- Update broadcast invalidation --------------------------------------------------
 
-def test_broadcast_actor_update_drops_cached_actor_doc():
+def test_broadcast_actor_update_drops_cached_actor_doc_and_page():
     edge, d1_log = FakeEdgeCache(), []
     globs = _base_globals(edge, d1_log)
     actor_url = "https://forkmesh.com/ap/users/alice"
+    page_url = "https://forkmesh.com/@alice"
     edge.store[actor_url] = FakeResponse({"stale": True})
+    edge.store[page_url] = FakeResponse({"stale": True})
+    edge.store[page_url + "/repositories"] = FakeResponse({"stale": True})
 
     async def _ap_actor_bi(env, kind, handle):
         return "bi"
@@ -329,11 +346,14 @@ def test_broadcast_actor_update_drops_cached_actor_doc():
         "_ap_local_actor": _ap_local_actor,
         "_ap_build_actor_doc": _ap_build_actor_doc,
         "d1_all": d1_all,
+        "quote": quote,
+        "ACCOUNT_LOOKUP_CACHE_PREFIX": "https://forkmesh.internal/api/accounts/",
     })
     ns = _load("_ap_broadcast_actor_update", extra_globals=globs)
     _run(ns["_ap_broadcast_actor_update"](
         None, _fake_request(actor_url), "user", "alice"))
-    assert actor_url not in edge.store
+    # Both the actor doc and its rel=me verification page leave the cache.
+    assert edge.store == {}
 
 
 # --- Media endpoints (issue #416 round 3) ------------------------------------------

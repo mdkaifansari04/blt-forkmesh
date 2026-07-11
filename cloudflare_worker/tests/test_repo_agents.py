@@ -182,6 +182,11 @@ def _harness(accounts):
                     "UNIQUE constraint failed: repo_agents.repo_bi, repo_agents.agent_id")
             repo_agents[(repo_bi, agent_id)] = {"data": data, "updated_at": updated_at}
             return
+        if sql.startswith("DELETE FROM agent_prompts WHERE id IN"):
+            drained = set(args)
+            agent_prompts[:] = [r for r in agent_prompts
+                                if r["id"] not in drained]
+            return
         if sql.startswith("DELETE FROM agent_prompts"):
             repo_bi = args[0]
             agent_prompts[:] = [r for r in agent_prompts if r["repo_bi"] != repo_bi]

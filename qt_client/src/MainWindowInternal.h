@@ -413,8 +413,10 @@ constexpr int kProgressBarRole = Qt::UserRole + 11;
 // MirrorSyncDelegate to draw a pac-man countdown to its next heartbeat/re-sync.
 constexpr int kPacmanAnchorRole = Qt::UserRole + 12;
 // Cadence on which a node re-fetches its mirrors from source (mirrors
-// m_mirrorSyncTimer); a behind node is expected to catch up at the next tick.
-constexpr qint64 kMirrorSyncIntervalMs = 5LL * 60 * 1000;
+// m_mirrorSyncTimer, which adds ±15% jitter — the pie is an approximation);
+// a behind node is expected to catch up at the next tick. Only a safety net
+// now: push events notify mirror peers the moment the source moves.
+constexpr qint64 kMirrorSyncIntervalMs = 15LL * 60 * 1000;
 // Defined further down; used early by MirrorSyncDelegate to pick chart colors.
 bool currentThemeIsDark();
 

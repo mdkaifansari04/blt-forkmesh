@@ -732,6 +732,8 @@ async def purge_catalog_related_caches():
 
 
 CATALOG_CACHE_KEY = "https://forkmesh.internal/api/repositories"
+# Guest (viewer-less) GET /api/accounts/<name> payloads, keyed by name.
+ACCOUNT_LOOKUP_CACHE_PREFIX = "https://forkmesh.internal/api/accounts/"
 NETWORK_STATS_CACHE_KEY = "https://forkmesh.internal/api/network/stats"
 NETWORK_LEADERBOARDS_CACHE_KEY = "https://forkmesh.internal/api/network/leaderboards"
 NETWORK_OVERVIEW_CACHE_KEY = "https://forkmesh.internal/api/network/overview"
@@ -1163,7 +1165,16 @@ async def record_online_sample(env):
         )
 
 
+ONLINE_HISTORY_CACHE_KEY = "https://forkmesh.internal/api/network/online-history"
+
+
 async def online_history(env):
+    # network.html polls this every minute per open tab (alongside the
+    # already-cached leaderboards); serve the burst from the colo edge like
+    # its siblings. The data is hourly buckets, so 30s staleness is free.
+    cached = await edge_cache_match(ONLINE_HISTORY_CACHE_KEY)
+    if cached is not None:
+        return cached
     await ensure_schema(env)
     now = int(Date.now())
     cur_hour = (now // 3600000) * 3600000
@@ -1216,10 +1227,12 @@ async def online_history(env):
             ],
         })
     nodes.sort(key=lambda n: (-int(n["totalMinutes"]), str(n["label"])))
-    return json_response(
+    resp = json_response(
         {"ok": True, "hours": series, "nodes": nodes[:ONLINE_HISTORY_MAX_NODES]},
         cache_seconds=30,
     )
+    await edge_cache_put(ONLINE_HISTORY_CACHE_KEY, resp)
+    return resp
 
 
 async def _response_json(response):
@@ -3391,10 +3404,22 @@ async def repo_about_handler(env, request, owner, repo):
     rows = await d1_all(
         env, "SELECT key_bi, data, is_private FROM repositories")
     updated = 0
+    text_changed = False
     first = None
     for row in rows:
         record = await decrypt_row(env, row.get("data"))
         if not _catalog_record_matches_identity(record, owner, repo):
+            continue
+        updated += 1
+        if first is None:
+            first = record
+        # Re-saving the About dialog with unchanged values must be a no-op:
+        # every write here cascades into a catalog cache purge, an about_inbox
+        # round-trip through the owner's desktop, and an Update(Group)
+        # broadcast to every fediverse follower.
+        if (str(record.get("description") or "") == description and
+                (not website_provided or
+                 str(record.get("website") or "") == website)):
             continue
         record["description"] = description
         if website_provided:
@@ -3407,17 +3432,28 @@ async def repo_about_handler(env, request, owner, repo):
             1 if record.get("visibility") == "private" else 0,
             row.get("key_bi"),
         )
-        updated += 1
-        if first is None:
-            first = record
+        text_changed = True
     if not updated:
         return json_response({"error": "not_found"}, status=404)
     media_bi = await blind_index(env, str(owner).lower() + "/" + repo)
+    media_changed = False
     for kind, png_b64 in media_updates.items():
+        existing = await d1_first(
+            env, "SELECT data FROM repo_media WHERE repo_bi=? AND kind=?",
+            media_bi, kind)
         if not png_b64:
-            await d1_run(
-                env, "DELETE FROM repo_media WHERE repo_bi=? AND kind=?",
-                media_bi, kind)
+            if existing:
+                await d1_run(
+                    env, "DELETE FROM repo_media WHERE repo_bi=? AND kind=?",
+                    media_bi, kind)
+                media_changed = True
+            continue
+        # Identical bytes keep the stored updated_at: bumping it would rotate
+        # the ?v= cache-buster in the actor doc and make every follower server
+        # re-download an image that did not change.
+        stored = await decrypt_row(env, existing.get("data")) if existing \
+            else None
+        if stored and stored.get("png") == png_b64:
             continue
         await d1_run(
             env,
@@ -3427,32 +3463,35 @@ async def repo_about_handler(env, request, owner, repo):
             " updated_at=excluded.updated_at",
             media_bi, kind, await encrypt_row(env, {"png": png_b64}),
             int(Date.now()))
-    # Queue the edit for the owner's desktop node, which writes it into the
-    # repo's committed .forkmesh/info.json (the same file the desktop app's
-    # own About editor maintains) on its next sync. Latest edit wins.
-    about_update = {
-        "about": description,
-        "website": website if website_provided
-        else clean_string((first or {}).get("website", "") or "", 240),
-        "ts": int(Date.now()),
-        "editor": actor,
-        "source": "web",
-    }
-    await d1_run(
-        env,
-        "INSERT INTO about_inbox (repo_bi, data, queued_at) VALUES (?,?,?)"
-        " ON CONFLICT(repo_bi) DO UPDATE SET data=excluded.data,"
-        " queued_at=excluded.queued_at",
-        media_bi, await encrypt_row(env, about_update), about_update["ts"])
-    await _best_effort_inbox_side_effect(
-        notify_repo_host(env, owner, repo, "about"))
-    await purge_catalog_related_caches()
-    # Tell existing fediverse followers the profile changed (Update activity),
-    # so the new logo/banner/description shows up on remote servers now, not
-    # whenever their actor cache happens to expire.
-    await _best_effort_inbox_side_effect(_ap_broadcast_actor_update(
-        env, request, AP_ACTOR_REPO,
-        ap.repo_handle(str(owner).lower(), str(repo).lower())))
+        media_changed = True
+    if text_changed:
+        # Queue the edit for the owner's desktop node, which writes it into the
+        # repo's committed .forkmesh/info.json (the same file the desktop app's
+        # own About editor maintains) on its next sync. Latest edit wins.
+        about_update = {
+            "about": description,
+            "website": website if website_provided
+            else clean_string((first or {}).get("website", "") or "", 240),
+            "ts": int(Date.now()),
+            "editor": actor,
+            "source": "web",
+        }
+        await d1_run(
+            env,
+            "INSERT INTO about_inbox (repo_bi, data, queued_at) VALUES (?,?,?)"
+            " ON CONFLICT(repo_bi) DO UPDATE SET data=excluded.data,"
+            " queued_at=excluded.queued_at",
+            media_bi, await encrypt_row(env, about_update), about_update["ts"])
+        await _best_effort_inbox_side_effect(
+            notify_repo_host(env, owner, repo, "about"))
+        await purge_catalog_related_caches()
+    if text_changed or media_changed:
+        # Tell existing fediverse followers the profile changed (Update
+        # activity), so the new logo/banner/description shows up on remote
+        # servers now, not whenever their actor cache happens to expire.
+        await _best_effort_inbox_side_effect(_ap_broadcast_actor_update(
+            env, request, AP_ACTOR_REPO,
+            ap.repo_handle(str(owner).lower(), str(repo).lower())))
     # Return only the fields the caller just set — never the full decrypted
     # catalog record (which carries private-repo cloneUrl/visibility/stateHash).
     media_rows = await d1_all(
@@ -4273,6 +4312,11 @@ async def _delete_repo_scoped_state(env, repo_bi):
     await d1_run(env, "DELETE FROM clone_rr WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM repo_first_hosted WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM repo_agents WHERE repo_bi=?", repo_bi)
+    # Invalidate the per-isolate agent-snapshot digest: a re-published repo
+    # gets the same deterministic repo_bi back, and a memoized digest would
+    # otherwise make the desktop's identical re-push a silent no-op forever
+    # (empty repo_agents while the desktop believes its sessions published).
+    _AGENT_PUSH_DIGESTS.pop(repo_bi, None)
     await d1_run(env, "DELETE FROM agent_prompts WHERE repo_bi=?", repo_bi)
 
 
@@ -5502,6 +5546,12 @@ async def _account_profile(env, request):
         return json_response({"ok": True, "accountDeleted": True})
 
     changed = False
+    # The Person actor doc only ever surfaces the bio and the profile-private
+    # federation gate (_ap_build_actor_doc), so remember just those: the
+    # Update(Person) broadcast below must not fire for payout/avatar/
+    # notification tweaks — every no-op broadcast fans out one delivery per
+    # follower server and pulls a rel=me refetch storm back at us.
+    fed_before = (rec.get("profile_bio", ""), bool(rec.get("profile_private")))
     if "solana" in data:
         solana = clean_string(data.get("solana", ""), 64).strip()
         if solana and not SOLANA_RE.match(solana):
@@ -5661,10 +5711,14 @@ async def _account_profile(env, request):
     if changed:
         await _save_account(env, name_bi, rec)
         # Fediverse followers of this profile get an Update(Person) so bio
-        # changes propagate to remote servers immediately.
-        await _best_effort_inbox_side_effect(_ap_broadcast_actor_update(
-            env, request, AP_ACTOR_USER,
-            clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()))
+        # changes propagate to remote servers immediately — but only when a
+        # federated field actually changed (see fed_before above).
+        fed_after = (rec.get("profile_bio", ""),
+                     bool(rec.get("profile_private")))
+        if fed_after != fed_before:
+            await _best_effort_inbox_side_effect(_ap_broadcast_actor_update(
+                env, request, AP_ACTOR_USER,
+                clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()))
     payload = await _account_public_payload(env, rec)
     payload["verificationSent"] = bool(verification_sent)
     payload["verificationQueued"] = bool(verification_queued)
@@ -6561,10 +6615,13 @@ async def _account_heartbeat(env, request):
     # isolate: one subrequest on EVERY 60s heartbeat from every node was pure
     # overhead (donations are surfaced within minutes either way).
     now_ms = int(Date.now())
-    last_probe = _HEARTBEAT_BALANCE_PROBES.get(wallet, 0)
+    # Keyed by account+wallet: accounts sharing a payout wallet must each
+    # keep their own donation-detection baseline.
+    probe_key = str(name_bi) + ":" + wallet
+    last_probe = _HEARTBEAT_BALANCE_PROBES.get(probe_key, 0)
     if (wallet and SOLANA_RE.match(wallet)
             and now_ms - last_probe >= HEARTBEAT_SOLANA_BALANCE_MIN_MS):
-        _HEARTBEAT_BALANCE_PROBES[wallet] = now_ms
+        _HEARTBEAT_BALANCE_PROBES[probe_key] = now_ms
         if len(_HEARTBEAT_BALANCE_PROBES) > 5000:
             _HEARTBEAT_BALANCE_PROBES.clear()
         try:
@@ -8877,8 +8934,22 @@ async def accounts_handler(env, request):
     match = ACCOUNTS_RE.match(url.path)
     if match and method == "GET":
         name = clean_string(match.group(1), MAX_NODE_NAME).lower()
+        # The viewer-less lookup is what every /@name view, fediverse
+        # click-through and dashboard page boot fires, and it cost 6-8 D1
+        # ops (record decrypt + admin check + three follow COUNTs + mirror
+        # count + presence) per hit: park the guest variant at the edge.
+        # viewer=<name> responses stay per-caller (isFollowing) and skip the
+        # cache; _ap_broadcast_actor_update purges the key on profile edits.
+        viewer_less = "viewer" not in parse_qs(urlparse(request.url).query)
+        lookup_cache_key = ACCOUNT_LOOKUP_CACHE_PREFIX + quote(name)
+        if viewer_less:
+            cached = await edge_cache_match(lookup_cache_key)
+            if cached is not None:
+                return cached
         name_bi, rec = await _account_row(env, name)
         if not rec:
+            # Availability misses are deliberately uncached: the signup
+            # form's name check must see a just-taken name immediately.
             return json_response(
                 {"ok": True, "exists": False, "available": True, "name": name})
         # Public lookup never returns email/secret material. A name is only
@@ -8927,6 +8998,10 @@ async def accounts_handler(env, request):
             env, rec.get("name", name), viewer)
         payload = {**payload, "social": social, **social}
         payload = {**payload, **_account_profile_fields(rec)}
+        if viewer_less:
+            resp = json_response(payload, cache_seconds=60)
+            await edge_cache_put(lookup_cache_key, resp)
+            return resp
         return json_response(payload)
     return json_response({"error": "not_found"}, status=404)
 
@@ -9158,6 +9233,43 @@ async def _ap_repo_federates(env, owner, repo):
 # to one origin computation per colo per TTL. Keyed by the canonical public
 # URL; only successful (200) documents are stored.
 
+async def _ap_negative_response(cache_key, error="not_found"):
+    # Park a 404 at the edge briefly. Probes for handles that don't federate
+    # (deleted accounts, crawlers, Mastodon re-resolving after a failed
+    # follow) otherwise re-run the full D1 federation gate on every hit, and
+    # they arrive in the same bursts the 200s do.
+    resp = json_response({"error": error}, status=404, cache_seconds=120)
+    await edge_cache_put(cache_key, resp)
+    return resp
+
+
+async def ap_hostmeta_handler(env, request):
+    # Mastodon's resolver falls back to GET /.well-known/host-meta whenever a
+    # webfinger lookup fails, so during any failure window each missed
+    # resolution used to cost a SECOND request that walked the entire route
+    # chain into the terminal JSON 404 — a self-amplifying loop. The document
+    # is a constant pointer at our webfinger template: no schema, no D1, and
+    # a day at the edge.
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    origin = _ap_origin(env, request)
+    cache_key = origin + "/.well-known/host-meta"
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
+    xrd = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+           '<XRD xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0">'
+           '<Link rel="lrdd" '
+           'template="%s/.well-known/webfinger?resource={uri}"/>'
+           '</XRD>' % origin)
+    resp = Response(xrd, status=200, headers={
+        "content-type": "application/xrd+xml; charset=utf-8",
+        "cache-control": "public, max-age=86400",
+    })
+    await edge_cache_put(cache_key, resp)
+    return resp
+
+
 async def ap_webfinger_handler(env, request):
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -9185,14 +9297,14 @@ async def ap_webfinger_handler(env, request):
     else:
         parsed = ap.split_handle(handle)
         if not parsed:
-            return json_response({"error": "not_found"}, status=404)
+            return await _ap_negative_response(cache_key)
         if parsed[0] == "user":
             if not await _ap_user_federates(env, parsed[1]):
-                return json_response({"error": "not_found"}, status=404)
+                return await _ap_negative_response(cache_key)
             kind, actor_handle, acct_name = AP_ACTOR_USER, parsed[1], parsed[1]
         else:
             if not await _ap_repo_federates(env, parsed[1], parsed[2]):
-                return json_response({"error": "not_found"}, status=404)
+                return await _ap_negative_response(cache_key)
             kind = AP_ACTOR_REPO
             actor_handle = ap.repo_handle(parsed[1], parsed[2])
             acct_name = actor_handle
@@ -9307,7 +9419,10 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
     attachments = [
         ap.property_value(
             "Repository" if kind == AP_ACTOR_REPO else "Profile", profile_url),
-        ap.property_value("Relay", origin),
+        # Plain text, deliberately: an anchor here made every follower
+        # server's link verifier fetch the worker-served homepage on each
+        # verification round, for a row that can never earn the green check.
+        ap.property_text("Relay", _ap_domain_of(origin)),
     ]
     return ap.actor_doc(
         _ap_actor_url(origin, kind, handle), actor_type, handle, display,
@@ -9337,13 +9452,13 @@ async def _ap_actor_doc_response(env, request, kind, handle):
         parsed = await _ap_resolve_local_target(
             env, origin, _ap_actor_url(origin, kind, handle))
         if not parsed:
-            return json_response({"error": "not_found"}, status=404)
+            return await _ap_negative_response(cache_key)
     rec = await _ap_local_actor(env, kind, handle, create=True)
     if not rec:
         return json_response({"error": "unavailable"}, status=503)
     doc = await _ap_build_actor_doc(env, origin, kind, handle, rec)
     if not doc:
-        return json_response({"error": "not_found"}, status=404)
+        return await _ap_negative_response(cache_key)
     resp = json_response(doc, cache_seconds=300, extra_headers={
         "content-type": ap.ACTIVITY_CONTENT_TYPE})
     await edge_cache_put(cache_key, resp)
@@ -9365,8 +9480,17 @@ async def _ap_broadcast_actor_update(env, request, kind, handle):
     actor_url = _ap_actor_url(origin, kind, handle)
     # Drop the edge-cached actor doc so refetches see the new profile — even
     # with no followers to notify, a remote server may hold the URL and poll
-    # it (best-effort: other colos age out within the TTL).
+    # it (best-effort: other colos age out within the TTL). The rel=me page
+    # the actor points at is edge-cached too (_serve_profile_page /
+    # _serve_repo_page), so drop the canonical page keys alongside it.
     await edge_cache_delete(actor_url)
+    if kind == AP_ACTOR_USER:
+        await edge_cache_delete(origin + "/@" + quote(handle))
+        await edge_cache_delete(origin + "/@" + quote(handle) + "/repositories")
+        await edge_cache_delete(ACCOUNT_LOOKUP_CACHE_PREFIX + quote(handle))
+    elif kind == AP_ACTOR_REPO:
+        page_owner, _, page_repo = handle.partition(".")
+        await edge_cache_delete(origin + repo_web_href(page_owner, page_repo))
     followers = await d1_all(
         env, "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
         actor_bi)
@@ -9407,11 +9531,11 @@ async def ap_collection_handler(env, request, kind, handle, which):
     if not await _ap_enabled(env):
         return _ap_disabled_response()
     if kind == AP_ACTOR_USER and not await _ap_user_federates(env, handle):
-        return json_response({"error": "not_found"}, status=404)
+        return await _ap_negative_response(collection_url)
     if kind == AP_ACTOR_REPO:
         owner, _, repo = handle.partition(".")
         if not await _ap_repo_federates(env, owner, repo):
-            return json_response({"error": "not_found"}, status=404)
+            return await _ap_negative_response(collection_url)
     actor_bi = await _ap_actor_bi(env, kind, handle)
     total = 0
     if which == "followers":
@@ -9595,10 +9719,30 @@ async def _ap_remote_actor(env, actor_id, force_refresh=False):
 
 
 async def _ap_deliver_body(env, actor_url, priv_b64, inbox_url, body_str):
+    """Returns (status, retry_after_ms). retry_after_ms is 0 unless the
+    remote answered 429/503 with a parseable Retry-After — the drain uses it
+    as a floor under the normal backoff so a throttling server isn't re-hit
+    sooner than it asked."""
     resp = await _ap_signed_request(
         actor_url + "#main-key", priv_b64, "POST", inbox_url,
         body_str=body_str)
-    return int(getattr(resp, "status", 0)) if resp is not None else 0
+    if resp is None:
+        return 0, 0
+    status = int(getattr(resp, "status", 0))
+    retry_after_ms = 0
+    if status in (429, 503):
+        try:
+            raw = (resp.headers.get("retry-after") or "").strip()
+        except Exception:
+            raw = ""
+        if raw.isdigit():
+            retry_after_ms = int(raw) * 1000
+        elif raw:
+            when = ap.parse_http_date_ms(raw)
+            if when:
+                retry_after_ms = when - int(Date.now())
+        retry_after_ms = max(0, min(retry_after_ms, 24 * 60 * 60 * 1000))
+    return status, retry_after_ms
 
 
 async def _ap_drain_outbox(env, limit):
@@ -9619,12 +9763,12 @@ async def _ap_drain_outbox(env, limit):
             continue
         rec = await decrypt_row(env, row.get("data"))
         attempts = int(row.get("attempts") or 0) + 1
-        status = 0
+        status, retry_after_ms = 0, 0
         if rec and rec.get("body") and rec.get("actorKind"):
             local = await _ap_local_actor(
                 env, rec["actorKind"], rec["actorHandle"])
             if local:
-                status = await _ap_deliver_body(
+                status, retry_after_ms = await _ap_deliver_body(
                     env, rec.get("actorUrl", ""), local["privkey"],
                     row.get("inbox", ""), rec["body"])
         done = (200 <= status < 400) or status in (404, 410)
@@ -9633,7 +9777,9 @@ async def _ap_drain_outbox(env, limit):
         else:
             await d1_run(
                 env, "UPDATE ap_outbox SET attempts=?, next_ts=? WHERE id=?",
-                attempts, now + ap.retry_backoff_ms(attempts), row.get("id"))
+                attempts,
+                now + max(ap.retry_backoff_ms(attempts), retry_after_ms),
+                row.get("id"))
 
 
 # --- Outbound publishing -------------------------------------------------------
@@ -9790,7 +9936,7 @@ async def _ap_handle_follow(env, request, activity, remote):
     }
     accept_body = json.dumps(ap.accept_activity(actor_url, follow_ref))
     inbox_url = (remote.get("inbox") or "").strip()
-    status = await _ap_deliver_body(
+    status, _ = await _ap_deliver_body(
         env, actor_url, local["privkey"], inbox_url, accept_body)
     if inbox_url and not (200 <= status < 400) and status not in (404, 410):
         # The remote server keeps the follow "pending" (spinner) until the
@@ -12696,7 +12842,8 @@ async def sync_handler(env, request):
     # literals (same convention as _inbox_author_over_quota); inbox items are
     # NOT deleted here — the node acks a merged inbox with its per-repo DELETE.
     marks = ",".join("?" for _ in repo_bis)
-    by_repo = {}   # repo_bi -> {topic: [decrypted rows...]}
+    by_repo = {}      # repo_bi -> {topic: [decrypted rows...]}
+    drain_ids = {}    # repo_bi -> {table: [row ids read]}, for exact deletes
     if repo_bis:
         for topic, table, ordered in (
                 ("issues", "issue_inbox", True),
@@ -12706,16 +12853,24 @@ async def sync_handler(env, request):
                 ("agentPrompts", "agent_prompts", True),
                 ("aboutUpdate", "about_inbox", False)):
             order = " ORDER BY id ASC" if ordered else ""
+            id_col = "rowid AS drain_id" if table == "about_inbox" else "id AS drain_id"
             table_rows = await d1_all(
                 env,
-                f"SELECT repo_bi, data FROM {table} WHERE repo_bi IN ({marks})"
-                + order,
+                f"SELECT repo_bi, data, {id_col} FROM {table}"
+                f" WHERE repo_bi IN ({marks})" + order,
                 *repo_bis)
             for r in table_rows or []:
                 item = await decrypt_row(env, r.get("data"))
                 if item:
                     by_repo.setdefault(r.get("repo_bi"), {}) \
                         .setdefault(topic, []).append(item)
+                # Track the exact rows READ (even undecryptable ones — they
+                # can never be delivered, so draining them is correct) so the
+                # drain deletes below can't sweep away rows inserted while
+                # this request was still decrypting (drop-undelivered race).
+                if table in ("agent_prompts", "about_inbox"):
+                    drain_ids.setdefault(r.get("repo_bi"), {}) \
+                        .setdefault(table, []).append(r.get("drain_id"))
     repos = []
     for row in rows:
         rec = await decrypt_row(env, row["data"])
@@ -12736,18 +12891,31 @@ async def sync_handler(env, request):
             "discussions": pending.get("discussions", []),
             "commits": pending.get("commits", []),
         }
+        # Drain-on-read deletes target the EXACT rows this request read (by
+        # id), never the whole repo_bi: a prompt/About edit inserted while
+        # this request was decrypting must survive for the next sync instead
+        # of being swept away undelivered.
         prompts = pending.get("agentPrompts", [])
-        if prompts:
+        prompt_ids = drain_ids.get(repo_bi, {}).get("agent_prompts", [])
+        if prompt_ids:
             await d1_run(
-                env, "DELETE FROM agent_prompts WHERE repo_bi=?", repo_bi)
+                env,
+                "DELETE FROM agent_prompts WHERE id IN (%s)"
+                % ",".join("?" for _ in prompt_ids),
+                *prompt_ids)
         entry["agentPrompts"] = prompts
         # Web About edits, drained on read like agent prompts: the node writes
         # the change into the repo's committed .forkmesh/info.json.
         abouts = pending.get("aboutUpdate", [])
+        about_ids = drain_ids.get(repo_bi, {}).get("about_inbox", [])
         if abouts:
             entry["aboutUpdate"] = abouts[0]
+        if about_ids:
             await d1_run(
-                env, "DELETE FROM about_inbox WHERE repo_bi=?", repo_bi)
+                env,
+                "DELETE FROM about_inbox WHERE rowid IN (%s)"
+                % ",".join("?" for _ in about_ids),
+                *about_ids)
         repos.append(entry)
     return json_response(
         {"ok": True, "serverTime": int(Date.now()), "repos": repos})
@@ -12875,7 +13043,14 @@ async def agents_handler(env, request, owner, repo):
         )
         prompts = [rec for rec in
                    [await decrypt_row(env, r["data"]) for r in rows] if rec]
-        await d1_run(env, "DELETE FROM agent_prompts WHERE repo_bi=?", repo_bi)
+        # Delete exactly the rows read: a prompt queued while we were
+        # decrypting must survive for the next drain, not vanish undelivered.
+        if rows:
+            await d1_run(
+                env,
+                "DELETE FROM agent_prompts WHERE id IN (%s)"
+                % ",".join("?" for _ in rows),
+                *[r["id"] for r in rows])
         return json_response({"ok": True, "prompts": prompts})
 
     return json_response({"error": "method_not_allowed"}, status=405)
@@ -15363,6 +15538,13 @@ class Default(WorkerEntrypoint):
                 {
                     "ok": True,
                     "rev": _build_rev(self.env),
+                    # deploy.sh stamps APP_VERSION (qt_client release number)
+                    # alongside BUILD_REV; the dashboard header chip renders
+                    # it. It was documented as echoed here but never was —
+                    # which also left the chip's sessionStorage cache
+                    # unreachable, so every page navigation refetched this.
+                    "version": str(
+                        getattr(self.env, "APP_VERSION", "") or ""),
                     "now": Date.now(),
                 }
             )
@@ -15464,6 +15646,8 @@ class Default(WorkerEntrypoint):
         # the (unrelated) Solana payout relay mesh.
         if url.path == "/.well-known/webfinger":
             return await ap_webfinger_handler(self.env, request)
+        if url.path == "/.well-known/host-meta":
+            return await ap_hostmeta_handler(self.env, request)
         if url.path == "/.well-known/nodeinfo":
             return await ap_nodeinfo_handler(self.env, request, True)
         if url.path == "/nodeinfo/2.1":
@@ -15751,6 +15935,7 @@ class Default(WorkerEntrypoint):
             # by the owner account's registered key. Read-only browse/clone of a
             # repo someone else hosts stays public, so only gate the upgrade.
             public_browse = False
+            browse_cache_key = ""  # set only for public /history (fmv-keyed)
             upgrade = (request.headers.get("upgrade") or "").lower()
             if upgrade == "websocket":
                 params = parse_qs(url.query)
@@ -15802,6 +15987,23 @@ class Default(WorkerEntrypoint):
                     # same flapping node and returning its error.
                     failed_mirror = None
                     params = parse_qs(url.query)
+                    # The contribution graph fans out one /history fetch per
+                    # repo (up to 12 on a first profile view), each a full
+                    # mirror-selection + DO tunnel round-trip. The client
+                    # already sends fmv=<attested state hash>, so keying on
+                    # the whole URL self-invalidates the moment the repo
+                    # moves (git_advert_cache pattern); the TTL is only a
+                    # backstop. Public repos only — private browse carries
+                    # per-viewer tokens and never sets browse_cache_key.
+                    if (host_match.group(3) == "history"
+                            and params.get("fmv", [""])[0]):
+                        browse_cache_key = (
+                            "https://forkmesh.internal" + url.path
+                            + "?" + url.query)
+                        cached = await edge_cache_match_media(
+                            browse_cache_key, "application/json")
+                        if cached is not None:
+                            return cached
                     pinned = safe_segment(params.get("fmserved", [""])[0])
                     if not (pinned and pinned.lower() == owner.lower()):
                         served = await self._select_browse_mirror(owner, repo)
@@ -15825,6 +16027,12 @@ class Default(WorkerEntrypoint):
                                 fstatus = 0
                             if forwarded is not None and \
                                     fstatus not in (0, 502, 503, 504):
+                                if browse_cache_key and fstatus == 200:
+                                    # Same raw-response store as git adverts:
+                                    # rebuilt with a public max-age so the
+                                    # Cache API accepts it.
+                                    await git_advert_cache_put(
+                                        browse_cache_key, forwarded)
                                 return forwarded
                             failed_mirror = served
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
@@ -15868,10 +16076,16 @@ class Default(WorkerEntrypoint):
                                 "/api/repo/%s/%s/%s" % (
                                     fallback, repo, host_match.group(3)))
                             if int(forwarded.status) not in (502, 503, 504):
+                                if browse_cache_key and \
+                                        int(forwarded.status) == 200:
+                                    await git_advert_cache_put(
+                                        browse_cache_key, forwarded)
                                 return forwarded
                         except Exception:
                             pass
                         tried.append(fallback)
+                if browse_cache_key and status == 200:
+                    await git_advert_cache_put(browse_cache_key, response)
             return response
 
         room = room_key_from_path(url.path)
@@ -15955,6 +16169,17 @@ class Default(WorkerEntrypoint):
         # public data instead of the logged-in session (public-profile mode).
         # Eligibility mirrors the fediverse actor: active + not private —
         # node-owner accounts get pages too, matching _ap_user_federates.
+        # Served identically to every viewer (personalization happens in
+        # dashboard.js), so the built page lives in the colo edge cache: it is
+        # the rel=me verification target every follower server GETs after an
+        # Update(Person), and those bursts must not each rebuild it at origin.
+        # _ap_broadcast_actor_update purges the key on profile changes.
+        origin = url.scheme + "://" + url.netloc
+        cache_key = "%s/@%s%s" % (
+            origin, quote(name), "/repositories" if repositories else "")
+        cached = await edge_cache_match(cache_key)
+        if cached is not None:
+            return cached
         await ensure_schema(self.env)
         _, rec = await _account_row(self.env, name)
         if (not rec or rec.get("status") != "active"
@@ -15969,7 +16194,6 @@ class Default(WorkerEntrypoint):
             body = await resp.text()
         except Exception:
             body = "<!doctype html><title>ForkMesh</title>"
-        origin = url.scheme + "://" + url.netloc
         canonical = "%s/@%s" % (origin, quote(name))
         # rel="me" is the reciprocal half of the fediverse Person actor's
         # verified profile link (the actor's `url` is this page); the
@@ -15986,10 +16210,12 @@ class Default(WorkerEntrypoint):
         body = re.sub(r"<title>[^<]*</title>",
                       "<title>@%s · ForkMesh</title>" % _html_escape(name),
                       body, count=1)
-        return Response(body, status=200, headers={
+        page = Response(body, status=200, headers={
             "content-type": "text/html; charset=utf-8",
             "cache-control": "public, max-age=300",
         })
+        await edge_cache_put(cache_key, page)
+        return page
 
     async def _serve_repo_page(self, url):
         # The shared repo-detail document, plus per-repo head tags:
@@ -15999,17 +16225,26 @@ class Default(WorkerEntrypoint):
         #    itself and marks the profile row verified);
         #  - <link rel="alternate" type="application/activity+json"> — lets
         #    fediverse software discover the actor straight from the page URL.
+        # Identical for every viewer, and the rel=me verification target of
+        # the repo actor: edge-cached so follower-server verification bursts
+        # after an Update(Group) cost one origin build per colo per TTL.
+        origin = url.scheme + "://" + url.netloc
+        parts = [p for p in url.path.split("/") if p]
+        owner = safe_segment(unquote(parts[0])) if len(parts) >= 2 else ""
+        repo = safe_segment(unquote(parts[1])) if len(parts) >= 2 else ""
+        cache_key = ""
+        if owner and repo:
+            cache_key = "%s/%s/%s" % (origin, quote(owner), quote(repo))
+            cached = await edge_cache_match(cache_key)
+            if cached is not None:
+                return cached
         base = url.scheme + "://" + url.netloc + "/"
         try:
             resp = await self.env.ASSETS.fetch(base + DASHBOARD_REPO_ASSET)
             body = await resp.text()
         except Exception:
             body = "<!doctype html><title>ForkMesh Dashboard</title>"
-        parts = [p for p in url.path.split("/") if p]
-        owner = safe_segment(unquote(parts[0])) if len(parts) >= 2 else ""
-        repo = safe_segment(unquote(parts[1])) if len(parts) >= 2 else ""
         if owner and repo and "</head>" in body:
-            origin = url.scheme + "://" + url.netloc
             tags = (
                 "<link rel=\"me\" href=\"%s/%s/%s\">"
                 "<link rel=\"alternate\" type=\"application/activity+json\" "
@@ -16017,10 +16252,13 @@ class Default(WorkerEntrypoint):
                 % (origin, quote(owner), quote(repo),
                    origin, quote(owner), quote(repo)))
             body = body.replace("</head>", tags + "</head>", 1)
-        return Response(body, status=200, headers={
+        page = Response(body, status=200, headers={
             "content-type": "text/html; charset=utf-8",
             "cache-control": "public, max-age=300",
         })
+        if cache_key:
+            await edge_cache_put(cache_key, page)
+        return page
 
     async def _serve_dashboard_asset(self, url, asset_rel):
         # The per-page dashboard documents are generated by

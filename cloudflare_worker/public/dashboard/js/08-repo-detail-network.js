@@ -684,6 +684,11 @@
     if (modal) setNotificationModalOpen(true);
   }
 
+  // The release version changes at most per deploy: cache it in sessionStorage
+  // for an hour so repeat page navigations don't refetch /api/version.
+  const APP_VERSION_STORAGE = "forkmesh.appVersion";
+  const APP_VERSION_TTL_MS = 60 * 60 * 1000;
+
   async function renderAppVersion() {
     // Show the live ForkMesh release version (same number as the desktop app -
     // deploy.sh stamps it from qt_client/CMakeLists.txt as the APP_VERSION Worker
@@ -691,12 +696,32 @@
     // is unavailable so the header never shows a broken "v".
     const el = $("[data-app-version]");
     if (!el) return;
+    const show = (version) => {
+      el.textContent = version[0] === "v" ? version : "v" + version;
+      el.classList.remove("hidden");
+    };
+    try {
+      const cached = JSON.parse(sessionStorage.getItem(APP_VERSION_STORAGE) || "null");
+      if (cached?.version && Number(cached.expiresAt) > Date.now()) {
+        show(String(cached.version));
+        return;
+      }
+    } catch (_) {
+      /* unreadable cache entry: fall through to the fetch */
+    }
     try {
       const data = await fetchJson("/api/version");
       const version = (data && data.version ? String(data.version) : "").trim();
       if (!version) return;
-      el.textContent = version[0] === "v" ? version : "v" + version;
-      el.classList.remove("hidden");
+      try {
+        sessionStorage.setItem(APP_VERSION_STORAGE, JSON.stringify({
+          version,
+          expiresAt: Date.now() + APP_VERSION_TTL_MS,
+        }));
+      } catch (_) {
+        /* best-effort cache */
+      }
+      show(version);
     } catch (_) {
       /* leave the version chip hidden */
     }
@@ -815,7 +840,9 @@
   // awaits this promise before resolving its /owner/repo path.
   let repositoriesReady = null;
 
-  async function loadRepositories({ fresh = true } = {}) {
+  // Boot/shared-chrome loads take the cached path (browser + edge cache honor
+  // the server's max-age); only explicit user refresh actions pass fresh:true.
+  async function loadRepositories({ fresh = false } = {}) {
     if (dashboardMockRepositoriesEnabled()) {
       renderRepositories(dashboardMockRepositories(), state.session);
       return;

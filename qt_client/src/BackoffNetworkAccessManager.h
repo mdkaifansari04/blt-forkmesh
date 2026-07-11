@@ -78,6 +78,12 @@ public:
     QList<EndpointStats> endpointStats() const;
     QList<RequestRecord> endpointRequests(const QString &method,
                                           const QString &endpoint) const;
+    // True while this host's /api/* traffic sits inside the 429/5xx cooldown
+    // window (createRequest would answer it locally with a synthetic error).
+    // Lets periodic work that never passes through this manager — e.g. the
+    // git-subprocess mirror fetches — honour the same host-wide backpressure
+    // and skip a round instead of hammering an already rate-limited relay.
+    bool hostInCooldown(const QString &host) const;
 
     static QString canonicalFirewallRule(const QString &rule);
     static QString firewallRuleForUrl(const QUrl &url, bool includePort = false);
