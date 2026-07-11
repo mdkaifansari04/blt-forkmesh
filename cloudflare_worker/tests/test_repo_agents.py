@@ -48,6 +48,7 @@ FUNCS = {
     "_account_session_record", "_account_session_token",
     "_account_session_token_name", "_account_session_signature",
     "_account_session_secret", "_account_kind", "valid_node_name",
+    "_account_owns_node", "_owned_nodes",
 }
 
 

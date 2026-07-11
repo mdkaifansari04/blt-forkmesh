@@ -34,6 +34,7 @@ FUNCS = {
     "_account_session_secret", "_account_kind", "valid_node_name", "clean_string",
     "_owner_pubkey", "_catalog_record_matches_identity",
     "_repo_identity_from_clone_url", "safe_segment", "method_name",
+    "_account_owns_node", "_owned_nodes",
 }
 
 
@@ -367,3 +368,38 @@ def test_repo_about_requires_owner_session_and_hides_record():
     assert "repository" not in ok["data"]
     assert "SECRET-HASH" not in str(ok["data"])
     assert repos[0]["data"]["description"] == "a real description"
+
+
+def test_repo_about_allows_user_who_owns_the_node():
+    # A repo's owner is a NODE account ("laptop"); the human logs in with a
+    # separate USER account ("alice") that owns that node (adhoc #53). The
+    # owning user must be able to edit About even though their name != owner.
+    accounts = {
+        # Link recorded on BOTH sides, as _link_node_to_user writes it.
+        "alice": _user(),
+        "laptop": {"pubkey": "PK", "status": "active", "owner": "alice"},
+        "stranger": _user(),
+    }
+    accounts["alice"]["nodes"] = ["laptop"]
+    repos = [_repo_row("laptop", "proj")]
+    ns = _harness(accounts, repositories=repos)
+    env = object()
+    url = "https://forkmesh.test/api/repo/laptop/proj/about"
+
+    # The owning user's session is authorized.
+    ok = asyncio.run(ns["repo_about_handler"](
+        env, _Request("POST", url, body={
+            "description": "owned via node link",
+            "sessionToken": ns["_account_session_token"](env, "alice")}),
+        "laptop", "proj"))
+    assert ok["status"] == 200
+    assert repos[0]["data"]["description"] == "owned via node link"
+
+    # An unrelated user still cannot.
+    nope = asyncio.run(ns["repo_about_handler"](
+        env, _Request("POST", url, body={
+            "description": "defaced",
+            "sessionToken": ns["_account_session_token"](env, "stranger")}),
+        "laptop", "proj"))
+    assert nope["status"] == 403
+    assert repos[0]["data"]["description"] == "owned via node link"

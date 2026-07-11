@@ -1379,8 +1379,19 @@
   // the only account whose node can actually pick an "assign to agent" issue up
   // and run a coding agent on it.
   function sessionOwnsRepo(repo) {
-    const owner = String(state.session?.nodeName || "").toLowerCase();
-    return Boolean(owner) && owner === String(repo?.owner || "").toLowerCase();
+    // A repo's owner is a NODE account name. The logged-in account matches
+    // either directly (it IS that node) or because the user OWNS that node
+    // (adhoc #53 claim/link) — state.session.nodes is the list of node names
+    // the user owns, the same alias set profileContributionAliases folds in.
+    // Without this, a user whose repos are published by a linked node account
+    // could never edit About / assign agents from the web (backend
+    // _account_owns_node applies the identical rule).
+    const repoOwner = String(repo?.owner || "").toLowerCase();
+    if (!repoOwner) return false;
+    const me = String(state.session?.nodeName || "").toLowerCase();
+    if (me && me === repoOwner) return true;
+    const owned = Array.isArray(state.session?.nodes) ? state.session.nodes : [];
+    return owned.some((n) => String(n || "").toLowerCase() === repoOwner);
   }
 
   // True when the logged-in account may assign an issue to a coding agent on

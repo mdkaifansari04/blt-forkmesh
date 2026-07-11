@@ -3210,7 +3210,7 @@ async def repo_about_handler(env, request, owner, repo):
     # Only the repo owner (proven by their session token, not a self-asserted
     # ownerAccount string) or a network admin may edit repo metadata.
     actor = await _authed_account_name(env, request, data)
-    if not actor or (actor != str(owner or "").lower()
+    if not actor or (not await _account_owns_node(env, actor, owner)
                      and not await _is_admin(env, actor)):
         return json_response({"error": "not_authorized"}, status=403)
     if not await _owner_pubkey(env, owner):
@@ -4137,6 +4137,31 @@ def _owned_nodes(rec):
     if not isinstance(nodes, list):
         return []
     return [n for n in nodes if isinstance(n, str) and n]
+
+
+async def _account_owns_node(env, actor, node_name):
+    """True when the logged-in account `actor` may act AS the repo owner
+    `node_name`. A repo's owner is a NODE account, but the human logs in with
+    the linked USER account (adhoc #53 claim/link), whose name differs — so an
+    owner-gated web action must resolve that link, not string-compare names.
+
+    Ownership is recorded on both sides by _link_node_to_user: the node record
+    carries `owner` = <user name>, and the user record's `nodes` list carries
+    the node name. Either side is accepted (tolerate one being stale)."""
+    actor = str(actor or "").strip().lower()
+    node_name = str(node_name or "").strip().lower()
+    if not actor or not node_name:
+        return False
+    if actor == node_name:
+        return True
+    _, node_rec = await _account_row(env, node_name)
+    if node_rec and str(node_rec.get("owner", "")).strip().lower() == actor:
+        return True
+    _, actor_rec = await _account_row(env, actor)
+    if actor_rec and node_name in {
+            n.strip().lower() for n in _owned_nodes(actor_rec)}:
+        return True
+    return False
 
 
 def _clean_profile_timezone(raw):
@@ -9971,7 +9996,8 @@ async def _authorize_owner_account(env, owner, data, request=None):
     actor = (rec.get("name", "") if rec else "").strip().lower()
     if not actor:
         return False, json_response({"error": "not_authorized"}, status=403)
-    if actor != str(owner or "").lower() and not await _is_admin(env, actor):
+    if (not await _account_owns_node(env, actor, owner)
+            and not await _is_admin(env, actor)):
         return False, json_response({"error": "not_authorized"}, status=403)
     return True, None
 
