@@ -497,12 +497,23 @@ def test_signup_verification_email_is_a_professional_welcome_email():
         "https://forkmesh.com/blogs",
         "What was confusing",
         "founders@forkmesh.com",
-        "background:#090909",
-        "background:#141416",
         "color:#4ade80",
         "/api/accounts/verify-email?node=",
+        # Renders through the shared branded card (dark card + light-mode
+        # override), rather than a bespoke inline template.
+        "_forkmesh_email_card_html(",
     ):
         assert marker in body
+    card_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("def _forkmesh_email_card_html"):
+        ENTRY_TEXT.index("def _format_email_ts")
+    ]
+    for marker in (
+        "background:#090909",
+        "background:#141416",
+        "prefers-color-scheme: light",
+    ):
+        assert marker in card_body
 
 
 def test_login_page_links_to_password_reset():
