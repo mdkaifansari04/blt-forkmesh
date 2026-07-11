@@ -117,6 +117,28 @@ def test_digest_html_escapes_the_actor_name():
     assert "&lt;script&gt;" in html
 
 
+def test_digest_html_adapts_to_light_mode_clients():
+    # The card is dark-by-default (inline styles) for clients that ignore
+    # <style>, but must declare support for both schemes and ship a
+    # prefers-color-scheme:light override so clients that do honor it (Apple
+    # Mail, Gmail apps, Outlook.com, ...) don't force a dark card on a
+    # light-mode inbox.
+    ns = _load()
+    _subject, _text, html = ns["_notification_digest_email"]("alice", [{
+        "kind": "mention",
+        "title": "You were mentioned",
+        "body": "",
+        "repo": "alice/forkmesh",
+        "actor": "bob",
+        "ts": 1783607520000,
+        "meta": {"number": 7},
+    }])
+    assert 'name="color-scheme" content="light dark"' in html
+    assert "@media (prefers-color-scheme: light)" in html
+    assert 'class="fm-card"' in html
+    assert "background:#ffffff !important" in html
+
+
 def test_notify_mentions_accepts_an_optional_number_for_the_digest():
     # notify_mentions had no way to attach the item's number to the stored
     # notification at all — mentions always rendered numberless in the digest

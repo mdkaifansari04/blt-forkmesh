@@ -7559,42 +7559,32 @@ async def _send_verification_email(env, request, name, email):
             "What was confusing, missing, or most useful as you got started? "
             "Send feedback to " + feedback_email + ".\n\n"
             "If you did not create this account, you can ignore this email.")
-    html = (
-        "<div style=\"margin:0;padding:28px 16px;background:#090909;"
-        "font-family:'ForkMesh Lato',-apple-system,BlinkMacSystemFont,"
-        "Segoe UI,Helvetica,Arial,sans-serif;color:#f5f5f5;line-height:1.55\">"
-        "<div style=\"max-width:560px;margin:0 auto;border:1px solid #313134;"
-        "border-radius:8px;background:#141416;padding:24px\">"
-        "<p style=\"margin:0 0 22px;color:#a3a3a3;font-size:13px;"
-        "letter-spacing:0;font-weight:700\">ForkMesh</p>"
-        "<h1 style=\"margin:0 0 14px;color:#f5f5f5;font-size:24px;"
-        "line-height:1.25;font-weight:800\">Welcome to ForkMesh</h1>"
-        "<p style=\"margin:0 0 18px;color:#d4d4d8;font-size:15px\">Hi "
-        "<strong style=\"color:#f5f5f5\">" + safe_name + "</strong>, confirm "
-        "your email to finish setting up your account.</p>"
+    intro = ("Hi <strong class=\"fm-strong\" style=\"color:#f5f5f5\">" + safe_name +
+              "</strong>, confirm your email to finish setting up your account.")
+    body_html = (
         "<p style=\"margin:0 0 22px\"><a href=\"" + safe_link + "\" "
         "style=\"display:inline-block;background:#4ade80;color:#052e16;"
         "text-decoration:none;border-radius:8px;padding:10px 14px;"
         "font-size:14px;font-weight:800\">Confirm your email</a></p>"
-        "<div style=\"border-top:1px solid #313134;padding-top:18px;"
+        "<div class=\"fm-border\" style=\"border-top:1px solid #313134;padding-top:18px;"
         "margin-top:4px\">"
-        "<p style=\"margin:0 0 10px;color:#f5f5f5;font-size:15px;"
+        "<p class=\"fm-strong\" style=\"margin:0 0 10px;color:#f5f5f5;font-size:15px;"
         "font-weight:700\">Next steps</p>"
-        "<p style=\"margin:0 0 8px;color:#d4d4d8;font-size:14px\">Read the "
-        "<a href=\"" + docs_url + "\" style=\"color:#4ade80;"
+        "<p class=\"fm-text\" style=\"margin:0 0 8px;color:#d4d4d8;font-size:14px\">Read the "
+        "<a href=\"" + docs_url + "\" class=\"fm-link\" style=\"color:#4ade80;"
         "text-decoration:none\">ForkMesh docs</a>.</p>"
-        "<p style=\"margin:0 0 18px;color:#d4d4d8;font-size:14px\">Browse "
-        "<a href=\"" + blogs_url + "\" style=\"color:#4ade80;"
+        "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#d4d4d8;font-size:14px\">Browse "
+        "<a href=\"" + blogs_url + "\" class=\"fm-link\" style=\"color:#4ade80;"
         "text-decoration:none\">product notes and guides</a>.</p>"
-        "<p style=\"margin:0;color:#a3a3a3;font-size:14px\">What was confusing, "
+        "<p class=\"fm-muted\" style=\"margin:0;color:#a3a3a3;font-size:14px\">What was confusing, "
         "missing, or most useful as you got started? Send feedback to "
-        "<a href=\"mailto:" + feedback_email + "\" style=\"color:#4ade80;"
+        "<a href=\"mailto:" + feedback_email + "\" class=\"fm-link\" style=\"color:#4ade80;"
         "text-decoration:none\">" + feedback_email + "</a>.</p>"
-        "</div>"
-        "<p style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">If you did "
-        "not create this account, you can ignore this email.</p>"
-        "</div>"
         "</div>")
+    footer_html = (
+        "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">If you did "
+        "not create this account, you can ignore this email.</p>")
+    html = _forkmesh_email_card_html("Welcome to ForkMesh", intro, body_html, footer_html)
     return await _send_email(env, email, subject, text, html)
 
 
@@ -10522,20 +10512,45 @@ async def send_general_chat_digests(env):
 
 
 def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
+    # The card design below is dark-by-default (inline styles), with a
+    # prefers-color-scheme:light override layer applied via classes +
+    # !important so mail clients that honor CSS media queries (Apple Mail,
+    # iOS/Android Gmail, Outlook.com, Fastmail, ...) repaint it to match the
+    # recipient's OS/client theme instead of always forcing a dark card.
+    # Clients that ignore <style> fall back to the inline dark styles,
+    # matching the prior (dark-only) behavior.
+    scheme_style = (
+        "@media (prefers-color-scheme: light){"
+        ".fm-bg{background:#f4f4f5 !important}"
+        ".fm-card{background:#ffffff !important;border-color:#e4e4e7 !important}"
+        ".fm-item{background:#f4f4f5 !important;border-color:#e4e4e7 !important}"
+        ".fm-border{border-color:#e4e4e7 !important}"
+        ".fm-brand,.fm-muted{color:#71717a !important}"
+        ".fm-h1,.fm-strong,.fm-item-title{color:#111114 !important}"
+        ".fm-text,.fm-item-body{color:#3f3f46 !important}"
+        ".fm-link{color:#15803d !important}"
+        "}"
+    )
     return (
-        "<div style=\"margin:0;padding:28px 16px;background:#090909;"
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<meta name=\"color-scheme\" content=\"light dark\">"
+        "<meta name=\"supported-color-schemes\" content=\"light dark\">"
+        "<style>" + scheme_style + "</style></head>"
+        "<body style=\"margin:0;padding:0\">"
+        "<div class=\"fm-bg\" style=\"margin:0;padding:28px 16px;background:#090909;"
         "font-family:'ForkMesh Lato',-apple-system,BlinkMacSystemFont,"
         "Segoe UI,Helvetica,Arial,sans-serif;color:#f5f5f5;line-height:1.55\">"
-        "<div style=\"max-width:560px;margin:0 auto;border:1px solid #313134;"
+        "<div class=\"fm-card\" style=\"max-width:560px;margin:0 auto;border:1px solid #313134;"
         "border-radius:8px;background:#141416;padding:24px\">"
-        "<p style=\"margin:0 0 22px;color:#a3a3a3;font-size:13px;"
+        "<p class=\"fm-brand\" style=\"margin:0 0 22px;color:#a3a3a3;font-size:13px;"
         "letter-spacing:0;font-weight:700\">ForkMesh</p>"
-        "<h1 style=\"margin:0 0 14px;color:#f5f5f5;font-size:24px;"
+        "<h1 class=\"fm-h1\" style=\"margin:0 0 14px;color:#f5f5f5;font-size:24px;"
         "line-height:1.25;font-weight:800\">" + heading + "</h1>"
-        "<p style=\"margin:0 0 18px;color:#d4d4d8;font-size:15px\">" +
+        "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#d4d4d8;font-size:15px\">" +
         intro_html + "</p>" + body_html +
         (footer_html if footer_html else "") +
-        "</div></div>")
+        "</div></div></body></html>")
 
 
 def _format_email_ts(ts_ms):
@@ -10592,13 +10607,13 @@ def _notification_digest_email(node, items):
             _html_escape(when) if when else "",
         ]))
         html_items.append(
-            "<div style=\"border:1px solid #313134;border-radius:8px;"
+            "<div class=\"fm-item\" style=\"border:1px solid #313134;border-radius:8px;"
             "background:#0f0f11;padding:12px 14px;margin:0 0 10px\">"
-            "<p style=\"margin:0;color:#f5f5f5;font-size:14px;"
+            "<p class=\"fm-item-title\" style=\"margin:0;color:#f5f5f5;font-size:14px;"
             "font-weight:800\">" + _html_escape(prefix + title) + "</p>" +
-            ("<p style=\"margin:4px 0 0;color:#8a8a93;font-size:12px\">" +
+            ("<p class=\"fm-muted\" style=\"margin:4px 0 0;color:#8a8a93;font-size:12px\">" +
              meta_html + "</p>" if meta_html else "") +
-            ("<p style=\"margin:6px 0 0;color:#a3a3a3;font-size:13px;"
+            ("<p class=\"fm-item-body\" style=\"margin:6px 0 0;color:#a3a3a3;font-size:13px;"
              "line-height:1.45\">" + _html_escape(body) + "</p>"
              if body else "") + "</div>")
     lines += ["", "Open ForkMesh to read and reply.",
@@ -10607,13 +10622,14 @@ def _notification_digest_email(node, items):
     text = "\n".join(lines)
     html = _forkmesh_email_card_html(
         _html_escape(str(n) + " new notification" + ("s" if n != 1 else "")),
-        "Hi <strong style=\"color:#f5f5f5\">" + _html_escape(node or "there") +
+        "Hi <strong class=\"fm-strong\" style=\"color:#f5f5f5\">" +
+        _html_escape(node or "there") +
         "</strong>, you have " + str(n) + " unread ForkMesh notification" +
         ("s" if n != 1 else "") + ".",
         "<div style=\"margin:0 0 18px\">" + "".join(html_items) + "</div>"
-        "<p style=\"margin:0 0 16px;color:#d4d4d8;font-size:14px\">Open "
+        "<p class=\"fm-text\" style=\"margin:0 0 16px;color:#d4d4d8;font-size:14px\">Open "
         "ForkMesh to read and reply.</p>",
-        "<p style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">To stop "
+        "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">To stop "
         "these emails, update email notifications in your profile settings."
         "</p>",
     )
@@ -10634,19 +10650,21 @@ def _general_chat_digest_email(node, count):
     html = _forkmesh_email_card_html(
         _html_escape(str(n) + " encrypted #general message" +
                      ("s" if n != 1 else "")),
-        "Hi <strong style=\"color:#f5f5f5\">" + _html_escape(node or "there") +
+        "Hi <strong class=\"fm-strong\" style=\"color:#f5f5f5\">" +
+        _html_escape(node or "there") +
         "</strong>, #general has encrypted activity since your last digest.",
-        "<div style=\"border:1px solid #313134;border-radius:8px;"
+        "<div class=\"fm-item\" style=\"border:1px solid #313134;border-radius:8px;"
         "background:#0f0f11;padding:14px;margin:0 0 18px\">"
-        "<p style=\"margin:0;color:#f5f5f5;font-size:28px;font-weight:800;line-height:1\">"
+        "<p class=\"fm-item-title\" style=\"margin:0;color:#f5f5f5;font-size:28px;"
+        "font-weight:800;line-height:1\">"
         + str(n) + "</p>"
-        "<p style=\"margin:8px 0 0;color:#d4d4d8;font-size:14px\">encrypted "
+        "<p class=\"fm-item-body\" style=\"margin:8px 0 0;color:#d4d4d8;font-size:14px\">encrypted "
         "#general message" + ("s" if n != 1 else "") + " waiting</p>"
         "</div>"
-        "<p style=\"margin:0;color:#d4d4d8;font-size:14px\">Message contents "
+        "<p class=\"fm-text\" style=\"margin:0;color:#d4d4d8;font-size:14px\">Message contents "
         "are not sent over email. Log in on the web or open the ForkMesh app "
         "to read and reply.</p>",
-        "<p style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">To stop "
+        "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">To stop "
         "these emails, update email notifications in your profile settings."
         "</p>",
     )
