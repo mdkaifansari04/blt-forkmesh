@@ -1958,20 +1958,24 @@ async def _wallet_name_map(env):
     # Build wallet -> friendly node name from local accounts and federated
     # presence, so funds-received boards can label payout wallets. Best-effort.
     mapping = {}
-    try:
-        rows = await d1_all(env, "SELECT name, data FROM accounts")
-        for row in rows:
-            rec = await decrypt_row(env, row.get("data"))
-            if not rec:
-                continue
-            wallet = (rec.get("solana") or "").strip()
-            if not wallet:
-                continue
-            name = clean_string(row.get("name") or rec.get("name", ""), MAX_NODE_NAME)
-            if name:
-                mapping.setdefault(wallet, name)
-    except Exception:
-        pass
+    # The accounts table is legacy and drains into users/nodes, so read the
+    # payout-bearing records from both accounts and the nodes table.
+    for source in ("SELECT name, data FROM accounts",
+                   "SELECT name, data FROM nodes"):
+        try:
+            rows = await d1_all(env, source)
+            for row in rows:
+                rec = await decrypt_row(env, row.get("data"))
+                if not rec:
+                    continue
+                wallet = (rec.get("solana") or "").strip()
+                if not wallet:
+                    continue
+                name = clean_string(row.get("name") or rec.get("name", ""), MAX_NODE_NAME)
+                if name:
+                    mapping.setdefault(wallet, name)
+        except Exception:
+            pass
     try:
         fed = await d1_all(env, "SELECT wallet, name FROM federated_presence")
         for row in fed:
@@ -3352,6 +3356,23 @@ async def touch_registered_node(env, name_bi, rec=None):
         int(Date.now()), name_bi)
 
 
+async def _account_identity_rec_by_bi(env, name_bi):
+    # Authoritative-store fallback for a name_bi lookup once the legacy accounts
+    # row has been drained into the users/nodes tables (admin "make user/node"
+    # and the verified-email migration delete the accounts row after mirroring
+    # the full encrypted record into users/nodes). user_bi and node_bi are both
+    # blind_index(name) — the same value as an account's name_bi — so one key
+    # resolves either table. Returns the decrypted record, or None.
+    if not name_bi:
+        return None
+    row = await d1_first(env, "SELECT data FROM users WHERE user_bi=?", name_bi)
+    if not row:
+        row = await d1_first(env, "SELECT data FROM nodes WHERE node_bi=?", name_bi)
+    if not row:
+        return None
+    return await decrypt_row(env, row.get("data"))
+
+
 async def _account_row(env, name):
     name_bi = await blind_index(env, name)
     row = await d1_first(
@@ -3359,7 +3380,9 @@ async def _account_row(env, name):
         "SELECT data, email_bi, ip_bi, is_admin FROM accounts WHERE name_bi=?",
         name_bi)
     if not row:
-        return name_bi, None
+        # The accounts table is legacy: once a record has been migrated into the
+        # users/nodes tables its accounts row is deleted, so fall back to those.
+        return name_bi, await _account_identity_rec_by_bi(env, name_bi)
     rec = await decrypt_row(env, row["data"])
     if rec:
         try:
@@ -3820,6 +3843,11 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
     account_row = await d1_first(
         env, "SELECT data, email_bi, ip_bi, is_admin FROM accounts WHERE name_bi=?",
         name_bi)
+    if not account_row:
+        # Legacy accounts row already drained into the users table.
+        account_row = await d1_first(
+            env, "SELECT data, email_bi, ip_bi, is_admin FROM users WHERE user_bi=?",
+            name_bi)
     if not account_row:
         return name_bi, rec, "invalid_credentials"
 
@@ -4582,6 +4610,9 @@ async def _account_signup(env, request):
 
     email_bi = await blind_index(env, email)
     dup = await d1_first(env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
+    if not dup:
+        dup = await d1_first(
+            env, "SELECT user_bi AS name_bi FROM users WHERE email_bi=?", email_bi)
     if dup and dup.get("name_bi") != name_bi:
         return json_response({"error": "email_taken"}, status=409)
 
@@ -4628,6 +4659,10 @@ async def _account_password_record(env, data):
     if "@" in identifier:
         email_bi = await blind_index(env, identifier)
         row = await d1_first(env, "SELECT name_bi, data FROM accounts WHERE email_bi=?", email_bi)
+        if not row:
+            row = await d1_first(
+                env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
+                email_bi)
         if row:
             name_bi = row.get("name_bi", "")
             rec = await decrypt_row(env, row.get("data"))
@@ -5160,6 +5195,10 @@ async def _account_finalize(env, request):
         email_bi = await blind_index(env, email)
         dup = await d1_first(
             env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
+        if not dup:
+            dup = await d1_first(
+                env, "SELECT user_bi AS name_bi FROM users WHERE email_bi=?",
+                email_bi)
         if dup and dup.get("name_bi") != name_bi:
             return json_response({"error": "email_taken"}, status=409)
         salt, phash = await hash_password(password)
@@ -5237,6 +5276,10 @@ async def _account_profile(env, request):
         if "@" in identifier:
             email_bi = await blind_index(env, identifier)
             row = await d1_first(env, "SELECT name_bi, data FROM accounts WHERE email_bi=?", email_bi)
+            if not row:
+                row = await d1_first(
+                    env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
+                    email_bi)
             if row:
                 name_bi = row.get("name_bi", "")
                 rec = await decrypt_row(env, row.get("data"))
@@ -5485,6 +5528,10 @@ async def _resolve_user_by_password(env, data):
         email_bi = await blind_index(env, identifier)
         row = await d1_first(
             env, "SELECT name_bi, data FROM accounts WHERE email_bi=?", email_bi)
+        if not row:
+            row = await d1_first(
+                env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
+                email_bi)
         if row:
             name_bi = row.get("name_bi", "")
             rec = await decrypt_row(env, row.get("data"))
@@ -6007,6 +6054,9 @@ async def _account_login(env, request):
         email_bi = await blind_index(env, identifier)
         row = await d1_first(
             env, "SELECT data FROM accounts WHERE email_bi=?", email_bi)
+        if not row:
+            row = await d1_first(
+                env, "SELECT data FROM users WHERE email_bi=?", email_bi)
         if row:
             rec = await decrypt_row(env, row["data"])
     elif valid_node_name(identifier):
@@ -6391,6 +6441,9 @@ async def _online_payout_addresses(env):
     for r in rows:
         row = await d1_first(
             env, "SELECT name, data FROM accounts WHERE name_bi=?", r["name_bi"])
+        if not row:
+            row = await d1_first(
+                env, "SELECT name, data FROM nodes WHERE node_bi=?", r["name_bi"])
         if not row:
             continue
         rec = await decrypt_row(env, row["data"])
@@ -7162,8 +7215,11 @@ async def shares_handler(env, request, owner, repo):
 # until an email service (e.g. SES) is wired up.
 
 async def _is_admin(env, name):
-    # Admin status lives entirely in the accounts table's is_admin column. Grant
-    # it directly in the DB: UPDATE accounts SET is_admin=1 WHERE name='<node>'.
+    # Admin status lives in the is_admin column, on the legacy accounts row while
+    # it exists and mirrored onto the authoritative users row. Grant it directly
+    # in the DB: UPDATE accounts SET is_admin=1 WHERE name='<node>' (or the same
+    # on users once the account has migrated). Falls back to users so a migrated
+    # admin keeps their grant.
     name = (name or "").strip().lower()
     if not name:
         return False
@@ -7171,6 +7227,9 @@ async def _is_admin(env, name):
     try:
         row = await d1_first(
             env, "SELECT is_admin FROM accounts WHERE name_bi=?", name_bi)
+        if not row:
+            row = await d1_first(
+                env, "SELECT is_admin FROM users WHERE user_bi=?", name_bi)
     except Exception:
         return False  # column may predate migration 0006
     return bool(row and int(row.get("is_admin", 0) or 0))
@@ -7651,6 +7710,9 @@ async def _account_forgot_password(env, request):
             email_bi = await blind_index(env, identifier)
             row = await d1_first(
                 env, "SELECT data FROM accounts WHERE email_bi=?", email_bi)
+            if not row:
+                row = await d1_first(
+                    env, "SELECT data FROM users WHERE email_bi=?", email_bi)
             if row:
                 rec = await decrypt_row(env, row.get("data"))
         elif valid_node_name(identifier):
@@ -8171,6 +8233,9 @@ async def _federation_report_nodes(env):
     for r in (rows or []):
         row = await d1_first(
             env, "SELECT data FROM accounts WHERE name_bi=?", r["name_bi"])
+        if not row:
+            row = await d1_first(
+                env, "SELECT data FROM nodes WHERE node_bi=?", r["name_bi"])
         if not row:
             continue
         rec = await decrypt_row(env, row["data"])
@@ -9973,6 +10038,12 @@ async def send_notification_digests(env):
         acct = await d1_first(
             env, "SELECT data FROM accounts WHERE name_bi=?", recipient_bi)
         if not acct:
+            acct = await d1_first(
+                env, "SELECT data FROM users WHERE user_bi=?", recipient_bi)
+        if not acct:
+            acct = await d1_first(
+                env, "SELECT data FROM nodes WHERE node_bi=?", recipient_bi)
+        if not acct:
             continue
         rec = await decrypt_row(env, acct.get("data", ""))
         if not rec or rec.get("status") != "active":
@@ -10043,9 +10114,12 @@ async def send_general_chat_digests(env):
         return
     await ensure_schema(env)
     now = int(Date.now())
+    # Recipients come from the authoritative users table (accounts is legacy and
+    # is drained as records migrate); it only holds user-kind records, exactly
+    # the population eligible for this digest.
     rows = await d1_all(
         env,
-        "SELECT name_bi, data FROM accounts ORDER BY name LIMIT ?",
+        "SELECT user_bi AS name_bi, data FROM users ORDER BY username LIMIT ?",
         GENERAL_CHAT_EMAIL_MAX_RECIPIENTS,
     )
     for row in rows or []:
@@ -13520,6 +13594,21 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             '(PBKDF2-hashed); email and payout address are left unchanged.</span>'
             '</div>'
         ) % _admin_href(admin_query, table="accounts", action="set_password")
+        prefix += (
+            '<div class="tools">'
+            '<form method="post" action="%s" '
+            'onsubmit="return confirm(\'Migrate every account with a verified '
+            'email into the users table and remove it from accounts?\')">'
+            + csrf_field +
+            '<button type="submit">Migrate all verified-email users into users</button>'
+            '</form>'
+            '<span class="meta">One-click: pins every account whose email is '
+            'verified as a user, mirrors it into the authoritative users table, '
+            'and deletes its legacy accounts row. Unverified rows are left in '
+            'place.</span>'
+            '</div>'
+        ) % _admin_href(admin_query, table="accounts",
+                        action="migrate_verified_users")
 
     if table == "telemetry":
         # Purpose-built crash/stall dashboard + recent events, newest first.
@@ -13781,12 +13870,18 @@ async def _admin_migrate_account_kind(env, name, kind):
         return "Account migration failed: no account named '%s'." % name
     old_kind = _account_kind(rec)
     already_pinned = old_kind == kind and rec.get("kind") == kind
-    if already_pinned:
-        return "Account '%s' is already pinned as a %s." % (name, kind)
     rec["kind"] = kind
+    # Persist (mirrors the record into the authoritative users/nodes tables),
+    # then drain the legacy accounts row: making a user or a node moves it out of
+    # the accounts table entirely (adhoc #20).
     await _save_account(env, name_bi, rec)
+    await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
+    if already_pinned:
+        return ("Account '%s' was already a %s; removed its legacy accounts row."
+                % (name, kind))
     verb = "Pinned" if old_kind == kind else "Migrated"
-    msg = "%s account '%s' as %s." % (verb, name, kind)
+    msg = "%s account '%s' as %s (removed from the accounts table)." % (
+        verb, name, kind)
     notes = []
     if kind == "user" and not rec.get("pass_hash"):
         notes.append("Set a password before this user can log in.")
@@ -13794,6 +13889,44 @@ async def _admin_migrate_account_kind(env, name, kind):
         notes.append("Linked nodes on this record were left unchanged; transfer them separately if needed.")
     if notes:
         msg += " " + " ".join(notes)
+    return msg
+
+
+async def _admin_migrate_verified_users(env):
+    # Bulk one-click migration (adhoc #20): every legacy accounts row whose
+    # encrypted record has a verified email is pinned as a user, mirrored into
+    # the authoritative users table, and then removed from the accounts table.
+    rows = await d1_all(env, "SELECT name_bi, data FROM accounts")
+    migrated = 0
+    skipped = 0
+    errors = []
+    for row in rows or []:
+        name_bi = row.get("name_bi")
+        if not name_bi:
+            continue
+        rec = await decrypt_row(env, row.get("data", ""))
+        if not rec or not rec.get("email") or not rec.get("email_verified"):
+            skipped += 1
+            continue
+        try:
+            rec["kind"] = "user"
+            email_bi = await blind_index(
+                env, clean_string(rec.get("email", ""), 254).lower())
+            # _save_account mirrors into users; then drop the legacy row.
+            await _save_account(env, name_bi, rec, email_bi=email_bi)
+            await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
+            migrated += 1
+        except Exception as error:
+            errors.append(clean_string(rec.get("name", "unknown"), MAX_NODE_NAME)
+                          + ": " + _safe_error_text(error))
+    if migrated == 0 and not errors:
+        return ("No accounts with verified emails to migrate "
+                "(%d account row(s) checked)." % skipped)
+    msg = ("Migrated %d verified-email account(s) into the users table and "
+           "removed them from accounts (%d without a verified email left in "
+           "place)." % (migrated, skipped))
+    if errors:
+        msg += " Errors: " + "; ".join(errors[:5])
     return msg
 
 
@@ -14114,6 +14247,11 @@ class Default(WorkerEntrypoint):
                         self.env, name, kind)
                 except Exception as error:
                     banner = "Account migration failed: " + repr(error)
+            elif action == "migrate_verified_users":
+                try:
+                    banner = await _admin_migrate_verified_users(self.env)
+                except Exception as error:
+                    banner = "Verified-user migration failed: " + repr(error)
             elif action == "request_ownership":
                 try:
                     banner = await _admin_console_request_ownership(
