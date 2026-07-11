@@ -34,7 +34,8 @@ def _load(*names, extra_globals=None):
     want_assigns = {
         "ROOM_RE", "REPO_ROOM_RE", "GIT_INFO_RE", "GIT_PACK_RE",
         "RELEASE_BLOB_RE", "REPO_HOST_RE", "GIT_RECEIVE_RE",
-        "HOST_PRESENCE_STALE_MS", "STATUS_SYSTEMS", "STATUS_HISTORY_DAYS",
+        "HOST_PRESENCE_STALE_MS", "STATUS_SYSTEMS", "STATUS_SYSTEM_CHECKS",
+        "STATUS_HISTORY_DAYS",
         "STATUS_HISTORY_RETAIN_MS", "STATUS_SAMPLE_WINDOW_MS",
         "STATUS_HOUR_MS", "STATUS_DAY_MS",
         "STATUS_MINUTES_SHOWN", "STATUS_MINUTE_RETAIN_MS",
@@ -467,12 +468,17 @@ def _run_history(rows, hour_rows=(), minute_rows=()):
     return captured
 
 
-def test_no_data_counts_as_downtime():
+def test_no_data_is_unknown_not_fabricated_downtime():
+    # A missing sample means the sampling cron didn't run (monitoring gap) —
+    # it is NOT evidence of an outage. Counting gaps as downtime is what used
+    # to show every system with the same fabricated ~50% uptime while the
+    # site was actually up, so with no data at all the honest answer is
+    # "unknown" with no uptime number, not 0%.
     out = _run_history([])
     by_id = {s["id"]: s for s in out["systems"]}
-    assert by_id["website"]["status"] == "down"
-    assert by_id["website"]["uptimePct"] == 0.0
-    assert by_id["website"]["uptime24hPct"] == 0.0
+    assert by_id["website"]["status"] == "unknown"
+    assert by_id["website"]["uptimePct"] is None
+    assert by_id["website"]["uptime24hPct"] is None
     assert len(by_id["website"]["days"]) == 30
 
 
@@ -487,7 +493,12 @@ def test_all_checks_passing_today_is_operational():
     out = _run_history(rows, hour_rows)
     by_id = {s["id"]: s for s in out["systems"]}
     assert by_id["website"]["status"] == "operational"
-    assert by_id["website"]["uptime24hPct"] < 100.0
+    # Uptime covers RECORDED samples only — every recorded check passed, so
+    # 100%, with the sampling gaps reported separately as coverage instead of
+    # being silently folded in as fake downtime.
+    assert by_id["website"]["uptime24hPct"] == 100.0
+    assert by_id["website"]["coverage24hPct"] < 100.0
+    assert by_id["website"]["missing24h"] > 0
 
 
 def test_all_checks_failing_today_is_down():
@@ -607,15 +618,86 @@ def test_hours_breakdown_present_for_today_with_reason_on_degraded_hour():
     assert this_hour["reason"] == "500 on /api/x: boom"
 
 
-def test_hour_with_no_checks_is_down_and_explains_missing_samples():
+def test_hour_with_no_checks_is_unknown_and_explains_the_monitoring_gap():
     cur_day = (_Clock.value // DAY_MS) * DAY_MS
     out = _run_history([], hour_rows=())
     by_id = {s["id"]: s for s in out["systems"]}
     today = next(d for d in by_id["website"]["days"] if d["dayTs"] == cur_day)
     elapsed = [h for h in today["hours"] if h["expectedChecks"]]
     assert elapsed
-    assert all(h["status"] == "down" for h in elapsed)
-    assert all("treated as downtime" in h["reason"] for h in elapsed)
+    assert all(h["status"] == "unknown" for h in elapsed)
+    assert all("monitoring gap" in h["reason"] for h in elapsed)
+    assert all("not evidence of an outage" in h["reason"] for h in elapsed)
+    assert all(h["missingChecks"] == h["expectedChecks"] for h in elapsed)
+
+
+def test_uptime_counts_only_recorded_samples_and_reports_coverage():
+    # 10 samples recorded this hour (5 failed) out of a near-full day of
+    # expected minutes: uptime must be 50% of what was RECORDED, with the
+    # gaps surfaced as coverage — not a near-0% number fabricated from the
+    # sampler's own absence.
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    hour_rows = [
+        {"hour_ts": cur_hour, "system": "api", "checks": 10, "failures": 5,
+         "reason": "500 on /api/x: boom"},
+    ]
+    out = _run_history([], hour_rows)
+    by_id = {s["id"]: s for s in out["systems"]}
+    api = by_id["api"]
+    assert api["status"] == "degraded"
+    assert api["uptime24hPct"] == 50.0
+    assert api["uptimePct"] == 50.0
+    assert api["checks24h"] == 10
+    assert api["failures24h"] == 5
+    assert api["missing24h"] > 0
+    assert api["coverage24hPct"] < 100.0
+
+
+def test_stale_samples_flip_the_badge_to_unknown_not_a_stale_status():
+    # The newest recorded sample is hours old: claiming "operational" (or
+    # "down") from stale data would be false info — the badge must say the
+    # current state is unknown and why.
+    cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
+    stale_hour = cur_hour - 5 * HOUR_MS
+    hour_rows = [
+        {"hour_ts": stale_hour, "system": "website", "checks": 60,
+         "failures": 0, "reason": None},
+    ]
+    out = _run_history([], hour_rows)
+    by_id = {s["id"]: s for s in out["systems"]}
+    website = by_id["website"]
+    assert website["status"] == "unknown"
+    assert "monitoring gap" in website["reason"]
+    assert website["reasonTs"] == stale_hour
+    # The stale-but-recorded samples still count toward uptime honestly.
+    assert website["uptime24hPct"] == 100.0
+
+
+def test_each_system_describes_exactly_what_its_check_tests():
+    # Every /status row is click-expandable to show what its health check
+    # actually verifies; the descriptions must exist, be distinct per system
+    # (the rows share one sampler cron, so identical-looking bars need the
+    # difference spelled out), and match the real checks in
+    # record_status_sample.
+    out = _run_history([])
+    by_id = {s["id"]: s for s in out["systems"]}
+    descriptions = {sid: s["checkDescription"] for sid, s in by_id.items()}
+    assert all(d and len(d) > 40 for d in descriptions.values())
+    assert len(set(descriptions.values())) == len(descriptions)
+    assert "D1" in descriptions["database"]
+    assert "10 minutes" in descriptions["git_hosting"]
+    assert "/api/" in descriptions["api"]
+    assert "Exceeded allowed duration" in descriptions["durable_objects"]
+    assert "not an external HTTP probe" in descriptions["website"]
+
+
+def test_status_page_wires_the_click_to_expand_check_details():
+    status_html = (ROOT / "public" / "status.html").read_text(encoding="utf-8")
+    assert "checkDescription" in status_html
+    assert "status-row-detail-panel" in status_html
+    assert "What this check tests" in status_html
+    assert 'head.setAttribute("aria-expanded"' in status_html
+    assert "coverage24hPct" in status_html
 
 
 def test_operational_hour_does_not_carry_a_stale_reason():
@@ -669,10 +751,10 @@ def test_minute_with_no_row_is_future_only_for_the_current_bucket():
     # The newest bucket (this minute) simply hasn't been sampled by the cron
     # yet — that's not evidence of an outage.
     assert minutes[-1]["status"] == "future"
-    # Every older bucket with no row is missing data, which the page treats
-    # as downtime (same policy as the hour/day rows).
-    assert all(m["status"] == "down" for m in minutes[:-1])
-    assert all("treated as downtime" in m["reason"] for m in minutes[:-1])
+    # Every older bucket with no row is a monitoring gap (the sampling cron
+    # didn't run), shown as "unknown" — never fabricated into downtime.
+    assert all(m["status"] == "unknown" for m in minutes[:-1])
+    assert all("monitoring gap" in m["reason"] for m in minutes[:-1])
 
 
 def test_minute_row_reflects_ok_and_carries_its_failure_reason():
@@ -961,7 +1043,10 @@ def test_status_page_asset_and_redirect_exist():
     assert "status-row-metrics" in status_html
     assert "last 24 hourly checks" in status_html
     assert "currentHour - 23 * 3600000" in status_html
-    assert "Missing elapsed samples count as downtime" in status_html
+    # Missing samples are monitoring gaps, never fabricated downtime — the
+    # copy must say so, and the old "counts as downtime" claim must be gone.
+    assert "monitoring gap" in status_html
+    assert "count as downtime" not in status_html
     assert "optimizing traffic usage for bots" in status_html
     assert "marker.classList.add(\"is-hovered\")" in status_html
     assert "status-day-hour is-" in status_html
