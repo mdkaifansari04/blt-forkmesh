@@ -660,15 +660,18 @@ void RepoHost::connectSocket()
     });
     if (auto *ssl = qobject_cast<QSslSocket *>(m_socket))
         connect(ssl, &QSslSocket::encrypted, this, &RepoHost::onTransportReady);
+    // Leave m_wsConnectedAtMs alone here: scheduleReconnect() reads it to
+    // decide whether the connection stayed healthy long enough to reset the
+    // backoff ramp, and zeroes it itself right after that check. Zeroing it
+    // first made the reset unreachable — attempts only ever grew, so every
+    // host ended up permanently re-dialing at the 5-minute cap.
     connect(m_socket, &QTcpSocket::disconnected, this, [this] {
         m_wsReady = false;
-        m_wsConnectedAtMs = 0;
         emit networkDiagnosticsChanged();
         scheduleReconnect();
     });
     connect(m_socket, &QTcpSocket::errorOccurred, this, [this] {
         m_wsReady = false;
-        m_wsConnectedAtMs = 0;
         emit networkDiagnosticsChanged();
         scheduleReconnect();
     });
@@ -724,7 +727,6 @@ void RepoHost::onReadyRead()
         }
         m_wsReady = true;
         m_wsConnectedAtMs = QDateTime::currentMSecsSinceEpoch();
-        m_reconnectAttempts = 0;  // healthy again: reset the backoff ramp
         m_pingTimer->start();
         emit log("Host: serving " + m_owner + "/" + m_name + " live to the web.");
         emit networkDiagnosticsChanged();
@@ -1583,6 +1585,12 @@ void RepoHost::scheduleReconnect()
         m_pingTimer->stop();
     if (m_stopping)
         return;
+    // Reset the backoff ramp only after a connection that stayed healthy for
+    // a while — resetting on the 101 upgrade alone let an accept-then-drop
+    // relay (overloaded DO killing sockets) re-dial at the fast rate forever.
+    if (m_wsConnectedAtMs &&
+        QDateTime::currentMSecsSinceEpoch() - m_wsConnectedAtMs > 30000)
+        m_reconnectAttempts = 0;
     m_wsReady = false;
     m_wsConnectedAtMs = 0;
     emit networkDiagnosticsChanged();

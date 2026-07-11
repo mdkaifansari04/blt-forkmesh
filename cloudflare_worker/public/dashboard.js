@@ -554,7 +554,10 @@
     }
 
     const pending = (async () => {
-      const noStore = fresh || !ttl;
+      // Only explicit fresh loads bypass HTTP caching; plain fetches send no
+      // cache-buster and no cache-control override so the browser can reuse
+      // responses within the server's max-age (request budget).
+      const noStore = fresh;
       // Attach the account session as a bearer token when logged in. Endpoints
       // that expose per-account data (e.g. /api/notifications) require it;
       // public endpoints simply ignore it. Same-origin only.
@@ -1741,7 +1744,39 @@
   const CONTRIBUTION_GRID_COLUMNS = "2.25rem repeat(53, 0.75rem)";
   const CONTRIBUTION_GRID_GAP = "0.1875rem";
   const PROFILE_HISTORY_CONCURRENCY = 3;
-  const PROFILE_HISTORY_REPO_LIMIT = 24;
+  const PROFILE_HISTORY_REPO_LIMIT = 12;
+  // Per-repo /history responses feed only the contribution graph and change
+  // slowly, so they are cached in sessionStorage: navigating back to a profile
+  // page must not refetch every repo (request budget, free-tier Worker).
+  const PROFILE_HISTORY_CACHE_TTL_MS = 10 * 60 * 1000;
+  const PROFILE_HISTORY_CACHE_PREFIX = "forkmesh.profileHistory:";
+
+  function profileHistoryCacheKey(repo, session = profileSubject()) {
+    const subject = String(session?.nodeName || session?.email || "guest").trim().toLowerCase();
+    return `${PROFILE_HISTORY_CACHE_PREFIX}${subject}:${repoKey(repo)}`;
+  }
+
+  function readProfileHistoryCache(repo) {
+    try {
+      const parsed = JSON.parse(sessionStorage.getItem(profileHistoryCacheKey(repo)) || "null");
+      if (!parsed || !Array.isArray(parsed.commits)) return null;
+      if (!(Number(parsed.expiresAt) > Date.now())) return null;
+      return parsed.commits;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeProfileHistoryCache(repo, commits) {
+    try {
+      sessionStorage.setItem(profileHistoryCacheKey(repo), JSON.stringify({
+        commits,
+        expiresAt: Date.now() + PROFILE_HISTORY_CACHE_TTL_MS,
+      }));
+    } catch (_) {
+      /* best-effort: quota/private mode just means a refetch later */
+    }
+  }
 
   function contributionDateMs(value) {
     if (value === undefined || value === null || value === "") return null;
@@ -2027,14 +2062,30 @@
   }
 
   async function loadProfileContributionHistories(year = state.profileContributions.year) {
+    // The shared-chrome catalog load renders the contribution graph on EVERY
+    // page, but only the profile documents actually ship the grid — never fan
+    // out per-repo history fetches anywhere else (request budget).
+    if (!$("[data-contribution-cells]")) return;
     const groups = profileContributionGroups();
+    let hydratedFromCache = 0;
     const repos = groups.map((group) => sourceOfTruth(group))
       .filter((repo) => repoIsLive(repo))
-      .filter((repo) => !Array.isArray(state.profileContributions.liveHistory[
-        profileContributionHistoryKey(repo, year)
-      ]))
+      .filter((repo) => {
+        const key = profileContributionHistoryKey(repo, year);
+        if (Array.isArray(state.profileContributions.liveHistory[key])) return false;
+        const cached = readProfileHistoryCache(repo);
+        if (cached) {
+          state.profileContributions.liveHistory[key] = cached;
+          hydratedFromCache += 1;
+          return false;
+        }
+        return true;
+      })
       .slice(0, PROFILE_HISTORY_REPO_LIMIT);
-    if (!repos.length || state.profileContributions.loadedYears[year]) return;
+    if (!repos.length || state.profileContributions.loadedYears[year]) {
+      if (hydratedFromCache) renderProfileContributionGraph();
+      return;
+    }
     state.profileContributions.loading = true;
     renderProfileContributionGraph();
     let index = 0;
@@ -2045,7 +2096,9 @@
         const key = profileContributionHistoryKey(repo, year);
         try {
           const data = await fetchJson(repoLiveUrl(repo, "history"));
-          state.profileContributions.liveHistory[key] = Array.isArray(data.commits) ? data.commits : [];
+          const commits = Array.isArray(data.commits) ? data.commits : [];
+          state.profileContributions.liveHistory[key] = commits;
+          writeProfileHistoryCache(repo, commits);
         } catch (_) {
           state.profileContributions.liveHistory[key] = null;
         }
@@ -8197,6 +8250,11 @@
     if (modal) setNotificationModalOpen(true);
   }
 
+  // The release version changes at most per deploy: cache it in sessionStorage
+  // for an hour so repeat page navigations don't refetch /api/version.
+  const APP_VERSION_STORAGE = "forkmesh.appVersion";
+  const APP_VERSION_TTL_MS = 60 * 60 * 1000;
+
   async function renderAppVersion() {
     // Show the live ForkMesh release version (same number as the desktop app -
     // deploy.sh stamps it from qt_client/CMakeLists.txt as the APP_VERSION Worker
@@ -8204,12 +8262,32 @@
     // is unavailable so the header never shows a broken "v".
     const el = $("[data-app-version]");
     if (!el) return;
+    const show = (version) => {
+      el.textContent = version[0] === "v" ? version : "v" + version;
+      el.classList.remove("hidden");
+    };
+    try {
+      const cached = JSON.parse(sessionStorage.getItem(APP_VERSION_STORAGE) || "null");
+      if (cached?.version && Number(cached.expiresAt) > Date.now()) {
+        show(String(cached.version));
+        return;
+      }
+    } catch (_) {
+      /* unreadable cache entry: fall through to the fetch */
+    }
     try {
       const data = await fetchJson("/api/version");
       const version = (data && data.version ? String(data.version) : "").trim();
       if (!version) return;
-      el.textContent = version[0] === "v" ? version : "v" + version;
-      el.classList.remove("hidden");
+      try {
+        sessionStorage.setItem(APP_VERSION_STORAGE, JSON.stringify({
+          version,
+          expiresAt: Date.now() + APP_VERSION_TTL_MS,
+        }));
+      } catch (_) {
+        /* best-effort cache */
+      }
+      show(version);
     } catch (_) {
       /* leave the version chip hidden */
     }
@@ -8328,7 +8406,9 @@
   // awaits this promise before resolving its /owner/repo path.
   let repositoriesReady = null;
 
-  async function loadRepositories({ fresh = true } = {}) {
+  // Boot/shared-chrome loads take the cached path (browser + edge cache honor
+  // the server's max-age); only explicit user refresh actions pass fresh:true.
+  async function loadRepositories({ fresh = false } = {}) {
     if (dashboardMockRepositoriesEnabled()) {
       renderRepositories(dashboardMockRepositories(), state.session);
       return;

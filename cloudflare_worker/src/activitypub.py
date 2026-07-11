@@ -362,6 +362,13 @@ def property_value(name, url, label=None):
     }
 
 
+def property_text(name, text):
+    """A plain-text profile-metadata row. Mastodon's link verifier fetches
+    every anchor-valued row on each verification pass, so rows that don't
+    need the green check stay text and cost the origin nothing."""
+    return {"type": "PropertyValue", "name": name, "value": text}
+
+
 def actor_doc(actor_url, actor_type, preferred_username, display_name,
               summary, profile_url, pubkey_pem, shared_inbox=None,
               published_ms=None, icon_url=None, image_url=None,

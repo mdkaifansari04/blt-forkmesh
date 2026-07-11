@@ -480,7 +480,10 @@
     }
 
     const pending = (async () => {
-      const noStore = fresh || !ttl;
+      // Only explicit fresh loads bypass HTTP caching; plain fetches send no
+      // cache-buster and no cache-control override so the browser can reuse
+      // responses within the server's max-age (request budget).
+      const noStore = fresh;
       // Attach the account session as a bearer token when logged in. Endpoints
       // that expose per-account data (e.g. /api/notifications) require it;
       // public endpoints simply ignore it. Same-origin only.
