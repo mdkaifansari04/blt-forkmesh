@@ -1154,17 +1154,45 @@ QWidget *ClaudeTranscriptView::makeBubble(const QString &title, const QString &m
 // Claude Code conversation view where only the user's turns are boxed.
 bool ClaudeTranscriptView::parseInlineChoices(const QString &markdown, QStringList &options)
 {
-    // A markdown ordered-list item: "1. ..." or "1) ...", one per line.
+    // A markdown ordered-list item: "1. ..." or "1) ...", one per line. Capture
+    // the number too so we can require a real 1, 2, 3, … sequence.
     static const QRegularExpression item(
-        QStringLiteral("(?m)^[ \\t]{0,3}\\d{1,2}[.)][ \\t]+(.+)$"));
+        QStringLiteral("(?m)^[ \\t]{0,3}(\\d{1,2})[.)][ \\t]+(.+)$"));
     QStringList found;
+    QList<int> numbers;
+    int prevEnd = -1;
+    int lastEnd = -1;
+    bool contiguous = true;
     auto it = item.globalMatch(markdown);
-    while (it.hasNext())
-        found << it.next().captured(1).trimmed();
-    // Require at least two options and something that actually reads like a
-    // question, so a plain numbered list (e.g. steps in a plan) isn't mistaken
-    // for a clarifying question.
-    if (found.size() < 2 || !markdown.contains(QLatin1Char('?')))
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        // The items must sit back-to-back (only blank lines between them). A gap
+        // filled with prose means this is an explanation/plan whose paragraphs
+        // happen to start with numbers, not a block of choices.
+        if (prevEnd >= 0
+            && !QStringView(markdown).mid(prevEnd, m.capturedStart(0) - prevEnd)
+                    .trimmed().isEmpty())
+            contiguous = false;
+        numbers << m.captured(1).toInt();
+        found << m.captured(2).trimmed();
+        prevEnd = lastEnd = m.capturedEnd(0);
+    }
+    // Require at least two options so a lone numbered line isn't a "choice".
+    if (found.size() < 2 || !contiguous)
+        return false;
+    // The options must be numbered sequentially from 1 (1, 2, 3, …). Scattered
+    // or restarting numbers are ordinary prose that merely begins with a digit.
+    for (int i = 0; i < numbers.size(); ++i) {
+        if (numbers.at(i) != i + 1)
+            return false;
+    }
+    // The question mark that makes this read like a clarifying question must
+    // appear in the lead-in prose before the options or on an option line —
+    // i.e. at or before the end of the list. A "?" only in text that *follows*
+    // the list (e.g. "I changed:\n1. A\n2. B\nWant me to run tests?") is a
+    // trailing yes/no follow-up, not a selection over these items, so it must
+    // not turn a completed-work summary into a multiple-choice card (adhoc #15).
+    if (!QStringView(markdown).left(lastEnd).contains(QLatin1Char('?')))
         return false;
     options = found;
     return true;
