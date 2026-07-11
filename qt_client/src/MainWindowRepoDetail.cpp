@@ -998,7 +998,7 @@ QWidget *MainWindow::buildRepoCoveExplorerPage()
     m_coveExplorerInviteButton->setObjectName("ghostButton");
     m_coveExplorerInviteButton->setCursor(Qt::PointingHandCursor);
     m_coveExplorerInviteButton->setToolTip(
-        QStringLiteral("Invite a verified ForkMesh account to this cove"));
+        QStringLiteral("Invite a ForkMesh account to this cove"));
     setOcticon(m_coveExplorerInviteButton, "person", 16);
     connect(m_coveExplorerInviteButton, &QPushButton::clicked, this,
             &MainWindow::inviteUserToCurrentCove);
@@ -2190,16 +2190,15 @@ void MainWindow::saveCurrentRepoFile(bool createPull)
     updateRepoFileSaveActions();
 }
 
-QString MainWindow::verifiedCoveAccountName() const
+QString MainWindow::coveAccountName()
 {
-    const QString account = settingsAccountName();
-    if (account.isEmpty() || !hasActiveAccountSession() ||
-        !accountEmailVerified(account))
-        return {};
-    return account;
+    // Coves are keyed to ForkMesh user accounts, so a node session resolves to
+    // the user that owns the node. Email verification only gates node payouts;
+    // any active account session may use coves.
+    return hostLinkUserName();
 }
 
-bool MainWindow::coveInviteAccountVerified(const QString &accountName, QString *error)
+bool MainWindow::coveInviteAccountValid(const QString &accountName, QString *error)
 {
     const QString account = accountName.trimmed().toLower();
     if (account.isEmpty()) {
@@ -2217,11 +2216,6 @@ bool MainWindow::coveInviteAccountVerified(const QString &accountName, QString *
     if (lookup.value("status").toString() != QLatin1String("active")) {
         if (error)
             *error = QStringLiteral("%1 is not an active ForkMesh account.").arg(account);
-        return false;
-    }
-    if (!lookup.value("emailVerified").toBool()) {
-        if (error)
-            *error = QStringLiteral("%1 has not verified their email.").arg(account);
         return false;
     }
     return true;
@@ -2244,11 +2238,11 @@ void MainWindow::loadCoveExplorer()
 
     CoveStore store = coveStoreForRepo(m_repoDetailIndex);
     const bool canCreate = store.canWrite();
-    const QString account = verifiedCoveAccountName();
+    const QString account = coveAccountName();
     if (account.isEmpty()) {
         if (m_coveExplorerStatus)
             m_coveExplorerStatus->setText(
-                QStringLiteral("Sign in with a verified ForkMesh account."));
+                QStringLiteral("Sign in with a ForkMesh account."));
         if (m_coveExplorerNewButton)
             m_coveExplorerNewButton->setEnabled(false);
         if (m_coveExplorerInviteButton)
@@ -2260,7 +2254,7 @@ void MainWindow::loadCoveExplorer()
         if (m_coveExplorerSaveButton)
             m_coveExplorerSaveButton->setEnabled(false);
         new QTreeWidgetItem(m_coveExplorerTree,
-                            {QStringLiteral("(verified account required)")});
+                            {QStringLiteral("(sign in required)")});
         return;
     }
 
@@ -2318,7 +2312,7 @@ void MainWindow::refreshCoveExplorerTree()
             break;
         }
     }
-    const QString account = verifiedCoveAccountName();
+    const QString account = coveAccountName();
     const bool haveCove = coveIndex >= 0;
     const bool canWrite = haveCove && coveStoreForRepo(m_repoDetailIndex).canWrite();
     const bool isOwner =
@@ -2462,7 +2456,7 @@ void MainWindow::saveCurrentCoveExplorerDocument()
             doc.updatedAtMs = QDateTime::currentMSecsSinceEpoch();
             CoveAccessEntry entry;
             entry.who = m_profileIdentity.publicKey();
-            entry.name = verifiedCoveAccountName();
+            entry.name = coveAccountName();
             entry.ts = doc.updatedAtMs;
             entry.action = QStringLiteral("edit");
             CoveStore::appendAccess(cove, entry);
@@ -2483,11 +2477,11 @@ void MainWindow::saveCurrentCoveExplorerDocument()
 
 void MainWindow::createCoveExplorerCove()
 {
-    const QString account = verifiedCoveAccountName();
+    const QString account = coveAccountName();
     if (account.isEmpty()) {
         QMessageBox::warning(this, QStringLiteral("New cove"),
-                             QStringLiteral("Sign in with a verified ForkMesh "
-                                            "account before creating a cove."));
+                             QStringLiteral("Sign in with a ForkMesh account "
+                                            "before creating a cove."));
         return;
     }
     bool ok = false;
@@ -2513,7 +2507,7 @@ void MainWindow::createCoveExplorerCove()
 
 void MainWindow::inviteUserToCurrentCove()
 {
-    const QString account = verifiedCoveAccountName();
+    const QString account = coveAccountName();
     if (account.isEmpty())
         return;
     int coveIndex = -1;
@@ -2590,7 +2584,7 @@ void MainWindow::inviteUserToCurrentCove()
         return;
     }
     QString err;
-    if (!coveInviteAccountVerified(grantee, &err)) {
+    if (!coveInviteAccountValid(grantee, &err)) {
         QMessageBox::warning(this, QStringLiteral("Invite"), err);
         return;
     }

@@ -1646,8 +1646,8 @@ private:
     void inviteUserToCurrentCove();
     void createCoveExplorerDocument();
     void deleteCurrentCoveExplorerDocument();
-    QString verifiedCoveAccountName() const;
-    bool coveInviteAccountVerified(const QString &accountName, QString *error);
+    QString coveAccountName();
+    bool coveInviteAccountValid(const QString &accountName, QString *error);
     // IDE-style right-click menu on the file-explorer tree, and the file
     // operations it drives. New/rename/delete commit directly to the default
     // branch and need a working tree we own; copy-path/reveal work on any local
