@@ -24,6 +24,7 @@ REPO_TAB_ROUTES = frozenset({
     "discussions",
     "mirrors",
     "agents",
+    "insights",
 })
 
 RESERVED_ROUTE_PREFIXES = frozenset({

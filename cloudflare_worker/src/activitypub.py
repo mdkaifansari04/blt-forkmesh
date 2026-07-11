@@ -426,7 +426,8 @@ def collection_doc(collection_url, total_items):
 
 
 def note_doc(object_url, actor_url, followers_url, content_html,
-             published_ms, web_url=None, in_reply_to=None, summary=None):
+             published_ms, web_url=None, in_reply_to=None, summary=None,
+             attachments=None):
     doc = {
         "id": object_url,
         "type": "Note",
@@ -436,7 +437,7 @@ def note_doc(object_url, actor_url, followers_url, content_html,
         "to": [AS_PUBLIC],
         "cc": [followers_url],
         "sensitive": False,
-        "attachment": [],
+        "attachment": list(attachments) if attachments else [],
         "tag": [],
     }
     if web_url:
@@ -604,6 +605,46 @@ _EVENT_LABELS = {
     ("commit", "comment"): "Comment on commit",
     ("release", "publish"): "New release",
 }
+
+
+_BODY_IMG_RE = re.compile(r"!\[[^\]]*\]\((data:[^)\s]+)\)")
+_DATA_IMAGE_URL_RE = re.compile(
+    r"^data:(image/(?:png|jpe?g|gif|webp));base64,([A-Za-z0-9+/]+=*)$",
+    re.IGNORECASE)
+
+MAX_NOTE_IMAGES = 4
+MAX_NOTE_IMAGE_BYTES = 64 * 1024
+
+
+def extract_body_images(body, max_images=MAX_NOTE_IMAGES):
+    """Web/desktop issue composers embed attached images as markdown
+    ``![name](data:...)`` inline in the body (there is no separate upload
+    channel). Remote fediverse servers can't fetch a data: URL, and dumping
+    raw base64 into the note text is useless (and gets mangled by truncation),
+    so pull them out here: return the body with that markdown removed, plus
+    the decoded images (still base64) to be attached separately, each keyed
+    by its position so the caller can build a stable media URL per image."""
+    images = []
+
+    def strip(match):
+        if len(images) >= max_images:
+            return ""
+        parsed = _DATA_IMAGE_URL_RE.match(match.group(1))
+        if not parsed:
+            return ""
+        media_type, data_b64 = parsed.group(1).lower(), parsed.group(2)
+        try:
+            raw_len = len(base64.b64decode(data_b64, validate=True))
+        except Exception:
+            return ""
+        if not raw_len or raw_len > MAX_NOTE_IMAGE_BYTES:
+            return ""
+        images.append({"mediaType": media_type, "data": data_b64})
+        return ""
+
+    text = _BODY_IMG_RE.sub(strip, body or "")
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text, images
 
 
 def event_note_text(kind, event_type, owner, repo, ref, title, body,
