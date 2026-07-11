@@ -4707,9 +4707,11 @@ async def _account_follow(env, request, target_name, method):
     target = clean_string(target_name, MAX_NODE_NAME).lower()
     if not valid_node_name(target):
         return json_response({"error": "not_found"}, status=404)
+    # Any active, non-private account is followable — node accounts included,
+    # matching the fediverse layer (_ap_user_federates) and the public
+    # user-or-org page, which both treat the node name as a public identity.
     target_bi, target_rec = await _account_row(env, target)
     if (not target_rec or target_rec.get("status") != "active" or
-            _account_kind(target_rec) != "user" or
             bool(target_rec.get("profile_private"))):
         return json_response({"error": "not_found"}, status=404)
 
@@ -8910,9 +8912,8 @@ async def _ap_user_federates(env, name):
     # Any active, non-private account federates as a Person — node-owner
     # accounts included, not just login ("user"-kind) accounts: the node name
     # is the public authoring identity on issues/PRs, so it is what fediverse
-    # followers expect to find at @name@<domain>. (The web follow API stays
-    # stricter — user-kind targets only — but that gates a login feature, not
-    # public visibility.)
+    # followers expect to find at @name@<domain>. The web follow API
+    # (_account_follow) accepts the same targets.
     name = (name or "").strip().lower()
     if not valid_node_name(name):
         return False
