@@ -19,6 +19,15 @@
             "title": "Impliment activitypub",
             "ts": 1783492002,
             "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "d552c3e3-9e89-4f89-895c-c94a5ce6b99a",
+            "sig": "8q_yS8pGKcMoFXNEHgLFv1R2ZzfdRjRhv0-3OoGXpJJGmCPdjnsK5sj3PBobrhE3ojIEdJqR301F-pShOynjBw",
+            "status": "closed",
+            "ts": 1783737116812,
+            "type": "status"
         }
     ],
     "labels": [
@@ -28,8 +37,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "Impliment activitypub",
-    "updatedAt": 1783492002,
+    "updatedAt": 1783737116812,
     "votes": 0
 }
