@@ -1407,13 +1407,15 @@ def test_dashboard_repository_tab_counts_wait_for_live_data_and_update_mirrors()
 def test_dashboard_formats_catalog_millisecond_timestamps():
     dashboard_js = _read(PUBLIC / "dashboard.js")
     formatter = dashboard_js[
-        dashboard_js.index("function formatDate")
+        dashboard_js.index("function parseFlexibleDate")
         : dashboard_js.index("function formatSize")
     ]
 
     assert "const numeric = Number(value);" in formatter
     assert "1000000000000" in formatter
     assert "new Date(numeric" in formatter
+    assert "function formatDate(value) {" in formatter
+    assert "function formatTimeAgo(value) {" in formatter
 
 
 def test_worker_routes_public_history_through_live_host_not_commit_inbox():

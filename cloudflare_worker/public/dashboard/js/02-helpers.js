@@ -144,18 +144,46 @@
     return new Intl.NumberFormat().format(number);
   }
 
-  function formatDate(value) {
-    if (value === undefined || value === null || value === "") return "unknown";
+  function parseFlexibleDate(value) {
+    if (value === undefined || value === null || value === "") return null;
     const numeric = Number(value);
     const date = Number.isFinite(numeric) && numeric > 0
       ? new Date(numeric < 1000000000000 ? numeric * 1000 : numeric)
       : new Date(value);
-    if (Number.isNaN(date.getTime())) return "unknown";
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function formatDate(value) {
+    const date = parseFlexibleDate(value);
+    if (!date) return "unknown";
     return date.toLocaleDateString(undefined, {
       month: "short",
       day: "numeric",
       year: "numeric",
     });
+  }
+
+  // GitHub-style relative timestamp ("3 days ago") for the repo detail page's
+  // commit/file dates - absolute dates there made every mirrored commit look
+  // identically stale ("Jul 10, 2026") instead of showing recency at a glance.
+  function formatTimeAgo(value) {
+    const date = parseFlexibleDate(value);
+    if (!date) return "unknown";
+    const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+    if (seconds < 45) return "just now";
+    const units = [
+      ["year", 31536000],
+      ["month", 2592000],
+      ["week", 604800],
+      ["day", 86400],
+      ["hour", 3600],
+      ["minute", 60],
+    ];
+    for (const [name, secs] of units) {
+      const count = Math.floor(seconds / secs);
+      if (count >= 1) return `${count} ${name}${count === 1 ? "" : "s"} ago`;
+    }
+    return "just now";
   }
 
   function formatSize(bytes) {
