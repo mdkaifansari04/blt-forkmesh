@@ -42,7 +42,11 @@ REQUIRED_HEAD_META = {
     "application-name": "ForkMesh",
     "apple-mobile-web-app-title": "ForkMesh",
     "theme-color": "#090909",
-    "color-scheme": "dark",
+    # Site-wide light/dark support (2026-07-11): every page advertises both
+    # schemes; site-header.js / static-page.js stamp html.light/html.dark from
+    # the visitor's saved choice or OS preference. Only the self-contained
+    # landing page (index.html) remains dark-branded, allowed below.
+    "color-scheme": "light dark",
 }
 
 
@@ -123,13 +127,12 @@ def test_public_pages_use_shared_favicon_metadata():
             if not _has_link(parser, expected):
                 missing.append(f"{rel_path}: link {expected}")
         for name, content in REQUIRED_HEAD_META.items():
-            # The dashboard ships a light/dark theme toggle, so it legitimately
-            # advertises both schemes instead of the dark-only default. Every
-            # per-page dashboard document is built from the same shell.
+            # The self-contained landing page keeps its dark hero design and
+            # is the one page allowed to stay dark-only.
             if (
                 name == "color-scheme"
-                and rel_path.startswith("dashboard/")
-                and parser.meta.get(name) == "light dark"
+                and rel_path == "index.html"
+                and parser.meta.get(name) == "dark"
             ):
                 continue
             if parser.meta.get(name) != content:
