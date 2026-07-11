@@ -388,6 +388,62 @@ SCHEMA_STATEMENTS = [
     # desktop's real count over time.
     """CREATE TABLE IF NOT EXISTS issue_seq (
         repo_bi TEXT PRIMARY KEY, next_number INTEGER NOT NULL)""",
+    # --- ActivityPub federation (migration 0028) -----------------------------
+    # Local fediverse actors: one row per user/repo/instance actor that has
+    # actually been looked up from the fediverse (rows are minted lazily on the
+    # first WebFinger/actor fetch, so repos nobody follows cost nothing).
+    # actor_bi = blind_index("ap-actor:<kind>:<handle>"); handle is "alice" for
+    # users, "owner.repo" for repos, "instance" for the service actor. The
+    # encrypted data blob holds the RSA-2048 private key (PKCS8); pubkey_pem is
+    # plaintext because the actor document publishes it anyway.
+    """CREATE TABLE IF NOT EXISTS ap_actors (
+        actor_bi TEXT PRIMARY KEY, kind TEXT NOT NULL,
+        pubkey_pem TEXT NOT NULL, data TEXT NOT NULL,
+        created_at INTEGER NOT NULL)""",
+    # Remote accounts following a local actor. follower_id/inbox URLs stay
+    # plaintext: they are public fediverse identifiers needed for cron
+    # delivery fan-out without decrypting every row.
+    """CREATE TABLE IF NOT EXISTS ap_followers (
+        actor_bi TEXT NOT NULL, follower_id TEXT NOT NULL,
+        inbox TEXT NOT NULL, shared_inbox TEXT, follower_handle TEXT,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (actor_bi, follower_id))""",
+    "CREATE INDEX IF NOT EXISTS idx_ap_followers_actor ON ap_followers(actor_bi)",
+    # Cache of remote actor documents (public data, plaintext like `relays`).
+    """CREATE TABLE IF NOT EXISTS ap_remote_actors (
+        actor_id TEXT PRIMARY KEY, inbox TEXT, shared_inbox TEXT,
+        pubkey_pem TEXT, handle TEXT, display_name TEXT, url TEXT,
+        updated_at INTEGER NOT NULL)""",
+    # Local ActivityPub objects (the Notes we publish), served at /ap/o/<uuid>.
+    # context_bi = blind_index("ap-context:<owner>/<repo>#<kind>#<ref>") maps a
+    # remote reply's inReplyTo back to its forkmesh thread.
+    """CREATE TABLE IF NOT EXISTS ap_objects (
+        object_uuid TEXT PRIMARY KEY, actor_bi TEXT NOT NULL,
+        context_bi TEXT, data TEXT NOT NULL, published INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_ap_objects_actor ON ap_objects(actor_bi)",
+    "CREATE INDEX IF NOT EXISTS idx_ap_objects_context ON ap_objects(context_bi)",
+    # Inbound remote replies, kept OUTSIDE the Ed25519-signed event log (they
+    # cannot carry forkmesh author signatures) and surfaced to clients as
+    # clearly-marked fediverse comments. remote_id_bi dedupes redeliveries.
+    """CREATE TABLE IF NOT EXISTS ap_comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, context_bi TEXT NOT NULL,
+        remote_id_bi TEXT UNIQUE, data TEXT NOT NULL, ts INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_ap_comments_context ON ap_comments(context_bi, ts)",
+    # Outbound delivery queue (no Cloudflare Queues on the free plan): one row
+    # per (activity, destination inbox). A publish inserts rows and best-effort
+    # drains a few inline; the cron drains the rest with capped backoff.
+    """CREATE TABLE IF NOT EXISTS ap_outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, inbox TEXT NOT NULL,
+        data TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+        next_ts INTEGER NOT NULL, created_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_ap_outbox_next ON ap_outbox(next_ts)",
+    # Fediverse operator configuration (admin-managed, migration 0029): k/v
+    # settings (currently just enabled=1/0, default on when absent) and the
+    # remote-domain blocklist (defederation). Plaintext operational config.
+    """CREATE TABLE IF NOT EXISTS ap_settings (
+        k TEXT PRIMARY KEY, v TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS ap_blocked_domains (
+        domain TEXT PRIMARY KEY, added_by TEXT, added_at INTEGER NOT NULL)""",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

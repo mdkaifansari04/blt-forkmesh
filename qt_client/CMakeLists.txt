@@ -24,12 +24,33 @@ else()
     set(FORKMESH_VERSION "${PROJECT_VERSION}")
 endif()
 
-# Baked into the binaries: shown in the UI, and the quick-update button uses
-# the source dir to git pull + rebuild when running from a checkout.
+# Baked into the binaries: the quick-update button uses the source dir to
+# git pull + rebuild when running from a checkout. Global is fine here — the
+# value never changes between builds of the same checkout, so it never
+# invalidates incremental builds. (It also must stay global: the inline
+# updateClientDir() in MainWindowInternal.h reads it, so every TU has to see
+# the same value or the ODR is violated.)
 add_compile_definitions(
-    FORKMESH_VERSION="${FORKMESH_VERSION}"
     FORKMESH_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
 )
+
+# FORKMESH_VERSION changes on every release bump, so it must NOT be on compile
+# command lines at all — as a global definition it turned every bump into a
+# full rebuild of every target, and even a per-source COMPILE_DEFINITIONS
+# property rewrites the target's build.make, which every object in the target
+# depends on under the Makefile generator (same full rebuild). Instead it goes
+# into a generated header that only the handful of TUs reading the version
+# include; configure_file rewrites it only when the version actually changes,
+# so a bump recompiles just those files.
+configure_file(src/ForkMeshVersion.h.in ForkMeshVersion.h @ONLY)
+include_directories(${CMAKE_CURRENT_BINARY_DIR})
+
+# Wrap compilation in ccache when available: object files survive build-dir
+# wipes (run.sh rebuild) and branch switches, so those come back warm.
+find_program(FORKMESH_CCACHE ccache)
+if(FORKMESH_CCACHE)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${FORKMESH_CCACHE}")
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -432,6 +453,18 @@ if(FORKMESH_BUILD_TESTS)
     if(APPLE)
         set_target_properties(forkmesh-perf-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
+
+    # Keep the test binaries out of the default `all` target: window-tests and
+    # perf-tests each recompile every app source, so building them implicitly
+    # tripled the cost of a plain `cmake --build build` (what run.sh and the
+    # in-app quick-update do). They still build on demand — `--target check`
+    # below depends on all of them, run.sh test and ci.yml name their targets
+    # explicitly, and the release/deploy builds configure with
+    # FORKMESH_BUILD_TESTS=OFF anyway.
+    set_target_properties(
+        forkmesh-tests forkmesh-ide-tests forkmesh-e2e-stub-agent forkmesh-e2e
+        forkmesh-window-tests forkmesh-perf-tests
+        PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
     # Register all suites with CTest so they run independently of the app:
     #   ctest --test-dir build            (runs the already-built binaries)
