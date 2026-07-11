@@ -256,6 +256,7 @@ from urls import (  # noqa: E402
     AP_REPO_RE,
     AP_REPO_SUB_RE,
     AP_OBJECT_RE,
+    AP_OBJECT_MEDIA_RE,
     REPO_FEDI_COMMENTS_RE,
     REPO_AP_PUBLISH_RE,
     REPO_MEDIA_RE,
@@ -9174,6 +9175,36 @@ async def ap_object_handler(env, request, object_uuid):
         "content-type": ap.ACTIVITY_CONTENT_TYPE})
 
 
+async def ap_object_media_handler(env, request, object_uuid, index):
+    # Re-serves one image that was embedded as a "data:" URL in the source
+    # issue/comment body, at a real URL — remote servers fetch a Note's
+    # attachment URLs directly and can't resolve a data: URI.
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    if not await _ap_enabled(env):
+        return _ap_disabled_response()
+    row = await d1_first(
+        env, "SELECT data FROM ap_objects WHERE object_uuid=?", object_uuid)
+    rec = await decrypt_row(env, row.get("data")) if row else None
+    media = (rec or {}).get("media") or []
+    idx = int(index)
+    if idx < 0 or idx >= len(media):
+        return json_response({"error": "not_found"}, status=404)
+    item = media[idx]
+    try:
+        raw = base64.b64decode(item.get("data", ""), validate=True)
+    except Exception:
+        return json_response({"error": "not_found"}, status=404)
+    return JsResponse.new(_to_js(bytes(raw)), to_js({
+        "status": 200,
+        "headers": {
+            "content-type": item.get("mediaType", "image/png"),
+            "cache-control": "public, max-age=31536000, immutable",
+        },
+    }))
+
+
 # --- Outbound HTTP: signed fetch, remote actors, delivery ---------------------
 
 async def _ap_signed_request(key_id, priv_b64, method, url, body_str=None,
@@ -9344,9 +9375,13 @@ async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
     candidates = [(AP_ACTOR_REPO, ap.repo_handle(owner, repo.lower()))]
     if author and valid_node_name(author):
         candidates.append((AP_ACTOR_USER, author))
+    # Attached issue/comment images travel as inline "![name](data:...)"
+    # markdown (there's no separate upload channel); pull them out so they
+    # federate as real Image attachments instead of unrenderable base64 text.
+    clean_body, images = ap.extract_body_images(body or "")
     text = ap.event_note_text(
         kind, event_type, owner, repo, ref, clean_string(title, 240),
-        body or "", author, web_url)
+        clean_body, author, web_url)
     content_html = ap.note_html_from_text(text)
     ckey = ap.context_key(owner, repo, kind, ref)
     context_bi = await blind_index(env, "ap-context:" + ckey)
@@ -9366,12 +9401,19 @@ async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
             continue
         actor_url = _ap_actor_url(origin, actor_kind, handle)
         object_uuid = _ap_uuid()
+        attachments = [
+            ap.image_object(
+                "%s/ap/o/%s/media/%d" % (origin, object_uuid, i),
+                media_type=img["mediaType"])
+            for i, img in enumerate(images)]
         note = ap.note_doc(
             origin + "/ap/o/" + object_uuid, actor_url,
-            actor_url + "/followers", content_html, now, web_url=web_url)
+            actor_url + "/followers", content_html, now, web_url=web_url,
+            attachments=attachments)
         rec = {"note": note,
                "context": {"owner": owner, "repo": repo, "kind": kind,
-                           "ref": str(ref), "key": ckey}}
+                           "ref": str(ref), "key": ckey},
+               "media": images}
         await d1_run(
             env,
             "INSERT INTO ap_objects (object_uuid, actor_bi, context_bi, data,"
@@ -15105,6 +15147,11 @@ class Default(WorkerEntrypoint):
                 self.env, request, AP_ACTOR_REPO,
                 ap.repo_handle(ap_owner.lower(), ap_repo_name.lower()),
                 ap_repo_sub.group(3))
+        ap_object_media_match = AP_OBJECT_MEDIA_RE.match(url.path)
+        if ap_object_media_match:
+            return await ap_object_media_handler(
+                self.env, request, ap_object_media_match.group(1),
+                ap_object_media_match.group(2))
         ap_object_match = AP_OBJECT_RE.match(url.path)
         if ap_object_match:
             return await ap_object_handler(
