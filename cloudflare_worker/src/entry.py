@@ -11039,7 +11039,9 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None):
     in the logs to say why."""
     ai = getattr(env, "AI", None)
     if ai is None or js_nullish(ai) or not hasattr(ai, "run"):
-        _console_error("ForkBot AI unavailable: env.AI binding is missing")
+        await log_error(
+            env, 500, "AI", "forkbot/ai",
+            "ForkBot AI unavailable: env.AI binding is missing")
         return None
     model = clean_string(getattr(env, "FORKBOT_AI_MODEL", ""), 120) or \
         FORKBOT_AI_DEFAULT_MODEL
@@ -11070,7 +11072,8 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None):
             last_error = error
             continue
     if not ran:
-        _console_error(
+        await log_error(
+            env, 500, "AI", "forkbot/ai",
             "ForkBot AI call failed (%s): %s"
             % (model, _safe_error_text(last_error)[:300]))
         return None
@@ -11092,7 +11095,8 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None):
         return result
     if isinstance(result, str):
         return result
-    _console_error(
+    await log_error(
+        env, 500, "AI", "forkbot/ai",
         "ForkBot AI returned an unusable %s response (%s)"
         % (type(result).__name__, model))
     return None
@@ -12948,38 +12952,24 @@ async def capture_sentry_cron_check_in(env, status, check_in_id="",
         return False
 
 
-def _console_error(message):
-    try:
-        from js import console
-        console.error(str(message))
-    except Exception:
-        pass
-
-
 def _consume_background_task(task, label):
     try:
         task.result()
     except BaseException as error:
         if type(error).__name__ == "CancelledError":
             return
-        _console_error(
-            "Background task failed (%s): %s" %
-            (str(label or "background"), _safe_error_text(error)))
 
 
 def _fire_and_forget(coro, label="background"):
     try:
         task = asyncio.ensure_future(coro)
-    except BaseException as error:
+    except BaseException:
         try:
             close = getattr(coro, "close", None)
             if close is not None:
                 close()
         except BaseException:
             pass
-        _console_error(
-            "Failed to schedule background task (%s): %s" %
-            (str(label or "background"), _safe_error_text(error)))
         return None
     try:
         task.add_done_callback(
@@ -13029,13 +13019,7 @@ async def capture_worker_exception(env, request, url, error):
     except BaseException:
         message = _safe_error_text(error)
     try:
-        sentry_configured = (
-            _sentry_dsn_parts(getattr(env, "SENTRY_DSN", "")) is not None
-        )
-    except BaseException:
-        sentry_configured = False
-    try:
-        sentry_ok = await capture_sentry_error(
+        await capture_sentry_error(
             env, 500, method, path, message, ray,
             request=request,
             error=error,
@@ -13043,11 +13027,7 @@ async def capture_worker_exception(env, request, url, error):
             service="forkmesh",
         )
     except BaseException:
-        sentry_ok = False
-    if not sentry_ok and sentry_configured:
-        _console_error(
-            "Sentry capture failed for Cloudflare Worker exception 1101; "
-            "re-raising original exception.")
+        pass
     try:
         await _write_error_log(env, 500, method, path, message, ray)
     except BaseException:
@@ -14748,10 +14728,8 @@ class Default(WorkerEntrypoint):
         except Exception as error:
             try:
                 await capture_worker_exception(self.env, request, url, error)
-            except BaseException as handler_error:
-                _console_error(
-                    "Worker exception capture failed before re-raise: " +
-                    _safe_error_text(handler_error))
+            except BaseException:
+                pass
             # Re-raise so Cloudflare records the native Worker failure/Error 1101
             # while Sentry keeps the underlying Python exception and stack trace.
             raise
