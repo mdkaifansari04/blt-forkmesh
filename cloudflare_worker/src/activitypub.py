@@ -349,9 +349,23 @@ def image_object(url, media_type="image/png"):
     return {"type": "Image", "mediaType": media_type, "url": url}
 
 
+def property_value(name, url, label=None):
+    """One Mastodon profile-metadata row (PropertyValue attachment). The
+    value is an anchor carrying rel=\"me\" so the target page can reciprocate
+    with its own rel=\"me\" link and earn Mastodon's green verified check."""
+    text = label or url.split("://", 1)[-1]
+    return {
+        "type": "PropertyValue",
+        "name": name,
+        "value": ("<a href=\"%s\" rel=\"me nofollow noopener noreferrer\" "
+                  "target=\"_blank\">%s</a>" % (url, text)),
+    }
+
+
 def actor_doc(actor_url, actor_type, preferred_username, display_name,
               summary, profile_url, pubkey_pem, shared_inbox=None,
-              published_ms=None, icon_url=None, image_url=None):
+              published_ms=None, icon_url=None, image_url=None,
+              attachments=None):
     doc = {
         "@context": [AS_CONTEXT, SECURITY_CONTEXT],
         "id": actor_url,
@@ -380,6 +394,8 @@ def actor_doc(actor_url, actor_type, preferred_username, display_name,
         doc["icon"] = image_object(icon_url)     # avatar
     if image_url:
         doc["image"] = image_object(image_url)   # profile header/banner
+    if attachments:
+        doc["attachment"] = list(attachments)    # profile metadata rows
     return doc
 
 
@@ -394,7 +410,8 @@ def instance_actor_doc(origin, domain, pubkey_pem, icon_url=None,
         "Service actor for %s. Follow individual users or repositories "
         "instead." % domain,
         origin, pubkey_pem, shared_inbox=origin + "/ap/inbox",
-        icon_url=icon_url, image_url=image_url)
+        icon_url=icon_url, image_url=image_url,
+        attachments=[property_value("Relay", origin)])
     doc["inbox"] = origin + "/ap/inbox"
     return doc
 
