@@ -2771,20 +2771,37 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
         {"funded", "#d29922", "BOUNTY"},
         {"mirror", "#39c5cf", "MIRROR"},
         {"sync", "#39c5cf", "SYNC"},
+        // Account heartbeat pings hit "https://forkmesh.com/..." like every
+        // other request, so without this they'd fall into the generic FORK
+        // bucket below purely from the domain name.
+        {"account", "#8b949e", "ACCOUNT"},
         // Split the fork lifecycle the same way pull requests split into
         // PULL (opened) vs MERGE (closed) — "forked into" (done) above the
         // generic "fork" (in progress / location) so they read distinctly.
         {"forked into", "#3fb950", "FORKED"},
-        {"fork", "#3fb950", "FORK"},
+        // These all mention the "forkmesh/forkmesh" repo name, so without a
+        // dedicated rule above the generic "fork" match below they'd all be
+        // swept into an uninformative green FORK badge. Give each its own
+        // label so the log reads as what actually happened.
+        {"actions: ", "#f0883e", "ACTIONS"},
+        {"integrity pin", "#79c0ff", "PIN"},
+        {"host: ", "#f778ba", "HOST"},
         {"publish", "#58a6ff", "PUBLISH"},
         {"push", "#58a6ff", "GIT"},
         {"git:", "#58a6ff", "GIT"},
         {"commit", "#58a6ff", "GIT"},
         {"patch", "#58a6ff", "GIT"},
+        {"fork", "#3fb950", "FORK"},
         {"issue", "#bc8cff", "ISSUE"},
         {"admin", "#db6d28", "ADMIN"},
         {"identity", "#79c0ff", "IDENTITY"},
         {"encryption", "#79c0ff", "CRYPTO"},
+        // Split the generic NODE bucket the same way: a peer joining, raw
+        // mainnode traffic and a connection-status change are different
+        // events and shouldn't all read as the same green "NODE" badge.
+        {"node connected", "#3fb950", "PEER"},
+        {"network: ", "#f2cc60", "NETWORK"},
+        {"status: ", "#56d364", "STATUS"},
         {"connected", "#3fb950", "NODE"},
         {"peer", "#3fb950", "NODE"},
         {"node", "#3fb950", "NODE"},
@@ -2916,7 +2933,8 @@ void MainWindow::rebuildLogFilterButtons()
     addChip(QStringLiteral("All"), QString());
     // Show present categories in a stable, readable order.
     static const char *order[] = {
-        "SESSION", "NODE",   "FORK",  "FORKED", "MIRROR",   "SYNC",  "GIT",
+        "SESSION", "STATUS", "PEER",  "NODE",   "FORK",  "FORKED", "MIRROR",
+        "SYNC",    "ACCOUNT", "HOST", "ACTIONS", "PIN", "GIT",
         "PUBLISH", "PULL",   "MERGE", "ISSUE",    "BOUNTY", "WALLET",
         "CRYPTO",  "IDENTITY", "ADMIN", "SAVE",   "CLIP",  "NETWORK", "ERROR",
         "INFO",
