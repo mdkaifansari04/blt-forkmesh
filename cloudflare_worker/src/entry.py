@@ -8031,6 +8031,7 @@ def _verify_email_page(message, status):
     # this one-line confirmation page).
     body = ("<!doctype html><meta charset=utf-8>"
             "<meta name=\"color-scheme\" content=\"light dark\">"
+            "<script src=\"/posthog.js\"></script>"
             "<title>ForkMesh email</title>"
             "<body style=\"font-family:system-ui,sans-serif;max-width:32rem;"
             "margin:4rem auto;padding:0 1rem;line-height:1.5\">" + message +
@@ -14612,6 +14613,7 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         # tokens; ADMIN_STYLE loads after it so the admin rules win.
         "<link rel=\"stylesheet\" href=\"/styles.css\">"
         "<link rel=\"stylesheet\" href=\"/site-header.css\">"
+        "<script src=\"/posthog.js\"></script>"
         "<script src=\"/site-header.js\" defer></script>"
         "<style>" + ADMIN_STYLE + "</style></head><body>"
         "<div data-forkmesh-header=\"simple\"></div>"
