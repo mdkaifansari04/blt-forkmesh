@@ -14,13 +14,13 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QMenu>
-#include <QPlainTextEdit>
 #include <QProcess>
 #include <QSemaphore>
 #include <QPushButton>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QTextBrowser>
 #include <QWidget>
 
 #include <algorithm>
@@ -1477,7 +1477,7 @@ int main(int argc, char *argv[])
         // path the loop above already exercised.
         window.testRebuildNetworkLogView();
 
-        QPlainTextEdit *logView = window.testNetworkLogView();
+        QTextBrowser *logView = window.testNetworkLogView();
         check(logView != nullptr, QStringLiteral("network log view exists"));
         if (logView) {
             const int initialBlocks = logView->document()->blockCount();
