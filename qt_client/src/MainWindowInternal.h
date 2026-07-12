@@ -6669,11 +6669,62 @@ inline int mirrorNumberedDirMax(const QString &mirrorPath, const QString &branch
     return maxNumber;
 }
 
-// Issues / pull requests / discussions a node's mirror holds: each is the count
-// of numbered subdirs under its metadata folder on the served branch.
+// Open issue count for the advertised catalog issueCount. Closed issues keep
+// their .forkmesh/issues/<n>/ directory on disk, so a bare directory count
+// (mirrorNumberedDirCount) overstates the open total the website badges the
+// Issues tab with — the badge listed all issues, open and closed (adhoc #29,
+// following issue #397 which only fixed the live-served tree counts). Reads
+// each record's top-level status and counts anything not "closed" (open,
+// reopened, or unreadable) as open, matching RepoHost::countOpenIssues and the
+// web's parseIssueJson default. Returns -1 when the mirror/branch can't be read
+// (advertised as "unknown"), 0 when no issues have been filed.
+inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch)
+{
+    if (mirrorPath.trimmed().isEmpty() || branch.isEmpty() ||
+        !QDir(mirrorPath).exists())
+        return -1;
+    QByteArray out;
+    if (!runGitCapture(mirrorPath,
+                       {"ls-tree", "-z", branch + ":.forkmesh/issues"}, &out,
+                       nullptr))
+        return 0; // no .forkmesh/issues/ folder yet -> nothing filed
+    static const QRegularExpression numericName(QStringLiteral("^[0-9]+$"));
+    int open = 0;
+    for (const QByteArray &record : out.split('\0')) {
+        if (record.isEmpty())
+            continue;
+        const int tab = record.indexOf('\t');
+        if (tab < 0)
+            continue;
+        const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+        if (meta.size() < 2 || meta.at(1) != "tree")
+            continue;
+        const QString name = QString::fromUtf8(record.mid(tab + 1));
+        if (!numericName.match(name).hasMatch())
+            continue;
+        QByteArray blob;
+        QString status;
+        const QString rel =
+            QStringLiteral(".forkmesh/issues/%1/issue-%1.json").arg(name);
+        if (runGitCapture(mirrorPath, {"cat-file", "-p", branch + ":" + rel},
+                          &blob, nullptr))
+            status = QJsonDocument::fromJson(blob)
+                         .object()
+                         .value(QStringLiteral("status"))
+                         .toString();
+        if (status != QLatin1String("closed"))
+            ++open;
+    }
+    return open;
+}
+
+// Issues / pull requests / discussions a node's mirror holds. Issues report the
+// OPEN count (the catalog's documented contract; see catalog.py); pulls and
+// discussions are the count of numbered subdirs under their metadata folder on
+// the served branch.
 inline int mirrorIssueCount(const QString &mirrorPath, const QString &branch)
 {
-    return mirrorNumberedDirCount(mirrorPath, branch, QStringLiteral(".forkmesh/issues"));
+    return mirrorOpenIssueCount(mirrorPath, branch);
 }
 inline int mirrorIssueMaxNumber(const QString &mirrorPath, const QString &branch)
 {

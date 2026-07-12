@@ -1,7 +1,6 @@
   function openIssueCompose(repo) {
     const container = $("[data-repo-issues]");
     if (!container || !repo) return;
-    const who = escapeHtml(state.session?.nodeName || "you");
     const canAssignAgent = sessionCanAssignAgent(repo);
     container.innerHTML = `
       <form data-repo-issue-form class="grid gap-3 border-t border-border bg-background p-4">
@@ -45,7 +44,10 @@
           </div>
         </div>` : ""}
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
+          <div class="flex min-w-0 flex-col gap-1">
+            ${composeIdentityHtml(state.session, "Filing")}
+            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+          </div>
           <button type="submit" data-repo-issue-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Submit issue</button>
         </div>
       </form>`;
@@ -244,7 +246,6 @@
   function openPullCompose(repo) {
     const container = $("[data-repo-pulls]");
     if (!container || !repo) return;
-    const who = escapeHtml(state.session?.nodeName || "you");
     const branches = repoBranchList(repo);
     const defaultBranch = repoDefaultBranch(repo);
     const branchOptions = branches.map((branch) => `<option value="${escapeHtml(branch.name)}">${escapeHtml(branch.name)}</option>`).join("");
@@ -271,7 +272,10 @@
         </label>
         <div class="rounded-md border border-dashed border-border bg-secondary/20 px-3 py-2 text-[11px] text-muted-foreground">The diff isn't computed here - the maintainer's desktop client reconstructs it from the base and head branches when it drains this submission.</div>
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span data-repo-pull-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
+          <div class="flex min-w-0 flex-col gap-1">
+            ${composeIdentityHtml(state.session, "Filing")}
+            <span data-repo-pull-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+          </div>
           <button type="submit" data-repo-pull-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Create pull request</button>
         </div>
       </form>`;
@@ -703,7 +707,7 @@
     }
   }
 
-  function loadRepoFeaturePanels(repo) {
+  function loadRepoFeaturePanels(repo, recordRoute = null) {
     loadRepoMirrors(repo);
     // Feature panels load on their FIRST tab view (and reload here after a
     // repo/branch switch if that tab is already active): fetching hidden live
@@ -719,7 +723,14 @@
       loadRepoIssues(repo);
     } else if (active === "pulls" || active === "discussions") {
       state.loadedRepoTabs[active] = true;
-      loadRepoCollection(repo, active, `[data-repo-${active}]`);
+      // A record deep link (/owner/repo/pulls/<N> — e.g. the desktop client's
+      // "View on website" button) opens the record's detail page directly
+      // instead of the list; Back to the list loads it lazily from there.
+      if (recordRoute && recordRoute.kind === active && recordRoute.number) {
+        loadRepoRecordDetail(repo, active, recordRoute.number);
+      } else {
+        loadRepoCollection(repo, active, `[data-repo-${active}]`);
+      }
     } else if (active === "releases") {
       state.loadedRepoTabs.releases = true;
       loadRepoReleases(repo);
@@ -936,36 +947,6 @@
       </label>`;
   }
 
-  function renderRepoCollectionSidebar(kind) {
-    const primaryItems = [
-      ["Issues", "circle-dot"],
-      ["Assigned to me", "users"],
-      ["Created by me", "smile-plus"],
-      ["Mentioned", "at-sign"],
-      ["Recent activity", "clock"],
-    ];
-    const secondaryItems = [
-      ["Views", "layers"],
-      ["Projects", "table-2"],
-      ["Milestones", "milestone"],
-      ["Labels", "tag"],
-    ];
-    const renderItem = ([label, icon], active = false) => `
-      <button type="button" class="flex h-8 w-full items-center gap-2 rounded-md px-3 text-left text-xs font-semibold ${active ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground"}">
-        <i data-lucide="${icon}" class="h-3.5 w-3.5 shrink-0"></i>
-        <span class="min-w-0 truncate">${label}</span>
-      </button>`;
-    return `
-      <aside data-repo-collection-sidebar="${kind}" class="hidden border-r border-border pr-3 lg:block">
-        <nav class="grid gap-1">
-          ${primaryItems.map((item, index) => renderItem(item, index === 0)).join("")}
-        </nav>
-        <nav class="mt-5 grid gap-1 border-t border-border pt-5">
-          ${secondaryItems.map((item) => renderItem(item)).join("")}
-        </nav>
-      </aside>`;
-  }
-
   function renderRepoCollectionPanel(kind, repo, openCount, closedCount) {
     const isPulls = kind === "pulls";
     const config = repoCollectionConfig[kind];
@@ -983,8 +964,7 @@
 
     return `
       <section data-dashboard-repo-tab-panel="${kind}" class="hidden">
-        <div class="mt-4 grid gap-4 lg:grid-cols-[14rem_minmax(0,1fr)]">
-          ${renderRepoCollectionSidebar(kind)}
+        <div class="mt-4">
           <div class="min-w-0">
             ${isPulls ? `
               <div class="mb-4 rounded-lg border border-border bg-background px-4 py-5 text-center">

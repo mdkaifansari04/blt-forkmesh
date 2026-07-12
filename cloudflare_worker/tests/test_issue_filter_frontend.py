@@ -135,6 +135,38 @@ def test_repo_host_serves_open_and_closed_issue_split():
     assert '{"issues", openIssues + closedIssues}' in counts
 
 
+def test_advertised_catalog_issue_count_is_open_only():
+    # adhoc #29: the catalog's issueCount seeds the Issues tab badge on the FIRST
+    # repo render (before the live-served open/closed split from #397 arrives),
+    # and catalog.py documents it as the OPEN count. The desktop advert must
+    # therefore count open issues, not every .forkmesh/issues/<n> directory
+    # (closed issues keep their directory on disk, so a bare dir count showed all
+    # issues). mirrorIssueCount now delegates to a status-aware open counter.
+    internal = (
+        Path(__file__).resolve().parents[2]
+        / "qt_client"
+        / "src"
+        / "MainWindowInternal.h"
+    ).read_text(encoding="utf-8")
+    assert "inline int mirrorOpenIssueCount(const QString &mirrorPath" in internal
+    open_counter = internal[
+        internal.index("inline int mirrorOpenIssueCount")
+        : internal.index("inline int mirrorIssueCount")
+    ]
+    # Reads each record's status; anything not "closed" counts as open (matching
+    # RepoHost::countOpenIssues and the web's parseIssueJson default).
+    assert 'issue-%1.json' in open_counter
+    assert 'value(QStringLiteral("status"))' in open_counter
+    assert 'if (status != QLatin1String("closed"))' in open_counter
+    # The advertised issueCount is the open count, not the raw directory tally.
+    issue_count = internal[
+        internal.index("inline int mirrorIssueCount")
+        : internal.index("inline int mirrorIssueCount") + 260
+    ]
+    assert "return mirrorOpenIssueCount(mirrorPath, branch);" in issue_count
+    assert 'mirrorNumberedDirCount(mirrorPath, branch, QStringLiteral(".forkmesh/issues"))' not in issue_count
+
+
 def test_homepage_links_to_active_nodes():
     # The homepage surfaces a link to the live network/active-nodes page.
     assert 'href="/network"' in INDEX
@@ -147,7 +179,7 @@ def test_dashboard_js_batches_record_reads_and_lazy_loads_tabs():
     # /blob call fired 50+ parallel requests per page view and tripped the
     # relay's per-repo rate limit - and must only load on the tab's FIRST
     # view, not eagerly on every repo open.
-    assert "async function fetchRepoBlobs(repo, paths)" in DASHBOARD_JS
+    assert "async function fetchRepoBlobs(repo, paths, options = {})" in DASHBOARD_JS
     assert "/blobs?" in DASHBOARD_JS
     assert 'query.append("path", path)' in DASHBOARD_JS
     # Both list loaders go through the batch, never a per-record /blob loop.
