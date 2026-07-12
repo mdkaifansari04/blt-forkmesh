@@ -1802,17 +1802,26 @@ void MainWindow::updateUserAvatarButton()
 
 void MainWindow::refreshIssueComposerAvatar()
 {
-    if (!m_issueComposerAvatar)
-        return;
-    // Show this node's avatar next to the comment composer so it's clear who is
-    // about to post.
-    const QPixmap pm = roundedAvatar(effectiveAvatar(), 36);
-    if (pm.isNull()) {
-        m_issueComposerAvatar->setPixmap(QPixmap());
-        m_issueComposerAvatar->setText("FM");
-    } else {
-        m_issueComposerAvatar->setText(QString());
-        m_issueComposerAvatar->setPixmap(pm);
+    if (m_issueComposerAvatar) {
+        // Show this node's avatar next to the comment composer so it's clear who is
+        // about to post.
+        const QPixmap pm = roundedAvatar(effectiveAvatar(), 36);
+        if (pm.isNull()) {
+            m_issueComposerAvatar->setPixmap(QPixmap());
+            m_issueComposerAvatar->setText("FM");
+        } else {
+            m_issueComposerAvatar->setText(QString());
+            m_issueComposerAvatar->setPixmap(pm);
+        }
+    }
+
+    // The "Commenting as" label is built once with the composer, so it can go
+    // stale once the account name resolves after login. Keep it in sync
+    // whenever the avatar (and thus the identity) refreshes.
+    if (m_issueComposerTitle) {
+        m_issueComposerTitle->setText(
+            QStringLiteral("Commenting as <b>%1</b>")
+                .arg(topBarUserName().toHtmlEscaped()));
     }
 }
 
