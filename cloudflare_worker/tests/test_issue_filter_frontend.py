@@ -179,7 +179,7 @@ def test_dashboard_js_batches_record_reads_and_lazy_loads_tabs():
     # /blob call fired 50+ parallel requests per page view and tripped the
     # relay's per-repo rate limit - and must only load on the tab's FIRST
     # view, not eagerly on every repo open.
-    assert "async function fetchRepoBlobs(repo, paths)" in DASHBOARD_JS
+    assert "async function fetchRepoBlobs(repo, paths, options = {})" in DASHBOARD_JS
     assert "/blobs?" in DASHBOARD_JS
     assert 'query.append("path", path)' in DASHBOARD_JS
     # Both list loaders go through the batch, never a per-record /blob loop.
