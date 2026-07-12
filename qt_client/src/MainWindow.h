@@ -4577,6 +4577,7 @@ private:
     QPushButton *m_issueTitleCancelButton = nullptr;
     QLabel *m_issueMeta = nullptr;
     QLabel *m_issueComposerAvatar = nullptr;
+    QLabel *m_issueComposerTitle = nullptr;
     QLabel *m_issueReadonlyNote = nullptr;
     QLabel *m_issueInlineNotice = nullptr;
     QLabel *m_issueAssigneesValue = nullptr;
