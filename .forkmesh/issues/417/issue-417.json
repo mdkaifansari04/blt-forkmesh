@@ -19,6 +19,18 @@
             "title": "folder icons are not showing on a new install",
             "ts": 1783808095761,
             "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 3,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "31a5dd07-5ffd-4b80-a975-356c2afe09e7",
+            "sig": "AHjv8WnJN-yuw3McghjleaLgkoOSJC0TZi6opfc2oIsRAyJCYzmvzQGYMfm0M0NH-M5MdVVNAmOp0ALqPfO4Dg",
+            "ts": 1783872927043,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -30,6 +42,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "folder icons are not showing on a new install",
-    "updatedAt": 1783808095761,
+    "updatedAt": 1783872927043,
     "votes": 0
 }
