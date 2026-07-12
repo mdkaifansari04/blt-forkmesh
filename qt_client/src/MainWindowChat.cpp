@@ -6819,12 +6819,15 @@ void MainWindow::refreshHostsTable()
 // Selecting a row opens a detail panel with the node's full details, the repos
 // it hosts and the repos it mirrors.
 //
-// Online state is the OR of two independent signals: live chat-room presence
-// (m_nodeMenuEntries.online, from the encrypted roster) and the relay's
-// /api/network/stats "onlineNodes" list (live host tunnel or fresh signed
-// heartbeat). Headless mirror nodes serve repos through the relay without ever
-// joining this client's chat room, so the roster alone painted them offline
-// even while they were actively serving (adhoc #27).
+// Online state trusts the relay's /api/network/stats "onlineNodes" list (a live
+// host tunnel or a fresh signed heartbeat) as the network-canonical live set —
+// the same signal the Mirror nodes list and the Network page use. This lets
+// headless mirror nodes that serve via the relay without joining this client's
+// chat room show online (adhoc #27), and, once the relay set is fetched, stops a
+// stale roster entry from painting a node online after it stopped serving
+// (adhoc #43). Our own node is the exception: it trusts the local backend, since
+// it may host only private repos the relay never lists. Before the first relay
+// reply we fall back to the encrypted roster's presence flag.
 
 namespace {
 enum NodeCol {
@@ -6969,7 +6972,9 @@ void MainWindow::fetchRelayOnlineNodes(bool force)
             if (!name.isEmpty())
                 online.insert(name);
         }
-        if (online == m_relayOnlineNodes)
+        const bool firstReply = !m_relayOnlineNodesFetched;
+        m_relayOnlineNodesFetched = true;
+        if (!firstReply && online == m_relayOnlineNodes)
             return;
         m_relayOnlineNodes = online;
         refreshNodesTable();
@@ -6990,7 +6995,11 @@ void MainWindow::refreshNodesTable()
 
     // The roster record (version / owner / telemetry / mirrors) for a node.
     // Prefer an online entry when a reinstall left the same name in the roster
-    // twice (old key's session heartbeating beside the new one, adhoc #46).
+    // twice (old key's session heartbeating beside the new one, adhoc #46), but
+    // still backfill the identity fields (owner / version / solana / platform)
+    // from the other duplicate when the preferred entry left them blank — a
+    // headless heartbeat often omits the owner the earlier hello carried, which
+    // is why the Owner column was empty for nodes we clearly know (adhoc #43).
     auto rosterInfo = [this](const QString &name) -> MemberInfo {
         MemberInfo best;
         bool found = false;
@@ -7000,6 +7009,19 @@ void MainWindow::refreshNodesTable()
             if (!found || (m.online && !best.online)) {
                 best = m;
                 found = true;
+                continue;
+            }
+            if (best.ownerUser.trimmed().isEmpty())
+                best.ownerUser = m.ownerUser;
+            if (best.version.trimmed().isEmpty())
+                best.version = m.version;
+            if (best.solanaAddress.trimmed().isEmpty())
+                best.solanaAddress = m.solanaAddress;
+            if (best.platform.trimmed().isEmpty())
+                best.platform = m.platform;
+            if (best.mirrors.isEmpty() && !m.mirrors.isEmpty()) {
+                best.mirrors = m.mirrors;
+                best.mirrorDetails = m.mirrorDetails;
             }
         }
         return best;
@@ -7019,8 +7041,25 @@ void MainWindow::refreshNodesTable()
     for (int i = 0; i < m_nodeMenuEntries.size(); ++i) {
         const NodeMenuEntry &e = m_nodeMenuEntries.at(i);
         const MemberInfo mi = rosterInfo(e.name);
-        const bool serving = !e.online && relayOnline(e.name);
-        const bool isOnline = e.online || serving;
+        // The relay's /api/network/stats "onlineNodes" is the network-canonical
+        // live set (a live host tunnel or a fresh signed heartbeat) — the same
+        // signal the Mirror nodes list and the Network page trust. Once we have
+        // fetched it, it is authoritative even over a roster entry that still
+        // says "online": a node whose chat socket lingers after the machine
+        // stopped serving was being painted online here when it no longer was
+        // (adhoc #43). Our own node is the exception — trust the local backend
+        // for it, since we may host only private repos the relay never lists.
+        const bool relayLive = relayOnline(e.name);
+        const bool rosterLive = e.online;
+        bool isOnline;
+        if (e.self)
+            isOnline = rosterLive;
+        else if (m_relayOnlineNodesFetched)
+            isOnline = relayLive;
+        else
+            isOnline = rosterLive || relayLive; // pre-fetch fallback
+        // "serving" = live via the relay without being a live chat-room member.
+        const bool serving = isOnline && !e.self && !rosterLive;
         if (isOnline)
             ++online;
 
@@ -7034,9 +7073,9 @@ void MainWindow::refreshNodesTable()
         m_nodesTable->setItem(i, kNodeColName, nameItem);
 
         auto *statusItem = new QTableWidgetItem(
-            e.online ? QStringLiteral("Online")
-                     : (serving ? QStringLiteral("Online (serving)")
-                                : QStringLiteral("Offline")));
+            !isOnline ? QStringLiteral("Offline")
+                      : (serving ? QStringLiteral("Online (serving)")
+                                 : QStringLiteral("Online")));
         if (serving)
             statusItem->setToolTip(QStringLiteral(
                 "The relay reports this node live (host tunnel / signed "
@@ -7137,16 +7176,40 @@ void MainWindow::showNodeDetailForRow(int row)
     for (const MemberInfo &m : std::as_const(m_homeRoster)) {
         if (m.name != node)
             continue;
-        // Prefer an online entry when a reinstall left the name twice (adhoc #46).
-        if (!inRoster || (m.online && !mi.online))
+        // Prefer an online entry when a reinstall left the name twice (adhoc #46),
+        // but backfill blank identity fields from the other duplicate so the
+        // owner/version don't drop out with a headless heartbeat (adhoc #43).
+        if (!inRoster || (m.online && !mi.online)) {
             mi = m;
+        } else {
+            if (mi.ownerUser.trimmed().isEmpty())
+                mi.ownerUser = m.ownerUser;
+            if (mi.version.trimmed().isEmpty())
+                mi.version = m.version;
+            if (mi.solanaAddress.trimmed().isEmpty())
+                mi.solanaAddress = m.solanaAddress;
+            if (mi.platform.trimmed().isEmpty())
+                mi.platform = m.platform;
+            if (mi.mirrors.isEmpty() && !m.mirrors.isEmpty()) {
+                mi.mirrors = m.mirrors;
+                mi.mirrorDetails = m.mirrorDetails;
+            }
+        }
         inRoster = true;
     }
-    // Relay-side liveness: mirror nodes serve via the relay without joining
-    // this client's chat room, so the roster alone painted them offline.
-    const bool serving =
-        !entry.online && m_relayOnlineNodes.contains(node.trimmed().toLower());
-    const bool isOnline = entry.online || serving;
+    // Liveness mirrors refreshNodesTable(): the relay's authoritative live set
+    // wins over a lingering roster entry once we have fetched it; our own node
+    // trusts the local backend (adhoc #43).
+    const bool relayLive = m_relayOnlineNodes.contains(node.trimmed().toLower());
+    const bool rosterLive = entry.online;
+    bool isOnline;
+    if (entry.self)
+        isOnline = rosterLive;
+    else if (m_relayOnlineNodesFetched)
+        isOnline = relayLive;
+    else
+        isOnline = rosterLive || relayLive;
+    const bool serving = isOnline && !entry.self && !rosterLive;
 
     auto *content = new QWidget;
     auto *col = new QVBoxLayout(content);
@@ -7180,14 +7243,14 @@ void MainWindow::showNodeDetailForRow(int row)
     };
 
     addRow(QStringLiteral("Status"),
-           entry.online
-               ? QStringLiteral("Online")
+           !isOnline
+               ? QStringLiteral("Offline")
                : (serving
                       ? QString::fromUtf8(
                             "Online \xE2\x80\x94 serving via the relay (host "
                             "tunnel / signed heartbeat), not in this client's "
                             "chat room")
-                      : QStringLiteral("Offline")));
+                      : QStringLiteral("Online")));
     if (entry.self)
         addRow(QStringLiteral("This node"), QStringLiteral("Yes (you)"));
     QString platform = entry.platform.trimmed();
