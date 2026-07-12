@@ -495,7 +495,6 @@ void MainWindow::refreshOpenRepoDetail()
     // Re-read .forkmesh/ workflows so the "Actions (N)" badge tracks any added
     // or removed workflows a sync may have brought in.
     refreshRepoActions();
-    loadAboutSidebar();
     // loadCommits() above already refreshed the Insights counts if that tab is on
     // screen; off-screen it reloads when next opened, so no extra pass here.
     updateRepoDetailStatus();
