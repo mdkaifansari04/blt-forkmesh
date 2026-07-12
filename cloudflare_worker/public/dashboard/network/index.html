@@ -724,7 +724,13 @@
                     <div class="rounded-lg border border-border bg-card overflow-hidden mb-6">
                       <div class="px-4 py-3 border-b border-border flex items-center justify-between">
                         <span class="text-xs font-medium text-foreground">Connected nodes</span>
-                        <span data-network-node-count class="text-xs text-muted-foreground font-mono">Loading</span>
+                        <div class="flex items-center gap-3">
+                          <span data-network-node-count class="text-xs text-muted-foreground font-mono">Loading</span>
+                          <button type="button" data-network-online-only aria-pressed="true" title="Show only nodes that are online right now" class="inline-flex items-center gap-1.5 rounded-md border border-primary px-2 py-1 text-xs font-medium text-foreground hover:bg-secondary">
+                            <i data-lucide="circle" class="h-2 w-2 fill-primary text-primary"></i>
+                            <span data-network-online-only-label>Online only</span>
+                          </button>
+                        </div>
                       </div>
                       <div data-network-node-list class="divide-y divide-border">
                         <div class="px-4 py-3 text-sm text-muted-foreground"><span class="fm-spinner" aria-hidden="true"></span>Loading recent network...</div>
