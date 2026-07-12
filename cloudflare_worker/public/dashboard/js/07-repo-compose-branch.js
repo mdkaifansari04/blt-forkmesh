@@ -564,7 +564,7 @@
     container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading releases from the live mirror...</div>';
     const empty = '<div class="px-4 py-3 text-sm text-muted-foreground">No releases have been published to this mirror yet.</div>';
     try {
-      // Release manifests live in the git tree at releases/<channel>/release.json
+      // Release manifests live in the git tree at .forkmesh/releases/<channel>/release.json
       // (issue #304). List the channels, then batch-read every manifest in one
       // tunnel round-trip so opening the tab doesn't fan out N blob requests.
       let tree;
@@ -584,7 +584,7 @@
         container.innerHTML = empty;
         return;
       }
-      const paths = channels.map((channel) => `releases/${channel}/release.json`);
+      const paths = channels.map((channel) => `.forkmesh/releases/${channel}/release.json`);
       const blobs = await fetchRepoBlobs(repo, paths);
       const releases = [];
       channels.forEach((channel, index) => {
@@ -614,7 +614,7 @@
       releases.sort((a, b) => (Number(b.created_at) || 0) - (Number(a.created_at) || 0));
       container.innerHTML = releases.map((release) => renderRepoRelease(repo, release, downloads)).join("");
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a live desktop host serves the releases/ folder.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a live desktop host serves the .forkmesh/releases/ folder.</div>';
     } finally {
       window.lucide?.createIcons();
     }
