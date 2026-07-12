@@ -3295,7 +3295,7 @@ bool MainWindow::tryPrebuiltAutoUpdate(const QString &clientDir,
     if (!runGitCapture(clientDir,
                        {QStringLiteral("show"),
                         tagCommit +
-                            QStringLiteral(":releases/latest/release.json")},
+                            QStringLiteral(":.forkmesh/releases/latest/release.json")},
                        &manifestOut, nullptr)) {
         logSystem(QStringLiteral("Auto-update: release %1 publishes no "
                                  "artifact manifest; building from source.")

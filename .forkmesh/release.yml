@@ -9,7 +9,7 @@ name: Attach desktop build to release
 # Release binaries are NOT committed into git (issue #304). The binary bytes are
 # staged into the node's content-addressed release store (the CAS, co-located
 # with the served mirror) and only small TEXT metadata is committed under
-# releases/<channel>/ — SHASUMS256.txt + release.json. install.sh reads that
+# .forkmesh/releases/<channel>/ — SHASUMS256.txt + release.json. install.sh reads that
 # metadata over the git proxy, then downloads the binary from the relay's
 # content-addressed endpoint and verifies its sha256.
 #
@@ -51,10 +51,10 @@ jobs:
       # Build the optimized desktop client, name the binary forkmesh-<os>-<arch>
       # [.exe] (the exact scheme install.sh resolves from `uname`), then publish
       # it: tools/forkmesh-release-publish.sh hashes the binary, copies the bytes
-      # into the node's CAS, and writes releases/<channel>/{SHASUMS256.txt,
+      # into the node's CAS, and writes .forkmesh/releases/<channel>/{SHASUMS256.txt,
       # release.json}. The runner sets FORKMESH_RELEASE_CAS to the served CAS
       # (<mirror>/forkmesh-releases) so the bytes land where the node streams them
-      # from, then — after this step succeeds — harvests the releases/<channel>/
+      # from, then — after this step succeeds — harvests the .forkmesh/releases/<channel>/
       # metadata into the working copy, commits it, and publishes (syncs the
       # served mirror). The asset goes live for download automatically; nothing
       # here needs to commit into the throwaway worktree (cleanup discards it).
@@ -155,16 +155,16 @@ jobs:
           # release.json so in-app update checks (macOS/Windows) see the new
           # release. Derived from the same manifest the bare-binary path uses, so
           # there is a single source of truth for "latest" (docs §2). Committed
-          # alongside the other releases/<channel>/ metadata.
+          # alongside the other .forkmesh/releases/<channel>/ metadata.
           RELEASE_CHANNEL="$channel" tools/package/generate-appcast.sh \
             --channel "$channel" || echo "appcast generation skipped"
 
           # The bytes are now in the served CAS and the small text metadata
           # (SHASUMS256.txt + release.json + appcast.xml) is written under
-          # releases/${channel}/. ForkMesh harvests that metadata into the working
+          # .forkmesh/releases/${channel}/. ForkMesh harvests that metadata into the working
           # copy, commits it, and publishes the mirror once this step succeeds — so
           # the asset becomes downloadable with no manual commit. (Running this
-          # script standalone, outside ForkMesh? Commit releases/${channel}/ and
+          # script standalone, outside ForkMesh? Commit .forkmesh/releases/${channel}/ and
           # publish it yourself.)
           echo "Staged asset: $asset (channel: $channel)"
           echo "Once published, install it with:"

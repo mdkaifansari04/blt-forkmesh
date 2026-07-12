@@ -156,7 +156,7 @@ bool CommitCommentStore::canWrite() const
     return QFileInfo::exists(m_workTree + "/.git");
 }
 
-QString CommitCommentStore::commitsDir() const { return m_workTree + "/commits"; }
+QString CommitCommentStore::commitsDir() const { return m_workTree + "/.forkmesh/commits"; }
 QString CommitCommentStore::commitDir(const QString &sha) const
 {
     return commitsDir() + "/" + sha;
@@ -225,12 +225,12 @@ bool CommitCommentStore::writeComment(const QString &sha, int index,
 bool CommitCommentStore::commit(const QString &message, QString *error) const
 {
     QString err;
-    if (!runGit(m_workTree, {"add", "commits"}, nullptr, &err)) {
+    if (!runGit(m_workTree, {"add", ".forkmesh/commits"}, nullptr, &err)) {
         if (error)
             *error = "git add failed: " + err;
         return false;
     }
-    if (!runGit(m_workTree, {"commit", "-m", message, "--", "commits"}, nullptr, &err)) {
+    if (!runGit(m_workTree, {"commit", "-m", message, "--", ".forkmesh/commits"}, nullptr, &err)) {
         if (err.contains("nothing to commit") || err.isEmpty())
             return true;
         if (error)
@@ -308,11 +308,11 @@ QList<QPair<QString, QList<CommitComment>>> CommitCommentStore::loadAll() const
             if (isValidSha(name))
                 shas << name;
     } else if (!m_mirror.isEmpty()) {
-        // List the commits/ subtree directly so each entry name is a bare SHA.
+        // List the .forkmesh/commits/ subtree directly so each entry name is a bare SHA.
         const QString ref = mirrorRef();
         QByteArray listing;
         if (!ref.isEmpty() &&
-            runGit(m_mirror, {"ls-tree", ref + ":commits"}, &listing)) {
+            runGit(m_mirror, {"ls-tree", ref + ":.forkmesh/commits"}, &listing)) {
             for (const QString &line :
                  QString::fromUtf8(listing).split('\n', Qt::SkipEmptyParts)) {
                 const int tab = line.indexOf('\t');
@@ -359,7 +359,7 @@ QList<CommitComment> CommitCommentStore::loadFromMirror(const QString &sha) cons
     if (ref.isEmpty())
         return out;
     QByteArray listing;
-    if (!runGit(m_mirror, {"ls-tree", ref, "commits/" + sha + "/"}, &listing))
+    if (!runGit(m_mirror, {"ls-tree", ref, ".forkmesh/commits/" + sha + "/"}, &listing))
         return out;
     QStringList names;
     for (const QString &line :
@@ -374,7 +374,7 @@ QList<CommitComment> CommitCommentStore::loadFromMirror(const QString &sha) cons
     names.sort();
     for (const QString &name : names) {
         QByteArray bytes;
-        if (runGit(m_mirror, {"show", ref + ":commits/" + sha + "/" + name}, &bytes))
+        if (runGit(m_mirror, {"show", ref + ":.forkmesh/commits/" + sha + "/" + name}, &bytes))
             out.append(commentFromFrontMatter(parseFrontMatter(bytes)));
     }
     return out;

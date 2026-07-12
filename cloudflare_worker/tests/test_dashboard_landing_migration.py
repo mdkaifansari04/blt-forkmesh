@@ -832,7 +832,7 @@ def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
         "Open clean URL",
         "data-dashboard-repo-tab=\"${tab}\"",
         '"code", "commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors"',
-        # Releases load lazily on first tab view from releases/<channel>/release.json.
+        # Releases load lazily on first tab view from .forkmesh/releases/<channel>/release.json.
         "loadRepoReleases(state.selectedRepo)",
         "loadRepoInsights(state.selectedRepo)",
     ):

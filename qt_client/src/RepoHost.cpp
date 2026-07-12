@@ -401,7 +401,7 @@ QJsonObject searchReplyFor(const QString &mirrorPath, const QString &rawQuery)
 }
 
 // Count the numbered sub-directories (1/, 2/, …) under a metadata folder such
-// as .forkmesh/issues/, pulls/ or discussions/. Each maps to one filed item, so this is
+// as .forkmesh/issues/, pulls/ or .forkmesh/discussions/. Each maps to one filed item, so this is
 // the tally the website shows in its tab badges. A missing folder counts as 0.
 int countNumberedDirs(const QString &mirrorPath, const QString &ref,
                       const QString &dir)
@@ -437,7 +437,7 @@ QJsonObject rootCountsFor(const QString &mirrorPath, const QString &ref)
          countNumberedDirs(mirrorPath, ref, QStringLiteral(".forkmesh/issues"))},
         {"pulls", countNumberedDirs(mirrorPath, ref, QStringLiteral("pulls"))},
         {"discussions",
-         countNumberedDirs(mirrorPath, ref, QStringLiteral("discussions"))},
+         countNumberedDirs(mirrorPath, ref, QStringLiteral(".forkmesh/discussions"))},
         {"commits", commits}};
 }
 

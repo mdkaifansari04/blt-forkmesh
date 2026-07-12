@@ -2,19 +2,19 @@
 
 This directory holds **release metadata only**. Release binaries are **not**
 committed to git (issue #304; see
-[`docs/design/release-binary-publishing.md`](../docs/design/release-binary-publishing.md)).
+[`docs/design/release-binary-publishing.md`](../../docs/design/release-binary-publishing.md)).
 The actual binary bytes live in a per-node content-addressed store (the CAS),
 served on demand from a hosting node over the relay — the same way the repo
 itself is served — and verified by sha256 on download.
 
 > Historical note: releases used to commit the prebuilt binary directly under
-> `releases/<channel>/forkmesh-<os>-<arch>`. The installer still understands that
+> `.forkmesh/releases/<channel>/forkmesh-<os>-<arch>`. The installer still understands that
 > layout as a fallback, but new releases should use the metadata-only model below.
 
 ## Layout
 
 ```
-releases/<channel>/
+.forkmesh/releases/<channel>/
   SHASUMS256.txt   # "<sha256>  <asset-name>" per asset (sha256sum -c compatible)
   release.json     # manifest: repo, tag, tag_commit, channel, assets[]
 ```
@@ -46,7 +46,7 @@ tools/forkmesh-release-publish.sh \
 
 This hashes each binary, copies the bytes into the CAS (`--cas-dir`, which must
 be the directory the serving node reads from — set `FORKMESH_RELEASE_CAS` to it),
-and writes `releases/<channel>/SHASUMS256.txt` + `release.json`. Commit **only
+and writes `.forkmesh/releases/<channel>/SHASUMS256.txt` + `release.json`. Commit **only
 that metadata** and publish it — the asset goes live immediately. Run it once on a
 node of each OS to publish all three platform builds.
 

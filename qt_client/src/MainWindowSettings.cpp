@@ -11,6 +11,7 @@
 #include "QrCode.h"
 
 #include <QClipboard>
+#include <QColor>
 #include <QDialog>
 #include <QInputDialog>
 #include "KebabHeaderView.h"
@@ -2741,24 +2742,20 @@ struct NetworkLogStyle {
     QString badge;
 };
 
-NetworkLogStyle networkLogStyleFor(const QString &message)
-{
-    const QString lower = message.toLower();
-    // Errors / failures take precedence over any category.
-    if (lower.contains("fail") || lower.contains("error") ||
-        lower.contains("could not") || lower.contains("couldn't") ||
-        lower.contains("no live") || lower.contains("denied") ||
-        lower.contains("blocks ") || lower.contains("unable")) {
-        return {QStringLiteral("#f85149"), QStringLiteral("ERROR")};
-    }
-    // Each entry: substring to look for (lower-case) -> {accent, badge}. First
-    // match wins, so order from most specific to most general.
-    struct Rule {
-        const char *needle;
-        const char *accent;
-        const char *badge;
-    };
-    static const Rule rules[] = {
+// Each entry: substring to look for (lower-case) -> {accent, badge}. First
+// match wins, so order from most specific to most general. Kept at namespace
+// scope (not local to networkLogStyleFor) so accentForBadge() below can also
+// look a badge's colour up by name for the quick-filter chips.
+struct Rule {
+    const char *needle;
+    const char *accent;
+    const char *badge;
+};
+
+// Red is reserved for ERROR so the log reads "red == something failed" at a
+// glance; every other category (including HOST, previously pink) gets a
+// distinct non-red accent.
+const Rule kNetworkLogRules[] = {
         // App start/stop/rebuild-restart markers — keep above "fork" so
         // "ForkMesh" in the start line doesn't get tagged FORK.
         {"session started", "#f2cc60", "SESSION"},
@@ -2792,7 +2789,7 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
         // label so the log reads as what actually happened.
         {"actions: ", "#f0883e", "ACTIONS"},
         {"integrity pin", "#79c0ff", "PIN"},
-        {"host: ", "#f778ba", "HOST"},
+        {"host: ", "#76e3ea", "HOST"},
         {"publish", "#58a6ff", "PUBLISH"},
         {"push", "#58a6ff", "GIT"},
         {"git:", "#58a6ff", "GIT"},
@@ -2814,61 +2811,80 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
         {"node", "#3fb950", "NODE"},
         {"copied", "#8b949e", "CLIP"},
         {"saved", "#3fb950", "SAVE"},
-    };
-    for (const Rule &r : rules) {
+};
+
+NetworkLogStyle networkLogStyleFor(const QString &message)
+{
+    const QString lower = message.toLower();
+    // Errors / failures take precedence over any category — red is reserved
+    // for these so it always means "something failed."
+    if (lower.contains("fail") || lower.contains("error") ||
+        lower.contains("could not") || lower.contains("couldn't") ||
+        lower.contains("no live") || lower.contains("denied") ||
+        lower.contains("blocks ") || lower.contains("unable")) {
+        return {QStringLiteral("#f85149"), QStringLiteral("ERROR")};
+    }
+    for (const Rule &r : kNetworkLogRules) {
         if (lower.contains(QLatin1String(r.needle)))
             return {QString::fromLatin1(r.accent), QString::fromLatin1(r.badge)};
     }
     return {QStringLiteral("#6e7681"), QStringLiteral("INFO")};
 }
-} // namespace
 
-void MainWindow::appendNetworkLogLine(const QString &storedLine)
+// Direct badge-name -> accent lookup (as opposed to networkLogStyleFor's
+// substring match against a message), used to colour the quick-filter chips
+// the same as the log entries they filter.
+QString accentForBadge(const QString &badge)
 {
-    if (!m_settingsLog)
-        return;
+    if (badge == QLatin1String("ERROR"))
+        return QStringLiteral("#f85149");
+    if (badge == QLatin1String("INFO"))
+        return QStringLiteral("#6e7681");
+    for (const Rule &r : kNetworkLogRules) {
+        if (badge == QLatin1String(r.badge))
+            return QString::fromLatin1(r.accent);
+    }
+    return QStringLiteral("#8b949e");
+}
 
-    // The badge accents below read on either canvas, but the timestamp, day
-    // divider and message body need per-theme greys/text so the log isn't grey
-    // text washed out on the light (#ffffff) background. Dark keeps its lighter
-    // ink on the near-black canvas; light uses GitHub's near-black body text.
-    const bool dark = currentThemeIsDark();
-    const QString messageColor =
-        dark ? QStringLiteral("#adbac7") : QStringLiteral("#1f2328");
-    const QString timeColor =
-        dark ? QStringLiteral("#6e7681") : QStringLiteral("#656d76");
-    const QString dividerLabelColor =
-        dark ? QStringLiteral("#8b949e") : QStringLiteral("#656d76");
-    const QString dividerDashColor =
-        dark ? QStringLiteral("#484f58") : QStringLiteral("#afb8c1");
-
-    // Stored format: "yyyy-MM-dd HH:mm:ss  message". Parse leniently so any
-    // legacy/odd line still renders (as a plain message with no timestamp).
-    QString date, time, message = storedLine;
+// Stored format: "yyyy-MM-dd HH:mm:ss  message". Parses leniently so any
+// legacy/odd line still renders (as a plain message with no timestamp).
+void parseStoredLogLine(const QString &storedLine, QString &date, QString &time,
+                         QString &message)
+{
+    message = storedLine;
     if (storedLine.size() >= 21 && storedLine.at(10) == QLatin1Char(' ')) {
         date = storedLine.left(10);
         time = storedLine.mid(11, 8);
         message = storedLine.mid(21);
     }
+}
 
-    // Day divider whenever the calendar date changes from the previous line.
-    if (!date.isEmpty() && date != m_lastLogRenderDate) {
-        m_lastLogRenderDate = date;
-        const QString pretty =
-            QDate::fromString(date, QStringLiteral("yyyy-MM-dd"))
-                .toString(QStringLiteral("dddd, d MMMM yyyy"));
-        m_settingsLog->appendHtml(
-            QString::fromUtf8(
-                "<span style='color:%1'>"
-                "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80&nbsp;</span>"
-                "<span style='color:%2; font-weight:600'>%3</span>"
-                "<span style='color:%4'>&nbsp;"
-                "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80</span>")
-                .arg(dividerDashColor, dividerLabelColor,
-                     (pretty.isEmpty() ? date : pretty).toHtmlEscaped(),
-                     dividerDashColor));
-    }
+QString formatDayDividerHtml(const QString &date, bool dark)
+{
+    const QString dividerLabelColor =
+        dark ? QStringLiteral("#8b949e") : QStringLiteral("#656d76");
+    const QString dividerDashColor =
+        dark ? QStringLiteral("#484f58") : QStringLiteral("#afb8c1");
+    const QString pretty =
+        QDate::fromString(date, QStringLiteral("yyyy-MM-dd"))
+            .toString(QStringLiteral("dddd, d MMMM yyyy"));
+    return QString::fromUtf8(
+               "<span style='color:%1'>"
+               "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80&nbsp;</span>"
+               "<span style='color:%2; font-weight:600'>%3</span>"
+               "<span style='color:%4'>&nbsp;"
+               "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80</span>")
+        .arg(dividerDashColor, dividerLabelColor,
+             (pretty.isEmpty() ? date : pretty).toHtmlEscaped(), dividerDashColor);
+}
 
+QString formatLogLineHtml(const QString &time, const QString &message, bool dark)
+{
+    const QString messageColor =
+        dark ? QStringLiteral("#adbac7") : QStringLiteral("#1f2328");
+    const QString timeColor =
+        dark ? QStringLiteral("#6e7681") : QStringLiteral("#656d76");
     const NetworkLogStyle style = networkLogStyleFor(message);
     QString html;
     if (!time.isEmpty())
@@ -2877,11 +2893,96 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
     html += QStringLiteral(
                 "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
                 "<span style='color:%3'>%4</span>")
-                .arg(style.accent,
-                     style.badge.leftJustified(7).toHtmlEscaped(),
-                     messageColor,
-                     message.toHtmlEscaped());
-    m_settingsLog->appendHtml(html);
+                .arg(style.accent, style.badge.leftJustified(7).toHtmlEscaped(),
+                     messageColor, message.toHtmlEscaped());
+    return html;
+}
+} // namespace
+
+void MainWindow::appendNetworkLogLine(const QString &storedLine)
+{
+    if (!m_settingsLog)
+        return;
+
+    // The badge accents read on either canvas, but the timestamp, day divider
+    // and message body need per-theme greys/text so the log isn't grey text
+    // washed out on the light (#ffffff) background. Dark keeps its lighter ink
+    // on the near-black canvas; light uses GitHub's near-black body text.
+    const bool dark = currentThemeIsDark();
+
+    QString date, time, message;
+    parseStoredLogLine(storedLine, date, time, message);
+
+    // Day divider whenever the calendar date changes from the previous line.
+    if (!date.isEmpty() && date != m_lastLogRenderDate) {
+        m_lastLogRenderDate = date;
+        m_settingsLog->appendHtml(formatDayDividerHtml(date, dark));
+    }
+
+    m_settingsLog->appendHtml(formatLogLineHtml(time, message, dark));
+}
+
+// Loads the next older page of matching lines when the user scrolls to the
+// top of the network log, so history beyond the initial segment (adhoc #15)
+// is reachable by scrolling back instead of being capped at whatever first
+// rendered.
+void MainWindow::loadOlderNetworkLogSegment()
+{
+    if (!m_settingsLog || m_logRenderFrom <= 0 || m_logViewMutating)
+        return;
+    m_logViewMutating = true;
+
+    QStringList segment; // oldest -> newest
+    int idx = m_logRenderFrom;
+    while (idx > 0 && segment.size() < kNetworkLogSegmentSize) {
+        --idx;
+        const QString &line = m_networkLog.at(idx);
+        if (!m_logFilter.isEmpty() && logBadgeFor(line) != m_logFilter)
+            continue;
+        segment.prepend(line);
+    }
+    m_logRenderFrom = idx;
+    if (segment.isEmpty()) {
+        m_logViewMutating = false;
+        return;
+    }
+
+    const bool dark = currentThemeIsDark();
+    // Seed empty (not m_lastLogRenderDate, which tracks the log's true bottom)
+    // so this segment's own first line gets its own divider — the line that
+    // was previously topmost already has one from when it was first rendered.
+    QString runningDate;
+    QString html;
+    for (const QString &storedLine : std::as_const(segment)) {
+        QString date, time, message;
+        parseStoredLogLine(storedLine, date, time, message);
+        if (!date.isEmpty() && date != runningDate) {
+            runningDate = date;
+            html += QStringLiteral("<div>%1</div>").arg(formatDayDividerHtml(date, dark));
+        }
+        html += QStringLiteral("<div>%1</div>").arg(formatLogLineHtml(time, message, dark));
+    }
+
+    QScrollBar *sb = m_settingsLog->verticalScrollBar();
+    const int oldMax = sb ? sb->maximum() : 0;
+    const int oldVal = sb ? sb->value() : 0;
+
+    QTextCursor cursor(m_settingsLog->document());
+    cursor.movePosition(QTextCursor::Start);
+    cursor.insertHtml(html);
+
+    // Keep the viewport anchored on the content the user was already looking
+    // at instead of jumping to the very top (or bottom) of the now-longer log.
+    if (sb)
+        sb->setValue(oldVal + (sb->maximum() - oldMax));
+    m_logViewMutating = false;
+}
+
+void MainWindow::onNetworkLogScrolled(int value)
+{
+    QScrollBar *sb = m_settingsLog ? m_settingsLog->verticalScrollBar() : nullptr;
+    if (sb && value <= sb->minimum())
+        loadOlderNetworkLogSegment();
 }
 
 QString MainWindow::logBadgeFor(const QString &storedLine) const
@@ -2929,6 +3030,21 @@ void MainWindow::rebuildLogFilterButtons()
         chip->setToolTip(category.isEmpty()
                              ? QStringLiteral("Show every event")
                              : QStringLiteral("Show only %1 events").arg(label));
+        // Tint each chip with the same accent its badge uses in the log body
+        // (adhoc #15) so the filter row reads as the log's own legend instead
+        // of a flat, uniformly grey button row.
+        const QString accent =
+            category.isEmpty() ? QStringLiteral("#8b949e") : accentForBadge(category);
+        const QColor accentColor(accent);
+        const QString checkedBg = QStringLiteral("rgba(%1, %2, %3, 0.18)")
+                                       .arg(accentColor.red())
+                                       .arg(accentColor.green())
+                                       .arg(accentColor.blue());
+        chip->setStyleSheet(QStringLiteral(
+                                 "QPushButton#logFilterChip { color: %1; border-color: %1; }"
+                                 "QPushButton#logFilterChip:checked "
+                                 "{ background-color: %2; color: %1; border-color: %1; }")
+                                 .arg(accent, checkedBg));
         m_logFilterGroup->addButton(chip);
         m_logFilterRow->addWidget(chip);
         connect(chip, &QPushButton::clicked, this, [this, category] {
@@ -2968,13 +3084,27 @@ void MainWindow::rebuildNetworkLogView()
 {
     if (!m_settingsLog)
         return;
+    // Also guards the scrollbar's valueChanged (see m_logViewMutating) against
+    // reacting to the clear()/appendHtml calls below.
+    m_logViewMutating = true;
     m_settingsLog->clear();
     m_lastLogRenderDate.clear();
-    for (const QString &line : std::as_const(m_networkLog)) {
+
+    // Render only the newest segment up front; older history loads lazily as
+    // the user scrolls to the top (see loadOlderNetworkLogSegment).
+    QStringList segment; // oldest -> newest
+    int idx = m_networkLog.size();
+    while (idx > 0 && segment.size() < kNetworkLogSegmentSize) {
+        --idx;
+        const QString &line = m_networkLog.at(idx);
         if (!m_logFilter.isEmpty() && logBadgeFor(line) != m_logFilter)
             continue;
-        appendNetworkLogLine(line);
+        segment.prepend(line);
     }
+    m_logRenderFrom = idx;
+    for (const QString &line : std::as_const(segment))
+        appendNetworkLogLine(line);
+    m_logViewMutating = false;
 }
 
 QString MainWindow::networkLogPath() const
@@ -3028,8 +3158,13 @@ void MainWindow::logSystem(const QString &text)
     plain.replace(QChar(0x2026), QStringLiteral("..."));
     const QString line = time + "  " + plain;
     m_networkLog.append(line);
-    while (m_networkLog.size() > kNetworkLogLimit)
+    while (m_networkLog.size() > kNetworkLogLimit) {
         m_networkLog.removeFirst();
+        // m_logRenderFrom indexes into m_networkLog; trimming the front shifts
+        // every index down by one, so keep it pointed at the same line.
+        if (m_logRenderFrom > 0)
+            --m_logRenderFrom;
+    }
 
     // A category we haven't seen yet earns its own quick-filter chip.
     const QString badge = networkLogStyleFor(plain).badge;
@@ -3060,8 +3195,9 @@ void MainWindow::logSystem(const QString &text)
 }
 
 // Toast pill caps the inline message at this many characters; longer text is
-// elided to one line and revealed in full via the Expand button.
-static constexpr int kToastMaxChars = 100;
+// elided to one line and revealed in full via the Expand button. Sized to the
+// widened 900px toast container (see m_topMessageContainer).
+static constexpr int kToastMaxChars = 160;
 
 // Auto-dismiss windows for the top toast. Every toast counts down visibly so the
 // notification area never flashes a message away unannounced. Success
@@ -3138,18 +3274,19 @@ void MainWindow::renderTopMessage()
 // stay inside the window. Called on expand and on window resize.
 void MainWindow::positionTopMessageOverlay()
 {
-    if (!m_topMessageOverlay || !m_topMessage)
+    if (!m_topMessageOverlay || !m_topMessageContainer)
         return;
     const int margin = 16;
-    const int w = qMin(620, qMax(240, width() - 2 * margin));
+    const int w = qMin(900, qMax(240, width() - 2 * margin));
     m_topMessageOverlay->setFixedWidth(w);
     int h = m_topMessageOverlay->heightForWidth(w);
     if (h <= 0)
         h = m_topMessageOverlay->sizeHint().height();
     m_topMessageOverlay->setFixedHeight(h);
     // Anchor just below the inline toast, horizontally centred on it.
-    const QPoint anchor = m_topMessage->mapTo(this, QPoint(0, m_topMessage->height()));
-    int x = anchor.x() + m_topMessage->width() / 2 - w / 2;
+    const QPoint anchor =
+        m_topMessageContainer->mapTo(this, QPoint(0, m_topMessageContainer->height()));
+    int x = anchor.x() + m_topMessageContainer->width() / 2 - w / 2;
     x = qBound(margin, x, width() - w - margin);
     m_topMessageOverlay->move(x, anchor.y() + 6);
 }
@@ -3206,6 +3343,8 @@ void MainWindow::flashMessage(const QString &text, bool error,
     m_topMessageExpanded = false; // every new message starts collapsed
     renderTopMessage();
     m_topMessage->show();
+    if (m_topMessageContainer)
+        m_topMessageContainer->show();
 
     if (!m_topMessageTimer) {
         // Ticks once a second so the countdown is visible; when the count runs out
@@ -3284,6 +3423,8 @@ void MainWindow::dismissTopMessage()
         m_topMessage->hide();
         m_topMessage->setWordWrap(false); // back to a one-liner for the next toast
     }
+    if (m_topMessageContainer)
+        m_topMessageContainer->hide();
     if (m_topMessageOverlay)
         m_topMessageOverlay->hide(); // drop the floating expanded panel with the toast
     if (m_topMessageExpand)

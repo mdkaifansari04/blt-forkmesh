@@ -40,7 +40,7 @@ RELEASE_CHANNEL="latest"
 ASSET_NAME="forkmesh-linux-x86_64"
 ASSET_OS="linux"
 ASSET_ARCH="x86_64"
-ASSET_REL_PATH="releases/${RELEASE_CHANNEL}/${ASSET_NAME}"
+ASSET_REL_PATH=".forkmesh/releases/${RELEASE_CHANNEL}/${ASSET_NAME}"
 FORKMESH_HOST="https://relay.test"
 BIN_DIR="$OUT_DIR/bin"
 BIN="$BIN_DIR/forkmesh"
@@ -52,12 +52,12 @@ def _run(sums_line, payload, *, omit_curl=False, manifest=None):
     """Run install_prebuilt_release with a fake git+curl.
 
     Returns (rc, BIN bytes, stderr, blob_url). When `manifest` is given it is
-    committed as releases/latest/release.json in the fake repo, so the test can
+    committed as .forkmesh/releases/latest/release.json in the fake repo, so the test can
     assert the blob URL is built from the manifest's canonical repo.
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        fake_repo = tmp / "fake_repo" / "releases" / "latest"
+        fake_repo = tmp / "fake_repo" / ".forkmesh" / "releases" / "latest"
         fake_repo.mkdir(parents=True)
         (fake_repo / "SHASUMS256.txt").write_text(sums_line, encoding="utf-8")
         if manifest is not None:

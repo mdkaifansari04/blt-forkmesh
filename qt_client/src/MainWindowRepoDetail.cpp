@@ -5324,7 +5324,7 @@ bool isInboxDataPath(const QString &rel)
 {
     return rel.startsWith(QLatin1String(".forkmesh/issues/"))
         || rel.startsWith(QLatin1String("pulls/"))
-        || rel.startsWith(QLatin1String("commits/"))
+        || rel.startsWith(QLatin1String(".forkmesh/commits/"))
         || rel.startsWith(QLatin1String(".forkmesh/"));
 }
 
@@ -9009,6 +9009,8 @@ void MainWindow::showLoadStatus(const QString &what)
                  what.toHtmlEscaped()));
     m_topMessage->setWordWrap(false);
     m_topMessage->show();
+    if (m_topMessageContainer)
+        m_topMessageContainer->show();
     m_loadStatusShowing = true;
     m_topMessageElided = false;
     m_topMessageExpanded = false;

@@ -523,34 +523,34 @@ ts: 10
     final subscription = server.listen((request) async {
       request.response.headers.contentType = ContentType.json;
       final path = request.uri.queryParameters['path'] ?? '';
-      if (request.uri.path.endsWith('/tree') && path == 'discussions') {
+      if (request.uri.path.endsWith('/tree') && path == '.forkmesh/discussions') {
         request.response.write(
           jsonEncode({
             'entries': [
-              {'name': '3', 'path': 'discussions/3', 'type': 'dir'},
+              {'name': '3', 'path': '.forkmesh/discussions/3', 'type': 'dir'},
             ],
           }),
         );
       } else if (request.uri.path.endsWith('/tree') &&
-          path == 'discussions/3') {
+          path == '.forkmesh/discussions/3') {
         request.response.write(
           jsonEncode({
             'entries': [
               {
                 'name': 'discussion.md',
-                'path': 'discussions/3/discussion.md',
+                'path': '.forkmesh/discussions/3/discussion.md',
                 'type': 'file',
               },
               {
                 'name': '001-comment.md',
-                'path': 'discussions/3/001-comment.md',
+                'path': '.forkmesh/discussions/3/001-comment.md',
                 'type': 'file',
               },
             ],
           }),
         );
       } else if (request.uri.path.endsWith('/blob') &&
-          path == 'discussions/3/discussion.md') {
+          path == '.forkmesh/discussions/3/discussion.md') {
         request.response.write(
           jsonEncode({
             'content': '''---
@@ -562,7 +562,7 @@ How should maintainers review from phones?''',
           }),
         );
       } else if (request.uri.path.endsWith('/blob') &&
-          path == 'discussions/3/001-comment.md') {
+          path == '.forkmesh/discussions/3/001-comment.md') {
         request.response.write(
           jsonEncode({
             'content': '''---
@@ -786,7 +786,7 @@ LGTM from mobile.''',
           request.response.write(
             jsonEncode({
               'entries': [
-                {'name': 'latest', 'path': 'releases/latest', 'type': 'dir'},
+                {'name': 'latest', 'path': '.forkmesh/releases/latest', 'type': 'dir'},
               ],
             }),
           );
