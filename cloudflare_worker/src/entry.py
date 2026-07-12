@@ -16245,12 +16245,43 @@ class Default(WorkerEntrypoint):
         except Exception:
             body = "<!doctype html><title>ForkMesh Dashboard</title>"
         if owner and repo and "</head>" in body:
+            canonical = "%s/%s/%s" % (origin, quote(owner), quote(repo))
+            # OpenGraph/Twitter card so social + fediverse shares of the repo
+            # URL (the preview under a federated "new pull request" post, a
+            # Slack unfurl, etc.) render the repo's logo instead of a blank
+            # document icon. Prefer the owner-uploaded repo logo; fall back to
+            # the ForkMesh mark served from the site root.
+            og_image = origin + "/assets/logo.png"
+            try:
+                await ensure_schema(self.env)
+                repo_bi = await blind_index(self.env, owner + "/" + repo)
+                media = await d1_first(
+                    self.env,
+                    "SELECT updated_at FROM repo_media "
+                    "WHERE repo_bi=? AND kind='logo'",
+                    repo_bi)
+                if media:
+                    og_image = "%s/api/repo/%s/%s/media/logo.png?v=%d" % (
+                        origin, quote(owner), quote(repo),
+                        int(media.get("updated_at") or 0))
+            except Exception:
+                pass
+            title = "%s/%s - ForkMesh" % (owner, repo)
             tags = (
-                "<link rel=\"me\" href=\"%s/%s/%s\">"
+                "<link rel=\"me\" href=\"%s\">"
                 "<link rel=\"alternate\" type=\"application/activity+json\" "
                 "href=\"%s/ap/repos/%s/%s\">"
-                % (origin, quote(owner), quote(repo),
-                   origin, quote(owner), quote(repo)))
+                "<meta property=\"og:type\" content=\"website\">"
+                "<meta property=\"og:site_name\" content=\"ForkMesh\">"
+                "<meta property=\"og:url\" content=\"%s\">"
+                "<meta property=\"og:title\" content=\"%s\">"
+                "<meta property=\"og:image\" content=\"%s\">"
+                "<meta name=\"twitter:card\" content=\"summary\">"
+                "<meta name=\"twitter:title\" content=\"%s\">"
+                "<meta name=\"twitter:image\" content=\"%s\">"
+                % (canonical,
+                   origin, quote(owner), quote(repo),
+                   canonical, title, og_image, title, og_image))
             body = body.replace("</head>", tags + "</head>", 1)
         page = Response(body, status=200, headers={
             "content-type": "text/html; charset=utf-8",

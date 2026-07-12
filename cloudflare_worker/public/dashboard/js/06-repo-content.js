@@ -1553,6 +1553,10 @@
         if (copyButton) copyButton.setAttribute("data-dashboard-copy", handle);
         const badgeHandle = $("[data-repo-social-handle]");
         if (badgeHandle) { badgeHandle.textContent = handle; badgeHandle.title = handle; }
+        // Point every "View on Mastodon" link at the authoritative handle.
+        $$("[data-repo-mastodon-link]").forEach((el) => {
+          el.setAttribute("href", `https://mastodon.social/${handle}`);
+        });
       }
       const logo = $("[data-repo-social-logo]");
       if (logo) logo.src = body.logoUrl || body.defaultLogoUrl || "/assets/fediverse-avatar.png";
