@@ -642,13 +642,17 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_quickAddSlashButton, &QPushButton::clicked, this,
             &MainWindow::openQuickAddSlashActions);
 
-    // Icon-only send button inside the prompt frame (paper airplane = send/submit).
-    auto *quickAddSendButton = new QPushButton;
+    // Small send button inside the prompt frame: a paper-airplane icon with a
+    // "new" label (adhoc #28). This is the quick-add "start a new agent / file a
+    // new issue" send path, kept visually distinct from the "add" button that
+    // follows up on the agent already open above. A touch bigger than the old
+    // icon-only square so the label reads clearly.
+    auto *quickAddSendButton = new QPushButton(QStringLiteral("new"));
     quickAddSendButton->setObjectName("quickAddSendIcon");
     quickAddSendButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(quickAddSendButton, "paper-airplane", 15);
-    quickAddSendButton->setFixedSize(24, 24);
-    quickAddSendButton->setToolTip("Send (Enter)");
+    setOcticon(quickAddSendButton, "paper-airplane", 17);
+    quickAddSendButton->setFixedSize(58, 28);
+    quickAddSendButton->setToolTip("Send to a new agent (Enter)");
     connect(quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
 
@@ -656,30 +660,43 @@ QWidget *MainWindow::buildNetworkLogDock()
     // regular send icon (adhoc #99): sends the typed prompt as a follow-up
     // message to the agent session currently open above, instead of the
     // quick-add issue/new-agent flow.
-    m_quickAddSendToAgentButton = new QPushButton;
+    m_quickAddSendToAgentButton = new QPushButton(QStringLiteral("add"));
     m_quickAddSendToAgentButton->setObjectName("quickAddSendIcon");
     m_quickAddSendToAgentButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_quickAddSendToAgentButton, "paper-airplane", 15, -45.0);
-    m_quickAddSendToAgentButton->setFixedSize(24, 24);
+    setOcticon(m_quickAddSendToAgentButton, "paper-airplane", 17, -45.0);
+    m_quickAddSendToAgentButton->setFixedSize(58, 28);
     m_quickAddSendToAgentButton->setToolTip(
         "Send to the agent open above, as a follow-up message");
     connect(m_quickAddSendToAgentButton, &QPushButton::clicked, this, [this] {
         if (!m_issueQuickAdd)
             return;
-        const QString prompt = m_issueQuickAdd->toPlainText().trimmed();
+        const QString typed = m_issueQuickAdd->toPlainText().trimmed();
         if (m_selectedAgentSessionId < 0) {
             logSystem(QStringLiteral(
                 "No agent open above to send that to \xE2\x80\x94 open one first."));
             return;
         }
-        if (prompt.isEmpty()) {
-            // No text typed: just resume the open session with the same agent,
-            // the same thing the old per-session Continue button did (adhoc #178).
+        if (typed.isEmpty() && m_quickAddImages.isEmpty()) {
+            // Nothing typed and nothing attached: just resume the open session
+            // with the same agent, the same thing the old per-session Continue
+            // button did (adhoc #178).
             continueSelectedAgentSession();
             return;
         }
-        recordQuickAddHistory(prompt);
+        // Fold any attached images into the follow-up the same way the new-agent
+        // path does (issue #79): one "Attached image: <path>" line per file, so
+        // the agent open above actually receives the pictures the user attached
+        // rather than the bare text (adhoc #28).
+        QString prompt = typed;
+        for (const QString &img : m_quickAddImages) {
+            if (!prompt.isEmpty() && !prompt.endsWith(QLatin1Char('\n')))
+                prompt += QLatin1Char('\n');
+            prompt += QStringLiteral("Attached image: %1").arg(img);
+        }
+        if (!typed.isEmpty())
+            recordQuickAddHistory(typed);
         m_issueQuickAdd->clear();
+        clearQuickAddImages();
         sendPromptToSelectedAgent(prompt);
     });
 
