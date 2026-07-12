@@ -2858,7 +2858,8 @@ private:
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;
     QString m_connectionStatusColor;      // last dot colour (skip redundant repaints)
-    QLabel *m_topMessage = nullptr;       // compact centered success/failure toast
+    QLabel *m_topMessage = nullptr;       // compact centered success/failure toast text
+    QFrame *m_topMessageContainer = nullptr; // bordered pill wrapping the text + Expand/Copy/✕
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
     QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
