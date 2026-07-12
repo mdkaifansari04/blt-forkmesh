@@ -833,6 +833,43 @@ QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
              viewed ? QStringLiteral(" viewed") : QString(), viewedLink);
 }
 
+QString diffStickyLabelHtml(const DiffFileEntry &f)
+{
+    QString word = QStringLiteral("Modified");
+    if (f.status == QLatin1String("added"))
+        word = QStringLiteral("Added");
+    else if (f.status == QLatin1String("deleted"))
+        word = QStringLiteral("Removed");
+    else if (f.status == QLatin1String("renamed"))
+        word = QStringLiteral("Renamed");
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    const QString muted = QStringLiteral("#8b949e");
+    const QString fg = dark ? QStringLiteral("#e6edf3") : QStringLiteral("#1f2328");
+
+    QString pathHtml;
+    const int slash = f.path.lastIndexOf(QLatin1Char('/'));
+    if (slash >= 0)
+        pathHtml = QStringLiteral(
+                       "<span style='color:%1'>%2</span>"
+                       "<span style='color:%3;font-weight:600'>%4</span>")
+                       .arg(muted, f.path.left(slash + 1).toHtmlEscaped(), fg,
+                            f.path.mid(slash + 1).toHtmlEscaped());
+    else
+        pathHtml = QStringLiteral("<span style='color:%1;font-weight:600'>%2</span>")
+                       .arg(fg, f.path.toHtmlEscaped());
+
+    const QString statHtml =
+        f.binary
+            ? QStringLiteral(" <span style='color:%1'>BIN</span>").arg(muted)
+            : QStringLiteral(" <span style='color:#3fb950;font-weight:700'>+%1</span> "
+                             "<span style='color:#f85149;font-weight:700'>\xE2\x88\x92%2</span>")
+                  .arg(QString::number(f.adds), QString::number(f.dels));
+
+    return QStringLiteral("<span title='%1' style='font-family:monospace;"
+                          "font-size:12px'>%2 &nbsp;%3</span>")
+        .arg(word, pathHtml, statHtml);
+}
+
 QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                               const QString &dir, const QString &base,
                               const QString &head,
