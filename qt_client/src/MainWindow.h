@@ -1097,6 +1097,10 @@ private:
     // Set/clear the conflict badge on a single pull-list row, in place, so async
     // badge updates don't rebuild (and flicker) the whole table.
     void setPullConflictBadge(int number, bool conflict);
+    // Tooltip for a PR's conflict badge: the "why" behind the flag — the files
+    // whose patch no longer applies, pulled from m_pullConflictCache. Falls back
+    // to the bare "has merge conflicts" line when the file list isn't cached.
+    QString pullConflictBadgeTooltip(int number) const;
     void refreshPullList();
     void showPull(int number);
     // Files-changed authorship filter: show only agent- or human-authored files
