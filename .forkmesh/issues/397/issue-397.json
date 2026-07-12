@@ -74,6 +74,18 @@
             "status": "closed",
             "ts": 1783885331226,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "1dd2dddd-0022-4908-8421-bd3620f7e655",
+            "sig": "ygvitNoDAKrAQr8BkY_7TFN0519wW8Z2haWA9xuTxo8WtiJL-zdNpbZSetS2wJQ4d2mEeXBQ4Bm0GGoT2kQ8Aw",
+            "ts": 1783888038493,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -85,6 +97,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "closed",
     "title": "the issue header on the web should only show open issues",
-    "updatedAt": 1783885331226,
+    "updatedAt": 1783888038493,
     "votes": 0
 }
