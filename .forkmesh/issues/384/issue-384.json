@@ -8,6 +8,7 @@
     "bountyStatus": "",
     "bountyUsd": 0,
     "createdAt": 1783206983436,
+    "endDate": 0,
     "events": [
         {
             "attachments": [
@@ -96,6 +97,18 @@
             "status": "closed",
             "ts": 1783889544667,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3ec85491-c149-4075-a418-531d3b2281aa",
+            "sig": "Vp1UcTVKp9kztcJtvselzNSkYyIhxe3u972WdSchv4iD3AANZea6sjU_qhzUcpjiZhiMhn4sECbpGnL53McyAA",
+            "ts": 1783891618318,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -106,8 +119,9 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
+    "startDate": 0,
     "status": "closed",
     "title": "add projects and allow linking issues to projects",
-    "updatedAt": 1783889544667,
+    "updatedAt": 1783891618318,
     "votes": 0
 }
