@@ -114,6 +114,13 @@ public:
     // chatter stays off the public room); without this stamp a desktop USER'S
     // messages were invisible on the website. Default no-op.
     virtual void setAccountKind(const QString &kind) { Q_UNUSED(kind); }
+    // Re-key room encryption once the server-issued shared passphrase arrives.
+    // The passphrase fetch is async and often resolves after the backend is
+    // already connected (it starts from the first heartbeat, which fires after
+    // the initial connect), so a backend seeded with a fallback key must be
+    // able to switch to the real one without a reconnect. Default no-op for
+    // backends without room encryption.
+    virtual void setRoomPassphrase(const QString &passphrase) { Q_UNUSED(passphrase); }
     // Relay a ForkBot reply into a channel on behalf of this client — the bot
     // has no connection of its own; whichever client triggered it broadcasts
     // the answer (the web surfaces do the same). Default no-op.

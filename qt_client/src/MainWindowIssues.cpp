@@ -442,6 +442,7 @@ QWidget *MainWindow::buildIssuesSection()
             .arg(topBarUserName().toHtmlEscaped()));
     commentTitle->setObjectName("issueCommentTitle");
     commentTitle->setTextFormat(Qt::RichText);
+    m_issueComposerTitle = commentTitle;
     m_issueComposer = new MarkdownEditor;
     m_issueComposer->setObjectName("issueCommentEditor");
     m_issueComposer->setMinimumHeight(190);

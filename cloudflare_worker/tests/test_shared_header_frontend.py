@@ -116,15 +116,37 @@ def test_universal_header_is_session_aware():
 def test_universal_header_organizes_all_pages():
     js = _read(PUBLIC / "site-header.js")
 
-    # Primary nav.
-    for href in ("/docs", "/chat", "/network", "/pricing", "/blog", "/status"):
-        assert f'href="{href}"' in js
-    # "More" menu.
-    for href in ("/features", "/desktop", "/about", "/changelog", "/careers",
+    # Every site link lives in the hamburger menu, grouped and fully
+    # expanded — no nested "More" submenu to open.
+    for href in ("/docs", "/chat", "/network", "/pricing", "/blog", "/status",
+                 "/features", "/desktop", "/about", "/changelog", "/careers",
                  "/press", "/mirror-payouts", "/security-report", "/privacy",
                  "/terms"):
         assert f'href="{href}"' in js
-    # Current page highlight + mobile menu.
+    assert "fm-nav-group-title" in js
+    for group in ("Product", "Resources", "Community", "Company",
+                  "Legal &amp; security", "Account"):
+        assert f">{group}</span>" in js
+    assert "More <" not in js
+    # Current page highlight + hamburger menu.
     assert 'aria-current' in js
     assert "fm-header-burger" in js
     assert "fm-header-mobile" in js
+    # Dashboard-chrome parity: version pill, page context, payout shortcut.
+    assert "/api/version" in js
+    assert "fm-header-context" in js
+    assert 'src="/assets/sol.png"' in js
+
+
+def test_blog_posts_mount_universal_header():
+    # Blog posts used to carry their own mini header; they now mount the same
+    # universal header as the rest of the site.
+    posts = sorted((PUBLIC / "blog").glob("*/index.html"))
+    assert posts
+    for page in posts:
+        html = _read(page)
+        assert 'href="/site-header.css"' in html, f"{page} missing header CSS"
+        assert 'src="/site-header.js"' in html, f"{page} missing header JS"
+        assert '<div data-forkmesh-header="simple"></div>' in html, page
+        assert '<header class="top">' not in html, page
+        assert 'class="global-nav"' not in html, page
