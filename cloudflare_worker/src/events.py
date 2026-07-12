@@ -82,6 +82,16 @@ def issue_event_content(ev):
         return ",".join(ev.get("labels") or [])
     if t == "milestone":
         return ev.get("milestone", "") or ""
+    if t == "dates":
+        # Gantt start/end (epoch ms, 0 = unset); must byte-match the client's
+        # IssueStore/ProjectStore contentForSigning "dates" case.
+        parts = []
+        for key in ("startDate", "endDate"):
+            try:
+                parts.append(str(int(ev.get(key, 0) or 0)))
+            except (TypeError, ValueError):
+                parts.append("0")
+        return "\x00".join(parts)
     if t == "priority":
         try:
             return str(int(ev.get("priority", 0)))
