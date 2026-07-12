@@ -275,7 +275,7 @@ void MainWindow::loadArtifactsPanel()
     const QList<MirrorReleaseBlob> blobs = mirrorReleaseBlobs(mirrorPath);
 
     // Map blob sha256 -> asset name / source tag from the release manifests git
-    // already mirrors (releases/<channel>/release.json on the served branch), the
+    // already mirrors (.forkmesh/releases/<channel>/release.json on the served branch), the
     // same way replicateReleaseArtifacts reads them. A blob no manifest names is
     // an orphan and shown as such.
     QHash<QString, QString> nameByHash;
@@ -295,7 +295,7 @@ void MainWindow::loadArtifactsPanel()
             QByteArray manifestOut;
             if (!runGitCapture(mirrorPath,
                                {QStringLiteral("show"),
-                                branch + QStringLiteral(":releases/") + channel +
+                                branch + QStringLiteral(":.forkmesh/releases/") + channel +
                                     QStringLiteral("/release.json")},
                                &manifestOut, nullptr))
                 continue;
@@ -570,12 +570,12 @@ void MainWindow::loadReleasesPanel()
     const QString dir = repoGitDir();
     const bool writable = repoHasWorkingTree();
 
-    // Release artifacts are published under releases/<channel>/release.json (the
-    // channel is usually "latest", NOT the tag name — see releases/README.md and
+    // Release artifacts are published under .forkmesh/releases/<channel>/release.json (the
+    // channel is usually "latest", NOT the tag name — see .forkmesh/releases/README.md and
     // tools/forkmesh-release-publish.sh). Each manifest records the tag it was cut
     // from in its "tag" field, so scan every channel manifest and key the asset
     // names by that tag. The Artifacts column then looks up each release row by
-    // tag, instead of probing a releases/<tag>/ path that the publisher never
+    // tag, instead of probing a .forkmesh/releases/<tag>/ path that the publisher never
     // writes (which left the column always empty).
     // Each artifact name links to its live download on the relay's
     // content-addressed release endpoint (the exact URL install.sh fetches:
@@ -632,7 +632,7 @@ void MainWindow::loadReleasesPanel()
     QString latestChannelShaTooltip;
     QString latestChannelDownloads;
     if (!dir.isEmpty()) {
-        const QDir releasesDir(dir + QStringLiteral("/releases"));
+        const QDir releasesDir(dir + QStringLiteral("/.forkmesh/releases"));
         const QStringList channels =
             releasesDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
         for (const QString &channel : channels) {
@@ -877,7 +877,7 @@ void MainWindow::loadReleasesPanel()
             }
 
             // Artifacts for this tag come from the channel manifest scanned above
-            // (keyed by the manifest's own "tag" field), not a releases/<tag>/ path.
+            // (keyed by the manifest's own "tag" field), not a .forkmesh/releases/<tag>/ path.
             // The asset names are rendered as live-download links, so use a
             // rich-text label cell that opens the URL in the browser on click.
             QString artifactsHtml = artifactsByTag.value(tag);
@@ -2106,7 +2106,7 @@ void MainWindow::replicateReleaseArtifacts(int index)
     if (branch.isEmpty())
         return;
 
-    // Release manifests are committed metadata (releases/<channel>/release.json)
+    // Release manifests are committed metadata (.forkmesh/releases/<channel>/release.json)
     // that git already mirrors; only the binary bytes live out of git in the
     // per-node content-addressed store (issue #304). Read every channel's manifest
     // from the served branch, collect the asset blob hashes we don't already hold,
@@ -2117,7 +2117,7 @@ void MainWindow::replicateReleaseArtifacts(int index)
                         QStringLiteral("--name-only"),
                         branch + QStringLiteral(":releases")},
                        &channelsOut, nullptr))
-        return; // no releases/ tree on this branch — nothing to mirror
+        return; // no .forkmesh/releases/ tree on this branch — nothing to mirror
     static const QRegularExpression sha256Re(QStringLiteral("\\A[0-9a-f]{64}\\z"));
     // Every mirror of this repo shares the same source identity; a manifest that
     // doesn't name its own staging repo falls back to it.
@@ -2132,7 +2132,7 @@ void MainWindow::replicateReleaseArtifacts(int index)
         QByteArray manifestOut;
         if (!runGitCapture(mirrorPath,
                            {QStringLiteral("show"),
-                            branch + QStringLiteral(":releases/") + channel +
+                            branch + QStringLiteral(":.forkmesh/releases/") + channel +
                                 QStringLiteral("/release.json")},
                            &manifestOut, nullptr))
             continue;

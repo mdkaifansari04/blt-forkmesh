@@ -392,8 +392,8 @@ QPushButton#repoMenuButton:hover {
     color: #8b949e; font-size: 13px; font-weight: 700; padding: 5px 10px;
     min-width: 126px; max-width: 126px;
 }
-#topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
-              padding: 2px 12px; font-size: 12px; font-weight: 600; }
+#topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
+#topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
 #topMessageOverlay { background-color: #161b22; border: 1px solid #30363d;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #c9d1d9; }
@@ -1564,8 +1564,8 @@ QPushButton#repoMenuButton:hover {
     color: #656d76; font-size: 13px; font-weight: 700; padding: 5px 10px;
     min-width: 126px; max-width: 126px;
 }
-#topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
-              padding: 2px 12px; font-size: 12px; font-weight: 600; }
+#topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }
+#topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
 #topMessageOverlay { background-color: #ffffff; border: 1px solid #d0d7de;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #1f2328; }

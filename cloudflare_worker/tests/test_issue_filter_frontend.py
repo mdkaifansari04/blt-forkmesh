@@ -78,7 +78,9 @@ def test_dashboard_js_loads_issues_from_git_tree_and_counts_open():
     # The default Open view is rendered through the filter, and the tab badge
     # counts the open issues.
     assert 'issuesView.filter = "open";' in load
-    assert 'setRepoTabCount("issues", items.filter((issue) => issue.status === "open").length);' in load
+    # The badge counts open issues across the mirror list plus any persisted
+    # offline-owner submissions folded in (merged; see issue #379).
+    assert 'setRepoTabCount("issues", merged.filter((issue) => issue.status === "open").length);' in load
     assert "renderRepoIssues();" in load
 
 
