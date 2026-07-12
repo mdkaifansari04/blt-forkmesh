@@ -3072,9 +3072,16 @@ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUse
     runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
                       clientDir, [this, buildDir, appPath] {
         setUpdateStatus("Rebuilding...");
+        // Cap parallelism by RAM, not just cores: cc1plus peaks well past
+        // 1 GB on the big Qt translation units, and an OOM kill during an
+        // in-place update can take out the RUNNING node — which nothing
+        // restarts (the fleet daemons run under nohup, no supervisor).
+        int jobs = QThread::idealThreadCount();
+        const qint64 totalRam = SystemStats::totalMemoryBytes();
+        if (totalRam > 0)
+            jobs = qBound(1, int(totalRam / (1536LL * 1024 * 1024)), jobs);
         runUpdateStepUser("cmake",
-                          {"--build", buildDir, "-j",
-                           QString::number(QThread::idealThreadCount())},
+                          {"--build", buildDir, "-j", QString::number(jobs)},
                           buildDir, [this, buildDir, appPath] {
             const QString built = builtExecutablePath(buildDir);
             installAndRelaunch(built, appPath);
@@ -3082,25 +3089,75 @@ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUse
     });
 }
 
+// Run `<binary> --version` (optionally as another user) and require a clean
+// zero exit. --version returns before the Qt platform, root-gate and
+// single-instance setup, so this validates the binary loads and runs on THIS
+// machine (not truncated, right arch, shared libraries resolvable) without
+// disturbing the running node. Binaries predating the flag start the full app
+// instead — the timeout kill fails them, which is the safe direction.
+static bool binaryPassesStartCheck(const QString &binary, const QString &asUser)
+{
+    QProcess probe;
+    if (asUser.isEmpty()) {
+        probe.start(binary, {QStringLiteral("--version")});
+    } else {
+        probe.start(QStringLiteral("sudo"),
+                    {QStringLiteral("-u"), asUser, QStringLiteral("-H"), binary,
+                     QStringLiteral("--version")});
+    }
+    if (!probe.waitForStarted(5000))
+        return false;
+    if (!probe.waitForFinished(15000)) {
+        probe.kill();
+        probe.waitForFinished(2000);
+        return false;
+    }
+    return probe.exitStatus() == QProcess::NormalExit && probe.exitCode() == 0;
+}
+
 void MainWindow::installAndRelaunch(const QString &built, const QString &appPath)
 {
+    // The relaunch MUST carry the arguments this instance was started with:
+    // fleet nodes run headless as `forkmesh --allow-root`, and a respawn with
+    // no arguments hits the root gate in main() and exits immediately. With
+    // no supervisor behind the nohup daemon (install.sh), that argument drop
+    // permanently killed every flag-launched node that completed the v0.6.2
+    // update.
+    const QStringList relaunchArgs = QCoreApplication::arguments().mid(1);
+
     if (!m_updateAsUser.isEmpty()) {
         // Install and relaunch as the user so the binary is theirs, not root's.
+        // Keep the previous binary beside it: no failure past this point may
+        // leave the box with nothing runnable at appPath.
         const QString binDir = QFileInfo(appPath).absolutePath();
         const QString script =
-            QStringLiteral("mkdir -p %1 && cp -f %2 %3 && chmod 0755 %3")
+            QStringLiteral("mkdir -p %1 && { [ ! -e %3 ] || cp -f %3 %3.bak-update; }"
+                           " && cp -f %2 %3 && chmod 0755 %3")
                 .arg(shellSingleQuote(binDir), shellSingleQuote(built),
                      shellSingleQuote(appPath));
         setUpdateStatus("Installing for " + m_updateAsUser + "...");
+        const QString probeUser = m_updateAsUser;
+        if (!binaryPassesStartCheck(built, probeUser)) {
+            setUpdateStatus("Update failed: the new build did not pass its "
+                            "start check; keeping the current version.",
+                            true);
+            stopRestartSpin();
+            if (m_buildButton)
+                m_buildButton->setEnabled(true);
+            return;
+        }
         runUpdateStep("sudo", {"-u", m_updateAsUser, "-H", "sh", "-c", script},
-                      QDir::tempPath(), [this, appPath] {
+                      QDir::tempPath(), [this, appPath, relaunchArgs] {
             setUpdateStatus("Relaunching...");
             const QString user = m_updateAsUser;
             // Release the instance lock first so the replacement process (which
             // runs as a different user here, but may still share this user's
             // data on a single-user box) doesn't bounce off it before we quit.
             forkmesh::releaseSingleInstance();
-            QProcess::startDetached("sudo", {"-u", user, "-H", appPath});
+            QStringList args{QStringLiteral("-u"), user, QStringLiteral("-H"),
+                             appPath};
+            args += relaunchArgs;
+            QProcess::startDetached("sudo", args);
             logRestart(QStringLiteral("relaunched %1; quitting").arg(appPath));
             logSystem(QStringLiteral("=== Restarting now (rebuild & restart) ==="));
             QCoreApplication::quit();
@@ -3108,12 +3165,32 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
         return;
     }
 
-    // In-process update: replace the running binary over its own path (the
-    // running inode stays valid) and relaunch directly.
+    // In-process update: validate the new binary, park the old one as
+    // .bak-update, then replace over the running path (the running inode
+    // stays valid) and relaunch.
+    if (!binaryPassesStartCheck(built, QString())) {
+        setUpdateStatus("Update failed: the new build did not pass its start "
+                        "check; keeping the current version.",
+                        true);
+        stopRestartSpin();
+        if (m_buildButton)
+            m_buildButton->setEnabled(true);
+        return;
+    }
     if (QFileInfo(built).canonicalFilePath() !=
         QFileInfo(appPath).canonicalFilePath()) {
-        QFile::remove(appPath);
+        const QString bak = appPath + QStringLiteral(".bak-update");
+        QFile::remove(bak);
+        if (!QFile::rename(appPath, bak)) {
+            setUpdateStatus("Update failed: could not move the current binary "
+                            "aside at " + appPath, true);
+            stopRestartSpin();
+            if (m_buildButton)
+                m_buildButton->setEnabled(true);
+            return;
+        }
         if (!QFile::copy(built, appPath)) {
+            QFile::rename(bak, appPath); // restore — never leave appPath empty
             setUpdateStatus("Update failed: could not replace " + appPath, true);
             stopRestartSpin();
             if (m_buildButton)
@@ -3131,7 +3208,15 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
     // bounces off the still-held lock (this process hasn't unwound yet) and
     // exits into nothing instead of taking over.
     forkmesh::releaseSingleInstance();
-    QProcess::startDetached(appPath, {});
+    if (!QProcess::startDetached(appPath, relaunchArgs)) {
+        setUpdateStatus("Update installed but the relaunch failed; still "
+                        "running the previous version in memory.",
+                        true);
+        stopRestartSpin();
+        if (m_buildButton)
+            m_buildButton->setEnabled(true);
+        return;
+    }
     logRestart(QStringLiteral("relaunched %1; quitting").arg(appPath));
     logSystem(QStringLiteral("=== Restarting now (rebuild & restart) ==="));
     QCoreApplication::quit();
@@ -3161,6 +3246,208 @@ QString MainWindow::resolveInstallCloneUrl()
     clone.setQuery(QString());
     clone.setFragment(QString());
     return clone.toString();
+}
+
+// ---- Auto-update via prebuilt release artifacts -----------------------------
+// Rebuilding from source next to the live node is what killed the fleet when
+// v0.6.2 was tagged: every auto-updating node cloned through the relay and ran
+// a full cmake build on its own (often 1 GB) box, and any death mid-flow was
+// permanent because the nohup daemons have no supervisor. The release pipeline
+// already publishes sha256-named binaries into the mesh's content-addressed
+// store, so prefer those: verify, smoke-test, swap, relaunch. Source rebuild
+// stays as the fallback for platforms with no matching artifact.
+
+static bool fileSha256Matches(const QString &path, const QString &expected)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    QCryptographicHash hasher(QCryptographicHash::Sha256);
+    if (!hasher.addData(&file))
+        return false;
+    return QString::fromLatin1(hasher.result().toHex()) ==
+           expected.toLower();
+}
+
+bool MainWindow::tryPrebuiltAutoUpdate(const QString &clientDir,
+                                       const QString &tag,
+                                       const QString &tagCommit)
+{
+    // Root-under-sudo installs relaunch as the invoking user through the
+    // rebuild plumbing's sudo wrappers; keep them on that path.
+    if (!invokingNonRootUser().isEmpty())
+        return false;
+
+#if defined(Q_OS_LINUX)
+    const QString wantOs = QStringLiteral("linux");
+#elif defined(Q_OS_MACOS)
+    const QString wantOs = QStringLiteral("macos");
+#elif defined(Q_OS_WIN)
+    const QString wantOs = QStringLiteral("windows");
+#else
+    return false;
+#endif
+    const QString wantArch = QSysInfo::currentCpuArchitecture();
+
+    // The manifest is committed in the repo, so the checkout whose tags were
+    // just fetched already carries it — no extra network round-trip.
+    QByteArray manifestOut;
+    if (!runGitCapture(clientDir,
+                       {QStringLiteral("show"),
+                        tagCommit +
+                            QStringLiteral(":releases/latest/release.json")},
+                       &manifestOut, nullptr)) {
+        logSystem(QStringLiteral("Auto-update: release %1 publishes no "
+                                 "artifact manifest; building from source.")
+                      .arg(tag));
+        return false;
+    }
+    const QJsonObject manifest = QJsonDocument::fromJson(manifestOut).object();
+    static const QRegularExpression sha256Re(
+        QStringLiteral("\\A[0-9a-f]{64}\\z"));
+    QString assetHash;
+    QString assetName;
+    const QJsonArray assets =
+        manifest.value(QStringLiteral("assets")).toArray();
+    for (const QJsonValue &value : assets) {
+        const QJsonObject asset = value.toObject();
+        if (asset.value(QStringLiteral("os")).toString().trimmed() != wantOs)
+            continue;
+        if (asset.value(QStringLiteral("arch")).toString().trimmed() !=
+            wantArch)
+            continue;
+        const QString hash = asset.value(QStringLiteral("blob_sha256"))
+                                 .toString()
+                                 .trimmed()
+                                 .toLower();
+        if (!sha256Re.match(hash).hasMatch())
+            continue;
+        assetHash = hash;
+        assetName = asset.value(QStringLiteral("name")).toString();
+        break;
+    }
+    const QString manifestRepo =
+        manifest.value(QStringLiteral("repo")).toString().trimmed();
+    const int slash = manifestRepo.indexOf(QLatin1Char('/'));
+    if (assetHash.isEmpty() || slash <= 0) {
+        logSystem(QStringLiteral("Auto-update: release %1 has no prebuilt "
+                                 "artifact for %2/%3; building from source.")
+                      .arg(tag, wantOs, wantArch));
+        return false;
+    }
+
+    // Mirrors of the client repo replicate release artifacts into their CAS
+    // (replicateReleaseArtifacts), so a node that mirrors it usually holds
+    // the bytes already: verify and install with no download at all.
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (repo.previewOnly || repo.mirrorPath.trimmed().isEmpty())
+            continue;
+        const QString identity =
+            repoSegment(repo.owner, QStringLiteral("owner")) +
+            QLatin1Char('/') +
+            repoSegment(repo.name, QStringLiteral("repository"));
+        if (identity.compare(manifestRepo, Qt::CaseInsensitive) != 0)
+            continue;
+        const QString blob = mirrorReleaseBlobPath(repo.mirrorPath, assetHash);
+        if (QFile::exists(blob) && fileSha256Matches(blob, assetHash)) {
+            logSystem(QStringLiteral("Auto-update: installing release %1 from "
+                                     "this node's own artifact store (%2).")
+                          .arg(tag, assetName));
+            installPrebuiltAndRelaunch(blob, tag);
+            return true;
+        }
+    }
+
+    // Otherwise stream the blob from the relay's content-addressed route,
+    // hashing as it downloads (same pattern as downloadNextReleaseBlob).
+    if (!m_networkAccess)
+        return false;
+    const QString owner = manifestRepo.left(slash);
+    const QString name = manifestRepo.mid(slash + 1);
+    const QString staging =
+        QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+            .filePath(QStringLiteral("forkmesh-update-") + assetHash.left(12));
+    auto tmp = std::make_shared<QFile>(staging + QStringLiteral(".part"));
+    if (!tmp->open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    auto hasher =
+        std::make_shared<QCryptographicHash>(QCryptographicHash::Sha256);
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repo/%1/%2/releases/blob/sha256/%3")
+                    .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
+                         QString::fromUtf8(QUrl::toPercentEncoding(name)),
+                         assetHash));
+    logSystem(QStringLiteral(
+                  "Auto-update: downloading the release %1 artifact (%2)...")
+                  .arg(tag, assetName));
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::readyRead, this, [reply, tmp, hasher] {
+        const QByteArray chunk = reply->readAll();
+        tmp->write(chunk);
+        hasher->addData(chunk);
+    });
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, tmp, hasher, staging, assetHash, tag] {
+                const QByteArray rest = reply->readAll();
+                tmp->write(rest);
+                hasher->addData(rest);
+                const bool ok = reply->error() == QNetworkReply::NoError;
+                const QString netError = reply->errorString();
+                reply->deleteLater();
+                tmp->close();
+                const QString actual =
+                    QString::fromLatin1(hasher->result().toHex());
+                if (!ok || actual != assetHash) {
+                    QFile::remove(tmp->fileName());
+                    logSystem(
+                        QStringLiteral(
+                            "Auto-update: artifact download for %1 failed "
+                            "(%2); falling back to a source build.")
+                            .arg(tag, ok ? QStringLiteral("checksum mismatch")
+                                         : netError));
+                    updateRebuildRestart();
+                    return;
+                }
+                QFile::remove(staging);
+                if (!QFile::rename(tmp->fileName(), staging)) {
+                    QFile::remove(tmp->fileName());
+                    updateRebuildRestart();
+                    return;
+                }
+                installPrebuiltAndRelaunch(staging, tag);
+            });
+    return true;
+}
+
+void MainWindow::installPrebuiltAndRelaunch(const QString &artifactPath,
+                                            const QString &tag)
+{
+    // Stage a private executable copy — the CAS blob is not executable and
+    // may sit on a different filesystem than the installed binary.
+    const QString staged =
+        QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+            .filePath(QStringLiteral("forkmesh-update-staged"));
+    if (staged != artifactPath) {
+        QFile::remove(staged);
+        if (!QFile::copy(artifactPath, staged)) {
+            logSystem(QStringLiteral("Auto-update: could not stage the %1 "
+                                     "artifact; falling back to a source "
+                                     "build.")
+                          .arg(tag));
+            updateRebuildRestart();
+            return;
+        }
+    }
+    QFile::setPermissions(staged, QFile::ReadOwner | QFile::WriteOwner |
+                                      QFile::ExeOwner | QFile::ReadGroup |
+                                      QFile::ExeGroup | QFile::ReadOther |
+                                      QFile::ExeOther);
+    logRestart(QStringLiteral("prebuilt update to %1 staged").arg(tag));
+    // installAndRelaunch smoke-tests the staged binary (--version) before
+    // touching the installed one, parks the old binary as .bak-update, and
+    // relaunches with this instance's own arguments.
+    m_updateAsUser.clear();
+    installAndRelaunch(staged, QCoreApplication::applicationFilePath());
 }
 
 void MainWindow::updateRebuildRestart()
