@@ -2974,6 +2974,37 @@ QString formatDayDividerHtml(const QString &date, bool dark)
              (pretty.isEmpty() ? date : pretty).toHtmlEscaped(), dividerDashColor);
 }
 
+// Wraps http(s) URLs in the (already HTML-escaped) message with <a> tags so
+// they render as clickable links that open in the system browser (adhoc #42),
+// without disturbing the surrounding escaped text.
+QString linkifyEscapedMessage(const QString &escaped)
+{
+    static const QRegularExpression urlRe(
+        QStringLiteral("https?://[^\\s&<]+(&(?!amp;|lt;|gt;|quot;|#39;)[^\\s&<]*)*"));
+    QString html;
+    int lastEnd = 0;
+    auto it = urlRe.globalMatch(escaped);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        // Trailing punctuation commonly follows a URL in log prose ("...stats.")
+        // and shouldn't be swallowed into the link itself.
+        QString url = m.captured(0);
+        int len = url.size();
+        while (len > 0 &&
+               QStringLiteral(".,;:!?)").contains(url.at(len - 1))) {
+            --len;
+        }
+        url.truncate(len);
+        if (url.isEmpty())
+            continue;
+        html += escaped.mid(lastEnd, m.capturedStart(0) - lastEnd);
+        html += QStringLiteral("<a href='%1' style='color:inherit'>%1</a>").arg(url);
+        lastEnd = m.capturedStart(0) + len;
+    }
+    html += escaped.mid(lastEnd);
+    return html;
+}
+
 QString formatLogLineHtml(const QString &time, const QString &message, bool dark)
 {
     const QString messageColor =
@@ -2989,7 +3020,7 @@ QString formatLogLineHtml(const QString &time, const QString &message, bool dark
                 "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
                 "<span style='color:%3'>%4</span>")
                 .arg(style.accent, style.badge.leftJustified(7).toHtmlEscaped(),
-                     messageColor, message.toHtmlEscaped());
+                     messageColor, linkifyEscapedMessage(message.toHtmlEscaped()));
     return html;
 }
 } // namespace

@@ -2449,9 +2449,10 @@ QWidget *MainWindow::buildLogSection()
     clearButton->setToolTip("Clear the network log");
     setOcticon(clearButton, "trash", 14);
 
-    m_settingsLog = new QPlainTextEdit;
+    m_settingsLog = new QTextBrowser;
     m_settingsLog->setReadOnly(true);
     m_settingsLog->setObjectName("networkLog");
+    m_settingsLog->setOpenExternalLinks(true);
     // No setMaximumBlockCount here: that trims blocks from the *top* of the
     // document, which would silently discard the older segments this view now
     // loads on demand when the user scrolls up (adhoc #15). m_networkLog
