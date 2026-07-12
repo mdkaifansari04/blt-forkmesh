@@ -443,7 +443,7 @@ QWidget *MainWindow::buildNetworkLogDock()
             selectModelComboValue(
                 m_quickAddClaudeModel,
                 QSettings().value(kClaudeCodeModelSetting).toString().trimmed());
-            refreshClaudeModelCombo();
+            applyLiveClaudeModelsToCombos();
         } else if (agentIsCodexProvider(provider)) {
             populateCodexModelCombo(m_quickAddClaudeModel);
             m_quickAddClaudeModel->setProperty("claudeModelCombo", false);
@@ -2598,7 +2598,13 @@ QWidget *MainWindow::buildBreadcrumb()
     // other trigger keeps it current between those.
     auto *tokenUsage = new TokenUsageMiniChart;
     m_navTokenUsage = tokenUsage;
-    tokenUsage->onHover = [this] { refreshClaudeCodeUsage(); };
+    // This hover is also the only place that re-fetches the live claude-code
+    // model list (GET /v1/models, adhoc #41) — everywhere else that touches a
+    // model combo just applies whatever's already cached.
+    tokenUsage->onHover = [this] {
+        refreshClaudeCodeUsage();
+        refreshClaudeModelCombo();
+    };
     {
         QSettings settings;
         auto restore = [&](bool weekly, const QString &key) {
@@ -6804,6 +6810,11 @@ void MainWindow::refreshHostsTable()
         cellRow->addWidget(viewLogsBtn);
         m_hostsTable->setCellWidget(i, 4, cell);
     }
+
+    if (m_hostsNavButton)
+        m_hostsNavButton->setText(hosts.isEmpty()
+            ? QStringLiteral("Hosts")
+            : QStringLiteral("Hosts (%1)").arg(hosts.size()));
 }
 
 // --- Nodes ------------------------------------------------------------------
@@ -7077,6 +7088,10 @@ void MainWindow::refreshNodesTable()
                   .arg(m_nodeMenuEntries.size() == 1 ? "" : "s")
                   .arg(online));
     }
+    if (m_nodesNavButton)
+        m_nodesNavButton->setText(m_nodeMenuEntries.isEmpty()
+            ? QStringLiteral("Nodes")
+            : QStringLiteral("Nodes (%1)").arg(m_nodeMenuEntries.size()));
 
     // Re-open the previously shown node's detail (find it by name post-sort), or
     // default to the first row.
@@ -7417,6 +7432,10 @@ void MainWindow::refreshRelaysTable()
             ? QStringLiteral("No relays configured.")
             : QString::fromUtf8("Probing %1 relay(s)\xE2\x80\xA6")
                   .arg(m_servers.size()));
+    if (m_relaysNavButton)
+        m_relaysNavButton->setText(m_servers.isEmpty()
+            ? QStringLiteral("Relays")
+            : QStringLiteral("Relays (%1)").arg(m_servers.size()));
     for (int i = 0; i < m_servers.size(); ++i)
         probeRelayRow(i);
 }
