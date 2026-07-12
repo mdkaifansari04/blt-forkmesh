@@ -202,7 +202,7 @@
 	                  <section data-repo-readme class="mt-4 overflow-hidden rounded-lg border border-border bg-background">
 	                    <div data-repo-readme-filename class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="book-open" class="h-3.5 w-3.5 text-muted-foreground"></i>README.md</div>
 	                    <div data-repo-readme-body class="p-4 text-sm leading-6 text-muted-foreground">
-	                      <p class="mt-1">Loading README...</p>
+	                      <p class="mt-1">${loadingHtml("Loading README...")}</p>
 	                    </div>
 	                  </section>
 	                </div>
@@ -976,7 +976,7 @@
     const crumb = $("[data-repo-detail-crumb]");
     if (crumb && requested) crumb.textContent = requested;
     if (detail && requested) {
-      detail.innerHTML = '<p class="text-sm text-muted-foreground">Loading repository…</p>';
+      detail.innerHTML = `<p class="text-sm text-muted-foreground">${loadingHtml("Loading repository…")}</p>`;
     }
     // findRepository needs the catalog (alias/canonical grouping), so this page
     // does wait on the shared fetch before rendering the detail body.

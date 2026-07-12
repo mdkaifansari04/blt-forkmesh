@@ -234,6 +234,27 @@
         font-size: 11px;
       }
 
+      /* Shared loading indicator: inherits currentColor so it matches the
+         muted text it sits next to in either theme. */
+      .fm-spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid currentColor;
+        border-right-color: transparent;
+        border-radius: 9999px;
+        opacity: 0.75;
+        vertical-align: -2px;
+        margin-right: 8px;
+        animation: fm-spin 0.7s linear infinite;
+      }
+
+      @keyframes fm-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
       .view {
         display: none;
       }
@@ -706,7 +727,7 @@
                         <span data-network-node-count class="text-xs text-muted-foreground font-mono">Loading</span>
                       </div>
                       <div data-network-node-list class="divide-y divide-border">
-                        <div class="px-4 py-3 text-sm text-muted-foreground">Loading recent network...</div>
+                        <div class="px-4 py-3 text-sm text-muted-foreground"><span class="fm-spinner" aria-hidden="true"></span>Loading recent network...</div>
                       </div>
                     </div>
 
