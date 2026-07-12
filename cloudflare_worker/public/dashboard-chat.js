@@ -109,7 +109,11 @@
     const headers = { accept: "application/json" };
     if (token) headers.authorization = "Bearer " + token;
     const res = await fetch(ROOM_KEY_ENDPOINT, { headers, cache: "no-store" });
-    if (!res.ok) throw new Error("Sign in to join chat — room key unavailable.");
+    if (!res.ok) {
+      const err = new Error("Sign in to join chat — room key unavailable.");
+      err.code = res.status === 401 || res.status === 403 ? "auth" : "server";
+      throw err;
+    }
     const data = await res.json().catch(() => ({}));
     if (!data || !data.passphrase) throw new Error("Room key unavailable.");
     roomPassphrase = String(data.passphrase);
@@ -698,14 +702,24 @@
       showUserOnlyState();
       return;
     }
+    // WebCrypto (crypto.subtle) only exists in a secure context. On plain HTTP
+    // — a self-hosted node or LAN IP opened on mobile — it is undefined, so the
+    // room key can never derive. Say so plainly instead of the old blanket
+    // "Encryption unavailable", which read like a transient glitch.
+    if (!window.isSecureContext || !(window.crypto && window.crypto.subtle)) {
+      setStatus("Chat needs a secure (HTTPS) connection");
+      return;
+    }
     connecting = true;
     setInputsEnabled(true);
     setStatus("Connecting...");
     try {
       if (!roomKey) roomKey = await deriveRoomKey();
-    } catch (_) {
+    } catch (err) {
       connecting = false;
-      setStatus("Encryption unavailable");
+      // An expired/absent session token 401s the room-key fetch; tell the user
+      // to sign in again rather than blaming encryption.
+      setStatus(err && err.code === "auth" ? "Sign in again to join chat" : "Encryption unavailable");
       return;
     }
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
