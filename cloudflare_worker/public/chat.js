@@ -166,7 +166,9 @@ async function fetchRoomPassphrase() {
   if (token) headers.authorization = "Bearer " + token;
   const res = await fetch(ROOM_KEY_ENDPOINT, { headers, cache: "no-store" });
   if (!res.ok) {
-    throw new Error("Sign in to join chat — could not fetch the room key.");
+    const err = new Error("Sign in to join chat — could not fetch the room key.");
+    err.code = res.status === 401 || res.status === 403 ? "auth" : "server";
+    throw err;
   }
   const data = await res.json().catch(() => ({}));
   if (!data || !data.passphrase) throw new Error("Room key unavailable.");
@@ -1337,13 +1339,24 @@ async function connect() {
     lockChatForNonUser();
     return;
   }
+  // WebCrypto (crypto.subtle) only exists in a secure context. Served over
+  // plain HTTP — a self-hosted node or LAN IP opened on mobile — it is
+  // undefined, so the room key can never derive. Say so plainly.
+  if (!window.isSecureContext || !(window.crypto && window.crypto.subtle)) {
+    setStatus("Chat needs a secure (HTTPS) connection");
+    return;
+  }
   connecting = true;
   setStatus("Connecting...");
   try {
     if (!roomKey) roomKey = await deriveRoomKey();
   } catch (error) {
     connecting = false;
-    setStatus("Encryption unavailable in this browser");
+    // An expired/absent session token 401s the room-key fetch; point the user
+    // at re-authenticating instead of blaming the browser's crypto.
+    setStatus(error && error.code === "auth"
+      ? "Sign in again to join chat"
+      : "Encryption unavailable in this browser");
     return;
   }
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
