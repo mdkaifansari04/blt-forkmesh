@@ -76,6 +76,17 @@
             "sig": "NHSmbV56lF3wpRvkJKT08URJJp_Y8GOSmyNFUzgjxzYH2jMWCnW1psXAHWPO9Ha4JQIyMXYhdZaW0GyUm9woCg",
             "ts": 1783884384513,
             "type": "comment"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-384-add-projects-and-allow-linking-issues-to-project\".",
+            "id": "36d1d0c0-61f3-499e-910e-0e12b9762776",
+            "sig": "Av7XsP-U0JnwBq2PNLJXwNqAxTNGzk70QSsO3DY3KdhizmJ6RYG_kCEXmAAFopg3V1ORth1eZT4K4bEwXOJrAw",
+            "ts": 1783889544602,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -88,6 +99,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "add projects and allow linking issues to projects",
-    "updatedAt": 1783884384513,
+    "updatedAt": 1783889544602,
     "votes": 0
 }
