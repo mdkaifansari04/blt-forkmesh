@@ -5324,7 +5324,7 @@ bool isInboxDataPath(const QString &rel)
 {
     return rel.startsWith(QLatin1String(".forkmesh/issues/"))
         || rel.startsWith(QLatin1String("pulls/"))
-        || rel.startsWith(QLatin1String("commits/"))
+        || rel.startsWith(QLatin1String(".forkmesh/commits/"))
         || rel.startsWith(QLatin1String(".forkmesh/"));
 }
 

@@ -5,7 +5,7 @@
 # update. Deriving it from release.json keeps a single source of truth for
 # "what is the latest release" — see /docs#installers-updates.
 #
-# Emits: releases/<channel>/appcast.xml
+# Emits: .forkmesh/releases/<channel>/appcast.xml
 #
 # Usage:
 #   tools/package/generate-appcast.sh [--channel latest] [--host https://forkmesh.com]
@@ -33,9 +33,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-meta="releases/${channel}/release.json"
+meta=".forkmesh/releases/${channel}/release.json"
 [ -f "$meta" ] || { echo "Error: no manifest at $meta" >&2; exit 1; }
-out="releases/${channel}/appcast.xml"
+out=".forkmesh/releases/${channel}/appcast.xml"
 
 log() { echo "[appcast] $*" >&2; }
 host="${host%/}"
