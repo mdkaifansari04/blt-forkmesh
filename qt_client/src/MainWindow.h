@@ -1471,8 +1471,15 @@ private:
     // (GET /v1/models) and merge them into the composer's per-session model
     // picker, so the dropdown reflects the live line-up (new releases appear
     // without an app update). Best-effort: on any failure the static defaults
-    // from populateClaudeModelCombo() stand.
+    // from populateClaudeModelCombo() stand. Only called from the top-bar
+    // usage chart's hover (adhoc #41) so opening/switching model combos never
+    // hits the provider on its own.
     void refreshClaudeModelCombo();
+    // Push whatever's already cached in m_liveClaudeModels into every model
+    // combo without touching the network. Call this anywhere a combo is
+    // built/switched so it reflects the last live fetch; only the hover-driven
+    // refreshClaudeModelCombo() actually re-fetches.
+    void applyLiveClaudeModelsToCombos();
     // Codex currently exposes ForkMesh's locally tracked rolling-window
     // remaining time rather than a live provider utilization API. Keep the
     // top-bar Codex meter in sync with the Agents-page usage-limit countdown.
@@ -4466,8 +4473,8 @@ private:
     QSet<QString> m_externalStopped;         // uuids we've stopped — keep them idle
     QSet<QString> ownStreamCwds() const;    // dirs ForkMesh's own streams drive
     // Epoch-ms of the last live provider model-list fetch (see
-    // refreshClaudeModelCombo). Throttles re-fetches so browsing sessions doesn't
-    // hit /v1/models on every click while still keeping the list current.
+    // refreshClaudeModelCombo). Throttles re-fetches so repeated hovers of the
+    // top-bar usage chart don't hammer /v1/models.
     qint64 m_claudeModelsFetchedMs = 0;
     // The `data` array from the last successful /v1/models fetch, cached so a
     // model combo built after the fetch still gets the live line-up merged in

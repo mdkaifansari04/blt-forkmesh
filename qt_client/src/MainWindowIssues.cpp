@@ -811,10 +811,10 @@ QWidget *MainWindow::buildIssuesSection()
                     fillAgentFixModelCombo(
                         m_issueAgentModel,
                         m_issueAgentProvider->currentData().toString());
-                    refreshClaudeModelCombo();
+                    applyLiveClaudeModelsToCombos();
                 }
             });
-    refreshClaudeModelCombo();
+    applyLiveClaudeModelsToCombos();
     m_issueAssignAgentButton = makeEditorButton("Assign agent", "ghostButton");
     m_issueAgentCreatePrCheck = new QCheckBox("Create a PR", meta);
     m_issueAgentCreatePrCheck->setToolTip(
@@ -4510,13 +4510,15 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (handleFramelessResizeEvent(obj, event))
         return true;
 
-    // A Claude model combo's popup list view was shown: re-fetch the live model
-    // list so the dropdown always reflects the provider's current line-up.
+    // A Claude model combo's popup list view was shown: apply whatever's
+    // cached so the dropdown reflects the last live fetch. No network call
+    // here (see applyLiveClaudeModelsToCombos) — that only happens on the
+    // top-bar usage chart's hover.
     if (event->type() == QEvent::Show) {
         if (auto *w = qobject_cast<QWidget *>(obj)) {
             if (auto *combo = qobject_cast<QComboBox *>(w->parent())) {
                 if (combo->property("claudeModelCombo").toBool())
-                    refreshClaudeModelCombo();
+                    applyLiveClaudeModelsToCombos();
             }
         }
     }

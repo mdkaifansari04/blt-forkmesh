@@ -2145,46 +2145,51 @@ void MainWindow::refreshClaudeCodeUsage()
     });
 }
 
-// Apply the cached live model list to all claude-code model combos. Used both
-// at startup (to apply an already-fetched list to a freshly built combo) and
-// from the eventFilter popup-open path (throttle keeps it from hammering the API).
+// Apply whatever's already cached in m_liveClaudeModels to every claude-code
+// model combo. No network I/O — safe to call whenever a combo is built or
+// switched so it reflects the last live fetch (see refreshClaudeModelCombo).
+void MainWindow::applyLiveClaudeModelsToCombos()
+{
+    if (m_liveClaudeModels.isEmpty())
+        return;
+    const QJsonArray &models = m_liveClaudeModels;
+    mergeLiveClaudeModels(m_quickAddClaudeModel, models);
+    // Restore saved quick-add model after replacing the list.
+    if (m_quickAddClaudeModel) {
+        const QString saved =
+            QSettings().value(kClaudeCodeModelSetting).toString().trimmed();
+        const int idx = m_quickAddClaudeModel->findData(saved);
+        if (idx >= 0) {
+            QSignalBlocker b(m_quickAddClaudeModel);
+            m_quickAddClaudeModel->setCurrentIndex(idx);
+        }
+    }
+    // Branch, action, and issue fix combos: only update when set to claude-code.
+    const QString claudeCode = QStringLiteral("claude-code");
+    if (m_branchFixModelCombo && m_branchFixAgentCombo &&
+        m_branchFixAgentCombo->currentData().toString() == claudeCode)
+        mergeLiveClaudeModels(m_branchFixModelCombo, models);
+    if (m_actionFixModelCombo && m_actionFixAgentCombo &&
+        m_actionFixAgentCombo->currentData().toString() == claudeCode)
+        mergeLiveClaudeModels(m_actionFixModelCombo, models);
+    if (m_issueAgentModel && m_issueAgentProvider &&
+        m_issueAgentProvider->currentData().toString() == claudeCode)
+        mergeLiveClaudeModels(m_issueAgentModel, models);
+}
+
+// Re-fetch the live claude-code model list from the provider (GET /v1/models)
+// and merge it into every model combo. Only called from the top-bar usage
+// chart's hover (adhoc #41) — building/opening/switching a model combo just
+// calls applyLiveClaudeModelsToCombos() instead, so those never touch the
+// network on their own.
 void MainWindow::refreshClaudeModelCombo()
 {
-    auto applyToAllCombos = [this](const QJsonArray &models) {
-        mergeLiveClaudeModels(m_quickAddClaudeModel, models);
-        // Restore saved quick-add model after replacing the list.
-        if (m_quickAddClaudeModel) {
-            const QString saved =
-                QSettings().value(kClaudeCodeModelSetting).toString().trimmed();
-            const int idx = m_quickAddClaudeModel->findData(saved);
-            if (idx >= 0) {
-                QSignalBlocker b(m_quickAddClaudeModel);
-                m_quickAddClaudeModel->setCurrentIndex(idx);
-            }
-        }
-        // Branch, action, and issue fix combos: only update when set to claude-code.
-        const QString claudeCode = QStringLiteral("claude-code");
-        if (m_branchFixModelCombo && m_branchFixAgentCombo &&
-            m_branchFixAgentCombo->currentData().toString() == claudeCode)
-            mergeLiveClaudeModels(m_branchFixModelCombo, models);
-        if (m_actionFixModelCombo && m_actionFixAgentCombo &&
-            m_actionFixAgentCombo->currentData().toString() == claudeCode)
-            mergeLiveClaudeModels(m_actionFixModelCombo, models);
-        if (m_issueAgentModel && m_issueAgentProvider &&
-            m_issueAgentProvider->currentData().toString() == claudeCode)
-            mergeLiveClaudeModels(m_issueAgentModel, models);
-    };
-
-    // Apply whatever we have cached so combos built after the last fetch still
-    // show the live list without waiting for a new network round-trip.
-    if (!m_liveClaudeModels.isEmpty())
-        applyToAllCombos(m_liveClaudeModels);
+    applyLiveClaudeModelsToCombos();
 
     if (!m_networkAccess)
         return;
-    // Throttle: at most one live fetch every 60 seconds. The dropdown-open
-    // event filter calls this each time any model combo is opened so the list
-    // stays current without hammering /v1/models on every click.
+    // Throttle: at most one live fetch every 60 seconds, in case the user
+    // hovers the chart repeatedly in quick succession.
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (m_claudeModelsFetchedMs > 0 &&
         now - m_claudeModelsFetchedMs < 60LL * 1000)
@@ -2205,7 +2210,7 @@ void MainWindow::refreshClaudeModelCombo()
     req.setRawHeader("Accept", "application/json");
 
     QNetworkReply *reply = m_networkAccess->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, applyToAllCombos] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
         const QByteArray body = reply->readAll();
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError)
@@ -2220,7 +2225,7 @@ void MainWindow::refreshClaudeModelCombo()
         // load above buildChatPage()).
         QSettings().setValue(kClaudeModelsCacheSetting,
                              QJsonDocument(models).toJson(QJsonDocument::Compact));
-        applyToAllCombos(models);
+        applyLiveClaudeModelsToCombos();
     });
 }
 
@@ -3145,9 +3150,9 @@ void MainWindow::showAgentSession(int sessionId)
     // its contents below still update for when the user reopens it.
     if (m_agentDetail && !m_agentDetailHidden)
         m_agentDetail->show();
-    // Keep the model line-up fresh as the user browses sessions (throttled inside
-    // refreshClaudeModelCombo() so this doesn't hit the provider on every click).
-    refreshClaudeModelCombo();
+    // Keep the model line-up in sync with the cached list as the user browses
+    // sessions; the live re-fetch only happens on the top-bar chart's hover.
+    applyLiveClaudeModelsToCombos();
     if (m_agentTitle) {
         if (isExternalSession(sessionId)) {
             const QString label = !session->issueTitle.isEmpty()
