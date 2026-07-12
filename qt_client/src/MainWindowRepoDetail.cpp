@@ -8274,6 +8274,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     commitConversationLayout->setContentsMargins(0, 0, 0, 0);
     commitConversationLayout->setSpacing(8);
     commitConversationLayout->addWidget(commitThreadScroll, 1);
+    commitConversationLayout->addWidget(makeComposerIdentity(nullptr, QStringLiteral("Commenting")));
     commitConversationLayout->addWidget(m_commitComposer);
     commitConversationLayout->addLayout(commitComposerButtons);
 

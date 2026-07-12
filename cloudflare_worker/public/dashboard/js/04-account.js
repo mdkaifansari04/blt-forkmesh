@@ -215,10 +215,12 @@
     const avatar = $("[data-dashboard-profile-avatar]");
     const adminButton = $("[data-admin-button]");
     const homeName = $("[data-home-user-name]");
+    const composeName = $("[data-home-compose-name]");
     const sidebarName = $("[data-sidebar-user-name]");
 
     if (nameEl) nameEl.textContent = name;
     if (homeName) homeName.textContent = name;
+    if (composeName) composeName.textContent = name;
     if (sidebarName) sidebarName.textContent = name;
     if (statusEl) {
       statusEl.textContent = session?.emailVerified
@@ -227,6 +229,7 @@
     }
     applyAvatar(avatar, session);
     applyAvatar($("[data-home-user-avatar]"), session);
+    applyAvatar($("[data-home-compose-avatar]"), session);
     if (adminButton) {
       let adminUrl = session?.isAdmin ? (session?.adminUrl || "") : "";
       if (adminUrl && session?.nodeName && !/[?&]admin=/.test(adminUrl)) {
