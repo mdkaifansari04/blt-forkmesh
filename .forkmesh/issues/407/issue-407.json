@@ -54,6 +54,15 @@
             "sig": "DcBu8dsV2l73S9Sz8CVIuXLpEpRotKvc-XQxvBW49CRCWpBeqSsjsTtYHO87ToE5kGh8uAYiaUk6hQZYoxRsDA",
             "ts": 1783885352512,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "8a992a89-323d-472b-9da4-d544c38f7c40",
+            "sig": "GolqTsq7ELdFwSdXhq-5H_G7qB1tyUYLZY0DpeNa1h_t1urpxDTArOYNL7_ckgY2tyWtfTMBHqH-Eb0kriRRBA",
+            "status": "closed",
+            "ts": 1783885352568,
+            "type": "status"
         }
     ],
     "labels": [
@@ -64,8 +73,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "fix chat display on mobile web and show the full chat history",
-    "updatedAt": 1783885352512,
+    "updatedAt": 1783885352568,
     "votes": 0
 }
