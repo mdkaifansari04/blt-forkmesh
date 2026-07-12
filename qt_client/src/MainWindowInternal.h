@@ -2471,6 +2471,19 @@ const QString kClaudeModelsCacheSetting = QStringLiteral("agents/claudeModelsCac
 // Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
 // permission prompts). Read when a transcript session launches.
 const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
+// The composer mode-selector label that runs the agent unattended. Only this
+// one skips the CLI's permission prompts today; the other labels ("Ask before
+// edits" / "Edit automatically" / "Plan mode") all mean "don't skip" until the
+// app can drive per-tool approval headlessly (see MainWindowChat's selector).
+const QString kClaudeAutoModeLabel = QStringLiteral("Auto mode");
+
+// Does a session's stored permission-mode label (AgentSession::mode) run the
+// agent unattended? An empty label means the session predates per-session mode
+// capture, so callers fall back to the global kClaudeAutoModeSetting.
+inline bool agentModeSkipsPermissions(const QString &modeLabel)
+{
+    return modeLabel.trimmed() == kClaudeAutoModeLabel;
+}
 // Slash-actions menu (adhoc #116), mirroring the Claude Code extension's "/"
 // actions popup. Effort level for Claude Code runs ("low"/"medium"/"high"/
 // "xhigh"/"max"), passed to the CLI as `--effort`.
