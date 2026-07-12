@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.6.4 LANGUAGES CXX)
+project(ForkMesh VERSION 0.6.6 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -111,6 +111,8 @@ set(FORKMESH_APP_SOURCES
     src/PullReviewModel.cpp
     src/PullAiReview.h
     src/PullAiReview.cpp
+    src/PullBadgeWidget.h
+    src/PullBadgeWidget.cpp
     src/CommitCommentStore.h
     src/CommitCommentStore.cpp
     src/ReferenceLinks.h

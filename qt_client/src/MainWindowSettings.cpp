@@ -2994,7 +2994,7 @@ QString formatDayDividerHtml(const QString &date, bool dark)
 QString linkifyEscapedMessage(const QString &escaped)
 {
     static const QRegularExpression urlRe(
-        QStringLiteral("https?://[^\\s&<]+(&(?!amp;|lt;|gt;|quot;|#39;)[^\\s&<]*)*"));
+        QStringLiteral("https?://(?:[^\\s&<]|&(?:amp|lt|gt|quot|#39);)+"));
     QString html;
     int lastEnd = 0;
     auto it = urlRe.globalMatch(escaped);
