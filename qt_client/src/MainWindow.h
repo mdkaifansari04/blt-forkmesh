@@ -3107,6 +3107,8 @@ private:
     QPushButton *m_importButton = nullptr;
     QLabel *m_importStatus = nullptr;
     QCheckBox *m_autostartCheck = nullptr;
+    QLabel *m_autostartInfo = nullptr;
+    QPushButton *m_autostartRemoveButton = nullptr;
     QComboBox *m_themeCombo = nullptr;
     // Default coding-agent provider for new assignments; seeds the quick-add and
     // issue-detail provider pickers. Codex | OpenAI API | Claude API | Claude Code.
@@ -3511,6 +3513,7 @@ private:
     QLabel *m_aboutText = nullptr;
     QLabel *m_aboutTopics = nullptr;
     QLabel *m_aboutFiles = nullptr;
+    QLabel *m_aboutFediverse = nullptr;
     QLabel *m_releaseHeader = nullptr;
     QLabel *m_releaseRow = nullptr;
     QLabel *m_langBar = nullptr;
