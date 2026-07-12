@@ -16314,16 +16314,35 @@ class Default(WorkerEntrypoint):
         # off the assets store; no-cache only forces revalidation, matching the
         # platform's default ETag behavior for static assets.
         base = url.scheme + "://" + url.netloc + "/"
+        # Stream the asset body straight through rather than buffering the
+        # whole page into Python with resp.text(). / is the highest-traffic
+        # route and can't be edge-cached (varies on cookie, must revalidate),
+        # so every anonymous visit runs this handler; reassembling the HTML in
+        # the isolate each hit is avoidable Pyodide CPU/memory pressure on the
+        # single event loop — the hot-path work that, under a burst of
+        # visitors, starved the loop enough for the runtime to cancel a request
+        # as hung ("Cannot enter into task"). Passing resp.body to a new
+        # Response only rewrites the headers.
         try:
             resp = await self.env.ASSETS.fetch(base + "index.html")
-            body = await resp.text()
+            return JsResponse.new(resp.body, to_js({
+                "status": 200,
+                "headers": {
+                    "content-type": "text/html; charset=utf-8",
+                    "cache-control": "no-cache",
+                    "vary": "cookie",
+                },
+            }))
         except Exception:
-            body = "<!doctype html><title>ForkMesh</title>"
-        return Response(body, status=200, headers={
-            "content-type": "text/html; charset=utf-8",
-            "cache-control": "no-cache",
-            "vary": "cookie",
-        })
+            return Response(
+                "<!doctype html><title>ForkMesh</title>",
+                status=200,
+                headers={
+                    "content-type": "text/html; charset=utf-8",
+                    "cache-control": "no-cache",
+                    "vary": "cookie",
+                },
+            )
 
     async def _select_clone_fallback(self, owner, repo, force=False):
         # When owner/repo's own host is offline, find a healthy online mirror of the
