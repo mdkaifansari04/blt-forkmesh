@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
     "authorName": "jett",
@@ -42,6 +43,17 @@
             "sig": "h0EQMTgBsS8TjqW2p1cdqeapDziT-M5Vu03qmNH7P8xr34iRZ3h5NUuI5YKxENzsIq9jTN_tOjytMYvs9VELDg",
             "ts": 1783880618145,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "4c462d10-7455-45ee-b232-cdb9a30a1c3a",
+            "sig": "O0luYhqVKlYEDRMNb-oW8z3deBtf8c6L9JAJ2TbgkaMa3I_ZxcXHnbInalzX4aW6BJfx7PmSe0SNvW31FnUKDg",
+            "ts": 1783880618202,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -53,6 +65,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "the issue header on the web should only show open issues",
-    "updatedAt": 1783880618145,
+    "updatedAt": 1783880618202,
     "votes": 0
 }
