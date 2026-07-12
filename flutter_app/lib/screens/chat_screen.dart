@@ -55,9 +55,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final relay = context.watch<RelayService>();
     final wide = MediaQuery.of(context).size.width >= 720;
     final messages = relay.messages(relay.currentConversation);
-    final roster = relay.roster();
+    final groups = relay.rosterGroups();
 
-    final channelList = _ChannelList(relay: relay, roster: roster);
+    final channelList = _ChannelList(relay: relay, groups: groups);
     final transcript = _Transcript(
       relay: relay,
       messages: messages,
@@ -80,9 +80,9 @@ class _ChatScreenState extends State<ChatScreen> {
 }
 
 class _ChannelList extends StatelessWidget {
-  const _ChannelList({required this.relay, required this.roster});
+  const _ChannelList({required this.relay, required this.groups});
   final RelayService relay;
-  final List<Member> roster;
+  final List<MemberGroup> groups;
 
   @override
   Widget build(BuildContext context) {
@@ -102,15 +102,13 @@ class _ChannelList extends StatelessWidget {
               onTap: () => relay.switchConversation(c),
             ),
           const SizedBox(height: FmSpace.x4),
-          const FmSectionHeader(title: 'Nodes'),
+          const FmSectionHeader(title: 'People'),
           const SizedBox(height: FmSpace.x2),
-          for (final m in roster)
-            _ChannelTile(
-              title: m.self ? '${m.name} (you)' : m.name,
-              subtitle: m.platform.isEmpty ? null : m.platform,
-              statusColor: m.online ? FmColors.success : FmColors.offline,
-              selected: relay.currentConversation == '@${m.id}',
-              onTap: m.self ? null : () => relay.switchConversation('@${m.id}'),
+          for (final g in groups)
+            _MemberGroupTile(
+              group: g,
+              selected: relay.currentConversation == '@${g.id}',
+              onTap: g.self ? null : () => relay.switchConversation('@${g.id}'),
             ),
         ],
       ),
@@ -211,6 +209,141 @@ class _ChannelTile extends StatelessWidget {
       ),
     ),
   );
+}
+
+/// A single chat participant: their username, a disambiguating id when another
+/// user shares the name, and their online nodes as small platform icons — so a
+/// person running several nodes reads as one user rather than duplicates.
+class _MemberGroupTile extends StatelessWidget {
+  const _MemberGroupTile({
+    required this.group,
+    required this.selected,
+    this.onTap,
+  });
+
+  final MemberGroup group;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = group.self ? '${group.name} (you)' : group.name;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: FmSpace.x1),
+      child: Material(
+        color: selected ? FmTheme.accentSubtle(context) : Colors.transparent,
+        borderRadius: BorderRadius.circular(FmRadius.md),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(FmRadius.md),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 44),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: FmSpace.x3,
+                vertical: FmSpace.x2,
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Icon(
+                      Icons.circle,
+                      size: 10,
+                      color: group.online
+                          ? FmColors.success
+                          : FmColors.offline,
+                    ),
+                  ),
+                  const SizedBox(width: FmSpace.x3),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: selected
+                                ? FmTheme.textPrimary(context)
+                                : FmTheme.textSecondary(context),
+                            fontSize: 14,
+                            fontWeight: selected
+                                ? FontWeight.w700
+                                : FontWeight.w600,
+                          ),
+                        ),
+                        if (group.disambiguator.isNotEmpty) ...[
+                          const SizedBox(height: 1),
+                          Text(
+                            'id ${group.disambiguator}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: FmTheme.textTertiary(context),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: FmSpace.x1),
+                        _NodeIcons(nodes: group.members),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Horizontal strip of one small icon per node the user currently runs.
+class _NodeIcons extends StatelessWidget {
+  const _NodeIcons({required this.nodes});
+  final List<Member> nodes;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: FmSpace.x1,
+      runSpacing: FmSpace.x1,
+      children: [
+        for (final n in nodes)
+          Tooltip(
+            message: n.platform.isEmpty ? 'node' : n.platform,
+            child: Icon(
+              _platformIcon(n.platform),
+              size: 13,
+              color: FmTheme.textTertiary(context),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+IconData _platformIcon(String platform) {
+  switch (platform.toLowerCase()) {
+    case 'android':
+      return Icons.android;
+    case 'ios':
+      return Icons.phone_iphone;
+    case 'macos':
+      return Icons.laptop_mac;
+    case 'windows':
+      return Icons.desktop_windows;
+    case 'linux':
+      return Icons.dvr_outlined;
+    case 'web':
+      return Icons.public;
+    default:
+      return Icons.devices_other;
+  }
 }
 
 class _Transcript extends StatelessWidget {
