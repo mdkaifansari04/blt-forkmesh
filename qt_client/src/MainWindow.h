@@ -491,6 +491,7 @@ protected:
 private:
     static constexpr int kNetworkReposSectionIndex = 11;
     static constexpr int kNetworkDiagnosticsSectionIndex = 12;
+    static constexpr int kNodesSectionIndex = 13; // "Nodes" directory (adhoc #9)
 
     // Setup page
     QWidget *buildSetupPage();
@@ -957,6 +958,13 @@ private:
     QWidget *buildRelaysSection();
     void refreshRelaysTable();   // re-list relays and (re)probe each one
     void probeRelayRow(int row); // measure latency + read version for one relay
+    // Nodes: a sortable directory of every node this client knows about (the same
+    // nodes offered by the top-bar node dropdown), showing each node's platform,
+    // online state, version and repo count. Selecting a row opens a detail panel
+    // with that node's details and the repositories it hosts (adhoc #9).
+    QWidget *buildNodesSection();
+    void refreshNodesTable();           // re-list the known nodes into the table
+    void showNodeDetailForRow(int row); // fill the detail panel for a table row
     // Firewall: whitelist-only outbound request gate for traffic created by
     // ForkMesh's shared network manager.
     QWidget *buildFirewallSection();
@@ -2952,6 +2960,7 @@ private:
     QPushButton *m_logNavButton = nullptr; // "Log" button in the persistent top nav
     QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
+    QPushButton *m_nodesNavButton = nullptr;  // "Nodes" top-nav button (adhoc #9)
     QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
@@ -3001,6 +3010,11 @@ private:
     QLabel *m_relaysStatus = nullptr;       // "Probing N relays…" / last-refreshed line
     QPushButton *m_relaysRefreshButton = nullptr;
     int m_relayProbesInFlight = 0;          // outstanding /api/version probes
+    // Nodes section (adhoc #9): sortable directory of known nodes + a detail panel.
+    QTableWidget *m_nodesTable = nullptr;
+    QLabel *m_nodesStatus = nullptr;            // "N nodes · M online" summary line
+    QPushButton *m_nodesRefreshButton = nullptr;
+    QScrollArea *m_nodeDetailScroll = nullptr;  // detail panel for the selected node
     // Request firewall section: whitelist controls plus recent allow/deny
     // decisions. This is separate from m_firewallBanner, which is the older
     // inbound-peer troubleshooting banner inside Chat.
@@ -3488,6 +3502,7 @@ private:
     QLabel *m_aboutText = nullptr;
     QLabel *m_aboutTopics = nullptr;
     QLabel *m_aboutFiles = nullptr;
+    QLabel *m_aboutFediverse = nullptr;
     QLabel *m_releaseHeader = nullptr;
     QLabel *m_releaseRow = nullptr;
     QLabel *m_langBar = nullptr;

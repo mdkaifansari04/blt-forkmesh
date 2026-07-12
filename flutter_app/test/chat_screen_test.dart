@@ -106,6 +106,45 @@ void main() {
       );
     });
   });
+
+  testWidgets('nodes owned by one user collapse into a single roster entry', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final harness = await _RelayHarness.start();
+      addTearDown(harness.close);
+
+      // Same person (ownerUser "ada") connected from two distinct nodes.
+      await harness.sendPlain({
+        'type': 'presence',
+        'id': 'p-node-a',
+        'senderId': 'node-a',
+        'sender': 'Ada',
+        'ownerUser': 'ada',
+        'platform': 'linux',
+        'ts': 1000,
+      });
+      await harness.sendPlain({
+        'type': 'presence',
+        'id': 'p-node-b',
+        'senderId': 'node-b',
+        'sender': 'Ada',
+        'ownerUser': 'ada',
+        'platform': 'android',
+        'ts': 1000,
+      });
+      await _waitUntil(
+        () => harness.relay.roster().where((m) => !m.self).length == 2,
+      );
+
+      final groups = harness.relay.rosterGroups();
+      final ada = groups.where((g) => g.name == 'ada').toList();
+      // Two nodes, one user row — no duplicate.
+      expect(ada.length, 1);
+      expect(ada.first.members.length, 2);
+      expect(ada.first.disambiguator, isEmpty);
+    });
+  });
 }
 
 Future<void> _waitUntil(bool Function() condition) async {
