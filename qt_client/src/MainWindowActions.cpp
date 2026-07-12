@@ -50,9 +50,8 @@ void MainWindow::initActions()
                 run,
                 QString::fromUtf8(
                     "\n==> \xE2\x9A\xA0 INTERRUPTED: ForkMesh exited while this "
-                    "run was still running. Check the main Log view plus "
-                    "~/.forkmesh/diagnostics/crashes.log and stalls.log for the "
-                    "app-side failure.\n"));
+                    "run was still running. Check the main Log view (and stalls "
+                    "log) for the app-side failure.\n"));
             run.status = ActionStatus::Failed;
             run.finishedAtMs = interruptedAt;
             m_actionStore->saveRun(run);
