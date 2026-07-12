@@ -19,6 +19,17 @@
             "title": "the issue header on the web should only show open issues",
             "ts": 1783440684,
             "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "all places on the web shoudl only show open issues as well - unless we're on the issues list we'll see an open / closed count and can click on closed to see closed issues - but everywhere we show issues in lists and detail the count shoud only be the open count ",
+            "id": "f45ec438-ea65-4951-b34a-c8787e674000",
+            "sig": "pshP78UfRLjv-m7KIG-ebfA6PJYu5pHZRxxFTKfhu28ZvQMRQVtLYtRMvId2FQfL-mbO1r1peec2BO9a8Rx9CQ",
+            "ts": 1783880611922,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -30,6 +41,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "the issue header on the web should only show open issues",
-    "updatedAt": 1783440684,
+    "updatedAt": 1783880611922,
     "votes": 0
 }
