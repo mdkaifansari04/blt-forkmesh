@@ -2441,6 +2441,38 @@ async def active_registered_node_bis(env, now=None):
     return active
 
 
+async def _decrypted_public_catalog(env, now):
+    # Decrypted {key_bi, is_private, data} rows for every public repo owned by
+    # an active node, memoized per-isolate for PUBLIC_CATALOG_MEMO_TTL_MS — see
+    # the comment on _PUBLIC_CATALOG_MEMO for why this must not re-decrypt the
+    # whole catalog on every call.
+    cached = _PUBLIC_CATALOG_MEMO
+    if cached["rows"] is not None and now - cached["ts"] < PUBLIC_CATALOG_MEMO_TTL_MS:
+        return cached["rows"]
+    rows = await d1_all(
+        env,
+        "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
+    try:
+        active_nodes = await active_registered_node_bis(env, now)
+    except Exception:
+        active_nodes = None
+    catalog_rows = []
+    for row in rows:
+        if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
+            continue
+        rec = await decrypt_row(env, row.get("data"))
+        if not rec:
+            continue
+        catalog_rows.append({
+            "key_bi": row.get("key_bi"),
+            "is_private": int(row.get("is_private") or 0),
+            "data": rec,
+        })
+    cached["rows"] = catalog_rows
+    cached["ts"] = now
+    return catalog_rows
+
+
 async def purge_stale_registered_nodes(env, force=False):
     # Bound the registered-node table and public repo catalog to nodes that have
     # been live in the last hour. This is intentionally NOT account deletion:
@@ -2516,6 +2548,17 @@ SOL_USD_MAX = 100_000.0
 # Process-local price cache so we don't refetch on every signup poll.
 _SOL_USD_CACHE = {"usd": 0.0, "ts": 0}
 _SOL_USD_CACHE_TTL_MS = 5 * 60 * 1000
+# Per-isolate memo of the decrypted public repo catalog. _select_browse_mirror
+# runs on EVERY public info/refs request (git clone's round-robin mirror
+# pick) and previously re-ran a full D1 scan plus a sequential AES-GCM
+# decrypt_row() per public repo on each call — under a clone burst (CI, many
+# contributors pulling at once) that held the single Worker event loop long
+# enough for the runtime to cancel a request as hung ("Cannot enter into
+# task"), same failure mode already fixed elsewhere via per-isolate memoization
+# (see the 2026-07-11 free-plan overload notes). A short TTL is fine: this only
+# feeds best-effort mirror selection, not the integrity-checked ref content.
+_PUBLIC_CATALOG_MEMO = {"ts": 0, "rows": None}
+PUBLIC_CATALOG_MEMO_TTL_MS = 5000
 DONATION_ADDRESS_TTL_MS = 60 * 60 * 1000
 # After the address expires (hidden, no longer usable) keep it parked for one
 # more hour before deleting it outright, so a late payment can still be matched
@@ -16364,28 +16407,11 @@ class Default(WorkerEntrypoint):
                 for r in presence_rows
                 if r.get("repo_bi")
             }
-            rows = await d1_all(
-                self.env,
-                "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
-            try:
-                active_nodes = await active_registered_node_bis(self.env, now)
-            except Exception:
-                active_nodes = None
-            catalog_rows = []
-            for row in rows:
-                if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-                    continue
-                rec = await decrypt_row(self.env, row.get("data"))
-                if not rec:
-                    continue
-                if _is_blocked_catalog_identity(
-                        self.env, rec.get("owner"), rec.get("name")):
-                    continue
-                catalog_rows.append({
-                    "key_bi": row.get("key_bi"),
-                    "is_private": int(row.get("is_private") or 0),
-                    "data": rec,
-                })
+            catalog_rows = [
+                row for row in await _decrypted_public_catalog(self.env, now)
+                if not _is_blocked_catalog_identity(
+                    self.env, row["data"].get("owner"), row["data"].get("name"))
+            ]
             presence = await hydrate_repo_group_live_hosts(
                 self.env, owner, repo, catalog_rows, presence, now)
             source_ts = presence.get(repo_bi) or 0
@@ -16426,28 +16452,11 @@ class Default(WorkerEntrypoint):
                 for r in presence_rows
                 if r.get("repo_bi")
             }
-            rows = await d1_all(
-                self.env,
-                "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
-            try:
-                active_nodes = await active_registered_node_bis(self.env, now)
-            except Exception:
-                active_nodes = None
-            catalog_rows = []
-            for row in rows:
-                if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-                    continue
-                rec = await decrypt_row(self.env, row.get("data"))
-                if not rec:
-                    continue
-                if _is_blocked_catalog_identity(
-                        self.env, rec.get("owner"), rec.get("name")):
-                    continue
-                catalog_rows.append({
-                    "key_bi": row.get("key_bi"),
-                    "is_private": int(row.get("is_private") or 0),
-                    "data": rec,
-                })
+            catalog_rows = [
+                row for row in await _decrypted_public_catalog(self.env, now)
+                if not _is_blocked_catalog_identity(
+                    self.env, row["data"].get("owner"), row["data"].get("name"))
+            ]
             presence = await hydrate_repo_group_live_hosts(
                 self.env, owner, repo, catalog_rows, presence, now)
             candidates = browse_mirror_candidates(
@@ -16483,28 +16492,11 @@ class Default(WorkerEntrypoint):
                 for r in presence_rows
                 if r.get("repo_bi")
             }
-            rows = await d1_all(
-                self.env,
-                "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
-            try:
-                active_nodes = await active_registered_node_bis(self.env, now)
-            except Exception:
-                active_nodes = None
-            catalog_rows = []
-            for row in rows:
-                if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-                    continue
-                rec = await decrypt_row(self.env, row.get("data"))
-                if not rec:
-                    continue
-                if _is_blocked_catalog_identity(
-                        self.env, rec.get("owner"), rec.get("name")):
-                    continue
-                catalog_rows.append({
-                    "key_bi": row.get("key_bi"),
-                    "is_private": int(row.get("is_private") or 0),
-                    "data": rec,
-                })
+            catalog_rows = [
+                row for row in await _decrypted_public_catalog(self.env, now)
+                if not _is_blocked_catalog_identity(
+                    self.env, row["data"].get("owner"), row["data"].get("name"))
+            ]
             presence = await hydrate_repo_group_live_hosts(
                 self.env, owner, repo, catalog_rows, presence, now)
             candidates = release_blob_mirror_candidates(
