@@ -1357,6 +1357,30 @@ QWidget *MainWindow::buildRepoSettingsTab()
     heading->setObjectName("channelTitle");
     outer->addWidget(heading);
 
+    // --- About --------------------------------------------------------------
+    auto *aboutHeading = new QLabel("About");
+    aboutHeading->setObjectName("sectionLabel");
+    outer->addWidget(aboutHeading);
+
+    auto *aboutHint = new QLabel(
+        "The description, website link and topics shown on this repository's "
+        "overview (and on its public ForkMesh page).");
+    aboutHint->setObjectName("statusLine");
+    aboutHint->setWordWrap(true);
+    outer->addWidget(aboutHint);
+
+    auto *aboutEditBtn = new QPushButton("Edit description & website\xE2\x80\xA6");
+    aboutEditBtn->setProperty("buttonSize", "sm");
+    aboutEditBtn->setCursor(Qt::PointingHandCursor);
+    connect(aboutEditBtn, &QPushButton::clicked, this, &MainWindow::editRepoAbout);
+    auto *aboutRow = new QHBoxLayout;
+    aboutRow->setContentsMargins(0, 0, 0, 0);
+    aboutRow->addWidget(aboutEditBtn);
+    aboutRow->addStretch();
+    outer->addLayout(aboutRow);
+
+    outer->addSpacing(10);
+
     // --- Visibility -------------------------------------------------------
     auto *visHeading = new QLabel("Visibility");
     visHeading->setObjectName("sectionLabel");
