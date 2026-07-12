@@ -43,6 +43,17 @@
             "sig": "LPpJJe1WOI-HNed53kLPuvmbzMHIMEHQuEvjcKTi31Hsrw2u9yVb6Nh96UZh102M0g0XOKzGljaDQffycywtDQ",
             "ts": 1783872927108,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-417-folder-icons-are-not-showing-on-a-new-install\".",
+            "id": "1afa8674-954e-4fe5-8109-8ada45fae4c5",
+            "sig": "x3V4ZOrKXUxdGu6Cs9jv7_1ikIeyiwff467v0dJpBZQ9ACCoRrRQSX6O0wIn4MW3BFERyMWEOMlmkBvh1D6wDg",
+            "ts": 1783879238598,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -54,6 +65,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "folder icons are not showing on a new install",
-    "updatedAt": 1783872927108,
+    "updatedAt": 1783879238598,
     "votes": 0
 }
