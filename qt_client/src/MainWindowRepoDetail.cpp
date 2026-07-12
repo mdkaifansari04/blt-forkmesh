@@ -694,6 +694,15 @@ QWidget *MainWindow::buildAboutSidebar()
     connect(m_aboutFiles, &QLabel::linkActivated, this,
             [this](const QString &href) { openRepoFile(href); });
 
+    // "View on Mastodon" — a deep link to this repo's fediverse actor, which
+    // any Mastodon instance can resolve from the acct handle.
+    m_aboutFediverse = new QLabel;
+    m_aboutFediverse->setObjectName("statusLine");
+    m_aboutFediverse->setWordWrap(true);
+    m_aboutFediverse->setTextFormat(Qt::RichText);
+    m_aboutFediverse->setOpenExternalLinks(true);
+    m_aboutFediverse->setTextInteractionFlags(Qt::TextBrowserInteraction);
+
     m_releaseHeader = new QLabel("LATEST RELEASE");
     m_releaseHeader->setObjectName("sectionLabel");
     m_releaseRow = new QLabel;
@@ -776,6 +785,7 @@ QWidget *MainWindow::buildAboutSidebar()
     layout->addWidget(m_aboutText);
     layout->addWidget(m_aboutTopics);
     layout->addWidget(m_aboutFiles);
+    layout->addWidget(m_aboutFediverse);
     layout->addSpacing(kSectionGap);
     layout->addWidget(rule());
     layout->addSpacing(kSectionGap);
@@ -8463,6 +8473,37 @@ void MainWindow::loadAboutSidebar()
         }
         m_aboutFiles->setText(links.join(QString::fromUtf8("&nbsp;&nbsp; ")));
         m_aboutFiles->setVisible(!links.isEmpty());
+    }
+
+    // Fediverse: link to this repo's actor on Mastodon. The acct handle is
+    // "<owner>.<name>@<relay host>" (see the worker's repo_handle); any
+    // instance resolves a remote handle, so mastodon.social is the default.
+    if (m_aboutFediverse) {
+        // Match the worker's repo_handle / the website exactly: the raw,
+        // lowercased owner and name joined by a dot (not the dash-slugged
+        // repoSegment, which the actor handle is not built from).
+        const QString owner =
+            repo ? repo->owner.trimmed().toLower() : QString();
+        const QString name = repo ? repo->name.trimmed().toLower() : QString();
+        if (!owner.isEmpty() && !name.isEmpty()) {
+            QString relayHost = serverHost(
+                QSettings().value(kServerUrlSetting).toString().trimmed());
+            if (relayHost.isEmpty())
+                relayHost = serverHost(kDefaultServerUrl);
+            const QString handle =
+                QStringLiteral("@%1.%2@%3").arg(owner, name, relayHost);
+            const QString url =
+                QStringLiteral("https://mastodon.social/%1").arg(handle);
+            m_aboutFediverse->setText(
+                QStringLiteral("<a href=\"%1\" style='color:#58a6ff; "
+                               "text-decoration:none'>%2&nbsp;View on Mastodon</a>")
+                    .arg(url.toHtmlEscaped(),
+                         octiconMarkup("mastodon", 13, QColor("#58a6ff"))));
+            m_aboutFediverse->setToolTip(handle);
+            m_aboutFediverse->setVisible(true);
+        } else {
+            m_aboutFediverse->setVisible(false);
+        }
     }
 
     // Latest release: newest tag by creation date.

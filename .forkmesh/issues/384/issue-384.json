@@ -65,6 +65,17 @@
             "sig": "n2dtnYAtNo4D3Tu6NiOdbYAIjQ2-CeR0BXgoX2o583Vdkv132Bx82Ub5IAScirqLJNxVHmZIK8bWGMbFHzb2Cw",
             "ts": 1783881079540,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Linked pull request #10.",
+            "id": "839036c2-4db1-459a-948d-4cf498e5c61b",
+            "sig": "NHSmbV56lF3wpRvkJKT08URJJp_Y8GOSmyNFUzgjxzYH2jMWCnW1psXAHWPO9Ha4JQIyMXYhdZaW0GyUm9woCg",
+            "ts": 1783884384513,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -77,6 +88,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "add projects and allow linking issues to projects",
-    "updatedAt": 1783881079540,
+    "updatedAt": 1783884384513,
     "votes": 0
 }
