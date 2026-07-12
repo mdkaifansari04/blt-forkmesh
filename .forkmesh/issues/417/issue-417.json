@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "8Yz86t8tyEF3o6My2FuW3PnBqfDbDnqy8WZqKrRPZgQ",
     "authorName": "static-rack-9818",
@@ -31,6 +32,17 @@
             "sig": "AHjv8WnJN-yuw3McghjleaLgkoOSJC0TZi6opfc2oIsRAyJCYzmvzQGYMfm0M0NH-M5MdVVNAmOp0ALqPfO4Dg",
             "ts": 1783872927043,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "87357b96-b006-4d00-85db-3f3c7816a1ef",
+            "sig": "LPpJJe1WOI-HNed53kLPuvmbzMHIMEHQuEvjcKTi31Hsrw2u9yVb6Nh96UZh102M0g0XOKzGljaDQffycywtDQ",
+            "ts": 1783872927108,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -42,6 +54,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "folder icons are not showing on a new install",
-    "updatedAt": 1783872927043,
+    "updatedAt": 1783872927108,
     "votes": 0
 }
