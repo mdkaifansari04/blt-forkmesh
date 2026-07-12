@@ -813,7 +813,7 @@
   }
 
   // A discussion's replies are an append-only, signed event log stored as
-  // discussions/<N>/NNNN-comment.md files alongside discussion.md (see
+  // .forkmesh/discussions/<N>/NNNN-comment.md files alongside discussion.md (see
   // DiscussionStore.cpp on the desktop client). Reuses the pull conversation
   // row renderer since a discussion comment event has the same shape.
   function renderRepoDiscussionConversation(events) {
@@ -825,7 +825,7 @@
   async function loadRepoDiscussionConversation(repo, number) {
     let tree;
     try {
-      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `discussions/${number}` }));
+      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `.forkmesh/discussions/${number}` }));
     } catch (_) {
       return [];
     }
@@ -833,9 +833,9 @@
       .filter((entry) => entry.type !== "tree" && /^\d+-comment\.md$/.test(String(entry.name || "")))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
     if (!files.length) return [];
-    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `discussions/${number}/${entry.name}`));
+    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `.forkmesh/discussions/${number}/${entry.name}`));
     return files.map((entry) => {
-      const blob = blobs[`discussions/${number}/${entry.name}`];
+      const blob = blobs[`.forkmesh/discussions/${number}/${entry.name}`];
       if (!blob) return null;
       const parsed = parseFrontMatter(blobText(blob));
       const values = parsed.values || {};
@@ -1598,7 +1598,7 @@
         .filter((entry) => entry.type === "tree" && entry.name)
         .map((entry) => String(entry.name));
       if (!channels.length) return;
-      const paths = channels.map((channel) => `releases/${channel}/release.json`);
+      const paths = channels.map((channel) => `.forkmesh/releases/${channel}/release.json`);
       const blobs = await fetchRepoBlobs(repo, paths);
       let latest = null;
       paths.forEach((path) => {
