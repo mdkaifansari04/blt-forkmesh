@@ -3195,8 +3195,9 @@ void MainWindow::logSystem(const QString &text)
 }
 
 // Toast pill caps the inline message at this many characters; longer text is
-// elided to one line and revealed in full via the Expand button.
-static constexpr int kToastMaxChars = 100;
+// elided to one line and revealed in full via the Expand button. Sized to the
+// widened 900px toast container (see m_topMessageContainer).
+static constexpr int kToastMaxChars = 160;
 
 // Auto-dismiss windows for the top toast. Every toast counts down visibly so the
 // notification area never flashes a message away unannounced. Success
@@ -3273,18 +3274,19 @@ void MainWindow::renderTopMessage()
 // stay inside the window. Called on expand and on window resize.
 void MainWindow::positionTopMessageOverlay()
 {
-    if (!m_topMessageOverlay || !m_topMessage)
+    if (!m_topMessageOverlay || !m_topMessageContainer)
         return;
     const int margin = 16;
-    const int w = qMin(620, qMax(240, width() - 2 * margin));
+    const int w = qMin(900, qMax(240, width() - 2 * margin));
     m_topMessageOverlay->setFixedWidth(w);
     int h = m_topMessageOverlay->heightForWidth(w);
     if (h <= 0)
         h = m_topMessageOverlay->sizeHint().height();
     m_topMessageOverlay->setFixedHeight(h);
     // Anchor just below the inline toast, horizontally centred on it.
-    const QPoint anchor = m_topMessage->mapTo(this, QPoint(0, m_topMessage->height()));
-    int x = anchor.x() + m_topMessage->width() / 2 - w / 2;
+    const QPoint anchor =
+        m_topMessageContainer->mapTo(this, QPoint(0, m_topMessageContainer->height()));
+    int x = anchor.x() + m_topMessageContainer->width() / 2 - w / 2;
     x = qBound(margin, x, width() - w - margin);
     m_topMessageOverlay->move(x, anchor.y() + 6);
 }
@@ -3341,6 +3343,8 @@ void MainWindow::flashMessage(const QString &text, bool error,
     m_topMessageExpanded = false; // every new message starts collapsed
     renderTopMessage();
     m_topMessage->show();
+    if (m_topMessageContainer)
+        m_topMessageContainer->show();
 
     if (!m_topMessageTimer) {
         // Ticks once a second so the countdown is visible; when the count runs out
@@ -3419,6 +3423,8 @@ void MainWindow::dismissTopMessage()
         m_topMessage->hide();
         m_topMessage->setWordWrap(false); // back to a one-liner for the next toast
     }
+    if (m_topMessageContainer)
+        m_topMessageContainer->hide();
     if (m_topMessageOverlay)
         m_topMessageOverlay->hide(); // drop the floating expanded panel with the toast
     if (m_topMessageExpand)

@@ -459,9 +459,9 @@ class ApiService {
       final RepoTree treeRoot;
       try {
         final data = await _getJson(
-          _base('/api/repo/$owner/$name/tree', {'path': 'releases'}),
+          _base('/api/repo/$owner/$name/tree', {'path': '.forkmesh/releases'}),
         );
-        treeRoot = RepoTree.fromJson(data, path: 'releases');
+        treeRoot = RepoTree.fromJson(data, path: '.forkmesh/releases');
       } catch (_) {
         return const <RepoRelease>[];
       }
@@ -473,7 +473,7 @@ class ApiService {
             final blob = await this.blob(
               owner,
               name,
-              'releases/${dir.name}/release.json',
+              '.forkmesh/releases/${dir.name}/release.json',
             );
             final decoded = jsonDecode(blob.content);
             if (decoded is! Map<String, dynamic>) return null;
@@ -640,11 +640,11 @@ class ApiService {
   Future<List<RepoDiscussion>> publishedDiscussions(String owner, String name) {
     final key = '$owner/$name';
     return _cached(_discussionsCache, key, () async {
-      final dirs = await _numberedFolders(owner, name, 'discussions');
+      final dirs = await _numberedFolders(owner, name, '.forkmesh/discussions');
       final items = await Future.wait(
         dirs.map((dir) async {
           try {
-            final b = await blob(owner, name, 'discussions/$dir/discussion.md');
+            final b = await blob(owner, name, '.forkmesh/discussions/$dir/discussion.md');
             final events = await _discussionEvents(owner, name, dir);
             return _discussionFromMarkdown(dir, b.content, events: events);
           } catch (_) {
@@ -663,7 +663,7 @@ class ApiService {
     String number,
   ) async {
     try {
-      final t = await tree(owner, name, path: 'discussions/$number');
+      final t = await tree(owner, name, path: '.forkmesh/discussions/$number');
       final eventFiles =
           t.entries
               .where(

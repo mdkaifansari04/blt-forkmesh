@@ -43,6 +43,26 @@
             "sig": "mMW5v-B6L9RdyebhV5AkdtTjLGLKtOTbFV3P2MkuL6JGi5-LkxnYIrfDCRhdNxu_JyFzS7PMqOib82XLHHSiAg",
             "ts": 1783881121274,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-379-if-user-is-owner-of-source-of-truth-node-and-it\".",
+            "id": "f25484d9-27e3-4336-84e8-ca76e1d145f7",
+            "sig": "swC6enwQpYzlgiSuBealMdxlqvW067Dr3shWG2PIXvxO-2SGPytM8fEEGHy2YRKsHwtsSWGq7lUeN3LukP_PCw",
+            "ts": 1783882994465,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "6e2651e4-8a7f-45a6-b965-f7a525991053",
+            "sig": "UVzv1W2oFVajgqQOROBgm9QwIlyJoQUkNME0j2CDqhMQDU0oSM_Zczlcva3fcl1nFXBStYJ8eKGov4mTqmkBCg",
+            "status": "closed",
+            "ts": 1783882994535,
+            "type": "status"
         }
     ],
     "labels": [
@@ -53,8 +73,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "If user is owner of source of truth node and it’s down but a mirror is up allow for issues to be created fully to show up and then get synced back to sot when it’s online",
-    "updatedAt": 1783881121274,
+    "updatedAt": 1783882994535,
     "votes": 0
 }
