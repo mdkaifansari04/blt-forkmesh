@@ -2376,27 +2376,63 @@
       </div>`;
   }
 
-  // Composer pinned above the tab bar on every repo tab, not just Agents
-  // (adhoc #278): type a prompt and send it to a brand-new agent on the
-  // owner's node from wherever they're browsing the repo. The node's prompt
-  // drain recognises the "new" sentinel agent id and spins up an ad-hoc run.
-  function renderRepoAgentNewComposer() {
-    return `
-      <div class="mt-4 overflow-hidden rounded-lg border border-border bg-background">
-        <form data-repo-agent-new-form class="flex flex-col gap-2 bg-secondary/30 px-4 py-3">
-          <input data-repo-agent-new-input type="text" maxlength="8000" placeholder="Start a new agent - enter a prompt" class="h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary" />
-          <div class="flex items-center gap-2">
-            <select data-repo-agent-new-provider title="Agent provider" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary">
-              ${AGENT_PROVIDER_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("")}
-            </select>
-            <select data-repo-agent-new-model title="Agent model" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary">
-              ${AGENT_NEW_MODEL_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("")}
-            </select>
-            <button type="submit" data-repo-agent-new-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="plus" class="h-3.5 w-3.5"></i>Start agent</button>
-            <span data-repo-agent-new-hint class="text-[11px] text-muted-foreground"></span>
-          </div>
-        </form>
-      </div>`;
+  // The "start a new agent" composer lives in a single top modal opened from
+  // the robot button in the header nav (adhoc #62) - it was previously pinned
+  // above the repo tab bar (adhoc #278). Because the header is global, the
+  // modal carries its own repository picker instead of relying on a repo page
+  // being open. The node's prompt drain still recognises the "new" sentinel
+  // agent id and spins up an ad-hoc run.
+  function agentModalRepoChoices() {
+    const seen = new Set();
+    const choices = [];
+    for (const repo of state.repositories) {
+      if (!repo?.owner || !repo?.name || !sessionCanAssignAgent(repo)) continue;
+      const key = repoKey(repo).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      choices.push(repo);
+    }
+    return choices.sort((a, b) => repoKey(a).localeCompare(repoKey(b)));
+  }
+
+  function agentModalSelectedRepo() {
+    const value = String($("#agentModal [data-agent-modal-repo]")?.value || "");
+    if (!value.includes("/")) return null;
+    return state.repositories.find((repo) => repoKey(repo).toLowerCase() === value.toLowerCase()) || null;
+  }
+
+  function setAgentModalOpen(open) {
+    const modal = $("#agentModal");
+    if (!modal) return;
+    if (open) {
+      // Provider/model options are JS constants shared with the desktop app's
+      // picker, so the static modal markup gets them filled in on first open.
+      const providerSelect = modal.querySelector("[data-repo-agent-new-provider]");
+      if (providerSelect && !providerSelect.options.length) {
+        providerSelect.innerHTML = AGENT_PROVIDER_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("");
+      }
+      const modelSelect = modal.querySelector("[data-repo-agent-new-model]");
+      if (modelSelect && !modelSelect.options.length) {
+        modelSelect.innerHTML = AGENT_NEW_MODEL_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("");
+      }
+      const repoSelect = modal.querySelector("[data-agent-modal-repo]");
+      if (repoSelect) {
+        const choices = agentModalRepoChoices();
+        const currentKey = state.selectedRepo && sessionCanAssignAgent(state.selectedRepo)
+          ? repoKey(state.selectedRepo).toLowerCase()
+          : "";
+        repoSelect.innerHTML = choices.length
+          ? choices.map((repo) => `<option value="${escapeHtml(repoKey(repo))}"${repoKey(repo).toLowerCase() === currentKey ? " selected" : ""}>${escapeHtml(repoKey(repo))}</option>`).join("")
+          : '<option value="">No repositories you can start agents on</option>';
+        repoSelect.disabled = !choices.length;
+      }
+      const hint = modal.querySelector("[data-repo-agent-new-hint]");
+      if (hint) hint.textContent = "";
+      window.lucide?.createIcons();
+    }
+    modal.classList.toggle("hidden", !open);
+    modal.classList.toggle("flex", open);
+    if (open) modal.querySelector("[data-repo-agent-new-input]")?.focus();
   }
 
   function renderRepoAgentsList(agents) {
@@ -2415,11 +2451,11 @@
       return;
     }
     if (selectedId != null) state.agentsView.selectedAgentId = null;
-    // The "start a new agent" composer now lives above the tab bar on every
-    // tab (adhoc #278), not just here, so this list is just the sessions.
+    // The "start a new agent" composer now lives in the header robot-button
+    // modal (adhoc #62), so this list is just the sessions.
     container.innerHTML = agents.length
       ? `<div class="divide-y divide-border">${agents.map(renderRepoAgentRow).join("")}</div>`
-      : '<div class="px-4 py-3 text-sm text-muted-foreground">No agent sessions yet. Start one above, or from the desktop app.</div>';
+      : '<div class="px-4 py-3 text-sm text-muted-foreground">No agent sessions yet. Start one from the robot button in the header, or from the desktop app.</div>';
     window.lucide?.createIcons();
   }
 
@@ -2559,9 +2595,10 @@
     }
   }
 
-  // Top-of-list composer: queue a "new agent" prompt for this repo (adhoc #266).
-  // Reuses the per-agent prompt endpoint with the "new" sentinel agent id, which
-  // the owner's node turns into a fresh ad-hoc agent run on drain.
+  // Header-modal composer: queue a "new agent" prompt for the picked repo
+  // (adhoc #266, moved into the modal by adhoc #62). Reuses the per-agent
+  // prompt endpoint with the "new" sentinel agent id, which the owner's node
+  // turns into a fresh ad-hoc agent run on drain.
   async function handleRepoAgentNewSubmit(repo, form) {
     const input = form.querySelector("[data-repo-agent-new-input]");
     const providerSelect = form.querySelector("[data-repo-agent-new-provider]");
@@ -2573,6 +2610,10 @@
       hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
       hint.textContent = text;
     };
+    if (!repo) {
+      setHint("Pick a repository you own to start an agent.", "bad");
+      return;
+    }
     const text = String(input?.value || "").trim();
     if (!text) {
       setHint("Enter a prompt to start an agent.", "bad");
@@ -2598,7 +2639,11 @@
       }
       if (input) input.value = "";
       setHint("Sent - the node will start a new agent shortly.", "good");
-      if (state.activeRepoTab === "agents") loadRepoAgents(repo);
+      // Refresh the Agents tab only when it's showing the repo we just
+      // prompted - the modal can target any owned repo from any page.
+      if (state.activeRepoTab === "agents" && state.selectedRepo && repoKey(state.selectedRepo).toLowerCase() === repoKey(repo).toLowerCase()) {
+        loadRepoAgents(repo);
+      }
     } catch (error) {
       const code = String(error?.message || "");
       setHint(
