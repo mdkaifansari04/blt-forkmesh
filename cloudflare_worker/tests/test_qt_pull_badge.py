@@ -46,8 +46,11 @@ def test_badge_widget_scrolls_and_is_fed_per_file_stats():
 def test_badge_widget_paints_ratio_bar_and_directory_labels():
     # Green/red split proportional to the file's additions:deletions.
     assert "double(file.adds) / total" in WIDGET_CPP
-    # Directory clusters carry a "(N file(s))" label under a connector line.
+    # Directory clusters carry a "(N file(s))" label under a connector line,
+    # showing just the folder name (not the whole path) capped to 8 chars.
     assert 'QStringLiteral("%1  (%2 file%3)")' in WIDGET_CPP
+    assert ".arg(dirBadgeLabel(dir))" in WIDGET_CPP
+    assert "name.left(8)" in WIDGET_CPP
     # Files sort by path so each directory forms one contiguous tile run.
     assert "std::sort(m_files.begin(), m_files.end()" in WIDGET_CPP
     # Tiles surface the underlying path and counts on hover.

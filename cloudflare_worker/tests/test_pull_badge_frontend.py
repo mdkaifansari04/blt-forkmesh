@@ -38,6 +38,10 @@ def test_badge_renderer_shape():
     body = DASHBOARD_JS[start:start + 4000]
     assert "lastIndexOf(\"/\")" in body
     assert "Files changed" in body
+    # The label shows just the folder name (not the whole path), capped to
+    # 8 chars, e.g. "one/two/three" -> "three".
+    assert "function dirBadgeLabel(" in DASHBOARD_JS
+    assert "dirBadgeLabel(group.dir)" in body
 
 
 def test_badge_glyph_mapping_present_with_fallback():
