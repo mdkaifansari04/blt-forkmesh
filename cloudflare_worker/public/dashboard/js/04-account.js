@@ -858,9 +858,11 @@
     const events = data.events.slice(0, 20);
     empty.classList.toggle("hidden", Boolean(events.length));
     if (!events.length) {
-      empty.textContent = data.loading
-        ? "Loading live contribution history..."
-        : "No contribution activity found for this year yet.";
+      if (data.loading) {
+        empty.innerHTML = loadingHtml("Loading live contribution history...");
+      } else {
+        empty.textContent = "No contribution activity found for this year yet.";
+      }
       container.innerHTML = "";
       return;
     }
