@@ -2519,7 +2519,14 @@ const QString kDefaultClaudeCodeTerminalCommand =
 // full-accept default above so existing sessions stop stalling on prompts.
 const QString kLegacyClaudeCodeTerminalCommand =
     QStringLiteral("claude \"$(cat {promptFile})\"");
-constexpr int kNetworkLogLimit = 2000;
+// Raised from 2000: the view now renders in segments (see kNetworkLogSegmentSize)
+// instead of the whole buffer at once, so a much larger in-memory/on-disk history
+// no longer costs render time up front — it only matters once the user actually
+// scrolls back far enough to load it.
+constexpr int kNetworkLogLimit = 20000;
+// How many matching lines to render per "page" of the network log: the initial
+// view, and each older batch loaded when the user scrolls to the top.
+constexpr int kNetworkLogSegmentSize = 300;
 
 const QString kCodexProvider = QStringLiteral("codex");
 
