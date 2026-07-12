@@ -2613,14 +2613,14 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionFixModelCombo->hide();
     fillAgentFixModelCombo(m_actionFixModelCombo,
                           m_actionFixAgentCombo->currentData().toString());
-    refreshClaudeModelCombo();
+    applyLiveClaudeModelsToCombos();
     connect(m_actionFixAgentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) {
                 if (m_actionFixAgentCombo && m_actionFixModelCombo) {
                     fillAgentFixModelCombo(
                         m_actionFixModelCombo,
                         m_actionFixAgentCombo->currentData().toString());
-                    refreshClaudeModelCombo();
+                    applyLiveClaudeModelsToCombos();
                 }
             });
 

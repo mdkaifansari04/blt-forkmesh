@@ -1849,14 +1849,14 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchFixModelCombo->hide();
     fillAgentFixModelCombo(m_branchFixModelCombo,
                            m_branchFixAgentCombo->currentData().toString());
-    refreshClaudeModelCombo();
+    applyLiveClaudeModelsToCombos();
     connect(m_branchFixAgentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) {
                 if (m_branchFixAgentCombo && m_branchFixModelCombo) {
                     fillAgentFixModelCombo(
                         m_branchFixModelCombo,
                         m_branchFixAgentCombo->currentData().toString());
-                    refreshClaudeModelCombo();
+                    applyLiveClaudeModelsToCombos();
                 }
             });
 
