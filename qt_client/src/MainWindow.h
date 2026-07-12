@@ -2474,7 +2474,9 @@ private:
     // Issue #347: fetch/mint the owner's inbuilt bounty wallet and show its
     // deposit address, QR and live balance so the owner can pre-fund it.
     void showBountyWalletDialog();
-    void submitIssueCommentToInbox(const QString &body);
+    void submitIssueCommentToInbox(const QString &body,
+                                   const QStringList &attachmentSrcPaths = {},
+                                   const QStringList &attachmentPlaceholders = {});
     // Mirror node path: file a signed "assignees" event to the source of truth's
     // inbox so the looper's claim on an issue reaches the owner and syncs back to
     // every mirror (adhoc #38).
@@ -2487,6 +2489,8 @@ private:
     bool submitNewIssueToInbox(const QString &title, const QString &body,
                                const QStringList &labels, const QString &milestone,
                                int priority, const QStringList &assignees,
+                               const QStringList &attachmentSrcPaths = {},
+                               const QStringList &attachmentPlaceholders = {},
                                std::function<void(bool ok, const QString &error)> onDone = {});
     void syncIssuesInbox();
     // Drain one repo's issue/pull inbox (owner-only). `interactive` shows inline
