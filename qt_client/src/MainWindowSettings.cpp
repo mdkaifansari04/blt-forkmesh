@@ -129,9 +129,63 @@ QWidget *MainWindow::buildSettingsSection()
     m_autostartCheck->setChecked(isAutostartEnabled());
     m_autostartCheck->setToolTip(
         "Start ForkMesh automatically when you log in to this computer.");
-    connect(m_autostartCheck, &QCheckBox::toggled, this, [](bool enabled) {
-        setAutostartEnabled(enabled);
-    });
+
+    // Surface exactly how and where autostart is installed, plus an explicit
+    // "Remove auto startup" button (issue #393). The bare checkbox used to hide
+    // a failed removal — showing the concrete mechanism/path lets the user see
+    // a stale entry and delete it directly.
+    m_autostartInfo = new QLabel;
+    m_autostartInfo->setObjectName("modeHint");
+    m_autostartInfo->setWordWrap(true);
+    m_autostartInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    m_autostartRemoveButton = new QPushButton("Remove auto startup");
+    m_autostartRemoveButton->setObjectName("ghostButton");
+    m_autostartRemoveButton->setCursor(Qt::PointingHandCursor);
+    m_autostartRemoveButton->setToolTip(
+        "Delete the login-autostart entry so ForkMesh no longer starts when you "
+        "log in to this computer.");
+    auto *autostartRemoveRow = new QHBoxLayout;
+    autostartRemoveRow->addWidget(m_autostartRemoveButton);
+    autostartRemoveRow->addStretch();
+
+    // Reflect the real on-disk state in the label + button after every change,
+    // so the UI never claims autostart is off while the entry is still present.
+    auto refreshAutostartInfo = [this]() {
+        const bool on = isAutostartEnabled();
+        m_autostartInfo->setText(
+            (on ? QStringLiteral("Installed as a %1:\n%2")
+                : QStringLiteral("Not installed. Would be added as a %1 at:\n%2"))
+                .arg(autostartMechanismName(), autostartLocation()));
+        m_autostartRemoveButton->setEnabled(on);
+    };
+    refreshAutostartInfo();
+
+    // After enabling/disabling, re-seed the checkbox from disk so it matches
+    // reality even if the write or delete failed — the original bug was that
+    // unchecking left the entry in place and ForkMesh kept starting (#393).
+    auto applyAutostart = [this, refreshAutostartInfo](bool enable) {
+        if (!setAutostartEnabled(enable)) {
+            QMessageBox::warning(
+                this, "Autostart",
+                QStringLiteral(
+                    "Couldn't %1 login autostart.\n\n%2\n\nThe entry may be "
+                    "owned by another user (for example, left by a root "
+                    "installer), so you may need to remove it manually.")
+                    .arg(enable ? QStringLiteral("enable")
+                                : QStringLiteral("disable"),
+                         autostartLocation()));
+        }
+        m_autostartCheck->blockSignals(true);
+        m_autostartCheck->setChecked(isAutostartEnabled());
+        m_autostartCheck->blockSignals(false);
+        refreshAutostartInfo();
+    };
+
+    connect(m_autostartCheck, &QCheckBox::toggled, this,
+            [applyAutostart](bool enabled) { applyAutostart(enabled); });
+    connect(m_autostartRemoveButton, &QPushButton::clicked, this,
+            [applyAutostart]() { applyAutostart(false); });
 
     // Auto-update (adhoc #120): quietly check for a new version and update,
     // rebuild and relaunch when one is found — the same flow as the manual
@@ -1398,6 +1452,8 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addSpacing(6);
     generalCol->addWidget(startupLabel);
     generalCol->addWidget(m_autostartCheck);
+    generalCol->addWidget(m_autostartInfo);
+    generalCol->addLayout(autostartRemoveRow);
     generalCol->addWidget(autoUpdateCheck);
     generalCol->addWidget(defaultTabLabel);
     generalCol->addWidget(defaultTabCombo, 0, Qt::AlignLeft);

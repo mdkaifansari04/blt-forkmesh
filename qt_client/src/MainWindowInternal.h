@@ -6964,7 +6964,39 @@ inline bool isAutostartEnabled()
 #endif
 }
 
-inline void setAutostartEnabled(bool enabled)
+// Short name of the OS mechanism used to launch ForkMesh at login. Shown in
+// Settings so the user can see how autostart is wired, not just that it is on.
+inline QString autostartMechanismName()
+{
+#if defined(Q_OS_WIN)
+    return QStringLiteral("Windows registry Run key");
+#elif defined(Q_OS_MACOS)
+    return QStringLiteral("macOS LaunchAgent");
+#else
+    return QStringLiteral("XDG autostart entry");
+#endif
+}
+
+// The exact on-disk file (or registry key) that makes ForkMesh start at login.
+// This is what the "Remove auto startup" button deletes. Shown in Settings so
+// a stale entry left by an installer or an older build is visible and findable.
+inline QString autostartLocation()
+{
+#if defined(Q_OS_WIN)
+    return kWinRunKey + QStringLiteral("\\ForkMesh");
+#elif defined(Q_OS_MACOS)
+    return QDir::toNativeSeparators(launchAgentPath());
+#else
+    return QDir::toNativeSeparators(autostartDesktopPath());
+#endif
+}
+
+// Enable/disable launching ForkMesh at login. Returns true on success. The old
+// version silently ignored a failed remove(): if the autostart entry couldn't
+// be deleted (e.g. a root-owned file left by the curl installer) the checkbox
+// looked off but ForkMesh kept starting at login (issue #393). The bool lets
+// the UI re-read the real state and warn instead of lying.
+inline bool setAutostartEnabled(bool enabled)
 {
     const QString exe = QCoreApplication::applicationFilePath();
 #if defined(Q_OS_WIN)
@@ -6973,44 +7005,47 @@ inline void setAutostartEnabled(bool enabled)
         run.setValue("ForkMesh", QDir::toNativeSeparators(exe));
     else
         run.remove("ForkMesh");
+    run.sync();
+    return run.status() == QSettings::NoError &&
+           run.contains("ForkMesh") == enabled;
 #elif defined(Q_OS_MACOS)
     const QString path = launchAgentPath();
     if (!enabled) {
-        QFile::remove(path);
-        return;
+        // Treat "already gone" as success; only a real deletion failure counts.
+        return !QFileInfo::exists(path) || QFile::remove(path);
     }
     QDir().mkpath(QFileInfo(path).absolutePath());
     QFile file(path);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        const QString plist = QStringLiteral(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
-            "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
-            "<plist version=\"1.0\"><dict>\n"
-            "  <key>Label</key><string>com.forkmesh.app</string>\n"
-            "  <key>ProgramArguments</key><array><string>%1</string></array>\n"
-            "  <key>RunAtLoad</key><true/>\n"
-            "</dict></plist>\n").arg(exe);
-        file.write(plist.toUtf8());
-    }
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    const QString plist = QStringLiteral(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+        "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+        "<plist version=\"1.0\"><dict>\n"
+        "  <key>Label</key><string>com.forkmesh.app</string>\n"
+        "  <key>ProgramArguments</key><array><string>%1</string></array>\n"
+        "  <key>RunAtLoad</key><true/>\n"
+        "</dict></plist>\n").arg(exe);
+    return file.write(plist.toUtf8()) >= 0;
 #else
     const QString path = autostartDesktopPath();
     if (!enabled) {
-        QFile::remove(path);
-        return;
+        // Treat "already gone" as success; only a real deletion failure counts.
+        return !QFileInfo::exists(path) || QFile::remove(path);
     }
     QDir().mkpath(QFileInfo(path).absolutePath());
     QFile file(path);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        const QString desktop = QStringLiteral(
-            "[Desktop Entry]\n"
-            "Type=Application\n"
-            "Name=ForkMesh\n"
-            "Exec=%1\n"
-            "Terminal=false\n"
-            "X-GNOME-Autostart-enabled=true\n").arg(exe);
-        file.write(desktop.toUtf8());
-    }
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    const QString desktop = QStringLiteral(
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=ForkMesh\n"
+        "Exec=%1\n"
+        "Terminal=false\n"
+        "X-GNOME-Autostart-enabled=true\n").arg(exe);
+    return file.write(desktop.toUtf8()) >= 0;
 #endif
 }
 
