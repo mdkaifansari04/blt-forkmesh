@@ -3066,6 +3066,11 @@ private:
     // client's chat room) show online instead of permanently offline.
     QSet<QString> m_relayOnlineNodes;
     qint64 m_relayOnlineNodesFetchedMs = 0; // throttle between relay fetches
+    // True once /api/network/stats has answered at least once, so the Nodes page
+    // knows the relay's authoritative live set is available. Before the first
+    // reply we fall back to the encrypted roster's presence flag; after it, the
+    // relay is trusted over a possibly-stale roster entry (adhoc #43).
+    bool m_relayOnlineNodesFetched = false;
     // Request firewall section: whitelist controls plus recent allow/deny
     // decisions. This is separate from m_firewallBanner, which is the older
     // inbound-peer troubleshooting banner inside Chat.
