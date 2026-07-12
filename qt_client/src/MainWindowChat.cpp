@@ -6803,6 +6803,11 @@ void MainWindow::refreshHostsTable()
         cellRow->addWidget(viewLogsBtn);
         m_hostsTable->setCellWidget(i, 4, cell);
     }
+
+    if (m_hostsNavButton)
+        m_hostsNavButton->setText(hosts.isEmpty()
+            ? QStringLiteral("Hosts")
+            : QStringLiteral("Hosts (%1)").arg(hosts.size()));
 }
 
 // --- Nodes ------------------------------------------------------------------
@@ -7076,6 +7081,10 @@ void MainWindow::refreshNodesTable()
                   .arg(m_nodeMenuEntries.size() == 1 ? "" : "s")
                   .arg(online));
     }
+    if (m_nodesNavButton)
+        m_nodesNavButton->setText(m_nodeMenuEntries.isEmpty()
+            ? QStringLiteral("Nodes")
+            : QStringLiteral("Nodes (%1)").arg(m_nodeMenuEntries.size()));
 
     // Re-open the previously shown node's detail (find it by name post-sort), or
     // default to the first row.
@@ -7416,6 +7425,10 @@ void MainWindow::refreshRelaysTable()
             ? QStringLiteral("No relays configured.")
             : QString::fromUtf8("Probing %1 relay(s)\xE2\x80\xA6")
                   .arg(m_servers.size()));
+    if (m_relaysNavButton)
+        m_relaysNavButton->setText(m_servers.isEmpty()
+            ? QStringLiteral("Relays")
+            : QStringLiteral("Relays (%1)").arg(m_servers.size()));
     for (int i = 0; i < m_servers.size(); ++i)
         probeRelayRow(i);
 }
@@ -8163,6 +8176,14 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
 void MainWindow::refreshNetworkDiagnostics()
 {
     if (!m_networkDiagnosticsTable)
+        return;
+    // Rebuilding both tables re-shapes every cell's text and re-measures every
+    // column/row (resizeColumnsToContents → harfbuzz), which the stall watchdog
+    // clocked at ~600ms during startup while the section wasn't even on screen
+    // (adhoc #33). Only pay that when the Network section is actually visible;
+    // showSection() refreshes it on every open, so nothing goes stale.
+    if (m_sectionStack &&
+        m_sectionStack->currentIndex() != kNetworkDiagnosticsSectionIndex)
         return;
 
     QList<QJsonObject> rows;
