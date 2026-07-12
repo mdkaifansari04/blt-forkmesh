@@ -408,12 +408,12 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeCoveExplorerButton, &QPushButton::clicked, this,
             [this] { showRepoCoveExplorer(); });
 
-    // Git identity (name <email>) configured for the repo we're viewing, pinned
-    // to the far right of this same row. Filled in by updateFooterGitIdentity()
-    // each time a repo opens.
+    // Git identity (name <email>) configured for the repo we're viewing, left
+    // aligned right after the mode toggles it sits beside. Filled in by
+    // updateFooterGitIdentity() each time a repo opens.
     m_footerGitIdentity = new QLabel;
     m_footerGitIdentity->setObjectName("footerGitIdentity");
-    m_footerGitIdentity->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_footerGitIdentity->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_footerGitIdentity->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_footerGitIdentity->setToolTip(
         "Git author identity configured for the repository you're viewing");
@@ -424,8 +424,9 @@ QWidget *MainWindow::buildRepoFilesPanel()
     modeRow->addWidget(m_filesModeOverviewButton);
     modeRow->addWidget(m_filesModeExplorerButton);
     modeRow->addWidget(m_filesModeCoveExplorerButton);
-    modeRow->addStretch();
+    modeRow->addSpacing(12);
     modeRow->addWidget(m_footerGitIdentity);
+    modeRow->addStretch();
 
     auto *panel = new QWidget;
     auto *layout = new QVBoxLayout(panel);
@@ -636,179 +637,11 @@ QWidget *MainWindow::buildRepoOverviewPage()
     leftLayout->addWidget(commitCard);
     leftLayout->addWidget(m_overviewBodyStack, 1);
 
-    auto *body = new QHBoxLayout;
-    body->setContentsMargins(0, 0, 0, 0);
-    body->setSpacing(16);
-    body->addWidget(leftColumn, 1);
-    body->addWidget(buildAboutSidebar());
-
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(16, 10, 16, 16);
     layout->setSpacing(8);
-    layout->addLayout(body);
+    layout->addWidget(leftColumn);
     return page;
-}
-
-QWidget *MainWindow::buildAboutSidebar()
-{
-    auto *side = new QWidget;
-    side->setObjectName("aboutSidebar");
-    side->setFixedWidth(300);
-
-    auto *aboutLabel = new QLabel("About");
-    aboutLabel->setObjectName("aboutHeading");
-    m_aboutEditButton = new QPushButton;
-    m_aboutEditButton->setObjectName("aboutEditButton");
-    m_aboutEditButton->setCursor(Qt::PointingHandCursor);
-    m_aboutEditButton->setToolTip("Edit repository details");
-    m_aboutEditButton->setFixedSize(28, 28);
-    setOcticon(m_aboutEditButton, "gear", 15);
-    connect(m_aboutEditButton, &QPushButton::clicked, this,
-            &MainWindow::editRepoAbout);
-
-    auto *aboutHeader = new QHBoxLayout;
-    aboutHeader->setContentsMargins(0, 0, 0, 0);
-    aboutHeader->setSpacing(6);
-    aboutHeader->addWidget(aboutLabel);
-    aboutHeader->addStretch();
-    aboutHeader->addWidget(m_aboutEditButton);
-
-    m_aboutText = new QLabel;
-    m_aboutText->setObjectName("aboutText");
-    m_aboutText->setWordWrap(true);
-    m_aboutText->setTextFormat(Qt::RichText);
-    m_aboutText->setOpenExternalLinks(true);
-    m_aboutTopics = new QLabel;
-    m_aboutTopics->setObjectName("statusLine");
-    m_aboutTopics->setWordWrap(true);
-    m_aboutTopics->setTextFormat(Qt::RichText);
-
-    // On-disk repository size now lives on the "Code (N MB)" tab label again.
-
-    // Community files (README / LICENSE / CONTRIBUTING …) rendered as links that
-    // open the file in the overview, rather than escaping to a browser.
-    m_aboutFiles = new QLabel;
-    m_aboutFiles->setObjectName("statusLine");
-    m_aboutFiles->setWordWrap(true);
-    m_aboutFiles->setTextFormat(Qt::RichText);
-    connect(m_aboutFiles, &QLabel::linkActivated, this,
-            [this](const QString &href) { openRepoFile(href); });
-
-    // "View on Mastodon" — a deep link to this repo's fediverse actor, which
-    // any Mastodon instance can resolve from the acct handle.
-    m_aboutFediverse = new QLabel;
-    m_aboutFediverse->setObjectName("statusLine");
-    m_aboutFediverse->setWordWrap(true);
-    m_aboutFediverse->setTextFormat(Qt::RichText);
-    m_aboutFediverse->setOpenExternalLinks(true);
-    m_aboutFediverse->setTextInteractionFlags(Qt::TextBrowserInteraction);
-
-    m_releaseHeader = new QLabel("LATEST RELEASE");
-    m_releaseHeader->setObjectName("sectionLabel");
-    m_releaseRow = new QLabel;
-    m_releaseRow->setObjectName("statusLine");
-    m_releaseRow->setWordWrap(true);
-    m_releaseRow->setTextFormat(Qt::RichText);
-    connect(m_releaseRow, &QLabel::linkActivated, this, [this](const QString &) {
-        if (m_releasesTabIndex >= 0 && m_repoDetailTabs &&
-            m_repoDetailTabs->button(m_releasesTabIndex)) {
-            m_repoDetailTabs->button(m_releasesTabIndex)->setChecked(true);
-            m_repoDetailStack->setCurrentIndex(m_releasesTabIndex);
-            loadReleasesPanel();
-        }
-    });
-
-    auto *langLabel = new QLabel("LANGUAGES");
-    langLabel->setObjectName("sectionLabel");
-    m_langBar = new QLabel;
-    m_langBar->setObjectName("langBar");
-    m_langBar->setFixedHeight(10);
-    m_langBar->setTextFormat(Qt::RichText);
-    m_langLegend = new QLabel;
-    m_langLegend->setObjectName("statusLine");
-    m_langLegend->setWordWrap(true);
-    m_langLegend->setTextFormat(Qt::RichText);
-
-    m_filesCountHeader = new QLabel("FILES");
-    m_filesCountHeader->setObjectName("sectionLabel");
-    m_filesCountRow = new QLabel;
-    m_filesCountRow->setObjectName("statusLine");
-    m_filesCountRow->setWordWrap(true);
-    m_filesCountRow->setTextFormat(Qt::RichText);
-
-    m_contributorsHeader = new QLabel("CONTRIBUTORS");
-    m_contributorsHeader->setObjectName("sectionLabel");
-    m_contributorsRow = new QLabel;
-    m_contributorsRow->setObjectName("statusLine");
-    m_contributorsRow->setWordWrap(true);
-    m_contributorsRow->setTextFormat(Qt::RichText);
-    connect(m_contributorsRow, &QLabel::linkHovered, this,
-            [this](const QString &link) {
-                if (!m_contributorsRow)
-                    return;
-                if (!link.startsWith("contributor:")) {
-                    m_contributorsRow->setToolTip(QString());
-                    return;
-                }
-                const QString payload =
-                    link.mid(QStringLiteral("contributor:").size());
-                const int sep = payload.indexOf('|');
-                const QString encodedName =
-                    (sep >= 0) ? payload.left(sep) : payload;
-                const QString countText =
-                    (sep >= 0) ? payload.mid(sep + 1) : QString();
-                const QString name =
-                    QUrl::fromPercentEncoding(encodedName.toUtf8());
-                const QString tip = countText.isEmpty()
-                                       ? name
-                                       : QStringLiteral("%1 · %2 commits")
-                                             .arg(name, countText);
-                m_contributorsRow->setToolTip(tip);
-            });
-
-    // Thin hairline separators between sections for a cleaner, carded look.
-    auto rule = [&side]() {
-        auto *line = new QFrame(side);
-        line->setObjectName("aboutRule");
-        line->setFrameShape(QFrame::HLine);
-        line->setFixedHeight(1);
-        return line;
-    };
-
-    // Generous, even spacing so each section can breathe. One gap value is used
-    // on both sides of every hairline rule for a consistent vertical rhythm.
-    const int kSectionGap = 14;
-    auto *layout = new QVBoxLayout(side);
-    layout->setContentsMargins(22, 6, 20, 20);
-    layout->setSpacing(8);
-    layout->addLayout(aboutHeader);
-    layout->addWidget(m_aboutText);
-    layout->addWidget(m_aboutTopics);
-    layout->addWidget(m_aboutFiles);
-    layout->addWidget(m_aboutFediverse);
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(rule());
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(m_releaseHeader);
-    layout->addWidget(m_releaseRow);
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(rule());
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(langLabel);
-    layout->addWidget(m_langBar);
-    layout->addWidget(m_langLegend);
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(rule());
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(m_filesCountHeader);
-    layout->addWidget(m_filesCountRow);
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(rule());
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(m_contributorsHeader);
-    layout->addWidget(m_contributorsRow);
-    layout->addStretch();
-    return side;
 }
 
 QWidget *MainWindow::buildRepoEditorPage()
@@ -1555,9 +1388,6 @@ void MainWindow::openRepoDetail(int repoIndex)
             return;
         loadFileSearchIndex();
     });
-    nodeSwitchStep(QStringLiteral("Loading README & about…"));
-    loadAboutSidebar();
-    logStartup(QStringLiteral("  openRepo: about sidebar loaded"));
     nodeSwitchStep(QStringLiteral("Loading commit history…"));
     // Building the commit table is the single heaviest piece of per-open UI work
     // (up to 300 rows, each with cell widgets, plus several git reads). Most opens
@@ -7303,11 +7133,8 @@ bool MainWindow::applyRepoAboutMetadataAt(int index, const QString &about,
     repo.description = aboutText;
     saveRepositories();
     if (index == m_repoDetailIndex) {
-        // Only refresh the detail sidebar when this repo is the one on
-        // screen — the relay-sync path can touch any repository.
         m_repoInfo.about = aboutText;
         m_repoInfo.website = website;
-        loadAboutSidebar();
     }
     refreshRepositoryList();
     if (repo.publishToNetwork)
@@ -7317,94 +7144,12 @@ bool MainWindow::applyRepoAboutMetadataAt(int index, const QString &about,
     return true;
 }
 
-void MainWindow::loadRepoFediverseStatus()
-{
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size() ||
-        !m_aboutFediverse)
-        return;
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-    if (!repo.publishToNetwork)
-        return; // unpublished repos have no public fediverse actor
-    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
-    const QString name = repoSegment(repo.name, QStringLiteral("repository"));
-    if (owner.isEmpty() || name.isEmpty())
-        return;
-    QNetworkReply *reply =
-        m_networkAccess->get(QNetworkRequest(repoAboutApiUrl(owner, name)));
-    QPointer<QLabel> label(m_aboutFediverse);
-    // Rebuild from the base text captured now: loadAboutSidebar resets the
-    // label on every reload, and anchoring to the captured base keeps two
-    // in-flight fetches from stacking their suffixes.
-    const QString baseText = m_aboutFediverse->text();
-    const QString repoKey = owner + "/" + name;
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, label, baseText, repoKey] {
-        reply->deleteLater();
-        if (!label || reply->error() != QNetworkReply::NoError)
-            return;
-        if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
-            return;
-        const RepositoryRecord &current = m_repositories.at(m_repoDetailIndex);
-        if (repoSegment(current.owner, QStringLiteral("owner")) + "/" +
-                repoSegment(current.name, QStringLiteral("repository")) !=
-            repoKey)
-            return; // user opened another repo while the fetch ran
-        const QJsonObject fediverse =
-            QJsonDocument::fromJson(reply->readAll())
-                .object()
-                .value(QStringLiteral("fediverse"))
-                .toObject();
-        if (fediverse.isEmpty())
-            return;
-        QString extra;
-        if (!fediverse.value(QStringLiteral("enabled")).toBool(true)) {
-            extra = QStringLiteral(
-                "<br><span style='color:#d29922'>Federation is turned off "
-                "for this repository.</span>");
-        } else {
-            const int followers =
-                fediverse.value(QStringLiteral("followers")).toInt(0);
-            extra = QStringLiteral(
-                        "<br><span style='color:#8b949e'>%1 fediverse "
-                        "watcher%2</span>")
-                        .arg(followers)
-                        .arg(followers == 1 ? QString()
-                                            : QStringLiteral("s"));
-            const QJsonArray list =
-                fediverse.value(QStringLiteral("followersList")).toArray();
-            QStringList rows;
-            for (const QJsonValue &v : list) {
-                if (rows.size() >= 5)
-                    break;
-                const QString handle = v.toObject()
-                                           .value(QStringLiteral("handle"))
-                                           .toString()
-                                           .trimmed();
-                if (!handle.isEmpty())
-                    rows << handle.toHtmlEscaped();
-            }
-            if (!rows.isEmpty()) {
-                QString more;
-                if (list.size() > rows.size())
-                    more = QStringLiteral(" +%1 more")
-                               .arg(list.size() - rows.size());
-                extra += QStringLiteral(
-                             "<br><span style='color:#8b949e'>Followed by "
-                             "%1%2</span>")
-                             .arg(rows.join(QStringLiteral(", ")), more);
-            }
-        }
-        label->setText(baseText + extra);
-    });
-}
-
 void MainWindow::setRepoBranch(const QString &branch)
 {
     m_repoBranch = branch;
     if (m_branchButton)
         m_branchButton->setText(branch);
     loadRepoOverview(QString());
-    loadAboutSidebar();
     loadCommits(); // also refreshes the Insights counts when that tab is on screen
 }
 
@@ -8587,361 +8332,6 @@ void MainWindow::loadFileSearchIndex()
                        m_fileCompleter->setModel(
                            new QStringListModel(paths, m_fileCompleter));
                    });
-}
-
-void MainWindow::loadAboutSidebar()
-{
-    // This panel fires several synchronous git reads back to back — `ls-tree`,
-    // `for-each-ref`, a whole-tree `ls-tree -r -l` and a `shortlog -sne --all`
-    // that walks every commit. On a large history those add up to multiple
-    // seconds, and refreshOpenRepoDetail() calls us on every (debounced) push,
-    // so do the reads under a keep-alive scope: waitForGit() then polls in short
-    // slices and pumps the event loop, keeping the window responsive (and the
-    // stall watchdog's heartbeat alive) instead of freezing the GUI thread.
-    GitKeepAlive keepAlive;
-
-    const QString dir = repoGitDir();
-    const RepositoryRecord *repo =
-        (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
-            ? &m_repositories.at(m_repoDetailIndex)
-            : nullptr;
-
-    if (m_aboutEditButton) {
-        const bool editable = repoHasWorkingTree();
-        m_aboutEditButton->setEnabled(editable);
-        m_aboutEditButton->setToolTip(
-            editable
-                ? QStringLiteral("Edit repository details")
-                : QStringLiteral("Open a local working copy to edit repository details"));
-    }
-
-    // About text + website.
-    if (m_aboutText) {
-        QString text = m_repoInfo.about.isEmpty()
-                           ? (repo ? repo->description : QString())
-                           : m_repoInfo.about;
-        if (text.isEmpty())
-            text = "<span style='color:#8b949e'>No description.</span>";
-        else
-            text = text.toHtmlEscaped();
-        if (!m_repoInfo.website.isEmpty())
-            text += QStringLiteral("<br><a href=\"%1\">%1</a>")
-                        .arg(m_repoInfo.website.toHtmlEscaped());
-        m_aboutText->setText(text);
-    }
-    // Topics as chips.
-    if (m_aboutTopics) {
-        QStringList chips;
-        for (const QString &t : m_repoInfo.topics)
-            chips << "<span style='background:#1f6feb33; color:#58a6ff; "
-                     "border-radius:9px; padding:1px 8px;'>" +
-                         t.toHtmlEscaped() + "</span>";
-        m_aboutTopics->setText(chips.join(" "));
-        m_aboutTopics->setVisible(!chips.isEmpty());
-    }
-
-    // Community files: surface README / LICENSE / CONTRIBUTING / … as links that
-    // open the file in the overview. Match the repo root case-insensitively.
-    if (m_aboutFiles) {
-        QStringList roots;
-        QByteArray out;
-        if (!dir.isEmpty() &&
-            runGitCapture(dir, {"ls-tree", "--name-only", currentRef()}, &out,
-                          nullptr)) {
-            for (const QString &line : QString::fromUtf8(out).split('\n')) {
-                const QString t = line.trimmed();
-                if (!t.isEmpty())
-                    roots << t;
-            }
-        }
-        // label, octicon, set of accepted base-name prefixes (lowercase).
-        const struct {
-            const char *label;
-            const char *icon;
-            QStringList prefixes;
-        } wanted[] = {
-            {"README", "repo", {"readme"}},
-            {"License", "shield-check", {"license", "licence", "copying"}},
-            {"Contributing", "people", {"contributing"}},
-            {"Code of Conduct", "comment", {"code_of_conduct"}},
-            {"Security", "lock", {"security"}},
-        };
-        QStringList links;
-        for (const auto &w : wanted) {
-            QString match;
-            for (const QString &f : std::as_const(roots)) {
-                const QString base = f.section('.', 0, 0).toLower();
-                if (w.prefixes.contains(base)) {
-                    match = f;
-                    break;
-                }
-            }
-            if (match.isEmpty())
-                continue;
-            links << QStringLiteral(
-                         "<a href=\"%1\" style='color:#58a6ff; text-decoration:none'>"
-                         "%2%3</a>")
-                         .arg(match.toHtmlEscaped(),
-                              octiconMarkup(w.icon, 13, QColor("#58a6ff")),
-                              QString::fromUtf8("&nbsp;") + QString(w.label));
-        }
-        m_aboutFiles->setText(links.join(QString::fromUtf8("&nbsp;&nbsp; ")));
-        m_aboutFiles->setVisible(!links.isEmpty());
-    }
-
-    // Fediverse: link to this repo's actor on Mastodon. The acct handle is
-    // "<owner>.<name>@<relay host>" (see the worker's repo_handle); any
-    // instance resolves a remote handle, so mastodon.social is the default.
-    if (m_aboutFediverse) {
-        // Match the worker's repo_handle / the website exactly: the raw,
-        // lowercased owner and name joined by a dot (not the dash-slugged
-        // repoSegment, which the actor handle is not built from).
-        const QString owner =
-            repo ? repo->owner.trimmed().toLower() : QString();
-        const QString name = repo ? repo->name.trimmed().toLower() : QString();
-        if (!owner.isEmpty() && !name.isEmpty()) {
-            QString relayHost = serverHost(
-                QSettings().value(kServerUrlSetting).toString().trimmed());
-            if (relayHost.isEmpty())
-                relayHost = serverHost(kDefaultServerUrl);
-            const QString handle =
-                QStringLiteral("@%1.%2@%3").arg(owner, name, relayHost);
-            const QString url =
-                QStringLiteral("https://mastodon.social/%1").arg(handle);
-            m_aboutFediverse->setText(
-                QStringLiteral("<a href=\"%1\" style='color:#58a6ff; "
-                               "text-decoration:none'>%2&nbsp;View on Mastodon</a>")
-                    .arg(url.toHtmlEscaped(),
-                         octiconMarkup("mastodon", 13, QColor("#58a6ff"))));
-            m_aboutFediverse->setToolTip(handle);
-            m_aboutFediverse->setVisible(true);
-            // Live follower count + newest follower handles arrive async
-            // from the relay's public GET /about (best-effort adornment).
-            loadRepoFediverseStatus();
-        } else {
-            m_aboutFediverse->setVisible(false);
-        }
-    }
-
-    // Latest release: newest tag by creation date.
-    if (m_releaseHeader && m_releaseRow) {
-        QString tag, when;
-        QByteArray out;
-        if (!dir.isEmpty() &&
-            runGitCapture(dir,
-                          {"for-each-ref", "--sort=-creatordate", "--count=1",
-                           "--format=%(refname:short)%09%(creatordate:relative)",
-                           "refs/tags"},
-                          &out, nullptr)) {
-            const QString line = QString::fromUtf8(out).trimmed();
-            const int tab = line.indexOf('\t');
-            if (tab > 0) {
-                tag = line.left(tab).trimmed();
-                when = line.mid(tab + 1).trimmed();
-            } else if (!line.isEmpty()) {
-                tag = line;
-            }
-        }
-        const bool has = !tag.isEmpty();
-        m_releaseHeader->setVisible(has);
-        m_releaseRow->setVisible(has);
-        if (has) {
-            QString row =
-                QStringLiteral("<a href=\"#releases\" style='color:#58a6ff; "
-                               "text-decoration:none'>%1<span style='background:"
-                               "#238636; color:#fff; border-radius:9px; "
-                               "padding:1px 8px; font-weight:600'>%2</span></a>")
-                    .arg(octiconMarkup("tag", 14, QColor("#3fb950")) +
-                             QString::fromUtf8("&nbsp;"),
-                         tag.toHtmlEscaped());
-            if (!when.isEmpty())
-                row += QStringLiteral(
-                           "<br><span style='color:#8b949e'>released %1</span>")
-                           .arg(when.toHtmlEscaped());
-            m_releaseRow->setText(row);
-        }
-    }
-
-    // Languages: aggregate blob sizes per language.
-    if (m_langBar && m_langLegend) {
-        QHash<QString, qint64> bytesByLang;
-        qint64 total = 0;
-        QByteArray out;
-        if (!dir.isEmpty() &&
-            runGitCapture(dir, {"ls-tree", "-r", "-l", currentRef()}, &out, nullptr)) {
-            for (const QByteArray &record : out.split('\n')) {
-                const int tab = record.indexOf('\t');
-                if (tab < 0)
-                    continue;
-                const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
-                if (meta.size() < 4)
-                    continue;
-                bool ok = false;
-                const qint64 size = QString::fromUtf8(meta.at(3)).toLongLong(&ok);
-                if (!ok || size <= 0)
-                    continue;
-                const QString name = QString::fromUtf8(record.mid(tab + 1));
-                const QString lang = languageForFile(name);
-                if (lang.isEmpty())
-                    continue;
-                bytesByLang[lang] += size;
-                total += size;
-            }
-        }
-        QList<QPair<QString, qint64>> langs;
-        for (auto it = bytesByLang.constBegin(); it != bytesByLang.constEnd(); ++it)
-            langs.append({it.key(), it.value()});
-        std::sort(langs.begin(), langs.end(),
-                  [](const auto &a, const auto &b) { return a.second > b.second; });
-
-        QString legend;
-        const int shown = qMin(5, int(langs.size()));
-        for (int i = 0; i < shown && total > 0; ++i) {
-            const double pct = 100.0 * langs.at(i).second / total;
-            const QString color = languageColor(langs.at(i).first);
-            // Keep each "● Name 12.3%" entry on one line (all non-breaking
-            // spaces); only the trailing normal space between entries may wrap.
-            legend += QString::fromUtf8(
-                          "<span style='color:%1'>\xE2\x97\x8F</span>&nbsp;"
-                          "<span style='color:#c9d1d9'>%2</span>&nbsp;"
-                          "<span style='color:#8b949e'>%3%</span>&nbsp;&nbsp; ")
-                          .arg(color, langs.at(i).first.toHtmlEscaped(),
-                               QString::number(pct, 'f', 1));
-        }
-        m_langBar->setScaledContents(true);
-        m_langBar->setPixmap(languageBarPixmap(langs, total, shown, 600, 12));
-        m_langLegend->setText(legend.isEmpty()
-                                  ? "<span style='color:#8b949e'>No code yet.</span>"
-                                  : legend);
-    }
-
-    // Total tracked file count for the current ref.
-    if (m_filesCountHeader && m_filesCountRow) {
-        int fileCount = 0;
-        QByteArray out;
-        if (!dir.isEmpty() &&
-            runGitCapture(dir, {"ls-tree", "-r", "--name-only", currentRef()}, &out,
-                          nullptr)) {
-            for (const QByteArray &line : out.split('\n')) {
-                if (!line.trimmed().isEmpty())
-                    ++fileCount;
-            }
-        }
-        m_filesCountRow->setText(
-            QStringLiteral("<span style='color:#c9d1d9'>%1</span> "
-                            "<span style='color:#8b949e'>%2</span>")
-                .arg(formatCount(fileCount), fileCount == 1 ? "file" : "files"));
-    }
-
-    // Contributors from git shortlog, each shown as a deterministic avatar
-    // generated from their email (falling back to name) — gravatar-style.
-    if (m_contributorsRow && m_contributorsHeader) {
-        struct Contrib {
-            QString name;
-            QString email;
-            int count;
-        };
-        QList<Contrib> contribs;
-        QByteArray out;
-        // -e includes the email; lines look like "  12\tName <email>".
-        // Merge commits are counted (no --no-merges) so each tooltip's
-        // "N commits" is that author's true commit total — matching what
-        // `git shortlog -sne` / `git log --author` report — rather than
-        // silently dropping every merge they performed.
-        if (!dir.isEmpty() &&
-            runGitCapture(dir, {"shortlog", "-sne", "--all"}, &out,
-                          nullptr)) {
-            for (const QString &line : QString::fromUtf8(out).split('\n')) {
-                const QString t = line.trimmed();
-                if (t.isEmpty())
-                    continue;
-                const int tab = t.indexOf('\t');
-                if (tab < 0)
-                    continue;
-                QString who = t.mid(tab + 1).trimmed();
-                QString email;
-                const int lt = who.lastIndexOf('<');
-                const int gt = who.lastIndexOf('>');
-                if (lt >= 0 && gt > lt) {
-                    email = who.mid(lt + 1, gt - lt - 1).trimmed();
-                    who = who.left(lt).trimmed();
-                }
-                contribs.append({who, email, t.left(tab).toInt()});
-            }
-        }
-        m_contributorsHeader->setText(
-            QStringLiteral("CONTRIBUTORS %1").arg(formatCount(contribs.size())));
-
-        // Round a source PNG into a circular avatar (rendered at 2x for crisp
-        // hi-dpi edges), then embed it directly in the rich-text label.
-        auto rounded = [](QByteArray src, int px) -> QByteArray {
-            QPixmap p;
-            if (!p.loadFromData(src, "PNG") || p.isNull())
-                return src;
-            const int s = px * 2;
-            const QPixmap scaled = p.scaled(s, s, Qt::KeepAspectRatioByExpanding,
-                                            Qt::SmoothTransformation);
-            QPixmap out(s, s);
-            out.fill(Qt::transparent);
-            QPainter painter(&out);
-            painter.setRenderHint(QPainter::Antialiasing, true);
-            QPainterPath path;
-            path.addEllipse(0, 0, s, s);
-            painter.setClipPath(path);
-            painter.drawPixmap(0, 0, scaled);
-            painter.end();
-            QByteArray result;
-            QBuffer buf(&result);
-            buf.open(QIODevice::WriteOnly);
-            out.save(&buf, "PNG");
-            return result;
-        };
-
-        // Embed each avatar as an inline base64 PNG so it renders in rich text.
-        auto avatarTag = [this, &rounded](const Contrib &c, int px) {
-            const QString custom = m_repoInfo.contributorAvatars.value(c.name);
-            QByteArray png;
-            QPixmap fromFile;
-            if (!custom.isEmpty() && fromFile.load(custom)) {
-                QBuffer buf(&png);
-                buf.open(QIODevice::WriteOnly);
-                fromFile.save(&buf, "PNG");
-            } else {
-                const QString seed =
-                    c.email.isEmpty() ? c.name.toLower() : c.email.toLower();
-                png = forkMeshAvatarPng(seed);
-            }
-            png = rounded(png, px);
-            const QString tip = (c.name + QString::fromUtf8(" \xC2\xB7 ") +
-                                 QString::number(c.count) + " commits")
-                                    .toHtmlEscaped();
-            const QString link = QStringLiteral("contributor:%1|%2")
-                                   .arg(QString::fromLatin1(
-                                            QUrl::toPercentEncoding(c.name)),
-                                        QString::number(c.count));
-            return QStringLiteral(
-                       "<a href='%1'><img src='data:image/png;base64,%2' "
-                       "width='%3' height='%3' title='%4' "
-                       "style='border-radius:999px;'></a>")
-                .arg(link)
-                .arg(QString::fromLatin1(png.toBase64()))
-                .arg(px)
-                .arg(tip);
-        };
-
-        QString html;
-        const int shown = qMin(12, int(contribs.size()));
-        for (int i = 0; i < shown; ++i)
-            html += avatarTag(contribs.at(i), 32) +
-                    QString::fromUtf8("&nbsp;&nbsp;");
-        if (contribs.size() > shown)
-            html += QStringLiteral(
-                        "<span style='color:#8b949e'>&nbsp;+%1</span>")
-                        .arg(contribs.size() - shown);
-        m_contributorsRow->setText(html.isEmpty()
-                                       ? "<span style='color:#8b949e'>None yet.</span>"
-                                       : html);
-    }
 }
 
 void MainWindow::spinRefreshButton(QPushButton *button)
