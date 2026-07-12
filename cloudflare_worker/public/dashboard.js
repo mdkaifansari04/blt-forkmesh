@@ -5787,9 +5787,20 @@
 
   function applyServedCounts(counts) {
     if (!counts || typeof counts !== "object") return;
-    // Total issue count from the root tree's bundled tallies; the first view of
-    // the Issues tab refines it to the OPEN count (issues load lazily now).
-    if (Number.isFinite(Number(counts.issues))) setRepoTabCount("issues", Number(counts.issues));
+    // The Issues header shows OPEN issues only (issue #397): closed issues are
+    // opt-in behind the Closed filter, so the tab badge counts the open issues
+    // the host serves (counts.openIssues), and the panel's "N Open / N Closed"
+    // split is filled from the served open/closed tallies. Older hosts that only
+    // report a bundled total fall back to that total; the first view of the
+    // Issues tab still refines the badge to the open count once issues load.
+    const openIssues = Number.isFinite(Number(counts.openIssues))
+      ? Number(counts.openIssues)
+      : Number(counts.issues);
+    if (Number.isFinite(openIssues)) {
+      setRepoTabCount("issues", openIssues);
+      if (Number.isFinite(Number(counts.closedIssues)))
+        setRepoCollectionCounts("issues", openIssues, Number(counts.closedIssues));
+    }
     if (Number.isFinite(Number(counts.pulls))) setRepoTabCount("pulls", Number(counts.pulls));
     if (Number.isFinite(Number(counts.discussions))) setRepoTabCount("discussions", Number(counts.discussions));
   }

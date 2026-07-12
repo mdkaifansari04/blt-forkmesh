@@ -12,6 +12,8 @@ class Member {
     this.version = '',
     this.solanaAddress = '',
     this.mirrors = const [],
+    this.owner = '',
+    this.nodeName = '',
   });
 
   final String id;
@@ -22,6 +24,49 @@ class Member {
   final String version;
   final String solanaAddress;
   final List<String> mirrors;
+
+  /// User account that owns this node (the wire `ownerUser` field). When a
+  /// person runs several nodes they all carry the same owner, which lets the
+  /// roster collapse them into a single user instead of many duplicates.
+  final String owner;
+
+  /// Registered node account name (the wire `nodeName` field), used as a
+  /// last-resort display name when neither owner nor chat name is set.
+  final String nodeName;
+}
+
+/// One chat participant collapsed across the one-or-more nodes they run.
+/// A single person (identified by their owning account, wallet, or display
+/// name) can be connected from several nodes at once; grouping them here stops
+/// the same user from appearing in the roster multiple times as duplicates.
+class MemberGroup {
+  MemberGroup({
+    required this.name,
+    required this.members,
+    this.self = false,
+    this.disambiguator = '',
+  });
+
+  final String name;
+
+  /// The nodes this user currently has online, most relevant first.
+  final List<Member> members;
+
+  final bool self;
+
+  /// A short id shown beneath the username only when another distinct user
+  /// shares the same display name, so genuinely different people can be told
+  /// apart. Empty when the name is already unique.
+  final String disambiguator;
+
+  bool get online => members.any((m) => m.online);
+
+  /// Representative node for actions like opening a direct message.
+  Member get primary => members.first;
+
+  String get id => primary.id;
+
+  int get nodeCount => members.length;
 }
 
 class ChatMessage {

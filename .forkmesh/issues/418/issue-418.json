@@ -1,0 +1,35 @@
+{
+    "assignees": [
+    ],
+    "author": "8Yz86t8tyEF3o6My2FuW3PnBqfDbDnqy8WZqKrRPZgQ",
+    "authorName": "static-rack-9818",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783885682892,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "8Yz86t8tyEF3o6My2FuW3PnBqfDbDnqy8WZqKrRPZgQ",
+            "authorName": "static-rack-9818",
+            "body": "",
+            "id": "open-418",
+            "sig": "1L_OHn3Ela6dXQdZ2rcCDVMyBJLmQoYmvMBF3loX5bAzITQOCYOjSkksS_0-3nmDjSJ1XhZVA4p2SLfnVZQEDw",
+            "title": "when we first run the install script it seems to hang on this part \"==>   git: already present\n\" - lets show more detail of what is happening so we know",
+            "ts": 1783885682892,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 418,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "when we first run the install script it seems to hang on this part \"==>   git: already present\n\" - lets show more detail of what is happening so we know",
+    "updatedAt": 1783885682892,
+    "votes": 0
+}
