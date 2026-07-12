@@ -8,6 +8,7 @@
     "bountyStatus": "",
     "bountyUsd": 0,
     "createdAt": 1783486728266,
+    "endDate": 0,
     "events": [
         {
             "attachments": [
@@ -63,6 +64,18 @@
             "status": "closed",
             "ts": 1783885352568,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "5773624a-abc0-44e7-997b-9ae4ae5faec1",
+            "sig": "qx8yo1jB0l1iAHJSh2atLqjKADq1ZdY2WSRu6WNPvtOzX3W2vSQ_EEyTE_vKm_IlJ77Jiy41hm9yM9DjGTcnAQ",
+            "ts": 1783891475445,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -73,8 +86,9 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
+    "startDate": 0,
     "status": "closed",
     "title": "fix chat display on mobile web and show the full chat history",
-    "updatedAt": 1783885352568,
+    "updatedAt": 1783891475445,
     "votes": 0
 }
