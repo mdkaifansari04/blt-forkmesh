@@ -13,7 +13,7 @@ class ForkMeshIdentity;
 // different fields. Signatures are raw Ed25519 over an
 // explicit canonical string, matching the worker's ed25519_verify.
 struct IssueEvent {
-    QString type;          // open | comment | edit | status | labels | milestone | priority | progress | assignees | agent | bounty | delete
+    QString type;          // open | comment | edit | status | labels | milestone | dates | priority | progress | assignees | agent | bounty | delete
     QString id;
     QString author;        // signer pubkey (base64url)
     QString authorName;
@@ -25,6 +25,8 @@ struct IssueEvent {
     QString status;        // status: open|closed
     QStringList labels;    // labels
     QString milestone;     // milestone (empty = none)
+    qint64 startDate = 0;  // dates: planned start (epoch ms, 0 = unset)
+    qint64 endDate = 0;    // dates: planned end (epoch ms, 0 = unset)
     int priority = 0;      // priority: 1 (highest) through 99 (lowest), 0 = unset
     int progress = 0;      // progress: 0..100 percent complete
     QStringList assignees; // assignees
@@ -48,6 +50,8 @@ struct Issue {
     QString status = "open";
     QStringList labels;
     QString milestone;
+    qint64 startDate = 0; // planned start (epoch ms, 0 = unset)
+    qint64 endDate = 0;   // planned end (epoch ms, 0 = unset)
     int priority = 0; // 1 (highest) through 99 (lowest), 0 = unset
     int progress = 0; // 0..100 percent complete (latest signed progress event)
     QStringList assignees;
@@ -188,6 +192,9 @@ public:
     bool setStatus(int number, const QString &status, QString *error = nullptr);
     bool setLabels(int number, const QStringList &labels, QString *error = nullptr);
     bool setMilestone(int number, const QString &milestone, QString *error = nullptr);
+    // Set the planned start/end dates (epoch ms; 0 clears a date).
+    bool setDates(int number, qint64 startDate, qint64 endDate,
+                  QString *error = nullptr);
     bool setPriority(int number, int priority, QString *error = nullptr);
     bool setProgress(int number, int progress, QString *error = nullptr);
     // Pledge (or update) a bounty on an issue. address is the worker-issued

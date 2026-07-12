@@ -100,6 +100,9 @@ set(FORKMESH_APP_SOURCES
     src/IssueStore.cpp
     src/IssueBurnup.h
     src/IssueBurnup.cpp
+    src/ProjectStore.h
+    src/ProjectStore.cpp
+    src/ProjectGantt.h
     src/DiscussionStore.h
     src/DiscussionStore.cpp
     src/PullStore.h
@@ -168,6 +171,7 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowPulls.cpp
     src/MainWindowAgents.cpp
     src/MainWindowRepoDetail.cpp
+    src/MainWindowProjects.cpp
     src/MainWindowBranches.cpp
     src/MainWindowReleases.cpp
     src/MainWindowShortcuts.cpp
@@ -339,6 +343,8 @@ if(FORKMESH_BUILD_TESTS)
         src/IssueStore.cpp
         src/IssueBurnup.h
         src/IssueBurnup.cpp
+        src/ProjectStore.h
+        src/ProjectStore.cpp
         src/DiscussionStore.h
         src/DiscussionStore.cpp
         src/PullStore.h

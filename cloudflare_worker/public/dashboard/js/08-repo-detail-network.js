@@ -63,6 +63,7 @@
       insights: { label: "Insights", icon: "chart-no-axes-combined", count: "" },
       releases: { label: "Releases", icon: "tag", count: "" },
       issues: { label: "Issues", icon: "circle-dot", count: issuesCount },
+      projects: { label: "Projects", icon: "chart-gantt", count: "" },
       pulls: { label: "Pull requests", icon: "git-pull-request", count: pullsCount },
       discussions: { label: "Discussions", icon: "message-square", count: discussionsCount },
       mirrors: { label: "Mirrors", icon: "radio", count: mirrorsCount },
@@ -124,7 +125,7 @@
             </div>
           </div>
           <div class="flex min-w-0 overflow-x-auto px-3" role="tablist">
-            ${["code", "commits", "insights", "releases", "issues", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : [])].map((tab) => {
+            ${["code", "commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : [])].map((tab) => {
               const meta = tabMeta[tab];
               const iconAttr = tab === "issues"
                 ? 'data-lucide="circle-dot"'
@@ -219,6 +220,7 @@
             <section data-dashboard-repo-tab-panel="commits" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5 text-muted-foreground"></i>Commits</span><span class="font-mono text-[10px] text-muted-foreground">live mirror history</span></div><div data-repo-commits></div></div></section>
             <section data-dashboard-repo-tab-panel="releases" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="tag" class="h-3.5 w-3.5 text-primary"></i>Releases</span><span class="font-mono text-[10px] text-muted-foreground">signed release manifests</span></div><div data-repo-releases></div></div></section>
             ${renderRepoCollectionPanel("issues", repo, issuesCount, repoCount(repo, ["closedIssues", "closedIssueCount"]))}
+            <section data-dashboard-repo-tab-panel="projects" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-gantt" class="h-3.5 w-3.5 text-primary"></i>Projects</span><span class="font-mono text-[10px] text-muted-foreground">linked issues · milestones · gantt</span></div><div data-repo-projects></div></div></section>
             ${renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))}
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
@@ -1329,6 +1331,18 @@
       const issueFilterButton = event.target.closest("[data-dashboard-issue-filter]");
       if (issueFilterButton) {
         setIssueFilter(issueFilterButton.dataset.dashboardIssueFilter || "open");
+        return;
+      }
+
+      const projectFilterButton = event.target.closest("[data-dashboard-project-filter]");
+      if (projectFilterButton) {
+        setProjectFilter(projectFilterButton.dataset.dashboardProjectFilter || "open");
+        return;
+      }
+
+      const projectViewButton = event.target.closest("[data-dashboard-project-view]");
+      if (projectViewButton) {
+        setProjectView(projectViewButton.dataset.dashboardProjectView || "gantt");
         return;
       }
 
