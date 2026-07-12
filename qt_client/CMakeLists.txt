@@ -289,6 +289,22 @@ if(UNIX AND NOT APPLE)
     target_link_options(forkmesh PRIVATE -rdynamic)
 endif()
 
+# The file/folder tree icons under ../icons/ are loaded at runtime through
+# MainWindow::iconsDir() (MainWindowRepoDetail.cpp), which falls back to a
+# loose "icons" directory beside the executable when it isn't running from a
+# source checkout. None of the packagers (AppImage, NSIS, .dmg) or the bare
+# published binary ship that directory alongside the executable, so those
+# icons never appeared on anything but a from-source dev build (issue #417).
+# Bake the whole set into the binary as a Qt resource instead, so it's always
+# present regardless of how the app was installed.
+file(GLOB FORKMESH_TREE_ICON_FILES "${CMAKE_CURRENT_SOURCE_DIR}/../icons/*.svg")
+qt_add_resources(forkmesh "treeicons"
+    PREFIX "/icons/tree"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/../icons"
+    BIG_RESOURCES
+    FILES ${FORKMESH_TREE_ICON_FILES}
+)
+
 if(APPLE)
     set_target_properties(forkmesh PROPERTIES
         MACOSX_BUNDLE TRUE
