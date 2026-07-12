@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "forkbot",
     "authorName": "forkbot",
@@ -19,6 +20,29 @@
             "title": "fix chat display on mobile web and show the full chat history",
             "ts": 1783486728266,
             "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 11,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "016398eb-fd4e-449d-a607-4e7e2f2d614b",
+            "sig": "htuHWu4tVQIDRH3mNhk3MPm3k9YZfKDjWHWYe8N_o_3C-dISlhGwTGB4BoW-I7GQVRFl3VQGTpr8Y3IegU5MAg",
+            "ts": 1783880553537,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "8183bf4d-4fe9-4001-b574-b1810c417dc1",
+            "sig": "mKmkxuHo3rCGSRE0dMOQ4hDI_CEykKmgX81eTPYXc7qC-NpU0alM8QFYT1iXRURNRN3jqaEiahIa2zayRS_DDw",
+            "ts": 1783880553588,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -31,6 +55,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "fix chat display on mobile web and show the full chat history",
-    "updatedAt": 1783486728266,
+    "updatedAt": 1783880553588,
     "votes": 0
 }

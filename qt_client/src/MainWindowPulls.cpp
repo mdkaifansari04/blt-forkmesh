@@ -213,6 +213,22 @@ QWidget *MainWindow::buildPullsTab()
             copyReferenceLink(QStringLiteral("pull"),
                               QString::number(m_currentPullNumber));
     });
+    // View this PR's page on the public website, mirroring the repo's own
+    // "browsable at" link (repositoryWebUrl()).
+    auto *pullViewWebsiteButton = new QPushButton("View on website");
+    pullViewWebsiteButton->setObjectName("ghostButton");
+    pullViewWebsiteButton->setProperty("buttonSize", "sm");
+    pullViewWebsiteButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(pullViewWebsiteButton, "link", 16);
+    pullViewWebsiteButton->setToolTip("Open this pull request on the public website");
+    connect(pullViewWebsiteButton, &QPushButton::clicked, this, [this] {
+        if (m_currentPullNumber <= 0 || m_repoDetailIndex < 0 ||
+            m_repoDetailIndex >= m_repositories.size())
+            return;
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        QDesktopServices::openUrl(QUrl(repositoryWebUrl(repo) + "/pulls/" +
+                                       QString::number(m_currentPullNumber)));
+    });
     setOcticon(m_pullCloseButton, "circle-slash", 16);
     setOcticon(m_pullReopenButton, "issue-reopened", 16);
     m_pullReopenButton->setToolTip("Reopen this pull request");
@@ -339,6 +355,7 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullReopenButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullSendToSourceButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullLinkIssueButton, 0, Qt::AlignTop);
+    pullHeaderRow->addWidget(pullViewWebsiteButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteBranchButton, 0, Qt::AlignTop);
