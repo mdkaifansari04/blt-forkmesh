@@ -1126,6 +1126,31 @@ void MainWindow::queuePullConflictCheck(int number, const QString &fingerprint)
     }
 }
 
+QString MainWindow::pullConflictBadgeTooltip(int number) const
+{
+    const QString base = QStringLiteral("This pull request has merge conflicts");
+    const auto cached = m_pullConflictCache.constFind(number);
+    if (cached == m_pullConflictCache.constEnd() ||
+        cached->conflictFiles.isEmpty())
+        return base;
+    // Say the reason why the badge is showing: list the conflicting files so the
+    // flag is self-explanatory without opening the PR. Cap the list so a huge
+    // conflict doesn't produce an unreadable tooltip.
+    const QStringList &files = cached->conflictFiles;
+    constexpr int kMaxListed = 10;
+    QStringList lines;
+    for (int i = 0; i < files.size() && i < kMaxListed; ++i)
+        lines << QStringLiteral("\xE2\x80\xA2 ") + files.at(i);
+    if (files.size() > kMaxListed)
+        lines << QStringLiteral("\xE2\x80\xA6 and %1 more")
+                     .arg(files.size() - kMaxListed);
+    return QStringLiteral("%1 in %2 file%3:\n%4")
+        .arg(base)
+        .arg(files.size())
+        .arg(files.size() == 1 ? QString() : QStringLiteral("s"),
+             lines.join(QLatin1Char('\n')));
+}
+
 void MainWindow::setPullConflictBadge(int number, bool conflict)
 {
     if (!m_pullTable)
@@ -1139,7 +1164,7 @@ void MainWindow::setPullConflictBadge(int number, bool conflict)
             return;
         if (conflict) {
             st->setIcon(themedOcticon("alert", QColor("#f85149"), 13));
-            st->setToolTip(QStringLiteral("This pull request has merge conflicts"));
+            st->setToolTip(pullConflictBadgeTooltip(number));
         } else {
             st->setIcon(QIcon());
             st->setToolTip(QString());
@@ -1184,8 +1209,7 @@ void MainWindow::refreshPullList()
         // conflict icon so the list flags them without opening the detail pane.
         if (m_pullConflictByNumber.value(pr.number, false)) {
             st->setIcon(themedOcticon("alert", QColor("#f85149"), 13));
-            st->setToolTip(
-                QStringLiteral("This pull request has merge conflicts"));
+            st->setToolTip(pullConflictBadgeTooltip(pr.number));
         }
         m_pullTable->setItem(row, 3, st);
         auto *files = new QTableWidgetItem;
