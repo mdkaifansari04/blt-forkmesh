@@ -4699,6 +4699,7 @@ def _account_profile_fields(rec):
         "profileLocation": location,
         "profileTimezone": timezone,
         "profilePrivate": bool(rec.get("profile_private")),
+        "followersPublic": bool(rec.get("profile_followers_public")),
         "mastodon": mastodon,
         "mastodonUrl": _mastodon_url(mastodon),
         "profileLinks": _profile_links_public(rec),
@@ -5651,7 +5652,8 @@ async def _account_profile(env, request):
         return json_response({"error": "invalid_json"}, status=400)
     public_profile_fields = {
         "avatarPng", "profileBio", "profileAbout", "profileReadme",
-        "profileLocation", "profileTimezone", "profilePrivate", "mastodon",
+        "profileLocation", "profileTimezone", "profilePrivate",
+        "followersPublic", "mastodon",
         "profileLinks", "nodeName", "email", "identifier", "sessionToken",
     }
     session_bi, session_rec = await _account_session_record(env, request, data)
@@ -5697,7 +5699,8 @@ async def _account_profile(env, request):
     # Update(Person) broadcast below must not fire for payout/avatar/
     # notification tweaks — every no-op broadcast fans out one delivery per
     # follower server and pulls a rel=me refetch storm back at us.
-    fed_before = (rec.get("profile_bio", ""), bool(rec.get("profile_private")))
+    fed_before = (rec.get("profile_bio", ""), bool(rec.get("profile_private")),
+                  bool(rec.get("profile_followers_public")))
     if "solana" in data:
         solana = clean_string(data.get("solana", ""), 64).strip()
         if solana and not SOLANA_RE.match(solana):
@@ -5790,6 +5793,15 @@ async def _account_profile(env, request):
                 rec.pop("profile_private", None)
             changed = True
 
+    if "followersPublic" in data:
+        followers_public = bool(data.get("followersPublic"))
+        if bool(rec.get("profile_followers_public")) != followers_public:
+            if followers_public:
+                rec["profile_followers_public"] = True
+            else:
+                rec.pop("profile_followers_public", None)
+            changed = True
+
     if "mastodon" in data:
         raw_mastodon = clean_string(data.get("mastodon", ""), 120).strip()
         mastodon = _clean_mastodon_handle(raw_mastodon)
@@ -5860,7 +5872,8 @@ async def _account_profile(env, request):
         # changes propagate to remote servers immediately — but only when a
         # federated field actually changed (see fed_before above).
         fed_after = (rec.get("profile_bio", ""),
-                     bool(rec.get("profile_private")))
+                     bool(rec.get("profile_private")),
+                     bool(rec.get("profile_followers_public")))
         if fed_after != fed_before:
             await _best_effort_inbox_side_effect(_ap_broadcast_actor_update(
                 env, request, AP_ACTOR_USER,
@@ -9184,6 +9197,10 @@ AP_INSTANCE_HANDLE = "instance"
 AP_MAX_INBOX_BYTES = 128 * 1024
 AP_MAX_COMMENTS_PER_THREAD = 500
 AP_MAX_FOLLOWERS_PER_ACTOR = 5000
+# The `first` page embedded directly in a followers/following collection
+# (collection_doc) — a fixed cap keeps the response small even for popular
+# actors instead of paginating with next/prev links.
+AP_COLLECTION_PAGE_SIZE = 200
 AP_REMOTE_ACTOR_TTL_MS = 24 * 60 * 60 * 1000
 AP_DATE_SKEW_MS = 12 * 60 * 60 * 1000
 # Inline sends per publish; the rest waits for the cron drain. Kept small so a
@@ -9686,6 +9703,12 @@ async def _ap_broadcast_actor_update(env, request, kind, handle):
         await edge_cache_delete(origin + "/@" + quote(handle))
         await edge_cache_delete(origin + "/@" + quote(handle) + "/repositories")
         await edge_cache_delete(ACCOUNT_LOOKUP_CACHE_PREFIX + quote(handle))
+        # Toggling "make my followers/following public" (Settings) changes
+        # what ap_collection_handler returns for the same cached URL, so drop
+        # it too — otherwise the old bare-collection response (or stale
+        # items) lingers for the rest of its 300s TTL.
+        await edge_cache_delete(actor_url + "/followers")
+        await edge_cache_delete(actor_url + "/following")
     elif kind == AP_ACTOR_REPO:
         page_owner, _, page_repo = handle.partition(".")
         # The git page carries the rel="me" the green check verifies; the
@@ -9739,18 +9762,39 @@ async def ap_collection_handler(env, request, kind, handle, which):
             return await _ap_negative_response(collection_url)
     actor_bi = await _ap_actor_bi(env, kind, handle)
     total = 0
+    items = None
     if which == "followers":
         row = await d1_first(
             env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
             actor_bi)
         total = (row or {}).get("c", 0) or 0
+        # Repo watchers are already public (the About/Watch popover lists
+        # them), so repo actors always enumerate. User actors only enumerate
+        # when the account owner opted in via Settings — otherwise remote
+        # servers correctly read the bare collection as "not made visible".
+        show_items = True
+        if kind == AP_ACTOR_USER:
+            _, account_rec = await _account_row(env, handle)
+            show_items = bool((account_rec or {}).get(
+                "profile_followers_public"))
+        if show_items and total:
+            rows = await d1_all(
+                env,
+                "SELECT follower_id FROM ap_followers WHERE actor_bi=?"
+                " ORDER BY created_at DESC LIMIT ?",
+                actor_bi, AP_COLLECTION_PAGE_SIZE)
+            items = [r.get("follower_id", "") for r in (rows or [])
+                     if r.get("follower_id")]
+        elif show_items:
+            items = []
     elif which == "outbox":
         row = await d1_first(
             env, "SELECT COUNT(*) AS c FROM ap_objects WHERE actor_bi=?",
             actor_bi)
         total = (row or {}).get("c", 0) or 0
     resp = json_response(
-        ap.collection_doc(collection_url, total), cache_seconds=300,
+        ap.collection_doc(collection_url, total, items=items),
+        cache_seconds=300,
         extra_headers={"content-type": ap.ACTIVITY_CONTENT_TYPE})
     await edge_cache_put(collection_url, resp)
     return resp

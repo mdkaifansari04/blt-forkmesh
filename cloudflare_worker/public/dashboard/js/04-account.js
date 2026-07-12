@@ -1166,6 +1166,7 @@
     const timezoneInput = $("[data-profile-page-timezone]");
     const mastodonInput = $("[data-profile-page-mastodon]");
     const privateInput = $("[data-profile-page-private]");
+    const followersPublicInput = $("[data-profile-page-followers-public]");
     const publicUrl = $("[data-profile-public-url]");
     const txtValue = $("[data-profile-txt-value]");
 
@@ -1254,6 +1255,9 @@
     }
     if (privateInput) {
       privateInput.checked = Boolean(session?.profilePrivate);
+    }
+    if (followersPublicInput) {
+      followersPublicInput.checked = Boolean(session?.followersPublic);
     }
     if (publicUrl) publicUrl.textContent = profilePublicUrl(session);
     if (txtValue) txtValue.textContent = profileTxtValue(session);
@@ -1389,6 +1393,7 @@
         profileTimezone: ($("[data-profile-page-timezone]")?.value || "").trim(),
         mastodon: ($("[data-profile-page-mastodon]")?.value || "").trim(),
         profilePrivate: Boolean($("[data-profile-page-private]")?.checked),
+        followersPublic: Boolean($("[data-profile-page-followers-public]")?.checked),
         profileLinks: collectProfileLinks(),
       });
       setProfilePageHint("[data-profile-public-hint]", "Public profile saved.", "good");
