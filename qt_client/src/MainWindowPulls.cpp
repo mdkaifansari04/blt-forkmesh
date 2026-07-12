@@ -1414,16 +1414,19 @@ void MainWindow::showPull(int number)
         if (b)
             b->setEnabled(true);
     m_pullTitle->setText(QStringLiteral("#%1  %2").arg(found->number).arg(found->title));
+    // Filled via a single multi-arg call rather than chained .arg() calls:
+    // branchLinkHtml() percent-encodes the branch name into the href (e.g. "/"
+    // becomes "%2F"), and a later standalone .arg() call rescans the whole
+    // string, mistaking that literal "%2" for an unfilled placeholder and
+    // shifting every substitution after it by one.
     m_pullMeta->setText(
         QString::fromUtf8("<b>%1</b> \xE2\x86\x90 <b>%2</b> \xC2\xB7 %3 \xC2\xB7 %4 files "
                        "<span style='color:#3fb950'>+%5</span> "
                        "<span style='color:#f85149'>-%6</span> \xC2\xB7 by %7")
             .arg(branchLinkHtml(found->base), branchLinkHtml(found->head),
-                 found->status)
-            .arg(formatCount(found->filesChanged))
-            .arg(formatCount(found->additions))
-            .arg(formatCount(found->deletions))
-            .arg((found->authorName.isEmpty() ? found->author.left(10)
+                 found->status, formatCount(found->filesChanged),
+                 formatCount(found->additions), formatCount(found->deletions),
+                 (found->authorName.isEmpty() ? found->author.left(10)
                                               : found->authorName)
                      .toHtmlEscaped()));
     // Surface where the head branch sits relative to its base: when it trails the

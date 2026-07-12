@@ -193,11 +193,12 @@ QWidget *MainWindow::buildDiscussionsTab()
 DiscussionStore MainWindow::discussionStoreForCurrentRepo() const
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
-        return DiscussionStore(QString(), QString(), &m_profileIdentity, m_userName);
+        return DiscussionStore(QString(), QString(), &m_profileIdentity,
+                               chatDisplayName());
     const RepositoryRecord &repo =
         writableRecordFor(m_repositories.at(m_repoDetailIndex));
     return DiscussionStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
-                           m_userName);
+                           chatDisplayName());
 }
 
 void MainWindow::reloadDiscussions()

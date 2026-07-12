@@ -19,6 +19,15 @@
             "title": "testing new issue federate",
             "ts": 1783744795,
             "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "412c1de8-bd1a-43a0-86e1-150e4489b38b",
+            "sig": "QYAaRMCiIGnCCSeLnm8gi0mLkiL9cBxn7nfPdY9huoRemWuN7jZA4CdvTN0pQplXY-Vd1YLEnzMiqeiMFwPoBQ",
+            "target": "self",
+            "ts": 1783880334312,
+            "type": "delete"
         }
     ],
     "labels": [
@@ -30,6 +39,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "testing new issue federate",
-    "updatedAt": 1783744795,
+    "updatedAt": 1783880334312,
     "votes": 0
 }
