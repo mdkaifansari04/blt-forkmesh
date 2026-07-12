@@ -5302,6 +5302,13 @@
     "package.json": ["NPM", "#cb3837"], "package-lock.json": ["NPM", "#cb3837"],
   };
 
+  // Directory connector labels show just the folder name (not the whole
+  // path) capped to 8 chars, e.g. "one/two/three" -> "three".
+  function dirBadgeLabel(dir) {
+    const name = dir === "/" ? "/" : dir.slice(dir.lastIndexOf("/") + 1);
+    return name.length > 8 ? `${name.slice(0, 8)}…` : name;
+  }
+
   function fileBadgeGlyph(path) {
     const name = String(path || "").split("/").pop().toLowerCase();
     if (fileBadgeNames[name]) return fileBadgeNames[name];
@@ -5365,7 +5372,7 @@
               <div class="flex max-w-full flex-wrap gap-2">${group.files.map(renderPullBadgeTile).join("")}</div>
               <div class="flex items-center gap-2 text-[10px] text-muted-foreground">
                 <span class="h-px min-w-3 flex-1 bg-border"></span>
-                <span class="font-mono">${escapeHtml(group.dir)}</span>
+                <span class="font-mono" title="${escapeHtml(group.dir)}">${escapeHtml(dirBadgeLabel(group.dir))}</span>
                 <span>(${formatCount(group.files.length)} file${group.files.length === 1 ? "" : "s"})</span>
                 <span class="h-px min-w-3 flex-1 bg-border"></span>
               </div>
@@ -6606,6 +6613,43 @@
       $$("[data-repo-watch-count], [data-repo-watch-followers], [data-repo-social-followers]").forEach((el) => {
         el.textContent = formatCount(followers);
       });
+      // WHO is watching: newest followers (handle + remote profile link),
+      // each row captioned with what they follow.
+      const watchList = $("[data-repo-watch-list]");
+      if (watchList) {
+        const entries = Array.isArray(body.fediverse?.followersList)
+          ? body.fediverse.followersList : [];
+        if (entries.length) {
+          const following = `Following ${repoKey(repo).toLowerCase()}`;
+          watchList.innerHTML = entries.slice(0, 25).map((f) => {
+            const handleText = escapeHtml(String(f?.handle || f?.url || ""));
+            const url = String(f?.url || "");
+            const who = /^https?:\/\//i.test(url)
+              ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono text-[11px] text-foreground hover:underline">${handleText}</a>`
+              : `<span class="min-w-0 truncate font-mono text-[11px] text-foreground">${handleText}</span>`;
+            return `<div class="flex items-center justify-between gap-2 py-0.5">${who}<span class="shrink-0 text-[10px] text-muted-foreground">${escapeHtml(following)}</span></div>`;
+          }).join("");
+          watchList.classList.remove("hidden");
+        } else {
+          watchList.innerHTML = "";
+          watchList.classList.add("hidden");
+        }
+      }
+      // Owner switched federation off (or the instance did): say so instead
+      // of silently showing zeros.
+      $("[data-repo-watch-disabled]")?.classList.toggle(
+        "hidden", body.fediverse?.enabled !== false);
+      // Seed the gear form's federation switches with the stored settings so
+      // an untouched save round-trips them unchanged.
+      const apSettings = body.fediverse?.settings;
+      if (apSettings && typeof apSettings === "object") {
+        [["[data-repo-ap-federate]", "federate"],
+         ["[data-repo-ap-broadcast]", "broadcastEvents"],
+         ["[data-repo-ap-comments]", "acceptComments"]].forEach(([sel, key]) => {
+          const box = $(sel);
+          if (box && key in apSettings) box.checked = Boolean(apSettings[key]);
+        });
+      }
       const handle = String(body.fediverse?.handle || "");
       if (handle) {
         const handleEl = $("[data-repo-watch-handle]");
@@ -8263,6 +8307,8 @@
                     <button type="button" data-dashboard-copy="${escapeHtml(fediHandle)}" aria-label="Copy fediverse handle" class="copy-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i></button>
                   </div>
                   <p class="mt-2 text-[11px] text-muted-foreground"><span data-repo-watch-followers class="font-mono text-foreground">–</span> fediverse watchers</p>
+                  <p data-repo-watch-disabled class="mt-1 hidden text-[11px] text-yellow-500">Federation is turned off for this repository.</p>
+                  <div data-repo-watch-list class="mt-2 hidden max-h-44 overflow-auto rounded-md border border-border bg-secondary/40 p-2"></div>
                   <a data-repo-mastodon-link href="${escapeHtml(mastodonUrl)}" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-2 inline-flex items-center gap-1.5 text-[11px] hover:underline"><i data-lucide="external-link" class="h-3.5 w-3.5 shrink-0"></i>View on Mastodon</a>
                 </div>
               </div>
@@ -8418,6 +8464,12 @@
                 <label class="inline-flex items-center gap-1.5"><input data-repo-about-logo-clear type="checkbox" class="h-3 w-3" />Remove logo</label>
                 <label class="inline-flex items-center gap-1.5"><input data-repo-about-banner-clear type="checkbox" class="h-3 w-3" />Remove banner</label>
               </span>
+              <fieldset class="grid gap-1.5 rounded-md border border-border p-2 text-[11px] text-muted-foreground">
+                <legend class="px-1 text-[10px] font-semibold uppercase tracking-wide">ActivityPub federation</legend>
+                <label class="inline-flex items-start gap-1.5"><input data-repo-ap-federate type="checkbox" class="mt-0.5 h-3 w-3" checked />Federate this repository (fediverse actor and handle)</label>
+                <label class="inline-flex items-start gap-1.5"><input data-repo-ap-broadcast type="checkbox" class="mt-0.5 h-3 w-3" checked />Post new issues, pull requests, discussions and releases to followers</label>
+                <label class="inline-flex items-start gap-1.5"><input data-repo-ap-comments type="checkbox" class="mt-0.5 h-3 w-3" checked />Accept fediverse replies as federated comments</label>
+              </fieldset>
               <p class="text-[10px] leading-4 text-muted-foreground">Saved to the relay now and written into the repo's committed <span class="font-mono">.forkmesh/info.json</span> (what the desktop app shows) the next time the owner's node syncs.</p>
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <span data-repo-about-status class="text-[11px] text-muted-foreground"></span>
@@ -9760,6 +9812,17 @@
         const website = String(
           aboutForm.querySelector("[data-repo-about-website-input]")?.value || "").trim();
         media.website = website;
+        // Per-repo federation switches ride the same save (loadRepoFediverse
+        // seeded the checkboxes with the stored values, so an untouched form
+        // round-trips unchanged and the worker writes nothing).
+        const federateBox = aboutForm.querySelector("[data-repo-ap-federate]");
+        if (federateBox) {
+          media.fediverse = {
+            federate: federateBox.checked,
+            broadcastEvents: Boolean(aboutForm.querySelector("[data-repo-ap-broadcast]")?.checked),
+            acceptComments: Boolean(aboutForm.querySelector("[data-repo-ap-comments]")?.checked),
+          };
+        }
         const body = await saveRepoAboutFromWeb(state.selectedRepo, description, media);
         applyRepoAboutDescription(state.selectedRepo, body.description ?? description);
         applyRepoAboutWebsite(website);

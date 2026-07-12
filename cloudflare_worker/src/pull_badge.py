@@ -120,6 +120,17 @@ def _ellipsize(text, limit):
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
+def _dir_label(directory):
+    """Last path segment of a directory, capped to 8 chars.
+
+    Directory connector labels show just the folder name, not the whole path
+    ("one/two/three" -> "three"), so they stay readable under a narrow tile
+    cluster.
+    """
+    name = directory if directory == "/" else directory.rsplit("/", 1)[-1]
+    return name if len(name) <= 8 else name[:8] + "…"
+
+
 def _tile_svg(x, y, file):
     label, color = file_glyph(file["path"])
     adds, dels = file["adds"], file["dels"]
@@ -210,7 +221,7 @@ def pull_badge_svg(title, author, files, number=0):
                             x1, line_y, x2, line_y))
         seg_row, first, last = segments[-1]
         label = "%s  (%d file%s)" % (
-            _ellipsize(directory, 40), len(group),
+            _dir_label(directory), len(group),
             "" if len(group) == 1 else "s")
         body.append('<text x="%d" y="%d" font-size="13" fill="%s" '
                     'text-anchor="middle">%s</text>' % (
