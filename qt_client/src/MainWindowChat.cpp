@@ -6809,9 +6809,32 @@ void MainWindow::refreshHostsTable()
 //
 // A sortable directory of every node this client currently knows about — the
 // same set offered by the top-bar node dropdown (m_nodeMenuEntries). Each row
-// carries the node's platform badge, name, online state, advertised ForkMesh
-// version and how many repositories it hosts. Selecting a row opens a detail
-// panel with the node's full details and the repos it hosts.
+// carries the node's platform badge, name, online state, owner, advertised
+// ForkMesh version, repo/mirror counts and its CPU/RAM/disk telemetry bars.
+// Selecting a row opens a detail panel with the node's full details, the repos
+// it hosts and the repos it mirrors.
+//
+// Online state is the OR of two independent signals: live chat-room presence
+// (m_nodeMenuEntries.online, from the encrypted roster) and the relay's
+// /api/network/stats "onlineNodes" list (live host tunnel or fresh signed
+// heartbeat). Headless mirror nodes serve repos through the relay without ever
+// joining this client's chat room, so the roster alone painted them offline
+// even while they were actively serving (adhoc #27).
+
+namespace {
+enum NodeCol {
+    kNodeColName = 0,
+    kNodeColStatus,
+    kNodeColOwner,
+    kNodeColVersion,
+    kNodeColRepos,
+    kNodeColMirrors,
+    kNodeColCpu,
+    kNodeColRam,
+    kNodeColDisk,
+    kNodeColCount,
+};
+} // namespace
 
 QWidget *MainWindow::buildNodesSection()
 {
@@ -6831,7 +6854,9 @@ QWidget *MainWindow::buildNodesSection()
     auto *subtitle = new QLabel(QString::fromUtf8(
         "Every node this client knows about \xE2\x80\x94 the same nodes in the "
         "top-bar node dropdown. Click a column header to sort. Select a node to "
-        "see its details and the repositories it hosts."));
+        "see its details and the repositories it hosts and mirrors. \"Online "
+        "(serving)\" means the relay reports the node live (host tunnel or "
+        "signed heartbeat) even though it isn't in this client's chat room."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
     outer->addWidget(subtitle);
@@ -6845,8 +6870,10 @@ QWidget *MainWindow::buildNodesSection()
     m_nodesRefreshButton = new QPushButton(QStringLiteral("Refresh"));
     m_nodesRefreshButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_nodesRefreshButton, "sync", 14);
-    connect(m_nodesRefreshButton, &QPushButton::clicked, this,
-            &MainWindow::refreshNodesTable);
+    connect(m_nodesRefreshButton, &QPushButton::clicked, this, [this] {
+        fetchRelayOnlineNodes(true); // refreshes the table again on reply
+        refreshNodesTable();
+    });
     controls->addWidget(m_nodesRefreshButton);
     outer->addLayout(controls);
 
@@ -6855,12 +6882,14 @@ QWidget *MainWindow::buildNodesSection()
     split->setContentsMargins(0, 0, 0, 0);
     split->setSpacing(16);
 
-    m_nodesTable = new QTableWidget(0, 4);
+    m_nodesTable = new QTableWidget(0, kNodeColCount);
     installColumnHeaderMenu(m_nodesTable); // 3-dots per-column menu (issue #318)
     m_nodesTable->setObjectName("issueTable");
     m_nodesTable->setHorizontalHeaderLabels(
         {QStringLiteral("Node"), QStringLiteral("Status"),
-         QStringLiteral("Version"), QStringLiteral("Repos")});
+         QStringLiteral("Owner"), QStringLiteral("Version"),
+         QStringLiteral("Repos"), QStringLiteral("Mirrors"),
+         QStringLiteral("CPU"), QStringLiteral("RAM"), QStringLiteral("Disk")});
     m_nodesTable->verticalHeader()->setVisible(false);
     m_nodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_nodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -6868,11 +6897,17 @@ QWidget *MainWindow::buildNodesSection()
     m_nodesTable->setShowGrid(false);
     m_nodesTable->setSortingEnabled(true);
     m_nodesTable->horizontalHeader()->setSortIndicatorShown(true);
-    m_nodesTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    for (int c = 1; c < 4; ++c)
+    m_nodesTable->horizontalHeader()->setSectionResizeMode(kNodeColName,
+                                                           QHeaderView::Stretch);
+    for (int c = kNodeColName + 1; c < kNodeColCount; ++c)
         m_nodesTable->horizontalHeader()->setSectionResizeMode(
             c, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_nodesTable); // spreadsheet-style draggable columns (#263)
+    // CPU / RAM / disk columns render as little usage bars (details on hover),
+    // the same delegate the repo detail's Mirror nodes table uses.
+    auto *resourceBars = new ResourceBarDelegate(m_nodesTable);
+    for (int col : {kNodeColCpu, kNodeColRam, kNodeColDisk})
+        m_nodesTable->setItemDelegateForColumn(col, resourceBars);
     connect(m_nodesTable, &QTableWidget::cellClicked, this,
             [this](int row, int) { showNodeDetailForRow(row); });
     split->addWidget(m_nodesTable, 2);
@@ -6885,8 +6920,55 @@ QWidget *MainWindow::buildNodesSection()
 
     outer->addLayout(split, 1);
 
+    fetchRelayOnlineNodes();
     refreshNodesTable();
     return page;
+}
+
+void MainWindow::fetchRelayOnlineNodes(bool force)
+{
+    if (!m_networkAccess)
+        return;
+    const QString backoffKey = QStringLiteral("relay-online-nodes");
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // Throttle: refreshNodesTable runs on every roster flicker; only re-ask the
+    // relay once a minute (the response is edge-cached there anyway), or after
+    // 15s for an explicit Refresh click. The backoff gate keeps a failing/
+    // rate-limited relay from being re-queried on each attempt.
+    const qint64 minIntervalMs = force ? 15000 : 60000;
+    if (m_relayOnlineNodesFetchedMs > 0 &&
+        now - m_relayOnlineNodesFetchedMs < minIntervalMs)
+        return;
+    if (!m_pollBackoff.ready(backoffKey, now))
+        return;
+    m_relayOnlineNodesFetchedMs = now;
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/network/stats"));
+    url.setQuery(QString());
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, backoffKey] {
+        const QByteArray body = reply->readAll();
+        const bool ok = reply->error() == QNetworkReply::NoError;
+        reply->deleteLater();
+        const QJsonObject resp = QJsonDocument::fromJson(body).object();
+        if (!ok || !resp.value("ok").toBool()) {
+            m_pollBackoff.noteFailure(backoffKey,
+                                      QDateTime::currentMSecsSinceEpoch());
+            return;
+        }
+        m_pollBackoff.noteSuccess(backoffKey);
+        QSet<QString> online;
+        for (const QJsonValue &v : resp.value("onlineNodes").toArray()) {
+            const QString name = v.toString().trimmed().toLower();
+            if (!name.isEmpty())
+                online.insert(name);
+        }
+        if (online == m_relayOnlineNodes)
+            return;
+        m_relayOnlineNodes = online;
+        refreshNodesTable();
+    });
 }
 
 void MainWindow::refreshNodesTable()
@@ -6894,13 +6976,33 @@ void MainWindow::refreshNodesTable()
     if (!m_nodesTable)
         return;
 
-    // Advertised version for a node, looked up from the live chat roster.
-    auto rosterVersion = [this](const QString &name) -> QString {
-        for (const MemberInfo &m : std::as_const(m_homeRoster))
-            if (m.name == name)
-                return m.version.trimmed();
-        return QString();
+    // Ask the relay who is serving right now (throttled internally), so mirror
+    // nodes outside this client's chat room still show online. Only while the
+    // Nodes page is actually visible — this also runs on every roster tick, and
+    // a hidden page must not keep polling the quota-limited relay.
+    if (m_nodesTable->isVisible())
+        fetchRelayOnlineNodes();
+
+    // The roster record (version / owner / telemetry / mirrors) for a node.
+    // Prefer an online entry when a reinstall left the same name in the roster
+    // twice (old key's session heartbeating beside the new one, adhoc #46).
+    auto rosterInfo = [this](const QString &name) -> MemberInfo {
+        MemberInfo best;
+        bool found = false;
+        for (const MemberInfo &m : std::as_const(m_homeRoster)) {
+            if (m.name != name)
+                continue;
+            if (!found || (m.online && !best.online)) {
+                best = m;
+                found = true;
+            }
+        }
+        return best;
     };
+    auto relayOnline = [this](const QString &name) {
+        return m_relayOnlineNodes.contains(name.trimmed().toLower());
+    };
+    const QString dash = QString::fromUtf8("\xE2\x80\x94");
 
     // Which node the detail panel is currently showing, so a rebuild can keep it.
     const QString shown = m_nodesTable->property("shownNode").toString();
@@ -6911,29 +7013,58 @@ void MainWindow::refreshNodesTable()
     int online = 0;
     for (int i = 0; i < m_nodeMenuEntries.size(); ++i) {
         const NodeMenuEntry &e = m_nodeMenuEntries.at(i);
-        if (e.online)
+        const MemberInfo mi = rosterInfo(e.name);
+        const bool serving = !e.online && relayOnline(e.name);
+        const bool isOnline = e.online || serving;
+        if (isOnline)
             ++online;
 
         QString label = e.name.isEmpty() ? QStringLiteral("(unnamed)") : e.name;
         if (e.self)
             label += QStringLiteral("  (you)");
         auto *nameItem =
-            new QTableWidgetItem(osBadgeIcon(e.platform, e.online, 16), label);
+            new QTableWidgetItem(osBadgeIcon(e.platform, isOnline, 16), label);
         // Stash the real node name so a row stays identifiable after re-sorting.
         nameItem->setData(Qt::UserRole, e.name);
-        m_nodesTable->setItem(i, 0, nameItem);
+        m_nodesTable->setItem(i, kNodeColName, nameItem);
 
-        m_nodesTable->setItem(i, 1, new QTableWidgetItem(
-            e.online ? QStringLiteral("Online") : QStringLiteral("Offline")));
+        auto *statusItem = new QTableWidgetItem(
+            e.online ? QStringLiteral("Online")
+                     : (serving ? QStringLiteral("Online (serving)")
+                                : QStringLiteral("Offline")));
+        if (serving)
+            statusItem->setToolTip(QStringLiteral(
+                "The relay reports this node live (host tunnel / signed "
+                "heartbeat) even though it isn't in this client's chat room."));
+        m_nodesTable->setItem(i, kNodeColStatus, statusItem);
 
-        const QString version = rosterVersion(e.name);
-        m_nodesTable->setItem(i, 2, new QTableWidgetItem(
-            version.isEmpty() ? QString::fromUtf8("\xE2\x80\x94") : version));
+        const QString owner = mi.ownerUser.trimmed();
+        m_nodesTable->setItem(i, kNodeColOwner,
+                              new QTableWidgetItem(owner.isEmpty() ? dash : owner));
+
+        const QString version = mi.version.trimmed();
+        m_nodesTable->setItem(i, kNodeColVersion, new QTableWidgetItem(
+            version.isEmpty() ? dash : version));
 
         auto *repoItem = new QTableWidgetItem;
         repoItem->setData(Qt::DisplayRole, e.repoCount); // int -> numeric sort
         repoItem->setTextAlignment(Qt::AlignCenter);
-        m_nodesTable->setItem(i, 3, repoItem);
+        m_nodesTable->setItem(i, kNodeColRepos, repoItem);
+
+        auto *mirrorItem = new QTableWidgetItem;
+        mirrorItem->setData(Qt::DisplayRole, int(mi.mirrors.size()));
+        mirrorItem->setTextAlignment(Qt::AlignCenter);
+        m_nodesTable->setItem(i, kNodeColMirrors, mirrorItem);
+
+        // CPU / RAM / disk usage bars from the node's advertised telemetry
+        // (empty bar cell when the node didn't advertise the metric).
+        m_nodesTable->setItem(i, kNodeColCpu, makeCpuUsageCell(mi.cpuPercent));
+        m_nodesTable->setItem(i, kNodeColRam,
+            makeByteUsageCell(QStringLiteral("RAM"), mi.memUsedBytes,
+                              mi.memTotalBytes));
+        m_nodesTable->setItem(i, kNodeColDisk,
+            makeByteUsageCell(QStringLiteral("Disk"), mi.diskUsedBytes,
+                              mi.diskTotalBytes));
     }
     m_nodesTable->setSortingEnabled(true);
 
@@ -6993,9 +7124,20 @@ void MainWindow::showNodeDetailForRow(int row)
         if (e.name == node) { entry = e; break; }
     }
     MemberInfo mi;
+    bool inRoster = false;
     for (const MemberInfo &m : std::as_const(m_homeRoster)) {
-        if (m.name == node) { mi = m; break; }
+        if (m.name != node)
+            continue;
+        // Prefer an online entry when a reinstall left the name twice (adhoc #46).
+        if (!inRoster || (m.online && !mi.online))
+            mi = m;
+        inRoster = true;
     }
+    // Relay-side liveness: mirror nodes serve via the relay without joining
+    // this client's chat room, so the roster alone painted them offline.
+    const bool serving =
+        !entry.online && m_relayOnlineNodes.contains(node.trimmed().toLower());
+    const bool isOnline = entry.online || serving;
 
     auto *content = new QWidget;
     auto *col = new QVBoxLayout(content);
@@ -7006,7 +7148,7 @@ void MainWindow::showNodeDetailForRow(int row)
     auto *head = new QHBoxLayout;
     head->setSpacing(8);
     auto *badge = new QLabel;
-    badge->setPixmap(osBadgeIcon(entry.platform, entry.online, 28).pixmap(28, 28));
+    badge->setPixmap(osBadgeIcon(entry.platform, isOnline, 28).pixmap(28, 28));
     head->addWidget(badge);
     auto *nameLbl =
         new QLabel(node.isEmpty() ? QStringLiteral("(unnamed node)") : node);
@@ -7029,7 +7171,14 @@ void MainWindow::showNodeDetailForRow(int row)
     };
 
     addRow(QStringLiteral("Status"),
-           entry.online ? QStringLiteral("Online") : QStringLiteral("Offline"));
+           entry.online
+               ? QStringLiteral("Online")
+               : (serving
+                      ? QString::fromUtf8(
+                            "Online \xE2\x80\x94 serving via the relay (host "
+                            "tunnel / signed heartbeat), not in this client's "
+                            "chat room")
+                      : QStringLiteral("Offline")));
     if (entry.self)
         addRow(QStringLiteral("This node"), QStringLiteral("Yes (you)"));
     QString platform = entry.platform.trimmed();
@@ -7040,7 +7189,16 @@ void MainWindow::showNodeDetailForRow(int row)
     addRow(QStringLiteral("Version"), mi.version.trimmed());
     addRow(QStringLiteral("Owner"), mi.ownerUser.trimmed());
     addRow(QStringLiteral("Solana"), mi.solanaAddress.trimmed());
+    // The stable node id (public key) direct messages are addressed to.
+    // Shortened: the full key is long and unbroken, which stretches the panel.
+    if (!mi.id.trimmed().isEmpty()) {
+        const QString id = mi.id.trimmed();
+        addRow(QStringLiteral("Node ID"),
+               id.size() > 20 ? id.left(20) + QString::fromUtf8("\xE2\x80\xA6")
+                              : id);
+    }
     addRow(QStringLiteral("Repositories"), QString::number(entry.repoCount));
+    addRow(QStringLiteral("Mirrors"), QString::number(mi.mirrors.size()));
 
     // Host telemetry, when the node advertised it.
     if (mi.cpuPercent >= 0.0)
@@ -7087,6 +7245,64 @@ void MainWindow::showNodeDetailForRow(int row)
     if (shownRepos == 0) {
         auto *none =
             new QLabel(QStringLiteral("No repositories hosted by this node."));
+        none->setObjectName("mutedLabel");
+        none->setWordWrap(true);
+        col->addWidget(none);
+    }
+
+    // Repositories this node advertises mirroring, with each mirror's branch,
+    // served commit, size and how recently it synced (when advertised).
+    auto *mirrorsLbl = new QLabel(QStringLiteral("Mirrored repositories"));
+    QFont mlf = mirrorsLbl->font();
+    mlf.setBold(true);
+    mirrorsLbl->setFont(mlf);
+    mirrorsLbl->setContentsMargins(0, 8, 0, 0);
+    col->addWidget(mirrorsLbl);
+
+    int shownMirrors = 0;
+    for (const MirrorAdvert &advert : std::as_const(mi.mirrorDetails)) {
+        const QString name = !advert.source.trimmed().isEmpty()
+                                 ? advert.source.trimmed()
+                                 : advert.ownerName.trimmed();
+        if (name.isEmpty())
+            continue;
+        ++shownMirrors;
+        QString line = QStringLiteral("\xE2\x80\xA2 <b>%1</b>")
+                           .arg(name.toHtmlEscaped());
+        if (!advert.branch.trimmed().isEmpty()) {
+            line += QStringLiteral(" \xC2\xB7 %1")
+                        .arg(advert.branch.trimmed().toHtmlEscaped());
+            if (!advert.commit.trimmed().isEmpty())
+                line += QStringLiteral(" @ %1")
+                            .arg(advert.commit.trimmed().left(8).toHtmlEscaped());
+        }
+        if (advert.sizeBytes > 0)
+            line += QStringLiteral(" \xC2\xB7 %1")
+                        .arg(formatByteSize(advert.sizeBytes));
+        if (advert.updatedMs > 0)
+            line += QStringLiteral(" \xC2\xB7 synced %1 ago")
+                        .arg(formatShortRelativeTime(advert.updatedMs / 1000));
+        auto *m = new QLabel(line);
+        m->setTextFormat(Qt::RichText);
+        m->setWordWrap(true);
+        col->addWidget(m);
+    }
+    // Older peers advertise mirror names without per-repo detail.
+    if (shownMirrors == 0) {
+        for (const QString &name : std::as_const(mi.mirrors)) {
+            if (name.trimmed().isEmpty())
+                continue;
+            ++shownMirrors;
+            auto *m = new QLabel(QStringLiteral("\xE2\x80\xA2 <b>%1</b>")
+                                     .arg(name.trimmed().toHtmlEscaped()));
+            m->setTextFormat(Qt::RichText);
+            m->setWordWrap(true);
+            col->addWidget(m);
+        }
+    }
+    if (shownMirrors == 0) {
+        auto *none =
+            new QLabel(QStringLiteral("No mirrors advertised by this node."));
         none->setObjectName("mutedLabel");
         none->setWordWrap(true);
         col->addWidget(none);

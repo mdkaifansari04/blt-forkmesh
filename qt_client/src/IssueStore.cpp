@@ -247,6 +247,20 @@ bool copiedEveryAttachment(const QStringList &srcPaths,
     return false;
 }
 
+// Content-addressed filename shared by copyAttachments() (which writes the
+// file under this name) and readAttachmentsForRemoteSubmit() (which has no
+// working tree to write into, but must derive the identical name so the
+// signed IssueEvent::attachments list matches what the owner materializes).
+QString attachmentNameFor(const QByteArray &data, const QString &srcPath)
+{
+    const QString sha8 = QString::fromLatin1(
+        QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex().left(8));
+    QString ext = QFileInfo(srcPath).suffix().toLower();
+    if (ext.isEmpty())
+        ext = "bin";
+    return sha8 + "." + ext;
+}
+
 } // namespace
 
 // ---- IssueEvent (JSON is the wire format for the relay inbox) ---------------
@@ -467,6 +481,27 @@ IssueEvent IssueStore::makeSignedEvent(int number, IssueEvent ev) const
         ev.ts = QDateTime::currentMSecsSinceEpoch();
     ev.sig = m_identity ? m_identity->signData(canonicalString(number, ev)) : QString();
     return ev;
+}
+
+QList<RemoteAttachment> IssueStore::readAttachmentsForRemoteSubmit(
+    const QStringList &srcPaths)
+{
+    QList<RemoteAttachment> out;
+    for (const QString &src : srcPaths) {
+        QFile in(src);
+        if (!in.open(QIODevice::ReadOnly))
+            continue;
+        const QByteArray data = in.readAll();
+        out.append(RemoteAttachment{attachmentNameFor(data, src), data});
+    }
+    return out;
+}
+
+QString IssueStore::substituteAttachmentPlaceholders(
+    QString body, const QStringList &srcPaths, const QStringList &placeholders,
+    const QStringList &attachmentNames)
+{
+    return replaceAttachmentPlaceholders(body, srcPaths, placeholders, attachmentNames);
 }
 
 // ---- Loading ---------------------------------------------------------------
@@ -774,13 +809,8 @@ QStringList IssueStore::copyAttachments(int number, const QStringList &srcPaths)
         if (!in.open(QIODevice::ReadOnly))
             continue;
         const QByteArray data = in.readAll();
-        const QString sha8 = QString::fromLatin1(
-            QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex().left(8));
-        QString ext = QFileInfo(src).suffix().toLower();
-        if (ext.isEmpty())
-            ext = "bin";
         // Images live directly in the issue folder (no attachments/ subdir).
-        const QString name = sha8 + "." + ext;
+        const QString name = attachmentNameFor(data, src);
         QFile out(issueDir(number) + "/" + name);
         if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             out.write(data);
@@ -788,6 +818,24 @@ QStringList IssueStore::copyAttachments(int number, const QStringList &srcPaths)
         }
     }
     return rel;
+}
+
+void IssueStore::writeRemoteAttachmentFiles(int number, const QStringList &names,
+                                            const QList<RemoteAttachment> &attachments) const
+{
+    if (names.isEmpty() || attachments.isEmpty())
+        return;
+    QDir().mkpath(issueDir(number));
+    for (const QString &name : names) {
+        for (const RemoteAttachment &att : attachments) {
+            if (att.name != name)
+                continue;
+            QFile out(issueDir(number) + "/" + name);
+            if (out.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                out.write(att.data);
+            break;
+        }
+    }
 }
 
 bool IssueStore::commit(const QString &message, QString *error) const
@@ -1334,7 +1382,8 @@ bool IssueStore::saveMilestones(const QList<IssueMilestone> &milestones, QString
 
 bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
                                   const QString &titleIfNew, QString *error,
-                                  const RemoteIssueMeta &meta)
+                                  const RemoteIssueMeta &meta,
+                                  const QList<RemoteAttachment> &attachments)
 {
     if (!canWrite())
         return false;
@@ -1377,6 +1426,7 @@ bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
         issue.assignees = meta.assignees;
         issue.events.append(ev);
         recomputeMetadata(issue);
+        writeRemoteAttachmentFiles(number, ev.attachments, attachments);
         if (!writeIssueFile(issue, error))
             return false;
         return commit(QStringLiteral("issue #%1: opened (from %2)")
@@ -1416,6 +1466,7 @@ bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
     }
     issue.events.append(ev);
     recomputeMetadata(issue);
+    writeRemoteAttachmentFiles(number, ev.attachments, attachments);
     if (!writeIssueFile(issue, error))
         return false;
     return commit(
