@@ -27,6 +27,17 @@ const QColor kGreen(0x3f, 0xb9, 0x50);
 const QColor kRed(0xf8, 0x51, 0x49);
 const QColor kPurple(0xa3, 0x71, 0xf7);
 const QColor kMuted(0x8b, 0x94, 0x9e);
+
+// Directory connector labels show just the last path segment (not the whole
+// path) capped to 8 chars, so "one/two/three" reads as "three" instead of
+// overflowing the narrow tile cluster it sits under.
+QString dirBadgeLabel(const QString &dir)
+{
+    QString name = dir == QStringLiteral("/") ? dir : dir.section('/', -1);
+    if (name.length() > 8)
+        name = name.left(8) + QChar(0x2026);
+    return name;
+}
 } // namespace
 
 PullBadgeWidget::PullBadgeWidget(QWidget *parent) : QWidget(parent)
@@ -97,7 +108,7 @@ void PullBadgeWidget::relayout()
             seg.labeled = isLast;
             if (isLast)
                 seg.label = QStringLiteral("%1  (%2 file%3)")
-                                .arg(dir)
+                                .arg(dirBadgeLabel(dir))
                                 .arg(count)
                                 .arg(count == 1 ? QString()
                                                 : QStringLiteral("s"));

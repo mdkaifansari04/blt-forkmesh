@@ -717,6 +717,13 @@
     "package.json": ["NPM", "#cb3837"], "package-lock.json": ["NPM", "#cb3837"],
   };
 
+  // Directory connector labels show just the folder name (not the whole
+  // path) capped to 8 chars, e.g. "one/two/three" -> "three".
+  function dirBadgeLabel(dir) {
+    const name = dir === "/" ? "/" : dir.slice(dir.lastIndexOf("/") + 1);
+    return name.length > 8 ? `${name.slice(0, 8)}…` : name;
+  }
+
   function fileBadgeGlyph(path) {
     const name = String(path || "").split("/").pop().toLowerCase();
     if (fileBadgeNames[name]) return fileBadgeNames[name];
@@ -780,7 +787,7 @@
               <div class="flex max-w-full flex-wrap gap-2">${group.files.map(renderPullBadgeTile).join("")}</div>
               <div class="flex items-center gap-2 text-[10px] text-muted-foreground">
                 <span class="h-px min-w-3 flex-1 bg-border"></span>
-                <span class="font-mono">${escapeHtml(group.dir)}</span>
+                <span class="font-mono" title="${escapeHtml(group.dir)}">${escapeHtml(dirBadgeLabel(group.dir))}</span>
                 <span>(${formatCount(group.files.length)} file${group.files.length === 1 ? "" : "s"})</span>
                 <span class="h-px min-w-3 flex-1 bg-border"></span>
               </div>
