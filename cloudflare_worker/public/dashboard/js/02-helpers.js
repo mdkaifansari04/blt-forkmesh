@@ -144,6 +144,26 @@
     return new Intl.NumberFormat().format(number);
   }
 
+  // Compose-identity chip: avatar + username shown next to any box where the
+  // session user is about to send content (issues, replies, reviews). Built as
+  // an HTML string so it can be dropped straight into the template-literal forms
+  // in 06/07; mirrors the initial/avatarPng logic in applyAvatar().
+  function composeIdentityHtml(session, verb) {
+    const name = String(session?.nodeName || session?.email || "you");
+    const initial = escapeHtml((name[0] || "F").toUpperCase());
+    const avatarPng = String(session?.avatarPng || "");
+    const inner = avatarPng
+      ? `<img class="h-full w-full object-cover" src="data:image/png;base64,${avatarPng}" alt="${escapeHtml(name)} avatar" />`
+      : `<span class="text-[10px] font-semibold text-muted-foreground">${initial}</span>`;
+    const label = verb
+      ? `<span class="text-muted-foreground">${escapeHtml(verb)} as</span> <span class="font-semibold text-foreground">${escapeHtml(name)}</span>`
+      : `<span class="font-semibold text-foreground">${escapeHtml(name)}</span>`;
+    return `<span class="inline-flex min-w-0 items-center gap-2 text-xs">
+        <span class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-secondary">${inner}</span>
+        <span class="min-w-0 truncate">${label}</span>
+      </span>`;
+  }
+
   function parseFlexibleDate(value) {
     if (value === undefined || value === null || value === "") return null;
     const numeric = Number(value);

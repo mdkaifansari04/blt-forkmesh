@@ -1,7 +1,6 @@
   function openIssueCompose(repo) {
     const container = $("[data-repo-issues]");
     if (!container || !repo) return;
-    const who = escapeHtml(state.session?.nodeName || "you");
     const canAssignAgent = sessionCanAssignAgent(repo);
     container.innerHTML = `
       <form data-repo-issue-form class="grid gap-3 border-t border-border bg-background p-4">
@@ -45,7 +44,10 @@
           </div>
         </div>` : ""}
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
+          <div class="flex min-w-0 flex-col gap-1">
+            ${composeIdentityHtml(state.session, "Filing")}
+            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+          </div>
           <button type="submit" data-repo-issue-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Submit issue</button>
         </div>
       </form>`;
@@ -244,7 +246,6 @@
   function openPullCompose(repo) {
     const container = $("[data-repo-pulls]");
     if (!container || !repo) return;
-    const who = escapeHtml(state.session?.nodeName || "you");
     const branches = repoBranchList(repo);
     const defaultBranch = repoDefaultBranch(repo);
     const branchOptions = branches.map((branch) => `<option value="${escapeHtml(branch.name)}">${escapeHtml(branch.name)}</option>`).join("");
@@ -271,7 +272,10 @@
         </label>
         <div class="rounded-md border border-dashed border-border bg-secondary/20 px-3 py-2 text-[11px] text-muted-foreground">The diff isn't computed here - the maintainer's desktop client reconstructs it from the base and head branches when it drains this submission.</div>
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span data-repo-pull-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
+          <div class="flex min-w-0 flex-col gap-1">
+            ${composeIdentityHtml(state.session, "Filing")}
+            <span data-repo-pull-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+          </div>
           <button type="submit" data-repo-pull-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Create pull request</button>
         </div>
       </form>`;

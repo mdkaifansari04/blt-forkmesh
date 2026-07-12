@@ -1816,6 +1816,45 @@ void MainWindow::refreshIssueComposerAvatar()
     }
 }
 
+QWidget *MainWindow::makeComposerIdentity(QLabel **outAvatar, const QString &verb)
+{
+    // Freshly built each time a composer is shown (composer widgets are rebuilt
+    // on navigation), so it always reflects the current avatar and username.
+    auto *row = new QWidget;
+    auto *layout = new QHBoxLayout(row);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(8);
+
+    auto *avatar = new QLabel("FM");
+    avatar->setObjectName("issueAvatar");
+    avatar->setAlignment(Qt::AlignCenter);
+    avatar->setFixedSize(28, 28);
+    avatar->setScaledContents(true);
+    const QPixmap pm = roundedAvatar(effectiveAvatar(), 28);
+    if (!pm.isNull()) {
+        avatar->setText(QString());
+        avatar->setPixmap(pm);
+    }
+
+    auto *name = new QLabel;
+    name->setObjectName("issueCommentTitle");
+    name->setTextFormat(Qt::RichText);
+    const QString user = topBarUserName().toHtmlEscaped();
+    if (verb.trimmed().isEmpty())
+        name->setText(QStringLiteral("<b>%1</b>").arg(user));
+    else
+        name->setText(QStringLiteral("%1 as <b>%2</b>")
+                          .arg(verb.trimmed().toHtmlEscaped(), user));
+
+    layout->addWidget(avatar, 0, Qt::AlignVCenter);
+    layout->addWidget(name, 0, Qt::AlignVCenter);
+    layout->addStretch(1);
+
+    if (outAvatar)
+        *outAvatar = avatar;
+    return row;
+}
+
 void MainWindow::setSettingsAvatar(const QByteArray &pngData)
 {
     if (!m_settingsAvatarPreview)

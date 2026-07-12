@@ -12,6 +12,7 @@ import '../services/identity.dart';
 import '../services/inbox_service.dart';
 import '../services/notification_deep_link.dart';
 import '../theme.dart';
+import '../widgets/compose_identity_bar.dart';
 import '../widgets/fm_ui.dart';
 
 /// Repo detail with the GitHub-style tabs the Qt client has: About/Code,
@@ -383,7 +384,10 @@ Future<void> showNewIssueDialog(BuildContext context, Repository repo) async {
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              const ComposeIdentityBar(verb: 'Posting'),
+              const SizedBox(height: 8),
               TextField(
                 controller: title,
                 decoration: const InputDecoration(labelText: 'Title'),
@@ -582,7 +586,10 @@ Future<void> showNewPullDialog(BuildContext context, Repository repo) async {
         width: 520,
         child: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            const ComposeIdentityBar(verb: 'Posting'),
+            const SizedBox(height: 8),
             TextField(
               controller: title,
               decoration: const InputDecoration(labelText: 'Title'),
@@ -673,6 +680,8 @@ Future<void> showNewDiscussionDialog(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              const ComposeIdentityBar(verb: 'Posting'),
+              const SizedBox(height: 8),
               TextField(
                 controller: title,
                 decoration: const InputDecoration(labelText: 'Title'),
@@ -991,6 +1000,8 @@ Future<String?> _showPullReviewComposer(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              const ComposeIdentityBar(verb: 'Reviewing'),
+              const SizedBox(height: 8),
               Text(helper, style: const TextStyle(height: 1.4)),
               const SizedBox(height: 12),
               TextField(
@@ -1050,11 +1061,19 @@ Future<String?> _promptText(
       title: Text(title),
       content: SizedBox(
         width: 460,
-        child: TextField(
-          controller: c,
-          autofocus: true,
-          minLines: multiline ? 3 : 1,
-          maxLines: multiline ? 8 : 1,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const ComposeIdentityBar(verb: 'Commenting'),
+            const SizedBox(height: 8),
+            TextField(
+              controller: c,
+              autofocus: true,
+              minLines: multiline ? 3 : 1,
+              maxLines: multiline ? 8 : 1,
+            ),
+          ],
         ),
       ),
       actions: [
@@ -3789,6 +3808,8 @@ class _DiscussionDetailScreen extends StatelessWidget {
                 'Replies are signed and sent to the discussion inbox, pending the repo owner applying them.',
               ),
               const SizedBox(height: 12),
+              const ComposeIdentityBar(verb: 'Replying'),
+              const SizedBox(height: 8),
               TextField(
                 controller: body,
                 minLines: 3,
@@ -4852,6 +4873,8 @@ Future<String?> _showCommitCommentComposer(
               style: const TextStyle(height: 1.4),
             ),
             const SizedBox(height: 12),
+            const ComposeIdentityBar(verb: 'Commenting'),
+            const SizedBox(height: 8),
             TextField(
               controller: controller,
               autofocus: true,

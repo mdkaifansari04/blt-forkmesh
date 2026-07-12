@@ -2557,6 +2557,11 @@ private:
     void updateAvatarButton();
     void updateUserAvatarButton();
     void refreshIssueComposerAvatar();
+    // Builds a small "identity" row (self avatar + current username) shown above
+    // compose inputs so it's clear who is about to post. When verb is set the
+    // text reads e.g. "Filing as <b>alice</b>"; otherwise just the username.
+    QWidget *makeComposerIdentity(QLabel **outAvatar = nullptr,
+                                  const QString &verb = QString());
     void logout();
     // Erase every trace of ForkMesh from this computer (data, settings, desktop
     // integration and the program files) after confirmation, then quit.
