@@ -3,6 +3,8 @@
 
 import ast
 import asyncio
+import base64
+import re
 from pathlib import Path
 from urllib.parse import quote
 
@@ -16,6 +18,7 @@ FUNCS = {
     "issues_handler",
     "_inbox_author_over_quota",
     "_best_effort_inbox_side_effect",
+    "_clean_issue_attachment_data",
     "method_name",
     "clean_string",
     "repo_web_href",
@@ -113,10 +116,15 @@ def test_issue_post_succeeds_when_notification_fanout_fails():
         # fan-out: a dead ActivityPub path must never 500 an accepted issue.
         "_ap_publish_repo_event": failing_side_effect,
         "quote": quote,
+        "base64": base64,
         "MAX_ISSUE_BYTES": 64 * 1024,
         "MAX_PENDING_ISSUES": 500,
         "MAX_PENDING_PER_AUTHOR": 50,
         "MAX_NODE_NAME": 63,
+        "MAX_ISSUE_ATTACHMENTS": 6,
+        "MAX_ISSUE_ATTACHMENT_BYTES": 2 * 1024 * 1024,
+        "ISSUE_ATTACHMENT_NAME_RE": re.compile(
+            r"^[0-9a-f]{8}\.(png|jpg|jpeg|gif|webp|bmp|svg|bin)$"),
     })
 
     body = {

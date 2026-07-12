@@ -707,7 +707,7 @@
     }
   }
 
-  function loadRepoFeaturePanels(repo) {
+  function loadRepoFeaturePanels(repo, recordRoute = null) {
     loadRepoMirrors(repo);
     // Feature panels load on their FIRST tab view (and reload here after a
     // repo/branch switch if that tab is already active): fetching hidden live
@@ -723,7 +723,14 @@
       loadRepoIssues(repo);
     } else if (active === "pulls" || active === "discussions") {
       state.loadedRepoTabs[active] = true;
-      loadRepoCollection(repo, active, `[data-repo-${active}]`);
+      // A record deep link (/owner/repo/pulls/<N> — e.g. the desktop client's
+      // "View on website" button) opens the record's detail page directly
+      // instead of the list; Back to the list loads it lazily from there.
+      if (recordRoute && recordRoute.kind === active && recordRoute.number) {
+        loadRepoRecordDetail(repo, active, recordRoute.number);
+      } else {
+        loadRepoCollection(repo, active, `[data-repo-${active}]`);
+      }
     } else if (active === "releases") {
       state.loadedRepoTabs.releases = true;
       loadRepoReleases(repo);
@@ -940,36 +947,6 @@
       </label>`;
   }
 
-  function renderRepoCollectionSidebar(kind) {
-    const primaryItems = [
-      ["Issues", "circle-dot"],
-      ["Assigned to me", "users"],
-      ["Created by me", "smile-plus"],
-      ["Mentioned", "at-sign"],
-      ["Recent activity", "clock"],
-    ];
-    const secondaryItems = [
-      ["Views", "layers"],
-      ["Projects", "table-2"],
-      ["Milestones", "milestone"],
-      ["Labels", "tag"],
-    ];
-    const renderItem = ([label, icon], active = false) => `
-      <button type="button" class="flex h-8 w-full items-center gap-2 rounded-md px-3 text-left text-xs font-semibold ${active ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground"}">
-        <i data-lucide="${icon}" class="h-3.5 w-3.5 shrink-0"></i>
-        <span class="min-w-0 truncate">${label}</span>
-      </button>`;
-    return `
-      <aside data-repo-collection-sidebar="${kind}" class="hidden border-r border-border pr-3 lg:block">
-        <nav class="grid gap-1">
-          ${primaryItems.map((item, index) => renderItem(item, index === 0)).join("")}
-        </nav>
-        <nav class="mt-5 grid gap-1 border-t border-border pt-5">
-          ${secondaryItems.map((item) => renderItem(item)).join("")}
-        </nav>
-      </aside>`;
-  }
-
   function renderRepoCollectionPanel(kind, repo, openCount, closedCount) {
     const isPulls = kind === "pulls";
     const config = repoCollectionConfig[kind];
@@ -987,8 +964,7 @@
 
     return `
       <section data-dashboard-repo-tab-panel="${kind}" class="hidden">
-        <div class="mt-4 grid gap-4 lg:grid-cols-[14rem_minmax(0,1fr)]">
-          ${renderRepoCollectionSidebar(kind)}
+        <div class="mt-4">
           <div class="min-w-0">
             ${isPulls ? `
               <div class="mb-4 rounded-lg border border-border bg-background px-4 py-5 text-center">
