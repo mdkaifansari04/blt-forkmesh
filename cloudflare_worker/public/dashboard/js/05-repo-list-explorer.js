@@ -605,9 +605,11 @@
     detail.querySelectorAll("[data-dashboard-repo-tab-panel]").forEach((panel) => {
       panel.classList.toggle("hidden", panel.dataset.dashboardRepoTabPanel !== tab);
     });
-    // The repo content is a single full-width column (owner decision
-    // 2026-07-12: the About right-hand rail and the issues/pulls left rail
-    // were removed from the repo page).
+    // Every tab keeps the two-column layout with the About sidebar on the
+    // right. (An earlier "full-width README" mode collapsed the code tab's
+    // root view to one column, dropping the About rail below the README —
+    // owner decision 2026-07-11: the rail is a permanent right-hand column;
+    // only the explorer focus mode, which HIDES the rail, may collapse it.)
   }
 
   // Tab switch requested by the user (or a Back/Forward step): shows the tab,
@@ -769,17 +771,24 @@
 
   function setRepoExplorerFocusMode(active) {
     const detail = $("[data-repo-detail]");
+    const contentGrid = detail?.querySelector("[data-repo-content-grid]");
     const workspace = detail?.querySelector("[data-repo-code-workspace]");
     const explorer = detail?.querySelector("[data-repo-code-explorer]");
+    const about = detail?.querySelector("[data-repo-about]");
     const rootToolbar = detail?.querySelector("[data-repo-root-toolbar]");
     const focusActions = detail?.querySelector("[data-repo-focus-actions]");
     if (!detail) return;
 
+    // The grid collapse matches the base class renderRepoDetail emits (lg:) —
+    // legitimate here because focus mode hides the About rail entirely.
+    contentGrid?.classList.toggle("lg:grid-cols-[minmax(0,1fr)_18rem]", !active);
+    contentGrid?.classList.toggle("lg:grid-cols-1", active);
     workspace?.classList.toggle("grid", active);
     workspace?.classList.toggle("lg:grid-cols-[13rem_minmax(0,1fr)]", active);
     workspace?.classList.toggle("xl:grid-cols-[14rem_minmax(0,1fr)]", active);
     workspace?.classList.toggle("2xl:grid-cols-[16rem_minmax(0,1fr)]", active);
     explorer?.classList.toggle("hidden", !active);
+    about?.classList.toggle("hidden", active);
     rootToolbar?.classList.toggle("hidden", active);
     focusActions?.classList.toggle("hidden", !active);
   }
