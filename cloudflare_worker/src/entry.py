@@ -9105,7 +9105,16 @@ async def accounts_handler(env, request):
             cached = await edge_cache_match(lookup_cache_key)
             if cached is not None:
                 return cached
-        name_bi, rec = await _account_row(env, name)
+        # Now that users and nodes are separate tables, this public profile
+        # lookup reads from those authoritative per-kind stores instead of the
+        # legacy accounts table. accounts is only consulted as a fallback for
+        # records not yet mirrored into users/nodes — e.g. a reserved name with
+        # no pubkey, which the mirror intentionally keeps out of users/nodes so
+        # the signup availability check below can still see the name as taken.
+        name_bi = await blind_index(env, name)
+        rec = await _account_identity_rec_by_bi(env, name_bi)
+        if rec is None:
+            _, rec = await _account_row(env, name)
         if not rec:
             # Availability misses are deliberately uncached: the signup
             # form's name check must see a just-taken name immediately.
