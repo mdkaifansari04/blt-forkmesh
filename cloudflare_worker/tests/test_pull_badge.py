@@ -78,6 +78,19 @@ def test_file_glyph_known_special_and_fallback():
     assert label == "FILE"
 
 
+# --- directory labels ---------------------------------------------------------
+
+def test_dir_label_shows_last_segment_only():
+    assert badge._dir_label("one/two/three") == "three"
+    assert badge._dir_label("docs") == "docs"
+    assert badge._dir_label("/") == "/"
+
+
+def test_dir_label_caps_to_eight_chars():
+    assert badge._dir_label("cloudflare_worker") == "cloudfla…"
+    assert badge._dir_label("cloudflare_worker/src") == "src"
+
+
 # --- pull_badge_svg -----------------------------------------------------------
 
 def test_badge_svg_header_and_directory_groups():
@@ -90,8 +103,9 @@ def test_badge_svg_header_and_directory_groups():
     assert ">+5</text>" in svg
     assert ">-2</text>" in svg
     assert "Additions" in svg and "Deletions" in svg and "Files changed" in svg
-    # Directory clusters get a "(N files)" label; root files land under "/".
-    assert "src/auth  (2 files)" in svg
+    # Directory clusters get a "(N files)" label showing just the folder
+    # name (not the whole path); root files land under "/".
+    assert "auth  (2 files)" in svg
     assert "docs  (1 file)" in svg
 
 
