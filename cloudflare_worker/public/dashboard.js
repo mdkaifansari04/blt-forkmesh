@@ -826,6 +826,56 @@
     return { privateKey, pub };
   }
 
+  // Issue #379: offline issues an owner filed while their source-of-truth node
+  // was down (but a mirror was still serving the repo). They live only in the
+  // relay's inbox until the node returns and drains them, so we also keep a
+  // local copy per repo - keyed here - so they "show up fully" across reloads
+  // instead of vanishing the moment the mirror-loaded list replaces the
+  // optimistic, session-only placeholder.
+  const PENDING_ISSUES_STORAGE = "forkmesh.pendingIssues";
+
+  function pendingIssuesRepoKey(repo) {
+    return `${String(repo?.owner || "").toLowerCase()}/${String(repo?.name || "").toLowerCase()}`;
+  }
+
+  function readPendingIssueStore() {
+    try { return JSON.parse(localStorage.getItem(PENDING_ISSUES_STORAGE) || "{}") || {}; }
+    catch (_) { return {}; }
+  }
+
+  function writePendingIssueStore(store) {
+    try { localStorage.setItem(PENDING_ISSUES_STORAGE, JSON.stringify(store)); } catch (_) {}
+  }
+
+  function loadPendingIssues(repo) {
+    const list = readPendingIssueStore()[pendingIssuesRepoKey(repo)];
+    return Array.isArray(list) ? list : [];
+  }
+
+  function savePendingIssue(repo, item) {
+    const store = readPendingIssueStore();
+    const key = pendingIssuesRepoKey(repo);
+    const list = Array.isArray(store[key]) ? store[key] : [];
+    store[key] = [item, ...list].slice(0, 50);
+    writePendingIssueStore(store);
+  }
+
+  // Drop any locally-held pending issues whose title now appears in the mirror
+  // tree: the owner's node has come back and drained them, so the real numbered
+  // issue served from the mirror wins and the local placeholder retires.
+  function reconcilePendingIssues(repo, mirrorIssues) {
+    const list = loadPendingIssues(repo);
+    if (!list.length) return list;
+    const drained = new Set(
+      (mirrorIssues || []).map((issue) => String(issue.title || "").trim()));
+    const kept = list.filter((item) => !drained.has(String(item.title || "").trim()));
+    if (kept.length === list.length) return list;
+    const store = readPendingIssueStore();
+    store[pendingIssuesRepoKey(repo)] = kept;
+    writePendingIssueStore(store);
+    return kept;
+  }
+
   // Mirrors IssueStore::contentForSigning + canonicalString and the desktop's
   // inbox POST (verify_issue_event in the worker). New issues are signed with
   // number 0; the maintainer assigns the durable number on drain.
@@ -3155,6 +3205,14 @@
   // Live, but the named source of truth is down - a mirror node is serving it.
   function repoServedByMirror(repo) {
     return repoIsLive(repo) && !repo?.liveHost;
+  }
+  // The signed-in account owns this repo when their node name matches the repo
+  // owner slug (case-insensitive). Owners get to keep their own offline issue
+  // submissions visible until their source-of-truth node drains them (#379).
+  function isRepoOwner(repo) {
+    const owner = String(repo?.owner || "").trim().toLowerCase();
+    const me = String(state.session?.nodeName || "").trim().toLowerCase();
+    return Boolean(owner && me && owner === me);
   }
 
   function groupRepoMetric(group, keys) {
@@ -5795,7 +5853,9 @@
         tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: ".forkmesh/issues" }));
       } catch (error) {
         if (isMissingMirrorFolder(error)) {
-          state.issuesView.items = [];
+          // No issues on the mirror yet - still surface the owner's offline
+          // submissions kept locally while their node was down (issue #379).
+          state.issuesView.items = reconcilePendingIssues(repo, []);
           state.issuesView.filter = "open";
           state.issuesView.query = "";
           renderRepoIssues();
@@ -5816,12 +5876,17 @@
         if (!blob) return null;
         return parseIssueJson(blobText(blob), number);
       }).filter(Boolean);
-      state.issuesView.items = items;
+      // Issue #379: fold in the owner's offline submissions (kept locally while
+      // their source-of-truth node was down) so they still show up on reload,
+      // dropping any the node has since drained - the numbered mirror copy wins.
+      const pending = reconcilePendingIssues(repo, items);
+      const merged = pending.length ? [...pending, ...items] : items;
+      state.issuesView.items = merged;
       state.issuesView.filter = "open";
       state.issuesView.query = "";
-      setRepoTabCount("issues", items.filter((issue) => issue.status === "open").length);
-      const openIssues = items.filter((issue) => issue.status === "open").length;
-      setRepoCollectionCounts("issues", openIssues, items.length - openIssues);
+      setRepoTabCount("issues", merged.filter((issue) => issue.status === "open").length);
+      const openIssues = merged.filter((issue) => issue.status === "open").length;
+      setRepoCollectionCounts("issues", openIssues, merged.length - openIssues);
       renderRepoIssues();
     } catch (_) {
       container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a live desktop host serves the .forkmesh/issues/ folder.</div>';
@@ -6739,7 +6804,7 @@
       // Submissions land in the maintainer's inbox, not the public mirror, so it
       // won't be visible there until they drain it - but show it locally, on
       // top of this session's issue list, so the submitter sees it right away.
-      state.issuesView.items = [{
+      const pendingItem = {
         number: null,
         localId: `pending-${Date.now().toString(36)}`,
         title,
@@ -6750,14 +6815,25 @@
         body,
         wantsAgent: assignAgent,
         pending: true,
-      }, ...state.issuesView.items];
+      };
+      state.issuesView.items = [pendingItem, ...state.issuesView.items];
+      // Issue #379: when the owner files an issue while their source-of-truth
+      // node is offline but a mirror is serving the repo, persist it locally so
+      // it keeps showing up across reloads - fully, not just this session -
+      // until the node comes back online and drains it to the mirror.
+      const ownerOffline = isRepoOwner(repo) && repoServedByMirror(repo);
+      if (ownerOffline) savePendingIssue(repo, pendingItem);
       setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status === "open").length);
       if (titleInput) titleInput.value = "";
       if (bodyInput) bodyInput.value = "";
       images.length = 0;
       form.querySelector("[data-repo-issue-attachments]")?.replaceChildren();
       if (submit) submit.disabled = false;
-      setHint("Issue sent to the maintainer's inbox for review. Submit another or go back.", "good");
+      setHint(
+        ownerOffline
+          ? "Your source-of-truth node is offline, so this issue is held on a mirror and will sync to your node when it comes back online."
+          : "Issue sent to the maintainer's inbox for review. Submit another or go back.",
+        "good");
     } catch (error) {
       if (submit) submit.disabled = false;
       const code = String(error?.message || "");
