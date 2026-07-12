@@ -66,6 +66,15 @@
             "sig": "i1a6XJ9VEMtvXxJfBVML9RDZcGhTxmrIGr3L82U9iWMob-iaPMrv5qGvqjwUZWgy5UJgXCTyLZRMzyo8wbYwBA",
             "ts": 1783883008800,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "eb332621-0563-495e-b192-3348a7cd7a8d",
+            "sig": "-mBqszalmdiNgG9jXGTbsLnIGR2qUUpla9_9N9i2-VzbUKIiTHZnMSmh0r-YlFHNHjTl_gbg3tVQtRNuiNn4DA",
+            "status": "closed",
+            "ts": 1783883008871,
+            "type": "status"
         }
     ],
     "labels": [
@@ -76,8 +85,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "log clearly in the log with a big line across when the app starts and stops -…",
-    "updatedAt": 1783883008800,
+    "updatedAt": 1783883008871,
     "votes": 0
 }
