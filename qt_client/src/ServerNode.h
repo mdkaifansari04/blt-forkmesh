@@ -54,6 +54,7 @@ public:
 
     void sendChat(const QString &channel, const QString &text) override;
     void setAccountKind(const QString &kind) override;
+    void setRoomPassphrase(const QString &passphrase) override;
     void sendBotChat(const QString &channel, const QString &text) override;
     void sendDirect(const QString &targetId, const QString &text) override;
     void sendFile(const QString &conversation, const QString &fileName,
