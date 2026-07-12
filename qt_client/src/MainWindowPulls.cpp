@@ -8,6 +8,7 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
+#include "PacmanProgress.h"
 #include "PullAiReview.h"
 #include "PullBadgeWidget.h"
 
@@ -514,6 +515,54 @@ QWidget *MainWindow::buildPullsTab()
     connect(m_pullDiff, &QTextBrowser::anchorClicked, this,
             &MainWindow::onPullDiffAnchorClicked);
     registerDiffView(m_pullDiff);
+
+    // Sticky header overlay (adhoc #56): a compact bar pinned to the top of the
+    // diff viewport that mirrors the current file's header — filename, +/- stat,
+    // a Pac-Man progress chart, and a Viewed toggle — so those controls stay put
+    // while the file's body scrolls beneath. Parented to the viewport so it
+    // floats over the text and doesn't move as the document scrolls.
+    m_pullStickyHeader = new QFrame(m_pullDiff->viewport());
+    m_pullStickyHeader->setObjectName("diffStickyHeader");
+    {
+        const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+        m_pullStickyHeader->setStyleSheet(
+            QStringLiteral(
+                "#diffStickyHeader{background:%1;border-bottom:1px solid %2;}"
+                "#diffStickyHeader QLabel{background:transparent;}"
+                "#diffStickyHeader QPushButton{background:transparent;border:none;"
+                "color:%3;font-size:11px;padding:2px 4px;}"
+                "#diffStickyHeader QPushButton:hover{color:#3fb950;}")
+                .arg(dark ? "#161b22" : "#f6f8fa", dark ? "#30363d" : "#d0d7de",
+                     dark ? "#8b949e" : "#57606a"));
+        auto *sl = new QHBoxLayout(m_pullStickyHeader);
+        sl->setContentsMargins(10, 4, 8, 4);
+        sl->setSpacing(8);
+        m_pullStickyPath = new QLabel(m_pullStickyHeader);
+        m_pullStickyPath->setTextFormat(Qt::RichText);
+        m_pullStickyPath->setTextInteractionFlags(Qt::NoTextInteraction);
+        sl->addWidget(m_pullStickyPath, 1);
+        m_pullStickyPacman = new PacmanProgress(m_pullStickyHeader);
+        m_pullStickyPacman->setToolTip(
+            QStringLiteral("How much of this file you've scrolled through"));
+        sl->addWidget(m_pullStickyPacman, 0);
+        m_pullStickyViewed = new QPushButton(m_pullStickyHeader);
+        m_pullStickyViewed->setCursor(Qt::PointingHandCursor);
+        m_pullStickyViewed->setToolTip(QStringLiteral("Mark this file as viewed"));
+        connect(m_pullStickyViewed, &QPushButton::clicked, this, [this] {
+            if (m_pullStickyFile.isEmpty() || m_currentPullNumber < 0)
+                return;
+            const QString context =
+                QStringLiteral("pull/") + QString::number(m_currentPullNumber);
+            const QSet<QString> cur = loadDiffViewed(context);
+            setDiffViewed(context, m_pullStickyFile,
+                          !cur.contains(m_pullStickyFile));
+            renderPullDiff();
+            scrollPullDiffToFile(m_pullStickyFile);
+        });
+        sl->addWidget(m_pullStickyViewed, 0);
+        m_pullStickyHeader->hide();
+    }
+
     // Debounce the auto-mark-viewed scan off scroll ticks: re-rendering (which
     // collapses newly-viewed files) is too heavy to run on every pixel of a
     // fast scroll, so wait for scrolling to settle before checking.
@@ -524,6 +573,10 @@ QWidget *MainWindow::buildPullsTab()
             &MainWindow::applyAutoMarkViewedOnScroll);
     connect(m_pullDiff->verticalScrollBar(), &QScrollBar::valueChanged, this,
             [this] {
+                // Cheap, every-tick: advance the sticky header / Pac-Man / list
+                // selection so they track the scroll smoothly.
+                updatePullDiffScrollState();
+                // Heavy, debounced: collapse fully-seen files into "Viewed".
                 if (m_pullAutoViewedButton && m_pullAutoViewedButton->isChecked())
                     m_pullAutoViewedDebounce->start();
             });
@@ -1593,6 +1646,10 @@ void MainWindow::showPull(int number)
         m_pullDiffRenderKey.clear(); // widget no longer shows a rendered diff
         m_pullFileAnchors.clear();
         m_pullFileOrder.clear();
+        m_pullStickyLabelHtml.clear();
+        m_pullStickyFile.clear();
+        if (m_pullStickyHeader)
+            m_pullStickyHeader->hide();
     }
     renderPullCommits(*found);
     renderPullThread(*found);
@@ -1883,9 +1940,11 @@ void MainWindow::renderPullDiff()
     // which needs to know what's above/below the current file.
     m_pullFileAnchors.clear();
     m_pullFileOrder.clear();
+    m_pullStickyLabelHtml.clear();
     for (const DiffFileEntry &f : files) {
         m_pullFileAnchors.insert(f.path, f.anchor);
         m_pullFileOrder.append(f.path);
+        m_pullStickyLabelHtml.insert(f.path, diffStickyLabelHtml(f));
     }
 
     const QString styleSheet = diffStyleSheet(m_diffFontPt);
@@ -1910,6 +1969,11 @@ void MainWindow::renderPullDiff()
     // find bar was holding onto (issue #333) — rescan against the new one.
     if (m_pullDiffSearchBar && m_pullDiffSearchBar->isVisible())
         pullDiffSearchRecompute();
+    // The document (and its layout) was replaced; force the sticky header to
+    // re-read the new file positions on the next event-loop turn, once the
+    // layout has settled (adhoc #56).
+    m_pullStickyFile.clear();
+    QTimer::singleShot(0, this, &MainWindow::updatePullDiffScrollState);
 }
 
 // Scroll the all-files diff so the given file's section sits at the top.
@@ -1923,12 +1987,133 @@ void MainWindow::scrollPullDiffToFile(const QString &filePath)
     m_pullDiff->scrollToAnchor(anchor);
 }
 
+// Select a file in the changed-files list without letting currentItemChanged
+// scroll the diff back to that file's header (the selection here is *following*
+// the scroll, not driving it).
+void MainWindow::selectPullFileInList(const QString &filePath)
+{
+    if (!m_pullFiles)
+        return;
+    for (int row = 0; row < m_pullFiles->count(); ++row) {
+        QListWidgetItem *item = m_pullFiles->item(row);
+        if (item && item->data(Qt::UserRole).toString() == filePath) {
+            if (m_pullFiles->currentItem() == item)
+                return;
+            m_pullSuppressFileScroll = true;
+            m_pullFiles->setCurrentItem(item);
+            m_pullFiles->scrollToItem(item);
+            m_pullSuppressFileScroll = false;
+            return;
+        }
+    }
+}
+
+// Pin the sticky header across the top of the diff viewport at its natural
+// height (adhoc #56). Called on every scroll tick and on viewport resize.
+void MainWindow::layoutPullStickyHeader()
+{
+    if (!m_pullStickyHeader || !m_pullDiff)
+        return;
+    QWidget *vp = m_pullDiff->viewport();
+    m_pullStickyHeader->setGeometry(0, 0, vp->width(),
+                                    m_pullStickyHeader->sizeHint().height());
+}
+
+// Runs on every scroll tick of the all-files diff (cheap; no re-render). Figures
+// out which file sits at the top of the viewport, mirrors its header into the
+// sticky bar, advances the Pac-Man chart by how much of that file has scrolled
+// past, and selects the file in the list so the list follows the scroll
+// (adhoc #56, issue #250). The "mark viewed" re-render is left to the debounced
+// applyAutoMarkViewedOnScroll so this stays smooth.
+void MainWindow::updatePullDiffScrollState()
+{
+    if (!m_pullDiff || !m_pullStickyHeader)
+        return;
+    if (m_currentPullNumber < 0 || m_pullFileOrder.isEmpty()) {
+        m_pullStickyHeader->hide();
+        return;
+    }
+    QScrollBar *vbar = m_pullDiff->verticalScrollBar();
+    if (!vbar)
+        return;
+    const int viewTop = vbar->value();
+    const int viewBottom = viewTop + m_pullDiff->viewport()->height();
+    QTextDocument *doc = m_pullDiff->document();
+    const int docHeight = doc->documentLayout()->documentSize().height();
+
+    // Absolute document y-position of each file header, on-screen order; -1 when
+    // a file's anchor wasn't found (e.g. dropped from a size-capped render).
+    QList<int> tops;
+    tops.reserve(m_pullFileOrder.size());
+    for (const QString &path : std::as_const(m_pullFileOrder)) {
+        const QString anchor = m_pullFileAnchors.value(path);
+        QTextCursor cur;
+        tops.append(!anchor.isEmpty() && locateAnchorCursor(doc, anchor, cur)
+                        ? m_pullDiff->cursorRect(cur).top() + viewTop
+                        : -1);
+    }
+
+    // The file at the top of the viewport is the first one whose section still
+    // reaches below the top edge.
+    int idx = -1, fileTop = 0, fileBottom = 0;
+    for (int i = 0; i < m_pullFileOrder.size(); ++i) {
+        if (tops[i] < 0)
+            continue;
+        const int bottom =
+            (i + 1 < tops.size() && tops[i + 1] >= 0) ? tops[i + 1] : docHeight;
+        if (bottom > viewTop) {
+            idx = i;
+            fileTop = tops[i];
+            fileBottom = bottom;
+            break;
+        }
+    }
+    if (idx < 0) {
+        m_pullStickyHeader->hide();
+        return;
+    }
+    const QString path = m_pullFileOrder.at(idx);
+
+    // How much of the file has been seen: the fraction of its extent that has
+    // passed above the viewport's bottom edge, clamped to [0,1]. Hits 1.0 when
+    // the file's end scrolls into view.
+    double progress = 1.0;
+    if (fileBottom > fileTop)
+        progress = double(viewBottom - fileTop) / double(fileBottom - fileTop);
+    progress = qBound(0.0, progress, 1.0);
+
+    const QSet<QString> viewed =
+        loadDiffViewed(QStringLiteral("pull/") + QString::number(m_currentPullNumber));
+    const bool isViewed = viewed.contains(path);
+    if (path != m_pullStickyFile) {
+        m_pullStickyFile = path;
+        m_pullStickyPath->setText(m_pullStickyLabelHtml.value(path));
+        // The list follows the scroll: select whichever file is now on screen.
+        selectPullFileInList(path);
+    }
+    m_pullStickyViewed->setText(isViewed
+                                    ? QString::fromUtf8("\xE2\x98\x91 Viewed")
+                                    : QString::fromUtf8("\xE2\x98\x90 Viewed"));
+    // A completed / already-viewed file reads as done (full green Pac-Man);
+    // otherwise the chart tracks scroll progress in blue and greens on arrival.
+    m_pullStickyPacman->setColor(progress >= 0.999 || isViewed
+                                     ? QColor(0x3f, 0xb9, 0x50)
+                                     : QColor(0x58, 0xa6, 0xff));
+    m_pullStickyPacman->setProgress(isViewed ? 1.0 : progress);
+
+    layoutPullStickyHeader();
+    m_pullStickyHeader->show();
+    m_pullStickyHeader->raise();
+}
+
 // Debounced off the diff view's scrollbar (see m_pullAutoViewedDebounce): marks
-// every file that has scrolled entirely above the viewport as "Viewed" (only
-// while m_pullAutoViewedButton is checked), matching GitHub's "Automatically
-// mark files as viewed" toggle. Re-renders once for the whole batch — not per
-// file — and then restores the scroll position to whichever file is still on
-// screen, since collapsing viewed files above it shifts the document up.
+// every file the reviewer has scrolled fully through — its end has reached the
+// viewport bottom — as "Viewed" (only while m_pullAutoViewedButton is checked),
+// matching GitHub's "Automatically mark files as viewed" toggle and the sticky
+// header's Pac-Man chart, which fills to 100% on the same threshold (adhoc #56).
+// Re-renders once for the whole batch — not per file — and then restores the
+// scroll position to whichever file is still on screen, since collapsing viewed
+// files above it shifts the document up.
 void MainWindow::applyAutoMarkViewedOnScroll()
 {
     if (!m_pullAutoViewedButton || !m_pullAutoViewedButton->isChecked())
@@ -1940,6 +2125,7 @@ void MainWindow::applyAutoMarkViewedOnScroll()
         return;
 
     const int viewTop = vbar->value();
+    const int viewBottom = viewTop + m_pullDiff->viewport()->height();
     QTextDocument *doc = m_pullDiff->document();
     const int docHeight = doc->documentLayout()->documentSize().height();
 
@@ -1959,7 +2145,7 @@ void MainWindow::applyAutoMarkViewedOnScroll()
     const QString context =
         QStringLiteral("pull/") + QString::number(m_currentPullNumber);
     const QSet<QString> viewed = loadDiffViewed(context);
-    QString currentFile; // first file still at least partly on screen
+    QString currentFile; // first file the reviewer hasn't fully scrolled through
     QStringList newlyViewed;
     for (int i = 0; i < m_pullFileOrder.size(); ++i) {
         if (tops[i] < 0)
@@ -1968,7 +2154,8 @@ void MainWindow::applyAutoMarkViewedOnScroll()
         // for the last file.
         const int bottom = (i + 1 < tops.size() && tops[i + 1] >= 0) ? tops[i + 1]
                                                                      : docHeight;
-        if (bottom <= viewTop) {
+        // Fully seen once its end has reached the viewport's bottom edge.
+        if (bottom <= viewBottom) {
             if (!viewed.contains(m_pullFileOrder.at(i)))
                 newlyViewed << m_pullFileOrder.at(i);
         } else if (currentFile.isEmpty()) {
