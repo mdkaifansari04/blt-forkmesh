@@ -284,6 +284,7 @@ QWidget *MainWindow::buildChatPage()
     m_sectionStack->addWidget(buildNetworkReposSection()); // 11 Repos (network catalog)
     logStartup(QStringLiteral("  buildChatPage: network repos section built"));
     m_sectionStack->addWidget(buildNetworkDiagnosticsSection()); // 12 Network diagnostics
+    m_sectionStack->addWidget(buildNodesSection());      // 13 Nodes (adhoc #9)
     logStartup(QStringLiteral("  buildChatPage: network diagnostics section built"));
 
     // No left rails any more: relays and nodes are top-bar dropdowns, so the
@@ -2932,6 +2933,20 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_hostsNavButton, &QPushButton::clicked, this,
             [this] { showSection(7); });
 
+    // Nodes (adhoc #9): a sortable directory of every node this client knows
+    // about (the same nodes in the top-bar node dropdown). Sits between Hosts
+    // and Relays, section 13.
+    m_nodesNavButton = new QPushButton(QStringLiteral("Nodes"));
+    m_nodesNavButton->setObjectName("topNavButton");
+    m_nodesNavButton->setCheckable(true);
+    m_nodesNavButton->setCursor(Qt::PointingHandCursor);
+    m_nodesNavButton->setToolTip(
+        QString::fromUtf8("Nodes \xE2\x80\x94 platform, status, version and repo count"));
+    setOcticon(m_nodesNavButton, "server", 16);
+    m_navGroup->addButton(m_nodesNavButton, kNodesSectionIndex); // section 13: Nodes
+    connect(m_nodesNavButton, &QPushButton::clicked, this,
+            [this] { showSection(kNodesSectionIndex); });
+
     // Relays: a live list of the configured mainnode relays with their online
     // status, round-trip response time and running version. Sits next to Hosts,
     // section 8.
@@ -3224,6 +3239,7 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_logNavButton);
     navRow->addWidget(m_leaderboardNavButton);
     navRow->addWidget(m_hostsNavButton);
+    navRow->addWidget(m_nodesNavButton);
     navRow->addWidget(m_relaysNavButton);
     navRow->addWidget(m_networkNavButton);
     navRow->addSpacing(16);
@@ -3799,6 +3815,8 @@ QString lastSolanaBalanceSetting(const QString &address)
 void MainWindow::updateNodeSwitcher()
 {
     updateUserSwitcher();
+    // Keep the Nodes directory in step with the dropdown's node list.
+    refreshNodesTable();
     if (!m_nodeMenuButton)
         return;
     const QString caret = QString::fromUtf8("\xE2\x96\xBE");
@@ -5696,6 +5714,9 @@ void MainWindow::showSection(int index)
     } else if (index == 8) {
         // Re-list and re-probe the relays each time the Relays section opens.
         refreshRelaysTable();
+    } else if (index == kNodesSectionIndex) {
+        // Re-list the known nodes each time the Nodes section opens.
+        refreshNodesTable();
     } else if (index == kNetworkReposSectionIndex) {
         refreshNetworkReposPage();
     } else if (index == kNetworkDiagnosticsSectionIndex) {
@@ -6765,6 +6786,297 @@ void MainWindow::refreshHostsTable()
         cellRow->addWidget(viewLogsBtn);
         m_hostsTable->setCellWidget(i, 4, cell);
     }
+}
+
+// --- Nodes ------------------------------------------------------------------
+//
+// A sortable directory of every node this client currently knows about — the
+// same set offered by the top-bar node dropdown (m_nodeMenuEntries). Each row
+// carries the node's platform badge, name, online state, advertised ForkMesh
+// version and how many repositories it hosts. Selecting a row opens a detail
+// panel with the node's full details and the repos it hosts.
+
+QWidget *MainWindow::buildNodesSection()
+{
+    auto *page = new QWidget;
+    auto *outer = new QVBoxLayout(page);
+    outer->setContentsMargins(24, 20, 24, 24);
+    outer->setSpacing(12);
+
+    auto *title = new QLabel(QStringLiteral("Nodes"));
+    title->setObjectName("sectionTitle");
+    QFont titleFont = title->font();
+    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    outer->addWidget(title);
+
+    auto *subtitle = new QLabel(QString::fromUtf8(
+        "Every node this client knows about \xE2\x80\x94 the same nodes in the "
+        "top-bar node dropdown. Click a column header to sort. Select a node to "
+        "see its details and the repositories it hosts."));
+    subtitle->setObjectName("mutedLabel");
+    subtitle->setWordWrap(true);
+    outer->addWidget(subtitle);
+
+    // Status line + manual refresh button.
+    auto *controls = new QHBoxLayout;
+    controls->setContentsMargins(0, 0, 0, 0);
+    m_nodesStatus = new QLabel;
+    m_nodesStatus->setObjectName("mutedLabel");
+    controls->addWidget(m_nodesStatus, 1);
+    m_nodesRefreshButton = new QPushButton(QStringLiteral("Refresh"));
+    m_nodesRefreshButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_nodesRefreshButton, "sync", 14);
+    connect(m_nodesRefreshButton, &QPushButton::clicked, this,
+            &MainWindow::refreshNodesTable);
+    controls->addWidget(m_nodesRefreshButton);
+    outer->addLayout(controls);
+
+    // Master (sortable table) on the left, node detail panel on the right.
+    auto *split = new QHBoxLayout;
+    split->setContentsMargins(0, 0, 0, 0);
+    split->setSpacing(16);
+
+    m_nodesTable = new QTableWidget(0, 4);
+    installColumnHeaderMenu(m_nodesTable); // 3-dots per-column menu (issue #318)
+    m_nodesTable->setObjectName("issueTable");
+    m_nodesTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Node"), QStringLiteral("Status"),
+         QStringLiteral("Version"), QStringLiteral("Repos")});
+    m_nodesTable->verticalHeader()->setVisible(false);
+    m_nodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_nodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_nodesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_nodesTable->setShowGrid(false);
+    m_nodesTable->setSortingEnabled(true);
+    m_nodesTable->horizontalHeader()->setSortIndicatorShown(true);
+    m_nodesTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    for (int c = 1; c < 4; ++c)
+        m_nodesTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::ResizeToContents);
+    makeColumnsResizable(m_nodesTable); // spreadsheet-style draggable columns (#263)
+    connect(m_nodesTable, &QTableWidget::cellClicked, this,
+            [this](int row, int) { showNodeDetailForRow(row); });
+    split->addWidget(m_nodesTable, 2);
+
+    m_nodeDetailScroll = new QScrollArea;
+    m_nodeDetailScroll->setWidgetResizable(true);
+    m_nodeDetailScroll->setObjectName("nodeDetailPanel");
+    m_nodeDetailScroll->setMinimumWidth(260);
+    split->addWidget(m_nodeDetailScroll, 1);
+
+    outer->addLayout(split, 1);
+
+    refreshNodesTable();
+    return page;
+}
+
+void MainWindow::refreshNodesTable()
+{
+    if (!m_nodesTable)
+        return;
+
+    // Advertised version for a node, looked up from the live chat roster.
+    auto rosterVersion = [this](const QString &name) -> QString {
+        for (const MemberInfo &m : std::as_const(m_homeRoster))
+            if (m.name == name)
+                return m.version.trimmed();
+        return QString();
+    };
+
+    // Which node the detail panel is currently showing, so a rebuild can keep it.
+    const QString shown = m_nodesTable->property("shownNode").toString();
+
+    // Populate with sorting off so inserted rows don't reshuffle mid-fill.
+    m_nodesTable->setSortingEnabled(false);
+    m_nodesTable->setRowCount(m_nodeMenuEntries.size());
+    int online = 0;
+    for (int i = 0; i < m_nodeMenuEntries.size(); ++i) {
+        const NodeMenuEntry &e = m_nodeMenuEntries.at(i);
+        if (e.online)
+            ++online;
+
+        QString label = e.name.isEmpty() ? QStringLiteral("(unnamed)") : e.name;
+        if (e.self)
+            label += QStringLiteral("  (you)");
+        auto *nameItem =
+            new QTableWidgetItem(osBadgeIcon(e.platform, e.online, 16), label);
+        // Stash the real node name so a row stays identifiable after re-sorting.
+        nameItem->setData(Qt::UserRole, e.name);
+        m_nodesTable->setItem(i, 0, nameItem);
+
+        m_nodesTable->setItem(i, 1, new QTableWidgetItem(
+            e.online ? QStringLiteral("Online") : QStringLiteral("Offline")));
+
+        const QString version = rosterVersion(e.name);
+        m_nodesTable->setItem(i, 2, new QTableWidgetItem(
+            version.isEmpty() ? QString::fromUtf8("\xE2\x80\x94") : version));
+
+        auto *repoItem = new QTableWidgetItem;
+        repoItem->setData(Qt::DisplayRole, e.repoCount); // int -> numeric sort
+        repoItem->setTextAlignment(Qt::AlignCenter);
+        m_nodesTable->setItem(i, 3, repoItem);
+    }
+    m_nodesTable->setSortingEnabled(true);
+
+    if (m_nodesStatus) {
+        m_nodesStatus->setText(m_nodeMenuEntries.isEmpty()
+            ? QStringLiteral("No nodes known yet.")
+            : QString::fromUtf8("%1 node%2 \xC2\xB7 %3 online")
+                  .arg(m_nodeMenuEntries.size())
+                  .arg(m_nodeMenuEntries.size() == 1 ? "" : "s")
+                  .arg(online));
+    }
+
+    // Re-open the previously shown node's detail (find it by name post-sort), or
+    // default to the first row.
+    if (m_nodesTable->rowCount() > 0) {
+        int target = 0;
+        for (int r = 0; r < m_nodesTable->rowCount(); ++r) {
+            QTableWidgetItem *it = m_nodesTable->item(r, 0);
+            if (it && it->data(Qt::UserRole).toString() == shown) {
+                target = r;
+                break;
+            }
+        }
+        m_nodesTable->selectRow(target);
+        showNodeDetailForRow(target);
+    } else {
+        showNodeDetailForRow(-1);
+    }
+}
+
+void MainWindow::showNodeDetailForRow(int row)
+{
+    if (!m_nodeDetailScroll)
+        return;
+
+    // Placeholder when there is no valid selection.
+    if (!m_nodesTable || row < 0 || row >= m_nodesTable->rowCount() ||
+        !m_nodesTable->item(row, 0)) {
+        if (m_nodesTable)
+            m_nodesTable->setProperty("shownNode", QString());
+        auto *empty =
+            new QLabel(QStringLiteral("Select a node to see its details."));
+        empty->setObjectName("mutedLabel");
+        empty->setAlignment(Qt::AlignCenter);
+        empty->setWordWrap(true);
+        m_nodeDetailScroll->setWidget(empty);
+        return;
+    }
+
+    const QString node = m_nodesTable->item(row, 0)->data(Qt::UserRole).toString();
+    m_nodesTable->setProperty("shownNode", node);
+
+    // The dropdown entry (platform / online / repo count) and the roster record
+    // (version / owner / telemetry) for this node.
+    NodeMenuEntry entry;
+    for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
+        if (e.name == node) { entry = e; break; }
+    }
+    MemberInfo mi;
+    for (const MemberInfo &m : std::as_const(m_homeRoster)) {
+        if (m.name == node) { mi = m; break; }
+    }
+
+    auto *content = new QWidget;
+    auto *col = new QVBoxLayout(content);
+    col->setContentsMargins(16, 16, 16, 16);
+    col->setSpacing(8);
+
+    // Header: platform badge + node name.
+    auto *head = new QHBoxLayout;
+    head->setSpacing(8);
+    auto *badge = new QLabel;
+    badge->setPixmap(osBadgeIcon(entry.platform, entry.online, 28).pixmap(28, 28));
+    head->addWidget(badge);
+    auto *nameLbl =
+        new QLabel(node.isEmpty() ? QStringLiteral("(unnamed node)") : node);
+    QFont nf = nameLbl->font();
+    nf.setPointSizeF(nf.pointSizeF() + 3);
+    nf.setBold(true);
+    nameLbl->setFont(nf);
+    nameLbl->setWordWrap(true);
+    head->addWidget(nameLbl, 1);
+    col->addLayout(head);
+
+    auto addRow = [&](const QString &k, const QString &v) {
+        if (v.trimmed().isEmpty())
+            return;
+        auto *l = new QLabel(
+            QStringLiteral("<b>%1:</b> %2").arg(k, v.toHtmlEscaped()));
+        l->setTextFormat(Qt::RichText);
+        l->setWordWrap(true);
+        col->addWidget(l);
+    };
+
+    addRow(QStringLiteral("Status"),
+           entry.online ? QStringLiteral("Online") : QStringLiteral("Offline"));
+    if (entry.self)
+        addRow(QStringLiteral("This node"), QStringLiteral("Yes (you)"));
+    QString platform = entry.platform.trimmed();
+    if (platform.isEmpty())
+        platform = mi.platform.trimmed();
+    addRow(QStringLiteral("Platform"),
+           platform.isEmpty() ? QStringLiteral("unknown") : platform);
+    addRow(QStringLiteral("Version"), mi.version.trimmed());
+    addRow(QStringLiteral("Owner"), mi.ownerUser.trimmed());
+    addRow(QStringLiteral("Solana"), mi.solanaAddress.trimmed());
+    addRow(QStringLiteral("Repositories"), QString::number(entry.repoCount));
+
+    // Host telemetry, when the node advertised it.
+    if (mi.cpuPercent >= 0.0)
+        addRow(QStringLiteral("CPU"),
+               QStringLiteral("%1%").arg(mi.cpuPercent, 0, 'f', 0));
+    if (mi.memTotalBytes > 0)
+        addRow(QStringLiteral("Memory"),
+               QStringLiteral("%1 / %2").arg(
+                   SystemStats::formatBytes(mi.memUsedBytes),
+                   SystemStats::formatBytes(mi.memTotalBytes)));
+    if (mi.diskTotalBytes > 0)
+        addRow(QStringLiteral("Disk"),
+               QStringLiteral("%1 / %2").arg(
+                   SystemStats::formatBytes(mi.diskUsedBytes),
+                   SystemStats::formatBytes(mi.diskTotalBytes)));
+
+    // Repositories hosted by this node.
+    auto *reposLbl = new QLabel(QStringLiteral("Repositories"));
+    QFont rlf = reposLbl->font();
+    rlf.setBold(true);
+    reposLbl->setFont(rlf);
+    reposLbl->setContentsMargins(0, 8, 0, 0);
+    col->addWidget(reposLbl);
+
+    int shownRepos = 0;
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (repo.owner != node || repo.previewOnly)
+            continue;
+        ++shownRepos;
+        auto *r = new QLabel;
+        r->setTextFormat(Qt::RichText);
+        r->setWordWrap(true);
+        QString line = QStringLiteral("\xE2\x80\xA2 <b>%1</b>")
+                           .arg(repo.name.toHtmlEscaped());
+        if (repo.isPrivate)
+            line += QStringLiteral(" \xC2\xB7 private");
+        if (!repo.description.trimmed().isEmpty())
+            line += QStringLiteral(
+                        "<br><span style='color:#8b949e'>%1</span>")
+                        .arg(repo.description.trimmed().toHtmlEscaped());
+        r->setText(line);
+        col->addWidget(r);
+    }
+    if (shownRepos == 0) {
+        auto *none =
+            new QLabel(QStringLiteral("No repositories hosted by this node."));
+        none->setObjectName("mutedLabel");
+        none->setWordWrap(true);
+        col->addWidget(none);
+    }
+
+    col->addStretch();
+    m_nodeDetailScroll->setWidget(content);
 }
 
 // --- Relays -----------------------------------------------------------------
