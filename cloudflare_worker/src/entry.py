@@ -270,6 +270,7 @@ from urls import (  # noqa: E402
     AP_OBJECT_MEDIA_RE,
     REPO_FEDI_COMMENTS_RE,
     REPO_AP_PUBLISH_RE,
+    REPO_CARD_RE,
     REPO_MEDIA_RE,
     REPO_STAR_RE,
 )
@@ -378,6 +379,10 @@ from events import (  # noqa: E402
 # sibling module the test suite imports directly. Only the WebCrypto RSA glue,
 # the D1-backed actor/follower/delivery state and the HTTP handlers live below.
 import activitypub as ap  # noqa: E402
+
+# Social-preview (OpenGraph) info-card renderer — pure-stdlib PNG drawing,
+# another js-free sibling module the test suite imports directly.
+import og_card  # noqa: E402
 
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
@@ -10281,6 +10286,80 @@ async def repo_media_handler(env, request, owner, repo, media_kind):
     return resp
 
 
+async def repo_card_handler(env, request, owner, repo):
+    # Social-preview info card (adhoc #46): the repo page's og:image points
+    # here, so a Mastodon/Slack/Twitter unfurl shows the repo's name,
+    # description and stats grid (with the ForkMesh mark small in the corner)
+    # instead of a full-bleed logo. Public — same visibility gate as the page
+    # it previews — and edge-cached so link-preview fetch bursts after a share
+    # cost one render per colo per TTL.
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    parts = urlparse(request.url)
+    cache_key = _ap_origin(env, request) + parts.path
+    cached = await edge_cache_match_media(cache_key, "image/png")
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    if await _repo_is_private(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    row = await d1_first(
+        env, "SELECT data FROM repositories WHERE key_bi=?", repo_bi)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    rec = (await decrypt_row(env, row.get("data"))) or {}
+    stars_row = await d1_first(
+        env, "SELECT COUNT(*) AS n FROM repo_stars WHERE repo_bi=?", repo_bi)
+    followers = 0
+    if await _ap_enabled(env):
+        handle = ap.repo_handle(str(owner).lower(), str(repo).lower())
+        actor_bi = await _ap_actor_bi(env, AP_ACTOR_REPO, handle)
+        follow_row = await d1_first(
+            env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
+            actor_bi)
+        followers = (follow_row or {}).get("c", 0) or 0
+    # Mirror count the way the network page groups them: catalog records that
+    # share this repo's root commit (memoized decrypted catalog, so this full
+    # pass doesn't re-decrypt per request).
+    mirrors = 0
+    try:
+        now_ms = int(time.time() * 1000)
+        for entry in await _decrypted_public_catalog(env, now_ms):
+            if repo_mirror_same_group(rec, entry.get("data")):
+                mirrors += 1
+    except Exception:
+        mirrors = 0
+    info = {
+        "owner": owner,
+        "repo": repo,
+        "description": rec.get("description", ""),
+        "branch": rec.get("branch", ""),
+        "host": urlparse(_ap_origin(env, request)).netloc or "forkmesh.com",
+        "stars": (stars_row or {}).get("n", 0) or 0,
+        "mirrors": max(1, mirrors),
+        "issues": rec.get("issueCount", ""),
+        "pulls": rec.get("pullCount", ""),
+        "commits": rec.get("commitCount", ""),
+        "branches": rec.get("branchCount", ""),
+        "sizeBytes": rec.get("sizeBytes", 0),
+        "updatedAt": rec.get("updatedAt", ""),
+        "followers": followers,
+    }
+    png = og_card.render_repo_card(info, time.time())
+    # Stats drift, so keep the browser TTL modest; preview crawlers cache the
+    # rendered card on their side anyway.
+    resp = JsResponse.new(_to_js(bytes(png)), to_js({
+        "status": 200,
+        "headers": {
+            "content-type": "image/png",
+            "cache-control": "public, max-age=3600",
+        },
+    }))
+    await edge_cache_put(cache_key, resp)
+    return resp
+
+
 async def repo_star_handler(env, request, owner, repo):
     # Star/unstar a repo. A star is a plain per-account preference (not signed
     # by the owner's key), so it lives in its own repo_stars table - the same
@@ -15876,6 +15955,14 @@ class Default(WorkerEntrypoint):
             return await repo_media_handler(
                 self.env, request, owner, repo, repo_media_match.group(3))
 
+        repo_card_match = REPO_CARD_RE.match(url.path)
+        if repo_card_match:
+            owner = safe_segment(repo_card_match.group(1))
+            repo = safe_segment(repo_card_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_card_handler(self.env, request, owner, repo)
+
         star_match = REPO_STAR_RE.match(url.path)
         if star_match:
             owner = safe_segment(star_match.group(1))
@@ -16339,24 +16426,29 @@ class Default(WorkerEntrypoint):
             canonical = "%s/%s/%s" % (origin, quote(owner), quote(repo))
             # OpenGraph/Twitter card so social + fediverse shares of the repo
             # URL (the preview under a federated "new pull request" post, a
-            # Slack unfurl, etc.) render the repo's logo instead of a blank
-            # document icon. Prefer the owner-uploaded repo logo; fall back to
-            # the ForkMesh mark served from the site root.
-            og_image = origin + "/assets/logo.png"
+            # Slack unfurl, etc.) render the repo's rendered info card — name,
+            # description and stats grid with the ForkMesh mark in the corner
+            # (adhoc #46, see repo_card_handler / og_card.py) — instead of a
+            # full-bleed logo. og:description carries the catalog description
+            # so the unfurl text matches the repo, not the generic shell copy.
+            og_image = "%s/api/repo/%s/%s/card.png" % (
+                origin, quote(owner), quote(repo))
+            og_description = ""
             try:
                 await ensure_schema(self.env)
                 repo_bi = await blind_index(self.env, owner + "/" + repo)
-                media = await d1_first(
+                repo_row = await d1_first(
                     self.env,
-                    "SELECT updated_at FROM repo_media "
-                    "WHERE repo_bi=? AND kind='logo'",
-                    repo_bi)
-                if media:
-                    og_image = "%s/api/repo/%s/%s/media/logo.png?v=%d" % (
-                        origin, quote(owner), quote(repo),
-                        int(media.get("updated_at") or 0))
+                    "SELECT data FROM repositories WHERE key_bi=?", repo_bi)
+                rec = (await decrypt_row(
+                    self.env, repo_row.get("data"))) if repo_row else None
+                og_description = str((rec or {}).get("description", "") or "")
             except Exception:
                 pass
+            if not og_description:
+                og_description = ("%s/%s on ForkMesh — distributed Git "
+                                  "hosting on a mesh of desktop nodes."
+                                  % (owner, repo))
             title = "%s/%s - ForkMesh" % (owner, repo)
             tags = (
                 "<link rel=\"me\" href=\"%s\">"
@@ -16366,13 +16458,19 @@ class Default(WorkerEntrypoint):
                 "<meta property=\"og:site_name\" content=\"ForkMesh\">"
                 "<meta property=\"og:url\" content=\"%s\">"
                 "<meta property=\"og:title\" content=\"%s\">"
+                "<meta property=\"og:description\" content=\"%s\">"
                 "<meta property=\"og:image\" content=\"%s\">"
-                "<meta name=\"twitter:card\" content=\"summary\">"
+                "<meta property=\"og:image:width\" content=\"%d\">"
+                "<meta property=\"og:image:height\" content=\"%d\">"
+                "<meta name=\"twitter:card\" content=\"summary_large_image\">"
                 "<meta name=\"twitter:title\" content=\"%s\">"
+                "<meta name=\"twitter:description\" content=\"%s\">"
                 "<meta name=\"twitter:image\" content=\"%s\">"
                 % (canonical,
                    origin, quote(owner), quote(repo),
-                   canonical, title, og_image, title, og_image))
+                   canonical, title, _html_escape(og_description), og_image,
+                   og_card.CARD_W, og_card.CARD_H,
+                   title, _html_escape(og_description), og_image))
             body = body.replace("</head>", tags + "</head>", 1)
         page = Response(body, status=200, headers={
             "content-type": "text/html; charset=utf-8",

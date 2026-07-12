@@ -216,6 +216,13 @@
     })[char]);
   }
 
+  // Loading placeholder: spinner (see .fm-spinner in the shell <style>)
+  // followed by the label. `label` is inserted as HTML so call sites can keep
+  // their pre-escaped fragments.
+  function loadingHtml(label) {
+    return `<span class="fm-spinner" aria-hidden="true"></span>${label}`;
+  }
+
   function formatCount(value) {
     const number = Number(value) || 0;
     return new Intl.NumberFormat().format(number);
@@ -2104,9 +2111,11 @@
     const events = data.events.slice(0, 20);
     empty.classList.toggle("hidden", Boolean(events.length));
     if (!events.length) {
-      empty.textContent = data.loading
-        ? "Loading live contribution history..."
-        : "No contribution activity found for this year yet.";
+      if (data.loading) {
+        empty.innerHTML = loadingHtml("Loading live contribution history...");
+      } else {
+        empty.textContent = "No contribution activity found for this year yet.";
+      }
       container.innerHTML = "";
       return;
     }
@@ -3155,7 +3164,7 @@
     if (!state.globalSearch.open) return;
 
     if (state.repositoriesLoading) {
-      container.innerHTML = '<div class="px-3 py-5 text-sm text-muted-foreground">Loading repositories...</div>';
+      container.innerHTML = `<div class="px-3 py-5 text-sm text-muted-foreground">${loadingHtml("Loading repositories...")}</div>`;
       return;
     }
 
@@ -3440,7 +3449,7 @@
 
     if (state.repositoriesLoading) {
       if (list) {
-        list.innerHTML = '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">Loading repositories from an online node...</div>';
+        list.innerHTML = `<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">${loadingHtml("Loading repositories from an online node...")}</div>`;
       }
       if (summary) summary.textContent = "Loading repositories from an online node";
       if (prev) {
@@ -4727,7 +4736,7 @@
     // dropped it below the content was removed, owner decision 2026-07-11).
     renderRepoBreadcrumb(repo, path);
 
-    treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading tree...</div>';
+    treeBody.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading tree...")}</div>`;
     renderRepoExplorer(repo, path, []);
     try {
       const requestedAt = performance.now();
@@ -4819,7 +4828,7 @@
     readmePanel?.classList.add("hidden");
     setRepoExplorerFocusMode(repoPathParts(path).length > 1);
     viewer.classList.remove("hidden");
-    viewer.innerHTML = '<div class="py-3 text-sm text-muted-foreground">Loading file...</div>';
+    viewer.innerHTML = `<div class="py-3 text-sm text-muted-foreground">${loadingHtml("Loading file...")}</div>`;
     renderRepoBreadcrumb(repo, path, "blob");
     setRepoExplorerSelection(path, "blob");
     try {
@@ -5749,7 +5758,7 @@
     }
     const recordFile = typeof config.file === "function" ? config.file(Number(number)) : config.file;
     const recordPath = `${config.dir}/${number}/${recordFile}`;
-    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">Loading ${escapeHtml(config.itemLabel)} #${escapeHtml(number)} from the live mirror...</div>`;
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml(`Loading ${escapeHtml(config.itemLabel)} #${escapeHtml(number)} from the live mirror...`)}</div>`;
     try {
       // Pulls read with ref:"" so the host serves the forkmesh/pulls branch.
       const refParams = kind === "pulls" ? { ref: "" } : {};
@@ -5975,7 +5984,7 @@
   async function loadRepoIssues(repo) {
     const container = $("[data-repo-issues]");
     if (!container) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading issues from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading issues from the live mirror...")}</div>`;
     try {
       let tree;
       try {
@@ -6045,7 +6054,7 @@
   async function loadRepoProjects(repo) {
     const container = $("[data-repo-projects]");
     if (!container) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading projects from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading projects from the live mirror...")}</div>`;
     try {
       let tree;
       try {
@@ -6301,7 +6310,7 @@
     const container = $(containerSelector);
     const config = repoCollectionConfig[kind];
     if (!container || !config) return;
-    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">Loading ${escapeHtml(config.label.toLowerCase())} from the live mirror...</div>`;
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml(`Loading ${escapeHtml(config.label.toLowerCase())} from the live mirror...`)}</div>`;
     try {
       const items = await loadRepoRecordsFromMirror(repo, config);
       container.innerHTML = items.length
@@ -6896,7 +6905,7 @@
   async function loadRepoAgents(repo) {
     const container = $("[data-repo-agents]");
     if (!container || !repo) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading agent sessions...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading agent sessions...")}</div>`;
     try {
       const agents = await requestRepoAgentsList(repo);
       state.agentsView.agents = agents;
@@ -7359,7 +7368,7 @@
   async function loadRepoCommits(repo) {
     const container = $("[data-repo-commits]");
     if (!container) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading commits from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading commits from the live mirror...")}</div>`;
     try {
       const data = await fetchJson(repoLiveUrl(repo, "history"));
       const commits = Array.isArray(data.commits) ? data.commits : [];
@@ -7446,7 +7455,7 @@
   async function loadRepoCommitDetail(repo, hash) {
     const container = $("[data-repo-commits]");
     if (!container || !repo || !hash) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading commit from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading commit from the live mirror...")}</div>`;
     try {
       const data = await fetchJson(repoLiveUrl(repo, "commit", { path: hash }));
       state.repoCommitDetail = { repo, data };
@@ -7516,7 +7525,7 @@
 
   async function loadRepoMirrors(repo) {
     const container = $("[data-repo-mirrors]");
-    if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading mirrors...</div>';
+    if (container) container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading mirrors...")}</div>`;
     try {
       const data = await fetchJson(`${repoApiBase(repo)}/mirrors`);
       const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
@@ -7595,7 +7604,7 @@
   async function loadRepoReleases(repo) {
     const container = $("[data-repo-releases]");
     if (!container) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading releases from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading releases from the live mirror...")}</div>`;
     const empty = '<div class="px-4 py-3 text-sm text-muted-foreground">No releases have been published to this mirror yet.</div>';
     try {
       // Release manifests live in the git tree at .forkmesh/releases/<channel>/release.json
@@ -7714,7 +7723,7 @@
   async function loadRepoInsights(repo) {
     const container = $("[data-repo-insights]");
     if (!container || !repo) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading insights from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading insights from the live mirror...")}</div>`;
     try {
       const data = await fetchJson(repoLiveUrl(repo, "history"));
       const commits = Array.isArray(data.commits) ? data.commits : [];
@@ -8232,7 +8241,7 @@
 	                  <section data-repo-readme class="mt-4 overflow-hidden rounded-lg border border-border bg-background">
 	                    <div data-repo-readme-filename class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="book-open" class="h-3.5 w-3.5 text-muted-foreground"></i>README.md</div>
 	                    <div data-repo-readme-body class="p-4 text-sm leading-6 text-muted-foreground">
-	                      <p class="mt-1">Loading README...</p>
+	                      <p class="mt-1">${loadingHtml("Loading README...")}</p>
 	                    </div>
 	                  </section>
 	                </div>
@@ -9039,7 +9048,7 @@
     const crumb = $("[data-repo-detail-crumb]");
     if (crumb && requested) crumb.textContent = requested;
     if (detail && requested) {
-      detail.innerHTML = '<p class="text-sm text-muted-foreground">Loading repository…</p>';
+      detail.innerHTML = `<p class="text-sm text-muted-foreground">${loadingHtml("Loading repository…")}</p>`;
     }
     // findRepository needs the catalog (alias/canonical grouping), so this page
     // does wait on the shared fetch before rendering the detail body.
