@@ -218,6 +218,26 @@
     return new Intl.NumberFormat().format(number);
   }
 
+  // Compose-identity chip: avatar + username shown next to any box where the
+  // session user is about to send content (issues, replies, reviews). Built as
+  // an HTML string so it can be dropped straight into the template-literal forms
+  // in 06/07; mirrors the initial/avatarPng logic in applyAvatar().
+  function composeIdentityHtml(session, verb) {
+    const name = String(session?.nodeName || session?.email || "you");
+    const initial = escapeHtml((name[0] || "F").toUpperCase());
+    const avatarPng = String(session?.avatarPng || "");
+    const inner = avatarPng
+      ? `<img class="h-full w-full object-cover" src="data:image/png;base64,${avatarPng}" alt="${escapeHtml(name)} avatar" />`
+      : `<span class="text-[10px] font-semibold text-muted-foreground">${initial}</span>`;
+    const label = verb
+      ? `<span class="text-muted-foreground">${escapeHtml(verb)} as</span> <span class="font-semibold text-foreground">${escapeHtml(name)}</span>`
+      : `<span class="font-semibold text-foreground">${escapeHtml(name)}</span>`;
+    return `<span class="inline-flex min-w-0 items-center gap-2 text-xs">
+        <span class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-secondary">${inner}</span>
+        <span class="min-w-0 truncate">${label}</span>
+      </span>`;
+  }
+
   function parseFlexibleDate(value) {
     if (value === undefined || value === null || value === "") return null;
     const numeric = Number(value);
@@ -1438,10 +1458,12 @@
     const avatar = $("[data-dashboard-profile-avatar]");
     const adminButton = $("[data-admin-button]");
     const homeName = $("[data-home-user-name]");
+    const composeName = $("[data-home-compose-name]");
     const sidebarName = $("[data-sidebar-user-name]");
 
     if (nameEl) nameEl.textContent = name;
     if (homeName) homeName.textContent = name;
+    if (composeName) composeName.textContent = name;
     if (sidebarName) sidebarName.textContent = name;
     if (statusEl) {
       statusEl.textContent = session?.emailVerified
@@ -1450,6 +1472,7 @@
     }
     applyAvatar(avatar, session);
     applyAvatar($("[data-home-user-avatar]"), session);
+    applyAvatar($("[data-home-compose-avatar]"), session);
     if (adminButton) {
       let adminUrl = session?.isAdmin ? (session?.adminUrl || "") : "";
       if (adminUrl && session?.nodeName && !/[?&]admin=/.test(adminUrl)) {
@@ -5387,14 +5410,14 @@
     if (!state.session?.nodeName) {
       return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to reply to this discussion.</div>`;
     }
-    const who = escapeHtml(state.session.nodeName);
     return `
       <form data-repo-discussion-reply-form data-repo-discussion-reply-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
+        ${composeIdentityHtml(state.session, "Replying")}
         <label class="grid gap-1 text-xs font-medium text-muted-foreground">Reply
           <textarea data-repo-discussion-reply-body rows="3" placeholder="Write a reply. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
         </label>
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span data-repo-discussion-reply-hint class="text-[11px] text-muted-foreground">Replying as ${who}. Sent to the maintainer's inbox for review.</span>
+          <span data-repo-discussion-reply-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
           <button type="submit" data-repo-discussion-reply-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Reply</button>
         </div>
       </form>`;
@@ -5404,14 +5427,14 @@
     if (!state.session?.nodeName) {
       return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to comment or review this pull request.</div>`;
     }
-    const who = escapeHtml(state.session.nodeName);
     return `
       <form data-repo-pull-review-form data-repo-pull-review-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
+        ${composeIdentityHtml(state.session, "Reviewing")}
         <label class="grid gap-1 text-xs font-medium text-muted-foreground">Review
           <textarea data-repo-pull-review-body rows="3" placeholder="Leave a comment. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
         </label>
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span data-repo-pull-review-hint class="text-[11px] text-muted-foreground">Reviewing as ${who}. Sent to the maintainer's inbox for review.</span>
+          <span data-repo-pull-review-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
           <div class="flex flex-wrap items-center gap-2">
             <button type="submit" data-repo-pull-review-action="changes_requested" class="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"><i data-lucide="circle-x" class="h-4 w-4"></i>Request changes</button>
             <button type="submit" data-repo-pull-review-action="approved" class="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"><i data-lucide="circle-check" class="h-4 w-4"></i>Approve</button>
@@ -6627,7 +6650,6 @@
   function openIssueCompose(repo) {
     const container = $("[data-repo-issues]");
     if (!container || !repo) return;
-    const who = escapeHtml(state.session?.nodeName || "you");
     const canAssignAgent = sessionCanAssignAgent(repo);
     container.innerHTML = `
       <form data-repo-issue-form class="grid gap-3 border-t border-border bg-background p-4">
@@ -6671,7 +6693,10 @@
           </div>
         </div>` : ""}
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
+          <div class="flex min-w-0 flex-col gap-1">
+            ${composeIdentityHtml(state.session, "Filing")}
+            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+          </div>
           <button type="submit" data-repo-issue-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Submit issue</button>
         </div>
       </form>`;
@@ -6870,7 +6895,6 @@
   function openPullCompose(repo) {
     const container = $("[data-repo-pulls]");
     if (!container || !repo) return;
-    const who = escapeHtml(state.session?.nodeName || "you");
     const branches = repoBranchList(repo);
     const defaultBranch = repoDefaultBranch(repo);
     const branchOptions = branches.map((branch) => `<option value="${escapeHtml(branch.name)}">${escapeHtml(branch.name)}</option>`).join("");
@@ -6897,7 +6921,10 @@
         </label>
         <div class="rounded-md border border-dashed border-border bg-secondary/20 px-3 py-2 text-[11px] text-muted-foreground">The diff isn't computed here - the maintainer's desktop client reconstructs it from the base and head branches when it drains this submission.</div>
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span data-repo-pull-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
+          <div class="flex min-w-0 flex-col gap-1">
+            ${composeIdentityHtml(state.session, "Filing")}
+            <span data-repo-pull-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+          </div>
           <button type="submit" data-repo-pull-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Create pull request</button>
         </div>
       </form>`;

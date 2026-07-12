@@ -773,6 +773,7 @@ QWidget *MainWindow::buildPullsTab()
     auto *composerBlockLayout = new QVBoxLayout(composerBlock);
     composerBlockLayout->setContentsMargins(0, 0, 0, 0);
     composerBlockLayout->setSpacing(6);
+    composerBlockLayout->addWidget(makeComposerIdentity(nullptr, QStringLiteral("Reviewing")));
     composerBlockLayout->addWidget(m_pullComposer);
     composerBlockLayout->addLayout(composerButtons);
 

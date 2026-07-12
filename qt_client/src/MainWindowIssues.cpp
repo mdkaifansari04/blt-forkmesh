@@ -436,8 +436,11 @@ QWidget *MainWindow::buildIssuesSection()
     commentAvatar->setScaledContents(true);
     m_issueComposerAvatar = commentAvatar;
     refreshIssueComposerAvatar();
-    auto *commentTitle = new QLabel("Add a comment");
+    auto *commentTitle = new QLabel(
+        QStringLiteral("Commenting as <b>%1</b>")
+            .arg(topBarUserName().toHtmlEscaped()));
     commentTitle->setObjectName("issueCommentTitle");
+    commentTitle->setTextFormat(Qt::RichText);
     m_issueComposer = new MarkdownEditor;
     m_issueComposer->setObjectName("issueCommentEditor");
     m_issueComposer->setMinimumHeight(190);
@@ -3264,6 +3267,7 @@ void MainWindow::promptNewIssue()
     auto *leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(8);
+    leftLayout->addWidget(makeComposerIdentity(nullptr, QStringLiteral("Filing")));
     leftLayout->addWidget(titleLabel);
     leftLayout->addWidget(titleEdit);
     auto *descriptionLabel = new QLabel("Add a description", page);
@@ -7326,6 +7330,21 @@ QWidget *MainWindow::buildChatSection()
     auto *inputRowLayout = new QHBoxLayout(inputRow);
     inputRowLayout->setContentsMargins(6, 2, 6, 2);
     inputRowLayout->setSpacing(2);
+    // Small self avatar at the head of the pill so it's clear who is sending.
+    auto *selfAvatar = new QLabel("FM");
+    selfAvatar->setObjectName("issueAvatar");
+    selfAvatar->setAlignment(Qt::AlignCenter);
+    selfAvatar->setFixedSize(24, 24);
+    selfAvatar->setScaledContents(true);
+    selfAvatar->setToolTip(topBarUserName());
+    {
+        const QPixmap selfPm = roundedAvatar(effectiveAvatar(), 24);
+        if (!selfPm.isNull()) {
+            selfAvatar->setText(QString());
+            selfAvatar->setPixmap(selfPm);
+        }
+    }
+    inputRowLayout->addWidget(selfAvatar, 0, Qt::AlignVCenter);
     inputRowLayout->addWidget(attachButton);
     inputRowLayout->addWidget(m_messageInput, 1);
     inputRowLayout->addWidget(emojiButton);
