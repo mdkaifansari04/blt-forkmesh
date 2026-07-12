@@ -6288,6 +6288,30 @@ inline bool runGitCapture(const QString &dir, const QStringList &args, QByteArra
     return true;
 }
 
+// Run a git command in `dir` feeding `input` on stdin (e.g. cat-file --batch),
+// capturing stdout. Returns false (with stderr in `err`) on failure. QProcess
+// buffers writes issued before the child has spawned, so no waitForStarted is
+// needed.
+inline bool runGitCaptureInput(const QString &dir, const QStringList &args,
+                               const QByteArray &input, QByteArray *out,
+                               QString *err)
+{
+    QProcess process;
+    process.start("git", QStringList{"-C", dir} + args);
+    process.write(input);
+    process.closeWriteChannel();
+    if (!waitForGit(process, err))
+        return false;
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        if (err)
+            *err = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        return false;
+    }
+    if (out)
+        *out = process.readAllStandardOutput();
+    return true;
+}
+
 inline QString worktreeHeadBranch(const QString &workTree)
 {
     if (workTree.trimmed().isEmpty() || !QDir(workTree).exists(QStringLiteral(".git")))
@@ -6683,13 +6707,35 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
     if (mirrorPath.trimmed().isEmpty() || branch.isEmpty() ||
         !QDir(mirrorPath).exists())
         return -1;
+    // The count only changes when the served branch tip moves, but the publish
+    // and mirror-advert timers recompute it over and over. Reading one status
+    // blob per issue also used to spawn one `git cat-file -p` per issue — a
+    // repo with ~200 issues ran 200+ sequential subprocesses on the GUI thread
+    // and the stall watchdog clocked individual publishes at 1.8s+ (adhoc #33).
+    // Cache per mirror+branch keyed on the tip commit, and on a miss read every
+    // status through a single `git cat-file --batch` process. UI-thread only,
+    // so a plain static map needs no locking (same as tintedOcticonPixmap).
+    QByteArray tip;
+    runGitCapture(mirrorPath, {"rev-parse", "--verify", branch}, &tip, nullptr);
+    tip = tip.trimmed();
+    struct OpenIssueCacheEntry {
+        QByteArray tip;
+        int count = 0;
+    };
+    static QHash<QString, OpenIssueCacheEntry> cache;
+    const QString cacheKey = mirrorPath + QLatin1Char('\n') + branch;
+    if (!tip.isEmpty()) {
+        const auto cached = cache.constFind(cacheKey);
+        if (cached != cache.constEnd() && cached->tip == tip)
+            return cached->count;
+    }
     QByteArray out;
     if (!runGitCapture(mirrorPath,
                        {"ls-tree", "-z", branch + ":.forkmesh/issues"}, &out,
                        nullptr))
         return 0; // no .forkmesh/issues/ folder yet -> nothing filed
     static const QRegularExpression numericName(QStringLiteral("^[0-9]+$"));
-    int open = 0;
+    QStringList names;
     for (const QByteArray &record : out.split('\0')) {
         if (record.isEmpty())
             continue;
@@ -6700,21 +6746,54 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
         if (meta.size() < 2 || meta.at(1) != "tree")
             continue;
         const QString name = QString::fromUtf8(record.mid(tab + 1));
-        if (!numericName.match(name).hasMatch())
-            continue;
-        QByteArray blob;
-        QString status;
-        const QString rel =
-            QStringLiteral(".forkmesh/issues/%1/issue-%1.json").arg(name);
-        if (runGitCapture(mirrorPath, {"cat-file", "-p", branch + ":" + rel},
-                          &blob, nullptr))
-            status = QJsonDocument::fromJson(blob)
-                         .object()
-                         .value(QStringLiteral("status"))
-                         .toString();
-        if (status != QLatin1String("closed"))
-            ++open;
+        if (numericName.match(name).hasMatch())
+            names.append(name);
     }
+    int open = 0;
+    if (!names.isEmpty()) {
+        QByteArray batchIn;
+        for (const QString &name : std::as_const(names))
+            batchIn += (branch + QStringLiteral(":.forkmesh/issues/%1/issue-%1.json")
+                                     .arg(name))
+                           .toUtf8() +
+                       '\n';
+        QByteArray batchOut;
+        // Anything not readable as status "closed" (open, reopened, missing or
+        // malformed record) counts as open — matching RepoHost::countOpenIssues
+        // and the web's parseIssueJson default.
+        int remaining = names.size();
+        if (runGitCaptureInput(mirrorPath, {"cat-file", "--batch"}, batchIn,
+                               &batchOut, nullptr)) {
+            int pos = 0;
+            while (remaining > 0 && pos < batchOut.size()) {
+                const int eol = batchOut.indexOf('\n', pos);
+                if (eol < 0)
+                    break;
+                const QByteArray header = batchOut.mid(pos, eol - pos);
+                pos = eol + 1;
+                --remaining;
+                const QList<QByteArray> parts = header.split(' ');
+                bool sizeOk = false;
+                const qlonglong size =
+                    parts.size() >= 3 ? parts.at(2).toLongLong(&sizeOk) : 0;
+                if (!sizeOk || size < 0) {
+                    ++open; // "<path> missing" or unparsable header
+                    continue;
+                }
+                const QString status =
+                    QJsonDocument::fromJson(batchOut.mid(pos, size))
+                        .object()
+                        .value(QStringLiteral("status"))
+                        .toString();
+                pos += size + 1; // skip the record's trailing LF
+                if (status != QLatin1String("closed"))
+                    ++open;
+            }
+        }
+        open += remaining; // records the batch never answered default to open
+    }
+    if (!tip.isEmpty())
+        cache.insert(cacheKey, {tip, open});
     return open;
 }
 
