@@ -5256,6 +5256,115 @@
       </div>`).join("");
   }
 
+  // Pull-request badge (adhoc #44): a visual fingerprint of the PR. One tile
+  // per changed file — a file-type glyph over a green/red bar showing that
+  // file's additions:deletions ratio — grouped by directory with a labeled
+  // connector line. Mirrors the SVG the worker attaches to federated
+  // PR-opened notes (src/pull_badge.py) and the desktop Badge tab.
+  const fileBadgeStyles = {
+    ts: ["TS", "#3178c6"], tsx: ["TSX", "#3178c6"],
+    js: ["JS", "#f1e05a"], mjs: ["JS", "#f1e05a"], cjs: ["JS", "#f1e05a"],
+    jsx: ["JSX", "#61dafb"], py: ["PY", "#4b8bbe"], pyw: ["PY", "#4b8bbe"],
+    rb: ["RB", "#cc342d"], rs: ["RS", "#dea584"], go: ["GO", "#00add8"],
+    java: ["JAVA", "#b07219"], kt: ["KT", "#a97bff"], swift: ["SWFT", "#f05138"],
+    cs: ["C#", "#178600"], c: ["C", "#9cdcfe"], h: ["H", "#9cdcfe"],
+    cpp: ["C++", "#f34b7d"], cc: ["C++", "#f34b7d"], cxx: ["C++", "#f34b7d"],
+    hpp: ["H++", "#f34b7d"], php: ["PHP", "#777bb3"], dart: ["DART", "#00b4ab"],
+    vue: ["VUE", "#41b883"], svelte: ["SVLT", "#ff3e00"],
+    html: ["</>", "#e34c26"], htm: ["</>", "#e34c26"], css: ["CSS", "#563d7c"],
+    scss: ["SCSS", "#c6538c"], less: ["LESS", "#1d365d"],
+    md: ["MD", "#519aba"], markdown: ["MD", "#519aba"],
+    json: ["{ }", "#cbcb41"], yaml: ["YAML", "#cb4b4b"], yml: ["YAML", "#cb4b4b"],
+    toml: ["TOML", "#9c4221"], xml: ["XML", "#e37933"], ini: ["CFG", "#6d8086"],
+    cfg: ["CFG", "#6d8086"], conf: ["CFG", "#6d8086"], env: ["ENV", "#6d8086"],
+    sh: [">_", "#89e051"], bash: [">_", "#89e051"], zsh: [">_", "#89e051"],
+    bat: [">_", "#c1f12e"], ps1: [">_", "#012456"], sql: ["SQL", "#e38c00"],
+    svg: ["SVG", "#ffb13b"], png: ["IMG", "#a074c4"], jpg: ["IMG", "#a074c4"],
+    jpeg: ["IMG", "#a074c4"], gif: ["IMG", "#a074c4"], webp: ["IMG", "#a074c4"],
+    avif: ["IMG", "#a074c4"], ico: ["IMG", "#a074c4"], pdf: ["PDF", "#f40f02"],
+    txt: ["TXT", "#8b949e"], lock: ["LOCK", "#8b949e"], qrc: ["QRC", "#41cd52"],
+    ui: ["UI", "#41cd52"], cmake: ["CMK", "#649ad2"],
+  };
+  const fileBadgeNames = {
+    dockerfile: ["DOCK", "#2496ed"], makefile: ["MAKE", "#6d8086"],
+    "cmakelists.txt": ["CMK", "#649ad2"], license: ["LIC", "#d0b44c"],
+    "readme.md": ["MD", "#519aba"], ".gitignore": ["GIT", "#f14e32"],
+    ".gitattributes": ["GIT", "#f14e32"], ".gitmodules": ["GIT", "#f14e32"],
+    "package.json": ["NPM", "#cb3837"], "package-lock.json": ["NPM", "#cb3837"],
+  };
+
+  function fileBadgeGlyph(path) {
+    const name = String(path || "").split("/").pop().toLowerCase();
+    if (fileBadgeNames[name]) return fileBadgeNames[name];
+    const stem = name.replace(/^\.+/, "");
+    const ext = stem.includes(".") ? stem.split(".").pop() : "";
+    if (fileBadgeStyles[ext]) return fileBadgeStyles[ext];
+    return [ext.toUpperCase().slice(0, 4) || "FILE", "#8b949e"];
+  }
+
+  function renderPullBadgeTile(file) {
+    const [label, color] = fileBadgeGlyph(file.path);
+    const adds = file.adds || 0;
+    const dels = file.dels || 0;
+    const total = adds + dels;
+    const greenPct = total ? Math.round((adds / total) * 100) : 0;
+    const bar = total
+      ? `<span style="width:${greenPct}%;background:#3fb950"></span><span style="width:${100 - greenPct}%;background:#f85149"></span>`
+      : '<span style="width:100%;background:#30363d"></span>';
+    return `
+      <div class="flex w-12 flex-col gap-1" title="${escapeHtml(file.path || "file")} +${formatCount(adds)} -${formatCount(dels)}">
+        <div class="flex h-10 items-center justify-center rounded-md border border-border bg-secondary/60 font-mono text-[11px] font-bold" style="color:${color}">${escapeHtml(label)}</div>
+        <div class="flex h-1.5 overflow-hidden rounded-full">${bar}</div>
+      </div>`;
+  }
+
+  function renderRepoPullBadge(title, number, author, files) {
+    const rows = Array.isArray(files) ? files : [];
+    if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">The badge appears once the pull request\'s committed patch is available from the live mirror.</div>';
+    const additions = rows.reduce((sum, file) => sum + (file.adds || 0), 0);
+    const deletions = rows.reduce((sum, file) => sum + (file.dels || 0), 0);
+    // Cluster files by directory, preserving a sorted order so each directory
+    // forms one contiguous group under its labeled connector line.
+    const groups = [];
+    [...rows].sort((a, b) => String(a.path || "").localeCompare(String(b.path || ""))).forEach((file) => {
+      const path = String(file.path || "file");
+      const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "/";
+      if (groups.length && groups[groups.length - 1].dir === dir) groups[groups.length - 1].files.push(file);
+      else groups.push({ dir, files: [file] });
+    });
+    const stat = (value, caption, cls) => `
+      <div class="text-right">
+        <div class="font-mono text-lg font-bold ${cls}">${value}</div>
+        <div class="text-[10px] text-muted-foreground">${caption}</div>
+      </div>`;
+    return `
+      <div class="grid gap-5 p-4">
+        <div class="flex flex-wrap items-start justify-between gap-4">
+          <div class="min-w-0">
+            <div class="truncate text-lg font-semibold text-foreground">${escapeHtml(title || "Pull request")}</div>
+            <div class="mt-0.5 text-sm font-semibold text-primary">${number ? `#${escapeHtml(number)}` : "pull request"}<span class="ml-2 font-normal text-muted-foreground">by ${escapeHtml(author || "unknown")}</span></div>
+          </div>
+          <div class="flex shrink-0 gap-6">
+            ${stat(`+${formatCount(additions)}`, "Additions", "text-emerald-400")}
+            ${stat(`-${formatCount(deletions)}`, "Deletions", "text-red-400")}
+            ${stat(formatCount(rows.length), "Files changed", "text-foreground")}
+          </div>
+        </div>
+        <div class="flex flex-wrap items-end gap-x-8 gap-y-6">
+          ${groups.map((group) => `
+            <div class="flex flex-col gap-1.5">
+              <div class="flex max-w-full flex-wrap gap-2">${group.files.map(renderPullBadgeTile).join("")}</div>
+              <div class="flex items-center gap-2 text-[10px] text-muted-foreground">
+                <span class="h-px min-w-3 flex-1 bg-border"></span>
+                <span class="font-mono">${escapeHtml(group.dir)}</span>
+                <span>(${formatCount(group.files.length)} file${group.files.length === 1 ? "" : "s"})</span>
+                <span class="h-px min-w-3 flex-1 bg-border"></span>
+              </div>
+            </div>`).join("")}
+        </div>
+      </div>`;
+  }
+
   function diffRowClass(type) {
     if (type === "add") return "bg-emerald-950/40 text-emerald-300";
     if (type === "del") return "bg-red-950/35 text-red-300";
@@ -5648,6 +5757,10 @@
           <div data-repo-pull-conversation data-empty="${pullConversation.length ? "false" : "true"}" class="border-t border-border">${renderRepoPullConversation(pullConversation)}</div>
           ${renderPullReviewForm(number)}` : "";
     const pullFilesSection = isPulls ? `
+        <section class="overflow-hidden rounded-lg border border-border" data-repo-record-badge-panel>
+          <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="fingerprint" class="h-3.5 w-3.5 text-primary"></i>Badge</div>
+          ${renderRepoPullBadge(title, options.pending ? 0 : number, author, pullPatch.files)}
+        </section>
         <section class="overflow-hidden rounded-lg border border-border" data-repo-record-files-panel>
           <div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3">
             <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="files" class="h-3.5 w-3.5 text-primary"></i>Files changed</span>
@@ -5674,6 +5787,7 @@
           <button type="button" data-repo-record-tab="conversation" class="inline-flex h-11 items-center gap-2 border-b-2 border-primary px-3 text-xs font-semibold text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5"></i>Conversation<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullConversation.length)}</span></button>
           <button type="button" data-repo-record-tab="commits" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5"></i>Commits<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">1</span></button>
           <button type="button" data-repo-record-tab="files" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="files" class="h-3.5 w-3.5"></i>Files changed<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullPatch.files.length)}</span></button>
+          <button type="button" data-repo-record-tab="badge" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="fingerprint" class="h-3.5 w-3.5"></i>Badge</button>
         </nav>` : "";
     const sidebarSection = (label, value) => `
       <div class="border-t border-border py-4 first:border-t-0 first:pt-0">
@@ -9507,6 +9621,7 @@
             conversation: "[data-repo-record-conversation]",
             commits: "[data-repo-record-patch-panel]",
             files: "[data-repo-record-files-panel]",
+            badge: "[data-repo-record-badge-panel]",
           }[recordTabButton.dataset.repoRecordTab || ""];
           const target = targetSelector ? article.querySelector(targetSelector) : null;
           target?.scrollIntoView({ behavior: "smooth", block: "start" });
