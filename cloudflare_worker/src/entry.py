@@ -3394,13 +3394,38 @@ async def _repo_about_public(env, request, owner, repo):
         elif media.get("kind") == "banner":
             banner_url = media_url
     followers = 0
+    followers_list = []
     fedi_enabled = await _ap_enabled(env)
+    ap_settings = await _ap_repo_settings_get(env, owner, repo)
     if fedi_enabled:
         actor_bi = await _ap_actor_bi(env, AP_ACTOR_REPO, handle)
         row = await d1_first(
             env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
             actor_bi)
         followers = (row or {}).get("c", 0) or 0
+        # The newest followers, so the repo page can show WHO is watching —
+        # follower_id/handle are public fediverse identifiers (the remote
+        # server publishes the same follow), capped so a popular repo never
+        # ships thousands of rows in an About card.
+        rows = await d1_all(
+            env,
+            "SELECT follower_id, follower_handle FROM ap_followers"
+            " WHERE actor_bi=? ORDER BY created_at DESC LIMIT 50",
+            actor_bi)
+        for follower in rows or []:
+            follower_url = str(follower.get("follower_id") or "")
+            follower_handle = str(follower.get("follower_handle") or "")
+            if not follower_handle and follower_url:
+                # Older rows may lack the resolved handle; a readable
+                # fallback beats a bare URL in the UI.
+                parsed = urlparse(follower_url)
+                name = parsed.path.rstrip("/").rpartition("/")[2]
+                if name and parsed.hostname:
+                    follower_handle = "@%s@%s" % (
+                        name.lstrip("@"), parsed.hostname)
+            if follower_handle or follower_url:
+                followers_list.append(
+                    {"handle": follower_handle, "url": follower_url})
     return json_response({
         "ok": True,
         "description": clean_string(
@@ -3411,10 +3436,14 @@ async def _repo_about_public(env, request, owner, repo):
         "defaultLogoUrl": AP_AVATAR_PATH,
         "defaultBannerUrl": AP_BANNER_PATH,
         "fediverse": {
-            "enabled": fedi_enabled,
+            # enabled = "this repo currently federates": the instance switch
+            # AND the owner's per-repo switch.
+            "enabled": fedi_enabled and ap_settings["federate"],
             "handle": "@%s@%s" % (handle, _ap_domain_of(origin)),
             "actorUrl": _ap_actor_url(origin, AP_ACTOR_REPO, handle),
             "followers": followers,
+            "followersList": followers_list,
+            "settings": ap_settings,
         },
     }, cache_control="public, max-age=30")
 
@@ -3430,14 +3459,31 @@ async def repo_about_handler(env, request, owner, repo):
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     # Only the repo owner (proven by their session token, not a self-asserted
-    # ownerAccount string) or a network admin may edit repo metadata.
+    # ownerAccount string) or a network admin may edit repo metadata. The Qt
+    # desktop has no browser session; it proves the owner account's registered
+    # Ed25519 key instead (same trust gate as ap-publish / the inbox drains,
+    # with a distinct canonical so its tokens can't be replayed elsewhere).
     actor = await _authed_account_name(env, request, data)
-    if not actor or (not await _account_owns_node(env, actor, owner)
+    owner_key_authed = False
+    if not actor and data.get("ownerSig") and data.get("ts"):
+        ts = str(data.get("ts", "") or "")
+        owner_pub = await _owner_pubkey(env, owner)
+        canonical = ("forkmesh-repo-about-v1\n" + owner + "\n" + repo +
+                     "\n" + ts).encode()
+        if owner_pub and _ts_ok(ts) and await ed25519_verify(
+                owner_pub, str(data.get("ownerSig", "") or ""), canonical):
+            actor = str(owner).lower()
+            owner_key_authed = True
+    if not actor or (not owner_key_authed
+                     and not await _account_owns_node(env, actor, owner)
                      and not await _is_admin(env, actor)):
         return json_response({"error": "not_authorized"}, status=403)
     if not await _owner_pubkey(env, owner):
         return json_response({"error": "account_required"}, status=403)
 
+    # Absent = unchanged, so a settings-only save (Qt fediverse switches)
+    # never blanks the description.
+    description_provided = "description" in data
     description = clean_string(data.get("description", ""), 240)
     # Optional project website shown under the description (and written into
     # the repo's .forkmesh/info.json by the owner's node). Absent = unchanged;
@@ -3477,11 +3523,13 @@ async def repo_about_handler(env, request, owner, repo):
         # every write here cascades into a catalog cache purge, an about_inbox
         # round-trip through the owner's desktop, and an Update(Group)
         # broadcast to every fediverse follower.
-        if (str(record.get("description") or "") == description and
+        if ((not description_provided or
+             str(record.get("description") or "") == description) and
                 (not website_provided or
                  str(record.get("website") or "") == website)):
             continue
-        record["description"] = description
+        if description_provided:
+            record["description"] = description
         if website_provided:
             record["website"] = website
         enc = await encrypt_row(env, record)
@@ -3524,12 +3572,46 @@ async def repo_about_handler(env, request, owner, repo):
             media_bi, kind, await encrypt_row(env, {"png": png_b64}),
             int(Date.now()))
         media_changed = True
+    # Per-repo fediverse switches ride the same About save (web gear form and
+    # the Qt dialog both send a `fediverse` object). Absent = unchanged; an
+    # unchanged value writes nothing, so a plain description re-save never
+    # touches the AP tables or the edge cache.
+    ap_settings = None
+    fedi_data = data.get("fediverse")
+    if isinstance(fedi_data, dict):
+        current_settings = await _ap_repo_settings_get(env, owner, repo)
+        ap_settings = dict(current_settings)
+        for key in AP_REPO_SETTING_DEFAULTS:
+            if key in fedi_data:
+                ap_settings[key] = bool(fedi_data.get(key))
+        if ap_settings != current_settings:
+            await d1_run(
+                env,
+                "INSERT INTO ap_repo_settings (repo_bi, data, updated_at)"
+                " VALUES (?,?,?) ON CONFLICT(repo_bi) DO UPDATE SET"
+                " data=excluded.data, updated_at=excluded.updated_at",
+                await _ap_repo_settings_bi(env, owner, repo),
+                json.dumps(ap_settings), int(Date.now()))
+            # The actor doc, its collections and the webfinger lookup are
+            # edge-cached (and misses park a 404): drop them so a federation
+            # switch takes effect now, not after the TTL.
+            origin = _ap_origin(env, request)
+            ap_handle = ap.repo_handle(
+                str(owner).lower(), str(repo).lower())
+            actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, ap_handle)
+            for cache_key in (
+                    actor_url, actor_url + "/followers",
+                    actor_url + "/following", actor_url + "/outbox",
+                    "%s/.well-known/webfinger?resource=acct:%s@%s"
+                    % (origin, ap_handle, _ap_domain_of(origin))):
+                await edge_cache_delete(cache_key)
     if text_changed:
         # Queue the edit for the owner's desktop node, which writes it into the
         # repo's committed .forkmesh/info.json (the same file the desktop app's
         # own About editor maintains) on its next sync. Latest edit wins.
         about_update = {
-            "about": description,
+            "about": description if description_provided
+            else clean_string((first or {}).get("description", "") or "", 240),
             "website": website if website_provided
             else clean_string((first or {}).get("website", "") or "", 240),
             "ts": int(Date.now()),
@@ -3557,14 +3639,18 @@ async def repo_about_handler(env, request, owner, repo):
     media_rows = await d1_all(
         env, "SELECT kind FROM repo_media WHERE repo_bi=?", media_bi)
     media_kinds = {r.get("kind") for r in (media_rows or [])}
-    return json_response({
+    result = {
         "ok": True,
-        "description": description,
+        "description": description if description_provided
+        else clean_string((first or {}).get("description", "") or "", 240),
         "updated": updated,
         "hasLogo": "logo" in media_kinds,
         "hasBanner": "banner" in media_kinds,
         "isPrivate": bool(first and first.get("visibility") == "private"),
-    })
+    }
+    if ap_settings is not None:
+        result["fediverse"] = {"settings": ap_settings}
+    return json_response(result)
 
 
 async def repo_mirrors_handler(env, request, owner, repo):
@@ -9275,11 +9361,50 @@ async def _ap_user_federates(env, name):
 async def _ap_repo_federates(env, owner, repo):
     # Only published, public repos federate. A missing catalog row means the
     # repo was never published — unlike the git-clone path (which stays open
-    # for ad-hoc hosts), an unpublished repo has no fediverse presence.
+    # for ad-hoc hosts), an unpublished repo has no fediverse presence. The
+    # owner can also switch federation off per repo (web/Qt repo settings).
     key_bi = await blind_index(env, owner + "/" + repo)
     row = await d1_first(
         env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
-    return bool(row) and not int(row.get("is_private") or 0)
+    if not row or int(row.get("is_private") or 0):
+        return False
+    return (await _ap_repo_settings_get(env, owner, repo))["federate"]
+
+
+# Per-repo fediverse switches the owner manages from the web and Qt repo
+# settings. Defaults are "all on" so a repo without a row (every repo before
+# migration 0035) federates exactly as before.
+AP_REPO_SETTING_DEFAULTS = {
+    "federate": True,        # actor/webfinger exist at all
+    "broadcastEvents": True,  # issues/PRs/releases posted to followers
+    "acceptComments": True,  # remote replies ingested as federated comments
+}
+
+
+async def _ap_repo_settings_bi(env, owner, repo):
+    # Distinct namespace + full lowercasing on both halves: callers reach this
+    # with URL-cased (About handler) and handle-cased (AP gates) names, and
+    # they must all land on the same row.
+    return await blind_index(
+        env, "ap-repo-settings:%s/%s" % (str(owner or "").strip().lower(),
+                                         str(repo or "").strip().lower()))
+
+
+async def _ap_repo_settings_get(env, owner, repo):
+    row = await d1_first(
+        env, "SELECT data FROM ap_repo_settings WHERE repo_bi=?",
+        await _ap_repo_settings_bi(env, owner, repo))
+    settings = dict(AP_REPO_SETTING_DEFAULTS)
+    if row:
+        try:
+            stored = json.loads(row.get("data") or "{}")
+        except Exception:
+            stored = {}
+        if isinstance(stored, dict):
+            for key in AP_REPO_SETTING_DEFAULTS:
+                if key in stored:
+                    settings[key] = bool(stored[key])
+    return settings
 
 
 # The unauthenticated ActivityPub read endpoints (webfinger, nodeinfo, actor
@@ -9867,7 +9992,13 @@ async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
     author = clean_string(author_name or "", MAX_NODE_NAME).lower()
     # Handles (and thus actor ids) are lowercase-normalized so the same repo
     # always federates as one stable actor URL regardless of link casing.
-    candidates = [(AP_ACTOR_REPO, ap.repo_handle(owner, repo.lower()))]
+    # The repo actor only posts when the owner left both per-repo switches on;
+    # the author's own user actor keeps posting to ITS followers either way —
+    # those switches govern the repo's presence, not the author's.
+    settings = await _ap_repo_settings_get(env, owner, repo)
+    candidates = []
+    if settings["federate"] and settings["broadcastEvents"]:
+        candidates.append((AP_ACTOR_REPO, ap.repo_handle(owner, repo.lower())))
     if author and valid_node_name(author):
         candidates.append((AP_ACTOR_USER, author))
     # Attached issue/comment images travel as inline "![name](data:...)"
@@ -10067,6 +10198,12 @@ async def _ap_handle_create(env, request, activity, remote):
     if not parent or not isinstance(parent.get("context"), dict):
         return json_response({"ok": True}, status=202)
     context = parent["context"]
+    # Owner switched federated comments (or the whole actor) off: acknowledge
+    # and drop, same as any non-reply — redelivery storms must not 4xx.
+    reply_settings = await _ap_repo_settings_get(
+        env, context.get("owner", ""), context.get("repo", ""))
+    if not reply_settings["federate"] or not reply_settings["acceptComments"]:
+        return json_response({"ok": True}, status=202)
     context_bi = row.get("context_bi")
     count = await d1_first(
         env, "SELECT COUNT(*) AS c FROM ap_comments WHERE context_bi=?",

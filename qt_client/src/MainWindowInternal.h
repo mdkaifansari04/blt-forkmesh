@@ -68,6 +68,7 @@
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
 #include <QGridLayout>
+#include <QGroupBox>
 #include <QGuiApplication>
 #include <QStandardPaths>
 #include <QHBoxLayout>

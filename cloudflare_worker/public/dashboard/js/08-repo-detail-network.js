@@ -110,6 +110,8 @@
                     <button type="button" data-dashboard-copy="${escapeHtml(fediHandle)}" aria-label="Copy fediverse handle" class="copy-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i></button>
                   </div>
                   <p class="mt-2 text-[11px] text-muted-foreground"><span data-repo-watch-followers class="font-mono text-foreground">–</span> fediverse watchers</p>
+                  <p data-repo-watch-disabled class="mt-1 hidden text-[11px] text-yellow-500">Federation is turned off for this repository.</p>
+                  <div data-repo-watch-list class="mt-2 hidden max-h-44 overflow-auto rounded-md border border-border bg-secondary/40 p-2"></div>
                   <a data-repo-mastodon-link href="${escapeHtml(mastodonUrl)}" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-2 inline-flex items-center gap-1.5 text-[11px] hover:underline"><i data-lucide="external-link" class="h-3.5 w-3.5 shrink-0"></i>View on Mastodon</a>
                 </div>
               </div>
@@ -265,6 +267,12 @@
                 <label class="inline-flex items-center gap-1.5"><input data-repo-about-logo-clear type="checkbox" class="h-3 w-3" />Remove logo</label>
                 <label class="inline-flex items-center gap-1.5"><input data-repo-about-banner-clear type="checkbox" class="h-3 w-3" />Remove banner</label>
               </span>
+              <fieldset class="grid gap-1.5 rounded-md border border-border p-2 text-[11px] text-muted-foreground">
+                <legend class="px-1 text-[10px] font-semibold uppercase tracking-wide">ActivityPub federation</legend>
+                <label class="inline-flex items-start gap-1.5"><input data-repo-ap-federate type="checkbox" class="mt-0.5 h-3 w-3" checked />Federate this repository (fediverse actor and handle)</label>
+                <label class="inline-flex items-start gap-1.5"><input data-repo-ap-broadcast type="checkbox" class="mt-0.5 h-3 w-3" checked />Post new issues, pull requests, discussions and releases to followers</label>
+                <label class="inline-flex items-start gap-1.5"><input data-repo-ap-comments type="checkbox" class="mt-0.5 h-3 w-3" checked />Accept fediverse replies as federated comments</label>
+              </fieldset>
               <p class="text-[10px] leading-4 text-muted-foreground">Saved to the relay now and written into the repo's committed <span class="font-mono">.forkmesh/info.json</span> (what the desktop app shows) the next time the owner's node syncs.</p>
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <span data-repo-about-status class="text-[11px] text-muted-foreground"></span>
@@ -1607,6 +1615,17 @@
         const website = String(
           aboutForm.querySelector("[data-repo-about-website-input]")?.value || "").trim();
         media.website = website;
+        // Per-repo federation switches ride the same save (loadRepoFediverse
+        // seeded the checkboxes with the stored values, so an untouched form
+        // round-trips unchanged and the worker writes nothing).
+        const federateBox = aboutForm.querySelector("[data-repo-ap-federate]");
+        if (federateBox) {
+          media.fediverse = {
+            federate: federateBox.checked,
+            broadcastEvents: Boolean(aboutForm.querySelector("[data-repo-ap-broadcast]")?.checked),
+            acceptComments: Boolean(aboutForm.querySelector("[data-repo-ap-comments]")?.checked),
+          };
+        }
         const body = await saveRepoAboutFromWeb(state.selectedRepo, description, media);
         applyRepoAboutDescription(state.selectedRepo, body.description ?? description);
         applyRepoAboutWebsite(website);

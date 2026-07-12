@@ -2039,6 +2039,18 @@ private:
     bool applyRepoAboutMetadataAt(int index, const QString &about,
                                   const QString &websiteInput,
                                   QString *error = nullptr);
+    // The relay's public About/fediverse endpoint for one repo
+    // (GET = branding + follower list + federation switches; POST = save).
+    QUrl repoAboutApiUrl(const QString &owner, const QString &name) const;
+    // Push the per-repo ActivityPub switches (federate / broadcastEvents /
+    // acceptComments) to the relay, proven by the owner key (no browser
+    // session on the desktop). Best-effort fire-and-forget.
+    void saveRepoFediverseSettings(const QString &owner, const QString &name,
+                                   bool federate, bool broadcastEvents,
+                                   bool acceptComments);
+    // Async fediverse status for the About sidebar: appends follower count +
+    // newest follower handles under the "View on Mastodon" link.
+    void loadRepoFediverseStatus();
     void loadCommits();
     // Fill the Files/+/− columns of the commit list from `git log --numstat`,
     // which diffs every commit in the window and is the slow part of a load. Runs
