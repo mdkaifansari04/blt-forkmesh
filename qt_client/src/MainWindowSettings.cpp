@@ -3042,10 +3042,10 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
     // Day divider whenever the calendar date changes from the previous line.
     if (!date.isEmpty() && date != m_lastLogRenderDate) {
         m_lastLogRenderDate = date;
-        m_settingsLog->appendHtml(formatDayDividerHtml(date, dark));
+        m_settingsLog->append(formatDayDividerHtml(date, dark));
     }
 
-    m_settingsLog->appendHtml(formatLogLineHtml(time, message, dark));
+    m_settingsLog->append(formatLogLineHtml(time, message, dark));
 }
 
 // Loads the next older page of matching lines when the user scrolls to the
