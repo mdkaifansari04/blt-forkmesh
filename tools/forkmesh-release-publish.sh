@@ -7,10 +7,10 @@
 #   2. copies the bytes into the node's content-addressed release store (the CAS,
 #      co-located with the served mirror — NEVER committed to git), and
 #   3. records the asset in the channel's release metadata:
-#        releases/<channel>/SHASUMS256.txt   (sha256sum -c compatible)
-#        releases/<channel>/release.json     (manifest: tag, commit, assets)
+#        .forkmesh/releases/<channel>/SHASUMS256.txt   (sha256sum -c compatible)
+#        .forkmesh/releases/<channel>/release.json     (manifest: tag, commit, assets)
 #
-# Commit the releases/<channel>/ metadata changes (small, text) the usual way;
+# Commit the .forkmesh/releases/<channel>/ metadata changes (small, text) the usual way;
 # install.sh reads SHASUMS256.txt over the git proxy, then downloads each binary
 # from the relay's content-addressed endpoint and verifies the sha256.
 #
@@ -18,7 +18,7 @@
 #   tools/forkmesh-release-publish.sh [--channel latest] [--tag vX.Y.Z] \
 #       [--cas-dir DIR] [--repo owner/repo] BINARY [BINARY ...]
 #
-#   --channel   Release channel directory under releases/ (default: latest, or
+#   --channel   Release channel directory under .forkmesh/releases/ (default: latest, or
 #               $RELEASE_CHANNEL).
 #   --tag       Immutable git tag this release is cut from (default: $FORKMESH_TAG
 #               or the current `git describe --tags`).
@@ -60,7 +60,7 @@ fi
 [ -n "$cas_dir" ] || cas_dir=".forkmesh/release-blobs"
 
 tag_commit="$(git rev-parse HEAD 2>/dev/null || echo "")"
-meta_dir="releases/${channel}"
+meta_dir=".forkmesh/releases/${channel}"
 mkdir -p "$meta_dir" "$cas_dir"
 
 sha256_of() {
@@ -135,4 +135,4 @@ rm -f "${sums_file}.tmp"
 echo
 echo "Wrote ${meta_dir}/SHASUMS256.txt and ${meta_dir}/release.json"
 echo "Blobs staged in: ${cas_dir} (NOT committed; served by the node over the relay)"
-echo "Next: commit the releases/${channel}/ metadata, then publish it."
+echo "Next: commit the .forkmesh/releases/${channel}/ metadata, then publish it."

@@ -2471,6 +2471,19 @@ const QString kClaudeModelsCacheSetting = QStringLiteral("agents/claudeModelsCac
 // Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
 // permission prompts). Read when a transcript session launches.
 const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
+// The composer mode-selector label that runs the agent unattended. Only this
+// one skips the CLI's permission prompts today; the other labels ("Ask before
+// edits" / "Edit automatically" / "Plan mode") all mean "don't skip" until the
+// app can drive per-tool approval headlessly (see MainWindowChat's selector).
+const QString kClaudeAutoModeLabel = QStringLiteral("Auto mode");
+
+// Does a session's stored permission-mode label (AgentSession::mode) run the
+// agent unattended? An empty label means the session predates per-session mode
+// capture, so callers fall back to the global kClaudeAutoModeSetting.
+inline bool agentModeSkipsPermissions(const QString &modeLabel)
+{
+    return modeLabel.trimmed() == kClaudeAutoModeLabel;
+}
 // Slash-actions menu (adhoc #116), mirroring the Claude Code extension's "/"
 // actions popup. Effort level for Claude Code runs ("low"/"medium"/"high"/
 // "xhigh"/"max"), passed to the CLI as `--effort`.
@@ -2519,7 +2532,14 @@ const QString kDefaultClaudeCodeTerminalCommand =
 // full-accept default above so existing sessions stop stalling on prompts.
 const QString kLegacyClaudeCodeTerminalCommand =
     QStringLiteral("claude \"$(cat {promptFile})\"");
-constexpr int kNetworkLogLimit = 2000;
+// Raised from 2000: the view now renders in segments (see kNetworkLogSegmentSize)
+// instead of the whole buffer at once, so a much larger in-memory/on-disk history
+// no longer costs render time up front — it only matters once the user actually
+// scrolls back far enough to load it.
+constexpr int kNetworkLogLimit = 20000;
+// How many matching lines to render per "page" of the network log: the initial
+// view, and each older batch loaded when the user scrolls to the top.
+constexpr int kNetworkLogSegmentSize = 300;
 
 const QString kCodexProvider = QStringLiteral("codex");
 
@@ -6666,7 +6686,7 @@ inline int mirrorPullCount(const QString &mirrorPath, const QString &branch)
 inline int mirrorDiscussionCount(const QString &mirrorPath, const QString &branch)
 {
     return mirrorNumberedDirCount(mirrorPath, branch,
-                                  QStringLiteral("discussions"));
+                                  QStringLiteral(".forkmesh/discussions"));
 }
 
 // How many commits are reachable on the node's served branch (`git rev-list

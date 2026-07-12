@@ -195,7 +195,7 @@ bool DiscussionStore::canWrite() const
 
 QString DiscussionStore::discussionsDir() const
 {
-    return m_workTree + "/discussions";
+    return m_workTree + "/.forkmesh/discussions";
 }
 
 QString DiscussionStore::discussionDir(int number) const
@@ -393,12 +393,12 @@ int DiscussionStore::nextNumber() const
 bool DiscussionStore::commit(const QString &message, QString *error) const
 {
     QString err;
-    if (!runGit(m_workTree, {"add", "discussions"}, nullptr, &err)) {
+    if (!runGit(m_workTree, {"add", ".forkmesh/discussions"}, nullptr, &err)) {
         if (error)
             *error = "git add failed: " + err;
         return false;
     }
-    if (!runGit(m_workTree, {"commit", "-m", message, "--", "discussions"},
+    if (!runGit(m_workTree, {"commit", "-m", message, "--", ".forkmesh/discussions"},
                 nullptr, &err)) {
         if (err.contains("nothing to commit") || err.isEmpty())
             return true;
@@ -601,7 +601,7 @@ QList<Discussion> DiscussionStore::loadFromMirror(QString *error) const
         return discussions;
 
     QByteArray listing;
-    if (!runGit(m_mirror, {"ls-tree", ref, "discussions/"}, &listing))
+    if (!runGit(m_mirror, {"ls-tree", ref, ".forkmesh/discussions/"}, &listing))
         return discussions;
     for (const QString &line :
          QString::fromUtf8(listing).split('\n', Qt::SkipEmptyParts)) {
@@ -616,7 +616,7 @@ QList<Discussion> DiscussionStore::loadFromMirror(QString *error) const
 
         bool ok = false;
         const QByteArray md =
-            showFromMirror("discussions/" + base + "/discussion.md", &ok);
+            showFromMirror(".forkmesh/discussions/" + base + "/discussion.md", &ok);
         if (!ok)
             continue;
         const FrontMatter fm = parseFrontMatter(md);
@@ -634,7 +634,7 @@ QList<Discussion> DiscussionStore::loadFromMirror(QString *error) const
         discussion.events.append(open);
 
         QByteArray dirListing;
-        if (runGit(m_mirror, {"ls-tree", ref, "discussions/" + base + "/"},
+        if (runGit(m_mirror, {"ls-tree", ref, ".forkmesh/discussions/" + base + "/"},
                    &dirListing)) {
             QStringList names;
             for (const QString &l :
@@ -650,7 +650,7 @@ QList<Discussion> DiscussionStore::loadFromMirror(QString *error) const
             for (const QString &name : names) {
                 bool eok = false;
                 const QByteArray evBytes =
-                    showFromMirror("discussions/" + base + "/" + name, &eok);
+                    showFromMirror(".forkmesh/discussions/" + base + "/" + name, &eok);
                 if (eok)
                     discussion.events.append(
                         eventFromFrontMatter(parseFrontMatter(evBytes)));
