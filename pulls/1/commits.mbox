@@ -1,7 +1,7 @@
-From 83d2d8e8083b0732d169feec04db6868b4a3c965 Mon Sep 17 00:00:00 2001
+From a512fc8cd85f29cbc1fa42ad020a9dd2272d15f4 Mon Sep 17 00:00:00 2001
 From: Md Kaif Ansari <amdkaif843@gmail.com>
 Date: Sun, 12 Jul 2026 00:38:12 +0530
-Subject: [PATCH] feat(worker): add outreach schema and domain helpers
+Subject: [PATCH 1/2] feat(worker): add outreach schema and domain helpers
 
 ---
  .../migrations/0035_email_admin.sql           |  70 +++
@@ -1233,5 +1233,29 @@ index 00000000..2e7699e8
 +    assert "UNIQUE (campaign_id, recipient_id)" in sql
 +    assert "idx_email_deliveries_campaign_status" in sql
 -- 
-2.50.1 (Apple Git-155)
+2.47.3
+
+
+From b6756dc04a61ff61772e721757836ac6a082712a Mon Sep 17 00:00:00 2001
+From: forkmesh <forkmesh@users.forkmesh.local>
+Date: Sun, 12 Jul 2026 18:22:10 -0400
+Subject: [PATCH 2/2] pull #1: edit
+ cloudflare_worker/migrations/0035_email_admin.sql
+
+---
+ cloudflare_worker/migrations/0035_email_admin.sql | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/cloudflare_worker/migrations/0035_email_admin.sql b/cloudflare_worker/migrations/0035_email_admin.sql
+index 8829b531..ee8d6503 100644
+--- a/cloudflare_worker/migrations/0035_email_admin.sql
++++ b/cloudflare_worker/migrations/0035_email_admin.sql
+@@ -1,4 +1,4 @@
+--- ForkMesh D1 migration 0028 - encrypted email operations console.
++-- ForkMesh D1 migration 0035 - encrypted email operations console.
+ -- Private recipient and message fields live in encrypted data blobs.
+ 
+ CREATE TABLE IF NOT EXISTS email_recipients (
+-- 
+2.47.3
 

@@ -1,10 +1,10 @@
 diff --git a/cloudflare_worker/migrations/0035_email_admin.sql b/cloudflare_worker/migrations/0035_email_admin.sql
 new file mode 100644
-index 00000000..8829b531
+index 00000000..ee8d6503
 --- /dev/null
 +++ b/cloudflare_worker/migrations/0035_email_admin.sql
 @@ -0,0 +1,70 @@
-+-- ForkMesh D1 migration 0028 - encrypted email operations console.
++-- ForkMesh D1 migration 0035 - encrypted email operations console.
 +-- Private recipient and message fields live in encrypted data blobs.
 +
 +CREATE TABLE IF NOT EXISTS email_recipients (
