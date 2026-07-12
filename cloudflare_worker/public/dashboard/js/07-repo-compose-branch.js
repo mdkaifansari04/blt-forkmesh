@@ -340,7 +340,7 @@
   async function loadRepoCommits(repo) {
     const container = $("[data-repo-commits]");
     if (!container) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading commits from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading commits from the live mirror...")}</div>`;
     try {
       const data = await fetchJson(repoLiveUrl(repo, "history"));
       const commits = Array.isArray(data.commits) ? data.commits : [];
@@ -427,7 +427,7 @@
   async function loadRepoCommitDetail(repo, hash) {
     const container = $("[data-repo-commits]");
     if (!container || !repo || !hash) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading commit from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading commit from the live mirror...")}</div>`;
     try {
       const data = await fetchJson(repoLiveUrl(repo, "commit", { path: hash }));
       state.repoCommitDetail = { repo, data };
@@ -497,7 +497,7 @@
 
   async function loadRepoMirrors(repo) {
     const container = $("[data-repo-mirrors]");
-    if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading mirrors...</div>';
+    if (container) container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading mirrors...")}</div>`;
     try {
       const data = await fetchJson(`${repoApiBase(repo)}/mirrors`);
       const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
@@ -576,7 +576,7 @@
   async function loadRepoReleases(repo) {
     const container = $("[data-repo-releases]");
     if (!container) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading releases from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading releases from the live mirror...")}</div>`;
     const empty = '<div class="px-4 py-3 text-sm text-muted-foreground">No releases have been published to this mirror yet.</div>';
     try {
       // Release manifests live in the git tree at .forkmesh/releases/<channel>/release.json
@@ -695,7 +695,7 @@
   async function loadRepoInsights(repo) {
     const container = $("[data-repo-insights]");
     if (!container || !repo) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading insights from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading insights from the live mirror...")}</div>`;
     try {
       const data = await fetchJson(repoLiveUrl(repo, "history"));
       const commits = Array.isArray(data.commits) ? data.commits : [];
