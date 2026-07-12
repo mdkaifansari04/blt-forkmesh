@@ -106,6 +106,8 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
           version: p.version,
           solanaAddress: p.solana,
           mirrors: p.mirrors,
+          owner: p.owner,
+          nodeName: p.nodeName,
         ),
       );
     }
@@ -113,6 +115,80 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   int get onlineCount => roster().where((m) => m.online).length;
+
+  /// Roster collapsed to one entry per user. Nodes owned by the same identity
+  /// (owning account, then wallet, then display name) are grouped so a single
+  /// person no longer appears online several times as duplicates. When two
+  /// genuinely different users share a display name, each group carries a short
+  /// id so they can still be told apart.
+  List<MemberGroup> rosterGroups() {
+    final byKey = <String, List<Member>>{};
+    for (final m in roster()) {
+      byKey.putIfAbsent(_identityKey(m), () => <Member>[]).add(m);
+    }
+    // How many distinct users share each display name (lowercased)? Only the
+    // colliding names need a disambiguating id under them.
+    final nameCounts = <String, int>{};
+    for (final nodes in byKey.values) {
+      final name = _displayName(nodes.first).toLowerCase();
+      nameCounts[name] = (nameCounts[name] ?? 0) + 1;
+    }
+    final groups = <MemberGroup>[];
+    for (final nodes in byKey.values) {
+      nodes.sort(_compareNodes);
+      final primary = nodes.first;
+      final name = _displayName(primary);
+      final collides = (nameCounts[name.toLowerCase()] ?? 0) > 1;
+      groups.add(
+        MemberGroup(
+          name: name,
+          members: nodes,
+          self: nodes.any((m) => m.self),
+          disambiguator: collides ? _shortIdentity(primary) : '',
+        ),
+      );
+    }
+    return groups;
+  }
+
+  // The visible name for a node, mirroring the Qt client: the owning user
+  // account wins, then the chat name, then the registered node name.
+  String _displayName(Member m) {
+    if (m.owner.trim().isNotEmpty) return m.owner.trim();
+    if (m.name.trim().isNotEmpty) return m.name.trim();
+    if (m.nodeName.trim().isNotEmpty) return m.nodeName.trim();
+    return m.id;
+  }
+
+  // Stable grouping key: the owning account identifies a person across all
+  // their nodes; fall back to wallet, then display name, then node id so a
+  // node with no identity at all still shows up exactly once.
+  String _identityKey(Member m) {
+    if (m.self) return 'self';
+    final owner = m.owner.trim().toLowerCase();
+    if (owner.isNotEmpty) return 'owner:$owner';
+    final wallet = m.solanaAddress.trim();
+    if (wallet.isNotEmpty) return 'wallet:$wallet';
+    final name = _displayName(m).toLowerCase();
+    if (name.isNotEmpty) return 'name:$name';
+    return 'node:${m.id}';
+  }
+
+  // Short, glanceable id for disambiguating look-alike usernames.
+  String _shortIdentity(Member m) {
+    final raw = m.solanaAddress.trim().isNotEmpty
+        ? m.solanaAddress.trim()
+        : m.id;
+    if (raw.length <= 10) return raw;
+    return '${raw.substring(0, 4)}…${raw.substring(raw.length - 4)}';
+  }
+
+  // Self first, then online nodes, so the primary node represents the user.
+  int _compareNodes(Member a, Member b) {
+    if (a.self != b.self) return a.self ? -1 : 1;
+    if (a.online != b.online) return a.online ? -1 : 1;
+    return a.id.compareTo(b.id);
+  }
 
   List<ChatMessage> messages(String conversation) =>
       _history[conversation] ?? const [];
@@ -527,6 +603,10 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
     if (version.isNotEmpty) p.version = version;
     final solana = (m['solana'] ?? '').toString();
     if (solana.isNotEmpty) p.solana = solana;
+    final owner = (m['ownerUser'] ?? m['owner'] ?? '').toString();
+    if (owner.isNotEmpty) p.owner = owner;
+    final nodeName = (m['nodeName'] ?? '').toString();
+    if (nodeName.isNotEmpty) p.nodeName = nodeName;
     final mirrors = m['mirrors'];
     if (mirrors is List) p.mirrors = mirrors.map((e) => e.toString()).toList();
     p.online = true;
@@ -575,6 +655,8 @@ class _Peer {
   String platform = '';
   String version = '';
   String solana = '';
+  String owner = '';
+  String nodeName = '';
   List<String> mirrors = const [];
   bool online = true;
   int lastSeenMs = 0;
