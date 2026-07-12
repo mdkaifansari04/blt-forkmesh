@@ -493,7 +493,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddModeSelector->addItem(QStringLiteral("Ask before edits"), false);
     m_quickAddModeSelector->addItem(QStringLiteral("Edit automatically"), false);
     m_quickAddModeSelector->addItem(QStringLiteral("Plan mode"), false);
-    m_quickAddModeSelector->addItem(QStringLiteral("Auto mode"), true);
+    m_quickAddModeSelector->addItem(kClaudeAutoModeLabel, true);
     m_quickAddModeSelector->setMaxVisibleItems(30);
     m_quickAddModeSelector->setToolTip(
         "How much freedom the agent has to make changes without asking first.");
