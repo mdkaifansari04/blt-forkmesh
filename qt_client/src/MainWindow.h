@@ -240,7 +240,7 @@ public:
     // (adhoc #15) without needing real scroll-wheel input.
     void testShowLogSection() { showSection(4); }
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
-    QPlainTextEdit *testNetworkLogView() const { return m_settingsLog; }
+    QTextBrowser *testNetworkLogView() const { return m_settingsLog; }
     void testScrollNetworkLogToTop() { onNetworkLogScrolled(0); }
     QStringList testQuickUpdatePullArguments(const QString &clientDir) const;
     // Issue #214: the ordered "Build & preview" command pipeline — checkout into a
@@ -3133,7 +3133,7 @@ private:
     QLabel *m_settingsEmailVerifiedBadge = nullptr;
     QLabel *m_settingsAvatarPreview = nullptr;
     QLabel *m_identityBackupNag = nullptr; // #368: "back up your key" warning
-    QPlainTextEdit *m_settingsLog = nullptr;
+    QTextBrowser *m_settingsLog = nullptr;
     QHBoxLayout *m_logFilterRow = nullptr;    // chip row above the network log
     QButtonGroup *m_logFilterGroup = nullptr; // exclusive group for filter chips
     QString m_logFilter;                      // active category badge ("" = All)
