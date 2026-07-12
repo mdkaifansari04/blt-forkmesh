@@ -7802,6 +7802,21 @@ QWidget *MainWindow::buildRepoDetailSection()
     // Land on the Code view; opening a repo refreshes it (see openRepoDetail).
     m_repoDetailStack->setCurrentIndex(0);
 
+    // QStackedWidget sizes itself to the tallest page, even ones that aren't
+    // showing (e.g. Discussions or Settings next to a short Code view). Without
+    // this wrapper that height pushes into the outer app-wide scroll area, which
+    // then scrolls the whole page — header and tab bar included — out of view.
+    // Wrapping just the stack (same trick as contentScroll/settingsScroll) keeps
+    // header + tab bar fixed and scrolls only the active tab's body.
+    auto *repoDetailStackScroll = new QScrollArea;
+    repoDetailStackScroll->setObjectName("repoDetailStackScroll");
+    repoDetailStackScroll->setWidgetResizable(true);
+    repoDetailStackScroll->setFrameShape(QFrame::NoFrame);
+    repoDetailStackScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    repoDetailStackScroll->setMinimumHeight(0);
+    repoDetailStackScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    repoDetailStackScroll->setWidget(m_repoDetailStack);
+
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(6);
@@ -7809,7 +7824,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     layout->addWidget(m_repoDetailNotice);
     layout->addWidget(metaBand);
     layout->addWidget(tabBarScroll);
-    layout->addWidget(m_repoDetailStack, 1);
+    layout->addWidget(repoDetailStackScroll, 1);
     return page;
 }
 
