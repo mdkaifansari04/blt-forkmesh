@@ -30,6 +30,18 @@
             "sig": "tcQRcMyBF6GaNXyKNtduHykixSTFJ5QK2dxxmq1_B3QeUiV9SkC8h_q_ly32Mcu29qzb7Cj7BKS1CieZHm-PCA",
             "ts": 1783880680205,
             "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 14,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "a77067a0-d477-4a5d-a348-d4b13d749bf1",
+            "sig": "HIr3KCDz8adhG7TxJj2eNDDeAb9lANc8AFQ0V1pbtdL3iGQpzdQFBSyF96MMpMOEWCFFgH7w7rZsDoBfHYoHCg",
+            "ts": 1783880733412,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -41,6 +53,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "when deselecting do not start at startup, it continues to run",
-    "updatedAt": 1783880680205,
+    "updatedAt": 1783880733412,
     "votes": 0
 }
