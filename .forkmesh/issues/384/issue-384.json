@@ -41,6 +41,18 @@
             "sig": "gghpuN31MputXcoZALI6XUA8_aM5H725gRonKUR_EK1T-_-LtR18ZDmGgwkGLqaau2iwJMyDcdUMQJu4JcWGAA",
             "ts": 1783881067957,
             "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 17,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "3c1ac616-8e0a-4e71-806d-526ae2eaab1e",
+            "sig": "9vVl1KkV3X97vx_k2rFeUTgSW3SSJNRw8pJwQxfefCtEWco3upliQahzdYIpciXZZ8CD-yPbkkdmio6VkSZBBQ",
+            "ts": 1783881079479,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -53,6 +65,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "add projects and allow linking issues to projects",
-    "updatedAt": 1783881067957,
+    "updatedAt": 1783881079479,
     "votes": 0
 }
