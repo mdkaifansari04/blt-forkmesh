@@ -182,8 +182,8 @@ forkmesh/
   cloudflare_worker/  Python Worker relay + public website
   flutter_app/        Mobile app
   ide_extension/      Editor integration for ForkMesh agents
-  issues/             In-repo, signed issue tracker (the live roadmap)
-  releases/           Release metadata and artifacts
+  .forkmesh/          In-repo signed data: issues (the live roadmap),
+                      discussions, commit comments, release metadata, workflows
   tools/              Standalone helpers (MCP server, PR review)
 ```
 

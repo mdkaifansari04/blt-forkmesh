@@ -375,7 +375,7 @@ void MainWindow::showDiscussion(int number)
             const RepositoryRecord &repo =
                 writableRecordFor(m_repositories.at(m_repoDetailIndex));
             m_discussionComposer->setPreviewBasePath(
-                repo.localPath + "/discussions/" + QString::number(found->number));
+                repo.localPath + "/.forkmesh/discussions/" + QString::number(found->number));
         }
     }
     renderDiscussionThread(*found);

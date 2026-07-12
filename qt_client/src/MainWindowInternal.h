@@ -6666,7 +6666,7 @@ inline int mirrorPullCount(const QString &mirrorPath, const QString &branch)
 inline int mirrorDiscussionCount(const QString &mirrorPath, const QString &branch)
 {
     return mirrorNumberedDirCount(mirrorPath, branch,
-                                  QStringLiteral("discussions"));
+                                  QStringLiteral(".forkmesh/discussions"));
 }
 
 // How many commits are reachable on the node's served branch (`git rev-list
