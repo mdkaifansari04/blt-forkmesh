@@ -89,9 +89,50 @@ def test_dashboard_js_shows_per_tab_counts():
     # tallies plus the open-issue and mirror counts.
     assert 'data-dashboard-repo-tab-count="${tab}"' in DASHBOARD_JS
     assert "function applyServedCounts(counts)" in DASHBOARD_JS
+    assert 'setRepoTabCount("issues", openIssues);' in DASHBOARD_JS
     assert 'setRepoTabCount("pulls", Number(counts.pulls));' in DASHBOARD_JS
     assert 'setRepoTabCount("discussions", Number(counts.discussions));' in DASHBOARD_JS
     assert 'setRepoTabCount("mirrors", mirrors.length);' in DASHBOARD_JS
+
+
+def test_dashboard_js_issue_header_counts_open_not_total():
+    # Issue #397: every issue count the web badges must be the OPEN count, not
+    # open+closed. The served tree tallies now carry an open/closed split, and
+    # applyServedCounts badges the Issues tab from the open count (falling back
+    # to the bundled total only for older hosts), filling the panel's
+    # "N Open / N Closed" header from the served split.
+    served = DASHBOARD_JS[
+        DASHBOARD_JS.index("function applyServedCounts(counts)")
+        : DASHBOARD_JS.index("function issueMatchesQuery")
+    ]
+    assert "Number.isFinite(Number(counts.openIssues))" in served
+    assert "? Number(counts.openIssues)" in served
+    assert ": Number(counts.issues);" in served
+    assert 'setRepoTabCount("issues", openIssues);' in served
+    assert 'setRepoCollectionCounts("issues", openIssues, Number(counts.closedIssues));' in served
+
+
+def test_repo_host_serves_open_and_closed_issue_split():
+    # The desktop host that computes the served root-tree counts reports an
+    # open/closed issue split so the website can badge headers with the open
+    # count only (issue #397). Closed issues keep their .forkmesh/issues/<n>/
+    # directory, so a bare directory count would overstate the open total.
+    repo_host = (
+        Path(__file__).resolve().parents[2] / "qt_client" / "src" / "RepoHost.cpp"
+    ).read_text(encoding="utf-8")
+    assert "int countOpenIssues(const QString &mirrorPath" in repo_host
+    # Reads each issue record's top-level status; anything not "closed" is open.
+    assert "issue-%1.json" in repo_host
+    assert 'value(QStringLiteral("status"))' in repo_host
+    assert 'if (status != QLatin1String("closed"))' in repo_host
+    # rootCountsFor emits the split alongside the legacy total.
+    counts = repo_host[
+        repo_host.index("QJsonObject rootCountsFor")
+        : repo_host.index("QJsonObject rootCountsFor") + 900
+    ]
+    assert '{"openIssues", openIssues}' in counts
+    assert '{"closedIssues", closedIssues}' in counts
+    assert '{"issues", openIssues + closedIssues}' in counts
 
 
 def test_homepage_links_to_active_nodes():
@@ -131,8 +172,9 @@ def test_dashboard_js_batches_record_reads_and_lazy_loads_tabs():
     ]
     assert "state.loadedRepoTabs = {};" in panels
     assert '["commits", "issues", "pulls", "discussions", "releases", "insights", "agents"].includes(tab)' in DASHBOARD_JS
-    # The tab badge still fills immediately from the root tree's bundled counts.
-    assert 'setRepoTabCount("issues", Number(counts.issues));' in DASHBOARD_JS
+    # The tab badge still fills immediately from the root tree's served counts,
+    # badging the OPEN issue count (issue #397) rather than the open+closed total.
+    assert 'setRepoTabCount("issues", openIssues);' in DASHBOARD_JS
 
 
 # --- Free-text issue search (adjacent to the Open/Closed/All filter) --------
