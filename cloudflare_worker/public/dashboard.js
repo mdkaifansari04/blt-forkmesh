@@ -5347,7 +5347,7 @@
   }
 
   // A discussion's replies are an append-only, signed event log stored as
-  // discussions/<N>/NNNN-comment.md files alongside discussion.md (see
+  // .forkmesh/discussions/<N>/NNNN-comment.md files alongside discussion.md (see
   // DiscussionStore.cpp on the desktop client). Reuses the pull conversation
   // row renderer since a discussion comment event has the same shape.
   function renderRepoDiscussionConversation(events) {
@@ -5359,7 +5359,7 @@
   async function loadRepoDiscussionConversation(repo, number) {
     let tree;
     try {
-      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `discussions/${number}` }));
+      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `.forkmesh/discussions/${number}` }));
     } catch (_) {
       return [];
     }
@@ -5367,9 +5367,9 @@
       .filter((entry) => entry.type !== "tree" && /^\d+-comment\.md$/.test(String(entry.name || "")))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
     if (!files.length) return [];
-    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `discussions/${number}/${entry.name}`));
+    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `.forkmesh/discussions/${number}/${entry.name}`));
     return files.map((entry) => {
-      const blob = blobs[`discussions/${number}/${entry.name}`];
+      const blob = blobs[`.forkmesh/discussions/${number}/${entry.name}`];
       if (!blob) return null;
       const parsed = parseFrontMatter(blobText(blob));
       const values = parsed.values || {};
@@ -6132,7 +6132,7 @@
         .filter((entry) => entry.type === "tree" && entry.name)
         .map((entry) => String(entry.name));
       if (!channels.length) return;
-      const paths = channels.map((channel) => `releases/${channel}/release.json`);
+      const paths = channels.map((channel) => `.forkmesh/releases/${channel}/release.json`);
       const blobs = await fetchRepoBlobs(repo, paths);
       let latest = null;
       paths.forEach((path) => {
@@ -7186,7 +7186,7 @@
     container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading releases from the live mirror...</div>';
     const empty = '<div class="px-4 py-3 text-sm text-muted-foreground">No releases have been published to this mirror yet.</div>';
     try {
-      // Release manifests live in the git tree at releases/<channel>/release.json
+      // Release manifests live in the git tree at .forkmesh/releases/<channel>/release.json
       // (issue #304). List the channels, then batch-read every manifest in one
       // tunnel round-trip so opening the tab doesn't fan out N blob requests.
       let tree;
@@ -7206,7 +7206,7 @@
         container.innerHTML = empty;
         return;
       }
-      const paths = channels.map((channel) => `releases/${channel}/release.json`);
+      const paths = channels.map((channel) => `.forkmesh/releases/${channel}/release.json`);
       const blobs = await fetchRepoBlobs(repo, paths);
       const releases = [];
       channels.forEach((channel, index) => {
@@ -7236,7 +7236,7 @@
       releases.sort((a, b) => (Number(b.created_at) || 0) - (Number(a.created_at) || 0));
       container.innerHTML = releases.map((release) => renderRepoRelease(repo, release, downloads)).join("");
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a live desktop host serves the releases/ folder.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a live desktop host serves the .forkmesh/releases/ folder.</div>';
     } finally {
       window.lucide?.createIcons();
     }
