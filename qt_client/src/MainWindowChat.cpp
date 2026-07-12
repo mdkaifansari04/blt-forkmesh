@@ -2192,28 +2192,21 @@ void MainWindow::maybeUploadDiagnostics()
 
     QSettings settings;
     const QString diagDir = QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/");
-    const QString crashPath = diagDir + QStringLiteral("crashes.log");
     const QString stallPath = m_stallLogPath.isEmpty()
                                   ? diagDir + QStringLiteral("stalls.log")
                                   : m_stallLogPath;
 
-    qint64 crashSize = 0, stallSize = 0;
-    const QString crash = scrubDiagnostics(readDiagnosticsTail(
-        crashPath, settings.value(kTelemetryCrashOffsetSetting, 0).toLongLong(),
-        &crashSize));
+    qint64 stallSize = 0;
     const QString stalls = scrubDiagnostics(readDiagnosticsTail(
         stallPath, settings.value(kTelemetryStallOffsetSetting, 0).toLongLong(),
         &stallSize));
 
     QJsonArray events;
-    if (!crash.trimmed().isEmpty())
-        events.append(QJsonObject{{"kind", "crash"}, {"summary", crash}});
     if (!stalls.trimmed().isEmpty())
         events.append(QJsonObject{{"kind", "stall"}, {"summary", stalls}});
     if (events.isEmpty()) {
-        // Nothing new to report; still advance the offsets so a later append
+        // Nothing new to report; still advance the offset so a later append
         // doesn't re-scan the whole (unchanged) file.
-        settings.setValue(kTelemetryCrashOffsetSetting, crashSize);
         settings.setValue(kTelemetryStallOffsetSetting, stallSize);
         return;
     }
@@ -2243,17 +2236,15 @@ void MainWindow::maybeUploadDiagnostics()
                       QStringLiteral("application/json"));
     QNetworkReply *reply = m_networkAccess->post(
         request, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, crashSize, stallSize] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, stallSize] {
         const int status =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         reply->deleteLater();
-        // Only advance the uploaded offsets once the mainnode has accepted the
+        // Only advance the uploaded offset once the mainnode has accepted the
         // batch, so a transient failure re-sends the same records next startup.
         if (status >= 200 && status < 300) {
-            QSettings settings;
-            settings.setValue(kTelemetryCrashOffsetSetting, crashSize);
-            settings.setValue(kTelemetryStallOffsetSetting, stallSize);
-            logSystem(QStringLiteral("Uploaded opt-in crash/stall telemetry."));
+            QSettings().setValue(kTelemetryStallOffsetSetting, stallSize);
+            logSystem(QStringLiteral("Uploaded opt-in stall telemetry."));
         }
     });
 }
