@@ -71,8 +71,10 @@
       .chat-shell {
         display: flex;
         flex-direction: column;
-        height: 100dvh;
-        height: 100vh; /* fallback */
+        height: 100vh; /* fallback for browsers without dvh */
+        height: 100dvh; /* mobile: track the dynamic viewport so the input bar
+                           and full message log stay on-screen as the browser's
+                           URL/tool bar shows and hides */
         max-width: 1400px;
         margin: 0 auto;
       }
