@@ -1967,7 +1967,12 @@ void MainWindow::rebuildAndRelaunch()
 
 void MainWindow::maybeAutoUpdate()
 {
-    if (!QSettings().value(kAutoUpdateSetting, false).toBool())
+    // On by default for headless nodes (no operator is around to click "Update,
+    // rebuild & restart" on a VM), off by default on desktop. main.cpp seeds the
+    // value on first headless launch, but we also default to m_headless here so a
+    // node still auto-updates if that seed never persisted (e.g. an unwritable
+    // config dir). An explicit operator opt-out writes false and is respected.
+    if (!QSettings().value(kAutoUpdateSetting, m_headless).toBool())
         return;
     if (m_autoUpdateChecking)
         return; // a check from an earlier tick is still in flight
