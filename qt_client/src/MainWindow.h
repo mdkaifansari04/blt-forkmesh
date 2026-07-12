@@ -1121,6 +1121,9 @@ private:
     void selectPullFileInList(const QString &filePath);
     // Position the sticky header overlay across the top of the diff viewport.
     void layoutPullStickyHeader();
+    // Walk the rendered diff once, caching each file header's absolute y into
+    // m_pullFileTops so the per-scroll-tick sticky-header update stays cheap.
+    void computePullFileTops();
     // Debounced off the diff view's scrollbar (issue: auto-mark viewed on
     // scroll): while m_pullAutoViewedButton is checked, marks every file that
     // has scrolled entirely above the viewport as "Viewed" and re-renders,
@@ -3931,6 +3934,12 @@ private:
     QString m_pullStickyFile; // file path currently shown in the sticky header
     // path -> compact rich-text label (icon + dir/name + +/-) for that header.
     QHash<QString, QString> m_pullStickyLabelHtml;
+    // Absolute document y-position of each file header, aligned to
+    // m_pullFileOrder (-1 if not located). Cached because locating anchors walks
+    // the whole document, which is too heavy to redo on every scroll tick; the
+    // diff has word-wrap off, so these stay put until the next re-render clears
+    // the cache. Filled lazily by computePullFileTops().
+    QList<int> m_pullFileTops;
     int m_diffFontPt = 12; // diff viewer text size (the +/- zoom control)
     // Every diff viewer registered for shared text-size zoom (issue #254), so a
     // +/- click or Ctrl+wheel can re-render them all at the new size.

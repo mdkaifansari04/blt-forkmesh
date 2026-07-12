@@ -1334,7 +1334,10 @@ void setLongDiffsPref(bool on)
 // Defaults off, matching GitHub's same-named setting.
 bool autoMarkViewedOnScrollPref()
 {
-    return QSettings().value(QStringLiteral("view/autoMarkViewedOnScroll"), false).toBool();
+    // On by default (adhoc #56): reaching a file's bottom while scrolling
+    // auto-checks its Viewed box — the behaviour the sticky header's Pac-Man
+    // chart visualises. The eye toggle in the Files header opts out.
+    return QSettings().value(QStringLiteral("view/autoMarkViewedOnScroll"), true).toBool();
 }
 void setAutoMarkViewedOnScrollPref(bool on)
 {
