@@ -8,6 +8,7 @@
     "bountyStatus": "",
     "bountyUsd": 0,
     "createdAt": 1783432824,
+    "endDate": 0,
     "events": [
         {
             "attachments": [
@@ -74,6 +75,18 @@
             "status": "closed",
             "ts": 1783884876427,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "2ac34a19-591a-43eb-b633-acf81621e803",
+            "sig": "r7gjpkJys2C5SC-6Z_qgPSpVyHnCCXuqHV6Cy_A7UP1Tn7jg5WFUnBSEApAuVVV5aqdFvtZcMH6wSrfNVdGuAw",
+            "ts": 1783891485061,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -83,8 +96,9 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
+    "startDate": 0,
     "status": "closed",
     "title": "when deselecting do not start at startup, it continues to run",
-    "updatedAt": 1783884876427,
+    "updatedAt": 1783891485061,
     "votes": 0
 }
