@@ -107,6 +107,14 @@ MAX_FILES = 5000
 # of un-merged submissions a repo's inbox will hold.
 MAX_ISSUE_BYTES = 64 * 1024
 MAX_PENDING_ISSUES = 500
+# Screenshots a node with no write access attaches to an issue/comment ride
+# along as base64 bytes in the inbox item (it has no working tree to copy them
+# into — see the desktop's IssueStore::readAttachmentsForRemoteSubmit); capped
+# per-file and per-submission so one inbox row can't balloon.
+MAX_ISSUE_ATTACHMENTS = 6
+MAX_ISSUE_ATTACHMENT_BYTES = 2 * 1024 * 1024
+ISSUE_ATTACHMENT_NAME_RE = re.compile(
+    r"^[0-9a-f]{8}\.(png|jpg|jpeg|gif|webp|bmp|svg|bin)$")
 # Per-author cap across the issue/pull/commit/discussion inboxes, so one signing
 # key can't fill a repo's whole inbox to the global cap and block everyone else.
 MAX_PENDING_PER_AUTHOR = 50
@@ -12417,6 +12425,36 @@ async def forkbot_chat_handler(env, request):
     }, status=201)
 
 
+def _clean_issue_attachment_data(value):
+    """Validate the base64 image bytes a no-write-access node ships alongside a
+    signed issue/comment "open"/"comment" event (see MAX_ISSUE_ATTACHMENT_BYTES).
+    Returns (cleaned_list, error); cleaned_list entries are {"name","data"} with
+    data re-encoded from the decoded bytes so nothing but valid base64 survives."""
+    if not isinstance(value, list):
+        return [], None
+    if len(value) > MAX_ISSUE_ATTACHMENTS:
+        return [], "too_many_attachments"
+    cleaned = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            return [], "bad_attachment"
+        name = entry.get("name", "")
+        if not isinstance(name, str) or not ISSUE_ATTACHMENT_NAME_RE.match(name):
+            return [], "bad_attachment"
+        data = entry.get("data", "")
+        if not isinstance(data, str) or len(data) > 4 * (
+                (MAX_ISSUE_ATTACHMENT_BYTES + 2) // 3):
+            return [], "attachment_too_large"
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except Exception:
+            return [], "bad_attachment"
+        if len(raw) > MAX_ISSUE_ATTACHMENT_BYTES:
+            return [], "attachment_too_large"
+        cleaned.append({"name": name, "data": base64.b64encode(raw).decode()})
+    return cleaned, None
+
+
 async def issues_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
@@ -12437,6 +12475,14 @@ async def issues_handler(env, request, owner, repo):
             return json_response({"error": "issue_too_large"}, status=413)
         if not await verify_issue_event(number, event):
             return json_response({"error": "bad_signature"}, status=401)
+        # Screenshots the submitter had no working tree to copy in ride along as
+        # base64 bytes, named to match the signed event's attachments list.
+        attachment_data, attach_err = _clean_issue_attachment_data(
+            data.get("attachmentData"))
+        if attach_err:
+            status = 413 if attach_err in (
+                "too_many_attachments", "attachment_too_large") else 400
+            return json_response({"error": attach_err}, status=status)
         count = await d1_first(
             env, "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=?", repo_bi
         )
@@ -12496,6 +12542,7 @@ async def issues_handler(env, request, owner, repo):
             "titleIfNew": clean_string(data.get("titleIfNew", ""), 240),
             "event": event,
             "meta": meta,
+            "attachmentData": attachment_data,
             "submitter": clean_string(event.get("author", ""), 120),
             "submittedAt": int(Date.now()),
         }
