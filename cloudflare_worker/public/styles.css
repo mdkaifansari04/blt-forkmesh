@@ -3537,3 +3537,21 @@ html.dark .diff-hunk {
 @media (max-width: 640px) {
   .footer-inner { flex-direction: column; gap: 24px; }
 }
+
+/* Shared loading indicator: inherits currentColor so it matches whatever
+   muted/empty text it sits next to. */
+.fm-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 9999px;
+  opacity: 0.75;
+  vertical-align: -2px;
+  margin-right: 8px;
+  animation: fm-spin 0.7s linear infinite;
+}
+@keyframes fm-spin {
+  to { transform: rotate(360deg); }
+}
