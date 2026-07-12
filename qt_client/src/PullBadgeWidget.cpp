@@ -251,11 +251,14 @@ void PullBadgeWidget::paintEvent(QPaintEvent *)
         if (!seg.labeled)
             continue;
         p.setPen(kMuted);
-        const QRect labelRect(seg.lineRect.left(), seg.lineRect.top() + 4,
-                              seg.lineRect.width(), smallFm.height() + 2);
+        // Let the label spill a little past a narrow segment (a 1-2 file
+        // directory is narrower than its own name) instead of clipping it.
+        const QRect labelRect(seg.lineRect.left() - 26,
+                              seg.lineRect.top() + 4,
+                              seg.lineRect.width() + 52, smallFm.height() + 2);
         p.drawText(labelRect, Qt::AlignHCenter | Qt::AlignVCenter,
                    smallFm.elidedText(seg.label, Qt::ElideMiddle,
-                                      qMax(labelRect.width(), 120)));
+                                      labelRect.width()));
     }
 }
 
