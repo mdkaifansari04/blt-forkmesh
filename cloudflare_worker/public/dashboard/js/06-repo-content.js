@@ -717,6 +717,13 @@
     "package.json": ["NPM", "#cb3837"], "package-lock.json": ["NPM", "#cb3837"],
   };
 
+  // Directory connector labels show just the folder name (not the whole
+  // path) capped to 8 chars, e.g. "one/two/three" -> "three".
+  function dirBadgeLabel(dir) {
+    const name = dir === "/" ? "/" : dir.slice(dir.lastIndexOf("/") + 1);
+    return name.length > 8 ? `${name.slice(0, 8)}…` : name;
+  }
+
   function fileBadgeGlyph(path) {
     const name = String(path || "").split("/").pop().toLowerCase();
     if (fileBadgeNames[name]) return fileBadgeNames[name];
@@ -780,7 +787,7 @@
               <div class="flex max-w-full flex-wrap gap-2">${group.files.map(renderPullBadgeTile).join("")}</div>
               <div class="flex items-center gap-2 text-[10px] text-muted-foreground">
                 <span class="h-px min-w-3 flex-1 bg-border"></span>
-                <span class="font-mono">${escapeHtml(group.dir)}</span>
+                <span class="font-mono" title="${escapeHtml(group.dir)}">${escapeHtml(dirBadgeLabel(group.dir))}</span>
                 <span>(${formatCount(group.files.length)} file${group.files.length === 1 ? "" : "s"})</span>
                 <span class="h-px min-w-3 flex-1 bg-border"></span>
               </div>
@@ -2021,6 +2028,43 @@
       $$("[data-repo-watch-count], [data-repo-watch-followers], [data-repo-social-followers]").forEach((el) => {
         el.textContent = formatCount(followers);
       });
+      // WHO is watching: newest followers (handle + remote profile link),
+      // each row captioned with what they follow.
+      const watchList = $("[data-repo-watch-list]");
+      if (watchList) {
+        const entries = Array.isArray(body.fediverse?.followersList)
+          ? body.fediverse.followersList : [];
+        if (entries.length) {
+          const following = `Following ${repoKey(repo).toLowerCase()}`;
+          watchList.innerHTML = entries.slice(0, 25).map((f) => {
+            const handleText = escapeHtml(String(f?.handle || f?.url || ""));
+            const url = String(f?.url || "");
+            const who = /^https?:\/\//i.test(url)
+              ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono text-[11px] text-foreground hover:underline">${handleText}</a>`
+              : `<span class="min-w-0 truncate font-mono text-[11px] text-foreground">${handleText}</span>`;
+            return `<div class="flex items-center justify-between gap-2 py-0.5">${who}<span class="shrink-0 text-[10px] text-muted-foreground">${escapeHtml(following)}</span></div>`;
+          }).join("");
+          watchList.classList.remove("hidden");
+        } else {
+          watchList.innerHTML = "";
+          watchList.classList.add("hidden");
+        }
+      }
+      // Owner switched federation off (or the instance did): say so instead
+      // of silently showing zeros.
+      $("[data-repo-watch-disabled]")?.classList.toggle(
+        "hidden", body.fediverse?.enabled !== false);
+      // Seed the gear form's federation switches with the stored settings so
+      // an untouched save round-trips them unchanged.
+      const apSettings = body.fediverse?.settings;
+      if (apSettings && typeof apSettings === "object") {
+        [["[data-repo-ap-federate]", "federate"],
+         ["[data-repo-ap-broadcast]", "broadcastEvents"],
+         ["[data-repo-ap-comments]", "acceptComments"]].forEach(([sel, key]) => {
+          const box = $(sel);
+          if (box && key in apSettings) box.checked = Boolean(apSettings[key]);
+        });
+      }
       const handle = String(body.fediverse?.handle || "");
       if (handle) {
         const handleEl = $("[data-repo-watch-handle]");
