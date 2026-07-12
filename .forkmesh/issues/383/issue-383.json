@@ -8,6 +8,7 @@
     "bountyStatus": "",
     "bountyUsd": 0,
     "createdAt": 1783198047886,
+    "endDate": 0,
     "events": [
         {
             "attachments": [
@@ -75,6 +76,18 @@
             "status": "closed",
             "ts": 1783883008871,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "93dda510-b4c0-47e6-81ae-31d2a0d6216c",
+            "sig": "9QnUmiFsDj7OGRMWMP4xF-tBKJxm0V_YfW9iPxDu8ae7zsauJP8bjrw-WWCmYJcU4Q5nL80BCqXD-5-33UgfDw",
+            "ts": 1783892012021,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -85,8 +98,9 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
+    "startDate": 0,
     "status": "closed",
     "title": "log clearly in the log with a big line across when the app starts and stops -…",
-    "updatedAt": 1783883008871,
+    "updatedAt": 1783892012021,
     "votes": 0
 }

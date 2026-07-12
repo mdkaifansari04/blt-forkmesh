@@ -400,6 +400,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     }
     logStartup(QStringLiteral("identity loaded"));
     updateHomeStats();
+    // Populate the Hosts/Relays nav button counts up front — Nodes' count
+    // follows the roster and updates itself via updateNodeSwitcher().
+    refreshHostsTable();
+    refreshRelaysTable();
     logStartup(QStringLiteral("home stats updated (ctor end)"));
 }
 
