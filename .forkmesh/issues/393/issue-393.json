@@ -54,6 +54,17 @@
             "sig": "h17Tg4HuOtSiw1uw8zQ9b-G6YikW5OEez-5b6pbj3cfI9Iw93DF1YDDM1KekmY52-qMFQu3rzn889YklBzQLAQ",
             "ts": 1783880733476,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-393-when-deselecting-do-not-start-at-startup-it-cont\".",
+            "id": "56cdbee9-4d53-4ba9-a15d-086e3fb0d3c1",
+            "sig": "JBu5Cpoxn6Ke7Uof2qsa5-KYwpXPW4nLdnOJx-jgHnVEX96XOyxrawqnqFZUXYLykVynvxGSgPgGfD2KTZpgAA",
+            "ts": 1783884876373,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -65,6 +76,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "when deselecting do not start at startup, it continues to run",
-    "updatedAt": 1783880733476,
+    "updatedAt": 1783884876373,
     "votes": 0
 }
