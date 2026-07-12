@@ -8164,6 +8164,14 @@ void MainWindow::refreshNetworkDiagnostics()
 {
     if (!m_networkDiagnosticsTable)
         return;
+    // Rebuilding both tables re-shapes every cell's text and re-measures every
+    // column/row (resizeColumnsToContents → harfbuzz), which the stall watchdog
+    // clocked at ~600ms during startup while the section wasn't even on screen
+    // (adhoc #33). Only pay that when the Network section is actually visible;
+    // showSection() refreshes it on every open, so nothing goes stale.
+    if (m_sectionStack &&
+        m_sectionStack->currentIndex() != kNetworkDiagnosticsSectionIndex)
+        return;
 
     QList<QJsonObject> rows;
     if (m_backend)
