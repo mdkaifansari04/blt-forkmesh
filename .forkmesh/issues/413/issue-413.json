@@ -19,6 +19,15 @@
             "title": "new issue to test fediverse",
             "ts": 1783736347981,
             "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "6b52412b-eff4-4fa9-9a09-b3078275535e",
+            "sig": "ISyEaUepECq2fwpkUytWJTdbyYsz_IDezmop18uGmKLhyDErw4M52UHxdEiYx4fu6wUvLB2xQrk5XiV8SPVKCg",
+            "target": "self",
+            "ts": 1783880349796,
+            "type": "delete"
         }
     ],
     "labels": [
@@ -30,6 +39,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "new issue to test fediverse",
-    "updatedAt": 1783736347981,
+    "updatedAt": 1783880349796,
     "votes": 0
 }
