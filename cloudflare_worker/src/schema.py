@@ -481,6 +481,18 @@ SCHEMA_STATEMENTS = [
     # recipient email stays only in the encrypted account record.
     """CREATE TABLE IF NOT EXISTS feedback_email_sends (
         account_bi TEXT PRIMARY KEY, name TEXT, sent_at INTEGER NOT NULL)""",
+    # Per-repo fediverse switches (migration 0035), owner-managed from the web
+    # and Qt repo settings: federate (actor exists at all), broadcastEvents
+    # (issues/PRs/releases posted to followers), acceptComments (remote
+    # replies ingested as federated comments). repo_bi =
+    # blind_index("ap-repo-settings:<owner>/<repo>") with both halves
+    # lowercased; data is plaintext JSON of booleans (same operational-config
+    # trust level as ap_settings) so the hot unauthenticated AP gates never
+    # decrypt. A missing row means "all on" — existing repos keep federating
+    # exactly as before.
+    """CREATE TABLE IF NOT EXISTS ap_repo_settings (
+        repo_bi TEXT PRIMARY KEY, data TEXT NOT NULL,
+        updated_at INTEGER NOT NULL)""",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

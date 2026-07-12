@@ -7039,13 +7039,80 @@ void MainWindow::editRepoAbout()
     form->addRow("Description", descriptionEdit);
     form->addRow("Website", websiteEdit);
 
+    // Per-repo ActivityPub switches. These live on the relay (ap_repo_settings
+    // table), not in .forkmesh/info.json, because the relay enforces them on
+    // its public fediverse endpoints. Seeded async from the public GET /about
+    // and kept disabled until the stored values arrive, so a slow relay can
+    // never cause an accidental "everything back on" save.
+    auto *fediGroup = new QGroupBox("ActivityPub federation", &dialog);
+    auto *fediLayout = new QVBoxLayout(fediGroup);
+    auto *federateBox = new QCheckBox(
+        "Federate this repository (fediverse actor and handle)", fediGroup);
+    auto *broadcastBox = new QCheckBox(
+        "Post new issues, pull requests, discussions and releases to followers",
+        fediGroup);
+    auto *commentsBox = new QCheckBox(
+        "Accept fediverse replies as federated comments", fediGroup);
+    for (QCheckBox *box : {federateBox, broadcastBox, commentsBox}) {
+        box->setChecked(true);
+        box->setEnabled(false);
+        fediLayout->addWidget(box);
+    }
+    auto fediLoaded = std::make_shared<bool>(false);
+    if (repo.publishToNetwork) {
+        const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+        const QString name =
+            repoSegment(repo.name, QStringLiteral("repository"));
+        QNetworkReply *reply = m_networkAccess->get(
+            QNetworkRequest(repoAboutApiUrl(owner, name)));
+        QPointer<QCheckBox> fedPtr(federateBox);
+        QPointer<QCheckBox> broadPtr(broadcastBox);
+        QPointer<QCheckBox> comPtr(commentsBox);
+        connect(reply, &QNetworkReply::finished, this,
+                [reply, fedPtr, broadPtr, comPtr, fediLoaded] {
+                    reply->deleteLater();
+                    if (!fedPtr || !broadPtr || !comPtr ||
+                        reply->error() != QNetworkReply::NoError)
+                        return;
+                    const QJsonObject settings =
+                        QJsonDocument::fromJson(reply->readAll())
+                            .object()
+                            .value(QStringLiteral("fediverse"))
+                            .toObject()
+                            .value(QStringLiteral("settings"))
+                            .toObject();
+                    if (settings.isEmpty())
+                        return;
+                    fedPtr->setChecked(
+                        settings.value(QStringLiteral("federate")).toBool(true));
+                    broadPtr->setChecked(
+                        settings.value(QStringLiteral("broadcastEvents"))
+                            .toBool(true));
+                    comPtr->setChecked(
+                        settings.value(QStringLiteral("acceptComments"))
+                            .toBool(true));
+                    for (QCheckBox *box :
+                         {fedPtr.data(), broadPtr.data(), comPtr.data()})
+                        box->setEnabled(true);
+                    *fediLoaded = true;
+                });
+    } else {
+        fediGroup->setToolTip(
+            "Publish this repository to the network to give it a fediverse "
+            "presence.");
+    }
+
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save |
                                          QDialogButtonBox::Cancel,
                                          Qt::Horizontal, &dialog);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, this, [this, &dialog,
                                                          descriptionEdit,
-                                                         websiteEdit] {
+                                                         websiteEdit,
+                                                         federateBox,
+                                                         broadcastBox,
+                                                         commentsBox,
+                                                         fediLoaded] {
         QString error;
         if (!saveRepoAboutMetadata(descriptionEdit->toPlainText(),
                                    websiteEdit->text(), &error)) {
@@ -7055,6 +7122,18 @@ void MainWindow::editRepoAbout()
                                      : error);
             return;
         }
+        // The relay no-ops an unchanged settings save, so posting the loaded
+        // values back is free; skipped entirely when they never loaded.
+        if (*fediLoaded && m_repoDetailIndex >= 0 &&
+            m_repoDetailIndex < m_repositories.size()) {
+            const RepositoryRecord &current =
+                m_repositories.at(m_repoDetailIndex);
+            saveRepoFediverseSettings(
+                repoSegment(current.owner, QStringLiteral("owner")),
+                repoSegment(current.name, QStringLiteral("repository")),
+                federateBox->isChecked(), broadcastBox->isChecked(),
+                commentsBox->isChecked());
+        }
         dialog.accept();
     });
 
@@ -7062,9 +7141,62 @@ void MainWindow::editRepoAbout()
     layout->setContentsMargins(18, 18, 18, 18);
     layout->setSpacing(12);
     layout->addLayout(form);
+    layout->addWidget(fediGroup);
     layout->addWidget(buttons);
-    dialog.resize(460, 220);
+    dialog.resize(520, 340);
     dialog.exec();
+}
+
+QUrl MainWindow::repoAboutApiUrl(const QString &owner, const QString &name) const
+{
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repo/%1/%2/about").arg(owner, name));
+    return url;
+}
+
+void MainWindow::saveRepoFediverseSettings(const QString &owner,
+                                           const QString &name,
+                                           bool federate, bool broadcastEvents,
+                                           bool acceptComments)
+{
+    if (owner.isEmpty() || name.isEmpty())
+        return;
+    if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
+        logSystem("Fediverse: could not load identity to save federation "
+                  "settings.");
+        return;
+    }
+    // Same shape as the other owner-key gates (fresh ts + ed25519 over an
+    // explicit canonical string), with a distinct prefix so an About token
+    // can never be replayed as a host/view/push/inbox token or vice versa.
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-repo-about-v1\n" + owner + "\n" + name + "\n" + ts).toUtf8();
+    QJsonObject settings;
+    settings.insert(QStringLiteral("federate"), federate);
+    settings.insert(QStringLiteral("broadcastEvents"), broadcastEvents);
+    settings.insert(QStringLiteral("acceptComments"), acceptComments);
+    QJsonObject body;
+    body.insert(QStringLiteral("ts"), ts);
+    body.insert(QStringLiteral("ownerSig"),
+                m_profileIdentity.signData(canonical));
+    body.insert(QStringLiteral("fediverse"), settings);
+    QNetworkRequest request(repoAboutApiUrl(owner, name));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, owner, name] {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError)
+            logSystem(QStringLiteral(
+                          "Fediverse: saved federation settings for %1/%2.")
+                          .arg(owner, name));
+        else
+            logSystem(QStringLiteral("Fediverse: could not save federation "
+                                     "settings for %1/%2 (%3).")
+                          .arg(owner, name, reply->errorString()));
+    });
 }
 
 bool MainWindow::saveRepoAboutMetadata(const QString &about,
@@ -7183,6 +7315,87 @@ bool MainWindow::applyRepoAboutMetadataAt(int index, const QString &about,
     logSystem(QStringLiteral("Updated About details for %1/%2.")
                   .arg(repo.owner, repo.name));
     return true;
+}
+
+void MainWindow::loadRepoFediverseStatus()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size() ||
+        !m_aboutFediverse)
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    if (!repo.publishToNetwork)
+        return; // unpublished repos have no public fediverse actor
+    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    const QString name = repoSegment(repo.name, QStringLiteral("repository"));
+    if (owner.isEmpty() || name.isEmpty())
+        return;
+    QNetworkReply *reply =
+        m_networkAccess->get(QNetworkRequest(repoAboutApiUrl(owner, name)));
+    QPointer<QLabel> label(m_aboutFediverse);
+    // Rebuild from the base text captured now: loadAboutSidebar resets the
+    // label on every reload, and anchoring to the captured base keeps two
+    // in-flight fetches from stacking their suffixes.
+    const QString baseText = m_aboutFediverse->text();
+    const QString repoKey = owner + "/" + name;
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, label, baseText, repoKey] {
+        reply->deleteLater();
+        if (!label || reply->error() != QNetworkReply::NoError)
+            return;
+        if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+            return;
+        const RepositoryRecord &current = m_repositories.at(m_repoDetailIndex);
+        if (repoSegment(current.owner, QStringLiteral("owner")) + "/" +
+                repoSegment(current.name, QStringLiteral("repository")) !=
+            repoKey)
+            return; // user opened another repo while the fetch ran
+        const QJsonObject fediverse =
+            QJsonDocument::fromJson(reply->readAll())
+                .object()
+                .value(QStringLiteral("fediverse"))
+                .toObject();
+        if (fediverse.isEmpty())
+            return;
+        QString extra;
+        if (!fediverse.value(QStringLiteral("enabled")).toBool(true)) {
+            extra = QStringLiteral(
+                "<br><span style='color:#d29922'>Federation is turned off "
+                "for this repository.</span>");
+        } else {
+            const int followers =
+                fediverse.value(QStringLiteral("followers")).toInt(0);
+            extra = QStringLiteral(
+                        "<br><span style='color:#8b949e'>%1 fediverse "
+                        "watcher%2</span>")
+                        .arg(followers)
+                        .arg(followers == 1 ? QString()
+                                            : QStringLiteral("s"));
+            const QJsonArray list =
+                fediverse.value(QStringLiteral("followersList")).toArray();
+            QStringList rows;
+            for (const QJsonValue &v : list) {
+                if (rows.size() >= 5)
+                    break;
+                const QString handle = v.toObject()
+                                           .value(QStringLiteral("handle"))
+                                           .toString()
+                                           .trimmed();
+                if (!handle.isEmpty())
+                    rows << handle.toHtmlEscaped();
+            }
+            if (!rows.isEmpty()) {
+                QString more;
+                if (list.size() > rows.size())
+                    more = QStringLiteral(" +%1 more")
+                               .arg(list.size() - rows.size());
+                extra += QStringLiteral(
+                             "<br><span style='color:#8b949e'>Followed by "
+                             "%1%2</span>")
+                             .arg(rows.join(QStringLiteral(", ")), more);
+            }
+        }
+        label->setText(baseText + extra);
+    });
 }
 
 void MainWindow::setRepoBranch(const QString &branch)
@@ -8502,6 +8715,9 @@ void MainWindow::loadAboutSidebar()
                          octiconMarkup("mastodon", 13, QColor("#58a6ff"))));
             m_aboutFediverse->setToolTip(handle);
             m_aboutFediverse->setVisible(true);
+            // Live follower count + newest follower handles arrive async
+            // from the relay's public GET /about (best-effort adornment).
+            loadRepoFediverseStatus();
         } else {
             m_aboutFediverse->setVisible(false);
         }
