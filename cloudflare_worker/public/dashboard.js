@@ -36,6 +36,9 @@
     notificationUnread: 0,
     selectedNotificationId: "",
     issuesView: { filter: "open", items: [], query: "" },
+    // Projects tab (issue #384): projects link issues + a milestone and carry
+    // start/end dates; "gantt" is the default sub-view, "list" the fallback.
+    projectsView: { filter: "open", mode: "gantt", items: [] },
     claimNode: { pendingNodeId: "" },
     linkGrant: null,
     repoMirrors: [],
@@ -493,7 +496,7 @@
 
   // Feature-tab route segments (mirrors 404.html's `featureTabs` list) - tells
   // a tab route (e.g. /owner/repo/issues) apart from a tree/blob code deep link.
-  const REPO_TAB_ROUTES = ["commits", "insights", "releases", "issues", "pulls", "discussions", "mirrors"];
+  const REPO_TAB_ROUTES = ["commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors"];
 
   // The owner-only "Agents" tab (adhoc #182) is only ever a recognized route
   // for the account that can actually see it - sessionCanAssignAgent gates it
@@ -3718,11 +3721,12 @@
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
-    if (["commits", "issues", "pulls", "discussions", "releases", "insights", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
+    if (["commits", "issues", "projects", "pulls", "discussions", "releases", "insights", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
       if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
       state.loadedRepoTabs[tab] = true;
       if (tab === "commits") loadRepoCommits(state.selectedRepo);
       else if (tab === "issues") loadRepoIssues(state.selectedRepo);
+      else if (tab === "projects") loadRepoProjects(state.selectedRepo);
       else if (tab === "releases") loadRepoReleases(state.selectedRepo);
       else if (tab === "insights") loadRepoInsights(state.selectedRepo);
       else if (tab === "agents") loadRepoAgents(state.selectedRepo);
@@ -3731,6 +3735,8 @@
       // Re-selecting the tab should return to the issues list even if the
       // new-issue compose form was left open.
       renderRepoIssues();
+    } else if (tab === "projects") {
+      renderRepoProjects();
     } else if (tab === "agents") {
       loadRepoAgents(state.selectedRepo);
     }
@@ -4905,6 +4911,45 @@
       meta: [status, labels, issue.milestone].filter(Boolean).join(" · "),
       body: open.body || issue.body || "",
       wantsAgent: Boolean(issue.wantsAgent),
+      milestone: String(issue.milestone || ""),
+      progress: Number(issue.progress || 0) || 0,
+      startDate: Number(issue.startDate || 0) || 0,
+      endDate: Number(issue.endDate || 0) || 0,
+      createdAtMs: Number(issue.createdAt || open.ts || 0) || 0,
+    };
+  }
+
+  function projectJsonPath(number) {
+    return `.forkmesh/projects/${Number(number)}/project-${Number(number)}.json`;
+  }
+
+  // Projects (issue #384) are stored like issues - one signed-event JSON per
+  // numbered folder under .forkmesh/projects/ - and carry gantt start/end
+  // dates, an optional milestone link, and a list of linked issue numbers.
+  function parseProjectJson(text, fallbackNumber) {
+    let project = {};
+    try {
+      const parsed = JSON.parse(String(text || "{}"));
+      if (parsed && typeof parsed === "object") project = parsed;
+    } catch (_) {
+      project = {};
+    }
+    const number = Number(project.number || fallbackNumber);
+    const issues = (Array.isArray(project.issues) ? project.issues : [])
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    return {
+      number,
+      title: project.title || `project #${number}`,
+      status: project.status || "open",
+      body: project.body || "",
+      author: project.authorName || project.author || "unknown",
+      date: formatRecordDate(project.updatedAt || project.createdAt),
+      milestone: String(project.milestone || ""),
+      issues,
+      startDate: Number(project.startDate || 0) || 0,
+      endDate: Number(project.endDate || 0) || 0,
+      createdAtMs: Number(project.createdAt || 0) || 0,
     };
   }
 
@@ -5935,6 +5980,279 @@
     } catch (_) {
       container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a live desktop host serves the .forkmesh/issues/ folder.</div>';
     }
+  }
+
+  // --- Projects tab (issue #384) -------------------------------------------
+
+  function ganttDayLabel(ms) {
+    return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
+  // Percent of a project's linked issues that are closed; falls back to the
+  // linked milestone's issues (within the loaded window) when nothing is
+  // linked directly. Returns -1 when there is nothing to measure.
+  function projectProgress(project, issues) {
+    const linked = issues.filter((issue) => project.issues.includes(issue.number));
+    const pool = linked.length
+      ? linked
+      : (project.milestone ? issues.filter((issue) => issue.milestone === project.milestone) : []);
+    if (!pool.length) return -1;
+    return Math.round(pool.filter((issue) => issue.status !== "open").length * 100 / pool.length);
+  }
+
+  async function loadRepoProjects(repo) {
+    const container = $("[data-repo-projects]");
+    if (!container) return;
+    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading projects from the live mirror...</div>';
+    try {
+      let tree;
+      try {
+        tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: ".forkmesh/projects" }));
+      } catch (error) {
+        if (isMissingMirrorFolder(error)) {
+          state.projectsView.items = [];
+          state.projectsView.issues = [];
+          renderRepoProjects();
+          return;
+        }
+        throw error;
+      }
+      const dirs = (Array.isArray(tree.entries) ? tree.entries : [])
+        .filter((entry) => entry.type === "tree" && /^\d+$/.test(String(entry.name || "")))
+        .sort((a, b) => Number(b.name) - Number(a.name))
+        .slice(0, 50);
+      const blobs = await fetchRepoBlobs(
+        repo, dirs.map((entry) => projectJsonPath(Number(entry.name))));
+      const projects = dirs.map((entry) => {
+        const number = Number(entry.name);
+        const blob = blobs[projectJsonPath(number)];
+        if (!blob) return null;
+        return parseProjectJson(blobText(blob), number);
+      }).filter(Boolean);
+      // The gantt rows and progress bars need the linked issues' dates and
+      // states, so read exactly those issue files in one batched request.
+      const linkedNumbers = [...new Set(projects.flatMap((project) => project.issues))]
+        .filter((number) => Number.isFinite(number) && number > 0);
+      let issues = [];
+      if (linkedNumbers.length) {
+        const issueBlobs = await fetchRepoBlobs(repo, linkedNumbers.map((number) => issueJsonPath(number)));
+        issues = linkedNumbers
+          .map((number) => {
+            const blob = issueBlobs[issueJsonPath(number)];
+            return blob ? parseIssueJson(blobText(blob), number) : null;
+          })
+          .filter(Boolean);
+      }
+      // Milestone-linked progress reads whatever issues the Issues tab already
+      // loaded (its most-recent window) - good enough for an overview ratio.
+      (state.issuesView.items || []).forEach((issue) => {
+        if (!issues.some((existing) => existing.number === issue.number)) issues.push(issue);
+      });
+      state.projectsView.items = projects;
+      state.projectsView.issues = issues;
+      renderRepoProjects();
+    } catch (_) {
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Projects are unavailable until a live desktop host serves the .forkmesh/projects/ folder.</div>';
+    }
+  }
+
+  function renderRepoProjects() {
+    const container = $("[data-repo-projects]");
+    if (!container) return;
+    const view = state.projectsView;
+    const items = view.items || [];
+    const filtered = items.filter((project) => {
+      if (view.filter === "all") return true;
+      if (view.filter === "open") return project.status === "open";
+      return project.status !== "open";
+    });
+    const filterBar = `<div class="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2">
+      <div class="flex items-center gap-1">
+        ${["open", "closed", "all"].map((name) => `<button type="button" data-dashboard-project-filter="${name}" aria-pressed="${name === view.filter ? "true" : "false"}" class="inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${name === view.filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}">${name[0].toUpperCase() + name.slice(1)}</button>`).join("")}
+      </div>
+      <div class="flex items-center gap-1 rounded-md border border-border p-0.5">
+        ${[["gantt", "chart-gantt", "Gantt"], ["list", "list", "List"]].map(([mode, icon, label]) => `<button type="button" data-dashboard-project-view="${mode}" aria-pressed="${mode === view.mode ? "true" : "false"}" class="inline-flex h-6 items-center gap-1.5 rounded px-2 text-xs font-medium transition-colors ${mode === view.mode ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}"><i data-lucide="${icon}" class="h-3.5 w-3.5"></i>${label}</button>`).join("")}
+      </div>
+    </div>`;
+    const emptyLabel = items.length
+      ? `No ${view.filter === "all" ? "" : view.filter + " "}projects.`
+      : "No projects have been committed to this mirror yet. Create them from the desktop client's Projects tab.";
+    container.innerHTML = filterBar + (filtered.length
+      ? (view.mode === "gantt"
+        ? renderRepoProjectsGantt(filtered, view.issues || [])
+        : renderRepoProjectsList(filtered, view.issues || []))
+      : `<div class="px-4 py-3 text-sm text-muted-foreground">${emptyLabel}</div>`);
+    window.lucide?.createIcons();
+  }
+
+  function setProjectFilter(filter) {
+    state.projectsView.filter = filter;
+    renderRepoProjects();
+  }
+
+  function setProjectView(mode) {
+    state.projectsView.mode = mode === "list" ? "list" : "gantt";
+    renderRepoProjects();
+  }
+
+  function renderRepoProjectsList(projects, issues) {
+    const issueByNumber = new Map(issues.map((issue) => [issue.number, issue]));
+    return projects.map((project) => {
+      const progress = projectProgress(project, issues);
+      const dates = project.startDate || project.endDate
+        ? `${project.startDate ? ganttDayLabel(project.startDate) : "…"} → ${project.endDate ? ganttDayLabel(project.endDate) : "…"}`
+        : "";
+      const chips = project.issues.slice(0, 12).map((number) => {
+        const issue = issueByNumber.get(number);
+        const closed = issue && issue.status !== "open";
+        return `<button type="button" data-repo-record-kind="issues" data-repo-record-number="${number}" title="${escapeHtml(issue ? issue.title : `issue #${number}`)}" class="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] transition-colors hover:bg-secondary ${closed ? "text-muted-foreground line-through" : "text-foreground"}">#${number}</button>`;
+      }).join("");
+      return `
+        <div class="border-t border-border px-4 py-3">
+          <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <i data-lucide="chart-gantt" class="h-4 w-4 text-primary"></i>
+            <span class="min-w-0 truncate text-sm font-semibold text-foreground">${escapeHtml(project.title)}</span>
+            <span data-repo-record-state class="rounded-md border border-border bg-secondary/60 px-2 py-0.5 text-[10px] font-mono text-foreground">${escapeHtml(project.status)}</span>
+            ${dates ? `<span class="font-mono text-[10px] text-muted-foreground">${escapeHtml(dates)}</span>` : ""}
+            ${project.milestone ? `<span class="inline-flex items-center gap-1 rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-medium text-muted-foreground"><i data-lucide="milestone" class="h-3 w-3"></i>${escapeHtml(project.milestone)}</span>` : ""}
+          </div>
+          ${project.body ? `<p class="mt-1 truncate text-xs text-muted-foreground">${escapeHtml(project.body).slice(0, 200)}</p>` : ""}
+          <div class="mt-2 flex items-center gap-3">
+            <div class="h-1.5 w-40 overflow-hidden rounded-full bg-secondary"><span class="block h-full rounded-full bg-primary" style="width:${progress < 0 ? 0 : progress}%"></span></div>
+            <span class="font-mono text-[10px] text-muted-foreground">${progress < 0 ? "no linked issues" : `${progress}% · ${project.issues.length} issue${project.issues.length === 1 ? "" : "s"}`}</span>
+          </div>
+          ${chips ? `<div class="mt-2 flex flex-wrap items-center gap-1.5">${chips}</div>` : ""}
+        </div>`;
+    }).join("");
+  }
+
+  // The gantt view: one labeled row per project (rounded track + progress
+  // fill) with its linked issues indented beneath, over a shared month axis
+  // with a "today" rule. Chrome uses theme tokens so both modes stay readable;
+  // every bar is direct-labeled by its row so color never carries meaning
+  // alone.
+  function renderRepoProjectsGantt(projects, issues) {
+    const issueByNumber = new Map(issues.map((issue) => [issue.number, issue]));
+    const rows = [];
+    projects.forEach((project) => {
+      rows.push({
+        kind: "project",
+        label: project.title,
+        start: project.startDate,
+        end: project.endDate,
+        createdAt: project.createdAtMs,
+        status: project.status,
+        progress: projectProgress(project, issues),
+      });
+      project.issues.forEach((number) => {
+        const issue = issueByNumber.get(number);
+        if (!issue) return;
+        rows.push({
+          kind: "issue",
+          label: `#${number} ${issue.title}`,
+          start: issue.startDate,
+          end: issue.endDate,
+          createdAt: issue.createdAtMs,
+          status: issue.status,
+          number,
+        });
+      });
+    });
+    const now = Date.now();
+    const DAY = 24 * 60 * 60 * 1000;
+    let min = Infinity;
+    let max = -Infinity;
+    rows.forEach((row) => {
+      if (row.start > 0) min = Math.min(min, row.start);
+      if (row.end > 0) max = Math.max(max, row.end);
+      if (!(row.start > 0) && !(row.end > 0) && row.createdAt > 0) min = Math.min(min, row.createdAt);
+    });
+    if (!Number.isFinite(min)) min = now - 30 * DAY;
+    if (!Number.isFinite(max)) max = now;
+    max = Math.max(max, Math.min(now, min + 365 * DAY));
+    if (max - min < 14 * DAY) max = min + 14 * DAY;
+    const pad = (max - min) * 0.04;
+    min -= pad;
+    max += pad;
+    const span = max - min;
+    const pct = (ms) => Math.min(100, Math.max(0, (ms - min) * 100 / span));
+    // Month ticks (day ticks when the whole range fits inside ~2 months).
+    const ticks = [];
+    const cursor = new Date(min);
+    cursor.setHours(0, 0, 0, 0);
+    if (span > 62 * DAY) {
+      cursor.setDate(1);
+      cursor.setMonth(cursor.getMonth() + 1);
+      while (cursor.getTime() < max) {
+        ticks.push({ ms: cursor.getTime(), label: cursor.toLocaleDateString(undefined, { month: "short", year: span > 300 * DAY ? "2-digit" : undefined }) });
+        cursor.setMonth(cursor.getMonth() + 1);
+      }
+    } else {
+      const step = span > 21 * DAY ? 7 : span > 10 * DAY ? 2 : 1;
+      cursor.setDate(cursor.getDate() + step);
+      while (cursor.getTime() < max) {
+        ticks.push({ ms: cursor.getTime(), label: ganttDayLabel(cursor.getTime()) });
+        cursor.setDate(cursor.getDate() + step);
+      }
+    }
+    const todayVisible = now > min && now < max;
+    const GUTTER = "13rem";
+    const barTitle = (row) => {
+      const range = row.start > 0 || row.end > 0
+        ? `${row.start > 0 ? ganttDayLabel(row.start) : "?"} → ${row.end > 0 ? ganttDayLabel(row.end) : "?"}`
+        : "no dates set";
+      const progress = row.kind === "project" && row.progress >= 0 ? ` · ${row.progress}% done` : "";
+      return `${row.label} · ${range} · ${row.status}${progress}`;
+    };
+    const barHtml = (row) => {
+      const dated = row.start > 0 || row.end > 0;
+      const startMs = row.start > 0 ? row.start : (dated ? min + pad : Math.max(min, row.createdAt || min));
+      const endMs = row.end > 0 ? row.end : (dated ? Math.max(startMs + DAY, Math.min(now, max)) : Math.min(now, max));
+      const left = pct(startMs);
+      const width = Math.max(0.8, pct(Math.max(endMs, startMs + DAY)) - left);
+      const closed = row.status !== "open";
+      if (!dated) {
+        return `<span class="absolute top-1/2 h-2 -translate-y-1/2 rounded-full border border-dashed border-muted-foreground/50" style="left:${left}%;width:${width}%"></span>`;
+      }
+      if (row.kind === "project") {
+        const progress = row.progress < 0 ? 0 : row.progress;
+        return `<span class="absolute top-1/2 h-4 -translate-y-1/2 overflow-hidden rounded-md border border-primary/50 bg-primary/20 ${closed ? "opacity-55" : ""}" style="left:${left}%;width:${width}%"><span class="absolute inset-y-0 left-0 bg-primary" style="width:${progress}%"></span></span>`;
+      }
+      return `<span class="absolute top-1/2 h-2.5 -translate-y-1/2 rounded-full bg-accent ${closed ? "opacity-40" : ""}" style="left:${left}%;width:${width}%"></span>`;
+    };
+    const rowsHtml = rows.map((row) => `
+      <div class="grid grid-cols-[${GUTTER}_minmax(0,1fr)] items-center gap-3 rounded ${row.kind === "project" ? "h-9" : "h-7"} px-1 hover:bg-secondary/40">
+        <span class="flex min-w-0 items-center gap-1.5 ${row.kind === "project" ? "text-xs font-semibold text-foreground" : "pl-5 text-[11px] text-muted-foreground"}">
+          <span class="min-w-0 truncate">${escapeHtml(row.label)}</span>
+          ${row.kind === "project" && row.progress >= 0 ? `<span class="shrink-0 font-mono text-[10px] font-normal text-muted-foreground">${row.progress}%</span>` : ""}
+        </span>
+        <div class="relative h-full" title="${escapeHtml(barTitle(row))}">${barHtml(row)}</div>
+      </div>`).join("");
+    return `
+      <div class="p-4">
+        <div class="mb-2 flex flex-wrap items-center justify-end gap-4 text-[10px] text-muted-foreground">
+          <span class="inline-flex items-center gap-1.5"><span class="h-2 w-4 rounded-sm border border-primary/50 bg-primary/40"></span>Projects</span>
+          <span class="inline-flex items-center gap-1.5"><span class="h-2 w-4 rounded-full bg-accent"></span>Issues</span>
+          ${todayVisible ? '<span class="inline-flex items-center gap-1.5"><span class="h-3 w-px bg-destructive"></span>Today</span>' : ""}
+        </div>
+        <div class="overflow-x-auto">
+          <div class="min-w-[36rem]" data-repo-projects-gantt>
+            <div class="grid grid-cols-[${GUTTER}_minmax(0,1fr)] gap-3">
+              <span></span>
+              <div class="relative h-5">
+                ${ticks.map((tick) => `<span class="absolute top-0 -translate-x-1/2 font-mono text-[10px] text-muted-foreground" style="left:${pct(tick.ms)}%">${escapeHtml(tick.label)}</span>`).join("")}
+              </div>
+            </div>
+            <div class="relative">
+              <div class="pointer-events-none absolute inset-y-0 right-0" style="left:calc(${GUTTER} + 0.75rem + 0.25rem)">
+                ${ticks.map((tick) => `<span class="absolute inset-y-0 w-px bg-border/70" style="left:${pct(tick.ms)}%"></span>`).join("")}
+                ${todayVisible ? `<span class="absolute inset-y-0 w-px bg-destructive/70" style="left:${pct(now)}%"></span>` : ""}
+              </div>
+              ${rowsHtml}
+            </div>
+          </div>
+        </div>
+      </div>`;
   }
 
   async function loadRepoCollection(repo, kind, containerSelector) {
@@ -7733,6 +8051,7 @@
       insights: { label: "Insights", icon: "chart-no-axes-combined", count: "" },
       releases: { label: "Releases", icon: "tag", count: "" },
       issues: { label: "Issues", icon: "circle-dot", count: issuesCount },
+      projects: { label: "Projects", icon: "chart-gantt", count: "" },
       pulls: { label: "Pull requests", icon: "git-pull-request", count: pullsCount },
       discussions: { label: "Discussions", icon: "message-square", count: discussionsCount },
       mirrors: { label: "Mirrors", icon: "radio", count: mirrorsCount },
@@ -7794,7 +8113,7 @@
             </div>
           </div>
           <div class="flex min-w-0 overflow-x-auto px-3" role="tablist">
-            ${["code", "commits", "insights", "releases", "issues", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : [])].map((tab) => {
+            ${["code", "commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : [])].map((tab) => {
               const meta = tabMeta[tab];
               const iconAttr = tab === "issues"
                 ? 'data-lucide="circle-dot"'
@@ -7889,6 +8208,7 @@
             <section data-dashboard-repo-tab-panel="commits" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5 text-muted-foreground"></i>Commits</span><span class="font-mono text-[10px] text-muted-foreground">live mirror history</span></div><div data-repo-commits></div></div></section>
             <section data-dashboard-repo-tab-panel="releases" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="tag" class="h-3.5 w-3.5 text-primary"></i>Releases</span><span class="font-mono text-[10px] text-muted-foreground">signed release manifests</span></div><div data-repo-releases></div></div></section>
             ${renderRepoCollectionPanel("issues", repo, issuesCount, repoCount(repo, ["closedIssues", "closedIssueCount"]))}
+            <section data-dashboard-repo-tab-panel="projects" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-gantt" class="h-3.5 w-3.5 text-primary"></i>Projects</span><span class="font-mono text-[10px] text-muted-foreground">linked issues · milestones · gantt</span></div><div data-repo-projects></div></div></section>
             ${renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))}
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
@@ -8999,6 +9319,18 @@
       const issueFilterButton = event.target.closest("[data-dashboard-issue-filter]");
       if (issueFilterButton) {
         setIssueFilter(issueFilterButton.dataset.dashboardIssueFilter || "open");
+        return;
+      }
+
+      const projectFilterButton = event.target.closest("[data-dashboard-project-filter]");
+      if (projectFilterButton) {
+        setProjectFilter(projectFilterButton.dataset.dashboardProjectFilter || "open");
+        return;
+      }
+
+      const projectViewButton = event.target.closest("[data-dashboard-project-view]");
+      if (projectViewButton) {
+        setProjectView(projectViewButton.dataset.dashboardProjectView || "gantt");
         return;
       }
 

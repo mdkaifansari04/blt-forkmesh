@@ -6,6 +6,7 @@
 #include "DiscussionStore.h"
 #include "ForkMeshIdentity.h"
 #include "IssueStore.h"
+#include "ProjectStore.h"
 #include "PullStore.h"
 #include "CoveStore.h"
 #include "ActionStore.h"
@@ -79,6 +80,7 @@ class QTextEdit;
 class QCheckBox;
 class QComboBox;
 class QCompleter;
+class QDateEdit;
 class QStringListModel;
 class QGraphicsOpacityEffect;
 class QFrame;
@@ -2383,6 +2385,10 @@ private:
     void deleteCurrentIssueWithHistory(int number);
     void editIssueLabels();
     void editIssueMilestone();
+    // Planned start/end dates (issue #384): opens the inline two-QDateEdit
+    // editor in the sidebar's "Dates" row; save writes a signed "dates" event.
+    void editIssueDates();
+    void saveIssueDatesInline();
     void editIssuePriority();
     // Quick one-click priority nudge in the issue detail sidebar. direction < 0
     // raises priority (toward 1, highest); direction > 0 lowers it (toward 99,
@@ -2436,6 +2442,23 @@ private:
     void saveIssueAssigneesInline();
     void cancelIssueSidebarEditors();
     void updateIssueActionState();
+
+    // Projects tab (issue #384): repo-level projects that group issues, carry
+    // start/end dates and an optional milestone, and render as a list or a
+    // Gantt timeline. Backed by ProjectStore (.forkmesh/projects/).
+    QWidget *buildProjectsSection();
+    ProjectStore projectStoreForCurrentRepo() const; // build a store for that repo
+    void reloadProjects();      // load projects (+ issues, for progress) from the store
+    void refreshProjectList();  // apply the status filter into the table
+    void refreshProjectGantt(); // rebuild the Gantt rows from the loaded data
+    void showProject(int number); // render the selected project's detail pane
+    void promptNewProject();
+    void editProjectLinkedIssues(); // multi-select dialog over the repo's issues
+    void setProjectInlineNotice(const QString &message, bool error = false);
+    // Percent complete for a project: closed share of its linked issues, else
+    // (when only a milestone is linked) the closed share of that milestone.
+    int projectProgressPercent(const Project &project) const;
+
     QUrl issuesApiUrl(const RepositoryRecord &repo) const;
     QUrl bountyApiUrl(const RepositoryRecord &repo) const;
     // Website agent view (adhoc #182): the repo owner watches this node's
@@ -3362,6 +3385,8 @@ private:
     int m_artifactsTabIndex = -1; // index of the Artifacts page
     int m_shortcutsTabIndex = -1; // index of the Shortcuts page
     int m_settingsTabIndex = -1; // index of the Settings page
+    int m_projectsTabIndex = -1; // index of the Projects page (issue #384)
+    QPushButton *m_repoProjectsTab = nullptr; // handle for the Projects (N) badge
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
     // Splitter holding the branches table + changed-files/scope lists + diff view.
@@ -4571,6 +4596,15 @@ private:
     QLineEdit *m_issueLabelsEdit = nullptr;
     QComboBox *m_issueMilestoneEdit = nullptr;
     QComboBox *m_issuePriorityEdit = nullptr;
+    // Planned start/end dates row (issue #384): read-only value + an inline
+    // editor of two QDateEdits, each toggled by a "no date" enable checkbox.
+    QLabel *m_issueDatesValue = nullptr;
+    QStackedWidget *m_issueDatesStack = nullptr;
+    QPushButton *m_issueDatesButton = nullptr;
+    QDateEdit *m_issueStartDateEdit = nullptr;
+    QDateEdit *m_issueEndDateEdit = nullptr;
+    QCheckBox *m_issueStartDateEnable = nullptr;
+    QCheckBox *m_issueEndDateEnable = nullptr;
     QScrollArea *m_issueThreadScroll = nullptr;
     QWidget *m_issueThreadContainer = nullptr;
     QVBoxLayout *m_issueThreadLayout = nullptr;
@@ -4673,6 +4707,32 @@ private:
     // aimed at a row or the search box). Empty = "unknown", never skip.
     QString m_issuesLoadedSig;
     QStringList m_pendingIssueAttachments; // images queued for the next comment
+
+    // Projects tab widgets + state (issue #384).
+    QTableWidget *m_projectTable = nullptr;
+    QStackedWidget *m_projectViewStack = nullptr; // 0 list table, 1 Gantt
+    QComboBox *m_projectStatusFilter = nullptr;   // Open | Closed | All
+    // The Gantt chart (a ProjectGantt, kept as a QWidget* since that type is
+    // only included by MainWindowProjects.cpp) and its scroll host.
+    QWidget *m_projectGantt = nullptr;
+    QWidget *m_projectDetailPane = nullptr; // right-hand detail beside the list
+    QLabel *m_projectDetailTitle = nullptr;
+    QLabel *m_projectDetailStatus = nullptr; // Open/Closed status pill
+    QLabel *m_projectDetailBody = nullptr;
+    QLabel *m_projectDetailProgress = nullptr;
+    QLabel *m_projectInlineNotice = nullptr;
+    QDateEdit *m_projectStartEdit = nullptr;
+    QDateEdit *m_projectEndEdit = nullptr;
+    QCheckBox *m_projectStartEnable = nullptr;
+    QCheckBox *m_projectEndEnable = nullptr;
+    QComboBox *m_projectMilestoneCombo = nullptr;
+    QListWidget *m_projectIssuesList = nullptr; // linked issues in the detail pane
+    QPushButton *m_projectNewButton = nullptr;
+    QPushButton *m_projectCloseButton = nullptr; // Close/Reopen the project
+    QPushButton *m_projectDeleteButton = nullptr;
+    QList<Project> m_currentProjects;
+    int m_currentProjectNumber = -1;
+    bool m_projectDeleteConfirmPending = false;
 
     // Node profile panel widgets + the node it currently shows.
     QWidget *m_nodeProfilePanel = nullptr;

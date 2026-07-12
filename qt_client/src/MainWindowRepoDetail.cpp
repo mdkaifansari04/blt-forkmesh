@@ -7560,7 +7560,11 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Mirror nodes", "server"},
                                 {"Artifacts", "package"},
                                 {"Shortcuts", "rocket"},
-                                {"Settings", "gear"}};
+                                {"Settings", "gear"},
+                                // Projects (issue #384) is appended here so every
+                                // earlier tab keeps its positional id, but its
+                                // button is inserted next to Issues in the row.
+                                {"Projects", "list-unordered"}};
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
     auto *tabRow = new QHBoxLayout;
@@ -7603,8 +7607,15 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_repoReleasesTab = b; // handle for the Releases (N) badge
         if (i == 13)
             m_repoMirrorsTab = b; // handle for the Mirror nodes (N) badge
+        if (i == 17)
+            m_repoProjectsTab = b; // handle for the Projects (N) badge
         m_repoDetailTabs->addButton(b, i);
-        tabRow->addWidget(b);
+        if (i == 17)
+            // Projects sits right after Issues in the row (Code=0, Issues=1
+            // among the visible buttons) despite its appended positional id.
+            tabRow->insertWidget(2, b);
+        else
+            tabRow->addWidget(b);
     }
     tabRow->addStretch();
     auto *tabBar = new QWidget;
@@ -7742,6 +7753,8 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildShortcutsTab());                   // 15 Shortcuts
     m_settingsTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 16 Settings
+    m_projectsTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildProjectsSection());                // 17 Projects
     // Chat is no longer part of the repo hierarchy: it's a top-level section
     // (m_sectionStack index 2), reached from the always-visible nav.
     m_chatStackIndex = -1;
@@ -7821,6 +7834,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             loadShortcutsPanel();
         else if (id == m_settingsTabIndex)
             refreshRepoSettings();
+        else if (id == m_projectsTabIndex)
+            reloadProjects();
         // Hand keyboard focus to the new tab's list so the user can arrow through
         // its rows right away instead of having to click a row first.
         focusRepoDetailTable(id);

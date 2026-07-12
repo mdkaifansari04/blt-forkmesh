@@ -336,6 +336,8 @@ void MainWindow::focusRepoDetailTable(int id)
         table = m_mirrorNodesTable;
     else if (id == m_artifactsTabIndex)
         table = m_artifactsTable;
+    else if (id == m_projectsTabIndex)
+        table = m_projectTable;
     // Only grab focus for a table that's actually on screen (e.g. the Issues tab
     // hides m_issueTable while its Milestones/Labels sub-tab is showing).
     if (table && table->isVisible() && table->isEnabled())

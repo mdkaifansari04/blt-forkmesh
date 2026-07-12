@@ -628,11 +628,12 @@
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
-    if (["commits", "issues", "pulls", "discussions", "releases", "insights", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
+    if (["commits", "issues", "projects", "pulls", "discussions", "releases", "insights", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
       if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
       state.loadedRepoTabs[tab] = true;
       if (tab === "commits") loadRepoCommits(state.selectedRepo);
       else if (tab === "issues") loadRepoIssues(state.selectedRepo);
+      else if (tab === "projects") loadRepoProjects(state.selectedRepo);
       else if (tab === "releases") loadRepoReleases(state.selectedRepo);
       else if (tab === "insights") loadRepoInsights(state.selectedRepo);
       else if (tab === "agents") loadRepoAgents(state.selectedRepo);
@@ -641,6 +642,8 @@
       // Re-selecting the tab should return to the issues list even if the
       // new-issue compose form was left open.
       renderRepoIssues();
+    } else if (tab === "projects") {
+      renderRepoProjects();
     } else if (tab === "agents") {
       loadRepoAgents(state.selectedRepo);
     }

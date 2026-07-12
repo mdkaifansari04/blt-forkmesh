@@ -11,6 +11,7 @@
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
 
+#include <QDateEdit>
 #include <QLayoutItem>
 #include <QPair>
 #include <QPixmap>
@@ -510,6 +511,7 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueAssigneesValue = new QLabel("No one - <a href='#'>Assign yourself</a>");
     m_issueLabelsValue = new QLabel("No labels");
     m_issueMilestoneValue = new QLabel("No milestone");
+    m_issueDatesValue = new QLabel("No dates");
     m_issuePriorityValue = new QLabel("No priority");
     m_issueEstimateValue = new QLabel("\xE2\x80\x94");
     m_issueBountyValue = new QLabel("No bounty");
@@ -531,7 +533,8 @@ QWidget *MainWindow::buildIssuesSection()
         reloadIssues();
     };
     for (QLabel *v : {m_issueAssigneesValue, m_issueLabelsValue,
-                      m_issueMilestoneValue, m_issuePriorityValue,
+                      m_issueMilestoneValue, m_issueDatesValue,
+                      m_issuePriorityValue,
                       m_issueEstimateValue,
                       m_issueBountyValue}) {
         v->setObjectName("statusLine");
@@ -556,12 +559,14 @@ QWidget *MainWindow::buildIssuesSection()
     });
     m_issueLabelsButton = new QPushButton;
     m_issueMilestoneButton = new QPushButton;
+    m_issueDatesButton = new QPushButton;
     m_issuePriorityButton = new QPushButton;
     m_issueProgressButton = new QPushButton;
     m_issueBountyButton = new QPushButton;
     m_issueAssigneesButton = new QPushButton;
     m_issueDeleteButton = new QPushButton("Delete issue");
     for (QPushButton *b : {m_issueLabelsButton, m_issueMilestoneButton,
+                           m_issueDatesButton,
                            m_issuePriorityButton, m_issueProgressButton,
                            m_issueBountyButton,
                            m_issueAssigneesButton}) {
@@ -710,6 +715,44 @@ QWidget *MainWindow::buildIssuesSection()
     connect(milestoneSave, &QPushButton::clicked, this,
             &MainWindow::saveIssueMilestoneInline);
     connect(milestoneCancel, &QPushButton::clicked, this,
+            &MainWindow::cancelIssueSidebarEditors);
+
+    // Planned start/end dates (issue #384): value label + an inline editor of
+    // two QDateEdits, each gated by a "set" checkbox so a date can stay unset.
+    m_issueDatesStack = new QStackedWidget(meta);
+    m_issueDatesStack->addWidget(m_issueDatesValue);
+    auto *datesEditBox = new QWidget(meta);
+    auto *datesEditLayout = new QVBoxLayout(datesEditBox);
+    datesEditLayout->setContentsMargins(0, 0, 0, 0);
+    datesEditLayout->setSpacing(6);
+    auto makeIssueDateRow = [&](const QString &label, QCheckBox *&enableOut,
+                                QDateEdit *&editOut) {
+        auto *rowWidget = new QWidget(datesEditBox);
+        auto *row = new QHBoxLayout(rowWidget);
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(6);
+        enableOut = new QCheckBox(label, rowWidget);
+        enableOut->setToolTip("Untick to leave this date unset");
+        editOut = new QDateEdit(QDate::currentDate(), rowWidget);
+        editOut->setCalendarPopup(true);
+        editOut->setDisplayFormat(QStringLiteral("yyyy-MM-dd"));
+        editOut->setEnabled(false);
+        connect(enableOut, &QCheckBox::toggled, editOut, &QWidget::setEnabled);
+        row->addWidget(enableOut);
+        row->addWidget(editOut, 1);
+        return rowWidget;
+    };
+    datesEditLayout->addWidget(
+        makeIssueDateRow("Start", m_issueStartDateEnable, m_issueStartDateEdit));
+    datesEditLayout->addWidget(
+        makeIssueDateRow("End", m_issueEndDateEnable, m_issueEndDateEdit));
+    auto *datesSave = makeEditorButton("Save", "primaryButton");
+    auto *datesCancel = makeEditorButton("Cancel", "ghostButton");
+    datesEditLayout->addWidget(makeInlineButtonRow(datesSave, datesCancel));
+    m_issueDatesStack->addWidget(datesEditBox);
+    connect(datesSave, &QPushButton::clicked, this,
+            &MainWindow::saveIssueDatesInline);
+    connect(datesCancel, &QPushButton::clicked, this,
             &MainWindow::cancelIssueSidebarEditors);
 
     m_issuePriorityStack = new QStackedWidget(meta);
@@ -873,6 +916,7 @@ QWidget *MainWindow::buildIssuesSection()
     addMetaSection("Bounty", m_issueBountyValue, m_issueBountyButton);
     addMetaSection("Projects", makeValue("No projects"), makeGear());
     addMetaSection("Milestone", m_issueMilestoneStack, m_issueMilestoneButton);
+    addMetaSection("Dates", m_issueDatesStack, m_issueDatesButton);
     addMetaSection("Relationships", makeValue("None yet"), makeGear());
     m_issueDevelopmentValue = makeValue("No linked pull requests.");
     m_issueDevelopmentValue->setTextInteractionFlags(Qt::TextBrowserInteraction);
@@ -1132,6 +1176,8 @@ QWidget *MainWindow::buildIssuesSection()
             &MainWindow::editIssueLabels);
     connect(m_issueMilestoneButton, &QPushButton::clicked, this,
             &MainWindow::editIssueMilestone);
+    connect(m_issueDatesButton, &QPushButton::clicked, this,
+            &MainWindow::editIssueDates);
     connect(m_issuePriorityButton, &QPushButton::clicked, this,
             &MainWindow::editIssuePriority);
     connect(m_issueProgressButton, &QPushButton::clicked, this,
@@ -2396,6 +2442,8 @@ void MainWindow::renderIssueThread(const Issue &issue)
             m_issueLabelsValue->setText("No labels");
         if (m_issueMilestoneValue)
             m_issueMilestoneValue->setText("No milestone");
+        if (m_issueDatesValue)
+            m_issueDatesValue->setText("No dates");
         if (m_issuePriorityValue)
             m_issuePriorityValue->setText("No priority");
         updateIssueAgentUi(Issue());
@@ -2448,6 +2496,18 @@ void MainWindow::renderIssueThread(const Issue &issue)
         issue.milestone.isEmpty()
             ? QStringLiteral("No milestone")
             : QStringLiteral("<b>%1</b>").arg(issue.milestone.toHtmlEscaped()));
+    if (m_issueDatesValue) {
+        auto dateText = [](qint64 ms) {
+            return ms > 0 ? QDateTime::fromMSecsSinceEpoch(ms)
+                                .toString(QStringLiteral("yyyy-MM-dd"))
+                          : QString::fromUtf8("\xE2\x80\x94");
+        };
+        m_issueDatesValue->setText(
+            issue.startDate <= 0 && issue.endDate <= 0
+                ? QStringLiteral("No dates")
+                : QString::fromUtf8("%1 \xE2\x86\x92 %2")
+                      .arg(dateText(issue.startDate), dateText(issue.endDate)));
+    }
     m_issuePriorityValue->setText(
         issue.priority > 0
             ? QStringLiteral("<b>%1</b> <span style='color:#8b949e'>(1 highest, 99 lowest)</span>")
@@ -2521,6 +2581,20 @@ void MainWindow::renderIssueThread(const Issue &issue)
         const int selected = m_issueMilestoneEdit->findData(issue.milestone);
         if (selected >= 0)
             m_issueMilestoneEdit->setCurrentIndex(selected);
+    }
+    if (m_issueStartDateEdit && m_issueStartDateEnable) {
+        m_issueStartDateEnable->setChecked(issue.startDate > 0);
+        m_issueStartDateEdit->setDate(
+            issue.startDate > 0
+                ? QDateTime::fromMSecsSinceEpoch(issue.startDate).date()
+                : QDate::currentDate());
+    }
+    if (m_issueEndDateEdit && m_issueEndDateEnable) {
+        m_issueEndDateEnable->setChecked(issue.endDate > 0);
+        m_issueEndDateEdit->setDate(
+            issue.endDate > 0
+                ? QDateTime::fromMSecsSinceEpoch(issue.endDate).date()
+                : QDate::currentDate());
     }
     if (m_issuePriorityEdit) {
         const int selected = m_issuePriorityEdit->findData(issue.priority);
@@ -5027,6 +5101,41 @@ void MainWindow::saveIssueMilestoneInline()
     reloadIssues();
 }
 
+void MainWindow::editIssueDates()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    m_issueDeleteConfirmPending = false;
+    setIssueInlineNotice(QString());
+    if (m_issueDatesStack)
+        m_issueDatesStack->setCurrentIndex(1);
+    if (m_issueStartDateEdit)
+        m_issueStartDateEdit->setFocus();
+}
+
+void MainWindow::saveIssueDatesInline()
+{
+    if (m_currentIssueNumber < 0 || !m_issueStartDateEdit || !m_issueEndDateEdit)
+        return;
+    auto dateMs = [](QDateEdit *edit, QCheckBox *enable) -> qint64 {
+        if (!enable || !enable->isChecked())
+            return 0;
+        return edit->date().startOfDay().toMSecsSinceEpoch();
+    };
+    IssueStore store = issueStoreForCurrentRepo();
+    QString error;
+    if (!store.setDates(m_currentIssueNumber,
+                        dateMs(m_issueStartDateEdit, m_issueStartDateEnable),
+                        dateMs(m_issueEndDateEdit, m_issueEndDateEnable),
+                        &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not update dates." : error,
+                             true);
+        return;
+    }
+    setIssueInlineNotice("Dates updated.");
+    reloadIssues();
+}
+
 void MainWindow::editIssuePriority()
 {
     if (m_currentIssueNumber < 0)
@@ -6114,6 +6223,8 @@ void MainWindow::cancelIssueSidebarEditors()
         m_issueLabelsStack->setCurrentIndex(0);
     if (m_issueMilestoneStack)
         m_issueMilestoneStack->setCurrentIndex(0);
+    if (m_issueDatesStack)
+        m_issueDatesStack->setCurrentIndex(0);
     if (m_issuePriorityStack)
         m_issuePriorityStack->setCurrentIndex(0);
 }

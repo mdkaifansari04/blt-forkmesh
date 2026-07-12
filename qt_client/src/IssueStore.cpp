@@ -284,6 +284,10 @@ QJsonObject IssueEvent::toJson() const
         obj.insert("labels", fromStringList(labels));
     if (type == "milestone")
         obj.insert("milestone", milestone);
+    if (type == "dates") {
+        obj.insert("startDate", double(startDate));
+        obj.insert("endDate", double(endDate));
+    }
     if (type == "priority")
         obj.insert("priority", priority);
     if (type == "progress")
@@ -320,6 +324,8 @@ IssueEvent IssueEvent::fromJson(const QJsonObject &obj)
     ev.status = obj.value("status").toString();
     ev.labels = toStringList(obj.value("labels").toArray());
     ev.milestone = obj.value("milestone").toString();
+    ev.startDate = qint64(obj.value("startDate").toDouble());
+    ev.endDate = qint64(obj.value("endDate").toDouble());
     ev.priority = obj.value("priority").toInt();
     ev.progress = obj.value("progress").toInt();
     ev.bountyUsd = obj.value("bountyUsd").toDouble();
@@ -350,7 +356,9 @@ QJsonObject Issue::toJson() const
     }
     return {{"schema", "forkmesh-issue-v1"}, {"number", number}, {"title", title},
             {"status", status}, {"labels", fromStringList(labels)},
-            {"milestone", milestone}, {"priority", priority}, {"progress", progress},
+            {"milestone", milestone},
+            {"startDate", double(startDate)}, {"endDate", double(endDate)},
+            {"priority", priority}, {"progress", progress},
             {"assignees", fromStringList(assignees)},
             {"createdAt", double(createdAt)}, {"updatedAt", double(updatedAt)},
             {"author", author},
@@ -368,6 +376,8 @@ Issue Issue::fromJson(const QJsonObject &obj)
     issue.status = obj.value("status").toString("open");
     issue.labels = toStringList(obj.value("labels").toArray());
     issue.milestone = obj.value("milestone").toString();
+    issue.startDate = qint64(obj.value("startDate").toDouble());
+    issue.endDate = qint64(obj.value("endDate").toDouble());
     issue.priority = obj.value("priority").toInt();
     issue.progress = obj.value("progress").toInt();
     issue.assignees = toStringList(obj.value("assignees").toArray());
@@ -438,6 +448,8 @@ QString IssueStore::contentForSigning(const IssueEvent &ev)
         return ev.labels.join(",");
     if (ev.type == "milestone")
         return ev.milestone;
+    if (ev.type == "dates")
+        return QString::number(ev.startDate) + nul + QString::number(ev.endDate);
     if (ev.type == "priority")
         return QString::number(ev.priority);
     if (ev.type == "progress")
@@ -782,7 +794,10 @@ void IssueStore::recomputeMetadata(Issue &issue) const
             issue.labels = ev.labels;
         else if (ev.type == "milestone")
             issue.milestone = ev.milestone;
-        else if (ev.type == "priority")
+        else if (ev.type == "dates") {
+            issue.startDate = ev.startDate;
+            issue.endDate = ev.endDate;
+        } else if (ev.type == "priority")
             issue.priority = ev.priority;
         else if (ev.type == "progress")
             issue.progress = ev.progress;
@@ -1101,6 +1116,26 @@ bool IssueStore::setMilestone(int number, const QString &milestone, QString *err
     if (!writeIssueFile(issue, error))
         return false;
     return commit(QStringLiteral("issue #%1: milestone").arg(number), error);
+}
+
+bool IssueStore::setDates(int number, qint64 startDate, qint64 endDate,
+                          QString *error)
+{
+    if (!canWrite())
+        return false;
+    Issue issue;
+    if (!readIssueFile(number, issue))
+        return false;
+    IssueEvent ev;
+    ev.type = "dates";
+    ev.startDate = startDate;
+    ev.endDate = endDate;
+    ev = makeSignedEvent(number, ev);
+    issue.events.append(ev);
+    recomputeMetadata(issue);
+    if (!writeIssueFile(issue, error))
+        return false;
+    return commit(QStringLiteral("issue #%1: dates").arg(number), error);
 }
 
 bool IssueStore::setPriority(int number, int priority, QString *error)
