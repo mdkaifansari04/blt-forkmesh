@@ -3488,6 +3488,7 @@ private:
     QLabel *m_aboutText = nullptr;
     QLabel *m_aboutTopics = nullptr;
     QLabel *m_aboutFiles = nullptr;
+    QLabel *m_aboutFediverse = nullptr;
     QLabel *m_releaseHeader = nullptr;
     QLabel *m_releaseRow = nullptr;
     QLabel *m_langBar = nullptr;
