@@ -1116,6 +1116,15 @@ QString MainWindow::iconsDir() const
     if (resolved)
         return cached;
     resolved = true;
+    // Baked into the binary as a Qt resource (see qt_client/CMakeLists.txt) so
+    // the file/folder tree icons show up regardless of how the app was
+    // installed -- a packaged install never has a loose icons/ directory
+    // beside the executable (issue #417).
+    static const QString kResourceDir = QStringLiteral(":/icons/tree");
+    if (QDir(kResourceDir).exists()) {
+        cached = kResourceDir;
+        return cached;
+    }
     const QString src = QStringLiteral(FORKMESH_SOURCE_DIR);
     if (!src.isEmpty()) {
         const QString candidate = QDir(src).absoluteFilePath("../icons");
