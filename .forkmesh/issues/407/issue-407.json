@@ -43,6 +43,26 @@
             "sig": "mKmkxuHo3rCGSRE0dMOQ4hDI_CEykKmgX81eTPYXc7qC-NpU0alM8QFYT1iXRURNRN3jqaEiahIa2zayRS_DDw",
             "ts": 1783880553588,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-407-fix-chat-display-on-mobile-web-and-show-the-full\".",
+            "id": "3c10f230-e3d7-4f40-8fb1-6bf2ac725349",
+            "sig": "DcBu8dsV2l73S9Sz8CVIuXLpEpRotKvc-XQxvBW49CRCWpBeqSsjsTtYHO87ToE5kGh8uAYiaUk6hQZYoxRsDA",
+            "ts": 1783885352512,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "8a992a89-323d-472b-9da4-d544c38f7c40",
+            "sig": "GolqTsq7ELdFwSdXhq-5H_G7qB1tyUYLZY0DpeNa1h_t1urpxDTArOYNL7_ckgY2tyWtfTMBHqH-Eb0kriRRBA",
+            "status": "closed",
+            "ts": 1783885352568,
+            "type": "status"
         }
     ],
     "labels": [
@@ -53,8 +73,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "fix chat display on mobile web and show the full chat history",
-    "updatedAt": 1783880553588,
+    "updatedAt": 1783885352568,
     "votes": 0
 }

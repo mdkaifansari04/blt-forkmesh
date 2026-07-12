@@ -426,15 +426,68 @@ int countNumberedDirs(const QString &mirrorPath, const QString &ref,
     return count;
 }
 
+// Open-issue tally for the repo header (issue #397): the website badges a repo
+// with the number of OPEN issues, with closed issues opt-in behind the Closed
+// filter. Each .forkmesh/issues/<n>/issue-<n>.json carries a top-level "status"
+// ("open"/"closed"); anything not explicitly "closed" counts as open (matches
+// the web's parseIssueJson default, which treats a missing status as open). The
+// return value is the open count; when `closed` is non-null it receives the
+// remaining (total-minus-open) closed count for the panel's "N Closed" tally.
+int countOpenIssues(const QString &mirrorPath, const QString &ref, int *closed)
+{
+    if (closed)
+        *closed = 0;
+    QByteArray output;
+    if (!runGit(mirrorPath, {"ls-tree", "-z", ref + ":.forkmesh/issues"}, output))
+        return 0; // folder absent -> nothing filed yet
+    static const QRegularExpression numericName(QStringLiteral("^[0-9]+$"));
+    int open = 0;
+    int total = 0;
+    for (const QByteArray &record : output.split('\0')) {
+        if (record.isEmpty())
+            continue;
+        const int tab = record.indexOf('\t');
+        if (tab < 0)
+            continue;
+        const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+        if (meta.size() < 2 || meta.at(1) != "tree")
+            continue;
+        const QString name = QString::fromUtf8(record.mid(tab + 1));
+        if (!numericName.match(name).hasMatch())
+            continue;
+        ++total;
+        QByteArray blob;
+        QString status;
+        const QString rel =
+            QStringLiteral(".forkmesh/issues/%1/issue-%1.json").arg(name);
+        if (runGit(mirrorPath, {"cat-file", "-p", ref + ":" + rel}, blob))
+            status = QJsonDocument::fromJson(blob)
+                         .object()
+                         .value(QStringLiteral("status"))
+                         .toString();
+        if (status != QLatin1String("closed"))
+            ++open; // open, reopened, or unreadable -> counts as open
+    }
+    if (closed)
+        *closed = qMax(0, total - open);
+    return open;
+}
+
 QJsonObject rootCountsFor(const QString &mirrorPath, const QString &ref)
 {
     int commits = 0;
     QByteArray output;
     if (runGit(mirrorPath, {"rev-list", "--count", ref}, output))
         commits = QString::fromUtf8(output).trimmed().toInt();
+    // "issues" stays the total (open + closed) for backward compatibility; the
+    // website reads openIssues/closedIssues to badge headers with the open
+    // count only (issue #397) and to fill the panel's Open/Closed split.
+    int closedIssues = 0;
+    const int openIssues = countOpenIssues(mirrorPath, ref, &closedIssues);
     return QJsonObject{
-        {"issues",
-         countNumberedDirs(mirrorPath, ref, QStringLiteral(".forkmesh/issues"))},
+        {"issues", openIssues + closedIssues},
+        {"openIssues", openIssues},
+        {"closedIssues", closedIssues},
         {"pulls", countNumberedDirs(mirrorPath, ref, QStringLiteral("pulls"))},
         {"discussions",
          countNumberedDirs(mirrorPath, ref, QStringLiteral(".forkmesh/discussions"))},

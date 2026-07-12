@@ -54,6 +54,26 @@
             "sig": "JgB1slFFD57HdFTjoYFqflc4WvwkxoSwsnr5YVPkKqNTaPnKAXtc9-LTF1tJZSPeXMsChNOX3iPkbC607S-zCg",
             "ts": 1783880541818,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-411-there-are-several-users-online-as-duplicates-ple\".",
+            "id": "85c0907a-69ac-4f34-97eb-f9bbc12972ec",
+            "sig": "iOGCDSR--PWpgSimjNmjUqo2sbmK830ajYnKOzULxU3z3tttELbk7xWNz9Py3cLBh_dxS4JePWw8Pk-8ZGgVBg",
+            "ts": 1783885368507,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "64e57913-f5ba-4ab1-8268-db38dafea753",
+            "sig": "ieC11UrunxJEsPE5AutEIZ5quI0bze4__p_nafiYMqSYgjU8qGgaep3AIx-6UADWxYogTBgja7vyxFHNH26xBg",
+            "status": "closed",
+            "ts": 1783885368554,
+            "type": "status"
         }
     ],
     "labels": [
@@ -64,8 +84,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "there are several users online as duplicates, please create an issue to fix that",
-    "updatedAt": 1783880541818,
+    "updatedAt": 1783885368554,
     "votes": 0
 }
