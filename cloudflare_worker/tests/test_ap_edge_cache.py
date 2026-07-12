@@ -140,7 +140,7 @@ def _fake_request(url, method="GET"):
 
 # --- Collections ---------------------------------------------------------------
 
-def _collection_env(edge, d1_log, federates=True):
+def _collection_env(edge, d1_log, federates=True, followers_public=False):
     globs = _base_globals(edge, d1_log)
 
     async def _ap_user_federates(env, handle):
@@ -152,13 +152,23 @@ def _collection_env(edge, d1_log, federates=True):
     async def _ap_actor_bi(env, kind, handle):
         return "bi:" + handle
 
+    async def _account_row(env, name):
+        return "bi:" + name, {"profile_followers_public": followers_public}
+
+    async def d1_all(env, sql, *args):
+        d1_log.append(sql)
+        return []
+
     globs.update({
         "_ap_user_federates": _ap_user_federates,
         "_ap_repo_federates": _ap_repo_federates,
         "_ap_actor_bi": _ap_actor_bi,
+        "_account_row": _account_row,
+        "d1_all": d1_all,
+        "AP_COLLECTION_PAGE_SIZE": 200,
         "ap": SimpleNamespace(
-            collection_doc=lambda url, total: {
-                "id": url, "totalItems": total},
+            collection_doc=lambda url, total, items=None: {
+                "id": url, "totalItems": total, "items": items},
             ACTIVITY_CONTENT_TYPE="application/activity+json"),
     })
     return _load("ap_collection_handler", "_ap_negative_response",
@@ -175,6 +185,35 @@ def test_collection_cold_hit_computes_and_stores_by_canonical_url():
     assert resp.data["totalItems"] == 3
     assert edge.puts == ["https://forkmesh.com/ap/users/alice/followers"]
     assert any("COUNT(*)" in q for q in d1_log)
+
+
+def test_collection_followers_hidden_by_default_for_users():
+    edge, d1_log = FakeEdgeCache(), []
+    ns = _collection_env(edge, d1_log, followers_public=False)
+    resp = _run(ns["ap_collection_handler"](
+        None, _fake_request("https://forkmesh.com/ap/users/alice/followers"),
+        "user", "alice", "followers"))
+    assert resp.data["items"] is None  # opted out: bare collection
+    assert not any("ORDER BY" in q for q in d1_log)  # no items row fetch
+
+
+def test_collection_followers_enumerate_when_user_opts_in():
+    edge, d1_log = FakeEdgeCache(), []
+    ns = _collection_env(edge, d1_log, followers_public=True)
+    resp = _run(ns["ap_collection_handler"](
+        None, _fake_request("https://forkmesh.com/ap/users/alice/followers"),
+        "user", "alice", "followers"))
+    assert resp.data["items"] == []  # opted in, fake d1_all returns none
+    assert any("ORDER BY" in q for q in d1_log)  # items row fetch ran
+
+
+def test_collection_repo_followers_always_enumerate():
+    edge, d1_log = FakeEdgeCache(), []
+    ns = _collection_env(edge, d1_log)
+    resp = _run(ns["ap_collection_handler"](
+        None, _fake_request("https://forkmesh.com/ap/repos/acme/widgets/followers"),
+        "repo", "acme.widgets", "followers"))
+    assert resp.data["items"] == []  # repo watchers are already public
 
 
 def test_collection_warm_hit_is_served_without_touching_d1():
