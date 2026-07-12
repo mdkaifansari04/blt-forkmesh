@@ -423,13 +423,26 @@ def instance_actor_doc(origin, domain, pubkey_pem, icon_url=None,
     return doc
 
 
-def collection_doc(collection_url, total_items):
-    return {
+def collection_doc(collection_url, total_items, items=None):
+    doc = {
         "@context": AS_CONTEXT,
         "id": collection_url,
         "type": "OrderedCollection",
         "totalItems": int(total_items),
     }
+    if items is not None:
+        # A self-contained first page (no next/prev): small enough lists that
+        # remote servers don't need real pagination. Without a `first` page at
+        # all, Mastodon's UI treats the collection as hidden ("this user has
+        # chosen to not make their followers/following visible") even though
+        # totalItems is populated — so omitting this for opted-out accounts is
+        # what actually keeps their list private, not just leaving it out.
+        doc["first"] = {
+            "type": "OrderedCollectionPage",
+            "partOf": collection_url,
+            "orderedItems": list(items),
+        }
+    return doc
 
 
 def note_doc(object_url, actor_url, followers_url, content_html,
