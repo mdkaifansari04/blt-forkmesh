@@ -443,7 +443,7 @@ QWidget *MainWindow::buildNetworkLogDock()
             selectModelComboValue(
                 m_quickAddClaudeModel,
                 QSettings().value(kClaudeCodeModelSetting).toString().trimmed());
-            refreshClaudeModelCombo();
+            applyLiveClaudeModelsToCombos();
         } else if (agentIsCodexProvider(provider)) {
             populateCodexModelCombo(m_quickAddClaudeModel);
             m_quickAddClaudeModel->setProperty("claudeModelCombo", false);
@@ -2449,9 +2449,10 @@ QWidget *MainWindow::buildLogSection()
     clearButton->setToolTip("Clear the network log");
     setOcticon(clearButton, "trash", 14);
 
-    m_settingsLog = new QPlainTextEdit;
+    m_settingsLog = new QTextBrowser;
     m_settingsLog->setReadOnly(true);
     m_settingsLog->setObjectName("networkLog");
+    m_settingsLog->setOpenExternalLinks(true);
     // No setMaximumBlockCount here: that trims blocks from the *top* of the
     // document, which would silently discard the older segments this view now
     // loads on demand when the user scrolls up (adhoc #15). m_networkLog
@@ -2597,7 +2598,13 @@ QWidget *MainWindow::buildBreadcrumb()
     // other trigger keeps it current between those.
     auto *tokenUsage = new TokenUsageMiniChart;
     m_navTokenUsage = tokenUsage;
-    tokenUsage->onHover = [this] { refreshClaudeCodeUsage(); };
+    // This hover is also the only place that re-fetches the live claude-code
+    // model list (GET /v1/models, adhoc #41) — everywhere else that touches a
+    // model combo just applies whatever's already cached.
+    tokenUsage->onHover = [this] {
+        refreshClaudeCodeUsage();
+        refreshClaudeModelCombo();
+    };
     {
         QSettings settings;
         auto restore = [&](bool weekly, const QString &key) {
