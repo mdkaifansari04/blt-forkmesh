@@ -30,6 +30,18 @@
             "sig": "pshP78UfRLjv-m7KIG-ebfA6PJYu5pHZRxxFTKfhu28ZvQMRQVtLYtRMvId2FQfL-mbO1r1peec2BO9a8Rx9CQ",
             "ts": 1783880611922,
             "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 12,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "340920c3-008c-4c86-aa0c-aa9d52e38ba9",
+            "sig": "h0EQMTgBsS8TjqW2p1cdqeapDziT-M5Vu03qmNH7P8xr34iRZ3h5NUuI5YKxENzsIq9jTN_tOjytMYvs9VELDg",
+            "ts": 1783880618145,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -41,6 +53,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "the issue header on the web should only show open issues",
-    "updatedAt": 1783880611922,
+    "updatedAt": 1783880618145,
     "votes": 0
 }
