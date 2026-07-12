@@ -1647,6 +1647,7 @@ void MainWindow::showPull(int number)
         m_pullFileAnchors.clear();
         m_pullFileOrder.clear();
         m_pullStickyLabelHtml.clear();
+        m_pullFileTops.clear();
         m_pullStickyFile.clear();
         if (m_pullStickyHeader)
             m_pullStickyHeader->hide();
@@ -1941,6 +1942,7 @@ void MainWindow::renderPullDiff()
     m_pullFileAnchors.clear();
     m_pullFileOrder.clear();
     m_pullStickyLabelHtml.clear();
+    m_pullFileTops.clear(); // positions change on re-render; force a recompute
     for (const DiffFileEntry &f : files) {
         m_pullFileAnchors.insert(f.path, f.anchor);
         m_pullFileOrder.append(f.path);
@@ -2008,6 +2010,44 @@ void MainWindow::selectPullFileInList(const QString &filePath)
     }
 }
 
+// Walk the rendered diff once and record each file header's absolute document
+// y-position into m_pullFileTops (aligned to m_pullFileOrder; -1 if not found).
+// Locating an anchor scans the document, so gathering them one-by-one per file
+// is O(files x doc); this collects them all in a single pass and the result is
+// cached until the next re-render — the per-scroll-tick sticky update then just
+// reads the cache. Word-wrap is off, so a viewport resize doesn't move them.
+void MainWindow::computePullFileTops()
+{
+    m_pullFileTops.assign(m_pullFileOrder.size(), -1);
+    if (!m_pullDiff || m_pullFileOrder.isEmpty())
+        return;
+    QScrollBar *vbar = m_pullDiff->verticalScrollBar();
+    const int viewTop = vbar ? vbar->value() : 0;
+    QHash<QString, int> anchorIndex;
+    for (int i = 0; i < m_pullFileOrder.size(); ++i) {
+        const QString a = m_pullFileAnchors.value(m_pullFileOrder.at(i));
+        if (!a.isEmpty())
+            anchorIndex.insert(a, i);
+    }
+    QTextDocument *doc = m_pullDiff->document();
+    for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const QTextFragment frag = it.fragment();
+            if (!frag.isValid() || !frag.charFormat().isAnchor())
+                continue;
+            for (const QString &name : frag.charFormat().anchorNames()) {
+                const auto ai = anchorIndex.constFind(name);
+                if (ai == anchorIndex.constEnd())
+                    continue;
+                QTextCursor cur(doc);
+                cur.setPosition(frag.position());
+                m_pullFileTops[ai.value()] =
+                    m_pullDiff->cursorRect(cur).top() + viewTop;
+            }
+        }
+    }
+}
+
 // Pin the sticky header across the top of the diff viewport at its natural
 // height (adhoc #56). Called on every scroll tick and on viewport resize.
 void MainWindow::layoutPullStickyHeader()
@@ -2041,17 +2081,12 @@ void MainWindow::updatePullDiffScrollState()
     QTextDocument *doc = m_pullDiff->document();
     const int docHeight = doc->documentLayout()->documentSize().height();
 
-    // Absolute document y-position of each file header, on-screen order; -1 when
-    // a file's anchor wasn't found (e.g. dropped from a size-capped render).
-    QList<int> tops;
-    tops.reserve(m_pullFileOrder.size());
-    for (const QString &path : std::as_const(m_pullFileOrder)) {
-        const QString anchor = m_pullFileAnchors.value(path);
-        QTextCursor cur;
-        tops.append(!anchor.isEmpty() && locateAnchorCursor(doc, anchor, cur)
-                        ? m_pullDiff->cursorRect(cur).top() + viewTop
-                        : -1);
-    }
+    // Absolute document y-position of each file header, in on-screen order.
+    // Cached (see computePullFileTops) so this per-scroll-tick handler doesn't
+    // re-scan the whole document; rebuilt lazily if the cache is stale.
+    if (m_pullFileTops.size() != m_pullFileOrder.size())
+        computePullFileTops();
+    const QList<int> &tops = m_pullFileTops;
 
     // The file at the top of the viewport is the first one whose section still
     // reaches below the top edge.
