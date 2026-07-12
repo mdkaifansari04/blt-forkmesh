@@ -9,6 +9,7 @@
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
 #include "PullAiReview.h"
+#include "PullBadgeWidget.h"
 
 using namespace forkmesh::ui;
 
@@ -841,12 +842,24 @@ QWidget *MainWindow::buildPullsTab()
     m_pullThreadScroll->setObjectName("issuePageScroll");
     m_pullThreadScroll->setFrameShape(QFrame::NoFrame);
 
-    // ---- Sub-tab bar + stack (Conversation / Commits / Checks / Files changed).
+    // Badge tab (adhoc #44): the PR's visual fingerprint — one file-type icon
+    // tile per changed file with a green/red additions:deletions bar, grouped
+    // by directory. Scrolls because large PRs wrap over many tile rows.
+    m_pullBadgeWidget = new PullBadgeWidget;
+    auto *badgeScroll = new QScrollArea;
+    badgeScroll->setWidgetResizable(true);
+    badgeScroll->setWidget(m_pullBadgeWidget);
+    badgeScroll->setObjectName("issuePageScroll");
+    badgeScroll->setFrameShape(QFrame::NoFrame);
+
+    // ---- Sub-tab bar + stack (Conversation / Commits / Checks / Files
+    // changed / Badge).
     m_pullSubStack = new QStackedWidget;
     m_pullSubStack->addWidget(m_pullThreadScroll); // 0 Conversation
     m_pullSubStack->addWidget(m_pullCommitsList);  // 1 Commits
     m_pullSubStack->addWidget(checksPage);         // 2 Checks
     m_pullSubStack->addWidget(filesPage);          // 3 Files changed
+    m_pullSubStack->addWidget(badgeScroll);        // 4 Badge
 
     m_pullSubTabs = new QButtonGroup(this);
     m_pullSubTabs->setExclusive(true);
@@ -857,7 +870,8 @@ QWidget *MainWindow::buildPullsTab()
         {QStringLiteral("Conversation"), "comment"},
         {QStringLiteral("Commits"), "git-branch"},
         {QStringLiteral("Checks"), "workflow"},
-        {QStringLiteral("Files changed"), "file-diff"}};
+        {QStringLiteral("Files changed"), "file-diff"},
+        {QStringLiteral("Badge"), "graph"}};
     for (int i = 0; i < subTabs.size(); ++i) {
         auto *b = new QPushButton(subTabs.at(i).first);
         b->setObjectName("repoTab");
@@ -874,6 +888,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullTabCommits = qobject_cast<QPushButton *>(m_pullSubTabs->button(1));
     m_pullTabChecks = qobject_cast<QPushButton *>(m_pullSubTabs->button(2));
     m_pullTabFiles = qobject_cast<QPushButton *>(m_pullSubTabs->button(3));
+    m_pullTabBadge = qobject_cast<QPushButton *>(m_pullSubTabs->button(4));
     connect(m_pullSubTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_pullSubStack->setCurrentIndex(id);
         if (id == 2) // refresh the Checks table when it's brought forward
@@ -1392,6 +1407,8 @@ void MainWindow::showPull(int number)
         renderPullChecksSummary(PullRequest());
         renderPullReviewSummary(PullRequest());
         updatePullSubTabCounts(PullRequest());
+        if (m_pullBadgeWidget)
+            m_pullBadgeWidget->clearPull();
         if (m_pullComposer)
             m_pullComposer->setEnabled(false);
         for (QPushButton *b : {m_pullCommentButton, m_pullApproveButton,
@@ -1523,6 +1540,34 @@ void MainWindow::showPull(int number)
         m_pullFiles->addItem(item);
     }
     m_pullFiles->sortItems();
+    // Feed the Badge tab (adhoc #44): per-file additions/deletions counted
+    // from each file's diff section, with the same file-type icon the file
+    // list uses.
+    if (m_pullBadgeWidget) {
+        QList<PullBadgeWidget::FileEntry> badgeFiles;
+        badgeFiles.reserve(m_pullFileDiffs.size());
+        for (auto it = m_pullFileDiffs.constBegin();
+             it != m_pullFileDiffs.constEnd(); ++it) {
+            PullBadgeWidget::FileEntry entry;
+            entry.path = it.key();
+            for (const QString &line : it.value().split('\n')) {
+                if (line.startsWith(QLatin1String("+++")) ||
+                    line.startsWith(QLatin1String("---")))
+                    continue;
+                if (line.startsWith(QLatin1Char('+')))
+                    ++entry.adds;
+                else if (line.startsWith(QLatin1Char('-')))
+                    ++entry.dels;
+            }
+            entry.icon = iconForFile(it.key().section('/', -1));
+            badgeFiles << entry;
+        }
+        m_pullBadgeWidget->setPull(
+            found->title, found->number,
+            found->authorName.isEmpty() ? found->author.left(10)
+                                        : found->authorName,
+            found->additions, found->deletions, badgeFiles);
+    }
     // Offer the authorship filter only when the PR actually mixes agent and human
     // authorship — otherwise there is nothing to narrow.
     if (m_pullFileAuthorFilter) {

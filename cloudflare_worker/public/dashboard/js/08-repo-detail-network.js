@@ -422,6 +422,7 @@
       ["Synced", row.lastSync || ""],
       ["Platform", row.platform || ""],
       ["Version", row.version || ""],
+      ["Node id", row.nodeId ? String(row.nodeId).slice(0, 12) : ""],
       ["CPU", ""],
       ["RAM", ""],
       ["Disk", ""],
@@ -433,6 +434,7 @@
       ["Branches", formatCount(row.branchCount)],
       ["Pulls", formatCount(row.pullCount)],
       ["Discussions", formatCount(row.discussionCount)],
+      ["Worktrees", formatCount(row.worktreeCount)],
       ["Clones", formatCount(row.clonesServed)],
       ["Website", formatCount(row.websiteServed)],
       ["Artifacts", formatCount(row.artifactCount)],
@@ -446,29 +448,59 @@
       .join("");
   }
 
+  // The "Online only" toggle in the Connected nodes header hides offline nodes
+  // (the default, matching the desktop Mirror nodes panel). Turning it off
+  // surfaces nodes that have gone offline but still published a mirror record,
+  // rendered inactive rather than live. Defaults to on until the user flips it.
+  function networkOnlineOnly() {
+    return state.networkOnlineOnly !== false;
+  }
+
   function renderNetworkRows(rows) {
     const list = $("[data-network-node-list]");
     const count = $("[data-network-node-count]");
-    const recent = rows.slice(0, 6);
+    const toggle = $("[data-network-online-only]");
+    const onlineOnly = networkOnlineOnly();
     const onlineCount = rows.filter((row) => row.online).length;
+    const offlineCount = rows.length - onlineCount;
+    const visible = onlineOnly ? rows.filter((row) => row.online) : rows;
 
-    if (count) count.textContent = `${formatCount(onlineCount)} online`;
+    if (toggle) {
+      toggle.setAttribute("aria-pressed", onlineOnly ? "true" : "false");
+      toggle.classList.toggle("border-primary", onlineOnly);
+      toggle.classList.toggle("text-foreground", onlineOnly);
+      toggle.classList.toggle("text-muted-foreground", !onlineOnly);
+      const label = toggle.querySelector("[data-network-online-only-label]");
+      if (label) label.textContent = onlineOnly ? "Online only" : "Showing offline";
+    }
+    if (count) {
+      count.textContent = offlineCount
+        ? `${formatCount(onlineCount)} online · ${formatCount(offlineCount)} offline`
+        : `${formatCount(onlineCount)} online`;
+    }
     if (list) {
-      list.innerHTML = recent.length
-        ? recent.map((row) => `
+      list.innerHTML = visible.length
+        ? visible.map((row) => `
           <div class="px-4 py-3 hover:bg-secondary/50 transition-colors">
             <div class="flex items-center gap-4">
               <div class="flex items-center gap-2 flex-1 min-w-0">
                 <i data-lucide="circle" class="${nodeDotClass(row, "w-2 h-2")}"></i>
                 <span class="text-sm ${row.online ? "text-foreground" : "text-muted-foreground"} font-medium truncate font-mono">${escapeHtml(row.name || "node")}</span>
+                ${row.online ? "" : '<span class="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">offline</span>'}
               </div>
               <span class="text-xs text-muted-foreground w-20 text-right font-mono">${escapeHtml(nodeMetaLabel(row))}</span>
             </div>
             <div class="mt-2 flex flex-wrap gap-1.5 pl-4">${nodeDetailChips(row)}</div>
           </div>
         `).join("")
-        : '<div class="px-4 py-3 text-sm text-muted-foreground">No nodes online right now.</div>';
+        : `<div class="px-4 py-3 text-sm text-muted-foreground">${onlineOnly ? "No nodes online right now." : "No nodes yet."}</div>`;
     }
+  }
+
+  function toggleNetworkOnlineOnly() {
+    state.networkOnlineOnly = !networkOnlineOnly();
+    renderNetworkRows(Array.isArray(state.networkNodeRows) ? state.networkNodeRows : []);
+    window.lucide?.createIcons();
   }
 
   async function renderNetwork() {
@@ -535,6 +567,7 @@
           b.minutes - a.minutes ||
           a.name.localeCompare(b.name),
       );
+      state.networkNodeRows = rows;
       renderNetworkRows(rows);
     } catch (_) {
       $("[data-network-node-list]") && ($("[data-network-node-list]").innerHTML =
@@ -1014,6 +1047,11 @@
       return;
     }
 
+    if (event.target.closest("[data-network-online-only]")) {
+      toggleNetworkOnlineOnly();
+      return;
+    }
+
     const homeAgentSample = event.target.closest("[data-home-agent-sample]");
     if (homeAgentSample) {
       const input = $("[data-home-agent-input]");
@@ -1485,6 +1523,7 @@
             conversation: "[data-repo-record-conversation]",
             commits: "[data-repo-record-patch-panel]",
             files: "[data-repo-record-files-panel]",
+            badge: "[data-repo-record-badge-panel]",
           }[recordTabButton.dataset.repoRecordTab || ""];
           const target = targetSelector ? article.querySelector(targetSelector) : null;
           target?.scrollIntoView({ behavior: "smooth", block: "start" });

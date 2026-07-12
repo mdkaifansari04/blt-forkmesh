@@ -65,6 +65,7 @@ struct AgentDiffStat {
 
 class MessageRow;
 class MarkdownEditor;
+class PullBadgeWidget;
 class TerminalWidget;
 class ClaudeIdeBridge;
 class ClaudeStreamSession;
@@ -3914,13 +3915,18 @@ private:
     QList<QTextEdit *> m_diffViews;
     QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side
     QListWidget *m_pullCommitsList = nullptr;  // commits that make up the PR
-    // PR detail sub-tabs: Conversation / Commits / Checks / Files changed.
+    // PR detail sub-tabs: Conversation / Commits / Checks / Files changed /
+    // Badge.
     QButtonGroup *m_pullSubTabs = nullptr;
     QStackedWidget *m_pullSubStack = nullptr;
     QPushButton *m_pullTabConversation = nullptr;
     QPushButton *m_pullTabCommits = nullptr;
     QPushButton *m_pullTabChecks = nullptr;
     QPushButton *m_pullTabFiles = nullptr;
+    QPushButton *m_pullTabBadge = nullptr;
+    // Badge tab (adhoc #44): the PR's visual fingerprint — same design the
+    // relay attaches to federated PR-opened notes and the web dashboard shows.
+    PullBadgeWidget *m_pullBadgeWidget = nullptr;
     // Conversation: review thread + inline checks summary + inline composer.
     QScrollArea *m_pullThreadScroll = nullptr;
     QWidget *m_pullThreadContainer = nullptr;
