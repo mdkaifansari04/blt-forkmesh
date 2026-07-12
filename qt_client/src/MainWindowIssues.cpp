@@ -437,8 +437,11 @@ QWidget *MainWindow::buildIssuesSection()
     commentAvatar->setScaledContents(true);
     m_issueComposerAvatar = commentAvatar;
     refreshIssueComposerAvatar();
-    auto *commentTitle = new QLabel("Add a comment");
+    auto *commentTitle = new QLabel(
+        QStringLiteral("Commenting as <b>%1</b>")
+            .arg(topBarUserName().toHtmlEscaped()));
     commentTitle->setObjectName("issueCommentTitle");
+    commentTitle->setTextFormat(Qt::RichText);
     m_issueComposer = new MarkdownEditor;
     m_issueComposer->setObjectName("issueCommentEditor");
     m_issueComposer->setMinimumHeight(190);
@@ -3338,6 +3341,7 @@ void MainWindow::promptNewIssue()
     auto *leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(8);
+    leftLayout->addWidget(makeComposerIdentity(nullptr, QStringLiteral("Filing")));
     leftLayout->addWidget(titleLabel);
     leftLayout->addWidget(titleEdit);
     auto *descriptionLabel = new QLabel("Add a description", page);
@@ -3511,7 +3515,8 @@ void MainWindow::promptNewIssue()
             setPageNotice("Sending your issue to the maintainer's inbox...");
             const bool started = submitNewIssueToInbox(
                 title, bodyEdit->markdown(), labels, milestone, priority,
-                assignees,
+                assignees, bodyEdit->pendingAttachments(),
+                bodyEdit->pendingAttachmentPlaceholders(),
                 [this, pageGuard, createButton, setPageNotice](bool ok,
                                                                 const QString &error) {
                     // The compose page may have been cancelled/closed while the
@@ -3634,8 +3639,10 @@ void MainWindow::quickAddIssue()
         }
         QPointer<QPlainTextEdit> quickAddGuard(m_issueQuickAdd);
         quickAddGuard->setEnabled(false);
+        // Any queued images ride along as the new issue's attachments, same as
+        // the canWrite path below (issue #79).
         const bool started = submitNewIssueToInbox(
-            title, QString(), {}, QString(), 0, {},
+            title, QString(), {}, QString(), 0, {}, m_quickAddImages, {},
             [this, quickAddGuard, title](bool ok, const QString &) {
                 // submitNewIssueToInbox already flashes the failure toast; on
                 // success, clear the box now that the maintainer actually has
@@ -3646,6 +3653,7 @@ void MainWindow::quickAddIssue()
                 quickAddGuard->setEnabled(true);
                 if (ok) {
                     quickAddGuard->clear();
+                    clearQuickAddImages();
                     setIssueInlineNotice("Your signed issue was sent to the "
                                          "maintainer's inbox. It appears once "
                                          "they sync it.");
@@ -4361,7 +4369,7 @@ void MainWindow::addIssueComment()
     IssueStore store = issueStoreForCurrentRepo();
     if (!store.canWrite()) {
         // Not the host: send a signed comment to the maintainer's relay inbox.
-        submitIssueCommentToInbox(body);
+        submitIssueCommentToInbox(body, attachments, placeholders);
         return;
     }
 
@@ -6699,14 +6707,38 @@ void MainWindow::bountyAllOpenIssues(double amountUsd)
     reloadIssues();
 }
 
-void MainWindow::submitIssueCommentToInbox(const QString &body)
+namespace {
+// A remote submitter has no working tree to copy attached images into (see
+// IssueStore::readAttachmentsForRemoteSubmit), so the raw bytes ride along in
+// the inbox POST as base64; the owner's applyRemoteEvent() writes them into
+// the issue folder on merge.
+QJsonArray remoteAttachmentDataJson(const QList<RemoteAttachment> &attachments)
+{
+    QJsonArray array;
+    for (const RemoteAttachment &att : attachments)
+        array.append(QJsonObject{{"name", att.name},
+                                 {"data", QString::fromLatin1(att.data.toBase64())}});
+    return array;
+}
+} // namespace
+
+void MainWindow::submitIssueCommentToInbox(const QString &body,
+                                           const QStringList &attachmentSrcPaths,
+                                           const QStringList &attachmentPlaceholders)
 {
     const int idx = issuesRepoIndex();
     if (idx < 0)
         return;
     const RepositoryRecord &repo = m_repositories.at(idx);
 
-    QString text = body;
+    const QList<RemoteAttachment> attachmentData =
+        IssueStore::readAttachmentsForRemoteSubmit(attachmentSrcPaths);
+    QStringList attachmentNames;
+    for (const RemoteAttachment &att : attachmentData)
+        attachmentNames << att.name;
+
+    QString text = IssueStore::substituteAttachmentPlaceholders(
+        body, attachmentSrcPaths, attachmentPlaceholders, attachmentNames);
     while (text.endsWith('\n') || text.endsWith('\r'))
         text.chop(1);
 
@@ -6714,6 +6746,7 @@ void MainWindow::submitIssueCommentToInbox(const QString &body)
     IssueEvent ev;
     ev.type = "comment";
     ev.body = text;
+    ev.attachments = attachmentNames;
     ev = store.makeSignedEvent(m_currentIssueNumber, ev);
 
     QJsonObject eventJson = ev.toJson();
@@ -6721,7 +6754,8 @@ void MainWindow::submitIssueCommentToInbox(const QString &body)
     const QJsonObject payload{{"owner", repo.owner},
                               {"repo", repo.name},
                               {"number", m_currentIssueNumber},
-                              {"event", eventJson}};
+                              {"event", eventJson},
+                              {"attachmentData", remoteAttachmentDataJson(attachmentData)}};
 
     QNetworkRequest request(issuesApiUrl(repo));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -6772,6 +6806,7 @@ void MainWindow::submitIssueAssigneesToInbox(int number,
 bool MainWindow::submitNewIssueToInbox(
     const QString &title, const QString &body, const QStringList &labels,
     const QString &milestone, int priority, const QStringList &assignees,
+    const QStringList &attachmentSrcPaths, const QStringList &attachmentPlaceholders,
     std::function<void(bool ok, const QString &error)> onDone)
 {
     const int idx = issuesRepoIndex();
@@ -6787,12 +6822,20 @@ bool MainWindow::submitNewIssueToInbox(
         if (issue.number >= proposed)
             proposed = issue.number + 1;
 
+    const QList<RemoteAttachment> attachmentData =
+        IssueStore::readAttachmentsForRemoteSubmit(attachmentSrcPaths);
+    QStringList attachmentNames;
+    for (const RemoteAttachment &att : attachmentData)
+        attachmentNames << att.name;
+
     IssueStore store = issueStoreForCurrentRepo();
     IssueEvent ev;
     ev.type = "open";
     ev.id = QStringLiteral("open-%1").arg(proposed);
     ev.title = title;
-    ev.body = body;
+    ev.attachments = attachmentNames;
+    ev.body = IssueStore::substituteAttachmentPlaceholders(
+        body, attachmentSrcPaths, attachmentPlaceholders, attachmentNames);
     while (ev.body.endsWith('\n') || ev.body.endsWith('\r'))
         ev.body.chop(1);
     ev = store.makeSignedEvent(proposed, ev);
@@ -6810,7 +6853,8 @@ bool MainWindow::submitNewIssueToInbox(
                               {"number", proposed},
                               {"titleIfNew", title},
                               {"event", eventJson},
-                              {"meta", meta}};
+                              {"meta", meta},
+                              {"attachmentData", remoteAttachmentDataJson(attachmentData)}};
 
     QNetworkRequest request(issuesApiUrl(repo));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -7069,7 +7113,18 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
         meta.wantsAgent = metaObj.value("wantsAgent").toBool();
         meta.wantsAgentModel = metaObj.value("model").toString();
         meta.wantsAgentProvider = metaObj.value("provider").toString();
-        if (store.applyRemoteEvent(number, ev, titleIfNew, nullptr, meta)) {
+        // Images a no-write-access submitter attached ride along as base64
+        // bytes (see submitNewIssueToInbox/submitIssueCommentToInbox); write
+        // them into the issue folder as this event is merged in.
+        QList<RemoteAttachment> attachmentData;
+        for (const QJsonValue &a : item.value("attachmentData").toArray()) {
+            const QJsonObject obj = a.toObject();
+            attachmentData.append(RemoteAttachment{
+                obj.value("name").toString(),
+                QByteArray::fromBase64(obj.value("data").toString().toLatin1())});
+        }
+        if (store.applyRemoteEvent(number, ev, titleIfNew, nullptr, meta,
+                                   attachmentData)) {
             ++merged;
             const QString who =
                 ev.authorName.isEmpty() ? ev.author.left(8) : ev.authorName;
@@ -7437,6 +7492,21 @@ QWidget *MainWindow::buildChatSection()
     auto *inputRowLayout = new QHBoxLayout(inputRow);
     inputRowLayout->setContentsMargins(6, 2, 6, 2);
     inputRowLayout->setSpacing(2);
+    // Small self avatar at the head of the pill so it's clear who is sending.
+    auto *selfAvatar = new QLabel("FM");
+    selfAvatar->setObjectName("issueAvatar");
+    selfAvatar->setAlignment(Qt::AlignCenter);
+    selfAvatar->setFixedSize(24, 24);
+    selfAvatar->setScaledContents(true);
+    selfAvatar->setToolTip(topBarUserName());
+    {
+        const QPixmap selfPm = roundedAvatar(effectiveAvatar(), 24);
+        if (!selfPm.isNull()) {
+            selfAvatar->setText(QString());
+            selfAvatar->setPixmap(selfPm);
+        }
+    }
+    inputRowLayout->addWidget(selfAvatar, 0, Qt::AlignVCenter);
     inputRowLayout->addWidget(attachButton);
     inputRowLayout->addWidget(m_messageInput, 1);
     inputRowLayout->addWidget(emojiButton);

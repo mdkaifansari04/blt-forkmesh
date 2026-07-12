@@ -132,6 +132,7 @@ QWidget *MainWindow::buildDiscussionsTab()
     detailLayout->addWidget(m_discussionMeta);
     detailLayout->addWidget(m_discussionInlineNotice);
     detailLayout->addWidget(m_discussionThreadScroll, 1);
+    detailLayout->addWidget(makeComposerIdentity(nullptr, QStringLiteral("Commenting")));
     detailLayout->addWidget(m_discussionComposer);
     detailLayout->addLayout(composerButtons);
 
@@ -499,6 +500,7 @@ void MainWindow::createDiscussionDialog()
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     auto *layout = new QVBoxLayout(&dialog);
+    layout->addWidget(makeComposerIdentity(nullptr, QStringLiteral("Posting")));
     layout->addLayout(form);
     layout->addWidget(buttons);
     dialog.resize(560, 460);

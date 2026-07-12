@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/models.dart';
 import '../services/relay_service.dart';
 import '../theme.dart';
+import '../widgets/compose_identity_bar.dart';
 import '../widgets/fm_ui.dart';
 
 /// Encrypted chat against the live relay room: channel list, member roster, and
@@ -417,11 +418,19 @@ class _Transcript extends StatelessWidget {
         ),
         FmBottomActionBar(
           padding: const EdgeInsets.all(FmSpace.x3),
-          child: Row(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: TextField(
-                  controller: composer,
+              const Padding(
+                padding: EdgeInsets.only(left: 4, bottom: 4),
+                child: ComposeIdentityBar(),
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: composer,
                   minLines: 1,
                   maxLines: 5,
                   decoration: InputDecoration(
@@ -464,6 +473,8 @@ class _Transcript extends StatelessWidget {
                   ),
                   icon: const Icon(Icons.send, size: 18),
                 ),
+              ),
+                ],
               ),
             ],
           ),

@@ -829,7 +829,6 @@ def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
         "loadRepoCommits(repo)",
         "loadRepoMirrors(repo)",
         "Copy clone",
-        "Open clean URL",
         "data-dashboard-repo-tab=\"${tab}\"",
         '"code", "commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors"',
         # Releases load lazily on first tab view from .forkmesh/releases/<channel>/release.json.
@@ -911,8 +910,6 @@ def test_dashboard_repository_detail_uses_github_like_inner_layout():
         "Repository facts",
         "Go to file",
         "data-repo-commit-summary",
-        "data-repo-about",
-        "data-repo-live-summary",
         "data-repo-readme",
         "Pull requests",
     ):
@@ -934,7 +931,8 @@ def test_repository_code_page_matches_github_code_layout():
     assert "data-repo-action-star" in render
     assert "data-repo-code-sidebar" in render
     assert "data-repo-file-table" in render
-    assert "data-repo-about-rail" in render
+    # The About right-hand rail was removed from the repo page (adhoc #25).
+    assert "data-repo-about-rail" not in render
     assert "Watch" in render
     assert "Fork" in render
     assert "Star" in render
@@ -943,45 +941,32 @@ def test_repository_code_page_matches_github_code_layout():
     assert ">Code<" in render
 
 
-def test_dashboard_about_links_readme_activity_and_owner_edit():
+def test_dashboard_about_rail_removed_from_repo_detail():
+    # The About right-hand rail (readme/activity links, owner gear editor,
+    # fediverse badge, Live mirror summary) was removed from the repo page
+    # (adhoc #25): the content grid is a single full-width column. The
+    # delegated click/submit handlers stay wired but must have no matching
+    # markup in the render.
     dashboard_js = _read(PUBLIC / "dashboard.js")
     render = dashboard_js[
         dashboard_js.index("function renderRepoDetail")
         : dashboard_js.index("function findRepository")
     ]
-    click_handler = dashboard_js[
-        dashboard_js.index('const aboutEditButton = event.target.closest("[data-repo-about-edit]")')
-        : dashboard_js.index('const commitButton = event.target.closest("[data-dashboard-commit-hash]")')
-    ]
-    submit_handler = dashboard_js[
-        dashboard_js.index('const aboutForm = event.target.closest("[data-repo-about-form]")')
-        : dashboard_js.index('const issueForm = event.target.closest("[data-repo-issue-form]")')
-    ]
 
     for marker in (
-        "const canEditAbout = sessionOwnsRepo(repo);",
+        "data-repo-about-rail",
         "data-repo-about-edit",
         "data-repo-about-form",
         "data-repo-about-description",
         "data-repo-readme-link",
         "data-repo-activity-link",
-        "data-repo-insights",
-        'href="${escapeHtml(readmeHref)}"',
-        'href="${escapeHtml(`${repoPathUrl(repo)}/insights`)}"',
+        "data-repo-live-summary",
+        "data-repo-social-badge",
+        "lg:grid-cols-[minmax(0,1fr)_18rem]",
     ):
-        assert marker in render
-    for marker in (
-        "setRepoAboutEditing(true);",
-        "loadRepositoryBlob(state.selectedRepo, readmeLink.dataset.repoReadmePath || \"README.md\")",
-        "activateRepoTab(\"insights\");",
-    ):
-        assert marker in click_handler
-    for marker in (
-        "saveRepoAboutFromWeb(state.selectedRepo, description, media)",
-        "applyRepoAboutDescription(state.selectedRepo, body.description ?? description)",
-        "Only the source node owner can edit About.",
-    ):
-        assert marker in submit_handler
+        assert marker not in render
+    assert "data-repo-insights" in render
+    assert 'data-repo-content-grid class="grid min-w-0 gap-5 pt-5"' in render
 
 
 def test_dashboard_repository_detail_view_uses_full_width_container():
@@ -1032,9 +1017,8 @@ def test_dashboard_repository_metadata_constrains_long_values_without_fake_langu
         : dashboard_js.index("function findRepository")
     ]
 
-    assert 'grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3' in render
     assert "flex justify-between gap-3" not in render
-    assert "data-repo-live-summary" in render
+    assert "data-repo-live-summary" not in render
     # The Data size chip/row and the Repository metadata block were removed in
     # the About-rail cleanup; languages now render from the REAL live file
     # index (loadRepoAboutFilesAndLanguages), never a hardcoded mock mix.
@@ -1067,8 +1051,8 @@ def test_dashboard_repository_tabs_read_public_mirror_data_not_owner_inbox():
         'dir: ".forkmesh/issues", file: (number) => `issue-${Number(number)}.json`',
         'dir: "pulls", file: "pull.md"',
         'dir: "discussions", file: "discussion.md"',
-        "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path: config.dir }))",
-        "fetchRepoBlobs(repo, dirs.map(recordPath))",
+        "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path: config.dir, ...refParams }))",
+        "fetchRepoBlobs(repo, dirs.map(recordPath), refParams)",
         "Create from desktop client for signed submissions",
     ):
         assert marker in dashboard_js
@@ -1191,7 +1175,6 @@ def test_dashboard_repository_issue_and_pull_tabs_match_github_lists():
 
     for marker in (
         "function renderRepoCollectionPanel(kind, repo, openCount, closedCount)",
-        'data-repo-collection-sidebar="${kind}"',
         'data-repo-collection-toolbar="${kind}"',
         'data-repo-filter-menu="${kind}"',
         'data-repo-filter-query="${kind}"',
@@ -1200,11 +1183,6 @@ def test_dashboard_repository_issue_and_pull_tabs_match_github_lists():
         'placeholder="${kind === "pulls" ? "is:pr is:open" : "Search issues by title, body, author, or #number"}"',
         "New issue",
         "New pull request",
-        "Assigned to me",
-        "Created by me",
-        "Mentioned",
-        "Recent activity",
-        "Views",
         "Author",
         "Labels",
         "Projects",
@@ -1215,6 +1193,8 @@ def test_dashboard_repository_issue_and_pull_tabs_match_github_lists():
     ):
         assert marker in dashboard_js
 
+    # The decorative issues left rail was removed with the About rail (adhoc #25).
+    assert "data-repo-collection-sidebar" not in dashboard_js
     assert 'renderRepoCollectionPanel("issues", repo, issuesCount, repoCount(repo, ["closedIssues", "closedIssueCount"]))' in render
     assert 'renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))' in render
 
@@ -1295,9 +1275,9 @@ def test_dashboard_repository_records_open_live_markdown_detail_views():
         "data-repo-record-detail",
         "data-repo-record-back",
         "data-repo-record-body",
-        "const recordPath = `${config.dir}/${number}/${config.file}`;",
-        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: recordPath }))",
-        "loadRepoRecordDetail(state.selectedRepo, recordButton.dataset.repoRecordKind || \"\", recordButton.dataset.repoRecordNumber || \"\")",
+        "const recordPath = `${config.dir}/${number}/${recordFile}`;",
+        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: recordPath, ...refParams }))",
+        "loadRepoRecordDetail(state.selectedRepo, kind, number)",
         "loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);",
     ):
         assert marker in dashboard_js
@@ -1319,7 +1299,8 @@ def test_issue_and_pull_detail_pages_match_github_conversation_layout():
     assert "data-repo-record-sidebar" in detail
     assert 'data-repo-record-tab="conversation"' in detail
     assert 'data-repo-record-tab="commits"' in detail
-    assert 'data-repo-record-tab="checks"' in detail
+    # The Checks tab was a hardcoded 0 with nothing behind it - removed.
+    assert 'data-repo-record-tab="checks"' not in detail
     assert 'data-repo-record-tab="files"' in detail
     assert "Reviewers" in detail
     assert "Assignees" in detail
@@ -1339,7 +1320,7 @@ def test_dashboard_pull_detail_reads_committed_patch_for_files_changed():
         "data-repo-pull-files",
         "data-repo-pull-patch",
         "pulls/${number}/changes.patch",
-        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: patchPath }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: patchPath, ref: \"\" }))",
         "const pullPatch = kind === \"pulls\" ? await loadRepoPullPatch(repo, number) : null;",
         "renderRepoPullFiles(pullPatch.files)",
         "renderRepoPullPatch(pullPatch.patch, `pull:${repoKey(repo)}:${number}`)",
@@ -1543,8 +1524,8 @@ def test_dashboard_repository_branch_selection_drives_live_mirror_requests():
         'return `${repoApiBase(repo)}/${action}?${query.toString()}`;',
         "fetchJson(repoLiveUrl(repo, \"tree\", { path }))",
         "fetchJson(repoLiveUrl(repo, \"blob\", { path }))",
-        "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path: config.dir }))",
-        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: recordPath }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path: config.dir, ...refParams }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: recordPath, ...refParams }))",
         "fetchJson(repoLiveUrl(repo, \"history\"))",
         "fetchJson(repoLiveUrl(repo, \"commit\", { path: hash }))",
         "resetRepoFileFinder(state.selectedRepo);",
@@ -1920,7 +1901,7 @@ def test_dashboard_hard_refresh_preserves_tab_through_404_bounce():
     render_body = dashboard_js[render_start:dashboard_js.index("\n  function findRepository(key)")]
 
     assert "routeMatchesRepo" in render_body
-    assert 'repoTabRoutesFor(repo).includes(routeKind)\n      ? `${repoPathUrl(repo)}/${routeKind}`' in render_body
+    assert 'repoTabRoutesFor(repo).includes(routeKind)\n        ? `${repoPathUrl(repo)}/${routeKind}`' in render_body
     assert "navigateHistory(detailPath);" in render_body
     # The old bare-collapse call must be gone.
     assert "const detailPath = repoPathUrl(repo);" not in render_body

@@ -493,6 +493,7 @@ protected:
 private:
     static constexpr int kNetworkReposSectionIndex = 11;
     static constexpr int kNetworkDiagnosticsSectionIndex = 12;
+    static constexpr int kNodesSectionIndex = 13; // "Nodes" directory (adhoc #9)
 
     // Setup page
     QWidget *buildSetupPage();
@@ -959,6 +960,19 @@ private:
     QWidget *buildRelaysSection();
     void refreshRelaysTable();   // re-list relays and (re)probe each one
     void probeRelayRow(int row); // measure latency + read version for one relay
+    // Nodes: a sortable directory of every node this client knows about (the same
+    // nodes offered by the top-bar node dropdown), showing each node's platform,
+    // online state, owner, version, repo/mirror counts and telemetry. Selecting a
+    // row opens a detail panel with that node's details plus the repositories it
+    // hosts and mirrors (adhoc #9, #27).
+    QWidget *buildNodesSection();
+    void refreshNodesTable();           // re-list the known nodes into the table
+    void showNodeDetailForRow(int row); // fill the detail panel for a table row
+    // Fetch the relay's list of currently-online node names (/api/network/stats
+    // "onlineNodes": live host tunnel or fresh signed heartbeat). Headless
+    // mirror nodes serve through the relay without joining this client's chat
+    // room, so room presence alone painted them offline (adhoc #27).
+    void fetchRelayOnlineNodes(bool force = false);
     // Firewall: whitelist-only outbound request gate for traffic created by
     // ForkMesh's shared network manager.
     QWidget *buildFirewallSection();
@@ -2489,7 +2503,9 @@ private:
     // Issue #347: fetch/mint the owner's inbuilt bounty wallet and show its
     // deposit address, QR and live balance so the owner can pre-fund it.
     void showBountyWalletDialog();
-    void submitIssueCommentToInbox(const QString &body);
+    void submitIssueCommentToInbox(const QString &body,
+                                   const QStringList &attachmentSrcPaths = {},
+                                   const QStringList &attachmentPlaceholders = {});
     // Mirror node path: file a signed "assignees" event to the source of truth's
     // inbox so the looper's claim on an issue reaches the owner and syncs back to
     // every mirror (adhoc #38).
@@ -2502,6 +2518,8 @@ private:
     bool submitNewIssueToInbox(const QString &title, const QString &body,
                                const QStringList &labels, const QString &milestone,
                                int priority, const QStringList &assignees,
+                               const QStringList &attachmentSrcPaths = {},
+                               const QStringList &attachmentPlaceholders = {},
                                std::function<void(bool ok, const QString &error)> onDone = {});
     void syncIssuesInbox();
     // Drain one repo's issue/pull inbox (owner-only). `interactive` shows inline
@@ -2562,6 +2580,11 @@ private:
     void updateAvatarButton();
     void updateUserAvatarButton();
     void refreshIssueComposerAvatar();
+    // Builds a small "identity" row (self avatar + current username) shown above
+    // compose inputs so it's clear who is about to post. When verb is set the
+    // text reads e.g. "Filing as <b>alice</b>"; otherwise just the username.
+    QWidget *makeComposerIdentity(QLabel **outAvatar = nullptr,
+                                  const QString &verb = QString());
     void logout();
     // Erase every trace of ForkMesh from this computer (data, settings, desktop
     // integration and the program files) after confirmation, then quit.
@@ -2975,6 +2998,7 @@ private:
     QPushButton *m_logNavButton = nullptr; // "Log" button in the persistent top nav
     QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
+    QPushButton *m_nodesNavButton = nullptr;  // "Nodes" top-nav button (adhoc #9)
     QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
@@ -3024,6 +3048,17 @@ private:
     QLabel *m_relaysStatus = nullptr;       // "Probing N relays…" / last-refreshed line
     QPushButton *m_relaysRefreshButton = nullptr;
     int m_relayProbesInFlight = 0;          // outstanding /api/version probes
+    // Nodes section (adhoc #9): sortable directory of known nodes + a detail panel.
+    QTableWidget *m_nodesTable = nullptr;
+    QLabel *m_nodesStatus = nullptr;            // "N nodes · M online" summary line
+    QPushButton *m_nodesRefreshButton = nullptr;
+    QScrollArea *m_nodeDetailScroll = nullptr;  // detail panel for the selected node
+    // Node names (lowercased) the relay currently reports online — a live host
+    // tunnel or a fresh signed heartbeat. Merged into the Nodes page's status so
+    // headless mirror nodes that serve via the relay (but never join this
+    // client's chat room) show online instead of permanently offline.
+    QSet<QString> m_relayOnlineNodes;
+    qint64 m_relayOnlineNodesFetchedMs = 0; // throttle between relay fetches
     // Request firewall section: whitelist controls plus recent allow/deny
     // decisions. This is separate from m_firewallBanner, which is the older
     // inbound-peer troubleshooting banner inside Chat.

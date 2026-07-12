@@ -476,7 +476,7 @@
     return String(content || "");
   }
 
-  async function fetchRepoBlobs(repo, paths) {
+  async function fetchRepoBlobs(repo, paths, options = {}) {
     // Batched file read: ONE request returns every path (repeated ?path=
     // params); the worker fans the reads out over the live tunnel itself.
     // Fetching each record as its own /blob call flooded the relay with 50+
@@ -490,7 +490,10 @@
       const value = current.get(key);
       if (value) query.set(key, value);
     });
-    query.set("ref", repoSelectedBranch(repo));
+    // Same ref override contract as repoLiveUrl: pulls/ readers pass ref:""
+    // so the host resolves the forkmesh/pulls metadata branch (issue #399).
+    if (!("ref" in options)) query.set("ref", repoSelectedBranch(repo));
+    else if (options.ref) query.set("ref", options.ref);
     const version = repoDataVersion(repo);
     if (version) query.set("fmv", version);
     const requestedAt = performance.now();
@@ -500,9 +503,15 @@
   }
 
   async function loadRepoRecordsFromMirror(repo, config) {
+    // Pull requests moved to the dedicated forkmesh/pulls metadata branch
+    // (issue #399). Sending ref:"" lets the host resolve that branch itself
+    // (with its own fallback to the default branch for pre-#399 mirrors);
+    // naming the selected code branch here is what kept serving the stale
+    // pulls/ folder frozen on main at migration time.
+    const refParams = config.dir === "pulls" ? { ref: "" } : {};
     let tree;
     try {
-      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: config.dir }));
+      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: config.dir, ...refParams }));
     } catch (error) {
       if (isMissingMirrorFolder(error)) return [];
       throw error;
@@ -518,7 +527,7 @@
       return `${config.dir}/${entry.name}/${file}`;
     };
     // One batched request for every record file instead of a per-record fan-out.
-    const blobs = await fetchRepoBlobs(repo, dirs.map(recordPath));
+    const blobs = await fetchRepoBlobs(repo, dirs.map(recordPath), refParams);
     const records = dirs.map((entry) => {
       const number = Number(entry.name);
       const blob = blobs[recordPath(entry)];
@@ -729,7 +738,8 @@
   async function loadRepoPullPatch(repo, number) {
     const patchPath = `pulls/${number}/changes.patch`;
     try {
-      const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: patchPath }));
+      // ref:"" — resolved by the host to the forkmesh/pulls metadata branch.
+      const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: patchPath, ref: "" }));
       const patch = blobText(blob);
       return { patch, files: parsePatchStats(patch), unavailable: false };
     } catch (error) {
@@ -822,7 +832,8 @@
   async function loadRepoPullConversation(repo, number) {
     let tree;
     try {
-      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `pulls/${number}` }));
+      // ref:"" — resolved by the host to the forkmesh/pulls metadata branch.
+      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `pulls/${number}`, ref: "" }));
     } catch (_) {
       return [];
     }
@@ -830,7 +841,7 @@
       .filter((entry) => entry.type !== "tree" && /^\d+-/.test(String(entry.name || "")))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
     if (!files.length) return [];
-    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `pulls/${number}/${entry.name}`));
+    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `pulls/${number}/${entry.name}`), { ref: "" });
     return files.map((entry) => {
       const blob = blobs[`pulls/${number}/${entry.name}`];
       if (!blob) return null;
@@ -892,14 +903,14 @@
     if (!state.session?.nodeName) {
       return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to reply to this discussion.</div>`;
     }
-    const who = escapeHtml(state.session.nodeName);
     return `
       <form data-repo-discussion-reply-form data-repo-discussion-reply-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
+        ${composeIdentityHtml(state.session, "Replying")}
         <label class="grid gap-1 text-xs font-medium text-muted-foreground">Reply
           <textarea data-repo-discussion-reply-body rows="3" placeholder="Write a reply. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
         </label>
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span data-repo-discussion-reply-hint class="text-[11px] text-muted-foreground">Replying as ${who}. Sent to the maintainer's inbox for review.</span>
+          <span data-repo-discussion-reply-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
           <button type="submit" data-repo-discussion-reply-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Reply</button>
         </div>
       </form>`;
@@ -909,14 +920,14 @@
     if (!state.session?.nodeName) {
       return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to comment or review this pull request.</div>`;
     }
-    const who = escapeHtml(state.session.nodeName);
     return `
       <form data-repo-pull-review-form data-repo-pull-review-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
+        ${composeIdentityHtml(state.session, "Reviewing")}
         <label class="grid gap-1 text-xs font-medium text-muted-foreground">Review
           <textarea data-repo-pull-review-body rows="3" placeholder="Leave a comment. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
         </label>
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span data-repo-pull-review-hint class="text-[11px] text-muted-foreground">Reviewing as ${who}. Sent to the maintainer's inbox for review.</span>
+          <span data-repo-pull-review-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
           <div class="flex flex-wrap items-center gap-2">
             <button type="submit" data-repo-pull-review-action="changes_requested" class="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"><i data-lucide="circle-x" class="h-4 w-4"></i>Request changes</button>
             <button type="submit" data-repo-pull-review-action="approved" class="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"><i data-lucide="circle-check" class="h-4 w-4"></i>Approve</button>
@@ -1048,7 +1059,7 @@
           </div>
           <div data-repo-pull-files>${renderRepoPullFiles(pullPatch.files)}</div>
         </section>
-        <section class="overflow-hidden rounded-lg border border-border">
+        <section class="overflow-hidden rounded-lg border border-border" data-repo-record-patch-panel>
           <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-compare-arrows" class="h-3.5 w-3.5 text-primary"></i>Patch</div>
           ${renderRepoPullPatch(pullPatch.patch, `pull:${repoKey(repo)}:${number}`)}
         </section>` : "";
@@ -1066,7 +1077,6 @@
         <nav class="flex min-w-0 overflow-x-auto border-b border-border" aria-label="Pull request sections">
           <button type="button" data-repo-record-tab="conversation" class="inline-flex h-11 items-center gap-2 border-b-2 border-primary px-3 text-xs font-semibold text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5"></i>Conversation<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullConversation.length)}</span></button>
           <button type="button" data-repo-record-tab="commits" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5"></i>Commits<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">1</span></button>
-          <button type="button" data-repo-record-tab="checks" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="badge-check" class="h-3.5 w-3.5"></i>Checks<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">0</span></button>
           <button type="button" data-repo-record-tab="files" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="files" class="h-3.5 w-3.5"></i>Files changed<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullPatch.files.length)}</span></button>
         </nav>` : "";
     const sidebarSection = (label, value) => `
@@ -1141,10 +1151,13 @@
       window.lucide?.createIcons();
       return;
     }
-    const recordPath = `${config.dir}/${number}/${config.file}`;
+    const recordFile = typeof config.file === "function" ? config.file(Number(number)) : config.file;
+    const recordPath = `${config.dir}/${number}/${recordFile}`;
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">Loading ${escapeHtml(config.itemLabel)} #${escapeHtml(number)} from the live mirror...</div>`;
     try {
-      const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: recordPath }));
+      // Pulls read with ref:"" so the host serves the forkmesh/pulls branch.
+      const refParams = kind === "pulls" ? { ref: "" } : {};
+      const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: recordPath, ...refParams }));
       const parsed = parseFrontMatter(blobText(blob));
       const pullPatch = kind === "pulls" ? await loadRepoPullPatch(repo, number) : null;
       if (pullPatch) parsed.pullPatch = pullPatch;

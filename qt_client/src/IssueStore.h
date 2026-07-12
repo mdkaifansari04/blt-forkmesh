@@ -92,6 +92,18 @@ struct RemoteIssueMeta {
     QString wantsAgentProvider;
 };
 
+// Raw bytes for one image a no-write-access node attached to a remote "open"
+// or "comment" submission. Such a node has no working tree to copy the file
+// into (see IssueStore::copyAttachments), so it hashes/names the file itself
+// via readAttachmentsForRemoteSubmit() and ships the bytes alongside the
+// signed event; applyRemoteEvent() writes them into the issue folder on
+// merge, keyed by `name` (which already matches an entry in the event's
+// signed IssueEvent::attachments list).
+struct RemoteAttachment {
+    QString name;
+    QByteArray data;
+};
+
 struct IssueLabel {
     QString name;
     QString color;
@@ -212,10 +224,30 @@ public:
 
     // Merge a signature-bearing event received from the relay inbox into the
     // local issue store (used by cross-user sync). The event must already be
-    // signed and verified by the caller.
+    // signed and verified by the caller. `attachments` carries the raw bytes
+    // for any names listed in ev.attachments (a remote submitter has no
+    // working tree to have copied them into already); each is written into
+    // the issue folder before the event is committed.
     bool applyRemoteEvent(int number, const IssueEvent &ev, const QString &titleIfNew,
                           QString *error = nullptr,
-                          const RemoteIssueMeta &meta = {});
+                          const RemoteIssueMeta &meta = {},
+                          const QList<RemoteAttachment> &attachments = {});
+
+    // For a node with no working tree (relay/inbox submission path): read and
+    // content-address each source file the same way copyAttachments() would
+    // (sha256-prefix + extension), without touching disk. The returned names
+    // (RemoteAttachment::name) are what to put in IssueEvent::attachments
+    // before signing; the bytes ride along in the submission so the owner's
+    // applyRemoteEvent() can materialize them on merge.
+    static QList<RemoteAttachment> readAttachmentsForRemoteSubmit(
+        const QStringList &srcPaths);
+
+    // Public wrapper around the same "forkmesh-pending-image:N" placeholder
+    // substitution createIssue()/addComment() use, for the relay-submission
+    // path which has no working tree to call them on.
+    static QString substituteAttachmentPlaceholders(
+        QString body, const QStringList &srcPaths, const QStringList &placeholders,
+        const QStringList &attachmentNames);
 
     // The exact bytes that an event's signature commits to. Public + static so
     // it can be unit-tested and kept byte-identical to the worker's verifier.
@@ -230,6 +262,12 @@ private:
     bool writeIssueFile(const Issue &issue, QString *error) const;
     void recomputeMetadata(Issue &issue) const; // fold events into top-level fields
     QStringList copyAttachments(int number, const QStringList &srcPaths) const;
+    // Write the raw bytes a remote submitter shipped alongside a signed event
+    // into the issue folder, one file per name in `names` that has a matching
+    // entry in `attachments` (materializing what copyAttachments() would have
+    // written had the submitter had a working tree to copy from).
+    void writeRemoteAttachmentFiles(int number, const QStringList &names,
+                                    const QList<RemoteAttachment> &attachments) const;
     int nextNumber() const;
     bool commit(const QString &message, QString *error) const;
 
