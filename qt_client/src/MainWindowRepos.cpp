@@ -2931,6 +2931,8 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 } else {
                     detail = detail.left(500);
                 }
+                if (detail.isEmpty() && error != QNetworkReply::NoError)
+                    detail = reply->errorString();
                 const QString message =
                     "Catalog publish failed for " + repo.owner + "/" + repo.name +
                     (status > 0 ? " (HTTP " + QString::number(status) + ")" :
