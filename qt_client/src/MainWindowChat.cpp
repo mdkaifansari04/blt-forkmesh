@@ -2443,7 +2443,12 @@ QWidget *MainWindow::buildLogSection()
     m_settingsLog = new QPlainTextEdit;
     m_settingsLog->setReadOnly(true);
     m_settingsLog->setObjectName("networkLog");
-    m_settingsLog->setMaximumBlockCount(kNetworkLogLimit);
+    // No setMaximumBlockCount here: that trims blocks from the *top* of the
+    // document, which would silently discard the older segments this view now
+    // loads on demand when the user scrolls up (adhoc #15). m_networkLog
+    // itself (capped at kNetworkLogLimit) is the real bound on total history.
+    connect(m_settingsLog->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            &MainWindow::onNetworkLogScrolled);
 
     // Quick-filter chips that narrow the log to a single event category. The row
     // scrolls horizontally so a long set of categories never clips the log.
@@ -2461,11 +2466,12 @@ QWidget *MainWindow::buildLogSection()
     filterScroll->setFixedHeight(34);
 
     // Discover which categories the buffered history contains and build the
-    // chips now, but leave rendering the history itself (up to kNetworkLogLimit
-    // lines of colored HTML, ~300ms) to the first visit of the Log section —
-    // it's pure constructor cost for a view most launches never open. Live
-    // logSystem() lines still append to the (empty) view immediately; the first
-    // visit's full rebuild re-renders the buffer in order, history included.
+    // chips now, but leave rendering the history itself (the newest
+    // kNetworkLogSegmentSize lines; older segments load lazily on scroll) to
+    // the first visit of the Log section — it's pure constructor cost for a
+    // view most launches never open. Live logSystem() lines still append to
+    // the (empty) view immediately; the first visit's rebuild re-renders the
+    // latest segment in order, history included.
     m_logFilterCategories.clear();
     for (const QString &line : std::as_const(m_networkLog))
         m_logFilterCategories.insert(logBadgeFor(line));
@@ -2477,6 +2483,7 @@ QWidget *MainWindow::buildLogSection()
         m_lastLogRenderDate.clear();
         m_logFilter.clear();
         m_logFilterCategories.clear();
+        m_logRenderFrom = 0; // nothing left to page back into once cleared
         if (m_settingsLog)
             m_settingsLog->clear();
         saveNetworkLog();          // truncate the on-disk log too
@@ -5665,8 +5672,8 @@ void MainWindow::showSection(int index)
     } else if (index == 4 && m_settingsLog) {
         // First visit renders the persisted history that buildLogSection()
         // deliberately skipped (see m_networkLogViewStale) — the rebuild replays
-        // the whole in-memory buffer, so lines appended live since launch keep
-        // their place in order.
+        // the newest segment of the in-memory buffer, so lines appended live
+        // since launch keep their place in order.
         if (m_networkLogViewStale) {
             m_networkLogViewStale = false;
             rebuildNetworkLogView();
