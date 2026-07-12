@@ -256,7 +256,8 @@ ServerNode::ServerNode(const QString &userName, const QString &nodeName,
     // m_crypto was seeded with the legacy baked-in app key. When the relay's
     // server-held shared key is available, re-key with it (via the passphrase
     // constructor) so the room key is no longer a public constant. Empty keeps
-    // the fallback so chat still works if the key fetch hasn't completed yet.
+    // the fallback so chat still works if the key fetch hasn't completed yet
+    // (setRoomPassphrase() re-keys once it arrives).
     if (!roomPassphrase.isEmpty())
         m_crypto = RoomCrypto(m_roomName, roomPassphrase);
 
@@ -997,6 +998,20 @@ void ServerNode::sendChat(const QString &channel, const QString &text)
 void ServerNode::setAccountKind(const QString &kind)
 {
     m_accountKind = kind.trimmed().left(16);
+}
+
+void ServerNode::setRoomPassphrase(const QString &passphrase)
+{
+    // The passphrase fetch is async and races the initial connect (it's kicked
+    // off from the first heartbeat, which only fires once start() has already
+    // returned), so this backend is commonly still on the constructor's
+    // fallback key by the time the real one shows up. Re-key so this session
+    // matches the server-derived key every other client (web included) uses —
+    // without this, Qt and web would encrypt with different keys and silently
+    // fail to decrypt each other's messages.
+    if (passphrase.isEmpty())
+        return;
+    m_crypto = RoomCrypto(m_roomName, passphrase);
 }
 
 void ServerNode::sendBotChat(const QString &channel, const QString &text)

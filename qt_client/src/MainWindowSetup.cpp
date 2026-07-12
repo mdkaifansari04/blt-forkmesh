@@ -1590,8 +1590,14 @@ void MainWindow::fetchRoomPassphrase()
         const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
         reply->deleteLater();
         const QString pass = resp.value("passphrase").toString();
-        if (!pass.isEmpty())
+        if (!pass.isEmpty()) {
             m_roomPassphrase = pass;
+            // The backend may already be connected on the constructor's
+            // fallback key (this fetch races the initial connect) — re-key it
+            // now so it matches the server-derived key web/other nodes use.
+            if (m_backend)
+                m_backend->setRoomPassphrase(pass);
+        }
     });
 }
 
