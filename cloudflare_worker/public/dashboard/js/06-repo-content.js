@@ -864,14 +864,14 @@
     if (!state.session?.nodeName) {
       return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to reply to this discussion.</div>`;
     }
-    const who = escapeHtml(state.session.nodeName);
     return `
       <form data-repo-discussion-reply-form data-repo-discussion-reply-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
+        ${composeIdentityHtml(state.session, "Replying")}
         <label class="grid gap-1 text-xs font-medium text-muted-foreground">Reply
           <textarea data-repo-discussion-reply-body rows="3" placeholder="Write a reply. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
         </label>
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span data-repo-discussion-reply-hint class="text-[11px] text-muted-foreground">Replying as ${who}. Sent to the maintainer's inbox for review.</span>
+          <span data-repo-discussion-reply-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
           <button type="submit" data-repo-discussion-reply-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Reply</button>
         </div>
       </form>`;
@@ -881,14 +881,14 @@
     if (!state.session?.nodeName) {
       return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to comment or review this pull request.</div>`;
     }
-    const who = escapeHtml(state.session.nodeName);
     return `
       <form data-repo-pull-review-form data-repo-pull-review-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
+        ${composeIdentityHtml(state.session, "Reviewing")}
         <label class="grid gap-1 text-xs font-medium text-muted-foreground">Review
           <textarea data-repo-pull-review-body rows="3" placeholder="Leave a comment. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
         </label>
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span data-repo-pull-review-hint class="text-[11px] text-muted-foreground">Reviewing as ${who}. Sent to the maintainer's inbox for review.</span>
+          <span data-repo-pull-review-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
           <div class="flex flex-wrap items-center gap-2">
             <button type="submit" data-repo-pull-review-action="changes_requested" class="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"><i data-lucide="circle-x" class="h-4 w-4"></i>Request changes</button>
             <button type="submit" data-repo-pull-review-action="approved" class="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"><i data-lucide="circle-check" class="h-4 w-4"></i>Approve</button>
