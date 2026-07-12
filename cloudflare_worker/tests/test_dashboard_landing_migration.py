@@ -984,6 +984,23 @@ def test_dashboard_about_links_readme_activity_and_owner_edit():
         assert marker in submit_handler
 
 
+def test_dashboard_about_rail_only_shows_on_code_tab():
+    # The About rail only makes sense beside the file tree/README (owner
+    # decision 2026-07-12, discussion #2): every other tab — commits,
+    # releases, issues, projects, pulls, discussions, insights, mirrors,
+    # agents — should go full-width instead of leaving an orphaned rail.
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    tab_state = dashboard_js[
+        dashboard_js.index("function setRepoTab")
+        : dashboard_js.index("function repoPathParts")
+    ]
+
+    assert 'const showAbout = tab === "code";' in tab_state
+    assert 'contentGrid?.classList.toggle("lg:grid-cols-[minmax(0,1fr)_18rem]", showAbout);' in tab_state
+    assert 'contentGrid?.classList.toggle("lg:grid-cols-1", !showAbout);' in tab_state
+    assert 'about?.classList.toggle("hidden", !showAbout);' in tab_state
+
+
 def test_dashboard_repository_detail_view_uses_full_width_container():
     # The explore view lives on the worker-served repo page document (built
     # from the repo view partial).
