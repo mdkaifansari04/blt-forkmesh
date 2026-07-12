@@ -6,6 +6,13 @@
 #include "SingleInstance.h"
 #include "Theme.h"
 
+#if __has_include("ForkMeshVersion.h")
+#include "ForkMeshVersion.h"
+#endif
+#ifndef FORKMESH_VERSION
+#define FORKMESH_VERSION "dev"
+#endif
+
 #include <QApplication>
 #include <QDebug>
 #include <QDir>
@@ -130,6 +137,15 @@ int main(int argc, char *argv[])
     rawArgs.reserve(argc);
     for (int i = 0; i < argc; ++i)
         rawArgs << QString::fromLocal8Bit(argv[i]);
+
+    // `forkmesh --version` prints and exits before the Qt platform, root-gate
+    // and single-instance setup. The auto-updater runs a candidate binary with
+    // this flag as a smoke test, so it must succeed on a bare VPS with no
+    // display, as root, and while the old instance still holds the lock.
+    if (rawArgs.contains(QStringLiteral("--version"))) {
+        printf("ForkMesh %s\n", FORKMESH_VERSION);
+        return 0;
+    }
 
     const bool headless = detectHeadless(rawArgs);
     const bool allowRoot = rawArgs.contains(QStringLiteral("--allow-root")) ||

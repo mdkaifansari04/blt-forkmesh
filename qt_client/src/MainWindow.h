@@ -621,9 +621,19 @@ private:
     void updateRebuildRestart();
     // Settings → "Automatically update ForkMesh": periodic, quiet check for a new
     // tagged release on the update remote (ordinary commits on main don't count).
-    // Only ever triggers updateRebuildRestart() when one is actually found, and
-    // never while an agent is running.
+    // Only ever triggers an update when one is actually found, and never while
+    // an agent is running. Prefers the release's prebuilt artifact
+    // (tryPrebuiltAutoUpdate); updateRebuildRestart() is the source fallback.
     void maybeAutoUpdate();
+    // Install the new release from its sha256-verified prebuilt artifact
+    // (local mirror CAS first, else the relay's content-addressed blob route)
+    // instead of rebuilding from source next to the live node. Returns false
+    // when the tag has no artifact matching this OS/arch — caller falls back
+    // to the source rebuild.
+    bool tryPrebuiltAutoUpdate(const QString &clientDir, const QString &tag,
+                               const QString &tagCommit);
+    void installPrebuiltAndRelaunch(const QString &artifactPath,
+                                    const QString &tag);
     QString resolveInstallCloneUrl();
     void buildAndRelaunch(const QString &clientDir, const QString &asUser = QString(),
                           const QString &relaunchPath = QString(),
