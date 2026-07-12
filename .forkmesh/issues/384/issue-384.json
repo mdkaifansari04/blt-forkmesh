@@ -30,6 +30,17 @@
             "sig": "w_-PI5hrOSkc-2tXg8xVOqKXpSRXtUXrjfutxPUj0KGq17RaWDNxMcG9vQcMbu5wZ-44L8MWXdE6-xdyK-fdDw",
             "ts": 1783881043651,
             "type": "comment"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "make sure the gantt view looks visually appealing on both the qt client and the website ",
+            "id": "3fa9482f-914a-4abf-a04e-66a26f562cb1",
+            "sig": "gghpuN31MputXcoZALI6XUA8_aM5H725gRonKUR_EK1T-_-LtR18ZDmGgwkGLqaau2iwJMyDcdUMQJu4JcWGAA",
+            "ts": 1783881067957,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -42,6 +53,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "add projects and allow linking issues to projects",
-    "updatedAt": 1783881043651,
+    "updatedAt": 1783881067957,
     "votes": 0
 }
