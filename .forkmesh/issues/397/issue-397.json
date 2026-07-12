@@ -54,6 +54,26 @@
             "sig": "O0luYhqVKlYEDRMNb-oW8z3deBtf8c6L9JAJ2TbgkaMa3I_ZxcXHnbInalzX4aW6BJfx7PmSe0SNvW31FnUKDg",
             "ts": 1783880618202,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-397-the-issue-header-on-the-web-should-only-show-ope\".",
+            "id": "be1284a8-22c0-434d-942d-18b35dfad72a",
+            "sig": "PRBkQmZHFd6vx3-OqWAcqLyxKwNaifWpmgo1lNuDzbABd3N4c_j4o5CpvCYW5DglLk7JBb8ebiStbjEchzj3Bw",
+            "ts": 1783885331177,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "4b3e34bc-bc08-4961-bf40-280858639fce",
+            "sig": "vz4uOA5XQCj3qvz1nHo1tS19sTq3qLMEc9m4N_NCgd8S-xyoadWWykwYtoA9skknewEjZzrnje-Y1NGKk910BA",
+            "status": "closed",
+            "ts": 1783885331226,
+            "type": "status"
         }
     ],
     "labels": [
@@ -63,8 +83,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "the issue header on the web should only show open issues",
-    "updatedAt": 1783880618202,
+    "updatedAt": 1783885331226,
     "votes": 0
 }

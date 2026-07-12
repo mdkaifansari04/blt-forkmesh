@@ -428,3 +428,24 @@ def test_profile_and_repo_pages_are_edge_cached_before_any_d1_work():
     # The profile page checks the cache before ensure_schema/_account_row.
     assert (profile_body.index("edge_cache_match")
             < profile_body.index("ensure_schema"))
+    # The repo page still checks the edge cache before any D1 work, even though
+    # a cache miss now looks up the repo's logo for the OpenGraph card.
+    assert (repo_body.index("edge_cache_match")
+            < repo_body.index("ensure_schema"))
+
+
+def test_repo_page_injects_opengraph_card_with_repo_logo():
+    # A share of the repo URL (a federated "new pull request" post, a Slack
+    # unfurl) must render the repo's logo instead of a blank document icon:
+    # _serve_repo_page injects an og:image pointing at the owner-uploaded repo
+    # logo, falling back to the ForkMesh mark at the site root.
+    repo_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _serve_repo_page"):
+        ENTRY_TEXT.index("async def _serve_dashboard_asset")
+    ]
+    assert 'og_image = origin + "/assets/logo.png"' in repo_body
+    assert "WHERE repo_bi=? AND kind='logo'" in repo_body
+    assert "/api/repo/%s/%s/media/logo.png?v=%d" in repo_body
+    assert '<meta property=\\"og:image\\" content=\\"%s\\">' in repo_body
+    assert '<meta property=\\"og:title\\" content=\\"%s\\">' in repo_body
+    assert '<meta name=\\"twitter:image\\" content=\\"%s\\">' in repo_body
