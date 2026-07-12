@@ -6087,6 +6087,10 @@
         if (copyButton) copyButton.setAttribute("data-dashboard-copy", handle);
         const badgeHandle = $("[data-repo-social-handle]");
         if (badgeHandle) { badgeHandle.textContent = handle; badgeHandle.title = handle; }
+        // Point every "View on Mastodon" link at the authoritative handle.
+        $$("[data-repo-mastodon-link]").forEach((el) => {
+          el.setAttribute("href", `https://mastodon.social/${handle}`);
+        });
       }
       const logo = $("[data-repo-social-logo]");
       if (logo) logo.src = body.logoUrl || body.defaultLogoUrl || "/assets/fediverse-avatar.png";
@@ -7711,6 +7715,9 @@
     // Watch is real: it is the repo's fediverse follower count (see
     // loadRepoFediverse), and the button opens the follow-from-Mastodon card.
     const fediHandle = `@${(repo.owner || "").toLowerCase()}.${(repo.name || "").toLowerCase()}@${location.host}`;
+    // Deep link that opens this repo's fediverse actor on Mastodon (any
+    // instance resolves a remote acct handle; mastodon.social is the default).
+    const mastodonUrl = `https://mastodon.social/${fediHandle}`;
     detail.innerHTML = `
       <div data-repo-layout="github-like" class="min-w-0">
         <div data-repo-github-header class="rounded-t-lg border border-border bg-background">
@@ -7740,6 +7747,7 @@
                     <button type="button" data-dashboard-copy="${escapeHtml(fediHandle)}" aria-label="Copy fediverse handle" class="copy-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i></button>
                   </div>
                   <p class="mt-2 text-[11px] text-muted-foreground"><span data-repo-watch-followers class="font-mono text-foreground">–</span> fediverse watchers</p>
+                  <a data-repo-mastodon-link href="${escapeHtml(mastodonUrl)}" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-2 inline-flex items-center gap-1.5 text-[11px] hover:underline"><i data-lucide="external-link" class="h-3.5 w-3.5 shrink-0"></i>View on Mastodon</a>
                 </div>
               </div>
               <button type="button" data-repo-action-fork class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
@@ -7865,7 +7873,7 @@
               <div class="flex items-end gap-3 px-4 pb-3">
                 <img data-repo-social-logo src="/assets/fediverse-avatar.png" alt="Repository logo" class="-mt-7 h-14 w-14 shrink-0 rounded-xl border-2 border-background bg-background object-cover shadow" />
                 <div class="min-w-0 pb-0.5">
-                  <div data-repo-social-handle title="${escapeHtml(fediHandle)}" class="min-w-0 truncate font-mono text-[11px] text-foreground">${escapeHtml(fediHandle)}</div>
+                  <a data-repo-social-handle data-repo-mastodon-link href="${escapeHtml(mastodonUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(fediHandle)}" class="block min-w-0 truncate font-mono text-[11px] text-foreground hover:underline">${escapeHtml(fediHandle)}</a>
                   <div class="text-[11px] text-muted-foreground"><span data-repo-social-followers class="font-mono text-foreground">–</span> fediverse watchers</div>
                 </div>
               </div>
