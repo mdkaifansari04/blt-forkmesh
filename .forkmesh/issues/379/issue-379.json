@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
     "authorName": "jett",
@@ -31,6 +32,17 @@
             "sig": "WRa17TvSOlWWZdu9kpYjYfkiddvXIsz9SILlCqkcMu_dZVCuhYlXwXhQgSXFzgz6U1-2ZmUsG9OBlNwsN8cWCQ",
             "ts": 1783881121211,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "a995d737-62c3-4078-bd7f-43979a07fce3",
+            "sig": "mMW5v-B6L9RdyebhV5AkdtTjLGLKtOTbFV3P2MkuL6JGi5-LkxnYIrfDCRhdNxu_JyFzS7PMqOib82XLHHSiAg",
+            "ts": 1783881121274,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -43,6 +55,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "If user is owner of source of truth node and it’s down but a mirror is up allow for issues to be created fully to show up and then get synced back to sot when it’s online",
-    "updatedAt": 1783881121211,
+    "updatedAt": 1783881121274,
     "votes": 0
 }
