@@ -434,18 +434,21 @@ def test_profile_and_repo_pages_are_edge_cached_before_any_d1_work():
             < repo_body.index("ensure_schema"))
 
 
-def test_repo_page_injects_opengraph_card_with_repo_logo():
+def test_repo_page_injects_opengraph_card_with_stats_image():
     # A share of the repo URL (a federated "new pull request" post, a Slack
-    # unfurl) must render the repo's logo instead of a blank document icon:
-    # _serve_repo_page injects an og:image pointing at the owner-uploaded repo
-    # logo, falling back to the ForkMesh mark at the site root.
+    # unfurl) must render the repo's rendered stats card (adhoc #46), not the
+    # old full-bleed logo: _serve_repo_page injects an og:image pointing at
+    # /api/repo/<owner>/<repo>/card.png plus large-image + dimension hints,
+    # and an og:description carrying the catalog description.
     repo_body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _serve_repo_page"):
         ENTRY_TEXT.index("async def _serve_dashboard_asset")
     ]
-    assert 'og_image = origin + "/assets/logo.png"' in repo_body
-    assert "WHERE repo_bi=? AND kind='logo'" in repo_body
-    assert "/api/repo/%s/%s/media/logo.png?v=%d" in repo_body
+    assert 'og_image = origin + "/assets/logo.png"' not in repo_body
+    assert '/api/repo/%s/%s/card.png' in repo_body
     assert '<meta property=\\"og:image\\" content=\\"%s\\">' in repo_body
     assert '<meta property=\\"og:title\\" content=\\"%s\\">' in repo_body
+    assert '<meta property=\\"og:description\\" content=\\"%s\\">' in repo_body
+    assert '<meta property=\\"og:image:width\\" content=\\"%d\\">' in repo_body
+    assert 'summary_large_image' in repo_body
     assert '<meta name=\\"twitter:image\\" content=\\"%s\\">' in repo_body

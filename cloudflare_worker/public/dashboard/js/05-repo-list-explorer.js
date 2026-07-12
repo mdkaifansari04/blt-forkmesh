@@ -62,7 +62,7 @@
     if (!state.globalSearch.open) return;
 
     if (state.repositoriesLoading) {
-      container.innerHTML = '<div class="px-3 py-5 text-sm text-muted-foreground">Loading repositories...</div>';
+      container.innerHTML = `<div class="px-3 py-5 text-sm text-muted-foreground">${loadingHtml("Loading repositories...")}</div>`;
       return;
     }
 
@@ -347,7 +347,7 @@
 
     if (state.repositoriesLoading) {
       if (list) {
-        list.innerHTML = '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">Loading repositories from an online node...</div>';
+        list.innerHTML = `<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">${loadingHtml("Loading repositories from an online node...")}</div>`;
       }
       if (summary) summary.textContent = "Loading repositories from an online node";
       if (prev) {

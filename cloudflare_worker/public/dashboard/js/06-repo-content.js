@@ -151,7 +151,7 @@
     // dropped it below the content was removed, owner decision 2026-07-11).
     renderRepoBreadcrumb(repo, path);
 
-    treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading tree...</div>';
+    treeBody.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading tree...")}</div>`;
     renderRepoExplorer(repo, path, []);
     try {
       const requestedAt = performance.now();
@@ -243,7 +243,7 @@
     readmePanel?.classList.add("hidden");
     setRepoExplorerFocusMode(repoPathParts(path).length > 1);
     viewer.classList.remove("hidden");
-    viewer.innerHTML = '<div class="py-3 text-sm text-muted-foreground">Loading file...</div>';
+    viewer.innerHTML = `<div class="py-3 text-sm text-muted-foreground">${loadingHtml("Loading file...")}</div>`;
     renderRepoBreadcrumb(repo, path, "blob");
     setRepoExplorerSelection(path, "blob");
     try {
@@ -1287,7 +1287,7 @@
     }
     const recordFile = typeof config.file === "function" ? config.file(Number(number)) : config.file;
     const recordPath = `${config.dir}/${number}/${recordFile}`;
-    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">Loading ${escapeHtml(config.itemLabel)} #${escapeHtml(number)} from the live mirror...</div>`;
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml(`Loading ${escapeHtml(config.itemLabel)} #${escapeHtml(number)} from the live mirror...`)}</div>`;
     try {
       // Pulls read with ref:"" so the host serves the forkmesh/pulls branch.
       const refParams = kind === "pulls" ? { ref: "" } : {};
@@ -1513,7 +1513,7 @@
   async function loadRepoIssues(repo) {
     const container = $("[data-repo-issues]");
     if (!container) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading issues from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading issues from the live mirror...")}</div>`;
     try {
       let tree;
       try {
@@ -1583,7 +1583,7 @@
   async function loadRepoProjects(repo) {
     const container = $("[data-repo-projects]");
     if (!container) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading projects from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading projects from the live mirror...")}</div>`;
     try {
       let tree;
       try {
@@ -1839,7 +1839,7 @@
     const container = $(containerSelector);
     const config = repoCollectionConfig[kind];
     if (!container || !config) return;
-    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">Loading ${escapeHtml(config.label.toLowerCase())} from the live mirror...</div>`;
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml(`Loading ${escapeHtml(config.label.toLowerCase())} from the live mirror...`)}</div>`;
     try {
       const items = await loadRepoRecordsFromMirror(repo, config);
       container.innerHTML = items.length
@@ -2434,7 +2434,7 @@
   async function loadRepoAgents(repo) {
     const container = $("[data-repo-agents]");
     if (!container || !repo) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading agent sessions...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading agent sessions...")}</div>`;
     try {
       const agents = await requestRepoAgentsList(repo);
       state.agentsView.agents = agents;
