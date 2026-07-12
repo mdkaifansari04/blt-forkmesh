@@ -2016,14 +2016,14 @@ async def network_leaderboards(env):
             "name": owner, "sizeBytes": 0,
             "issueCount": 0, "commitCount": 0, "branchCount": 0,
             "pullCount": 0, "discussionCount": 0, "artifactCount": 0,
-            "clonesServed": 0, "websiteServed": 0,
+            "worktreeCount": 0, "clonesServed": 0, "websiteServed": 0,
             "commit": "", "branch": "", "lastSync": "",
-            "platform": "", "version": "", "_updatedMs": -1,
+            "platform": "", "version": "", "nodeId": "", "_updatedMs": -1,
         })
         detail["sizeBytes"] += size_bytes
         for field in ("issueCount", "commitCount", "branchCount", "pullCount",
-                      "discussionCount", "artifactCount", "clonesServed",
-                      "websiteServed"):
+                      "discussionCount", "artifactCount", "worktreeCount",
+                      "clonesServed", "websiteServed"):
             try:
                 detail[field] += max(0, int(rec.get(field, 0) or 0))
             except (TypeError, ValueError):
@@ -2036,6 +2036,7 @@ async def network_leaderboards(env):
             detail["lastSync"] = clean_string(rec.get("lastSync", ""), 32)
             detail["platform"] = clean_string(rec.get("platform", ""), 16)
             detail["version"] = clean_string(rec.get("version", ""), 32)
+            detail["nodeId"] = clean_string(rec.get("nodeId", ""), 64)
         if name:
             mirror_owners.setdefault(name, set()).add(owner.lower())
             if size_bytes > 0:
