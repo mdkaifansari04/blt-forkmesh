@@ -19,6 +19,17 @@
             "title": "there are several users online as duplicates, please create an issue to fix that",
             "ts": 1783612004640,
             "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "these show up in the chat - if they truly are different in some way maybe their id then show that underneith the username - also for each username show under it their nodes they own as little icons horozintally ",
+            "id": "6293e514-d5df-4838-b92b-2464990d82c4",
+            "sig": "2U9cZ15AoS0C6pq7M9qrWAU-GqqMJjWJZpP9DLf1yZ3n38q6f5u_4hqOQ10nazYciBlhROFo9P6r1-JOMmRLAA",
+            "ts": 1783880396424,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -31,6 +42,6 @@
     "schema": "forkmesh-issue-v1",
     "status": "open",
     "title": "there are several users online as duplicates, please create an issue to fix that",
-    "updatedAt": 1783612004640,
+    "updatedAt": 1783880396424,
     "votes": 0
 }
