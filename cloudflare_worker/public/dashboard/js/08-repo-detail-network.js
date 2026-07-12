@@ -1477,6 +1477,7 @@
             conversation: "[data-repo-record-conversation]",
             commits: "[data-repo-record-patch-panel]",
             files: "[data-repo-record-files-panel]",
+            badge: "[data-repo-record-badge-panel]",
           }[recordTabButton.dataset.repoRecordTab || ""];
           const target = targetSelector ? article.querySelector(targetSelector) : null;
           target?.scrollIntoView({ behavior: "smooth", block: "start" });

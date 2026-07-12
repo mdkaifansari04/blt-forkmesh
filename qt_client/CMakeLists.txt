@@ -111,6 +111,8 @@ set(FORKMESH_APP_SOURCES
     src/PullReviewModel.cpp
     src/PullAiReview.h
     src/PullAiReview.cpp
+    src/PullBadgeWidget.h
+    src/PullBadgeWidget.cpp
     src/CommitCommentStore.h
     src/CommitCommentStore.cpp
     src/ReferenceLinks.h
