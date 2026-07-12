@@ -1941,6 +1941,13 @@ void MainWindow::maybeAutoUpdate()
                 logSystem(QStringLiteral("Auto-update: release %1 is available; "
                                          "updating in the background.")
                              .arg(latestTag));
+                // Prefer the release's prebuilt artifact: rebuilding from
+                // source next to the live node is what killed the fleet on
+                // v0.6.2 (OOM/disk during the build, and no supervisor to
+                // restart a node that dies mid-update).
+                if (tryPrebuiltAutoUpdate(clientDir, latestTag,
+                                          tagCommit.trimmed()))
+                    return;
                 updateRebuildRestart();
             });
     fetch->start(QStringLiteral("git"), {"fetch", "--quiet", "--tags"});
