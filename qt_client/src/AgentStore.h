@@ -30,6 +30,13 @@ struct AgentSession {
     // this is a CLI alias: opus | sonnet | haiku. Applied on the next launch or
     // continuation, and shown in the agent header.
     QString model;
+    // Permission mode this session runs under, as the human-readable label from
+    // the composer's mode selector ("Ask before edits" / "Edit automatically" /
+    // "Plan mode" / "Auto mode"). Captured when a follow-up prompt is sent so the
+    // next resume honors the live selection, and shown in the agent header. Empty
+    // falls back to the global kClaudeAutoModeSetting. Only "Auto mode" skips the
+    // CLI's permission prompts today (see agentModeSkipsPermissions).
+    QString mode;
     bool createPr = false;
     int prNumber = 0;
     QString status = AgentStatus::Queued;

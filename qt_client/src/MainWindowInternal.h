@@ -2471,6 +2471,19 @@ const QString kClaudeModelsCacheSetting = QStringLiteral("agents/claudeModelsCac
 // Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
 // permission prompts). Read when a transcript session launches.
 const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
+// The composer mode-selector label that runs the agent unattended. Only this
+// one skips the CLI's permission prompts today; the other labels ("Ask before
+// edits" / "Edit automatically" / "Plan mode") all mean "don't skip" until the
+// app can drive per-tool approval headlessly (see MainWindowChat's selector).
+const QString kClaudeAutoModeLabel = QStringLiteral("Auto mode");
+
+// Does a session's stored permission-mode label (AgentSession::mode) run the
+// agent unattended? An empty label means the session predates per-session mode
+// capture, so callers fall back to the global kClaudeAutoModeSetting.
+inline bool agentModeSkipsPermissions(const QString &modeLabel)
+{
+    return modeLabel.trimmed() == kClaudeAutoModeLabel;
+}
 // Slash-actions menu (adhoc #116), mirroring the Claude Code extension's "/"
 // actions popup. Effort level for Claude Code runs ("low"/"medium"/"high"/
 // "xhigh"/"max"), passed to the CLI as `--effort`.
@@ -2519,7 +2532,14 @@ const QString kDefaultClaudeCodeTerminalCommand =
 // full-accept default above so existing sessions stop stalling on prompts.
 const QString kLegacyClaudeCodeTerminalCommand =
     QStringLiteral("claude \"$(cat {promptFile})\"");
-constexpr int kNetworkLogLimit = 2000;
+// Raised from 2000: the view now renders in segments (see kNetworkLogSegmentSize)
+// instead of the whole buffer at once, so a much larger in-memory/on-disk history
+// no longer costs render time up front — it only matters once the user actually
+// scrolls back far enough to load it.
+constexpr int kNetworkLogLimit = 20000;
+// How many matching lines to render per "page" of the network log: the initial
+// view, and each older batch loaded when the user scrolls to the top.
+constexpr int kNetworkLogSegmentSize = 300;
 
 const QString kCodexProvider = QStringLiteral("codex");
 
@@ -6666,7 +6686,7 @@ inline int mirrorPullCount(const QString &mirrorPath, const QString &branch)
 inline int mirrorDiscussionCount(const QString &mirrorPath, const QString &branch)
 {
     return mirrorNumberedDirCount(mirrorPath, branch,
-                                  QStringLiteral("discussions"));
+                                  QStringLiteral(".forkmesh/discussions"));
 }
 
 // How many commits are reachable on the node's served branch (`git rev-list
@@ -6944,7 +6964,39 @@ inline bool isAutostartEnabled()
 #endif
 }
 
-inline void setAutostartEnabled(bool enabled)
+// Short name of the OS mechanism used to launch ForkMesh at login. Shown in
+// Settings so the user can see how autostart is wired, not just that it is on.
+inline QString autostartMechanismName()
+{
+#if defined(Q_OS_WIN)
+    return QStringLiteral("Windows registry Run key");
+#elif defined(Q_OS_MACOS)
+    return QStringLiteral("macOS LaunchAgent");
+#else
+    return QStringLiteral("XDG autostart entry");
+#endif
+}
+
+// The exact on-disk file (or registry key) that makes ForkMesh start at login.
+// This is what the "Remove auto startup" button deletes. Shown in Settings so
+// a stale entry left by an installer or an older build is visible and findable.
+inline QString autostartLocation()
+{
+#if defined(Q_OS_WIN)
+    return kWinRunKey + QStringLiteral("\\ForkMesh");
+#elif defined(Q_OS_MACOS)
+    return QDir::toNativeSeparators(launchAgentPath());
+#else
+    return QDir::toNativeSeparators(autostartDesktopPath());
+#endif
+}
+
+// Enable/disable launching ForkMesh at login. Returns true on success. The old
+// version silently ignored a failed remove(): if the autostart entry couldn't
+// be deleted (e.g. a root-owned file left by the curl installer) the checkbox
+// looked off but ForkMesh kept starting at login (issue #393). The bool lets
+// the UI re-read the real state and warn instead of lying.
+inline bool setAutostartEnabled(bool enabled)
 {
     const QString exe = QCoreApplication::applicationFilePath();
 #if defined(Q_OS_WIN)
@@ -6953,44 +7005,47 @@ inline void setAutostartEnabled(bool enabled)
         run.setValue("ForkMesh", QDir::toNativeSeparators(exe));
     else
         run.remove("ForkMesh");
+    run.sync();
+    return run.status() == QSettings::NoError &&
+           run.contains("ForkMesh") == enabled;
 #elif defined(Q_OS_MACOS)
     const QString path = launchAgentPath();
     if (!enabled) {
-        QFile::remove(path);
-        return;
+        // Treat "already gone" as success; only a real deletion failure counts.
+        return !QFileInfo::exists(path) || QFile::remove(path);
     }
     QDir().mkpath(QFileInfo(path).absolutePath());
     QFile file(path);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        const QString plist = QStringLiteral(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
-            "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
-            "<plist version=\"1.0\"><dict>\n"
-            "  <key>Label</key><string>com.forkmesh.app</string>\n"
-            "  <key>ProgramArguments</key><array><string>%1</string></array>\n"
-            "  <key>RunAtLoad</key><true/>\n"
-            "</dict></plist>\n").arg(exe);
-        file.write(plist.toUtf8());
-    }
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    const QString plist = QStringLiteral(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+        "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+        "<plist version=\"1.0\"><dict>\n"
+        "  <key>Label</key><string>com.forkmesh.app</string>\n"
+        "  <key>ProgramArguments</key><array><string>%1</string></array>\n"
+        "  <key>RunAtLoad</key><true/>\n"
+        "</dict></plist>\n").arg(exe);
+    return file.write(plist.toUtf8()) >= 0;
 #else
     const QString path = autostartDesktopPath();
     if (!enabled) {
-        QFile::remove(path);
-        return;
+        // Treat "already gone" as success; only a real deletion failure counts.
+        return !QFileInfo::exists(path) || QFile::remove(path);
     }
     QDir().mkpath(QFileInfo(path).absolutePath());
     QFile file(path);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        const QString desktop = QStringLiteral(
-            "[Desktop Entry]\n"
-            "Type=Application\n"
-            "Name=ForkMesh\n"
-            "Exec=%1\n"
-            "Terminal=false\n"
-            "X-GNOME-Autostart-enabled=true\n").arg(exe);
-        file.write(desktop.toUtf8());
-    }
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    const QString desktop = QStringLiteral(
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=ForkMesh\n"
+        "Exec=%1\n"
+        "Terminal=false\n"
+        "X-GNOME-Autostart-enabled=true\n").arg(exe);
+    return file.write(desktop.toUtf8()) >= 0;
 #endif
 }
 

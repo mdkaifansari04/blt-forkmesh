@@ -41,14 +41,9 @@ char g_crashContext[4096] = {0};
 // array — 64 KiB comfortably exceeds the classic 8 KiB MINSIGSTKSZ.
 char g_altStack[64 * 1024];
 
-// Durable crash-log file descriptor, opened ahead of any fault in
-// installCrashHandler() so the handler only ever does signal-safe writes to it.
-// -1 = no durable log (write to stderr only). The opt-in telemetry upload reads
-// this file on the next startup (issue #354).
-int g_crashFd = -1;
-
-// The app's user-facing Log view persists to network_log.txt. Keep a separate
-// pre-opened fd so signal records can leave a compact breadcrumb there too.
+// The app's user-facing Log view persists to network_log.txt. A pre-opened fd
+// lets the signal handler write crash records directly there so they appear in
+// the log view without needing a separate crash file.
 int g_mainLogFd = -1;
 
 // Guard against a fault while we're already handling one (a bug in the handler,
@@ -96,12 +91,12 @@ void safeWriteFd(int fd, const char *s)
     (void)r;
 }
 
-// Write to stderr and, when open, mirror the same bytes into the durable crash
-// log so the record survives the process for the next-startup telemetry upload.
+// Write to stderr and also to the network log so crash records appear in the
+// user-visible log view without needing a separate crash file.
 void safeWrite(const char *s)
 {
     safeWriteFd(2, s);
-    safeWriteFd(g_crashFd, s);
+    safeWriteFd(g_mainLogFd, s);
 }
 
 void safeWriteNumToFd(int fd, unsigned long v)
@@ -117,7 +112,7 @@ void safeWriteNumToFd(int fd, unsigned long v)
 void safeWriteNum(unsigned long v)
 {
     safeWriteNumToFd(2, v);
-    safeWriteNumToFd(g_crashFd, v);
+    safeWriteNumToFd(g_mainLogFd, v);
 }
 
 void safeWriteInt(long v)
@@ -126,8 +121,8 @@ void safeWriteInt(long v)
     int n = safeItoa(v, buf);
     ssize_t r = ::write(2, buf, size_t(n));
     (void)r;
-    if (g_crashFd >= 0)
-        r = ::write(g_crashFd, buf, size_t(n));
+    if (g_mainLogFd >= 0)
+        r = ::write(g_mainLogFd, buf, size_t(n));
     (void)r;
 }
 
@@ -156,12 +151,12 @@ void safeWriteSignalInfo(const siginfo_t *info)
 }
 
 // backtrace_symbols_fd targets one fd, so emit the frames to stderr and the
-// durable log separately.
+// network log separately.
 void safeBacktrace(void *const *frames, int n)
 {
     backtrace_symbols_fd(frames, n, 2);
-    if (g_crashFd >= 0)
-        backtrace_symbols_fd(frames, n, g_crashFd);
+    if (g_mainLogFd >= 0)
+        backtrace_symbols_fd(frames, n, g_mainLogFd);
 }
 
 const char *signalName(int sig)
@@ -220,7 +215,7 @@ void safeWriteMainLogSignalRecord(int sig, unsigned long when,
                     "; action workflow survived and will finish/fail normally");
     } else {
         safeWriteFd(g_mainLogFd,
-                    "; terminating; see ~/.forkmesh/diagnostics/crashes.log");
+                    "; terminating; full record logged above");
     }
     safeWriteFd(g_mainLogFd, "\n");
 }
@@ -388,15 +383,10 @@ void installCrashHandler(const QString &crashLogPath,
         QByteArrayLiteral("ForkMesh v" FORKMESH_VERSION " (src " FORKMESH_SOURCE_DIR ")");
     qstrncpy(g_buildInfo, build.constData(), sizeof(g_buildInfo));
 
-    // Open the durable crash log now, in normal context, so the signal handler
-    // only writes to an already-open fd. Best-effort: on any failure we simply
-    // fall back to stderr-only logging (g_crashFd stays -1).
-    if (!crashLogPath.isEmpty()) {
-        QDir().mkpath(QFileInfo(crashLogPath).absolutePath());
-        const QByteArray path = QFile::encodeName(crashLogPath);
-        g_crashFd = ::open(path.constData(),
-                           O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
-    }
+    // crashLogPath is no longer used — crash records go directly to the network
+    // log (g_mainLogFd / network_log.txt) so they appear in the log view without
+    // needing a separate file. The parameter is kept for API compatibility.
+    Q_UNUSED(crashLogPath);
     if (!mainLogPath.isEmpty()) {
         QDir().mkpath(QFileInfo(mainLogPath).absolutePath());
         const QByteArray path = QFile::encodeName(mainLogPath);
@@ -412,7 +402,7 @@ void installCrashHandler(const QString &crashLogPath,
     installSignalHandlers();
     std::set_terminate(terminateHandler);
 #else
-    Q_UNUSED(crashLogPath);
+    Q_UNUSED(crashLogPath); // kept for API compatibility; never used
     Q_UNUSED(mainLogPath);
 #endif
 }
@@ -454,16 +444,6 @@ void logDiagnosticEvent(const QString &context, const QString &details)
     qCritical().noquote() << block;
     appendDiagnosticToMainLog(QStringLiteral("ForkMesh diagnostic"), context,
                               details);
-
-#ifdef FORKMESH_CRASH_HANDLER
-    // Mirror into the durable crash log, when one was opened, so the breadcrumb
-    // survives if the UI dies while handling the failure.
-    if (g_crashFd >= 0) {
-        const QByteArray utf8 = block.toUtf8();
-        ssize_t r = ::write(g_crashFd, utf8.constData(), size_t(utf8.size()));
-        (void)r;
-    }
-#endif
 }
 
 void logCaughtFault(const QString &context, const QString &what)
@@ -479,14 +459,6 @@ void logCaughtFault(const QString &context, const QString &what)
     qCritical().noquote() << block;
     appendDiagnosticToMainLog(QStringLiteral("ForkMesh caught fault"), context,
                               what);
-
-#ifdef FORKMESH_CRASH_HANDLER
-    if (g_crashFd >= 0) {
-        const QByteArray utf8 = block.toUtf8();
-        ssize_t r = ::write(g_crashFd, utf8.constData(), size_t(utf8.size()));
-        (void)r;
-    }
-#endif
 }
 
 } // namespace forkmesh

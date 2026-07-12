@@ -813,7 +813,7 @@
   }
 
   // A discussion's replies are an append-only, signed event log stored as
-  // discussions/<N>/NNNN-comment.md files alongside discussion.md (see
+  // .forkmesh/discussions/<N>/NNNN-comment.md files alongside discussion.md (see
   // DiscussionStore.cpp on the desktop client). Reuses the pull conversation
   // row renderer since a discussion comment event has the same shape.
   function renderRepoDiscussionConversation(events) {
@@ -825,7 +825,7 @@
   async function loadRepoDiscussionConversation(repo, number) {
     let tree;
     try {
-      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `discussions/${number}` }));
+      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `.forkmesh/discussions/${number}` }));
     } catch (_) {
       return [];
     }
@@ -833,9 +833,9 @@
       .filter((entry) => entry.type !== "tree" && /^\d+-comment\.md$/.test(String(entry.name || "")))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
     if (!files.length) return [];
-    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `discussions/${number}/${entry.name}`));
+    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `.forkmesh/discussions/${number}/${entry.name}`));
     return files.map((entry) => {
-      const blob = blobs[`discussions/${number}/${entry.name}`];
+      const blob = blobs[`.forkmesh/discussions/${number}/${entry.name}`];
       if (!blob) return null;
       const parsed = parseFrontMatter(blobText(blob));
       const values = parsed.values || {};
@@ -1253,9 +1253,20 @@
 
   function applyServedCounts(counts) {
     if (!counts || typeof counts !== "object") return;
-    // Total issue count from the root tree's bundled tallies; the first view of
-    // the Issues tab refines it to the OPEN count (issues load lazily now).
-    if (Number.isFinite(Number(counts.issues))) setRepoTabCount("issues", Number(counts.issues));
+    // The Issues header shows OPEN issues only (issue #397): closed issues are
+    // opt-in behind the Closed filter, so the tab badge counts the open issues
+    // the host serves (counts.openIssues), and the panel's "N Open / N Closed"
+    // split is filled from the served open/closed tallies. Older hosts that only
+    // report a bundled total fall back to that total; the first view of the
+    // Issues tab still refines the badge to the open count once issues load.
+    const openIssues = Number.isFinite(Number(counts.openIssues))
+      ? Number(counts.openIssues)
+      : Number(counts.issues);
+    if (Number.isFinite(openIssues)) {
+      setRepoTabCount("issues", openIssues);
+      if (Number.isFinite(Number(counts.closedIssues)))
+        setRepoCollectionCounts("issues", openIssues, Number(counts.closedIssues));
+    }
     if (Number.isFinite(Number(counts.pulls))) setRepoTabCount("pulls", Number(counts.pulls));
     if (Number.isFinite(Number(counts.discussions))) setRepoTabCount("discussions", Number(counts.discussions));
   }
@@ -1319,7 +1330,9 @@
         tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: ".forkmesh/issues" }));
       } catch (error) {
         if (isMissingMirrorFolder(error)) {
-          state.issuesView.items = [];
+          // No issues on the mirror yet - still surface the owner's offline
+          // submissions kept locally while their node was down (issue #379).
+          state.issuesView.items = reconcilePendingIssues(repo, []);
           state.issuesView.filter = "open";
           state.issuesView.query = "";
           renderRepoIssues();
@@ -1340,12 +1353,17 @@
         if (!blob) return null;
         return parseIssueJson(blobText(blob), number);
       }).filter(Boolean);
-      state.issuesView.items = items;
+      // Issue #379: fold in the owner's offline submissions (kept locally while
+      // their source-of-truth node was down) so they still show up on reload,
+      // dropping any the node has since drained - the numbered mirror copy wins.
+      const pending = reconcilePendingIssues(repo, items);
+      const merged = pending.length ? [...pending, ...items] : items;
+      state.issuesView.items = merged;
       state.issuesView.filter = "open";
       state.issuesView.query = "";
-      setRepoTabCount("issues", items.filter((issue) => issue.status === "open").length);
-      const openIssues = items.filter((issue) => issue.status === "open").length;
-      setRepoCollectionCounts("issues", openIssues, items.length - openIssues);
+      setRepoTabCount("issues", merged.filter((issue) => issue.status === "open").length);
+      const openIssues = merged.filter((issue) => issue.status === "open").length;
+      setRepoCollectionCounts("issues", openIssues, merged.length - openIssues);
       renderRepoIssues();
     } catch (_) {
       container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a live desktop host serves the .forkmesh/issues/ folder.</div>';
@@ -1591,7 +1609,7 @@
         .filter((entry) => entry.type === "tree" && entry.name)
         .map((entry) => String(entry.name));
       if (!channels.length) return;
-      const paths = channels.map((channel) => `releases/${channel}/release.json`);
+      const paths = channels.map((channel) => `.forkmesh/releases/${channel}/release.json`);
       const blobs = await fetchRepoBlobs(repo, paths);
       let latest = null;
       paths.forEach((path) => {

@@ -65,7 +65,7 @@ private:
     void complete(bool ok, const QString &finalMessage);
     void cleanupWorktree();
     // For a release run (ref under refs/tags/), copy the release metadata the
-    // workflow produced in the throwaway worktree (releases/<channel>/*) into the
+    // workflow produced in the throwaway worktree (.forkmesh/releases/<channel>/*) into the
     // owner's working copy and commit it, so it survives worktree cleanup and can
     // be published. The artifact bytes are already in the served CAS (the run's
     // FORKMESH_RELEASE_CAS points at <mirror>/forkmesh-releases). Returns true if
