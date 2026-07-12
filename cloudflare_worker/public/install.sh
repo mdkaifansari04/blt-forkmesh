@@ -652,9 +652,9 @@ detect_release_asset() {
   ASSET_ARCH="$arch"
   ASSET_NAME="forkmesh-${os}-${arch}"
   [ "$os" = "windows" ] && ASSET_NAME="${ASSET_NAME}.exe"
-  # Release channel: the directory under releases/ the workflow publishes into.
+  # Release channel: the directory under .forkmesh/releases/ the workflow publishes into.
   RELEASE_CHANNEL="${FORKMESH_RELEASE:-latest}"
-  ASSET_REL_PATH="releases/${RELEASE_CHANNEL}/${ASSET_NAME}"
+  ASSET_REL_PATH=".forkmesh/releases/${RELEASE_CHANNEL}/${ASSET_NAME}"
 }
 
 # Sparse-fetch a single committed file (repo-relative path $3) from clone URL $1
@@ -722,15 +722,15 @@ _install_binary() {
 # platform asset's content hash, downloads the bytes from the relay's
 # content-addressed release endpoint, and VERIFIES the sha256 before installing.
 # Falls back to a legacy release that still committed the binary into
-# releases/<channel>/, and then (via the caller) to a source build. Returns
+# .forkmesh/releases/<channel>/, and then (via the caller) to a source build. Returns
 # non-zero when git is unavailable or no mirror can serve a verified asset.
 install_prebuilt_release() {
   command -v git >/dev/null 2>&1 || return 1
   ensure_mirror_candidates
   local tmp repo sums manifest canon hash url bin got attempt attempt_url
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-prebuilt.XXXXXX" 2>/dev/null)" || return 1
-  sums="releases/${RELEASE_CHANNEL}/SHASUMS256.txt"
-  manifest="releases/${RELEASE_CHANNEL}/release.json"
+  sums=".forkmesh/releases/${RELEASE_CHANNEL}/SHASUMS256.txt"
+  manifest=".forkmesh/releases/${RELEASE_CHANNEL}/release.json"
   for repo in "${REPO_CANDIDATES[@]}"; do
     # New model: manifest checksum + content-addressed download (+ verify). Fetch
     # release.json in the same checkout so the blob can be requested from the repo
@@ -773,7 +773,7 @@ install_prebuilt_release() {
         done
       fi
     fi
-    # Legacy model: binary committed directly into releases/<channel>/.
+    # Legacy model: binary committed directly into .forkmesh/releases/<channel>/.
     if _sparse_fetch_file "$repo" "$tmp" "$ASSET_REL_PATH" && _install_binary "$tmp/$ASSET_REL_PATH"; then
       REPO="$repo"; rm -rf "$tmp"
       say "Installed prebuilt ForkMesh ${ASSET_OS}/${ASSET_ARCH} binary to $BIN"

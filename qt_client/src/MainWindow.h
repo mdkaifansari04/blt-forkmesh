@@ -233,6 +233,13 @@ public:
     void testSetNodeAlertGraceUntilMs(qint64 value) { m_nodeAlertGraceUntilMs = value; }
     QStringList testNetworkLog() const { return m_networkLog; }
     void testResetNetworkLog();
+    void testLogSystem(const QString &text) { logSystem(text); }
+    // Drives the network log's segmented-render + scroll-to-top-loads-more path
+    // (adhoc #15) without needing real scroll-wheel input.
+    void testShowLogSection() { showSection(4); }
+    void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
+    QPlainTextEdit *testNetworkLogView() const { return m_settingsLog; }
+    void testScrollNetworkLogToTop() { onNetworkLogScrolled(0); }
     QStringList testQuickUpdatePullArguments(const QString &clientDir) const;
     // Issue #214: the ordered "Build & preview" command pipeline — checkout into a
     // throwaway worktree, CMake configure, build — as "<program> <args…>" lines.
@@ -2586,6 +2593,18 @@ private:
     QString networkLogPath() const; // on-disk path for the persisted log
     void loadNetworkLog();          // restore log history at startup
     void saveNetworkLog();          // rewrite (and trim) the on-disk log
+    // Only the newest kNetworkLogSegmentSize matching lines are rendered up
+    // front; m_logRenderFrom is the m_networkLog index of the oldest line
+    // currently shown (0 once every matching line has been loaded). Reaching
+    // the top of the scroll area loads the next older segment.
+    int m_logRenderFrom = 0;
+    // Guards against the scrollbar's valueChanged firing (and re-entering the
+    // loader) while rebuildNetworkLogView()/loadOlderNetworkLogSegment() are
+    // themselves mutating the document — clear()/insertHtml() can transiently
+    // report the scrollbar at its minimum mid-edit.
+    bool m_logViewMutating = false;
+    void loadOlderNetworkLogSegment();
+    void onNetworkLogScrolled(int value);
     // Compact, centered success/failure banner shown in the top bar between the
     // breadcrumb and the notifications bell. Auto-clears after a few seconds.
     // `clickHref` makes the whole toast a clickable link routed by the
@@ -2858,7 +2877,8 @@ private:
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;
     QString m_connectionStatusColor;      // last dot colour (skip redundant repaints)
-    QLabel *m_topMessage = nullptr;       // compact centered success/failure toast
+    QLabel *m_topMessage = nullptr;       // compact centered success/failure toast text
+    QFrame *m_topMessageContainer = nullptr; // bordered pill wrapping the text + Expand/Copy/✕
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
     QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
@@ -3064,6 +3084,8 @@ private:
     QPushButton *m_importButton = nullptr;
     QLabel *m_importStatus = nullptr;
     QCheckBox *m_autostartCheck = nullptr;
+    QLabel *m_autostartInfo = nullptr;
+    QPushButton *m_autostartRemoveButton = nullptr;
     QComboBox *m_themeCombo = nullptr;
     // Default coding-agent provider for new assignments; seeds the quick-add and
     // issue-detail provider pickers. Codex | OpenAI API | Claude API | Claude Code.

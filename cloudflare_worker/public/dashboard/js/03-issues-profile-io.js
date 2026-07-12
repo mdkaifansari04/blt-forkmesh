@@ -198,6 +198,56 @@
     return { privateKey, pub };
   }
 
+  // Issue #379: offline issues an owner filed while their source-of-truth node
+  // was down (but a mirror was still serving the repo). They live only in the
+  // relay's inbox until the node returns and drains them, so we also keep a
+  // local copy per repo - keyed here - so they "show up fully" across reloads
+  // instead of vanishing the moment the mirror-loaded list replaces the
+  // optimistic, session-only placeholder.
+  const PENDING_ISSUES_STORAGE = "forkmesh.pendingIssues";
+
+  function pendingIssuesRepoKey(repo) {
+    return `${String(repo?.owner || "").toLowerCase()}/${String(repo?.name || "").toLowerCase()}`;
+  }
+
+  function readPendingIssueStore() {
+    try { return JSON.parse(localStorage.getItem(PENDING_ISSUES_STORAGE) || "{}") || {}; }
+    catch (_) { return {}; }
+  }
+
+  function writePendingIssueStore(store) {
+    try { localStorage.setItem(PENDING_ISSUES_STORAGE, JSON.stringify(store)); } catch (_) {}
+  }
+
+  function loadPendingIssues(repo) {
+    const list = readPendingIssueStore()[pendingIssuesRepoKey(repo)];
+    return Array.isArray(list) ? list : [];
+  }
+
+  function savePendingIssue(repo, item) {
+    const store = readPendingIssueStore();
+    const key = pendingIssuesRepoKey(repo);
+    const list = Array.isArray(store[key]) ? store[key] : [];
+    store[key] = [item, ...list].slice(0, 50);
+    writePendingIssueStore(store);
+  }
+
+  // Drop any locally-held pending issues whose title now appears in the mirror
+  // tree: the owner's node has come back and drained them, so the real numbered
+  // issue served from the mirror wins and the local placeholder retires.
+  function reconcilePendingIssues(repo, mirrorIssues) {
+    const list = loadPendingIssues(repo);
+    if (!list.length) return list;
+    const drained = new Set(
+      (mirrorIssues || []).map((issue) => String(issue.title || "").trim()));
+    const kept = list.filter((item) => !drained.has(String(item.title || "").trim()));
+    if (kept.length === list.length) return list;
+    const store = readPendingIssueStore();
+    store[pendingIssuesRepoKey(repo)] = kept;
+    writePendingIssueStore(store);
+    return kept;
+  }
+
   // Mirrors IssueStore::contentForSigning + canonicalString and the desktop's
   // inbox POST (verify_issue_event in the worker). New issues are signed with
   // number 0; the maintainer assigns the durable number on drain.

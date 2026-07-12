@@ -493,7 +493,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddModeSelector->addItem(QStringLiteral("Ask before edits"), false);
     m_quickAddModeSelector->addItem(QStringLiteral("Edit automatically"), false);
     m_quickAddModeSelector->addItem(QStringLiteral("Plan mode"), false);
-    m_quickAddModeSelector->addItem(QStringLiteral("Auto mode"), true);
+    m_quickAddModeSelector->addItem(kClaudeAutoModeLabel, true);
     m_quickAddModeSelector->setMaxVisibleItems(30);
     m_quickAddModeSelector->setToolTip(
         "How much freedom the agent has to make changes without asking first.");
@@ -2192,28 +2192,21 @@ void MainWindow::maybeUploadDiagnostics()
 
     QSettings settings;
     const QString diagDir = QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/");
-    const QString crashPath = diagDir + QStringLiteral("crashes.log");
     const QString stallPath = m_stallLogPath.isEmpty()
                                   ? diagDir + QStringLiteral("stalls.log")
                                   : m_stallLogPath;
 
-    qint64 crashSize = 0, stallSize = 0;
-    const QString crash = scrubDiagnostics(readDiagnosticsTail(
-        crashPath, settings.value(kTelemetryCrashOffsetSetting, 0).toLongLong(),
-        &crashSize));
+    qint64 stallSize = 0;
     const QString stalls = scrubDiagnostics(readDiagnosticsTail(
         stallPath, settings.value(kTelemetryStallOffsetSetting, 0).toLongLong(),
         &stallSize));
 
     QJsonArray events;
-    if (!crash.trimmed().isEmpty())
-        events.append(QJsonObject{{"kind", "crash"}, {"summary", crash}});
     if (!stalls.trimmed().isEmpty())
         events.append(QJsonObject{{"kind", "stall"}, {"summary", stalls}});
     if (events.isEmpty()) {
-        // Nothing new to report; still advance the offsets so a later append
+        // Nothing new to report; still advance the offset so a later append
         // doesn't re-scan the whole (unchanged) file.
-        settings.setValue(kTelemetryCrashOffsetSetting, crashSize);
         settings.setValue(kTelemetryStallOffsetSetting, stallSize);
         return;
     }
@@ -2243,17 +2236,15 @@ void MainWindow::maybeUploadDiagnostics()
                       QStringLiteral("application/json"));
     QNetworkReply *reply = m_networkAccess->post(
         request, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, crashSize, stallSize] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, stallSize] {
         const int status =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         reply->deleteLater();
-        // Only advance the uploaded offsets once the mainnode has accepted the
+        // Only advance the uploaded offset once the mainnode has accepted the
         // batch, so a transient failure re-sends the same records next startup.
         if (status >= 200 && status < 300) {
-            QSettings settings;
-            settings.setValue(kTelemetryCrashOffsetSetting, crashSize);
-            settings.setValue(kTelemetryStallOffsetSetting, stallSize);
-            logSystem(QStringLiteral("Uploaded opt-in crash/stall telemetry."));
+            QSettings().setValue(kTelemetryStallOffsetSetting, stallSize);
+            logSystem(QStringLiteral("Uploaded opt-in stall telemetry."));
         }
     });
 }
@@ -2443,7 +2434,12 @@ QWidget *MainWindow::buildLogSection()
     m_settingsLog = new QPlainTextEdit;
     m_settingsLog->setReadOnly(true);
     m_settingsLog->setObjectName("networkLog");
-    m_settingsLog->setMaximumBlockCount(kNetworkLogLimit);
+    // No setMaximumBlockCount here: that trims blocks from the *top* of the
+    // document, which would silently discard the older segments this view now
+    // loads on demand when the user scrolls up (adhoc #15). m_networkLog
+    // itself (capped at kNetworkLogLimit) is the real bound on total history.
+    connect(m_settingsLog->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            &MainWindow::onNetworkLogScrolled);
 
     // Quick-filter chips that narrow the log to a single event category. The row
     // scrolls horizontally so a long set of categories never clips the log.
@@ -2461,11 +2457,12 @@ QWidget *MainWindow::buildLogSection()
     filterScroll->setFixedHeight(34);
 
     // Discover which categories the buffered history contains and build the
-    // chips now, but leave rendering the history itself (up to kNetworkLogLimit
-    // lines of colored HTML, ~300ms) to the first visit of the Log section —
-    // it's pure constructor cost for a view most launches never open. Live
-    // logSystem() lines still append to the (empty) view immediately; the first
-    // visit's full rebuild re-renders the buffer in order, history included.
+    // chips now, but leave rendering the history itself (the newest
+    // kNetworkLogSegmentSize lines; older segments load lazily on scroll) to
+    // the first visit of the Log section — it's pure constructor cost for a
+    // view most launches never open. Live logSystem() lines still append to
+    // the (empty) view immediately; the first visit's rebuild re-renders the
+    // latest segment in order, history included.
     m_logFilterCategories.clear();
     for (const QString &line : std::as_const(m_networkLog))
         m_logFilterCategories.insert(logBadgeFor(line));
@@ -2477,6 +2474,7 @@ QWidget *MainWindow::buildLogSection()
         m_lastLogRenderDate.clear();
         m_logFilter.clear();
         m_logFilterCategories.clear();
+        m_logRenderFrom = 0; // nothing left to page back into once cleared
         if (m_settingsLog)
             m_settingsLog->clear();
         saveNetworkLog();          // truncate the on-disk log too
@@ -2692,7 +2690,7 @@ QWidget *MainWindow::buildBreadcrumb()
     // top bar (between the breadcrumb and the notifications bell) and is flanked
     // by stretches so it stays centered regardless of breadcrumb width.
     m_topMessage = new QLabel;
-    m_topMessage->setObjectName("topMessage");
+    m_topMessage->setObjectName("topMessageText");
     m_topMessage->setTextFormat(Qt::RichText);
     // Left-align the text itself: the toast as a whole still sits centered in the
     // bar (via the stretches around it below), but when the window is too narrow
@@ -2700,11 +2698,9 @@ QWidget *MainWindow::buildBreadcrumb()
     // centered label clips from both ends — hiding the start of the message where
     // the useful detail is. Left alignment keeps that start visible.
     m_topMessage->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    // Hard cap on the pill's width so a long toast can never widen the window; the
-    // text itself is elided to one line in flashMessage. A long message reveals its
-    // full text inline via the Expand button beside the toast (see renderTopMessage)
-    // rather than popping up a modal.
-    m_topMessage->setMaximumWidth(620);
+    // The pill's overall width is capped on m_topMessageContainer below (which
+    // also holds the Expand/Copy/✕ buttons); the label itself just fills it. The
+    // text is elided to one line in flashMessage regardless.
     // Selectable like before, plus clickable links so the integrity-pin warning can
     // carry its "Reset integrity pin" / "Why?" actions inline (see showPinWarning).
     m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
@@ -2766,6 +2762,25 @@ QWidget *MainWindow::buildBreadcrumb()
         if (m_topMessageTimer && m_topMessageTimer->isActive())
             renderTopMessageCountdown();
     });
+
+    // Wrap the text and its Expand/Copy/✕ affordances in one bordered pill so
+    // they render (and hit-test) as a single contained unit instead of the
+    // buttons floating loose beside the box, which could leave them squeezed
+    // to almost nothing — and effectively unclickable — once the rest of the
+    // crowded top bar ran short on room (adhoc #16).
+    m_topMessageContainer = new QFrame;
+    m_topMessageContainer->setObjectName("topMessage");
+    // Widened from the old 620px cap so a long error is readable without
+    // expanding it; still capped so it can never widen the window.
+    m_topMessageContainer->setMaximumWidth(900);
+    auto *topMessageRow = new QHBoxLayout(m_topMessageContainer);
+    topMessageRow->setContentsMargins(12, 2, 6, 2);
+    topMessageRow->setSpacing(4);
+    topMessageRow->addWidget(m_topMessage, 1);
+    topMessageRow->addWidget(m_topMessageExpand);
+    topMessageRow->addWidget(m_topMessageCopy);
+    topMessageRow->addWidget(m_topMessageClose);
+    m_topMessageContainer->hide();
 
     // The expanded full text lives in this floating panel, parented to the window
     // (not to any layout) and raised above everything when shown. Revealing it
@@ -3138,10 +3153,7 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addSpacing(12);
     mainRow->addWidget(m_breadcrumb);
     mainRow->addStretch();
-    mainRow->addWidget(m_topMessage);
-    mainRow->addWidget(m_topMessageExpand);
-    mainRow->addWidget(m_topMessageCopy);
-    mainRow->addWidget(m_topMessageClose);
+    mainRow->addWidget(m_topMessageContainer);
     mainRow->addStretch();
     // Live CPU/MEM/DISK sparklines, moved up next to the donate button (adhoc #121).
     mainRow->addWidget(cpuChart);
@@ -5083,6 +5095,8 @@ void MainWindow::showPinWarning()
     m_topMessageExpanded = false;
     m_topMessage->setWordWrap(false);
     m_topMessage->show();
+    if (m_topMessageContainer)
+        m_topMessageContainer->show();
     // Persistent like an error toast: no auto-timeout, dismissible via Copy / ✕.
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
@@ -5665,8 +5679,8 @@ void MainWindow::showSection(int index)
     } else if (index == 4 && m_settingsLog) {
         // First visit renders the persisted history that buildLogSection()
         // deliberately skipped (see m_networkLogViewStale) — the rebuild replays
-        // the whole in-memory buffer, so lines appended live since launch keep
-        // their place in order.
+        // the newest segment of the in-memory buffer, so lines appended live
+        // since launch keep their place in order.
         if (m_networkLogViewStale) {
             m_networkLogViewStale = false;
             rebuildNetworkLogView();

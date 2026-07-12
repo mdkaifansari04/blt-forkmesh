@@ -139,6 +139,14 @@
   function repoServedByMirror(repo) {
     return repoIsLive(repo) && !repo?.liveHost;
   }
+  // The signed-in account owns this repo when their node name matches the repo
+  // owner slug (case-insensitive). Owners get to keep their own offline issue
+  // submissions visible until their source-of-truth node drains them (#379).
+  function isRepoOwner(repo) {
+    const owner = String(repo?.owner || "").trim().toLowerCase();
+    const me = String(state.session?.nodeName || "").trim().toLowerCase();
+    return Boolean(owner && me && owner === me);
+  }
 
   function groupRepoMetric(group, keys) {
     let best = null;
