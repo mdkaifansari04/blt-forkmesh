@@ -379,6 +379,9 @@ from events import (  # noqa: E402
 # sibling module the test suite imports directly. Only the WebCrypto RSA glue,
 # the D1-backed actor/follower/delivery state and the HTTP handlers live below.
 import activitypub as ap  # noqa: E402
+# Pull-request badge SVG (adhoc #44): a pure, js-free generator for the visual
+# "fingerprint" attached to federated PR-opened notes.
+from pull_badge import patch_file_stats, pull_badge_svg  # noqa: E402
 
 # Social-preview (OpenGraph) info-card renderer — pure-stdlib PNG drawing,
 # another js-free sibling module the test suite imports directly.
@@ -9858,7 +9861,8 @@ async def _ap_drain_outbox(env, limit):
 # --- Outbound publishing -------------------------------------------------------
 
 async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
-                                 ref, title, body, author_name):
+                                 ref, title, body, author_name,
+                                 extra_images=None):
     """Federate one repo event: a Note from the repo actor to its followers,
     plus (when the author maps to a local account with its own actor) the same
     Note from the user actor to theirs.
@@ -9886,6 +9890,9 @@ async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
     # markdown (there's no separate upload channel); pull them out so they
     # federate as real Image attachments instead of unrenderable base64 text.
     clean_body, images = ap.extract_body_images(body or "")
+    # Caller-supplied media (the generated pull-request badge SVG, adhoc #44)
+    # leads the attachment list so it becomes the visible preview.
+    images = [img for img in (extra_images or []) if img] + images
     text = ap.event_note_text(
         kind, event_type, owner, repo, ref, clean_string(title, 240),
         clean_body, author, web_url)
@@ -12799,9 +12806,26 @@ async def pulls_handler(env, request, owner, repo):
         await notify_mentions(env, owner, repo, actor, title, pull.get("body", ""),
                               repo_web_href(owner, repo), "pull")
         await notify_repo_host(env, owner, repo, "pulls")
+        # Badge (adhoc #44): render the PR's visual fingerprint from the
+        # signed patch and attach it to the federated note as its lead image.
+        # Best-effort — a badge failure must never block the submission.
+        badge = None
+        try:
+            stats = patch_file_stats(pull.get("patch", "") or "")
+            if stats:
+                svg = pull_badge_svg(
+                    title, clean_string(
+                        pull.get("authorName", "") or pull.get("author", ""),
+                        MAX_NODE_NAME), stats)
+                badge = {"mediaType": "image/svg+xml",
+                         "data": base64.b64encode(
+                             svg.encode("utf-8")).decode("ascii")}
+        except Exception:
+            badge = None
         await _best_effort_inbox_side_effect(_ap_publish_repo_event(
             env, request, owner, repo, "pull", "open", 0, title,
-            pull.get("body", ""), pull.get("authorName", "")))
+            pull.get("body", ""), pull.get("authorName", ""),
+            extra_images=[badge] if badge else None))
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
