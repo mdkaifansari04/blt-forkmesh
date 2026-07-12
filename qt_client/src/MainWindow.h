@@ -960,11 +960,17 @@ private:
     void probeRelayRow(int row); // measure latency + read version for one relay
     // Nodes: a sortable directory of every node this client knows about (the same
     // nodes offered by the top-bar node dropdown), showing each node's platform,
-    // online state, version and repo count. Selecting a row opens a detail panel
-    // with that node's details and the repositories it hosts (adhoc #9).
+    // online state, owner, version, repo/mirror counts and telemetry. Selecting a
+    // row opens a detail panel with that node's details plus the repositories it
+    // hosts and mirrors (adhoc #9, #27).
     QWidget *buildNodesSection();
     void refreshNodesTable();           // re-list the known nodes into the table
     void showNodeDetailForRow(int row); // fill the detail panel for a table row
+    // Fetch the relay's list of currently-online node names (/api/network/stats
+    // "onlineNodes": live host tunnel or fresh signed heartbeat). Headless
+    // mirror nodes serve through the relay without joining this client's chat
+    // room, so room presence alone painted them offline (adhoc #27).
+    void fetchRelayOnlineNodes(bool force = false);
     // Firewall: whitelist-only outbound request gate for traffic created by
     // ForkMesh's shared network manager.
     QWidget *buildFirewallSection();
@@ -3019,6 +3025,12 @@ private:
     QLabel *m_nodesStatus = nullptr;            // "N nodes · M online" summary line
     QPushButton *m_nodesRefreshButton = nullptr;
     QScrollArea *m_nodeDetailScroll = nullptr;  // detail panel for the selected node
+    // Node names (lowercased) the relay currently reports online — a live host
+    // tunnel or a fresh signed heartbeat. Merged into the Nodes page's status so
+    // headless mirror nodes that serve via the relay (but never join this
+    // client's chat room) show online instead of permanently offline.
+    QSet<QString> m_relayOnlineNodes;
+    qint64 m_relayOnlineNodesFetchedMs = 0; // throttle between relay fetches
     // Request firewall section: whitelist controls plus recent allow/deny
     // decisions. This is separate from m_firewallBanner, which is the older
     // inbound-peer troubleshooting banner inside Chat.
