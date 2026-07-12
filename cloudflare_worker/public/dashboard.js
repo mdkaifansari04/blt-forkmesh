@@ -5323,15 +5323,28 @@
     const adds = file.adds || 0;
     const dels = file.dels || 0;
     const total = adds + dels;
-    const greenPct = total ? Math.round((adds / total) * 100) : 0;
-    const bar = total
-      ? `<span style="width:${greenPct}%;background:#3fb950"></span><span style="width:${100 - greenPct}%;background:#f85149"></span>`
-      : '<span style="width:100%;background:#30363d"></span>';
+    const addPct = total ? Math.round((adds / total) * 100) : 0;
+    // Tiny per-file diff strip, same height as the glyph square: a green
+    // slice on top sized to the addition share, red below for deletions.
+    const diffStrip = total
+      ? `<span class="block w-full" style="height:${addPct}%;background:#3fb950"></span><span class="block w-full" style="height:${100 - addPct}%;background:#f85149"></span>`
+      : '<span class="block h-full w-full" style="background:#30363d"></span>';
     return `
-      <div class="flex w-12 flex-col gap-1" title="${escapeHtml(file.path || "file")} +${formatCount(adds)} -${formatCount(dels)}">
-        <div class="flex h-10 items-center justify-center rounded-md border border-border bg-secondary/60 font-mono text-[11px] font-bold" style="color:${color}">${escapeHtml(label)}</div>
-        <div class="flex h-1.5 overflow-hidden rounded-full">${bar}</div>
+      <div class="flex w-16 shrink-0 gap-1.5" title="${escapeHtml(file.path || "file")} +${formatCount(adds)} -${formatCount(dels)}">
+        <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-secondary/60 font-mono text-[11px] font-bold" style="color:${color}">${escapeHtml(label)}</div>
+        <div class="flex h-10 w-1.5 shrink-0 flex-col overflow-hidden rounded-full">${diffStrip}</div>
       </div>`;
+  }
+
+  // Deterministic hue per author name so the icon is stable across loads
+  // without needing an avatar fetch (mirrors loadRepoAboutContributors).
+  function badgeAuthorAvatarHtml(author) {
+    const name = String(author || "unknown");
+    let hash = 0;
+    for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+    const hue = hash % 360;
+    const initial = escapeHtml((name[0] || "?").toUpperCase());
+    return `<span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-background font-mono text-[10px] font-semibold text-white" style="background-color:hsl(${hue} 55% 42%)">${initial}</span>`;
   }
 
   function renderRepoPullBadge(title, number, author, files) {
@@ -5354,11 +5367,11 @@
         <div class="text-[10px] text-muted-foreground">${caption}</div>
       </div>`;
     return `
-      <div class="grid gap-5 p-4">
+      <div class="grid gap-5 rounded-lg border border-border p-4">
         <div class="flex flex-wrap items-start justify-between gap-4">
           <div class="min-w-0">
-            <div class="truncate text-lg font-semibold text-foreground">${escapeHtml(title || "Pull request")}</div>
-            <div class="mt-0.5 text-sm font-semibold text-primary">${number ? `#${escapeHtml(number)}` : "pull request"}<span class="ml-2 font-normal text-muted-foreground">by ${escapeHtml(author || "unknown")}</span></div>
+            <div class="truncate text-2xl font-bold text-foreground">${escapeHtml(title || "Pull request")}</div>
+            <div class="mt-1 flex items-center gap-1.5 text-sm font-semibold text-primary">${number ? `#${escapeHtml(number)}` : "pull request"}<span class="ml-2 inline-flex items-center gap-1.5 font-normal text-muted-foreground">by ${badgeAuthorAvatarHtml(author)}${escapeHtml(author || "unknown")}</span></div>
           </div>
           <div class="flex shrink-0 gap-6">
             ${stat(`+${formatCount(additions)}`, "Additions", "text-emerald-400")}
@@ -5373,7 +5386,7 @@
               <div class="flex items-center gap-2 text-[10px] text-muted-foreground">
                 <span class="h-px min-w-3 flex-1 bg-border"></span>
                 <span class="font-mono" title="${escapeHtml(group.dir)}">${escapeHtml(dirBadgeLabel(group.dir))}</span>
-                <span>(${formatCount(group.files.length)} file${group.files.length === 1 ? "" : "s"})</span>
+                <span class="font-mono">…${formatCount(group.files.length)}</span>
                 <span class="h-px min-w-3 flex-1 bg-border"></span>
               </div>
             </div>`).join("")}
