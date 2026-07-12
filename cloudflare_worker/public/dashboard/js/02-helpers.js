@@ -139,6 +139,13 @@
     })[char]);
   }
 
+  // Loading placeholder: spinner (see .fm-spinner in the shell <style>)
+  // followed by the label. `label` is inserted as HTML so call sites can keep
+  // their pre-escaped fragments.
+  function loadingHtml(label) {
+    return `<span class="fm-spinner" aria-hidden="true"></span>${label}`;
+  }
+
   function formatCount(value) {
     const number = Number(value) || 0;
     return new Intl.NumberFormat().format(number);
