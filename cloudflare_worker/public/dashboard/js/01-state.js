@@ -36,6 +36,9 @@
     notificationUnread: 0,
     selectedNotificationId: "",
     issuesView: { filter: "open", items: [], query: "" },
+    // Projects tab (issue #384): projects link issues + a milestone and carry
+    // start/end dates; "gantt" is the default sub-view, "list" the fallback.
+    projectsView: { filter: "open", mode: "gantt", items: [] },
     claimNode: { pendingNodeId: "" },
     linkGrant: null,
     repoMirrors: [],
