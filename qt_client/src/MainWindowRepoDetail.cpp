@@ -8994,6 +8994,8 @@ void MainWindow::showLoadStatus(const QString &what)
                  what.toHtmlEscaped()));
     m_topMessage->setWordWrap(false);
     m_topMessage->show();
+    if (m_topMessageContainer)
+        m_topMessageContainer->show();
     m_loadStatusShowing = true;
     m_topMessageElided = false;
     m_topMessageExpanded = false;

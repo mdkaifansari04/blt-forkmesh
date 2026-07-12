@@ -2692,7 +2692,7 @@ QWidget *MainWindow::buildBreadcrumb()
     // top bar (between the breadcrumb and the notifications bell) and is flanked
     // by stretches so it stays centered regardless of breadcrumb width.
     m_topMessage = new QLabel;
-    m_topMessage->setObjectName("topMessage");
+    m_topMessage->setObjectName("topMessageText");
     m_topMessage->setTextFormat(Qt::RichText);
     // Left-align the text itself: the toast as a whole still sits centered in the
     // bar (via the stretches around it below), but when the window is too narrow
@@ -2700,11 +2700,9 @@ QWidget *MainWindow::buildBreadcrumb()
     // centered label clips from both ends — hiding the start of the message where
     // the useful detail is. Left alignment keeps that start visible.
     m_topMessage->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    // Hard cap on the pill's width so a long toast can never widen the window; the
-    // text itself is elided to one line in flashMessage. A long message reveals its
-    // full text inline via the Expand button beside the toast (see renderTopMessage)
-    // rather than popping up a modal.
-    m_topMessage->setMaximumWidth(620);
+    // The pill's overall width is capped on m_topMessageContainer below (which
+    // also holds the Expand/Copy/✕ buttons); the label itself just fills it. The
+    // text is elided to one line in flashMessage regardless.
     // Selectable like before, plus clickable links so the integrity-pin warning can
     // carry its "Reset integrity pin" / "Why?" actions inline (see showPinWarning).
     m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
@@ -2766,6 +2764,25 @@ QWidget *MainWindow::buildBreadcrumb()
         if (m_topMessageTimer && m_topMessageTimer->isActive())
             renderTopMessageCountdown();
     });
+
+    // Wrap the text and its Expand/Copy/✕ affordances in one bordered pill so
+    // they render (and hit-test) as a single contained unit instead of the
+    // buttons floating loose beside the box, which could leave them squeezed
+    // to almost nothing — and effectively unclickable — once the rest of the
+    // crowded top bar ran short on room (adhoc #16).
+    m_topMessageContainer = new QFrame;
+    m_topMessageContainer->setObjectName("topMessage");
+    // Widened from the old 620px cap so a long error is readable without
+    // expanding it; still capped so it can never widen the window.
+    m_topMessageContainer->setMaximumWidth(900);
+    auto *topMessageRow = new QHBoxLayout(m_topMessageContainer);
+    topMessageRow->setContentsMargins(12, 2, 6, 2);
+    topMessageRow->setSpacing(4);
+    topMessageRow->addWidget(m_topMessage, 1);
+    topMessageRow->addWidget(m_topMessageExpand);
+    topMessageRow->addWidget(m_topMessageCopy);
+    topMessageRow->addWidget(m_topMessageClose);
+    m_topMessageContainer->hide();
 
     // The expanded full text lives in this floating panel, parented to the window
     // (not to any layout) and raised above everything when shown. Revealing it
@@ -3138,10 +3155,7 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addSpacing(12);
     mainRow->addWidget(m_breadcrumb);
     mainRow->addStretch();
-    mainRow->addWidget(m_topMessage);
-    mainRow->addWidget(m_topMessageExpand);
-    mainRow->addWidget(m_topMessageCopy);
-    mainRow->addWidget(m_topMessageClose);
+    mainRow->addWidget(m_topMessageContainer);
     mainRow->addStretch();
     // Live CPU/MEM/DISK sparklines, moved up next to the donate button (adhoc #121).
     mainRow->addWidget(cpuChart);
@@ -5083,6 +5097,8 @@ void MainWindow::showPinWarning()
     m_topMessageExpanded = false;
     m_topMessage->setWordWrap(false);
     m_topMessage->show();
+    if (m_topMessageContainer)
+        m_topMessageContainer->show();
     // Persistent like an error toast: no auto-timeout, dismissible via Copy / ✕.
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
