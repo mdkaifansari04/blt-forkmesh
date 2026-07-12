@@ -409,8 +409,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // off.
     m_autoUpdateTimer = new QTimer(this);
     connect(m_autoUpdateTimer, &QTimer::timeout, this, &MainWindow::maybeAutoUpdate);
-    m_autoUpdateTimer->start(60 * 60 * 1000);
-    QTimer::singleShot(5 * 60 * 1000, this, &MainWindow::maybeAutoUpdate);
+    // Both checks are jittered so a fleet doesn't discover a fresh tag in
+    // lockstep and pile onto the relay (and the one live source mirror) at
+    // the same moment — publishing v0.6.2 turned every node's updater loose
+    // within the same hour.
+    m_autoUpdateTimer->start(
+        60 * 60 * 1000 +
+        int(QRandomGenerator::global()->bounded(-10 * 60 * 1000,
+                                                10 * 60 * 1000 + 1)));
+    QTimer::singleShot(
+        5 * 60 * 1000 +
+            int(QRandomGenerator::global()->bounded(10 * 60 * 1000)),
+        this, &MainWindow::maybeAutoUpdate);
     // Chat messages are retained for 7 days (kChatMessageRetentionMs); sweep
     // local history hourly so a node left running that long doesn't keep
     // showing/serving messages the relay has already dropped (adhoc #49).
