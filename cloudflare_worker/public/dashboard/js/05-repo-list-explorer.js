@@ -605,11 +605,18 @@
     detail.querySelectorAll("[data-dashboard-repo-tab-panel]").forEach((panel) => {
       panel.classList.toggle("hidden", panel.dataset.dashboardRepoTabPanel !== tab);
     });
-    // Every tab keeps the two-column layout with the About sidebar on the
-    // right. (An earlier "full-width README" mode collapsed the code tab's
-    // root view to one column, dropping the About rail below the README —
-    // owner decision 2026-07-11: the rail is a permanent right-hand column;
-    // only the explorer focus mode, which HIDES the rail, may collapse it.)
+    // The About right-hand rail only belongs next to the file tree/README
+    // (owner decision 2026-07-12, discussion #2): every other tab — commits,
+    // releases, issues, projects, pulls, discussions, insights, mirrors,
+    // agents — goes full-width instead of leaving a rail with nothing beside
+    // it to explain. The explorer focus mode independently hides the rail
+    // (and collapses this same grid) while active on the code tab.
+    const contentGrid = detail.querySelector("[data-repo-content-grid]");
+    const about = detail.querySelector("[data-repo-about]");
+    const showAbout = tab === "code";
+    contentGrid?.classList.toggle("lg:grid-cols-[minmax(0,1fr)_18rem]", showAbout);
+    contentGrid?.classList.toggle("lg:grid-cols-1", !showAbout);
+    about?.classList.toggle("hidden", !showAbout);
   }
 
   // Tab switch requested by the user (or a Back/Forward step): shows the tab,
