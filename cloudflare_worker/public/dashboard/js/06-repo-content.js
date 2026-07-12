@@ -339,15 +339,17 @@
       return Number.isFinite(ts) && ts > latest ? ts : latest;
     }, Number(issue.updatedAt || issue.createdAt || open.ts || 0));
     const status = issue.status || issue.state || "open";
-    const labels = Array.isArray(issue.labels)
-      ? issue.labels.slice(0, 3).join(", ")
-      : parseFrontMatterList(issue.labels).slice(0, 3).join(", ");
+    const labelsList = (Array.isArray(issue.labels)
+      ? issue.labels
+      : parseFrontMatterList(issue.labels)).slice(0, 3);
+    const labels = labelsList.join(", ");
     return {
       number,
       title: issue.title || open.title || `issue #${number}`,
       status,
       author: issue.authorName || open.authorName || issue.author || open.author || "unknown",
       date: formatRecordDate(updatedAt || issue.createdAt || open.ts),
+      labels: labelsList,
       meta: [status, labels, issue.milestone].filter(Boolean).join(" · "),
       body: open.body || issue.body || "",
       wantsAgent: Boolean(issue.wantsAgent),
@@ -356,6 +358,24 @@
       startDate: Number(issue.startDate || 0) || 0,
       endDate: Number(issue.endDate || 0) || 0,
       createdAtMs: Number(issue.createdAt || open.ts || 0) || 0,
+    };
+  }
+
+  // Adapt an issue-N.json blob into the { values, body } shape that
+  // renderRepoRecordDetail consumes for pulls/discussions front matter, so the
+  // issue detail view renders from the same JSON the Issues list already reads.
+  function issueDetailParsed(text, fallbackNumber) {
+    const issue = parseIssueJson(text, fallbackNumber);
+    return {
+      values: {
+        title: issue.title,
+        status: issue.status,
+        authorName: issue.author,
+        milestone: issue.milestone,
+        labels: `[${(issue.labels || []).join(", ")}]`,
+        createdAt: issue.createdAtMs,
+      },
+      body: issue.body,
     };
   }
 
@@ -1158,7 +1178,13 @@
       // Pulls read with ref:"" so the host serves the forkmesh/pulls branch.
       const refParams = kind === "pulls" ? { ref: "" } : {};
       const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: recordPath, ...refParams }));
-      const parsed = parseFrontMatter(blobText(blob));
+      // Issues are signed-event JSON (issue-N.json), not markdown front matter,
+      // so parse them the same way the list does and map into the shape the
+      // detail renderer expects. Any live mirror serving .forkmesh/issues/
+      // answers this blob read, so the detail loads whenever the list does.
+      const parsed = kind === "issues"
+        ? issueDetailParsed(blobText(blob), number)
+        : parseFrontMatter(blobText(blob));
       const pullPatch = kind === "pulls" ? await loadRepoPullPatch(repo, number) : null;
       if (pullPatch) parsed.pullPatch = pullPatch;
       if (kind === "pulls") parsed.pullConversation = await loadRepoPullConversation(repo, number);

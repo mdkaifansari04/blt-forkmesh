@@ -8,6 +8,7 @@
     "bountyStatus": "",
     "bountyUsd": 0,
     "createdAt": 1783612004640,
+    "endDate": 0,
     "events": [
         {
             "attachments": [
@@ -74,6 +75,18 @@
             "status": "closed",
             "ts": 1783885368554,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3df1635d-1d91-4f5c-a51d-a73c1ebebac6",
+            "sig": "NIVYuCYknIPGFpsxqmlxiy-csMebX_JCNhI58Sqf9jQDNAfPMEYpT3CM_AYoHyGU3V5rvfGGzq_5KofhBH-sBg",
+            "ts": 1783890829036,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -84,8 +97,9 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
+    "startDate": 0,
     "status": "closed",
     "title": "there are several users online as duplicates, please create an issue to fix that",
-    "updatedAt": 1783885368554,
+    "updatedAt": 1783890829036,
     "votes": 0
 }
