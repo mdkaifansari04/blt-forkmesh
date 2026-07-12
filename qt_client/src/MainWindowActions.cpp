@@ -347,7 +347,7 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
         const auto isMetadataPath = [](const QString &p) {
             return p.startsWith(QLatin1String(".forkmesh/issues/")) ||
                    p.startsWith(QLatin1String("pulls/")) ||
-                   p.startsWith(QLatin1String("commits/"));
+                   p.startsWith(QLatin1String(".forkmesh/commits/"));
         };
         if (!changed.isEmpty() &&
             std::all_of(changed.cbegin(), changed.cend(), isMetadataPath)) {
@@ -672,7 +672,7 @@ void MainWindow::onReleaseMetadataLanded(int runId)
     if (index < 0)
         return;
     // The release workflow staged the artifact bytes into the served CAS and the
-    // runner committed the tiny releases/ manifest into the working copy. Refresh
+    // runner committed the tiny .forkmesh/releases/ manifest into the working copy. Refresh
     // the served mirror before publishing so install.sh and the website read the
     // same release metadata the catalog advertises.
     logSystem(QStringLiteral(

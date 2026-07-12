@@ -1,4 +1,5 @@
 qt_client/build-forkmesh/
+qt_client/build-ci/
 cloudflare_worker/python_modules/
 
 # Local secrets / env files (the *.example templates stay tracked).
@@ -12,5 +13,5 @@ tools/__pycache__/
 
 # Release artifact bytes live in a per-node content-addressed blob store and are
 # NEVER committed (issue #304; see docs/design/release-binary-publishing.md).
-# Only the small signed release metadata under releases/ is tracked.
+# Only the small signed release metadata under .forkmesh/releases/ is tracked.
 .forkmesh/release-blobs/
