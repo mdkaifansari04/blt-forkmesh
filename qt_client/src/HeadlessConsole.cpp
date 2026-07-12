@@ -33,7 +33,7 @@ HeadlessConsole::HeadlessConsole(MainWindow *window, QCoreApplication *app,
 
     // A durable daemon must stop only on an explicit signal, never on a stray
     // terminal hang-up. SIGINT/SIGTERM stay owned by CrashHandler so external
-    // service-manager stops leave a durable signal record in crashes.log.
+    // service-manager stops leave a signal record in the network log.
 
 #if defined(Q_OS_UNIX)
     m_stdin = new QSocketNotifier(STDIN_FILENO, QSocketNotifier::Read, this);
@@ -76,7 +76,7 @@ void HeadlessConsole::printHelp()
              "\n"
              "Durable daemon: the node keeps running until you `quit`/`exit` or send\n"
              "SIGINT/SIGTERM (Ctrl-C, kill, systemctl stop; recorded in the\n"
-             "crash diagnostics). Closing stdin does NOT\n"
+             "network log). Closing stdin does NOT\n"
              "stop it — run it detached with `forkmesh --headless </dev/null &`, nohup\n"
              "or a systemd service and it stays up. The `daemon` command does the same\n"
              "on demand: it releases the prompt so you can exit the shell while the\n"
