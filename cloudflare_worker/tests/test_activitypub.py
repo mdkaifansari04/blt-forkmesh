@@ -327,6 +327,17 @@ def test_collection_doc():
     doc = ap.collection_doc("https://x/ap/users/a/followers", 3)
     assert doc["type"] == "OrderedCollection"
     assert doc["totalItems"] == 3
+    assert "first" not in doc  # no items given: opaque to remote enumerators
+
+
+def test_collection_doc_with_items_embeds_first_page():
+    doc = ap.collection_doc(
+        "https://x/ap/users/a/followers", 2,
+        items=["https://remote/users/bob", "https://remote/users/carol"])
+    assert doc["first"]["type"] == "OrderedCollectionPage"
+    assert doc["first"]["partOf"] == "https://x/ap/users/a/followers"
+    assert doc["first"]["orderedItems"] == [
+        "https://remote/users/bob", "https://remote/users/carol"]
 
 
 # --- Remote extraction -----------------------------------------------------------

@@ -521,6 +521,9 @@
       profilePrivate: Object.prototype.hasOwnProperty.call(body, "profilePrivate")
         ? Boolean(body.profilePrivate)
         : Boolean(base.profilePrivate),
+      followersPublic: Object.prototype.hasOwnProperty.call(body, "followersPublic")
+        ? Boolean(body.followersPublic)
+        : Boolean(base.followersPublic),
       mastodon: body.mastodon ?? base.mastodon ?? "",
       mastodonUrl: body.mastodonUrl ?? base.mastodonUrl ?? "",
       profileLinks: Array.isArray(body.profileLinks)
