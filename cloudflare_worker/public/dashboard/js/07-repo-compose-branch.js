@@ -193,7 +193,7 @@
       // Submissions land in the maintainer's inbox, not the public mirror, so it
       // won't be visible there until they drain it - but show it locally, on
       // top of this session's issue list, so the submitter sees it right away.
-      state.issuesView.items = [{
+      const pendingItem = {
         number: null,
         localId: `pending-${Date.now().toString(36)}`,
         title,
@@ -204,14 +204,25 @@
         body,
         wantsAgent: assignAgent,
         pending: true,
-      }, ...state.issuesView.items];
+      };
+      state.issuesView.items = [pendingItem, ...state.issuesView.items];
+      // Issue #379: when the owner files an issue while their source-of-truth
+      // node is offline but a mirror is serving the repo, persist it locally so
+      // it keeps showing up across reloads - fully, not just this session -
+      // until the node comes back online and drains it to the mirror.
+      const ownerOffline = isRepoOwner(repo) && repoServedByMirror(repo);
+      if (ownerOffline) savePendingIssue(repo, pendingItem);
       setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status === "open").length);
       if (titleInput) titleInput.value = "";
       if (bodyInput) bodyInput.value = "";
       images.length = 0;
       form.querySelector("[data-repo-issue-attachments]")?.replaceChildren();
       if (submit) submit.disabled = false;
-      setHint("Issue sent to the maintainer's inbox for review. Submit another or go back.", "good");
+      setHint(
+        ownerOffline
+          ? "Your source-of-truth node is offline, so this issue is held on a mirror and will sync to your node when it comes back online."
+          : "Issue sent to the maintainer's inbox for review. Submit another or go back.",
+        "good");
     } catch (error) {
       if (submit) submit.disabled = false;
       const code = String(error?.message || "");
@@ -564,7 +575,7 @@
     container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading releases from the live mirror...</div>';
     const empty = '<div class="px-4 py-3 text-sm text-muted-foreground">No releases have been published to this mirror yet.</div>';
     try {
-      // Release manifests live in the git tree at releases/<channel>/release.json
+      // Release manifests live in the git tree at .forkmesh/releases/<channel>/release.json
       // (issue #304). List the channels, then batch-read every manifest in one
       // tunnel round-trip so opening the tab doesn't fan out N blob requests.
       let tree;
@@ -584,7 +595,7 @@
         container.innerHTML = empty;
         return;
       }
-      const paths = channels.map((channel) => `releases/${channel}/release.json`);
+      const paths = channels.map((channel) => `.forkmesh/releases/${channel}/release.json`);
       const blobs = await fetchRepoBlobs(repo, paths);
       const releases = [];
       channels.forEach((channel, index) => {
@@ -614,7 +625,7 @@
       releases.sort((a, b) => (Number(b.created_at) || 0) - (Number(a.created_at) || 0));
       container.innerHTML = releases.map((release) => renderRepoRelease(repo, release, downloads)).join("");
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a live desktop host serves the releases/ folder.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a live desktop host serves the .forkmesh/releases/ folder.</div>';
     } finally {
       window.lucide?.createIcons();
     }

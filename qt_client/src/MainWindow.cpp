@@ -7,66 +7,6 @@ using namespace forkmesh::ui;
 
 namespace {
 
-// A crash kills the process before it can log anything about itself, so the
-// only record was ever CrashHandler's ~/.forkmesh/diagnostics/crashes.log (plus
-// stderr/journalctl) — invisible unless someone went looking there. Surface it
-// as a line in the *next* session's own log instead, the same log the user
-// actually reads (adhoc #200). Returns a one-line summary of what's new since
-// `seenOffset`, or empty if nothing new; *newSize is always set to the file's
-// current size so the caller can advance the stored offset unconditionally.
-QString describeNewCrashes(const QString &path, qint64 seenOffset, qint64 *newSize)
-{
-    QFile f(path);
-    *newSize = seenOffset;
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-        return QString();
-    const qint64 size = f.size();
-    *newSize = size;
-    qint64 from = seenOffset;
-    if (from < 0 || from > size)
-        from = 0; // log rotated/cleared since we last checked
-    if (from >= size)
-        return QString();
-    f.seek(from);
-    const QString tail = QString::fromUtf8(f.readAll());
-
-    static const QString marker = QStringLiteral("===== ForkMesh crash =====");
-    static const QRegularExpression sigRe(QStringLiteral("signal: ([^\\n]+)"));
-    static const QRegularExpression whenRe(QStringLiteral("when \\(epoch\\): (\\d+)"));
-    int count = 0;
-    QString lastSignal, lastWhen;
-    for (int pos = tail.indexOf(marker); pos >= 0;
-         pos = tail.indexOf(marker, pos + marker.size())) {
-        ++count;
-        const auto sigMatch = sigRe.match(tail, pos);
-        if (sigMatch.hasMatch())
-            lastSignal = sigMatch.captured(1);
-        const auto whenMatch = whenRe.match(tail, pos);
-        if (whenMatch.hasMatch())
-            lastWhen = whenMatch.captured(1);
-    }
-    if (count == 0)
-        return QString();
-
-    QString when;
-    bool ok = false;
-    const qint64 epoch = lastWhen.toLongLong(&ok);
-    if (ok)
-        when = QDateTime::fromSecsSinceEpoch(epoch)
-                   .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
-
-    QString msg = QStringLiteral("Previous session failed to exit cleanly and "
-                                 "crashed (%1)")
-                      .arg(lastSignal.isEmpty() ? QStringLiteral("unknown signal")
-                                                : lastSignal);
-    if (!when.isEmpty())
-        msg += QStringLiteral(" at %1").arg(when);
-    if (count > 1)
-        msg += QStringLiteral(" \xE2\x80\x94 %1 crash(es) recorded").arg(count);
-    msg += QStringLiteral(". See ~/.forkmesh/diagnostics/crashes.log for the backtrace.");
-    return msg;
-}
-
 // ForkMesh is event-driven: every HTTP request fires in response to some
 // action/event (a relay sync frame, a catalog publish, an agent poll…). The
 // finished() choke point only sees the reply, so we recover *what drove it*
@@ -254,23 +194,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     loadCachedFavicons();
     // Restore the network log from disk *before* the log section is built so the
     // history (and prior sessions' start/stop markers) renders on the first
-    // frame, then record this session's start time.
+    // frame, then record this session's start time. Crash records from a prior
+    // unclean exit are already in the loaded log (the crash handler writes to
+    // network_log.txt directly), so no separate crash-file scan is needed.
     loadNetworkLog();
+    logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     logSystem(QStringLiteral("Session started - ForkMesh v" FORKMESH_VERSION "."));
-    // If the previous run ended in a crash, say so here instead of leaving it
-    // silently sitting in crashes.log (adhoc #200).
-    {
-        QSettings crashSettings;
-        const QString crashPath =
-            QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/crashes.log");
-        qint64 newSize = 0;
-        const QString notice = describeNewCrashes(
-            crashPath, crashSettings.value(kCrashLogSeenOffsetSetting, 0).toLongLong(),
-            &newSize);
-        crashSettings.setValue(kCrashLogSeenOffsetSetting, newSize);
-        if (!notice.isEmpty())
-            logSystem(notice);
-    }
+    logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     logStartup(QStringLiteral("servers + favicons loaded"));
 
     // Load the persisted profile state (custom avatar + node name) *before* the
@@ -629,7 +559,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
     QSettings().setValue(kWindowGeometrySetting, saveGeometry());
     saveChatHistory();
     // Record this session's stop time, then flush+trim the persisted log.
+    logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     logSystem(QStringLiteral("Session ended."));
+    logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     saveNetworkLog();
     QMainWindow::closeEvent(event);
 }
