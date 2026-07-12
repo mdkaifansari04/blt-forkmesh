@@ -122,13 +122,12 @@ private:
 int main(int argc, char *argv[])
 {
     // First thing, before anything can fault: install the crash handlers so an
-    // unexpected exit/crash leaves a backtrace in ~/.forkmesh/diagnostics/
-    // crashes.log ("sometimes the app exits / crashes" with nothing to explain
-    // why). A compact signal breadcrumb also goes to the main network log.
-    // The durable crash file is what the opt-in telemetry upload sends on the
-    // next startup (issue #354). Cheap; opens a couple fds plus fixed buffers.
+    // unexpected exit/crash leaves a record in the network log. A compact signal
+    // breadcrumb and the full backtrace go to network_log.txt directly so the
+    // crash is visible in the log view on next startup without needing a
+    // separate file. Cheap; opens a couple fds plus fixed buffers.
     forkmesh::installCrashHandler(
-        QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/crashes.log"),
+        QString(),
         earlyMainLogPath());
 
     // Collect args before QApplication so headless/root flags are visible while we

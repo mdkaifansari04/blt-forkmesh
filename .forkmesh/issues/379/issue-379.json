@@ -1,34 +1,80 @@
 {
-  "schema": "forkmesh-issue-v1",
-  "number": 379,
-  "title": "If user is owner of source of truth node and it’s down but a mirror is up allow for issues to be created fully to show up and then get synced back to sot when it’s online",
-  "status": "open",
-  "labels": [
-    "infra"
-  ],
-  "milestone": "",
-  "priority": 0,
-  "progress": 0,
-  "assignees": [],
-  "createdAt": 1783151437,
-  "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
-  "authorName": "jett",
-  "bountyUsd": 0.0,
-  "bountyAddress": "",
-  "bountyStatus": "",
-  "events": [
-    {
-      "type": "open",
-      "id": "open-web-1783151437",
-      "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
-      "authorName": "jett",
-      "ts": 1783151437,
-      "title": "If user is owner of source of truth node and it’s down but a mirror is up allow for issues to be created fully to show up and then get synced back to sot when it’s online",
-      "body": "",
-      "attachments": [],
-      "sig": "H30m_zLWDf6ir32FQcjZJbh385Wv1fKnp5ggmYiwg31chAaxPYezNe2nz_6dqER44-CW_nl_j0IB3yfPZHQKDQ"
-    }
-  ],
-  "votes": 0,
-  "updatedAt": 1783151437
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783151437,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783151437",
+            "sig": "H30m_zLWDf6ir32FQcjZJbh385Wv1fKnp5ggmYiwg31chAaxPYezNe2nz_6dqER44-CW_nl_j0IB3yfPZHQKDQ",
+            "title": "If user is owner of source of truth node and it’s down but a mirror is up allow for issues to be created fully to show up and then get synced back to sot when it’s online",
+            "ts": 1783151437,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 19,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "395d5010-28f9-4f71-8af4-735d61627452",
+            "sig": "WRa17TvSOlWWZdu9kpYjYfkiddvXIsz9SILlCqkcMu_dZVCuhYlXwXhQgSXFzgz6U1-2ZmUsG9OBlNwsN8cWCQ",
+            "ts": 1783881121211,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "a995d737-62c3-4078-bd7f-43979a07fce3",
+            "sig": "mMW5v-B6L9RdyebhV5AkdtTjLGLKtOTbFV3P2MkuL6JGi5-LkxnYIrfDCRhdNxu_JyFzS7PMqOib82XLHHSiAg",
+            "ts": 1783881121274,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-379-if-user-is-owner-of-source-of-truth-node-and-it\".",
+            "id": "f25484d9-27e3-4336-84e8-ca76e1d145f7",
+            "sig": "swC6enwQpYzlgiSuBealMdxlqvW067Dr3shWG2PIXvxO-2SGPytM8fEEGHy2YRKsHwtsSWGq7lUeN3LukP_PCw",
+            "ts": 1783882994465,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "6e2651e4-8a7f-45a6-b965-f7a525991053",
+            "sig": "UVzv1W2oFVajgqQOROBgm9QwIlyJoQUkNME0j2CDqhMQDU0oSM_Zczlcva3fcl1nFXBStYJ8eKGov4mTqmkBCg",
+            "status": "closed",
+            "ts": 1783882994535,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "infra"
+    ],
+    "milestone": "",
+    "number": 379,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "If user is owner of source of truth node and it’s down but a mirror is up allow for issues to be created fully to show up and then get synced back to sot when it’s online",
+    "updatedAt": 1783882994535,
+    "votes": 0
 }
