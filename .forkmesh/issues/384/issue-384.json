@@ -87,6 +87,15 @@
             "sig": "Av7XsP-U0JnwBq2PNLJXwNqAxTNGzk70QSsO3DY3KdhizmJ6RYG_kCEXmAAFopg3V1ORth1eZT4K4bEwXOJrAw",
             "ts": 1783889544602,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "aadbe884-3fce-4e83-988d-dd1f82347eb0",
+            "sig": "1EZufRCfAubEL6zIDXJB1pFWeolTW6ECb8zAxf54j7BRXrZj1Dc2CPK1ymvj9b-g6x1aV1tJWUirPLqPdL54DQ",
+            "status": "closed",
+            "ts": 1783889544667,
+            "type": "status"
         }
     ],
     "labels": [
@@ -97,8 +106,8 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "status": "closed",
     "title": "add projects and allow linking issues to projects",
-    "updatedAt": 1783889544602,
+    "updatedAt": 1783889544667,
     "votes": 0
 }
