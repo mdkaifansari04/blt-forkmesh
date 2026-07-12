@@ -9445,7 +9445,15 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
         if not repo_row or int(repo_row.get("is_private") or 0):
             return None
         actor_type, display = "Group", owner + "/" + repo
-        profile_url = origin + repo_web_href(owner, repo)
+        repo_web_url = origin + repo_web_href(owner, repo)
+        # The actor's canonical `url` is the repo's fediverse profile page (a
+        # feed of its federated posts), not the raw git-forge page: Mastodon
+        # sends a user who clicks the repo handle — in a mention, or via the
+        # profile's external-link — to this `url`, and dropping them onto a
+        # code page straight from a social timeline is jarring (adhoc #50).
+        # The git page stays one row away ("Repository", below) and is linked
+        # prominently on the profile page itself.
+        profile_url = origin + "/@" + handle
         # Owner-set About description becomes the fediverse bio.
         catalog_rec = await decrypt_row(env, repo_row.get("data"))
         description = clean_string(
@@ -9473,9 +9481,14 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
     # the actor's `url`, so Mastodon's link verification turns it green) and
     # the relay this actor lives on (origin-derived, so self-hosted relays
     # advertise their own domain).
+    # The verified profile row links the human page ("Repository" = a repo's
+    # git page, "Profile" = a user's /@name page). For repos that page is no
+    # longer the actor's `url`, so the reciprocal rel="me" that earns the green
+    # check lives on the git page (see _serve_repo_page), pointing at this actor.
+    web_link = repo_web_url if kind == AP_ACTOR_REPO else profile_url
     attachments = [
         ap.property_value(
-            "Repository" if kind == AP_ACTOR_REPO else "Profile", profile_url),
+            "Repository" if kind == AP_ACTOR_REPO else "Profile", web_link),
         # Plain text, deliberately: an anchor here made every follower
         # server's link verifier fetch the worker-served homepage on each
         # verification round, for a row that can never earn the green check.
@@ -9547,7 +9560,10 @@ async def _ap_broadcast_actor_update(env, request, kind, handle):
         await edge_cache_delete(ACCOUNT_LOOKUP_CACHE_PREFIX + quote(handle))
     elif kind == AP_ACTOR_REPO:
         page_owner, _, page_repo = handle.partition(".")
+        # The git page carries the rel="me" the green check verifies; the
+        # /@owner.repo profile page is the actor's `url` and its post feed.
         await edge_cache_delete(origin + repo_web_href(page_owner, page_repo))
+        await edge_cache_delete(origin + "/@" + handle)
     followers = await d1_all(
         env, "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
         actor_bi)
@@ -13759,6 +13775,86 @@ def _html_escape(value):
     )
 
 
+def _repo_fedi_profile_html(title, bio, handle_full, code_url, actor_json,
+                            icon_url, image_url, followers, post_count,
+                            posts_html):
+    """Server-rendered HTML for a repo actor's fediverse profile page (its
+    `url`). All caller-supplied strings are already HTML-escaped except
+    posts_html, which is our own generated note markup. Self-contained (inline
+    CSS, no dashboard.js) so it stays cheap to build under verification bursts.
+    """
+    return (
+        "<!doctype html><html lang=\"en\"><head>"
+        "<meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,"
+        " initial-scale=1\">"
+        "<title>" + title + " on the fediverse · ForkMesh</title>"
+        "<meta name=\"description\" content=\"" + bio + "\">"
+        "<link rel=\"alternate\" type=\"application/activity+json\" href=\""
+        + actor_json + "\">"
+        "<style>"
+        ":root{color-scheme:dark}"
+        "*{box-sizing:border-box}"
+        "body{margin:0;background:#0b0d12;color:#e6e8ee;font:15px/1.55 "
+        "system-ui,-apple-system,Segoe UI,Roboto,sans-serif}"
+        "a{color:#8b7dff;text-decoration:none}a:hover{text-decoration:underline}"
+        ".wrap{max-width:640px;margin:0 auto;padding:0 16px 48px}"
+        ".banner{height:160px;border-radius:0 0 12px 12px;background-size:cover;"
+        "background-position:center;background-color:#12151c}"
+        ".head{display:flex;gap:16px;align-items:flex-end;margin-top:-44px;"
+        "padding:0 4px}"
+        ".avatar{width:88px;height:88px;border-radius:16px;border:3px solid "
+        "#0b0d12;background:#12151c;object-fit:cover;flex:0 0 auto}"
+        ".id{padding-bottom:6px;min-width:0}"
+        ".id h1{margin:0;font-size:22px;line-height:1.2}"
+        ".badge{display:inline-block;margin-left:8px;padding:1px 8px;"
+        "border:1px solid #232733;border-radius:999px;font-size:11px;"
+        "color:#9aa3b2;vertical-align:middle}"
+        ".handle{color:#9aa3b2;font-family:ui-monospace,SFMono-Regular,"
+        "Menlo,monospace;font-size:13px;word-break:break-all}"
+        ".bio{margin:16px 4px 0}"
+        ".stats{display:flex;gap:20px;margin:14px 4px 0;color:#9aa3b2;"
+        "font-size:13px}"
+        ".stats b{color:#e6e8ee}"
+        ".actions{display:flex;gap:10px;flex-wrap:wrap;margin:18px 4px 0}"
+        ".btn{display:inline-block;padding:8px 14px;border-radius:8px;"
+        "border:1px solid #232733;background:#12151c;color:#e6e8ee;"
+        "font-size:13px;font-weight:600}"
+        ".btn.primary{background:#5a4bff;border-color:#5a4bff;color:#fff}"
+        ".sep{margin:28px 4px 12px;color:#9aa3b2;font-size:12px;"
+        "text-transform:uppercase;letter-spacing:.06em}"
+        ".post{border:1px solid #232733;border-radius:10px;padding:14px 16px;"
+        "margin:0 4px 12px;background:#0f1218}"
+        ".post .body{white-space:pre-wrap;word-wrap:break-word}"
+        ".post .body p{margin:0 0 8px}"
+        ".post .meta{margin-top:10px;color:#9aa3b2;font-size:12px;display:flex;"
+        "gap:14px}"
+        ".empty{color:#9aa3b2;margin:0 4px;padding:20px 0}"
+        ".foot{margin:32px 4px 0;color:#6b7280;font-size:12px}"
+        "</style></head><body><div class=\"wrap\">"
+        "<div class=\"banner\" style=\"background-image:url('" + image_url
+        + "')\"></div>"
+        "<div class=\"head\">"
+        "<img class=\"avatar\" src=\"" + icon_url + "\" alt=\"\">"
+        "<div class=\"id\"><h1>" + title
+        + "<span class=\"badge\">Group</span></h1>"
+        "<div class=\"handle\">" + handle_full + "</div></div></div>"
+        "<p class=\"bio\">" + bio + "</p>"
+        "<div class=\"stats\"><span><b>" + str(followers)
+        + "</b> followers</span><span><b>" + str(post_count)
+        + "</b> posts</span></div>"
+        "<div class=\"actions\">"
+        "<a class=\"btn primary\" href=\"" + code_url + "\">Browse code →</a>"
+        "<a class=\"btn\" href=\"" + actor_json
+        + "\">ActivityPub actor</a></div>"
+        "<div class=\"sep\">Federated activity</div>"
+        + posts_html +
+        "<p class=\"foot\">Follow <span class=\"handle\">" + handle_full
+        + "</span> from Mastodon or any ActivityPub app to get new issues, "
+        "pull requests, discussions and releases in your feed.</p>"
+        "</div></body></html>")
+
+
 def _is_tunnel_content_path(path):
     """Host-tunnel content routes whose 502/503/504s mean 'that node is
     offline', not 'the worker failed': release blobs, repo browse, git
@@ -15888,6 +15984,23 @@ class Default(WorkerEntrypoint):
                 url, public_profile.group(1),
                 repositories=bool(public_profile.group(2)))
 
+        # /@owner.repo — a repo actor's fediverse profile page (a feed of its
+        # federated posts). A user handle never contains a dot, so a dotted
+        # /@handle is unambiguously a repo actor (see ap.split_handle). This is
+        # the repo actor's `url`, so fediverse clients that resolve it with an
+        # ActivityPub Accept header get the actor document instead of HTML.
+        fedi_repo = re.match(r"^/@([^/]+)/?$", unquote(url.path))
+        if fedi_repo:
+            parsed = ap.split_handle(fedi_repo.group(1).lower())
+            if parsed and parsed[0] == "repo":
+                _, ph_owner, ph_repo = parsed
+                if ap.wants_activity_json(request.headers.get("accept") or ""):
+                    return await _ap_actor_doc_response(
+                        self.env, request, AP_ACTOR_REPO,
+                        ap.repo_handle(ph_owner, ph_repo))
+                return await self._serve_repo_profile_page(
+                    url, ph_owner, ph_repo)
+
         issues_match = REPO_ISSUES_RE.match(url.path)
         if issues_match:
             owner = safe_segment(issues_match.group(1))
@@ -16397,10 +16510,10 @@ class Default(WorkerEntrypoint):
 
     async def _serve_repo_page(self, url):
         # The shared repo-detail document, plus per-repo head tags:
-        #  - <link rel="me" href="<canonical repo URL>"> — the reciprocal half
-        #    of the repo actor's verified profile link (the actor's `url` IS
-        #    this page, so Mastodon's verifier finds the page vouching for
-        #    itself and marks the profile row verified);
+        #  - <link rel="me" href="<repo actor url>"> — the reciprocal half of
+        #    the repo actor's verified "Repository" row: that row links this git
+        #    page, so Mastodon fetches it and looks for a rel=me back to the
+        #    actor's `url` (the /@owner.repo fediverse profile) to mark it green;
         #  - <link rel="alternate" type="application/activity+json"> — lets
         #    fediverse software discover the actor straight from the page URL.
         # Identical for every viewer, and the rel=me verification target of
@@ -16424,6 +16537,10 @@ class Default(WorkerEntrypoint):
             body = "<!doctype html><title>ForkMesh Dashboard</title>"
         if owner and repo and "</head>" in body:
             canonical = "%s/%s/%s" % (origin, quote(owner), quote(repo))
+            # The repo actor's `url` — the /@owner.repo fediverse profile — is
+            # the rel=me target that verifies this page's "Repository" row.
+            # Lowercased to match the actor id (handles are case-folded).
+            fedi_profile = "%s/@%s.%s" % (origin, owner.lower(), repo.lower())
             # OpenGraph/Twitter card so social + fediverse shares of the repo
             # URL (the preview under a federated "new pull request" post, a
             # Slack unfurl, etc.) render the repo's rendered info card — name,
@@ -16466,7 +16583,7 @@ class Default(WorkerEntrypoint):
                 "<meta name=\"twitter:title\" content=\"%s\">"
                 "<meta name=\"twitter:description\" content=\"%s\">"
                 "<meta name=\"twitter:image\" content=\"%s\">"
-                % (canonical,
+                % (fedi_profile,
                    origin, quote(owner), quote(repo),
                    canonical, title, _html_escape(og_description), og_image,
                    og_card.CARD_W, og_card.CARD_H,
@@ -16478,6 +16595,94 @@ class Default(WorkerEntrypoint):
         })
         if cache_key:
             await edge_cache_put(cache_key, page)
+        return page
+
+    async def _serve_repo_profile_page(self, url, owner, repo):
+        # The repo actor's `url`: a lightweight, edge-cached fediverse profile —
+        # banner, avatar, bio, follower count and a feed of the repo's federated
+        # posts — so a Mastodon user who clicks the repo handle (in a mention or
+        # via the profile's external-link) lands on a social profile instead of
+        # the git-forge page (adhoc #50). The code is one click away. Fediverse
+        # clients that send an ActivityPub Accept header are handed the actor
+        # document by the caller; this is the HTML view for browsers.
+        origin = url.scheme + "://" + url.netloc
+        handle = ap.repo_handle(owner.lower(), repo.lower())
+        cache_key = "%s/@%s" % (origin, handle)
+        cached = await edge_cache_match(cache_key)
+        if cached is not None:
+            return cached
+        await ensure_schema(self.env)
+        if not await _ap_enabled(self.env):
+            return await self._serve_not_found_page(url)
+        key_bi = await blind_index(self.env, owner + "/" + repo)
+        repo_row = await d1_first(
+            self.env,
+            "SELECT is_private, data FROM repositories WHERE key_bi=?", key_bi)
+        if not repo_row or int(repo_row.get("is_private") or 0):
+            return await self._serve_not_found_page(url)
+        rec = await decrypt_row(self.env, repo_row.get("data"))
+        description = clean_string(
+            (rec or {}).get("description", "") or "", 240).strip()
+        # Branding: owner-uploaded logo/banner (repo About tab), else defaults.
+        icon_url = AP_AVATAR_PATH
+        image_url = AP_BANNER_PATH
+        media_rows = await d1_all(
+            self.env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?",
+            key_bi)
+        for media in media_rows or []:
+            media_url = "/api/repo/%s/%s/media/%s.png?v=%d" % (
+                quote(owner), quote(repo), media.get("kind", ""),
+                int(media.get("updated_at") or 0))
+            if media.get("kind") == "logo":
+                icon_url = media_url
+            elif media.get("kind") == "banner":
+                image_url = media_url
+        actor_bi = await _ap_actor_bi(self.env, AP_ACTOR_REPO, handle)
+        followers_row = await d1_first(
+            self.env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
+            actor_bi)
+        followers = int((followers_row or {}).get("c") or 0)
+        post_rows = await d1_all(
+            self.env,
+            "SELECT data, published FROM ap_objects WHERE actor_bi=?"
+            " ORDER BY published DESC LIMIT 20", actor_bi)
+        posts = []
+        for row in post_rows or []:
+            note_rec = await decrypt_row(self.env, row.get("data"))
+            note = (note_rec or {}).get("note") or {}
+            content = note.get("content") or ""  # our own generated, safe HTML
+            if not content:
+                continue
+            when = ap.iso_utc(int(row.get("published") or 0))[:10]
+            link = str(note.get("url") or "")
+            link_html = ("<a class=\"lnk\" href=\"%s\">View →</a>"
+                         % _html_escape(link)) if link else ""
+            posts.append(
+                "<article class=\"post\"><div class=\"body\">%s</div>"
+                "<div class=\"meta\"><time>%s</time>%s</div></article>"
+                % (content, _html_escape(when), link_html))
+        if not posts:
+            posts.append(
+                "<p class=\"empty\">No federated posts yet — new issues, "
+                "pull requests, discussions and releases will appear here.</p>")
+        title = _html_escape("%s/%s" % (owner, repo))
+        handle_full = _html_escape("@%s@%s" % (handle, _ap_domain_of(origin)))
+        code_url = _html_escape(origin + repo_web_href(owner, repo))
+        actor_json = _html_escape(
+            "%s/ap/repos/%s/%s" % (origin, quote(owner), quote(repo)))
+        bio = (_html_escape(description) if description else
+               "ForkMesh repository — follow for new issues, pull "
+               "requests, discussions and releases.")
+        body = _repo_fedi_profile_html(
+            title=title, bio=bio, handle_full=handle_full, code_url=code_url,
+            actor_json=actor_json, icon_url=_html_escape(icon_url),
+            image_url=_html_escape(image_url), followers=followers,
+            post_count=len(post_rows or []), posts_html="\n".join(posts))
+        page = Response(body, status=200, headers={
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "public, max-age=300",
+        })
+        await edge_cache_put(cache_key, page)
         return page
 
     async def _serve_dashboard_asset(self, url, asset_rel):

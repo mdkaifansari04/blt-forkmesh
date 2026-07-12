@@ -62,8 +62,9 @@ Follows Mastodon/Wildebeest practice:
   `ap_remote_actors` for 24 h with one forced refresh on verify failure
   (key rotation).
 * Discovery: `/.well-known/webfinger`, `/.well-known/nodeinfo` →
-  `/nodeinfo/2.1`, and content negotiation on `/@name` (an ActivityPub
-  `Accept` header gets the actor document instead of HTML).
+  `/nodeinfo/2.1`, and content negotiation on `/@name` (users) and
+  `/@owner.repo` (repos): an ActivityPub `Accept` header gets the actor
+  document, a browser gets the HTML profile page.
 
 The pure protocol spine (documents, signing strings, digest, sanitization)
 lives in `cloudflare_worker/src/activitypub.py` — stdlib-only, imported
@@ -97,11 +98,20 @@ Every actor ships an avatar (`icon`) and profile header (`image`):
 * Profile metadata (verified links): every actor ships `attachment`
   PropertyValue rows — the canonical page (`Repository` for repo actors,
   `Profile` for users) and the `Relay` it lives on (origin-derived, so
-  self-hosted relays advertise their own domain). The repo/profile link is
-  Mastodon-verifiable: the served page carries a reciprocal
-  `<link rel="me">` (injected per-repo at serve time by `_serve_repo_page`,
-  and baked into `_public_profile_html`), and since it equals the actor's
-  `url`, Mastodon's link verifier marks the row green.
+  self-hosted relays advertise their own domain). The row is
+  Mastodon-verifiable: the served page carries a reciprocal `<link rel="me">`
+  pointing back at the actor's `url` (injected per-page at serve time by
+  `_serve_repo_page` / `_serve_repo_profile_page`, and baked into
+  `_public_profile_html`), which is what turns the row green.
+* Actor `url` (click-through target): Mastodon sends anyone who clicks a
+  handle — a mention in a post, or the profile's external-link — to the
+  actor's `url`. For **users** that is the `/@name` profile page. For **repos**
+  it is the `/@owner.repo` **fediverse profile page** (`_serve_repo_profile_page`:
+  banner, avatar, bio, follower/post counts and a feed of the repo's federated
+  posts), *not* the raw git page — landing a social-timeline visitor on a code
+  forge was jarring (adhoc #50). The git page stays the verified `Repository`
+  row and is linked prominently on the profile; because the `Repository` row
+  now differs from `url`, the git page's `rel="me"` points at `/@owner.repo`.
 * Change propagation: saving the repo About (or a user profile) broadcasts an
   `Update(actor)` activity to all existing followers, so remote servers
   refetch the avatar/header/bio immediately instead of waiting out their

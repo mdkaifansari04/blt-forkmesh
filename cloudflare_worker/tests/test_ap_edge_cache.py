@@ -31,6 +31,13 @@ ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 
+# The repo-actor `url` test exercises the real document builders.
+import importlib.util as _ilu  # noqa: E402
+_ap_spec = _ilu.spec_from_file_location(
+    "activitypub", ROOT / "src" / "activitypub.py")
+_ap = _ilu.module_from_spec(_ap_spec)
+_ap_spec.loader.exec_module(_ap)
+
 
 def _load(*names, extra_globals=None):
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
@@ -477,3 +484,64 @@ def test_repo_media_not_found_is_not_cached():
         "forkmesh", "forkmesh", "logo"))
     assert resp.status == 404
     assert edge.store == {}
+
+
+# --- Repo actor `url` points at the fediverse profile page (adhoc #50) --------
+# Clicking a repo handle on Mastodon (a mention, or the profile external-link)
+# sends the user to the actor's `url`. It used to be the raw git page, dropping
+# social-timeline visitors onto a code forge; it is now the /@owner.repo
+# fediverse profile, with the git page kept as the verified "Repository" row.
+
+def _actor_doc_globals():
+    async def _ap_user_federates(env, name):
+        return True
+
+    async def blind_index(env, value):
+        return "bi:" + value
+
+    async def d1_first(env, sql, *args):
+        # The repositories row: public, with an encrypted blob we decrypt below.
+        return {"is_private": 0, "data": "BLOB"}
+
+    async def d1_all(env, sql, *args):
+        return []  # no uploaded logo/banner media
+
+    async def decrypt_row(env, data):
+        return {"description": "A federated repo"}
+
+    return {
+        "AP_ACTOR_INSTANCE": "instance",
+        "AP_ACTOR_USER": "user",
+        "AP_ACTOR_REPO": "repo",
+        "AP_AVATAR_PATH": "/assets/fediverse-avatar.png",
+        "AP_BANNER_PATH": "/assets/fediverse-banner.png",
+        "ap": _ap,
+        "clean_string": lambda value, n=0: str(value or "")[:n] if n else str(
+            value or ""),
+        "blind_index": blind_index,
+        "d1_first": d1_first,
+        "d1_all": d1_all,
+        "decrypt_row": decrypt_row,
+        "_ap_user_federates": _ap_user_federates,
+        "_ap_domain_of": lambda origin: "forkmesh.com",
+        "repo_web_href": lambda owner, repo: "/%s/%s" % (owner, repo),
+        "_ap_actor_url": lambda origin, kind, handle: (
+            origin + "/ap/repos/%s/%s" % tuple(handle.split(".", 1))
+            if kind == "repo" else origin + "/ap/users/" + handle),
+    }
+
+
+def test_repo_actor_url_is_fediverse_profile_page_not_git_page():
+    ns = _load("_ap_build_actor_doc", extra_globals=_actor_doc_globals())
+    doc = _run(ns["_ap_build_actor_doc"](
+        None, "https://forkmesh.com", "repo", "owner.repo",
+        {"pubkeyPem": "PEM", "createdAt": 123}))
+    # `url` (Mastodon's click-through target) is the social profile page...
+    assert doc["url"] == "https://forkmesh.com/@owner.repo"
+    # ...while the actor id and the verified "Repository" row still point at
+    # the git page so the code stays reachable and the green check survives.
+    assert doc["id"] == "https://forkmesh.com/ap/repos/owner/repo"
+    repo_row = next(a for a in doc["attachment"]
+                    if a.get("name") == "Repository")
+    assert "https://forkmesh.com/owner/repo" in repo_row["value"]
+    assert "/@owner.repo" not in repo_row["value"]
