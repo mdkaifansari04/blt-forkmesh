@@ -11,6 +11,7 @@
 #include "../src/IssueStore.h"
 #include "../src/MirrorCrypto.h"
 #include "../src/NetworkBackoff.h"
+#include "../src/ProjectStore.h"
 #include "../src/PullAiReview.h"
 #include "../src/PullReviewModel.h"
 #include "../src/PullStore.h"
@@ -804,6 +805,142 @@ int main(int argc, char *argv[])
     check(!verifyEd25519(tampered.author, tampered.sig,
                          IssueStore::canonicalString(7, tampered)),
           "tampered issue-event signature is rejected");
+
+    // "dates" event (issue #384, planned start/end): content is
+    // "<startMs>\0<endMs>" as plain base-10 integers. Pin it so the client and
+    // the worker's issue_event_content stay byte-identical.
+    IssueEvent datesVec;
+    datesVec.type = "dates";
+    datesVec.author = "TESTPUB";
+    datesVec.ts = 4000;
+    datesVec.startDate = 1700000000000LL;
+    datesVec.endDate = 1702000000000LL;
+    const QByteArray expectedDates =
+        "forkmesh-issue-event-v1\ndates\n7\nTESTPUB\n4000\n"
+        "e07365adb1daf83b068e4f38034e0eef07af8d9fdda7b763836f9af9ef091daa";
+    check(IssueStore::canonicalString(7, datesVec) == expectedDates,
+          "issue dates-event canonical string matches the cross-language vector");
+
+    // --- Project event signing (issue #384) --------------------------------
+    // Pin the canonical byte format so the C++ client and the worker's
+    // verifier stay byte-identical. The project number is bound.
+    {
+        ProjectEvent openProject;
+        openProject.type = "open";
+        openProject.author = "TESTPUB";
+        openProject.ts = 1000;
+        openProject.title = "Roadmap";
+        openProject.body = "Ship the mesh";
+        const QByteArray expectedProjectOpen =
+            "forkmesh-project-event-v1\nopen\n1\nTESTPUB\n1000\n"
+            "734c32c3b5b0e94aaa58bac54fcd507746c3e64ef8273f5e537819a268f576ee";
+        check(ProjectStore::canonicalString(1, openProject) == expectedProjectOpen,
+              "project open canonical string matches the cross-language vector");
+
+        ProjectEvent projectDates;
+        projectDates.type = "dates";
+        projectDates.author = "TESTPUB";
+        projectDates.ts = 2000;
+        projectDates.startDate = 1700000000000LL;
+        projectDates.endDate = 1702000000000LL;
+        const QByteArray expectedProjectDates =
+            "forkmesh-project-event-v1\ndates\n1\nTESTPUB\n2000\n"
+            "e07365adb1daf83b068e4f38034e0eef07af8d9fdda7b763836f9af9ef091daa";
+        check(ProjectStore::canonicalString(1, projectDates) ==
+                  expectedProjectDates,
+              "project dates canonical string matches the cross-language vector");
+
+        // Linked issues sign as a comma-joined ascending list ("384,385") no
+        // matter the stored order, so both sides hash identical bytes.
+        ProjectEvent projectIssues;
+        projectIssues.type = "issues";
+        projectIssues.author = "TESTPUB";
+        projectIssues.ts = 3000;
+        projectIssues.issues = {385, 384};
+        const QByteArray expectedProjectIssues =
+            "forkmesh-project-event-v1\nissues\n1\nTESTPUB\n3000\n"
+            "452ebda460e1290f69693757d3971639ab5f8164af5014014061b1704b47e157";
+        check(ProjectStore::canonicalString(1, projectIssues) ==
+                  expectedProjectIssues,
+              "project issues canonical string sorts ascending and matches the "
+              "cross-language vector");
+
+        // Sign a real project event with the node identity and verify it.
+        ProjectStore projectStore(QString(), QString(), &identity, "tester");
+        ProjectEvent signedProject =
+            projectStore.makeSignedEvent(1, openProject);
+        check(verifyEd25519(signedProject.author, signedProject.sig,
+                            ProjectStore::canonicalString(1, signedProject)),
+              "project-event signature verifies against the public key");
+        ProjectEvent tamperedProject = signedProject;
+        tamperedProject.body = "Ship the mesh!";
+        check(!verifyEd25519(tamperedProject.author, tamperedProject.sig,
+                             ProjectStore::canonicalString(1, tamperedProject)),
+              "tampered project-event signature is rejected");
+    }
+
+    // Functional round-trip (issue #384): create a project in a real temp git
+    // repo, mutate its fields, and reload it — plus the issue "dates" event.
+    {
+        QTemporaryDir td;
+        check(td.isValid(), "project store temp repo dir is valid");
+        const QString dir = td.path();
+        const auto git = [&](const QStringList &args) {
+            QProcess p;
+            p.start(QStringLiteral("git"),
+                    QStringList{QStringLiteral("-C"), dir} + args);
+            p.waitForFinished(10000);
+        };
+        git({QStringLiteral("init")});
+        git({QStringLiteral("config"), QStringLiteral("user.email"),
+             QStringLiteral("t@t")});
+        git({QStringLiteral("config"), QStringLiteral("user.name"),
+             QStringLiteral("T")});
+
+        ProjectStore projects(dir, QString(), &identity, "tester");
+        check(projects.canWrite(), "project store can write to the temp repo");
+        QString err;
+        const int number =
+            projects.createProject("Roadmap", "Ship the mesh", 1700000000000LL,
+                                   1702000000000LL, "v1.0", {385, 384}, &err);
+        check(number == 1, "first project takes number 1");
+        QList<Project> loaded = projects.loadAll(&err);
+        check(loaded.size() == 1 && loaded.first().title == "Roadmap" &&
+                  loaded.first().body == "Ship the mesh" &&
+                  loaded.first().status == "open" &&
+                  loaded.first().startDate == 1700000000000LL &&
+                  loaded.first().endDate == 1702000000000LL &&
+                  loaded.first().milestone == "v1.0" &&
+                  loaded.first().issues == (QList<int>{384, 385}),
+              "a created project round-trips through disk with sorted issues");
+        check(projects.setStatus(number, "closed", &err) &&
+                  projects.setIssues(number, {7}, &err) &&
+                  projects.setDates(number, 0, 1702000000000LL, &err),
+              "project status/issues/dates mutations succeed");
+        loaded = projects.loadAll(&err);
+        check(loaded.size() == 1 && loaded.first().status == "closed" &&
+                  loaded.first().issues == (QList<int>{7}) &&
+                  loaded.first().startDate == 0 &&
+                  loaded.first().endDate == 1702000000000LL,
+              "later project events fold over the earlier metadata");
+        check(projects.tombstoneProject(number, &err),
+              "tombstoning a project succeeds");
+        check(projects.loadAll().isEmpty(),
+              "a tombstoned project disappears from loadAll");
+
+        IssueStore issues(dir, QString(), &identity, "tester");
+        const int issueNumber =
+            issues.createIssue("Test issue", "body", {}, QString(), 0, {}, {},
+                               &err);
+        check(issueNumber == 1, "first issue takes number 1");
+        check(issues.setDates(issueNumber, 1700000000000LL, 0, &err),
+              "issue setDates appends a signed dates event");
+        const QList<Issue> reloaded = issues.loadAll();
+        check(reloaded.size() == 1 &&
+                  reloaded.first().startDate == 1700000000000LL &&
+                  reloaded.first().endDate == 0,
+              "issue dates fold into the reloaded metadata");
+    }
 
     // --- PullAiReview: prompt, findings JSON, quick-fix suggestions ------
     {
