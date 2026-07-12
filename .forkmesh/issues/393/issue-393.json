@@ -1,32 +1,90 @@
 {
-  "schema": "forkmesh-issue-v1",
-  "number": 393,
-  "title": "when deselecting do not start at startup, it continues to run",
-  "status": "open",
-  "labels": [],
-  "milestone": "",
-  "priority": 0,
-  "progress": 0,
-  "assignees": [],
-  "createdAt": 1783432824,
-  "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
-  "authorName": "jett",
-  "bountyUsd": 0.0,
-  "bountyAddress": "",
-  "bountyStatus": "",
-  "events": [
-    {
-      "type": "open",
-      "id": "open-web-1783432824",
-      "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
-      "authorName": "jett",
-      "ts": 1783432824,
-      "title": "when deselecting do not start at startup, it continues to run",
-      "body": "",
-      "attachments": [],
-      "sig": "1qqcCyL8ny5HKyT4b7HHrlyeKB4HeJy-0_5XXLNxotNtAX1bEmK_BZX-bXuitRruRpl2kEa2NrYNGiD7R4g9DA"
-    }
-  ],
-  "votes": 0,
-  "updatedAt": 1783432824
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783432824,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783432824",
+            "sig": "1qqcCyL8ny5HKyT4b7HHrlyeKB4HeJy-0_5XXLNxotNtAX1bEmK_BZX-bXuitRruRpl2kEa2NrYNGiD7R4g9DA",
+            "title": "when deselecting do not start at startup, it continues to run",
+            "ts": 1783432824,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "for this lets also show where the automated startup is installed to if its in the system file or how it's installed - show this in sthe settings screen so we can see more details and then have this be a button to 'remove auto startup\" or something ",
+            "id": "b3a4e313-14bb-4649-a444-48ef2a61be10",
+            "sig": "tcQRcMyBF6GaNXyKNtduHykixSTFJ5QK2dxxmq1_B3QeUiV9SkC8h_q_ly32Mcu29qzb7Cj7BKS1CieZHm-PCA",
+            "ts": 1783880680205,
+            "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 14,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "a77067a0-d477-4a5d-a348-d4b13d749bf1",
+            "sig": "HIr3KCDz8adhG7TxJj2eNDDeAb9lANc8AFQ0V1pbtdL3iGQpzdQFBSyF96MMpMOEWCFFgH7w7rZsDoBfHYoHCg",
+            "ts": 1783880733412,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "b3d59d00-425a-47ca-830e-b6b1d3dad20f",
+            "sig": "h17Tg4HuOtSiw1uw8zQ9b-G6YikW5OEez-5b6pbj3cfI9Iw93DF1YDDM1KekmY52-qMFQu3rzn889YklBzQLAQ",
+            "ts": 1783880733476,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-393-when-deselecting-do-not-start-at-startup-it-cont\".",
+            "id": "56cdbee9-4d53-4ba9-a15d-086e3fb0d3c1",
+            "sig": "JBu5Cpoxn6Ke7Uof2qsa5-KYwpXPW4nLdnOJx-jgHnVEX96XOyxrawqnqFZUXYLykVynvxGSgPgGfD2KTZpgAA",
+            "ts": 1783884876373,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "7738095c-ae1b-4847-9dd4-f577ce697f24",
+            "sig": "07igUSo0disJCOq1pa6ACQyEd93lWrri233iWyms5n6G-iq5jaGfuC1O1_0xtJoTiD0F0gBT2uIukGCcOnbABA",
+            "status": "closed",
+            "ts": 1783884876427,
+            "type": "status"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 393,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "when deselecting do not start at startup, it continues to run",
+    "updatedAt": 1783884876427,
+    "votes": 0
 }

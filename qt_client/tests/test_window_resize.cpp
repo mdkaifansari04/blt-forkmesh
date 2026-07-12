@@ -14,6 +14,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QMenu>
+#include <QPlainTextEdit>
 #include <QProcess>
 #include <QSemaphore>
 #include <QPushButton>
@@ -1462,6 +1463,67 @@ int main(int argc, char *argv[])
                   QStringLiteral("agent/issue-291-unrelated")),
               QStringLiteral("merging an unrelated branch flags no agent session "
                              "(issue #291)"));
+    }
+
+    // adhoc #15: the network log renders only its newest segment up front, and
+    // scrolling to the top loads the next older segment instead of capping
+    // history at whatever first rendered.
+    {
+        window.testResetNetworkLog();
+        for (int i = 0; i < 800; ++i)
+            window.testLogSystem(QString("Segment test line %1").arg(i));
+        // Force a from-scratch render (as a cold start / first tab visit would)
+        // over the now-populated buffer, rather than the live per-line append
+        // path the loop above already exercised.
+        window.testRebuildNetworkLogView();
+
+        QPlainTextEdit *logView = window.testNetworkLogView();
+        check(logView != nullptr, QStringLiteral("network log view exists"));
+        if (logView) {
+            const int initialBlocks = logView->document()->blockCount();
+            check(initialBlocks < 800,
+                  QString("initial network log render is segmented, not the full "
+                          "800 lines (blocks=%1)")
+                      .arg(initialBlocks));
+            const QString initialText = logView->toPlainText();
+            check(initialText.contains(QStringLiteral("Segment test line 799")) &&
+                      !initialText.contains(QStringLiteral("Segment test line 0\n")) &&
+                      !initialText.endsWith(QStringLiteral("Segment test line 0")),
+                  QStringLiteral("initial segment shows the newest line but not "
+                                 "the oldest"));
+
+            // Scrolling to the top should pull in an older batch, growing the
+            // rendered block count.
+            window.testScrollNetworkLogToTop();
+            const int afterOneScroll = logView->document()->blockCount();
+            check(afterOneScroll > initialBlocks,
+                  QString("scrolling to the top loads an older segment "
+                          "(blocks %1 -> %2)")
+                      .arg(initialBlocks)
+                      .arg(afterOneScroll));
+
+            // Keep scrolling to the top until the very first logged line
+            // surfaces (or give up after a generous number of loads) — proves
+            // history keeps loading further back, not just once.
+            bool reachedOldest = false;
+            for (int i = 0; i < 10 && !reachedOldest; ++i) {
+                window.testScrollNetworkLogToTop();
+                reachedOldest =
+                    logView->toPlainText().contains(QStringLiteral("Segment test line 0\n")) ||
+                    logView->toPlainText().endsWith(QStringLiteral("Segment test line 0"));
+            }
+            check(reachedOldest,
+                  QStringLiteral("repeated scroll-to-top eventually reaches the "
+                                 "oldest logged line"));
+
+            // Once everything is loaded, scrolling to the top again is a no-op
+            // (no crash, no further growth).
+            const int fullBlocks = logView->document()->blockCount();
+            window.testScrollNetworkLogToTop();
+            check(logView->document()->blockCount() == fullBlocks,
+                  QStringLiteral("scrolling to the top with nothing older left "
+                                 "does not change the view"));
+        }
     }
 
     stopChildProcesses(window);

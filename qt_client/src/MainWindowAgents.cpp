@@ -1193,14 +1193,29 @@ void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
     // the new model up — a still-running process can't be retargeted mid-turn
     // — but stashing it on the session now means the very next resume honors it.
     if (AgentSession *session = findAgentSession(m_selectedAgentSessionId);
-        session && session->provider == QLatin1String("claude-code") &&
-        m_quickAddClaudeModel) {
-        const QString chosen = m_quickAddClaudeModel->currentData().toString();
-        if (session->model != chosen) {
-            session->model = chosen;
-            if (m_agentStore)
-                m_agentStore->saveSession(*session);
+        session && session->provider == QLatin1String("claude-code")) {
+        bool changed = false;
+        if (m_quickAddClaudeModel) {
+            const QString chosen = m_quickAddClaudeModel->currentData().toString();
+            if (session->model != chosen) {
+                session->model = chosen;
+                changed = true;
+            }
         }
+        // The composer's mode dropdown is the user's live permission-mode choice
+        // for what runs next; capture it the same way as the model so the next
+        // resume honors it (a still-running turn can't be retargeted, but the
+        // stored label is picked up on the following resume) and the detail
+        // header shows which mode this session runs.
+        if (m_quickAddModeSelector) {
+            const QString chosenMode = m_quickAddModeSelector->currentText();
+            if (session->mode != chosenMode) {
+                session->mode = chosenMode;
+                changed = true;
+            }
+        }
+        if (changed && m_agentStore)
+            m_agentStore->saveSession(*session);
     }
     sendPromptToAgentSession(m_selectedAgentSessionId, prompt);
 }
@@ -3243,6 +3258,18 @@ void MainWindow::showAgentSession(int sessionId)
         }
         lines << labeled(QStringLiteral("Model"),
                          agentModelLabel(displayModel).toHtmlEscaped());
+        // Permission mode this Claude Code session runs under (the composer's
+        // mode selector, captured on the last follow-up). Older sessions have no
+        // stored mode, so show the current composer default they'd resume with.
+        if (session->provider == QLatin1String("claude-code")) {
+            const QString modeLabel =
+                session->mode.isEmpty()
+                    ? (QSettings().value(kClaudeAutoModeSetting, true).toBool()
+                           ? kClaudeAutoModeLabel
+                           : QStringLiteral("Ask before edits"))
+                    : session->mode;
+            lines << labeled(QStringLiteral("Mode"), modeLabel.toHtmlEscaped());
+        }
         lines << labeled(QStringLiteral("Repo"),
                          QStringLiteral("%1/%2").arg(session->owner.toHtmlEscaped(),
                                                      session->name.toHtmlEscaped()));
@@ -5178,6 +5205,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     const QString baseRef = session.baseRef;
     const int issueNumber = session.issueNumber;
     const QString model = session.model;
+    const QString sessionMode = session.mode;
 
     session.status = AgentStatus::Running;
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
@@ -5210,7 +5238,13 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     // Start the CLI once the working directory is ready. Pulled into a lambda
     // because the worktree checkout below finishes asynchronously; the IDE bridge
     // and env are set up here since they depend on the final workdir.
-    const bool autoMode = QSettings().value(kClaudeAutoModeSetting, true).toBool();
+    // A mode captured on the session (the composer's selector at the last
+    // follow-up) is authoritative for this run; only fall back to the global
+    // composer default when the session predates per-session mode capture.
+    const bool autoMode =
+        sessionMode.isEmpty()
+            ? QSettings().value(kClaudeAutoModeSetting, true).toBool()
+            : agentModeSkipsPermissions(sessionMode);
     // Which model the CLI runs as. A model set on the session itself (e.g. the
     // agent/model dropdown a caller picked before starting this run) wins;
     // otherwise fall back to the footer quick-add bar's persisted choice (adhoc
