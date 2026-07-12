@@ -234,6 +234,27 @@
         font-size: 11px;
       }
 
+      /* Shared loading indicator: inherits currentColor so it matches the
+         muted text it sits next to in either theme. */
+      .fm-spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid currentColor;
+        border-right-color: transparent;
+        border-radius: 9999px;
+        opacity: 0.75;
+        vertical-align: -2px;
+        margin-right: 8px;
+        animation: fm-spin 0.7s linear infinite;
+      }
+
+      @keyframes fm-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
       .view {
         display: none;
       }
@@ -692,7 +713,7 @@
                 </div>
 
                 <div id="repoList" class="repo-list divide-y divide-border" aria-live="polite">
-                  <div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">Loading repositories from an online node...</div>
+                  <div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground"><span class="fm-spinner" aria-hidden="true"></span>Loading repositories from an online node...</div>
                 </div>
 
                 <div data-repo-pagination class="border-t border-border px-4 sm:px-5 py-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
