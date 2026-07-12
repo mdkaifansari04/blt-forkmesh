@@ -3695,11 +3695,9 @@
     detail.querySelectorAll("[data-dashboard-repo-tab-panel]").forEach((panel) => {
       panel.classList.toggle("hidden", panel.dataset.dashboardRepoTabPanel !== tab);
     });
-    // Every tab keeps the two-column layout with the About sidebar on the
-    // right. (An earlier "full-width README" mode collapsed the code tab's
-    // root view to one column, dropping the About rail below the README —
-    // owner decision 2026-07-11: the rail is a permanent right-hand column;
-    // only the explorer focus mode, which HIDES the rail, may collapse it.)
+    // The repo content is a single full-width column (owner decision
+    // 2026-07-12: the About right-hand rail and the issues/pulls left rail
+    // were removed from the repo page).
   }
 
   // Tab switch requested by the user (or a Back/Forward step): shows the tab,
@@ -3858,24 +3856,17 @@
 
   function setRepoExplorerFocusMode(active) {
     const detail = $("[data-repo-detail]");
-    const contentGrid = detail?.querySelector("[data-repo-content-grid]");
     const workspace = detail?.querySelector("[data-repo-code-workspace]");
     const explorer = detail?.querySelector("[data-repo-code-explorer]");
-    const about = detail?.querySelector("[data-repo-about]");
     const rootToolbar = detail?.querySelector("[data-repo-root-toolbar]");
     const focusActions = detail?.querySelector("[data-repo-focus-actions]");
     if (!detail) return;
 
-    // The grid collapse matches the base class renderRepoDetail emits (lg:) —
-    // legitimate here because focus mode hides the About rail entirely.
-    contentGrid?.classList.toggle("lg:grid-cols-[minmax(0,1fr)_18rem]", !active);
-    contentGrid?.classList.toggle("lg:grid-cols-1", active);
     workspace?.classList.toggle("grid", active);
     workspace?.classList.toggle("lg:grid-cols-[13rem_minmax(0,1fr)]", active);
     workspace?.classList.toggle("xl:grid-cols-[14rem_minmax(0,1fr)]", active);
     workspace?.classList.toggle("2xl:grid-cols-[16rem_minmax(0,1fr)]", active);
     explorer?.classList.toggle("hidden", !active);
-    about?.classList.toggle("hidden", active);
     rootToolbar?.classList.toggle("hidden", active);
     focusActions?.classList.toggle("hidden", !active);
   }
@@ -4182,7 +4173,13 @@
       const value = current.get(key);
       if (value) query.set(key, value);
     });
-    query.set("ref", repoSelectedBranch(repo));
+    // pulls/ metadata lives on its own dedicated branch (issue #399): the
+    // host resolves a pulls/ path to refs/heads/forkmesh/pulls only when the
+    // request names NO explicit ref, so pull readers pass ref:"" to defer to
+    // the host instead of pinning the stale pulls/ copy left on the selected
+    // code branch. Every other caller keeps the selected-branch default.
+    if (!("ref" in (params || {}))) query.set("ref", repoSelectedBranch(repo));
+    else if (!String(params.ref || "")) query.delete("ref");
     const version = repoDataVersion(repo);
     if (version) query.set("fmv", version);
     return `${repoApiBase(repo)}/${action}?${query.toString()}`;
@@ -4994,7 +4991,7 @@
     return String(content || "");
   }
 
-  async function fetchRepoBlobs(repo, paths) {
+  async function fetchRepoBlobs(repo, paths, options = {}) {
     // Batched file read: ONE request returns every path (repeated ?path=
     // params); the worker fans the reads out over the live tunnel itself.
     // Fetching each record as its own /blob call flooded the relay with 50+
@@ -5008,7 +5005,10 @@
       const value = current.get(key);
       if (value) query.set(key, value);
     });
-    query.set("ref", repoSelectedBranch(repo));
+    // Same ref override contract as repoLiveUrl: pulls/ readers pass ref:""
+    // so the host resolves the forkmesh/pulls metadata branch (issue #399).
+    if (!("ref" in options)) query.set("ref", repoSelectedBranch(repo));
+    else if (options.ref) query.set("ref", options.ref);
     const version = repoDataVersion(repo);
     if (version) query.set("fmv", version);
     const requestedAt = performance.now();
@@ -5018,9 +5018,15 @@
   }
 
   async function loadRepoRecordsFromMirror(repo, config) {
+    // Pull requests moved to the dedicated forkmesh/pulls metadata branch
+    // (issue #399). Sending ref:"" lets the host resolve that branch itself
+    // (with its own fallback to the default branch for pre-#399 mirrors);
+    // naming the selected code branch here is what kept serving the stale
+    // pulls/ folder frozen on main at migration time.
+    const refParams = config.dir === "pulls" ? { ref: "" } : {};
     let tree;
     try {
-      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: config.dir }));
+      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: config.dir, ...refParams }));
     } catch (error) {
       if (isMissingMirrorFolder(error)) return [];
       throw error;
@@ -5036,7 +5042,7 @@
       return `${config.dir}/${entry.name}/${file}`;
     };
     // One batched request for every record file instead of a per-record fan-out.
-    const blobs = await fetchRepoBlobs(repo, dirs.map(recordPath));
+    const blobs = await fetchRepoBlobs(repo, dirs.map(recordPath), refParams);
     const records = dirs.map((entry) => {
       const number = Number(entry.name);
       const blob = blobs[recordPath(entry)];
@@ -5247,7 +5253,8 @@
   async function loadRepoPullPatch(repo, number) {
     const patchPath = `pulls/${number}/changes.patch`;
     try {
-      const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: patchPath }));
+      // ref:"" — resolved by the host to the forkmesh/pulls metadata branch.
+      const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: patchPath, ref: "" }));
       const patch = blobText(blob);
       return { patch, files: parsePatchStats(patch), unavailable: false };
     } catch (error) {
@@ -5340,7 +5347,8 @@
   async function loadRepoPullConversation(repo, number) {
     let tree;
     try {
-      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `pulls/${number}` }));
+      // ref:"" — resolved by the host to the forkmesh/pulls metadata branch.
+      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `pulls/${number}`, ref: "" }));
     } catch (_) {
       return [];
     }
@@ -5348,7 +5356,7 @@
       .filter((entry) => entry.type !== "tree" && /^\d+-/.test(String(entry.name || "")))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
     if (!files.length) return [];
-    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `pulls/${number}/${entry.name}`));
+    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `pulls/${number}/${entry.name}`), { ref: "" });
     return files.map((entry) => {
       const blob = blobs[`pulls/${number}/${entry.name}`];
       if (!blob) return null;
@@ -5566,7 +5574,7 @@
           </div>
           <div data-repo-pull-files>${renderRepoPullFiles(pullPatch.files)}</div>
         </section>
-        <section class="overflow-hidden rounded-lg border border-border">
+        <section class="overflow-hidden rounded-lg border border-border" data-repo-record-patch-panel>
           <div class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="git-compare-arrows" class="h-3.5 w-3.5 text-primary"></i>Patch</div>
           ${renderRepoPullPatch(pullPatch.patch, `pull:${repoKey(repo)}:${number}`)}
         </section>` : "";
@@ -5584,7 +5592,6 @@
         <nav class="flex min-w-0 overflow-x-auto border-b border-border" aria-label="Pull request sections">
           <button type="button" data-repo-record-tab="conversation" class="inline-flex h-11 items-center gap-2 border-b-2 border-primary px-3 text-xs font-semibold text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5"></i>Conversation<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullConversation.length)}</span></button>
           <button type="button" data-repo-record-tab="commits" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5"></i>Commits<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">1</span></button>
-          <button type="button" data-repo-record-tab="checks" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="badge-check" class="h-3.5 w-3.5"></i>Checks<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">0</span></button>
           <button type="button" data-repo-record-tab="files" class="inline-flex h-11 items-center gap-2 border-b-2 border-transparent px-3 text-xs font-semibold text-muted-foreground"><i data-lucide="files" class="h-3.5 w-3.5"></i>Files changed<span class="rounded-full bg-secondary px-1.5 py-0.5 font-mono text-[10px]">${formatCount(pullPatch.files.length)}</span></button>
         </nav>` : "";
     const sidebarSection = (label, value) => `
@@ -5659,10 +5666,13 @@
       window.lucide?.createIcons();
       return;
     }
-    const recordPath = `${config.dir}/${number}/${config.file}`;
+    const recordFile = typeof config.file === "function" ? config.file(Number(number)) : config.file;
+    const recordPath = `${config.dir}/${number}/${recordFile}`;
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">Loading ${escapeHtml(config.itemLabel)} #${escapeHtml(number)} from the live mirror...</div>`;
     try {
-      const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: recordPath }));
+      // Pulls read with ref:"" so the host serves the forkmesh/pulls branch.
+      const refParams = kind === "pulls" ? { ref: "" } : {};
+      const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: recordPath, ...refParams }));
       const parsed = parseFrontMatter(blobText(blob));
       const pullPatch = kind === "pulls" ? await loadRepoPullPatch(repo, number) : null;
       if (pullPatch) parsed.pullPatch = pullPatch;
@@ -7356,7 +7366,7 @@
     }
   }
 
-  function loadRepoFeaturePanels(repo) {
+  function loadRepoFeaturePanels(repo, recordRoute = null) {
     loadRepoMirrors(repo);
     // Feature panels load on their FIRST tab view (and reload here after a
     // repo/branch switch if that tab is already active): fetching hidden live
@@ -7372,7 +7382,14 @@
       loadRepoIssues(repo);
     } else if (active === "pulls" || active === "discussions") {
       state.loadedRepoTabs[active] = true;
-      loadRepoCollection(repo, active, `[data-repo-${active}]`);
+      // A record deep link (/owner/repo/pulls/<N> — e.g. the desktop client's
+      // "View on website" button) opens the record's detail page directly
+      // instead of the list; Back to the list loads it lazily from there.
+      if (recordRoute && recordRoute.kind === active && recordRoute.number) {
+        loadRepoRecordDetail(repo, active, recordRoute.number);
+      } else {
+        loadRepoCollection(repo, active, `[data-repo-${active}]`);
+      }
     } else if (active === "releases") {
       state.loadedRepoTabs.releases = true;
       loadRepoReleases(repo);
@@ -7589,36 +7606,6 @@
       </label>`;
   }
 
-  function renderRepoCollectionSidebar(kind) {
-    const primaryItems = [
-      ["Issues", "circle-dot"],
-      ["Assigned to me", "users"],
-      ["Created by me", "smile-plus"],
-      ["Mentioned", "at-sign"],
-      ["Recent activity", "clock"],
-    ];
-    const secondaryItems = [
-      ["Views", "layers"],
-      ["Projects", "table-2"],
-      ["Milestones", "milestone"],
-      ["Labels", "tag"],
-    ];
-    const renderItem = ([label, icon], active = false) => `
-      <button type="button" class="flex h-8 w-full items-center gap-2 rounded-md px-3 text-left text-xs font-semibold ${active ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground"}">
-        <i data-lucide="${icon}" class="h-3.5 w-3.5 shrink-0"></i>
-        <span class="min-w-0 truncate">${label}</span>
-      </button>`;
-    return `
-      <aside data-repo-collection-sidebar="${kind}" class="hidden border-r border-border pr-3 lg:block">
-        <nav class="grid gap-1">
-          ${primaryItems.map((item, index) => renderItem(item, index === 0)).join("")}
-        </nav>
-        <nav class="mt-5 grid gap-1 border-t border-border pt-5">
-          ${secondaryItems.map((item) => renderItem(item)).join("")}
-        </nav>
-      </aside>`;
-  }
-
   function renderRepoCollectionPanel(kind, repo, openCount, closedCount) {
     const isPulls = kind === "pulls";
     const config = repoCollectionConfig[kind];
@@ -7636,8 +7623,7 @@
 
     return `
       <section data-dashboard-repo-tab-panel="${kind}" class="hidden">
-        <div class="mt-4 grid gap-4 lg:grid-cols-[14rem_minmax(0,1fr)]">
-          ${renderRepoCollectionSidebar(kind)}
+        <div class="mt-4">
           <div class="min-w-0">
             ${isPulls ? `
               <div class="mb-4 rounded-lg border border-border bg-background px-4 py-5 text-center">
@@ -7717,9 +7703,17 @@
       && repoMatchesKey(repo, routeRepoKey);
     const routeKind = routeMatchesRepo ? routeParts[2] : undefined;
     const routePath = routeMatchesRepo && routeParts.length > 3 ? routeParts.slice(3).map(decodeURIComponent).join("/") : "";
-    const detailPath = repoTabRoutesFor(repo).includes(routeKind)
-      ? `${repoPathUrl(repo)}/${routeKind}`
-      : repoPathUrl(repo, routeKind === "blob" ? "blob" : "tree", routePath);
+    // /owner/repo/pulls/<N> is a record deep link (the desktop client's
+    // "View on website" button, or a refreshed/shared PR detail URL): keep
+    // the number in the address bar and open that PR's detail page below.
+    const recordRoute = ["pulls", "discussions"].includes(routeKind) && /^\d+$/.test(routePath)
+      ? { kind: routeKind, number: routePath }
+      : null;
+    const detailPath = recordRoute
+      ? `${repoPathUrl(repo)}/${recordRoute.kind}/${recordRoute.number}`
+      : repoTabRoutesFor(repo).includes(routeKind)
+        ? `${repoPathUrl(repo)}/${routeKind}`
+        : repoPathUrl(repo, routeKind === "blob" ? "blob" : "tree", routePath);
     navigateHistory(detailPath);
     const crumb = $("[data-repo-detail-crumb]");
     if (crumb) crumb.textContent = `${repo.owner || "owner"}/${repo.name || "repository"}`;
@@ -7733,9 +7727,6 @@
     const updatedAt = formatTimeAgo(repo.updatedAt || repo.lastSync);
     const live = repoIsLive(repo);
     const viaMirror = repoServedByMirror(repo);
-    const canEditAbout = sessionOwnsRepo(repo);
-    const readmePath = "README.md";
-    const readmeHref = repoPathUrl(repo, "blob", readmePath);
     const tabMeta = {
       code: { label: "Code", icon: "code-2", count: "" },
       commits: { label: "Commits", icon: "git-commit-horizontal", count: commitsCount },
@@ -7821,7 +7812,7 @@
           </div>
         </div>
         ${canSeeAgentsTab ? renderRepoAgentNewComposer() : ""}
-	        <div data-repo-content-grid class="grid min-w-0 gap-5 pt-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+	        <div data-repo-content-grid class="grid min-w-0 gap-5 pt-5">
 		          <div class="min-w-0">
 		            <section data-dashboard-repo-tab-panel="code">
 		              <div data-repo-root-toolbar class="grid gap-2 md:grid-cols-[auto_minmax(0,1fr)_auto_auto]">
@@ -7904,80 +7895,6 @@
             <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-repo-mirrors></div></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
           </div>
-          <aside data-repo-about data-repo-about-rail class="min-w-0 rounded-lg border border-border bg-background p-4">
-            ${repo.isPrivate ? "" : `
-            <div data-repo-social-badge class="-mx-4 -mt-4 mb-4 overflow-hidden rounded-t-lg border-b border-border">
-              <div data-repo-social-banner class="h-20 w-full bg-secondary bg-cover bg-center" style="background-image:url('/assets/fediverse-banner.png')"></div>
-              <div class="flex items-end gap-3 px-4 pb-3">
-                <img data-repo-social-logo src="/assets/fediverse-avatar.png" alt="Repository logo" class="-mt-7 h-14 w-14 shrink-0 rounded-xl border-2 border-background bg-background object-cover shadow" />
-                <div class="min-w-0 pb-0.5">
-                  <a data-repo-social-handle data-repo-mastodon-link href="${escapeHtml(mastodonUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(fediHandle)}" class="block min-w-0 truncate font-mono text-[11px] text-foreground hover:underline">${escapeHtml(fediHandle)}</a>
-                  <div class="text-[11px] text-muted-foreground"><span data-repo-social-followers class="font-mono text-foreground">–</span> fediverse watchers</div>
-                </div>
-              </div>
-            </div>`}
-            <div class="flex items-center justify-between gap-3">
-              <h3 class="text-sm font-semibold text-foreground">About</h3>
-              ${canEditAbout
-                ? `<button type="button" data-repo-about-edit aria-label="Edit About" class="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="settings" class="h-3.5 w-3.5"></i></button>`
-                : `<i data-lucide="settings" class="h-3.5 w-3.5 text-muted-foreground"></i>`}
-            </div>
-            <p data-repo-about-description class="mt-3 text-sm leading-6 text-foreground">${escapeHtml(repo.description || "No description published.")}</p>
-            <a data-repo-about-website href="#" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-1 hidden min-w-0 items-center gap-1.5 text-xs hover:underline"><i data-lucide="globe" class="h-3.5 w-3.5 shrink-0"></i><span data-repo-about-website-label class="min-w-0 truncate"></span></a>
-            <form data-repo-about-form class="mt-3 hidden grid gap-2">
-              <textarea data-repo-about-input rows="4" maxlength="240" class="min-h-24 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary">${escapeHtml(repo.description || "")}</textarea>
-              <label class="grid gap-1 text-[11px] text-muted-foreground">Website
-                <input data-repo-about-website-input type="url" maxlength="240" placeholder="https://example.com" class="h-8 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
-              </label>
-              <label class="grid gap-1 text-[11px] text-muted-foreground">Logo — square PNG, up to 256 KB (fediverse avatar)
-                <input data-repo-about-logo type="file" accept="image/png" class="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-secondary file:px-2 file:py-1 file:text-xs file:text-foreground" />
-              </label>
-              <label class="grid gap-1 text-[11px] text-muted-foreground">Banner — 1500×500 PNG, up to 1 MB (fediverse header)
-                <input data-repo-about-banner type="file" accept="image/png" class="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-secondary file:px-2 file:py-1 file:text-xs file:text-foreground" />
-              </label>
-              <span class="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
-                <label class="inline-flex items-center gap-1.5"><input data-repo-about-logo-clear type="checkbox" class="h-3 w-3" />Remove logo</label>
-                <label class="inline-flex items-center gap-1.5"><input data-repo-about-banner-clear type="checkbox" class="h-3 w-3" />Remove banner</label>
-              </span>
-              <p class="text-[10px] leading-4 text-muted-foreground">Saved to the relay now and written into the repo's committed <span class="font-mono">.forkmesh/info.json</span> (what the desktop app shows) the next time the owner's node syncs.</p>
-              <div class="flex flex-wrap items-center justify-between gap-2">
-                <span data-repo-about-status class="text-[11px] text-muted-foreground"></span>
-                <span class="inline-flex items-center gap-2">
-                  <button type="button" data-repo-about-cancel class="inline-flex h-8 items-center rounded-md border border-border px-3 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground">Cancel</button>
-                  <button type="submit" class="inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90">Save</button>
-                </span>
-              </div>
-            </form>
-            <div class="mt-4 grid gap-2 text-xs text-muted-foreground">
-              <a href="${escapeHtml(cloneUrl(repo))}" class="dashboard-accent-link inline-flex min-w-0 items-center gap-2 hover:underline"><i data-lucide="link" class="h-3.5 w-3.5 shrink-0"></i><span class="min-w-0 truncate">Open clean URL</span></a>
-              <a href="${escapeHtml(readmeHref)}" data-repo-readme-link data-repo-readme-path="${escapeHtml(readmePath)}" class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="book-open" class="h-3.5 w-3.5"></i><span>Readme</span></a>
-              <a href="${escapeHtml(`${repoPathUrl(repo)}/insights`)}" data-repo-activity-link class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="activity" class="h-3.5 w-3.5"></i><span>Activity</span></a>
-            </div>
-            <div data-repo-about-release class="mt-5 hidden border-t border-border pt-4">
-              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Latest release</h4>
-              <div data-repo-about-release-body class="mt-2 text-xs text-muted-foreground"></div>
-            </div>
-            <div data-repo-about-langs class="mt-5 hidden border-t border-border pt-4">
-              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Languages</h4>
-              <div data-repo-about-langs-bar class="mt-2 flex h-2 w-full overflow-hidden rounded-full bg-secondary"></div>
-              <div data-repo-about-langs-legend class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground"></div>
-            </div>
-            <div data-repo-about-files class="mt-5 hidden border-t border-border pt-4">
-              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Files</h4>
-              <p data-repo-about-files-count class="mt-2 text-xs text-muted-foreground"></p>
-            </div>
-            <div data-repo-about-contribs class="mt-5 hidden border-t border-border pt-4">
-              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contributors <span data-repo-about-contribs-count class="font-mono text-foreground"></span></h4>
-              <div data-repo-about-contribs-list class="mt-2 flex flex-wrap gap-1.5"></div>
-            </div>
-            <div data-repo-live-summary class="mt-5 border-t border-border pt-4">
-              <h4 class="text-xs font-semibold text-foreground">Live mirror</h4>
-              <dl class="mt-3 grid gap-3 text-xs">
-                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Mirrors</dt><dd data-dashboard-repo-count="mirrors" class="min-w-0 truncate text-right text-foreground font-mono">${tabCountLabel(mirrorsCount)}</dd></div>
-              </dl>
-              <div data-repo-live-mirror-list class="mt-3 overflow-hidden rounded-md border border-border"></div>
-            </div>
-          </aside>
         </div>
       </div>`;
     // Restore whichever tab the URL points at (e.g. a refresh on
@@ -7990,7 +7907,7 @@
     window.lucide?.createIcons();
     loadRepositoryTree(repo, routeKind === "tree" ? routePath : "");
     if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
-    loadRepoFeaturePanels(repo);
+    loadRepoFeaturePanels(repo, recordRoute);
     loadRepoPendingCounts(repo);
     loadRepoStarState(repo, $("[data-repo-action-star]"));
   }
@@ -9093,17 +9010,54 @@
 
       const recordButton = event.target.closest("[data-repo-record-kind][data-repo-record-number]");
       if (recordButton && state.selectedRepo) {
-        loadRepoRecordDetail(state.selectedRepo, recordButton.dataset.repoRecordKind || "", recordButton.dataset.repoRecordNumber || "");
+        const kind = recordButton.dataset.repoRecordKind || "";
+        const number = recordButton.dataset.repoRecordNumber || "";
+        // Mirror the opened record into the address bar (/owner/repo/pulls/4)
+        // so refresh and the desktop client's "View on website" button land on
+        // this same detail page. Pending records have no mirror number yet.
+        if (["pulls", "discussions"].includes(kind) && /^\d+$/.test(number)) {
+          navigateHistory(`${repoPathUrl(state.selectedRepo)}/${kind}/${number}`);
+        }
+        loadRepoRecordDetail(state.selectedRepo, kind, number);
         return;
       }
 
       const recordBackButton = event.target.closest("[data-repo-record-back]");
       if (recordBackButton && state.selectedRepo) {
         const kind = recordBackButton.dataset.repoRecordBack || "";
+        if (["pulls", "discussions"].includes(kind)) {
+          navigateHistory(`${repoPathUrl(state.selectedRepo)}/${kind}`);
+        }
+        state.repoRecordDetail = null;
         if (kind === "issues") {
           renderRepoIssues();
         } else {
           loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
+        }
+        return;
+      }
+
+      // PR detail section tabs (Conversation / Commits / Files changed): all
+      // sections render on the one page, so a tab click highlights itself and
+      // scrolls its section into view.
+      const recordTabButton = event.target.closest("[data-repo-record-tab]");
+      if (recordTabButton) {
+        const article = recordTabButton.closest("[data-repo-record-detail]");
+        if (article) {
+          article.querySelectorAll("[data-repo-record-tab]").forEach((button) => {
+            const active = button === recordTabButton;
+            button.classList.toggle("border-primary", active);
+            button.classList.toggle("border-transparent", !active);
+            button.classList.toggle("text-foreground", active);
+            button.classList.toggle("text-muted-foreground", !active);
+          });
+          const targetSelector = {
+            conversation: "[data-repo-record-conversation]",
+            commits: "[data-repo-record-patch-panel]",
+            files: "[data-repo-record-files-panel]",
+          }[recordTabButton.dataset.repoRecordTab || ""];
+          const target = targetSelector ? article.querySelector(targetSelector) : null;
+          target?.scrollIntoView({ behavior: "smooth", block: "start" });
         }
         return;
       }
@@ -9418,6 +9372,15 @@
           // Feature tab (issues, pulls, etc.): restore without re-loading
           // records since they cache in state.
           setRepoTab(kind);
+          // Step Back/Forward between a record detail (/pulls/4) and its list.
+          if (["pulls", "discussions"].includes(kind)) {
+            if (/^\d+$/.test(path)) {
+              loadRepoRecordDetail(repo, kind, path);
+            } else if (state.repoRecordDetail?.kind === kind) {
+              state.repoRecordDetail = null;
+              loadRepoCollection(repo, kind, `[data-repo-${kind}]`);
+            }
+          }
         } else if (kind === "blob" && path) {
           loadRepositoryBlob(repo, path);
         } else {
