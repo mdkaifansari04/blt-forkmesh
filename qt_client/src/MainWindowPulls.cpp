@@ -948,6 +948,10 @@ QWidget *MainWindow::buildPullsTab()
             for (const PullRequest &pr : std::as_const(m_currentPulls))
                 if (pr.number == m_currentPullNumber)
                     renderPullChecks(pr);
+        if (id == 3) // Files changed brought forward: show the sticky header now,
+            // not only after the first scroll (adhoc #56). Defer so the diff
+            // viewport has laid out at its shown size before we measure it.
+            QTimer::singleShot(0, this, &MainWindow::updatePullDiffScrollState);
     });
 
     auto *detailLayout = new QVBoxLayout(m_pullDetail);
