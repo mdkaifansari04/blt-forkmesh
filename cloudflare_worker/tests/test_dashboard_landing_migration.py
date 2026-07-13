@@ -939,7 +939,11 @@ def test_repository_code_page_matches_github_code_layout():
     assert "Fork" in render
     assert "Star" in render
     assert "Add file" in render
-    assert "Last commit date" in render
+    # The Name/Last-commit-message/Last-commit-date column header row was
+    # dropped (adhoc #87) so the file table reads as a compact GitHub-style
+    # commit line; the summary banner still carries commit + date.
+    assert "Last commit date" not in render
+    assert "data-repo-commit-date" in render
     assert ">Code<" in render
 
 
@@ -1038,7 +1042,10 @@ def test_dashboard_repository_folder_icons_are_grey():
         : dashboard_js.index("async function loadRepositoryBlob")
     ]
 
-    assert 'data-lucide="${isTree ? "folder" : "file"}" class="h-4 w-4 shrink-0 text-muted-foreground"' in tree_loader
+    # File rows now use the shared vscode-icons SVGs (same set as the Qt
+    # desktop file browser) via fileIconHtml, not a lucide folder/file glyph
+    # (adhoc #87). Folders stay neutral - no text-primary tint.
+    assert 'fileIconHtml(entry, "h-4 w-4 shrink-0")' in tree_loader
     assert '${isTree ? "text-primary" : "text-muted-foreground"}' not in tree_loader
 
 
@@ -1185,7 +1192,7 @@ def test_dashboard_code_tree_rows_use_live_commit_messages():
 
     for marker in (
         "QJsonObject commitSummaryForPath",
-        '"log", "-1", "--date=format:%Y-%m-%d"',
+        '"log", "-1", "--date=iso-strict"',
         '"--format=%H%x1f%an%x1f%cd%x1f%s"',
         'args << "--" << path;',
         'entry.insert(QStringLiteral("message"), commit.value(QStringLiteral("subject")));',
@@ -1263,6 +1270,11 @@ def test_dashboard_repository_issue_and_pull_tabs_paginate_records_at_the_bottom
     assert "renderRepoRecordList(items, config, kind)" in collection_loader
     assert "const page = state.repoCollectionPages[kind] || 1;" in record_renderer
     assert "loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);" in click_handler
+    # Issue #420: paginating the Issues list must keep the open/closed/all filter
+    # (renderRepoIssues) instead of re-rendering the raw, unfiltered record list.
+    assert 'if (kind === "issues") renderRepoIssues();' in click_handler
+    # Issue #420: 25 records per page (not 5) for issues and pulls.
+    assert "const REPO_COLLECTION_PAGE_SIZE = 25;" in dashboard_js
 
 
 def test_dashboard_repository_record_chips_and_sidebar_links_use_neutral_github_like_colors():

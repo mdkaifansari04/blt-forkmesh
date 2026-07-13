@@ -76,7 +76,7 @@
   const $$ = (selector) => Array.from(document.querySelectorAll(selector));
   const MAX_REPO_FILE_FINDER_RESULTS = 500;
   const MAX_REPO_FILE_FINDER_SECONDS = 6;
-  const REPO_COLLECTION_PAGE_SIZE = 5;
+  const REPO_COLLECTION_PAGE_SIZE = 25;
   const DASHBOARD_THEME_KEY = "forkmesh.dashboard.theme";
   const DASHBOARD_LONG_DIFFS_KEY = "forkmesh.dashboard.longDiffs";
   const DASHBOARD_DIFF_AUTO_RENDER_MAX_CHARS = 250000;
@@ -293,6 +293,90 @@
       if (count >= 1) return `${count} ${name}${count === 1 ? "" : "s"} ago`;
     }
     return "just now";
+  }
+
+  // Map a file name to a vscode-icons SVG base name, mirroring the Qt client's
+  // fileTypeIconName (MainWindowInternal.h) so the web file browser shows the
+  // exact same per-filetype icons as the desktop app. The referenced subset is
+  // copied into public/assets/file-icons/; unknown types fall back to
+  // default_file.
+  const FILE_ICON_BY_NAME = {
+    "cmakelists.txt": "file_type_cmake",
+    "dockerfile": "file_type_docker",
+    "makefile": "file_type_makefile",
+    "package.json": "file_type_npm",
+    "package-lock.json": "file_type_npm",
+    ".gitignore": "file_type_git",
+    ".gitattributes": "file_type_git",
+    ".gitmodules": "file_type_git",
+    "license": "file_type_license",
+    "license.md": "file_type_license",
+    "license.txt": "file_type_license",
+    "copying": "file_type_license",
+    "readme.md": "file_type_markdown",
+    "todo": "file_type_todo",
+    ".env": "file_type_config",
+  };
+  const FILE_ICON_BY_EXT = {
+    js: "file_type_js", mjs: "file_type_js", cjs: "file_type_js",
+    jsx: "file_type_reactjs", ts: "file_type_typescript",
+    tsx: "file_type_reactts", py: "file_type_python", pyw: "file_type_python",
+    rb: "file_type_ruby", rs: "file_type_rust", go: "file_type_go",
+    java: "file_type_java", kt: "file_type_kotlin", kts: "file_type_kotlin",
+    swift: "file_type_swift", c: "file_type_c", h: "file_type_cheader",
+    hpp: "file_type_cpp", hh: "file_type_cpp", hxx: "file_type_cpp",
+    cpp: "file_type_cpp", cc: "file_type_cpp", cxx: "file_type_cpp",
+    cs: "file_type_csharp", php: "file_type_php", pl: "file_type_perl",
+    pm: "file_type_perl", lua: "file_type_lua", r: "file_type_r",
+    scala: "file_type_scala", hs: "file_type_haskell", ex: "file_type_elixir",
+    exs: "file_type_elixir", erl: "file_type_erlang", dart: "file_type_dart",
+    html: "file_type_html", htm: "file_type_html", css: "file_type_css",
+    scss: "file_type_scss", sass: "file_type_sass", less: "file_type_less",
+    json: "file_type_json", yaml: "file_type_yaml", yml: "file_type_yaml",
+    toml: "file_type_toml", xml: "file_type_xml", ini: "file_type_ini",
+    cfg: "file_type_config", conf: "file_type_config", md: "file_type_markdown",
+    markdown: "file_type_markdown", txt: "file_type_text", text: "file_type_text",
+    log: "file_type_log", sql: "file_type_sql", sh: "file_type_shell",
+    bash: "file_type_shell", zsh: "file_type_shell", ps1: "file_type_powershell",
+    gradle: "file_type_gradle", svg: "file_type_svg", png: "file_type_image",
+    jpg: "file_type_image", jpeg: "file_type_image", gif: "file_type_image",
+    webp: "file_type_image", bmp: "file_type_image", ico: "file_type_image",
+    mp3: "file_type_audio", wav: "file_type_audio", flac: "file_type_audio",
+    ogg: "file_type_audio", mp4: "file_type_video", mov: "file_type_video",
+    mkv: "file_type_video", webm: "file_type_video", pdf: "file_type_pdf",
+    zip: "file_type_zip", tar: "file_type_zip", gz: "file_type_zip",
+    "7z": "file_type_zip", rar: "file_type_zip", ttf: "file_type_font",
+    otf: "file_type_font", woff: "file_type_font", woff2: "file_type_font",
+    exe: "file_type_binary", bin: "file_type_binary", o: "file_type_binary",
+    a: "file_type_binary", so: "file_type_binary", dll: "file_type_binary",
+    key: "file_type_key", pem: "file_type_key", crt: "file_type_cert",
+    cert: "file_type_cert", cer: "file_type_cert", cmake: "file_type_cmake",
+  };
+
+  function fileTypeIconName(fileName) {
+    const lower = String(fileName || "").toLowerCase();
+    if (FILE_ICON_BY_NAME[lower]) return FILE_ICON_BY_NAME[lower];
+    const dot = lower.lastIndexOf(".");
+    if (dot >= 0) {
+      const ext = lower.slice(dot + 1);
+      if (FILE_ICON_BY_EXT[ext]) return FILE_ICON_BY_EXT[ext];
+    }
+    return "default_file";
+  }
+
+  // <img> to a copied vscode-icons SVG, so the web file rows use the same icons
+  // as the Qt desktop browser. Directories use the folder icon; the onerror
+  // fallback covers the few Qt names we don't ship an SVG for (mirrors Qt's
+  // "verify the file exists, else default_file"). The icon name comes from a
+  // fixed allow-list, so it is safe to interpolate unescaped.
+  function fileIconHtml(entry, cls = "h-4 w-4 shrink-0") {
+    const isTree = entry?.type === "tree";
+    const name = isTree ? "default_folder" : fileTypeIconName(entry?.name || "");
+    const fallback = isTree ? "default_folder" : "default_file";
+    const onErr = name === fallback
+      ? ""
+      : ` onerror="this.onerror=null;this.src='/assets/file-icons/${fallback}.svg'"`;
+    return `<img src="/assets/file-icons/${name}.svg" alt="" aria-hidden="true" class="${cls}"${onErr} />`;
   }
 
   function formatSize(bytes) {
@@ -3935,7 +4019,7 @@
       rows.push(entries.map((entry) => {
         const isTree = entry.type === "tree";
         const childPath = repoChildPath(path, entry.name);
-        return `<button type="button" data-repo-explorer-entry data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="${repoExplorerRowClass(false)}"><i data-lucide="${isTree ? "folder" : "file"}" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i><span class="min-w-0 truncate">${escapeHtml(entry.name || "entry")}</span></button>`;
+        return `<button type="button" data-repo-explorer-entry data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="${repoExplorerRowClass(false)}">${fileIconHtml(entry, "h-3.5 w-3.5 shrink-0")}<span class="min-w-0 truncate">${escapeHtml(entry.name || "entry")}</span></button>`;
       }).join(""));
     } else {
       rows.push('<div class="px-3 py-2 text-xs text-muted-foreground">No files in this folder.</div>');
@@ -4850,7 +4934,7 @@
         const date = formatTimeAgo(entry.date || entry.updatedAt || entry.committedAt || entry.commitDate || entry.mtime || repo.updatedAt || repo.lastSync);
         return `
             <button data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-2.5 text-left text-sm hover:bg-secondary/40 transition-colors sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
-              <i data-lucide="${isTree ? "folder" : "file"}" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
+              ${fileIconHtml(entry, "h-4 w-4 shrink-0")}
               <span class="min-w-0 truncate font-medium text-foreground">${escapeHtml(entry.name || "entry")}</span>
               <span class="hidden min-w-0 truncate text-xs text-muted-foreground sm:block">${escapeHtml(message)}</span>
               <span class="shrink-0 text-xs text-muted-foreground font-mono">${escapeHtml(date)}</span>
@@ -5483,11 +5567,11 @@
   }
 
   function diffRowClass(type) {
-    if (type === "add") return "bg-emerald-950/40 text-emerald-300";
-    if (type === "del") return "bg-red-950/35 text-red-300";
-    if (type === "hunk") return "bg-primary/10 text-primary";
+    if (type === "add") return "bg-primary/15 text-primary";
+    if (type === "del") return "bg-destructive/15 text-destructive";
+    if (type === "hunk") return "bg-accent/10 text-accent";
     if (type === "meta") return "text-muted-foreground";
-    return "text-zinc-300";
+    return "text-foreground";
   }
 
   function renderDiffFileRows(rows) {
@@ -7622,66 +7706,84 @@
       renderAttachmentChips();
     });
 
+    // Shared by both the file picker and clipboard paste: validate, embed (or
+    // crop/compress if oversized), then insert a placeholder into the body at
+    // the caret so pasted screenshots land right where the cursor was.
+    const addIssueImageFile = async (file, rawName) => {
+      const name = rawName.replace(/[[\]]/g, "_");
+      if (!file.type.startsWith("image/")) {
+        setAttachHint(`${name}: not an image.`, "bad");
+        return;
+      }
+      if (images.length >= ISSUE_IMAGE_MAX_COUNT) {
+        setAttachHint(`You can attach up to ${ISSUE_IMAGE_MAX_COUNT} images.`, "bad");
+        return;
+      }
+      if (file.size > ISSUE_IMAGE_RAW_MAX_BYTES) {
+        setAttachHint(`${name} is too large to attach (max ${formatSize(ISSUE_IMAGE_RAW_MAX_BYTES)}).`, "bad");
+        return;
+      }
+      const total = images.reduce((sum, img) => sum + img.size, 0);
+      const budget = Math.min(ISSUE_IMAGE_MAX_BYTES, ISSUE_IMAGE_MAX_TOTAL_BYTES - total);
+      if (budget <= 0) {
+        setAttachHint("Attached images already use up the issue's size limit - remove one to add another.", "bad");
+        return;
+      }
+      let dataUrl;
+      let size;
+      if (file.size <= budget) {
+        try {
+          dataUrl = await readAsDataUrl(file);
+          size = file.size;
+        } catch (_) {
+          setAttachHint(`Could not read ${name}.`, "bad");
+          return;
+        }
+      } else {
+        setAttachHint(`${name} is ${formatSize(file.size)} - crop or compress it to fit under ${formatSize(budget)}.`);
+        const result = await openImageResizeModal(file, budget);
+        if (!result) {
+          setAttachHint("");
+          return;
+        }
+        dataUrl = result.dataUrl;
+        size = result.size;
+      }
+      const id = `forkmesh-pending-image:${Date.now().toString(36)}${images.length}`;
+      images.push({ id, name, dataUrl, size });
+      const start = bodyInput?.selectionStart ?? bodyInput?.value.length ?? 0;
+      const end = bodyInput?.selectionEnd ?? start;
+      if (bodyInput) {
+        const insertion = `\n![${name}](${id})\n`;
+        bodyInput.value = bodyInput.value.slice(0, start) + insertion + bodyInput.value.slice(end);
+        const cursor = start + insertion.length;
+        bodyInput.selectionStart = bodyInput.selectionEnd = cursor;
+      }
+      setAttachHint("");
+    };
+
     if (attachButton && fileInput) {
       attachButton.addEventListener("click", () => fileInput.click());
       fileInput.addEventListener("change", async () => {
         const files = Array.from(fileInput.files || []);
         fileInput.value = "";
-        for (const file of files) {
-          if (!file.type.startsWith("image/")) {
-            setAttachHint(`${file.name}: not an image.`, "bad");
-            continue;
-          }
-          if (images.length >= ISSUE_IMAGE_MAX_COUNT) {
-            setAttachHint(`You can attach up to ${ISSUE_IMAGE_MAX_COUNT} images.`, "bad");
-            break;
-          }
-          if (file.size > ISSUE_IMAGE_RAW_MAX_BYTES) {
-            setAttachHint(`${file.name} is too large to attach (max ${formatSize(ISSUE_IMAGE_RAW_MAX_BYTES)}).`, "bad");
-            continue;
-          }
-          const total = images.reduce((sum, img) => sum + img.size, 0);
-          const budget = Math.min(ISSUE_IMAGE_MAX_BYTES, ISSUE_IMAGE_MAX_TOTAL_BYTES - total);
-          if (budget <= 0) {
-            setAttachHint("Attached images already use up the issue's size limit - remove one to add another.", "bad");
-            continue;
-          }
-          let dataUrl;
-          let size;
-          if (file.size <= budget) {
-            try {
-              dataUrl = await readAsDataUrl(file);
-              size = file.size;
-            } catch (_) {
-              setAttachHint(`Could not read ${file.name}.`, "bad");
-              continue;
-            }
-          } else {
-            setAttachHint(`${file.name} is ${formatSize(file.size)} - crop or compress it to fit under ${formatSize(budget)}.`);
-            const result = await openImageResizeModal(file, budget);
-            if (!result) {
-              setAttachHint("");
-              continue;
-            }
-            dataUrl = result.dataUrl;
-            size = result.size;
-          }
-          const id = `forkmesh-pending-image:${Date.now().toString(36)}${images.length}`;
-          const name = file.name.replace(/[[\]]/g, "_");
-          images.push({ id, name, dataUrl, size });
-          const start = bodyInput?.selectionStart ?? bodyInput?.value.length ?? 0;
-          const end = bodyInput?.selectionEnd ?? start;
-          if (bodyInput) {
-            const insertion = `\n![${name}](${id})\n`;
-            bodyInput.value = bodyInput.value.slice(0, start) + insertion + bodyInput.value.slice(end);
-            const cursor = start + insertion.length;
-            bodyInput.selectionStart = bodyInput.selectionEnd = cursor;
-          }
-          setAttachHint("");
-        }
+        for (const file of files) await addIssueImageFile(file, file.name);
         renderAttachmentChips();
       });
     }
+    bodyInput?.addEventListener("paste", async (event) => {
+      const imageItems = Array.from(event.clipboardData?.items || [])
+        .filter((item) => item.kind === "file" && item.type.startsWith("image/"));
+      if (!imageItems.length) return;
+      // A pasted screenshot has no useful text form, so claim the paste instead
+      // of letting the browser also dump it in as an inline object/blank text.
+      event.preventDefault();
+      for (const item of imageItems) {
+        const file = item.getAsFile();
+        if (file) await addIssueImageFile(file, file.name || "screenshot.png");
+      }
+      renderAttachmentChips();
+    });
     container.querySelector("[data-repo-issue-title]")?.focus();
   }
 
@@ -8726,12 +8828,6 @@
 	                      <span data-repo-commit-hash class="font-mono text-muted-foreground">${escapeHtml(commitId)}</span>
 	                      <span data-repo-commit-date class="font-mono text-muted-foreground">${escapeHtml(updatedAt)}</span>
 	                      <button type="button" data-dashboard-history-button aria-label="Open commit history" class="inline-flex items-center gap-1 font-medium text-foreground hover:text-primary transition-colors"><i data-lucide="history" class="h-3.5 w-3.5 text-muted-foreground"></i>History</button>
-	                    </div>
-	                    <div class="grid grid-cols-[1.5rem_minmax(0,1fr)_auto] gap-3 border-b border-border bg-secondary/25 px-4 py-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
-	                      <span></span>
-	                      <span>Name</span>
-	                      <span class="hidden sm:block">Last commit message</span>
-	                      <span>Last commit date</span>
 	                    </div>
 	                    <div data-repo-tree></div>
 	                  </div>
@@ -10090,7 +10186,12 @@
         const targetPage = Number(repoCollectionPageButton.dataset.repoCollectionPageTarget);
         if (kind && Number.isFinite(targetPage)) {
           state.repoCollectionPages[kind] = targetPage;
-          loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
+          // Issues keep their open/closed/all filter (and its filter bar) that
+          // renderRepoIssues applies; routing pagination through
+          // loadRepoCollection would re-render the raw record list unfiltered,
+          // leaking closed issues into the default "open" view (issue #420).
+          if (kind === "issues") renderRepoIssues();
+          else loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
         }
         return;
       }

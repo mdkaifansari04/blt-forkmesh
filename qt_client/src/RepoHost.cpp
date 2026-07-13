@@ -511,7 +511,11 @@ QJsonObject commitSummaryForPath(const QString &mirrorPath, const QString &ref,
     // website's "recent commit" banner and last-commit column looked perpetually
     // stale (weeks old) even right after a fresh sync. The committer date is when
     // the commit actually landed in the tree, which is the recency GitHub shows.
-    QStringList args{"log", "-1", "--date=format:%Y-%m-%d",
+    // iso-strict (not date-only %Y-%m-%d): the website renders these as relative
+    // "N minutes/seconds ago" labels, so truncating to midnight made a commit
+    // pushed seconds ago read as "hours"/"1 day ago". Keep the full timestamp +
+    // timezone so recency is exact down to the second.
+    QStringList args{"log", "-1", "--date=iso-strict",
                      "--format=%H%x1f%an%x1f%cd%x1f%s", ref};
     if (!path.isEmpty())
         args << "--" << path;

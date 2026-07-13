@@ -3022,6 +3022,23 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_navDrawButton, &QPushButton::clicked, this,
             &MainWindow::startScreenDraw);
 
+    // Resize button beside the draw/screenshot buttons: snap the window down to
+    // a common minimal screen size (1280x720), so it's quick to preview how
+    // ForkMesh looks on a smaller display before filing a UI bug.
+    m_navResizeButton = new QPushButton;
+    m_navResizeButton->setObjectName("topNavButton");
+    m_navResizeButton->setCursor(Qt::PointingHandCursor);
+    m_navResizeButton->setToolTip(
+        QString::fromUtf8("Resize to 1280\xC3\x97" "720 \xE2\x80\x94 a common "
+                          "minimal screen size, handy for previewing smaller "
+                          "displays"));
+    setOcticon(m_navResizeButton, "device-desktop", 14);
+    connect(m_navResizeButton, &QPushButton::clicked, this, [this] {
+        if (isMaximized())
+            showNormal();
+        resize(1280, 720);
+    });
+
     // Donate + social cluster, moved up out of the footer (adhoc #117). A standout
     // donate button (opens the central-fund QR) sits beside a compact row of two
     // icon-only social buttons — the ForkMesh Reddit and Twitter/X links —
@@ -3258,10 +3275,11 @@ QWidget *MainWindow::buildBreadcrumb()
     // Live diagnostics glyph (CPU/MEM/DISK sparklines moved up to mainRow for adhoc #121).
     navRow->addWidget(m_footerDiagnostics);
     navRow->addStretch();
-    // Right-aligned so they sit under the top-right avatar; the pencil and
-    // screenshot buttons sit just left of the rebuild/restart button.
+    // Right-aligned so they sit under the top-right avatar; the pencil,
+    // screenshot and resize buttons sit just left of the rebuild/restart button.
     navRow->addWidget(m_navDrawButton);
     navRow->addWidget(m_navScreenshotButton);
+    navRow->addWidget(m_navResizeButton);
     navRow->addWidget(m_navRebuildButton);
     auto *navRowHost = new QWidget;
     navRowHost->setLayout(navRow);

@@ -7,6 +7,7 @@
     "bountyStatus": "",
     "bountyUsd": 0,
     "createdAt": 1783885729089,
+    "endDate": 0,
     "events": [
         {
             "attachments": [
@@ -19,6 +20,15 @@
             "title": "there is an errror on a new isntall",
             "ts": 1783885729089,
             "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "1fbb7e65-9719-4f8e-b0fb-c62a1a5e945e",
+            "sig": "23yGZgKe84OjEVP74LXCMxtyeEX5w4KLW2V3zqHeRaKr621FItMfDRnKd4l7JwvZy6oy44013t-XDXkqs938Dw",
+            "status": "closed",
+            "ts": 1783914323815,
+            "type": "status"
         }
     ],
     "labels": [
@@ -28,8 +38,9 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
-    "status": "open",
+    "startDate": 0,
+    "status": "closed",
     "title": "there is an errror on a new isntall",
-    "updatedAt": 1783885729089,
+    "updatedAt": 1783914323815,
     "votes": 0
 }

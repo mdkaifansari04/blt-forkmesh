@@ -813,7 +813,7 @@
       rows.push(entries.map((entry) => {
         const isTree = entry.type === "tree";
         const childPath = repoChildPath(path, entry.name);
-        return `<button type="button" data-repo-explorer-entry data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="${repoExplorerRowClass(false)}"><i data-lucide="${isTree ? "folder" : "file"}" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i><span class="min-w-0 truncate">${escapeHtml(entry.name || "entry")}</span></button>`;
+        return `<button type="button" data-repo-explorer-entry data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="${repoExplorerRowClass(false)}">${fileIconHtml(entry, "h-3.5 w-3.5 shrink-0")}<span class="min-w-0 truncate">${escapeHtml(entry.name || "entry")}</span></button>`;
       }).join(""));
     } else {
       rows.push('<div class="px-3 py-2 text-xs text-muted-foreground">No files in this folder.</div>');
