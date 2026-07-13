@@ -140,6 +140,8 @@ set(FORKMESH_APP_SOURCES
     src/KebabHeaderView.cpp
     src/TerminalWidget.h
     src/TerminalWidget.cpp
+    src/ClaudeAccountTransfer.h
+    src/ClaudeAccountTransfer.cpp
     src/ClaudeIdeBridge.h
     src/ClaudeIdeBridge.cpp
     src/ClaudeStreamSession.h
@@ -330,6 +332,8 @@ if(FORKMESH_BUILD_TESTS)
         resources/icons.qrc
         src/BackoffNetworkAccessManager.h
         src/BackoffNetworkAccessManager.cpp
+        src/ClaudeAccountTransfer.h
+        src/ClaudeAccountTransfer.cpp
         src/ActionFile.h
         src/ActionFile.cpp
         src/ForkMeshIdentity.h
