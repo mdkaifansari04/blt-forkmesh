@@ -8076,6 +8076,135 @@
     return Boolean(name && servedName && name === servedName);
   }
 
+  // The source-of-truth node in a mirror group: the one whose name matches the
+  // repo owner (it holds the canonical copy), else the freshest online node with
+  // a commit, else the one with the most complete history. Every other node's
+  // commit/counts are compared against this one so the tab can flag a mirror
+  // serving stale or divergent data, exactly like the desktop Mirror nodes panel.
+  function pickReferenceMirror(mirrors) {
+    const list = (Array.isArray(mirrors) ? mirrors : []).filter(
+      (mirror) => String(mirror && mirror.commit || "").trim(),
+    );
+    if (!list.length) return null;
+    const owner = String(state.selectedRepo?.owner || "").trim().toLowerCase();
+    const named = owner
+      ? list.find(
+          (mirror) =>
+            String(mirror.node || mirror.owner || mirror.name || "").trim().toLowerCase() === owner,
+        )
+      : null;
+    if (named) return named;
+    return list.slice().sort(
+      (a, b) =>
+        Number(b.status === "online") - Number(a.status === "online") ||
+        (Number(b.lastSync) || 0) - (Number(a.lastSync) || 0) ||
+        (Number(b.commitCount) || 0) - (Number(a.commitCount) || 0),
+    )[0];
+  }
+
+  // A count differs from the reference node's only when both sides actually
+  // reported a value (>= 0) — an em dash on either side means "not tracked", not
+  // "out of sync", so it's never flagged.
+  function mirrorCountMismatch(value, ref) {
+    return Number(ref) >= 0 && Number(value) >= 0 && Number(value) !== Number(ref);
+  }
+
+  // One metadata chip. `mismatch` underlines it (amber) and notes the canonical
+  // value in the tooltip, matching the desktop panel's underline of a cell that
+  // doesn't match the source of truth.
+  function mirrorChip(label, value, mismatch, note) {
+    const shown = value === "" || value === undefined || value === null ? "-" : value;
+    return `
+        <span class="inline-flex items-center gap-1 rounded-md border ${mismatch ? "border-amber-500/50" : "border-border"} px-1.5 py-0.5 text-[10px] font-mono"${mismatch && note ? ` title="${escapeHtml(note)}"` : ""}>
+          <span class="text-muted-foreground">${escapeHtml(label)}</span>
+          <span class="${mismatch ? "text-amber-600 underline decoration-amber-500/60" : "text-foreground"}">${escapeHtml(shown)}</span>
+        </span>`;
+  }
+
+  // The metadata columns the desktop Mirror nodes panel shows, rendered as chips
+  // under each mirror row: commit + sync freshness, on-disk size, and the mirrored
+  // issue/commit/branch/pull/discussion/worktree/clone/website/artifact tallies.
+  // Content columns that don't match the source of truth are underlined.
+  function mirrorDetailChips(mirror, refMirror) {
+    const commit = String(mirror.commit || "").trim();
+    const refCommit = String(refMirror?.commit || "").trim();
+    const branch = String(mirror.branch || "").trim();
+    const commitLabel = commit
+      ? commit.slice(0, 7) + (branch ? ` (${branch})` : "")
+      : "";
+    const chips = [
+      mirrorChip(
+        "Commit",
+        commitLabel,
+        Boolean(commit && refCommit && commit !== refCommit),
+        refCommit ? `Source of truth is at ${refCommit.slice(0, 7)}` : "",
+      ),
+      mirrorChip("Synced", mirror.lastSync ? formatTimeAgo(mirror.lastSync) : "", false, ""),
+      mirrorChip("Size", mirror.sizeBytes ? formatSize(mirror.sizeBytes) : "", false, ""),
+      mirrorChip("Issues", mirrorCountText(mirror.issueCount), mirrorCountMismatch(mirror.issueCount, refMirror?.issueCount), `Source: ${mirrorCountText(refMirror?.issueCount)}`),
+      mirrorChip("Commits", mirrorCountText(mirror.commitCount), mirrorCountMismatch(mirror.commitCount, refMirror?.commitCount), `Source: ${mirrorCountText(refMirror?.commitCount)}`),
+      mirrorChip("Branches", mirrorCountText(mirror.branchCount), mirrorCountMismatch(mirror.branchCount, refMirror?.branchCount), `Source: ${mirrorCountText(refMirror?.branchCount)}`),
+      mirrorChip("Pulls", mirrorCountText(mirror.pullCount), mirrorCountMismatch(mirror.pullCount, refMirror?.pullCount), `Source: ${mirrorCountText(refMirror?.pullCount)}`),
+      mirrorChip("Discussions", mirrorCountText(mirror.discussionCount), mirrorCountMismatch(mirror.discussionCount, refMirror?.discussionCount), `Source: ${mirrorCountText(refMirror?.discussionCount)}`),
+      mirrorChip("Worktrees", mirrorCountText(mirror.worktreeCount), false, ""),
+      mirrorChip("Clones", mirrorCountText(mirror.clonesServed), false, ""),
+      mirrorChip("Website", mirrorCountText(mirror.websiteServed), false, ""),
+      mirrorChip("Artifacts", mirrorCountText(mirror.artifactCount), mirrorCountMismatch(mirror.artifactCount, refMirror?.artifactCount), `Source: ${mirrorCountText(refMirror?.artifactCount)}`),
+    ];
+    return chips.join("");
+  }
+
+  // Counts arrive as -1 when a node hasn't reported them; show a dash for those
+  // (a distinct state from a real 0) so a chip never reads a misleading "0".
+  function mirrorCountText(value) {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? formatCount(number) : "";
+  }
+
+  // The full Mirrors-tab row: a header line (dot, name, source-of-truth / out-of-
+  // sync / integrity badges, version, serve speed, status) over a wrapped strip of
+  // the same metadata columns the desktop Mirror nodes panel shows.
+  function renderMirrorTabRow(mirror, servedBy, refMirror) {
+    const online = mirror.status === "online";
+    const isServing = online && mirrorRowIsServing(mirror, servedBy);
+    const speed = isServing ? formatServeSpeed(servedBy.tookMs) : "";
+    const rawVersion = String(mirror.version || mirror.appVersion || mirror.clientVersion || "").trim();
+    const version = rawVersion
+      ? (rawVersion[0].toLowerCase() === "v" ? rawVersion : `v${rawVersion}`)
+      : "";
+    const commit = String(mirror.commit || "").trim();
+    const refCommit = String(refMirror?.commit || "").trim();
+    const isSource = Boolean(refMirror && mirror === refMirror);
+    const behind = online && commit && refCommit && commit !== refCommit;
+    const integrityRejected = mirror.integrity === "rejected";
+    const dotColor = !online
+      ? "text-muted-foreground"
+      : behind
+        ? "text-amber-500"
+        : "text-primary";
+    const rowClass = isServing
+      ? "border-t border-border px-4 py-3 text-sm ring-1 ring-inset ring-primary bg-primary/5"
+      : "border-t border-border px-4 py-3 text-sm hover:bg-secondary/40 transition-colors";
+    return `
+        <div class="${rowClass}">
+          <div class="flex items-center gap-3">
+            <i data-lucide="${online ? "radio" : "circle"}" class="h-4 w-4 shrink-0 ${dotColor}"></i>
+            <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <span class="min-w-0 truncate font-mono text-foreground">${escapeHtml(mirror.node || mirror.owner || mirror.name || "mirror")}</span>
+              ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
+              ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
+              ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
+              ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
+            </div>
+            <span class="flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
+              ${speed ? `<span class="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">${escapeHtml(speed)}</span>` : ""}
+              ${escapeHtml(mirror.status || "unknown")}
+            </span>
+          </div>
+          <div class="mt-2 flex flex-wrap gap-1.5 pl-7">${mirrorDetailChips(mirror, refMirror)}</div>
+        </div>`;
+  }
+
   function renderMirrorRow(mirror, servedBy) {
     const online = mirror.status === "online";
     const isServing = online && mirrorRowIsServing(mirror, servedBy);
@@ -8116,7 +8245,19 @@
   function renderRepoMirrorLists(mirrors, servedBy) {
     const tabContainer = $("[data-repo-mirrors]");
     if (tabContainer && mirrors.length) {
-      tabContainer.innerHTML = mirrors.map((mirror) => renderMirrorRow(mirror, servedBy)).join("");
+      // Source of truth first, then online before offline, then freshest sync —
+      // the same ordering as the desktop Mirror nodes panel.
+      const refMirror = pickReferenceMirror(mirrors);
+      const ordered = mirrors.slice().sort(
+        (a, b) =>
+          Number(b === refMirror) - Number(a === refMirror) ||
+          Number(b.status === "online") - Number(a.status === "online") ||
+          (Number(b.lastSync) || 0) - (Number(a.lastSync) || 0) ||
+          String(a.node || a.owner || a.name || "").localeCompare(String(b.node || b.owner || b.name || "")),
+      );
+      tabContainer.innerHTML = ordered
+        .map((mirror) => renderMirrorTabRow(mirror, servedBy, refMirror))
+        .join("");
     }
     renderRepoLiveMirrorList(mirrors, servedBy);
     window.lucide?.createIcons();
