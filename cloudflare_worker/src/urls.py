@@ -59,7 +59,7 @@ REPO_AGENTS_TRANSCRIPT_RE = re.compile(
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(
-    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search)$")
+    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search|stats)$")
 # Release asset download (issue #304): the bytes live in the node's
 # content-addressed store (never in git), streamed back over the host tunnel.
 # Stable, content-addressed URL — immutable, so it caches forever at the edge.

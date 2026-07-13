@@ -2169,44 +2169,113 @@
     } catch (_) { /* no releases — section stays hidden */ }
   }
 
+  function renderRepoAboutFileCount(count, partial) {
+    const section = $("[data-repo-about-files]");
+    const label = $("[data-repo-about-files-count]");
+    if (!section || !label || !count) return;
+    label.textContent = `${Number(count).toLocaleString()}${partial ? "+" : ""} files`;
+    section.classList.remove("hidden");
+  }
+
+  // ranked: [[language, weight], ...] already sorted desc. weight is bytes when
+  // the host provided sizes (accurate), else a plain file count (fallback).
+  function renderRepoAboutLanguages(ranked) {
+    const total = ranked.reduce((sum, [, weight]) => sum + weight, 0);
+    if (!ranked.length || !total) return;
+    const bar = $("[data-repo-about-langs-bar]");
+    const legend = $("[data-repo-about-langs-legend]");
+    const section = $("[data-repo-about-langs]");
+    if (!bar || !legend || !section) return;
+    bar.innerHTML = ranked.map(([language, weight]) => {
+      const color = REPO_LANGUAGE_COLORS[language] || "#8a8a8a";
+      const pct = (weight / total) * 100;
+      return `<span title="${escapeHtml(language)}" style="width:${pct.toFixed(1)}%;background-color:${color}"></span>`;
+    }).join("");
+    legend.innerHTML = ranked.map(([language, weight]) => {
+      const color = REPO_LANGUAGE_COLORS[language] || "#8a8a8a";
+      const pct = ((weight / total) * 100).toFixed(1);
+      return `<span class="inline-flex items-center gap-1.5"><span class="h-2 w-2 rounded-full" style="background-color:${color}"></span><span class="font-medium text-foreground">${escapeHtml(language)}</span> ${pct}%</span>`;
+    }).join("");
+    section.classList.remove("hidden");
+  }
+
+  // The identicon shown for a contributor. Keyed on the git email (falling back
+  // to the name) so two distinct people never collapse to the same swatch the
+  // way a name-initial + single hue did — a two-tone gradient plus up-to-two
+  // initials keeps each user visually distinct and stable across loads.
+  function repoContributorAvatar(contributor) {
+    const name = String(contributor?.name || contributor?.email || "?").trim();
+    const email = String(contributor?.email || "").trim().toLowerCase();
+    const commits = Number(contributor?.commits) || 0;
+    const key = email || name.toLowerCase();
+    let hash = 0;
+    for (let i = 0; i < key.length; i += 1) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+    const hue = hash % 360;
+    const hue2 = (hue + 40 + ((hash >> 8) % 90)) % 360;
+    const words = name.split(/[\s._@-]+/).filter(Boolean);
+    const initials = ((words[0]?.[0] || "?") + (words[1]?.[0] || "")).toUpperCase();
+    const title = `${name}${email ? ` <${email}>` : ""}` +
+      (commits ? ` — ${commits} commit${commits === 1 ? "" : "s"}` : "");
+    return `<span title="${escapeHtml(title)}" class="flex h-8 w-8 items-center justify-center rounded-full border border-background font-mono text-[10px] font-semibold uppercase text-white shadow-sm" style="background-image:linear-gradient(135deg, hsl(${hue} 60% 46%), hsl(${hue2} 58% 38%))">${escapeHtml(initials)}</span>`;
+  }
+
+  // contributors: [{name, email, commits}, ...] sorted desc. total overrides the
+  // rendered count (the host knows the full-history total even though only the
+  // top few avatars are shown).
+  function renderRepoAboutContributors(contributors, total) {
+    const rows = (Array.isArray(contributors) ? contributors : [])
+      .filter((c) => c && (c.name || c.email));
+    if (!rows.length) return;
+    const section = $("[data-repo-about-contribs]");
+    const count = $("[data-repo-about-contribs-count]");
+    const list = $("[data-repo-about-contribs-list]");
+    if (!section || !count || !list) return;
+    count.textContent = String(Number(total) || rows.length);
+    list.innerHTML = rows.slice(0, 14).map(repoContributorAvatar).join("");
+    section.classList.remove("hidden");
+  }
+
+  // Preferred path: one /stats round-trip the host answers from `git ls-tree -r`
+  // + `git shortlog`, so the file count is exact, languages are byte-weighted,
+  // and contributors span the whole history. Returns false (→ fall back to the
+  // per-directory walk + capped history) when the host is offline or too old to
+  // know the op.
+  async function loadRepoAboutStats(repo) {
+    let data;
+    try {
+      data = await fetchRepoJson(repoLiveUrl(repo, "stats"));
+    } catch (_) {
+      return false; // host offline, or an old node that answered bad_op as a 5xx
+    }
+    if (!data || data.ok === false) return false;
+    if (!repoAboutStillCurrent(repo)) return true; // served, but the user navigated away
+    renderRepoAboutFileCount(Number(data.fileCount) || 0, false);
+    const tally = {};
+    Object.entries(data.extensions || {}).forEach(([ext, info]) => {
+      const language = REPO_LANGUAGE_EXTENSIONS[String(ext).toLowerCase()];
+      if (!language) return;
+      const bytes = Number(info?.bytes) || 0;
+      const weight = bytes > 0 ? bytes : Number(info?.files) || 0;
+      if (weight > 0) tally[language] = (tally[language] || 0) + weight;
+    });
+    renderRepoAboutLanguages(Object.entries(tally).sort((a, b) => b[1] - a[1]).slice(0, 6));
+    renderRepoAboutContributors(data.contributors, Number(data.contributorCount) || 0);
+    return true;
+  }
+
   async function loadRepoAboutFilesAndLanguages(repo) {
     try {
       const files = await buildRepoFileIndex(repo);
       if (!files.length || !repoAboutStillCurrent(repo)) return;
-      const partial = Boolean(state.repoFileFinder?.partial);
-      const filesSection = $("[data-repo-about-files]");
-      const filesCount = $("[data-repo-about-files-count]");
-      if (filesSection && filesCount) {
-        filesCount.textContent = `${files.length.toLocaleString()}${partial ? "+" : ""} files`;
-        filesSection.classList.remove("hidden");
-      }
+      renderRepoAboutFileCount(files.length, Boolean(state.repoFileFinder?.partial));
       const tally = {};
-      let categorized = 0;
       files.forEach((path) => {
         const name = String(path).split("/").pop() || "";
         const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
         const language = REPO_LANGUAGE_EXTENSIONS[ext];
-        if (!language) return;
-        tally[language] = (tally[language] || 0) + 1;
-        categorized += 1;
+        if (language) tally[language] = (tally[language] || 0) + 1;
       });
-      const ranked = Object.entries(tally).sort((a, b) => b[1] - a[1]).slice(0, 6);
-      if (!ranked.length || !categorized) return;
-      const bar = $("[data-repo-about-langs-bar]");
-      const legend = $("[data-repo-about-langs-legend]");
-      const section = $("[data-repo-about-langs]");
-      if (!bar || !legend || !section) return;
-      bar.innerHTML = ranked.map(([language, count]) => {
-        const color = REPO_LANGUAGE_COLORS[language] || "#8a8a8a";
-        const pct = (count / categorized) * 100;
-        return `<span title="${escapeHtml(language)}" style="width:${pct.toFixed(1)}%;background-color:${color}"></span>`;
-      }).join("");
-      legend.innerHTML = ranked.map(([language, count]) => {
-        const color = REPO_LANGUAGE_COLORS[language] || "#8a8a8a";
-        const pct = ((count / categorized) * 100).toFixed(1);
-        return `<span class="inline-flex items-center gap-1.5"><span class="h-2 w-2 rounded-full" style="background-color:${color}"></span><span class="font-medium text-foreground">${escapeHtml(language)}</span> ${pct}%</span>`;
-      }).join("");
-      section.classList.remove("hidden");
+      renderRepoAboutLanguages(Object.entries(tally).sort((a, b) => b[1] - a[1]).slice(0, 6));
     } catch (_) { /* host offline — sections stay hidden */ }
   }
 
@@ -2221,22 +2290,19 @@
         if (author) tally[author] = (tally[author] || 0) + 1;
       });
       const ranked = Object.entries(tally).sort((a, b) => b[1] - a[1]);
-      if (!ranked.length) return;
-      const section = $("[data-repo-about-contribs]");
-      const count = $("[data-repo-about-contribs-count]");
-      const list = $("[data-repo-about-contribs-list]");
-      if (!section || !count || !list) return;
-      count.textContent = String(ranked.length);
-      list.innerHTML = ranked.slice(0, 14).map(([author, commitCount]) => {
-        // Deterministic hue per author so avatars are stable across loads.
-        let hash = 0;
-        for (let i = 0; i < author.length; i += 1) hash = (hash * 31 + author.charCodeAt(i)) >>> 0;
-        const hue = hash % 360;
-        const initial = (author[0] || "?").toUpperCase();
-        return `<span title="${escapeHtml(author)} — ${commitCount} commit${commitCount === 1 ? "" : "s"}" class="flex h-8 w-8 items-center justify-center rounded-full border border-background font-mono text-[11px] font-semibold text-white shadow-sm" style="background-color:hsl(${hue} 55% 42%)">${escapeHtml(initial)}</span>`;
-      }).join("");
-      section.classList.remove("hidden");
+      renderRepoAboutContributors(
+        ranked.map(([name, commitCount]) => ({ name, commits: commitCount })),
+        ranked.length);
     } catch (_) { /* host offline — section stays hidden */ }
+  }
+
+  // The About rail's file/language/contributor sections come from /stats in one
+  // request; only when that host op is unavailable do we fall back to the slower
+  // directory walk and capped commit history.
+  async function loadRepoAboutInsights(repo) {
+    if (await loadRepoAboutStats(repo)) return;
+    loadRepoAboutFilesAndLanguages(repo);
+    loadRepoAboutContributors(repo);
   }
 
   function loadRepoAboutRail(repo) {
@@ -2244,15 +2310,13 @@
       // Private repos have no fediverse presence; live sections still apply.
       loadRepoAboutInfo(repo);
       loadRepoAboutRelease(repo);
-      loadRepoAboutFilesAndLanguages(repo);
-      loadRepoAboutContributors(repo);
+      loadRepoAboutInsights(repo);
       return;
     }
     loadRepoFediverse(repo);
     loadRepoAboutInfo(repo);
     loadRepoAboutRelease(repo);
-    loadRepoAboutFilesAndLanguages(repo);
-    loadRepoAboutContributors(repo);
+    loadRepoAboutInsights(repo);
   }
 
   // --- Owner-only "Agents" tab (adhoc #182) -----------------------------
