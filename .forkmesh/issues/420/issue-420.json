@@ -75,6 +75,18 @@
             "status": "closed",
             "ts": 1783914686823,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "4b057307-443c-498a-b9a2-890b908bf8af",
+            "sig": "2XKCRcyMNuaoFnT85uC79jKNxVFSOXnKfV7ILOcx_RUzd2R3NWG4w0VMsRSHw-9zFXH-ZZ_trB7suXdlLNV5BQ",
+            "ts": 1783915892106,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -87,6 +99,6 @@
     "startDate": 0,
     "status": "closed",
     "title": "it seems the website is loading all issues when we go to the issues page and not just the open ones - please fix that Loading issues from the live mirror...",
-    "updatedAt": 1783914686823,
+    "updatedAt": 1783915892106,
     "votes": 0
 }
