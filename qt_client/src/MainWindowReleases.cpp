@@ -286,7 +286,7 @@ void MainWindow::loadArtifactsPanel()
         runGitCapture(mirrorPath,
                       {QStringLiteral("ls-tree"), QStringLiteral("-z"),
                        QStringLiteral("--name-only"),
-                       branch + QStringLiteral(":releases")},
+                       branch + QStringLiteral(":.forkmesh/releases")},
                       &channelsOut, nullptr)) {
         for (const QByteArray &raw : channelsOut.split('\0')) {
             const QString channel = QString::fromUtf8(raw).trimmed();
@@ -2146,7 +2146,7 @@ void MainWindow::replicateReleaseArtifacts(int index)
     if (!runGitCapture(mirrorPath,
                        {QStringLiteral("ls-tree"), QStringLiteral("-z"),
                         QStringLiteral("--name-only"),
-                        branch + QStringLiteral(":releases")},
+                        branch + QStringLiteral(":.forkmesh/releases")},
                        &channelsOut, nullptr))
         return; // no .forkmesh/releases/ tree on this branch — nothing to mirror
     static const QRegularExpression sha256Re(QStringLiteral("\\A[0-9a-f]{64}\\z"));
