@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy the ForkMesh website and relay Worker to Cloudflare.
+# Deploy the ForkMesh website and relay Worker to Cloudflare
 #
 # The Worker serves the static site from public/ (Cloudflare Static Assets)
 # and hosts the API/relay/catalog routes, so a single deploy ships both.

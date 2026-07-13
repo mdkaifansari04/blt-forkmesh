@@ -2726,16 +2726,11 @@ QWidget *MainWindow::buildBreadcrumb()
     // The pill's overall width is capped on m_topMessageContainer below (which
     // also holds the Expand/Copy/✕ buttons); the label itself just fills it. The
     // text is elided to one line in flashMessage regardless.
-    // Selectable like before, plus clickable links so the integrity-pin warning can
-    // carry its "Reset integrity pin" / "Why?" actions inline (see showPinWarning).
+    // Selectable like before, plus clickable links (e.g. the "jump to agent" toast).
     m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                           Qt::LinksAccessibleByMouse);
     connect(m_topMessage, &QLabel::linkActivated, this, [this](const QString &href) {
-        if (href == QLatin1String("fm:resetpin"))
-            resetRepoPin();
-        else if (href == QLatin1String("fm:whypin"))
-            showPinExplanation();
-        else if (href.startsWith(QLatin1String("fm:agent:"))) {
+        if (href.startsWith(QLatin1String("fm:agent:"))) {
             // "agent is waiting for you" toast: jump straight to that session.
             bool ok = false;
             const int sid = href.mid(9).toInt(&ok);
@@ -2821,13 +2816,6 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageOverlayText->setWordWrap(true);
     m_topMessageOverlayText->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                                      Qt::LinksAccessibleByMouse);
-    connect(m_topMessageOverlayText, &QLabel::linkActivated, this,
-            [this](const QString &href) {
-                if (href == QLatin1String("fm:resetpin"))
-                    resetRepoPin();
-                else if (href == QLatin1String("fm:whypin"))
-                    showPinExplanation();
-            });
     overlayLayout->addWidget(m_topMessageOverlayText);
     m_topMessageOverlay->hide();
 
@@ -4874,13 +4862,14 @@ QString MainWindow::mirrorStateHash(const QString &mirrorPath) const
 // stateHash no longer matches the refs this node serves, every clone is rejected
 // with "repository failed integrity check". Only the owning, publishing node can
 // fix it (the relay verifies the maintainer key on the re-attestation), so the
-// warning — and its "Reset integrity pin" action — only surfaces there. It is
-// shown in the top-bar notification toast (see showPinWarning), not an in-page banner.
+// warning only surfaces there — as a caution triangle on the self row/dot in the
+// Mirror nodes panel (m_repoPinMismatch, see loadMirrorNodesPanel), not a
+// top-bar toast; the "Reset integrity pin" action lives in that panel's header.
 void MainWindow::refreshRepoPinBanner()
 {
     if (!m_topMessage)
         return;
-    dismissPinWarning();
+    m_repoPinMismatch = false;
     m_repoPinCheckIndex = -1;
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
@@ -4964,8 +4953,14 @@ void MainWindow::refreshRepoPinBanner()
                             // Only a non-empty pin that disagrees with our live
                             // refs blocks clones. An absent pin fails open on the
                             // relay (nothing to fix), a matching pin is healthy.
-                            if (found && !pinned.isEmpty() && pinned != localHash)
-                                showPinWarning();
+                            if (found && !pinned.isEmpty() && pinned != localHash) {
+                                m_repoPinMismatch = true;
+                                logSystem(
+                                    "Integrity pin: clones of " + owner + "/" + name +
+                                    " are being rejected — the relay's pinned hash no "
+                                    "longer matches the refs this node serves.");
+                                loadMirrorNodesPanel(); // paint the caution triangle now
+                            }
                         });
             });
     git->start("git", QStringList{"-C", mirrorPath, "for-each-ref",
@@ -5108,56 +5103,6 @@ void MainWindow::reattestStalePins()
         });
 }
 
-// Show the integrity-pin warning as a persistent top-bar toast. Mirrors the error
-// branch of flashMessage (red, stays up with Copy / dismiss affordances) but the
-// label carries the "Reset integrity pin" and "Why?" actions as inline links,
-// routed by the linkActivated handler wired in the constructor.
-void MainWindow::showPinWarning()
-{
-    if (!m_topMessage)
-        return;
-    m_loadStatusShowing = false;
-    m_pinWarningActive = true;
-    m_topMessageRaw = QStringLiteral(
-        "Clones of this repo are being rejected - the relay's integrity pin no longer "
-        "matches the refs this node serves. Reset the integrity pin to fix it.");
-    logSystem(m_topMessageRaw);
-    // Byte-escaped glyphs (✕, ·) must go through fromUtf8, not QStringLiteral, or they
-    // render as mojibake (each byte becomes its own char16_t).
-    m_topMessage->setText(QString::fromUtf8(
-        "<span style='color:#f85149'>\xE2\x9C\x95" " <b>Clones of this repo are being "
-        "rejected.</b> The integrity pin no longer matches the refs this node "
-        "serves. </span>"
-        "<a href='fm:resetpin' style='color:#58a6ff;text-decoration:none'>Reset "
-        "integrity pin</a>"
-        "<span style='color:#f85149'> \xC2\xB7" " </span>"
-        "<a href='fm:whypin' style='color:#58a6ff;text-decoration:none'>Why?</a>"));
-    // The warning carries its own inline links, so it isn't an expandable toast.
-    m_topMessageElided = false;
-    m_topMessageExpanded = false;
-    m_topMessage->setWordWrap(false);
-    m_topMessage->show();
-    if (m_topMessageContainer)
-        m_topMessageContainer->show();
-    // Persistent like an error toast: no auto-timeout, dismissible via Copy / ✕.
-    if (m_topMessageTimer)
-        m_topMessageTimer->stop();
-    if (m_topMessageOverlay)
-        m_topMessageOverlay->hide(); // drop any leftover expanded panel
-    if (m_topMessageExpand)
-        m_topMessageExpand->hide();
-    if (m_topMessageCopy)
-        m_topMessageCopy->show();
-    if (m_topMessageClose)
-        m_topMessageClose->show();
-}
-
-void MainWindow::dismissPinWarning()
-{
-    if (m_pinWarningActive)
-        dismissTopMessage();
-}
-
 // Re-publish the open repo's catalog record, which re-signs the CURRENT mirror
 // stateHash and overwrites the stale pin so the relay serves clones again.
 void MainWindow::resetRepoPin()
@@ -5171,33 +5116,11 @@ void MainWindow::resetRepoPin()
     flashMessage(QStringLiteral("Re-attesting the integrity pin…"));
     publishRepository(index, true);
     // Give the signed write a moment to land, then re-check: refreshRepoPinBanner
-    // clears the warning toast if the pin now matches, or re-shows it if not.
+    // clears the caution triangle if the pin now matches, or re-flags it if not.
     QTimer::singleShot(1500, this, [this, index] {
         if (m_repoDetailIndex == index)
             refreshRepoPinBanner();
     });
-}
-
-void MainWindow::showPinExplanation()
-{
-    QMessageBox box(this);
-    box.setIcon(QMessageBox::Information);
-    box.setWindowTitle(QStringLiteral("Repository integrity pin"));
-    box.setText(QStringLiteral(
-        "ForkMesh pins an owner-signed fingerprint of the branches and tags your "
-        "node serves."));
-    box.setInformativeText(QStringLiteral(
-        "When you publish, your node signs a hash of its current refs and the "
-        "relay pins it. The relay then refuses to serve any mirror whose live "
-        "refs don't hash to that pin — this is what stops a tampered or rolled-"
-        "back mirror from ever being cloned.\n\n"
-        "If the refs you serve have moved on (new commits, branches, or tags) but "
-        "the pinned hash wasn't refreshed, the relay rejects every clone with "
-        "\"repository failed integrity check\".\n\n"
-        "As the owner you are the source of truth: \"Reset integrity pin\" re-"
-        "signs the refs you currently serve and overwrites the stale pin, so "
-        "clones work again."));
-    box.exec();
 }
 
 void MainWindow::pushCurrentRepoUpstream()

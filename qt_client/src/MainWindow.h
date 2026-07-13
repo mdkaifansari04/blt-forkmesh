@@ -768,10 +768,10 @@ private:
     // Signed catalog-list URL (adds our viewer token so the relay also returns our
     // own private repos). Shared by fetchCatalogRepos() and refreshRepoPinBanner().
     QUrl catalogListUrl();
-    // Show/hide the "clones are being rejected" warning on the owner's node when the
-    // relay's pinned stateHash no longer matches the refs this node serves. The
-    // warning surfaces as the top-bar notification toast (with Reset / Why links),
-    // not an in-page banner.
+    // Detect when the relay's pinned stateHash no longer matches the refs the open
+    // repo's owner node actually serves ("clones are being rejected"). Rather than
+    // an intrusive top-bar toast, this just flags m_repoPinMismatch, which paints
+    // the self row/dot in the Mirror nodes panel as a caution triangle (adhoc #65).
     void refreshRepoPinBanner();
     // Periodic auto-heal: for EVERY repo this node is the source of truth for (not
     // just the open one), re-attest the relay's integrity pin when the refs we
@@ -782,16 +782,8 @@ private:
     // publish), and when the source is offline it simply never runs, so the pin
     // freezes and keeps protecting clones against a tampered mirror as before.
     void reattestStalePins();
-    // Show the integrity-pin warning in the top-bar toast, persistent (like an error
-    // toast) with clickable "Reset integrity pin" and "Why?" links.
-    void showPinWarning();
-    // Clear the top-bar toast only if it is currently the integrity-pin warning, so
-    // an unrelated toast isn't clobbered when the pin becomes healthy again.
-    void dismissPinWarning();
     // Re-attest the open repo's current refs, overwriting a stale relay pin.
     void resetRepoPin();
-    // Dialog explaining what the integrity pin is and why a reset is needed.
-    void showPinExplanation();
     // True when the open repo's branch tracks the ForkMesh relay (which serves
     // clone/fetch only, no git-receive-pack). Such repos publish by syncing the
     // served mirror from the local copy, not by a git push to the relay.
@@ -2976,7 +2968,7 @@ private:
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
     bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
     bool m_topMessageExpanded = false;    // user expanded the truncated toast to its full text
-    bool m_pinWarningActive = false;      // true while the top toast holds the integrity-pin warning
+    bool m_repoPinMismatch = false;       // true when the open repo's served refs no longer match the relay's pinned hash (adhoc #65)
 
     // Setup widgets
     QLineEdit *m_nameEdit;

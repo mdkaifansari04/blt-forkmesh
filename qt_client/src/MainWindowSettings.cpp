@@ -3470,9 +3470,6 @@ void MainWindow::flashMessage(const QString &text, bool error,
         renderTopMessageCountdown(); // repaint the "(+N more)" suffix
         return;
     }
-    // A generic toast supersedes the integrity-pin warning (it'll be re-shown on the
-    // next refreshRepoPinBanner if still stale), so this is no longer the pin toast.
-    m_pinWarningActive = false;
     m_topMessageError = error;
     m_topMessageRaw = trimmed;
     // Keep the pill compact: a long message (a multi-line git error, say) must not
@@ -3553,7 +3550,6 @@ void MainWindow::renderTopMessageCountdown()
 void MainWindow::dismissTopMessage()
 {
     m_loadStatusShowing = false;
-    m_pinWarningActive = false;
     m_topMessageExpanded = false;
     m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
     m_topMessageQueue.clear();
