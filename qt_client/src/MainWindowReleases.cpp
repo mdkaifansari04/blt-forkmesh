@@ -1489,16 +1489,23 @@ void MainWindow::loadMirrorNodesPanel()
     // source of truth attested (or the owner resets the pin). Applied to the
     // Node cell of both live-roster and catalog-backed rows.
     int pinRejectedNodes = 0;
-    auto markPinRejected = [&pinRejectedNodes](QTableWidgetItem *item) {
+    auto markPinRejected = [&pinRejectedNodes](QTableWidgetItem *item, bool isSelf) {
         ++pinRejectedNodes;
         item->setText(item->text() +
                       QString::fromUtf8("  \xE2\x9A\xA0 failing integrity pin"));
         item->setForeground(QColor("#f85149"));
-        const QString note = QString::fromUtf8(
-            "Clones from this node are being rejected: the refs it serves match "
-            "no state the source of truth attested (integrity pin). This clears "
-            "once the node syncs \xE2\x80\x94 or, if the node is already up to "
-            "date, when the owner resets the pin.");
+        const QString note =
+            isSelf
+                ? QString::fromUtf8(
+                      "Clones of this repo are being rejected: the relay's pinned "
+                      "hash no longer matches the refs this node serves. Use "
+                      "\xE2\x80\x9CReset integrity pin\xE2\x80\x9D above to re-sign "
+                      "the current refs and clear it.")
+                : QString::fromUtf8(
+                      "Clones from this node are being rejected: the refs it serves "
+                      "match no state the source of truth attested (integrity pin). "
+                      "This clears once the node syncs \xE2\x80\x94 or, if the node "
+                      "is already up to date, when the owner resets the pin.");
         item->setToolTip(item->toolTip().isEmpty()
                              ? note
                              : item->toolTip() + QStringLiteral("\n\n") + note);
@@ -1509,11 +1516,16 @@ void MainWindow::loadMirrorNodesPanel()
         if (!advert && !namedOnly)
             continue;
 
-        // Node: green/grey dot + name (+ "you") (+ source-of-truth tag).
+        // Node: green/grey dot + name (+ "you") (+ source-of-truth tag). Our own
+        // row also fails here when the relay's pin has drifted past what we
+        // serve (m_repoPinMismatch, adhoc #65) — the relay's /mirrors payload
+        // can't see that on its own, since it only knows the hash we last
+        // published, not our live refs.
         const bool online = node.self ? (m_backend != nullptr) : node.online;
         const bool integrityFailing =
             integrityByNode.value(displayNodeName(node, advert).trimmed().toLower()) ==
-            QLatin1String("rejected");
+                QLatin1String("rejected") ||
+            (node.self && m_repoPinMismatch);
         if (onlineOnly && !online)
             continue;
 
@@ -1558,7 +1570,7 @@ void MainWindow::loadMirrorNodesPanel()
             nameItem->setToolTip(nameItem->toolTip() + QStringLiteral("\nChat: ") +
                                  node.name.trimmed());
         if (integrityFailing)
-            markPinRejected(nameItem);
+            markPinRejected(nameItem, node.self);
         m_mirrorNodesTable->setItem(row, MirrorNodeColNode, nameItem);
         m_mirrorNodesTable->setItem(row, MirrorNodeColOwner,
                                     makeOwnerCell(ownerDisplay));
@@ -1801,7 +1813,7 @@ void MainWindow::loadMirrorNodesPanel()
                     ? QStringLiteral("Online now")
                     : QStringLiteral("Published mirror \xC2\xB7 not in the live room"));
             if (integrityFailing)
-                markPinRejected(nameItem);
+                markPinRejected(nameItem, false);
             m_mirrorNodesTable->setItem(row, MirrorNodeColNode, nameItem);
             m_mirrorNodesTable->setItem(row, MirrorNodeColOwner,
                                         makeOwnerCell(ownerUser));
