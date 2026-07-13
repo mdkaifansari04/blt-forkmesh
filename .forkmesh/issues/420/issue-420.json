@@ -20,6 +20,17 @@
             "title": "it seems the website is loading all issues when we go to the issues page and not just the open ones - please fix that Loading issues from the live mirror...",
             "ts": 1783911677,
             "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "and also show 25 prs and 25 issues and not 5 in the page ",
+            "id": "4daaac3a-063d-4875-888e-1658660c5eaa",
+            "sig": "OMt8kkFIrOEDYUhIJf6lYSYdij-dM4qmIYzZi5TtDtJSjsk6wHVQGbWk99PYBVpSYPRt2Otd9j817OBv8IJsDQ",
+            "ts": 1783914266799,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -32,6 +43,6 @@
     "startDate": 0,
     "status": "open",
     "title": "it seems the website is loading all issues when we go to the issues page and not just the open ones - please fix that Loading issues from the live mirror...",
-    "updatedAt": 1783911677,
+    "updatedAt": 1783914266799,
     "votes": 0
 }
