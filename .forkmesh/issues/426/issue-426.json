@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783916191297,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-426",
+            "sig": "BAw4MJTnsoceb65IykOjOMopCR8eq8Rxs_HK520-ahNwIiPINPRlwRUbdYTZhjGTfD97H1LeLf03HhRo_B2tCw",
+            "title": "have teh ability for the repo owner to delete posts from mastodon",
+            "ts": 1783916191297,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 426,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "have teh ability for the repo owner to delete posts from mastodon",
+    "updatedAt": 1783916191297,
+    "votes": 0
+}
