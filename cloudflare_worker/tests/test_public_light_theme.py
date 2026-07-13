@@ -463,6 +463,50 @@ def test_shared_footer_defines_dark_and_light_semantic_palettes():
     ):
         assert "var(--fm-footer-" in css_rule(footer_css, selector, "site-footer.css")
 
+    assert_css_declarations(
+        footer_css,
+        ".forkmesh-footer",
+        {"--fm-footer-social-border": "var(--border, #313131)"},
+        "site-footer.css",
+    )
+    assert_css_declarations(
+        footer_css,
+        "html.light .forkmesh-footer",
+        {"--fm-footer-social-border": "#d0d7de"},
+        "site-footer.css",
+    )
+    assert_css_declarations(
+        footer_css,
+        ".site-footer-social-link",
+        {"border": "1px solid var(--fm-footer-social-border)"},
+        "site-footer.css",
+    )
+    assert_css_declarations(
+        footer_css,
+        ".forkmesh-footer",
+        {
+            "--fm-footer-social-hover-border": (
+                "rgba(232, 232, 232, 0.3)"
+            )
+        },
+        "site-footer.css",
+    )
+    assert_css_declarations(
+        footer_css,
+        "html.light .forkmesh-footer",
+        {"--fm-footer-social-hover-border": "#8c959f"},
+        "site-footer.css",
+    )
+    assert_css_declarations(
+        footer_css,
+        ".site-footer-social-link:hover",
+        {
+            "border-color": "var(--fm-footer-social-hover-border)",
+            "color": "var(--fm-footer-fg)",
+        },
+        "site-footer.css",
+    )
+
 
 def test_landing_page_remains_explicitly_dark():
     assert '<html lang="en" class="dark h-full scroll-smooth">' in read(
