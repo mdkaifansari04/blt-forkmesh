@@ -414,3 +414,57 @@ def test_shared_family_styles_define_light_palettes():
         assert_css_declarations(css, "html.light", contract["light"], name)
         for selector, expected in contract["rules"].items():
             assert_css_declarations(css, selector, expected, name)
+
+
+def test_shared_footer_defines_dark_and_light_semantic_palettes():
+    footer_css = read(PUBLIC / "site-footer.css")
+
+    for token in (
+        "--fm-footer-panel",
+        "--fm-footer-fg",
+        "--fm-footer-muted",
+        "--fm-footer-border",
+        "--fm-footer-wordmark",
+        "--fm-footer-glow",
+    ):
+        assert token in footer_css
+
+    light_override = css_rule(footer_css, "html.light .forkmesh-footer", "site-footer.css")
+    expected_light = {
+        "--fm-footer-panel": "#ffffff",
+        "--fm-footer-fg": "#1f2328",
+        "--fm-footer-muted": "#656d76",
+        "--fm-footer-border": "#d0d7de",
+        "--fm-footer-wordmark": "#eef2f7",
+        "--fm-footer-glow": "color-mix(in srgb, #1f2328 72%, #ffffff)",
+    }
+    assert_css_declarations(
+        footer_css,
+        "html.light .forkmesh-footer",
+        expected_light,
+        "site-footer.css",
+    )
+    for token in (
+        "--fm-footer-panel",
+        "--fm-footer-fg",
+        "--fm-footer-muted",
+        "--fm-footer-border",
+        "--fm-footer-wordmark",
+        "--fm-footer-glow",
+    ):
+        assert token in light_override
+
+    for selector in (
+        ".site-footer-panel",
+        ".site-footer-brand-copy",
+        ".site-footer-column-title",
+        ".site-footer-column-link",
+        ".site-footer-copyright",
+    ):
+        assert "var(--fm-footer-" in css_rule(footer_css, selector, "site-footer.css")
+
+
+def test_landing_page_remains_explicitly_dark():
+    assert '<html lang="en" class="dark h-full scroll-smooth">' in read(
+        PUBLIC / "index.html"
+    )

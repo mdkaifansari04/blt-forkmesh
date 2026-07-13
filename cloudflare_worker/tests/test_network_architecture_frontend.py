@@ -77,6 +77,20 @@ def test_network_command_center_styles_exist():
         assert marker in STYLES
 
 
+def test_network_command_center_surfaces_use_theme_tokens():
+    network_block = STYLES[
+        STYLES.index("/* ===== Network command center ===== */"):
+        STYLES.index("/* ===== Doc content ===== */")
+    ]
+
+    assert "#111212" not in network_block
+    assert "rgba(9, 9, 9" not in network_block
+    assert "var(--card)" in network_block
+    assert "var(--card-soft)" in network_block
+    assert "var(--border)" in network_block
+    assert "color-mix(in srgb, var(--foreground)" in network_block
+
+
 def test_network_stats_bindings_update_all_metric_instances():
     for marker in (
         'setText("#network-clients, [data-network-clients]"',
