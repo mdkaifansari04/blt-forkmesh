@@ -2067,9 +2067,10 @@ void MainWindow::updateUserAvatarButton()
 void MainWindow::refreshIssueComposerAvatar()
 {
     if (m_issueComposerAvatar) {
-        // Show this node's avatar next to the comment composer so it's clear who is
-        // about to post.
-        const QPixmap pm = roundedAvatar(effectiveAvatar(), 36);
+        // Show the user's avatar next to the comment composer so it matches the
+        // "Commenting as <user>" label (and the identity a comment is filed under)
+        // rather than the node's badge.
+        const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 36);
         if (pm.isNull()) {
             m_issueComposerAvatar->setPixmap(QPixmap());
             m_issueComposerAvatar->setText("FM");
@@ -2103,7 +2104,9 @@ QWidget *MainWindow::makeComposerIdentity(QLabel **outAvatar, const QString &ver
     avatar->setAlignment(Qt::AlignCenter);
     avatar->setFixedSize(28, 28);
     avatar->setScaledContents(true);
-    const QPixmap pm = roundedAvatar(effectiveAvatar(), 28);
+    // The composer posts under the user identity (topBarUserName), so show the
+    // matching user avatar here instead of the node badge.
+    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 28);
     if (!pm.isNull()) {
         avatar->setText(QString());
         avatar->setPixmap(pm);
