@@ -613,6 +613,27 @@
 
   function handlePlain(plain) {
     const type = plain.type;
+    // Mirror-mesh signals ride the same encrypted room as chat: a source node
+    // broadcasts "mirror-update" the instant its repo advances from the source
+    // of truth, and every mirror node replies "mirror-synced" once it has
+    // pulled that commit. Re-broadcast both as a window event so the dashboard's
+    // open repo can re-fetch host health live instead of waiting for a manual
+    // reload — this is what makes the Mirrors tab show nodes converge instantly.
+    // These frames are stamped accountKind "node", so handle them before the
+    // user-only guard below (which is meant for chat surfaces).
+    if (type === "mirror-update" || type === "mirror-synced") {
+      try {
+        window.dispatchEvent(new CustomEvent("forkmesh:mirror-signal", {
+          detail: {
+            kind: type,
+            repo: String(plain.repo || "").slice(0, 200),
+            commit: String(plain.commit || "").slice(0, 64),
+            sender: String(plain.sender || "").slice(0, MAX_NAME),
+          },
+        }));
+      } catch (_) {}
+      return;
+    }
     if (type !== "history" && plain.accountKind !== "user") return;
     const sender = String(plain.sender || "peer").slice(0, MAX_NAME);
     if (type === "chat") {

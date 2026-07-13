@@ -8307,6 +8307,46 @@
     }
   }
 
+  // Live convergence for the open repo's Mirrors tab. The chat socket
+  // (dashboard-chat.js) re-broadcasts the mirror-mesh's "mirror-update" /
+  // "mirror-synced" frames as a window event the moment a source of truth
+  // advances and each node pulls it. When one names the repo we're viewing,
+  // re-fetch host health so the nodes visibly converge without a manual reload.
+  let liveMirrorRefreshTimer = null;
+  let liveMirrorConfirmTimer = null;
+  function refreshOpenRepoMirrors() {
+    const repo = state.selectedRepo;
+    // Only meaningful while the Mirrors panel is actually mounted.
+    if (repo && document.querySelector("[data-repo-mirrors]")) loadRepoMirrors(repo);
+  }
+  function onLiveMirrorSignal(event) {
+    const repo = state.selectedRepo;
+    if (!repo) return;
+    const target = String(event?.detail?.repo || "").trim().toLowerCase();
+    if (!target) return;
+    // The frame carries "<catalog-owner>/<repo>". Match the open repo by its
+    // full key, or fall back to the repo-name tail (older/renamed peers).
+    const key = repoKey(repo).toLowerCase();
+    const name = String(repo.name || "").trim().toLowerCase();
+    const tail = target.slice(target.lastIndexOf("/") + 1);
+    if (target !== key && !(name && tail === name)) return;
+    // Trailing-coalesce a burst of per-node acks into a single refetch, then
+    // confirm once more after the publishing nodes' catalog records propagate
+    // (the /mirrors payload is catalog-derived and lags the room frame a beat).
+    if (liveMirrorRefreshTimer) clearTimeout(liveMirrorRefreshTimer);
+    liveMirrorRefreshTimer = setTimeout(() => {
+      liveMirrorRefreshTimer = null;
+      refreshOpenRepoMirrors();
+      if (!liveMirrorConfirmTimer) {
+        liveMirrorConfirmTimer = setTimeout(() => {
+          liveMirrorConfirmTimer = null;
+          refreshOpenRepoMirrors();
+        }, 5000);
+      }
+    }, 1200);
+  }
+  window.addEventListener("forkmesh:mirror-signal", onLiveMirrorSignal);
+
   function renderRepoRelease(repo, release, downloads) {
     const tag = String(release.tag || "untagged");
     const channel = String(release.channel || "");
