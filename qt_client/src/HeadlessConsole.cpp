@@ -64,6 +64,10 @@ void HeadlessConsole::printHelp()
              "  repos               list local repositories\n"
              "  mirrors             repos this node mirrors / serves + cpu & memory\n"
              "  sync                sync mirrors + poll owned inboxes now\n"
+             "  claude-auth ...     status | export [path] | import <path> —\n"
+             "                      move an owner's Claude Code login onto this host\n"
+             "                      so it can take agent requests (use - for stdout/\n"
+             "                      stdin instead of a file)\n"
              "  e2e                 run the end-to-end mesh-loop self-test\n"
              "                      (publish->browse->clone->issue->agent PR->merge)\n"
              "  setup <name> [sol]  pick a node name and connect (first run)\n"
@@ -158,6 +162,8 @@ void HeadlessConsole::dispatch(const QString &raw)
     } else if (cmd == QLatin1String("sync")) {
         m_window->headlessSyncNow();
         m_out << "sync triggered" << Qt::endl;
+    } else if (cmd == QLatin1String("claude-auth")) {
+        printLines(m_window->headlessClaudeAuth(args));
     } else if (cmd == QLatin1String("e2e")) {
         runMeshLoopSelfTest();
     } else if (cmd == QLatin1String("setup") || cmd == QLatin1String("connect")) {

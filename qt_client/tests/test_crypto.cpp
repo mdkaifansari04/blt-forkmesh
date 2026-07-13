@@ -1,6 +1,7 @@
 #include "../src/ActionFile.h"
 #include "../src/AgentStore.h"
 #include "../src/BackoffNetworkAccessManager.h"
+#include "../src/ClaudeAccountTransfer.h"
 #include "../src/CommitCommentStore.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
@@ -2461,6 +2462,79 @@ int main(int argc, char *argv[])
             RepoSecurity::scanManifest(input, QStringLiteral("does-not-exist.json"));
         check(missingRescan.dependencyCount == 0 && missingRescan.findings.isEmpty(),
               "single-manifest rescan on a missing/untracked path is a safe no-op");
+    }
+
+    {
+        // Claude Code account transfer: bundle round-trips and installs onto a
+        // host's ~/.claude/.credentials.json (issue: move the owner's login onto
+        // hosts so they can take agent requests).
+        QJsonObject oauth;
+        oauth.insert("accessToken", "tok-secret-1234");
+        oauth.insert("refreshToken", "refresh-abcd");
+        oauth.insert("subscriptionType", "max");
+        oauth.insert("expiresAt", double(4102444800000LL));
+
+        const QString encoded =
+            ClaudeAccountTransfer::encodeBundle(oauth, "sk-ant-key", "owner-node");
+        check(!encoded.contains("tok-secret-1234"),
+              "encoded bundle is base64, not plaintext token");
+
+        QJsonObject roundOauth;
+        QString roundKey, err;
+        check(ClaudeAccountTransfer::parseBundle(encoded.toUtf8(), roundOauth,
+                                                 roundKey, err),
+              "base64 bundle parses back");
+        check(roundOauth.value("accessToken").toString() == "tok-secret-1234" &&
+                  roundKey == "sk-ant-key",
+              "bundle round-trips the oauth token and API key");
+
+        // Raw JSON (an exported keyfile) is accepted too.
+        const QByteArray rawJson =
+            ClaudeAccountTransfer::buildBundle(oauth, "sk-ant-key", "owner-node");
+        QJsonObject jsonOauth;
+        QString jsonKey, jsonErr;
+        check(ClaudeAccountTransfer::parseBundle(rawJson, jsonOauth, jsonKey,
+                                                 jsonErr) &&
+                  jsonOauth.value("accessToken").toString() == "tok-secret-1234",
+              "raw-JSON bundle parses too");
+
+        // Junk / foreign JSON is rejected.
+        QJsonObject junkOauth;
+        QString junkKey, junkErr;
+        check(!ClaudeAccountTransfer::parseBundle("{\"kind\":\"nope\"}", junkOauth,
+                                                  junkKey, junkErr),
+              "a non-ForkMesh bundle is rejected");
+
+        // Install writes ~/.claude/.credentials.json under a temp home and
+        // preserves any sibling keys already there.
+        QTemporaryDir homeDir;
+        check(homeDir.isValid(), "temp home for install test");
+        QDir().mkpath(homeDir.path() + "/.claude");
+        QFile pre(homeDir.path() + "/.claude/.credentials.json");
+        check(pre.open(QIODevice::WriteOnly), "seed an existing creds file");
+        pre.write("{\"other\":\"keep-me\"}");
+        pre.close();
+
+        QString installErr;
+        check(ClaudeAccountTransfer::installOauth(homeDir.path(), roundOauth,
+                                                  installErr),
+              "installOauth writes credentials.json");
+        check(ClaudeAccountTransfer::hasCredentials(homeDir.path()),
+              "installed home now reports a Claude Code login");
+        QFile post(homeDir.path() + "/.claude/.credentials.json");
+        check(post.open(QIODevice::ReadOnly), "read back installed creds");
+        const QJsonObject installed =
+            QJsonDocument::fromJson(post.readAll()).object();
+        post.close();
+        check(installed.value("claudeAiOauth").toObject().value("accessToken")
+                      .toString() == "tok-secret-1234",
+              "installed creds carry the transferred token");
+        check(installed.value("other").toString() == "keep-me",
+              "install merges rather than clobbering sibling keys");
+
+        const QString desc = ClaudeAccountTransfer::describeOauth(oauth);
+        check(!desc.contains("tok-secret-1234") && desc.contains("1234"),
+              "describeOauth masks the token to its tail");
     }
 
     if (failures) {
