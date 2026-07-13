@@ -1263,6 +1263,11 @@ def test_dashboard_repository_issue_and_pull_tabs_paginate_records_at_the_bottom
     assert "renderRepoRecordList(items, config, kind)" in collection_loader
     assert "const page = state.repoCollectionPages[kind] || 1;" in record_renderer
     assert "loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);" in click_handler
+    # Issue #420: paginating the Issues list must keep the open/closed/all filter
+    # (renderRepoIssues) instead of re-rendering the raw, unfiltered record list.
+    assert 'if (kind === "issues") renderRepoIssues();' in click_handler
+    # Issue #420: 25 records per page (not 5) for issues and pulls.
+    assert "const REPO_COLLECTION_PAGE_SIZE = 25;" in dashboard_js
 
 
 def test_dashboard_repository_record_chips_and_sidebar_links_use_neutral_github_like_colors():
