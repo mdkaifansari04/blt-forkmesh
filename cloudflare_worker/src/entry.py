@@ -386,9 +386,10 @@ from events import (  # noqa: E402
 # sibling module the test suite imports directly. Only the WebCrypto RSA glue,
 # the D1-backed actor/follower/delivery state and the HTTP handlers live below.
 import activitypub as ap  # noqa: E402
-# Pull-request badge SVG (adhoc #44): a pure, js-free generator for the visual
-# "fingerprint" attached to federated PR-opened notes.
-from pull_badge import patch_file_stats, pull_badge_svg  # noqa: E402
+# Pull-request badge (adhoc #44/#83): a pure, js-free generator for the visual
+# "fingerprint" attached to federated PR-opened notes. The federated copy is a
+# square PNG — fediverse clients won't preview an SVG attachment.
+from pull_badge import patch_file_stats, pull_badge_png  # noqa: E402
 
 # Social-preview (OpenGraph) info-card renderer — pure-stdlib PNG drawing,
 # another js-free sibling module the test suite imports directly.
@@ -10081,7 +10082,7 @@ async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
     # markdown (there's no separate upload channel); pull them out so they
     # federate as real Image attachments instead of unrenderable base64 text.
     clean_body, images = ap.extract_body_images(body or "")
-    # Caller-supplied media (the generated pull-request badge SVG, adhoc #44)
+    # Caller-supplied media (the generated pull-request badge PNG, adhoc #44)
     # leads the attachment list so it becomes the visible preview.
     images = [img for img in (extra_images or []) if img] + images
     text = ap.event_note_text(
@@ -13010,13 +13011,12 @@ async def pulls_handler(env, request, owner, repo):
         try:
             stats = patch_file_stats(pull.get("patch", "") or "")
             if stats:
-                svg = pull_badge_svg(
+                png = pull_badge_png(
                     title, clean_string(
                         pull.get("authorName", "") or pull.get("author", ""),
                         MAX_NODE_NAME), stats)
-                badge = {"mediaType": "image/svg+xml",
-                         "data": base64.b64encode(
-                             svg.encode("utf-8")).decode("ascii")}
+                badge = {"mediaType": "image/png",
+                         "data": base64.b64encode(png).decode("ascii")}
         except Exception:
             badge = None
         await _best_effort_inbox_side_effect(_ap_publish_repo_event(
