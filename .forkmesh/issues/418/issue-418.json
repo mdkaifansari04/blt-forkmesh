@@ -44,6 +44,17 @@
             "sig": "wUlOAnaKdJlghFBFtwLqUyup2z-D6QQOoscjhyfAkqhza7_rbVCZnyB52lqP-xkv7lJndNCkTCgnHkkIYyq3Ag",
             "ts": 1783914333292,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-418-when-we-first-run-the-install-script-it-seems-to\".",
+            "id": "b70fb551-96d3-4275-b9c8-d39a5e989f8e",
+            "sig": "xr7rrodPXKmNsJ9Ud_44Uje28cy_Cye6xQ7IZKr6LnW9NKBaM3LY-Ddn71jj5pMQX7f4rAd1eS596fkZJSmxBg",
+            "ts": 1783914596802,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -56,6 +67,6 @@
     "startDate": 0,
     "status": "open",
     "title": "when we first run the install script it seems to hang on this part \"==>   git: already present\n\" - lets show more detail of what is happening so we know",
-    "updatedAt": 1783914333292,
+    "updatedAt": 1783914596802,
     "votes": 0
 }
