@@ -479,8 +479,8 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=53b09028c147" defer></script>
-    <script src="/dashboard-chat.js?v=bef3d7dac49e" defer></script>
+    <script src="/dashboard.js?v=28cd49043068" defer></script>
+    <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="network">
     <div data-dashboard-root data-dashboard-section="network" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
@@ -636,6 +636,17 @@
           >
             <i data-lucide="shield-alert" class="h-3.5 w-3.5"></i>
             <span>Admin</span>
+          </a>
+
+          <a
+            data-node-reconnect
+            href="/dashboard/settings"
+            aria-label="Reconnect a node to this account"
+            title="No node is connected to drain this account — link one to sync issues, chats and more"
+            class="hidden ml-0.5 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-600 hover:bg-amber-500/20 transition-colors focus:outline-none focus:ring-1 focus:ring-amber-500/30 dark:text-amber-400"
+          >
+            <i data-lucide="plug-zap" class="h-3.5 w-3.5"></i>
+            <span>Reconnect node</span>
           </a>
 
           <a

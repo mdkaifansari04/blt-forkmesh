@@ -208,6 +208,15 @@
     });
   }
 
+  function nodeNeedsReconnect(session) {
+    // A guest has nothing to reconnect; a node-kind session IS the node.
+    const signedIn = Boolean(session && (session.nodeName || session.email));
+    if (!signedIn || session.kind === "node") return false;
+    // Only flag when the account affirmatively has zero linked nodes. An absent
+    // list means "unknown" (older payload), not "none" — stay quiet then.
+    return Array.isArray(session.nodes) && session.nodes.length === 0;
+  }
+
   function renderProfile(session) {
     const name = session?.nodeName || session?.email || "My Profile";
     const nameEl = $("[data-dashboard-profile-name]");
@@ -241,6 +250,17 @@
       // Worker env yet) would otherwise show a button that links to "#".
       adminButton.classList.toggle("hidden", !adminUrl);
       adminButton.href = adminUrl || "#";
+    }
+    // Reconnect affordance next to the avatar: a signed-in user account with no
+    // node linked has nothing authenticated to drain its issues/chats/etc. to a
+    // desktop, so surface the re-link flow (the Settings > Nodes claim/link
+    // panel) instead of leaving the data stuck online. Shown only when we can
+    // affirmatively tell there are zero linked nodes (session.nodes present and
+    // empty) for a user-like account — never for a node session or when the
+    // link state is simply unknown, to avoid a false alarm.
+    const reconnect = $("[data-node-reconnect]");
+    if (reconnect) {
+      reconnect.classList.toggle("hidden", !nodeNeedsReconnect(session));
     }
     renderProfileModal(session);
     renderProfilePage(session);
