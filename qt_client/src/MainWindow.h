@@ -453,6 +453,10 @@ public:
     // streams to the terminal via the [restart +Nms] log lines.
     void headlessUpdateRestart();
     QStringList headlessStatusLines() const;
+    // `claude-auth status|export [path]|import <path>` from the headless console:
+    // move this owner's Claude Code login (and configured Claude API key) onto a
+    // host so it can service "start an agent" requests. Returns output lines.
+    QStringList headlessClaudeAuth(const QStringList &args);
     QStringList headlessRosterLines() const;
     QStringList headlessRepoLines() const;
     QStringList headlessMirrorLines() const;
@@ -2508,7 +2512,12 @@ private:
     // Start a new ad-hoc agent for a repo from a website "new agent" prompt
     // (adhoc #266): the top-of-list web composer queues these with agentId "new".
     void startWebNewAgentForRepo(const RepositoryRecord &repo, const QString &task,
-                                 const QString &providerOverride = QString());
+                                 const QString &providerOverride = QString(),
+                                 const QStringList &images = QStringList());
+    // Decode pasted/attached screenshot data: URLs queued with a website "new
+    // agent" prompt (adhoc #78) to image files on disk; returns their paths.
+    QStringList saveWebAgentImages(const RepositoryRecord &repo,
+                                   const QStringList &images);
     // Private-repo collaborator ACL (issue #9): share/unshare a private repo with
     // other accounts and list current collaborators.
     QUrl sharesApiUrl(const RepositoryRecord &repo) const;
@@ -2596,6 +2605,9 @@ private:
     // #368: identity key backup/export/import UI + first-run "back up" nag.
     void backUpIdentityKey();
     void refreshIdentityBackupNag();
+    // Export/import the Claude Code account (claude.ai OAuth login + Claude API
+    // key) so a host node can run "claude-code" agents as this owner.
+    void transferClaudeCodeAccount();
     void chooseAvatar();
     void setSettingsAvatar(const QByteArray &pngData);
     // Effective avatar bytes: the uploaded/generated one, or a deterministic
