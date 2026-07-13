@@ -7511,6 +7511,24 @@ void MainWindow::performRelaySync()
                 drainAgentPrompts();
                 return;
             }
+            if (status == 401 || status == 403) {
+                // The relay rejected this node's signed drain: its key is not one
+                // the account currently trusts (never linked, or a key the relay
+                // has since dropped). This used to fail totally silently, so a
+                // node just "stopped syncing" with no clue — issues/chats/etc.
+                // piled up online and never arrived. Surface it once, pointing at
+                // the re-link flow, instead of only backing off.
+                static bool s_relaySyncAuthWarned = false;
+                if (!s_relaySyncAuthWarned) {
+                    s_relaySyncAuthWarned = true;
+                    logSystem(QStringLiteral(
+                                  "The relay rejected this node's sign-in (HTTP "
+                                  "%1), so new issues, chats and other updates "
+                                  "can't sync down. Re-link this node to your "
+                                  "account from Settings to reconnect.")
+                                  .arg(status));
+                }
+            }
             m_pollBackoff.noteFailure(QStringLiteral("relaySync"),
                                       QDateTime::currentMSecsSinceEpoch());
             return;
