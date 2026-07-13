@@ -45,6 +45,17 @@
             "sig": "bhliPX_NAgaAJZfUlSTAO7-suX_wpqFrhwtHFre722YmffP4ldyeABzY5ORy1IfP4Kyblihms2JCKxmdso63Ag",
             "ts": 1783914352355,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-425-add-a-button-here-to-resize-to-a-minimal-screen\".",
+            "id": "dc1c3660-b26b-49e2-8d1f-54326e73eeb7",
+            "sig": "6MgBK5JW9yxASDfQsQKUxszHS_l0NfAm43tAf40fwnMJUhIt44cX54MZDV7wg7SsPoCPXmkh10M7iM485q41CQ",
+            "ts": 1783914945050,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -57,6 +68,6 @@
     "startDate": 0,
     "status": "open",
     "title": "add a button here to resize to a minimal screen size that is more common",
-    "updatedAt": 1783914352355,
+    "updatedAt": 1783914945050,
     "votes": 0
 }
