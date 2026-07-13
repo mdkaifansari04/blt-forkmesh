@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783911909,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783911909",
+            "sig": "1DJJL-7jMH-5-IYGnjaU9mvNizIaXbpoNl028ZqnJzn-oPUvdQ8kBljaNAu8aC5Lz1kuRXjBso84M4IggbFBBg",
+            "title": "make the round trip sync with latest commits to other nodes instant, send a signal that the commit is different and have the nodes update right away and report back right away that it was done",
+            "ts": 1783911909,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 424,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "make the round trip sync with latest commits to other nodes instant, send a signal that the commit is different and have the nodes update right away and report back right away that it was done",
+    "updatedAt": 1783911909,
+    "votes": 0
+}
