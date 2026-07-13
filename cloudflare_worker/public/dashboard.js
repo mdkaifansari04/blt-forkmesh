@@ -2183,7 +2183,7 @@
         index += 1;
         const key = profileContributionHistoryKey(repo, year);
         try {
-          const data = await fetchJson(repoLiveUrl(repo, "history"));
+          const data = await fetchRepoJson(repoLiveUrl(repo, "history"));
           const commits = Array.isArray(data.commits) ? data.commits : [];
           state.profileContributions.liveHistory[key] = commits;
           writeProfileHistoryCache(repo, commits);
@@ -3946,7 +3946,7 @@
     try {
       while (queue.length && files.length < MAX_REPO_FILE_FINDER_RESULTS && ((Date.now() - started) / 1000) < MAX_REPO_FILE_FINDER_SECONDS) {
         const path = queue.shift();
-        const data = await fetchJson(repoLiveUrl(repo, "tree", { path }));
+        const data = await fetchRepoJson(repoLiveUrl(repo, "tree", { path }));
         const entries = Array.isArray(data.entries) ? data.entries.slice() : [];
         entries.sort((a, b) => {
           if (a.type !== b.type) return a.type === "tree" ? -1 : 1;
@@ -4748,7 +4748,13 @@
     renderRepoExplorer(repo, path, []);
     try {
       const requestedAt = performance.now();
-      const data = await fetchJson(repoLiveUrl(repo, "tree", { path }));
+      // A live-mirror read: fetch fresh (fetchRepoJson, no-store) like every
+      // other tunnel surface (issues/pulls/releases/README), never the browser-
+      // cached, account-scoped fetchJson. The router round-robins browse across
+      // whichever mirrors are online, so a cached copy could pin the page to a
+      // node that has since gone offline — the "served by mirror" view must
+      // reflect the mirror that actually answered this request.
+      const data = await fetchRepoJson(repoLiveUrl(repo, "tree", { path }));
       renderRepoServedBy(data.servedBy, performance.now() - requestedAt);
       updateRepoCommitSummary(data.latestCommit, repo);
       const entries = Array.isArray(data.entries) ? data.entries.slice() : [];
@@ -4845,7 +4851,9 @@
         if (renderRepoPreview(viewer, repo, path, {})) return;
       }
       const requestedAt = performance.now();
-      const data = await fetchJson(repoLiveUrl(repo, "blob", { path }));
+      // Fresh live-mirror read (see loadRepositoryTree): the blob must come from
+      // the mirror serving this request, not a stale browser cache.
+      const data = await fetchRepoJson(repoLiveUrl(repo, "blob", { path }));
       renderRepoServedBy(data.servedBy, performance.now() - requestedAt);
       if (renderRepoPreview(viewer, repo, path, data)) return;
       const content = data.content || data.text || "";
@@ -6797,7 +6805,7 @@
 
   async function loadRepoAboutContributors(repo) {
     try {
-      const data = await fetchJson(repoLiveUrl(repo, "history"));
+      const data = await fetchRepoJson(repoLiveUrl(repo, "history"));
       const commits = Array.isArray(data?.commits) ? data.commits : [];
       if (!commits.length || !repoAboutStillCurrent(repo)) return;
       const tally = {};
@@ -7593,7 +7601,7 @@
     if (!container) return;
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading commits from the live mirror...")}</div>`;
     try {
-      const data = await fetchJson(repoLiveUrl(repo, "history"));
+      const data = await fetchRepoJson(repoLiveUrl(repo, "history"));
       const commits = Array.isArray(data.commits) ? data.commits : [];
       if (!commits.length) {
         container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No commits are available from this live mirror yet.</div>';
@@ -7680,7 +7688,7 @@
     if (!container || !repo || !hash) return;
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading commit from the live mirror...")}</div>`;
     try {
-      const data = await fetchJson(repoLiveUrl(repo, "commit", { path: hash }));
+      const data = await fetchRepoJson(repoLiveUrl(repo, "commit", { path: hash }));
       state.repoCommitDetail = { repo, data };
       container.innerHTML = renderRepoCommitDetail(repo, data);
     } catch (_) {
@@ -7948,7 +7956,7 @@
     if (!container || !repo) return;
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading insights from the live mirror...")}</div>`;
     try {
-      const data = await fetchJson(repoLiveUrl(repo, "history"));
+      const data = await fetchRepoJson(repoLiveUrl(repo, "history"));
       const commits = Array.isArray(data.commits) ? data.commits : [];
       container.innerHTML = renderRepoInsights(repo, commits);
     } catch (_) {
@@ -8176,7 +8184,7 @@
     const key = repoKey(repo);
     if (state.repoBranches[key]?.loaded) return;
     try {
-      const data = await fetchJson(`${repoApiBase(repo)}/branches`);
+      const data = await fetchRepoJson(`${repoApiBase(repo)}/branches`);
       const branches = (Array.isArray(data.branches) ? data.branches : [])
         .map(normalizeRepoBranch)
         .filter(Boolean);

@@ -342,7 +342,7 @@
     if (!container) return;
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading commits from the live mirror...")}</div>`;
     try {
-      const data = await fetchJson(repoLiveUrl(repo, "history"));
+      const data = await fetchRepoJson(repoLiveUrl(repo, "history"));
       const commits = Array.isArray(data.commits) ? data.commits : [];
       if (!commits.length) {
         container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No commits are available from this live mirror yet.</div>';
@@ -429,7 +429,7 @@
     if (!container || !repo || !hash) return;
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading commit from the live mirror...")}</div>`;
     try {
-      const data = await fetchJson(repoLiveUrl(repo, "commit", { path: hash }));
+      const data = await fetchRepoJson(repoLiveUrl(repo, "commit", { path: hash }));
       state.repoCommitDetail = { repo, data };
       container.innerHTML = renderRepoCommitDetail(repo, data);
     } catch (_) {
@@ -697,7 +697,7 @@
     if (!container || !repo) return;
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading insights from the live mirror...")}</div>`;
     try {
-      const data = await fetchJson(repoLiveUrl(repo, "history"));
+      const data = await fetchRepoJson(repoLiveUrl(repo, "history"));
       const commits = Array.isArray(data.commits) ? data.commits : [];
       container.innerHTML = renderRepoInsights(repo, commits);
     } catch (_) {
@@ -925,7 +925,7 @@
     const key = repoKey(repo);
     if (state.repoBranches[key]?.loaded) return;
     try {
-      const data = await fetchJson(`${repoApiBase(repo)}/branches`);
+      const data = await fetchRepoJson(`${repoApiBase(repo)}/branches`);
       const branches = (Array.isArray(data.branches) ? data.branches : [])
         .map(normalizeRepoBranch)
         .filter(Boolean);
