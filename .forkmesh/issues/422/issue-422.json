@@ -55,6 +55,15 @@
             "sig": "digAa2pg8W9ul9VQng3WzcHudwYMgbaWlkKwcmGkDiw7B5wulY-yCS8t3wFjPhZDgvuU1sRIgdcNxbPf-u4CBw",
             "ts": 1783914925033,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "f21802ed-e9b5-46db-875c-55cfb883b3d3",
+            "sig": "SjVdXPmsMvAvTE9j6bXnWHHSxQU182gxQoikwHPsZMA9p9JXfDEdiaywBXB6FijZBuoXAxPhv-sXXYIM9V2dDA",
+            "status": "closed",
+            "ts": 1783914925103,
+            "type": "status"
         }
     ],
     "labels": [
@@ -65,8 +74,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "fix the color of the diffs on the commits page on web",
-    "updatedAt": 1783914925033,
+    "updatedAt": 1783914925103,
     "votes": 0
 }
