@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.14 (2026-07-04)"
+INSTALLER_VERSION="0.12.15 (2026-07-12)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -195,8 +195,11 @@ resolve_install_node() {
   esac
   source_url="${FORKMESH_INSTALL_SOURCE_URL}${sep}_=$(date +%s)"
   dbg "Querying install source: $source_url"
-  if ! body="$(curl -sSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$source_url")"; then
-    die "Could not check for an online ForkMesh mirror. Please try again shortly."
+  # A bounded timeout so an unreachable mainnode fails loudly instead of the
+  # install appearing to hang forever with no output (issue #418) — curl has no
+  # timeout by default and can sit for minutes on a dead connection.
+  if ! body="$(curl -sSL -m 20 -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$source_url")"; then
+    die "Could not check for an online ForkMesh mirror (timed out after 20s querying $FORKMESH_INSTALL_SOURCE_URL). Please try again shortly."
   fi
   dbg "install-source response: $body"
   # Prefer the ranked "nodes":[ ... ] list (newer mainnode); fall back to the
@@ -732,6 +735,11 @@ install_prebuilt_release() {
   sums=".forkmesh/releases/${RELEASE_CHANNEL}/SHASUMS256.txt"
   manifest=".forkmesh/releases/${RELEASE_CHANNEL}/release.json"
   for repo in "${REPO_CANDIDATES[@]}"; do
+    # The sparse-checkout clone below is silent (redirected to /dev/null so a
+    # missing manifest isn't logged as an error) and can take a while over a
+    # slow mirror, so announce the attempt here — otherwise the install appears
+    # to hang with no output between "Resolving..." and "Downloading..." (#418).
+    say "Checking $repo for a prebuilt release…"
     # New model: manifest checksum + content-addressed download (+ verify). Fetch
     # release.json in the same checkout so the blob can be requested from the repo
     # that staged it — not the mirror that happened to serve this clone.
