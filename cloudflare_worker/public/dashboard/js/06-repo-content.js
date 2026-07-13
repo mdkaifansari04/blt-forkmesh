@@ -185,7 +185,7 @@
         const date = formatTimeAgo(entry.date || entry.updatedAt || entry.committedAt || entry.commitDate || entry.mtime || repo.updatedAt || repo.lastSync);
         return `
             <button data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-2.5 text-left text-sm hover:bg-secondary/40 transition-colors sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
-              <i data-lucide="${isTree ? "folder" : "file"}" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
+              ${fileIconHtml(entry, "h-4 w-4 shrink-0")}
               <span class="min-w-0 truncate font-medium text-foreground">${escapeHtml(entry.name || "entry")}</span>
               <span class="hidden min-w-0 truncate text-xs text-muted-foreground sm:block">${escapeHtml(message)}</span>
               <span class="shrink-0 text-xs text-muted-foreground font-mono">${escapeHtml(date)}</span>
@@ -818,11 +818,11 @@
   }
 
   function diffRowClass(type) {
-    if (type === "add") return "bg-emerald-950/40 text-emerald-300";
-    if (type === "del") return "bg-red-950/35 text-red-300";
-    if (type === "hunk") return "bg-primary/10 text-primary";
+    if (type === "add") return "bg-primary/15 text-primary";
+    if (type === "del") return "bg-destructive/15 text-destructive";
+    if (type === "hunk") return "bg-accent/10 text-accent";
     if (type === "meta") return "text-muted-foreground";
-    return "text-zinc-300";
+    return "text-foreground";
   }
 
   function renderDiffFileRows(rows) {

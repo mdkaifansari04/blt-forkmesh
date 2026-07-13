@@ -1056,7 +1056,8 @@ private:
                              const QString &headerHtml, const QString &body,
                              const QString &accent = QString(),
                              const QString &copyLink = QString(),
-                             const QString &authorId = QString());
+                             const QString &authorId = QString(),
+                             const std::function<void()> &onDelete = {});
     QWidget *buildRepoSecurityTab();
     QWidget *buildRepoQualityTab();
     QWidget *buildInsightsTab();
@@ -1071,6 +1072,7 @@ private:
     void updateDiscussionActionState();
     void createDiscussionDialog();
     void postDiscussionComment();
+    void deleteDiscussionComment(int number, const QString &eventId);
     void startDiscussionFromComposer();
     static QString discussionTitleFromBody(const QString &body);
     void submitDiscussionEventToInbox(int number, const DiscussionEvent &ev,
@@ -3046,6 +3048,7 @@ private:
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
     QPushButton *m_navDrawButton = nullptr; // pencil -> draw freehand on the screen
+    QPushButton *m_navResizeButton = nullptr; // snap window to a common minimal size
     QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
     QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
     QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
@@ -4345,6 +4348,12 @@ private:
     void markAgentSessionRunning(int sessionId);
     QHash<int, QStringList> m_streamFiles;
     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
+    // In-flight worktree teardown threads (cleanupStreamWorktree), keyed by
+    // sessionId. A resume of the same session must wait for its prior teardown to
+    // finish before re-creating the worktree — the two run `git worktree` on the
+    // same repo and would otherwise race, leaving `claude --resume` in the main
+    // checkout with a red "0 turns" error on the first Add (adhoc #84).
+    QHash<int, QThread *> m_worktreeTeardown;
     // User messages queued while a session has no live CLI (typed after the task
     // finished, or while it resumes after a ForkMesh restart). Flushed as
     // follow-up turns the next time the session's stream starts.
