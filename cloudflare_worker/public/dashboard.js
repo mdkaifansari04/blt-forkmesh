@@ -7309,6 +7309,8 @@
       if (state.activeRepoTab === "agents" && state.selectedRepo && repoKey(state.selectedRepo).toLowerCase() === repoKey(repo).toLowerCase()) {
         loadRepoAgents(repo);
       }
+      // Close the modal now that the prompt is queued (adhoc #80).
+      setAgentModalOpen(false);
     } catch (error) {
       const code = String(error?.message || "");
       setHint(
