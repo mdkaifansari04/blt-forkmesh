@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783916615,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783916615",
+            "sig": "KeV5_YTYVY79EJ2WGEzELtXUQzfHDPeB-_uWotwNXJgp66r1hT9yS9iDYbX71qvrI8UyuCtzjvr49Oqwj9h5BQ",
+            "title": "issues are loading too slow on the web please make it faster it only needs to load the titles of the open issues and show them fast also the open / closed counts are wrong fix those too",
+            "ts": 1783916615,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 427,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "issues are loading too slow on the web please make it faster it only needs to load the titles of the open issues and show them fast also the open / closed counts are wrong fix those too",
+    "updatedAt": 1783916615,
+    "votes": 0
+}
