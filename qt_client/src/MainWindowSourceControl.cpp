@@ -1916,7 +1916,7 @@ RepoSecurityInput MainWindow::buildRepoSecurityInput(const RepositoryRecord &sel
     input.isPrivate = selected.isPrivate;
     input.previewOnly = selected.previewOnly;
     input.actionsEnabled = selected.actionsEnabled;
-    input.integrityWarning = m_pinWarningActive;
+    input.integrityWarning = m_repoPinMismatch;
     input.issues =
         IssueStore(writable.localPath, input.mirrorPath, &m_profileIdentity, m_userName)
             .loadAll();
