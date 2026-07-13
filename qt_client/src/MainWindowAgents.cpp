@@ -1542,10 +1542,20 @@ void MainWindow::applyAgentPromptsPayload(const RepositoryRecord &repo,
         // to spin up a brand-new ad-hoc agent for this repo from the prompt,
         // rather than steer an existing session.
         if (agentId == QLatin1String("new")) {
+            // Optional pasted/attached screenshots (adhoc #78): data: URLs the
+            // website queued alongside the prompt. Written into the agent's
+            // working tree so the agent can actually see them.
+            QStringList images;
+            const QJsonArray imageArr = item.value("images").toArray();
+            for (const QJsonValue &imageValue : imageArr) {
+                const QString src = imageValue.toString();
+                if (!src.isEmpty())
+                    images.append(src);
+            }
             // Optional provider chosen in the website composer's dropdown
             // (adhoc #271); empty leaves the node's default in place.
             startWebNewAgentForRepo(repo, text,
-                                    item.value("provider").toString());
+                                    item.value("provider").toString(), images);
             continue;
         }
         bool ok = false;
@@ -1585,7 +1595,8 @@ void MainWindow::deliverQueuedAgentPrompt(int sessionId, const QString &text)
 // compose row uses, honouring the node's default provider/model choice.
 void MainWindow::startWebNewAgentForRepo(const RepositoryRecord &repo,
                                          const QString &task,
-                                         const QString &providerOverride)
+                                         const QString &providerOverride,
+                                         const QStringList &images)
 {
     int repoIndex = -1;
     for (int i = 0; i < m_repositories.size(); ++i) {
@@ -1615,9 +1626,89 @@ void MainWindow::startWebNewAgentForRepo(const RepositoryRecord &repo,
     const QString model = provider == QLatin1String("claude-code")
                               ? QSettings().value(kClaudeCodeModelSetting).toString()
                               : QString();
-    logSystem(QStringLiteral("Starting a new agent for %1/%2 from a website prompt.")
-                  .arg(repo.owner, repo.name));
-    startAdHocAgentForRepo(repoIndex, task, provider, /*createPr=*/true, model);
+    // Pasted/attached screenshots (adhoc #78): decode each data: URL to a file
+    // on disk and fold an absolute-path reference into the task, so the agent
+    // can open the screenshot with its file/image tools. Written outside the
+    // repo checkout (a fresh worktree wouldn't carry files dropped into the
+    // main clone), under the app data dir.
+    QString finalTask = task;
+    const QStringList savedImages = saveWebAgentImages(repo, images);
+    if (!savedImages.isEmpty()) {
+        const bool one = savedImages.size() == 1;
+        const QString shots = one ? QStringLiteral("screenshot")
+                                  : QStringLiteral("screenshots");
+        const QString them = one ? QStringLiteral("it") : QStringLiteral("them");
+        QString note = QStringLiteral(
+            "\n\nThe user attached %1 %2 with this prompt. "
+            "Open %3 with your file/image tools to view %3:")
+                           .arg(QString::number(savedImages.size()), shots, them);
+        for (const QString &path : savedImages)
+            note += QStringLiteral("\n- %1").arg(path);
+        finalTask += note;
+    }
+    logSystem(QStringLiteral("Starting a new agent for %1/%2 from a website prompt%3.")
+                  .arg(repo.owner, repo.name,
+                       savedImages.isEmpty()
+                           ? QString()
+                           : QStringLiteral(" (%1 screenshot(s) attached)")
+                                 .arg(QString::number(savedImages.size()))));
+    startAdHocAgentForRepo(repoIndex, finalTask, provider, /*createPr=*/true, model);
+}
+
+// Decode the website's pasted/attached screenshot data: URLs (adhoc #78) to
+// image files on disk and return their absolute paths. Best-effort: malformed
+// or non-image entries are skipped, and a write failure just drops that one.
+QStringList MainWindow::saveWebAgentImages(const RepositoryRecord &repo,
+                                           const QStringList &images)
+{
+    QStringList paths;
+    if (images.isEmpty())
+        return paths;
+    QString baseDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (baseDir.isEmpty())
+        baseDir = QDir::tempPath();
+    QDir dir(baseDir + QStringLiteral("/agent-screenshots/%1-%2-%3")
+                           .arg(repo.owner, repo.name)
+                           .arg(QDateTime::currentMSecsSinceEpoch()));
+    if (!dir.mkpath(QStringLiteral(".")))
+        return paths;
+    int index = 0;
+    for (const QString &src : images) {
+        // Expect a "data:image/<subtype>;base64,<payload>" URL.
+        const int comma = src.indexOf(QLatin1Char(','));
+        if (!src.startsWith(QLatin1String("data:image/")) || comma < 0)
+            continue;
+        const QString header = src.left(comma);
+        if (!header.contains(QLatin1String("base64")))
+            continue;
+        QString subtype = header.mid(QStringLiteral("data:image/").size());
+        subtype = subtype.section(QLatin1Char(';'), 0, 0).toLower();
+        // Guard against odd subtypes ending up as a weird file extension;
+        // fall back to png for anything that isn't a plain alphanumeric token.
+        bool cleanSubtype = !subtype.isEmpty();
+        for (const QChar &ch : subtype) {
+            if (!ch.isLetterOrNumber()) {
+                cleanSubtype = false;
+                break;
+            }
+        }
+        QString ext = subtype == QLatin1String("jpeg") ? QStringLiteral("jpg")
+                      : cleanSubtype                   ? subtype
+                                                       : QStringLiteral("png");
+        const QByteArray bytes = QByteArray::fromBase64(
+            src.mid(comma + 1).toLatin1());
+        if (bytes.isEmpty())
+            continue;
+        const QString path = dir.filePath(
+            QStringLiteral("screenshot-%1.%2").arg(QString::number(++index), ext));
+        QFile file(path);
+        if (file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size()) {
+            file.close();
+            paths.append(QDir::toNativeSeparators(path));
+        }
+    }
+    return paths;
 }
 
 void MainWindow::testOpenAiAgentKey()

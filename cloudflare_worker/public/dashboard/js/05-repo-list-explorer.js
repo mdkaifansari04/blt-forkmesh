@@ -526,6 +526,65 @@
     `).join("");
   }
 
+  // Home left-rail "Active agent sessions" (adhoc #81). Renders the aggregated
+  // non-terminal agent runs collected by loadHomeAgentSessions(). The panel
+  // stays hidden until there is at least one active session so it never shows
+  // an empty box to accounts that don't run agents.
+  function renderHomeAgentSessions() {
+    const panel = $("[data-home-agent-sessions-panel]");
+    const container = $("[data-home-agent-sessions]");
+    if (!panel || !container) return;
+    const sessions = Array.isArray(state.homeAgentSessions) ? state.homeAgentSessions : [];
+    if (!sessions.length) {
+      panel.classList.add("hidden");
+      container.innerHTML = "";
+      return;
+    }
+    panel.classList.remove("hidden");
+    container.innerHTML = sessions.slice(0, 8).map((entry) => {
+      const agent = entry.agent || {};
+      const repo = entry.repo || {};
+      const issueLabel = repoAgentIssueLabel(agent) || repoKey(repo);
+      return `
+        <a href="${escapeHtml(repoPathUrl(repo) + "/agents")}" class="grid gap-1 rounded-md px-2 py-1.5 text-left text-xs hover:bg-secondary">
+          <div class="flex min-w-0 items-center gap-2">
+            <span class="h-2 w-2 shrink-0 rounded-full bg-yellow-500"></span>
+            <span class="min-w-0 flex-1 truncate font-medium text-foreground">${escapeHtml(issueLabel)}</span>
+            <span class="shrink-0 font-mono ${repoAgentStatusTone(agent.status)}">${escapeHtml(agent.status || "unknown")}</span>
+          </div>
+          <span class="truncate pl-4 text-muted-foreground">${escapeHtml(repoKey(repo))}</span>
+        </a>`;
+    }).join("");
+    window.lucide?.createIcons();
+  }
+
+  // Fetch the agent-session list for every repo the session can assign agents
+  // to and keep only the still-running (non-terminal) ones. The per-repo
+  // /agents/list endpoint is owner-gated, so this only runs for a signed-in
+  // account and silently skips repos it can't read.
+  async function loadHomeAgentSessions() {
+    if (!state.session?.nodeName) return;
+    const repos = (state.repositories || []).filter((repo) =>
+      repo?.owner && repo?.name && sessionCanAssignAgent(repo));
+    if (!repos.length) {
+      state.homeAgentSessions = [];
+      renderHomeAgentSessions();
+      return;
+    }
+    const results = await Promise.all(repos.map(async (repo) => {
+      try {
+        const agents = await requestRepoAgentsList(repo);
+        return agents
+          .filter((agent) => repoAgentsCanPrompt(agent.status))
+          .map((agent) => ({ repo, agent }));
+      } catch (_) {
+        return [];
+      }
+    }));
+    state.homeAgentSessions = results.flat();
+    renderHomeAgentSessions();
+  }
+
   // The repo groups the profile pages list: the whole catalog on the
   // session's own dashboard, but ONLY the viewed account's repos in
   // public-profile mode (/@name).
@@ -570,6 +629,7 @@
     renderHomeRepositories();
     renderHomeFeed();
     renderHomeChangelog();
+    renderHomeAgentSessions();
     renderProfileRepositories();
     renderProfileRepositoryCount();
   }
