@@ -1,0 +1,36 @@
+From 8aa8c58c64f81238147de2311ca8ca0954133d3b Mon Sep 17 00:00:00 2001
+From: signal-kernel-5543
+ <BGvs0d_KmZc8BVMetu_LgoHUpW2djuIso_Oy0BtErpg@forkmesh>
+Date: Mon, 13 Jul 2026 00:14:45 -0400
+Subject: [PATCH] Edit README.md
+
+---
+ README.md | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/README.md b/README.md
+index 7698fa0d..eba7206b 100644
+--- a/README.md
++++ b/README.md
+@@ -9,7 +9,7 @@ any repository. And when the machine that owns a project goes offline, the mesh
+ keeps serving it.
+ 
+ It is open source, free-plan-hostable at the edge, and already doing real work
+-today — issues, pull requests, CI-style actions, AI coding agents, on-chain
++today — issues, pull requests, CI-style actions, AI coding agents, on-chain test
+ bounties, and a live public website — all running on the network right now.
+ 
+ > **This is early, and that's the point.** The foundation is built and working.
+@@ -18,8 +18,7 @@ bounties, and a live public website — all running on the network right now.
+ > mesh fills up. Build a node, mirror a project you care about, and you're
+ > already part of it.
+ 
+-**Docs:** [forkmesh.com/docs](https://forkmesh.com/docs) — the protocol spec,
+-desktop/relay/mobile/IDE build notes, and the
++**Docs:** [forkmesh.com/docs](https://forkmesh.com/docs) — the protocol spec, test
+ [changelog](https://forkmesh.com/changelog).
+ 
+ ---
+-- 
+2.51.0
+
