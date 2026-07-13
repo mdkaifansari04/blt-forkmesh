@@ -66,6 +66,7 @@ struct AgentDiffStat {
 class MessageRow;
 class MarkdownEditor;
 class PullBadgeWidget;
+class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
 class ClaudeStreamSession;
@@ -1113,6 +1114,19 @@ private:
     void renderPullDiff();
     // Scroll the all-files diff so the given file's section is at the top.
     void scrollPullDiffToFile(const QString &filePath);
+    // Follow the diff scroll (adhoc #56): keep the sticky header showing the
+    // topmost visible file, advance its Pac-Man progress chart as the file
+    // scrolls past, and select that file in the list — without bouncing the
+    // diff back to the file header. Cheap (no re-render); runs on every tick.
+    void updatePullDiffScrollState();
+    // Select a file in the changed-files list without scrolling the diff back to
+    // it (used while the selection follows the scroll).
+    void selectPullFileInList(const QString &filePath);
+    // Position the sticky header overlay across the top of the diff viewport.
+    void layoutPullStickyHeader();
+    // Walk the rendered diff once, caching each file header's absolute y into
+    // m_pullFileTops so the per-scroll-tick sticky-header update stays cheap.
+    void computePullFileTops();
     // Debounced off the diff view's scrollbar (issue: auto-mark viewed on
     // scroll): while m_pullAutoViewedButton is checked, marks every file that
     // has scrolled entirely above the viewport as "Viewed" and re-renders,
@@ -3895,6 +3909,23 @@ private:
     // while scrolling the PR diff, mirroring GitHub's same-named setting).
     QPushButton *m_pullAutoViewedButton = nullptr;
     QTimer *m_pullAutoViewedDebounce = nullptr;
+    // Sticky diff header overlay (adhoc #56): floats a copy of the current
+    // file's header at the top of the scrolling diff so the filename / +/- stat
+    // / Viewed controls stay visible, with a Pac-Man progress chart that fills
+    // as the file scrolls past and auto-checks Viewed once the bottom is seen.
+    QFrame *m_pullStickyHeader = nullptr;
+    QLabel *m_pullStickyPath = nullptr;
+    PacmanProgress *m_pullStickyPacman = nullptr;
+    QPushButton *m_pullStickyViewed = nullptr;
+    QString m_pullStickyFile; // file path currently shown in the sticky header
+    // path -> compact rich-text label (icon + dir/name + +/-) for that header.
+    QHash<QString, QString> m_pullStickyLabelHtml;
+    // Absolute document y-position of each file header, aligned to
+    // m_pullFileOrder (-1 if not located). Cached because locating anchors walks
+    // the whole document, which is too heavy to redo on every scroll tick; the
+    // diff has word-wrap off, so these stay put until the next re-render clears
+    // the cache. Filled lazily by computePullFileTops().
+    QList<int> m_pullFileTops;
     int m_diffFontPt = 12; // diff viewer text size (the +/- zoom control)
     // Every diff viewer registered for shared text-size zoom (issue #254), so a
     // +/- click or Ctrl+wheel can re-render them all at the new size.

@@ -266,6 +266,11 @@ QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                        const QSet<QString> &viewedFiles = {});
 bool diffSplitPref();
 void setDiffSplitPref(bool split);
+// Compact rich-text label (status octicon + muted dir / bold name + coloured
+// +adds/-dels) for a changed file, used by the PR review page's sticky header
+// overlay (adhoc #56). Unlike diffFileHeaderHtml this carries no Viewed toggle
+// or table layout — it renders inline in a QLabel.
+QString diffStickyLabelHtml(const DiffFileEntry &f);
 bool longDiffsPref();
 void setLongDiffsPref(bool on);
 bool autoMarkViewedOnScrollPref();

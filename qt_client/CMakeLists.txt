@@ -113,6 +113,7 @@ set(FORKMESH_APP_SOURCES
     src/PullAiReview.cpp
     src/PullBadgeWidget.h
     src/PullBadgeWidget.cpp
+    src/PacmanProgress.h
     src/CommitCommentStore.h
     src/CommitCommentStore.cpp
     src/ReferenceLinks.h
