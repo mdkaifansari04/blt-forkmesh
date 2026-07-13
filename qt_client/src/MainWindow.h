@@ -4345,6 +4345,12 @@ private:
     void markAgentSessionRunning(int sessionId);
     QHash<int, QStringList> m_streamFiles;
     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
+    // In-flight worktree teardown threads (cleanupStreamWorktree), keyed by
+    // sessionId. A resume of the same session must wait for its prior teardown to
+    // finish before re-creating the worktree — the two run `git worktree` on the
+    // same repo and would otherwise race, leaving `claude --resume` in the main
+    // checkout with a red "0 turns" error on the first Add (adhoc #84).
+    QHash<int, QThread *> m_worktreeTeardown;
     // User messages queued while a session has no live CLI (typed after the task
     // finished, or while it resumes after a ForkMesh restart). Flushed as
     // follow-up turns the next time the session's stream starts.
