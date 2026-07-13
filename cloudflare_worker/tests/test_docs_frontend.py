@@ -9,10 +9,38 @@ DOCS_PAGES = (
     PUBLIC / "docs.html",
     PUBLIC / "docs" / "index.html",
 )
+CONTRIBUTION_GUIDE = PUBLIC / "docs" / "contributions" / "index.html"
 
 
 def _read(page: Path) -> str:
     return page.read_text(encoding="utf-8")
+
+
+def test_contribution_counting_guide_documents_native_public_ledger():
+    assert CONTRIBUTION_GUIDE.is_file()
+    html = _read(CONTRIBUTION_GUIDE)
+    docs_index = _read(PUBLIC / "docs" / "index.html")
+
+    for marker in (
+        "How ForkMesh counts contributions",
+        "Commits",
+        "Issues",
+        "Pull requests",
+        "Reviews",
+        "Repositories",
+        "public repositories only",
+        "configured Git identity",
+        "Mirrors",
+        "Languages",
+        "Partial history",
+        "does not depend on GitHub",
+    ):
+        assert marker in html
+
+    assert '<link rel="stylesheet" href="/site-header.css"' in html
+    assert '<script src="/site-header.js"' in html
+    assert '<div data-forkmesh-header="simple"></div>' in html
+    assert 'href="/docs/contributions"' in docs_index
 
 
 def test_docs_pages_use_tailwind_cdn_and_page_local_styles():
