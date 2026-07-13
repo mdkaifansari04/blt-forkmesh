@@ -57,10 +57,13 @@
     repoCommitDetail: null,
     repoRecordDetail: null,
     profileContributions: {
-      year: new Date().getFullYear(),
-      liveHistory: {},
+      range: null,
+      data: null,
       loading: false,
-      loadedYears: {},
+      error: "",
+      requestKey: "",
+      selectedDay: "",
+      cache: {},
     },
     settingsView: {
       section: "public-profile",

@@ -105,6 +105,20 @@
         --dashboard-scrollbar-rgb: 139 148 158;
         --dashboard-link: #58a6ff;
         --dashboard-link-hover: #79c0ff;
+        --contribution-commits: #58a6ff;
+        --contribution-issues: #3fb950;
+        --contribution-pulls: #bc8cff;
+        --contribution-reviews: #f0883e;
+        --contribution-repositories: #f778ba;
+        --contribution-empty: #161b22;
+        --contribution-unverified: #0d1117;
+        --contribution-grid-edge: #30363d;
+        --contribution-cube-top: rgb(255 255 255 / 0.22);
+        --contribution-cube-left: rgb(0 0 0 / 0.18);
+        --contribution-cube-right: rgb(0 0 0 / 0.34);
+        --contribution-tooltip-bg: #161b22;
+        --contribution-tooltip-fg: #f0f6fc;
+        --contribution-tooltip-border: #30363d;
         --background: #010409;
         --foreground: #f0f6fc;
         --card: #0d1117;
@@ -139,6 +153,20 @@
         --dashboard-scrollbar-rgb: 71 85 105;
         --dashboard-link: #000000;
         --dashboard-link-hover: #000000;
+        --contribution-commits: #0969da;
+        --contribution-issues: #1a7f37;
+        --contribution-pulls: #8250df;
+        --contribution-reviews: #bc4c00;
+        --contribution-repositories: #bf3989;
+        --contribution-empty: #ebedf0;
+        --contribution-unverified: #f6f8fa;
+        --contribution-grid-edge: #d0d7de;
+        --contribution-cube-top: rgb(255 255 255 / 0.42);
+        --contribution-cube-left: rgb(0 0 0 / 0.12);
+        --contribution-cube-right: rgb(0 0 0 / 0.22);
+        --contribution-tooltip-bg: #ffffff;
+        --contribution-tooltip-fg: #1f2328;
+        --contribution-tooltip-border: #d0d7de;
         --background: #ffffff;
         --foreground: #000000;
         --card: #ffffff;
@@ -153,6 +181,10 @@
       * {
         border-color: var(--border);
         box-sizing: border-box;
+      }
+
+      [hidden] {
+        display: none !important;
       }
 
       html {
@@ -417,6 +449,177 @@
         color: var(--dashboard-link-hover);
       }
 
+      [data-profile-contribution-card],
+      [data-profile-contribution-panorama],
+      [data-profile-contribution-skyline-panel],
+      [data-profile-contribution-insights],
+      [data-profile-contribution-metrics] {
+        min-width: 0;
+      }
+
+      [data-profile-contribution-panorama] {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(15rem, 18rem);
+        gap: 1rem;
+      }
+
+      [data-profile-contribution-skyline-panel] {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        grid-row: span 2;
+        position: relative;
+      }
+
+      [data-profile-contribution-skyline-viewport] {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        overscroll-behavior-x: contain;
+        padding: 0.75rem;
+        scrollbar-gutter: stable;
+      }
+
+      [data-profile-contribution-skyline-viewport]:focus-visible {
+        border-radius: 0.5rem;
+        outline: 2px solid rgb(var(--dashboard-ring-rgb));
+        outline-offset: -2px;
+      }
+
+      [data-profile-contribution-skyline] {
+        display: block;
+        width: 100%;
+        min-width: 46rem;
+        height: auto;
+        overflow: visible;
+      }
+
+      [data-profile-contribution-radar],
+      [data-profile-contribution-languages] {
+        display: block;
+        width: 100%;
+        height: auto;
+        overflow: visible;
+      }
+
+      [data-profile-contribution-skyline] [tabindex="0"] {
+        cursor: pointer;
+        transition: filter 140ms ease, opacity 140ms ease;
+      }
+
+      [data-profile-contribution-skyline] [tabindex="0"]:hover {
+        filter: brightness(1.12);
+      }
+
+      [data-profile-contribution-skyline] [tabindex="0"]:focus-visible {
+        filter: brightness(1.18) drop-shadow(0 0 0.2rem rgb(var(--dashboard-ring-rgb)));
+        outline: none;
+      }
+
+      [data-profile-contribution-tooltip] {
+        position: absolute;
+        z-index: 20;
+        max-width: min(18rem, calc(100% - 1.5rem));
+        pointer-events: none;
+        border: 1px solid var(--contribution-tooltip-border);
+        border-radius: 0.5rem;
+        background: var(--contribution-tooltip-bg);
+        box-shadow: 0 12px 32px rgb(0 0 0 / 0.28);
+        color: var(--contribution-tooltip-fg);
+        font-size: 0.75rem;
+        line-height: 1.4;
+        padding: 0.55rem 0.7rem;
+      }
+
+      [data-profile-contribution-loading],
+      [data-profile-contribution-error] {
+        position: absolute;
+        inset: 1rem;
+        z-index: 15;
+        min-height: 0;
+        border-radius: 0.75rem;
+        background: rgb(var(--dashboard-background-rgb) / 0.94);
+        backdrop-filter: blur(3px);
+      }
+
+      [data-profile-contribution-error] {
+        display: grid;
+        place-content: center;
+      }
+
+      [data-profile-contribution-metrics] {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        overflow: hidden;
+      }
+
+      [data-profile-contribution-metrics] > div {
+        min-width: 0;
+        padding: 0.75rem 0.9rem;
+      }
+
+      [data-profile-contribution-metrics] > div + div {
+        border-left: 1px solid rgb(var(--dashboard-border-rgb));
+      }
+
+      [data-profile-contribution-coverage] {
+        text-wrap: pretty;
+      }
+
+      @media (max-width: 1180px) {
+        [data-profile-contribution-panorama] {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        [data-profile-contribution-skyline-panel] {
+          grid-column: 1 / -1;
+          grid-row: auto;
+        }
+
+        [data-profile-contribution-insights] {
+          display: contents;
+        }
+      }
+
+      @media (max-width: 680px) {
+        [data-profile-contribution-panorama] {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        [data-profile-contribution-skyline-panel],
+        [data-profile-contribution-metrics] {
+          grid-column: auto;
+        }
+
+        [data-profile-contribution-insights] {
+          display: grid;
+        }
+
+        [data-profile-contribution-metrics] {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        [data-profile-contribution-metrics] > div {
+          border-bottom: 1px solid rgb(var(--dashboard-border-rgb));
+        }
+
+        [data-profile-contribution-metrics] > div + div {
+          border-left: 0;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        [data-profile-contribution-card] *,
+        [data-profile-contribution-card] *::before,
+        [data-profile-contribution-card] *::after {
+          scroll-behavior: auto !important;
+          transition: none !important;
+          animation: none !important;
+        }
+      }
+
       @media (max-width: 1023px) {
         [data-dashboard-root] {
           height: 100dvh;
@@ -479,8 +682,8 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=28cd49043068" defer></script>
-    <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+    <script src="/dashboard.js?v=c5f8d84a947a" defer></script>
+    <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="profile">
     <div data-dashboard-root data-dashboard-section="profile-overview" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
@@ -764,34 +967,92 @@
                         <p class="text-muted-foreground">Pinned profile content and public activity will live here.</p>
                       </div>
                     </section>
-                    <div data-profile-contribution-timeline-layout class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_9rem] xl:items-start">
+                    <div data-profile-contribution-timeline-layout class="grid min-w-0 gap-6">
                       <div data-profile-contribution-main class="grid min-w-0 gap-6">
-                        <section data-profile-contribution-grid class="grid gap-3">
-                          <div class="flex items-center justify-between gap-3">
-                            <h2 data-profile-contribution-summary class="text-xl font-semibold leading-7 text-foreground">0 contributions in the last year</h2>
-                            <button type="button" class="hidden items-center gap-1 text-sm text-muted-foreground hover:text-foreground sm:inline-flex">
-                              <span>Contribution settings</span>
-                              <i data-lucide="chevron-down" class="h-4 w-4"></i>
-                            </button>
-                          </div>
-                          <div data-profile-contribution-calendar class="overflow-x-auto rounded-md border border-border bg-background px-6 py-5">
-                            <div class="min-w-[880px]">
-                              <div data-contribution-months class="grid text-xs text-muted-foreground"></div>
-                              <div data-contribution-cells class="mt-1 grid text-xs text-muted-foreground" aria-label="Contribution activity calendar"></div>
-                              <div class="mt-4 flex items-center justify-between gap-4 text-xs text-muted-foreground">
-                                <a href="/docs/contributions" class="hover:text-accent hover:underline">Learn how we count contributions</a>
-                                <span data-contribution-legend class="inline-flex items-center gap-1.5"></span>
+                        <section data-profile-contribution-card aria-labelledby="profile-contribution-heading" class="min-w-0 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+                          <header class="flex min-w-0 flex-col gap-4 border-b border-border px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+                            <div class="min-w-0">
+                              <p class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Native activity</p>
+                              <h2 id="profile-contribution-heading" data-profile-contribution-summary class="mt-1 text-xl font-semibold leading-7 text-foreground">0 contributions in the last year</h2>
+                            </div>
+                            <div data-profile-contribution-periods role="group" aria-label="Contribution period" class="flex min-w-0 gap-1 overflow-x-auto rounded-lg border border-border bg-background p-1 text-xs">
+                              <button data-profile-contribution-period="rolling" type="button" aria-current="true" class="shrink-0 rounded-md bg-secondary px-3 py-1.5 font-semibold text-foreground">Last year</button>
+                            </div>
+                          </header>
+
+                          <div class="relative min-w-0 p-4 sm:p-5">
+                            <div data-profile-contribution-loading role="status" aria-live="polite" class="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
+                              <span class="h-2 w-2 animate-pulse rounded-full bg-primary"></span>
+                              Loading verified contribution activity...
+                            </div>
+                            <div data-profile-contribution-empty hidden class="mb-4 rounded-lg border border-dashed border-border bg-background p-4 text-center">
+                              <p class="font-semibold text-foreground">No public contributions in this period</p>
+                              <p class="mt-2 text-sm text-muted-foreground">Publish or contribute to a public ForkMesh repository to begin your native activity skyline.</p>
+                            </div>
+                            <div data-profile-contribution-error hidden role="alert" class="min-h-48 rounded-lg border border-destructive/40 bg-background p-6 text-center">
+                              <p class="font-semibold text-foreground">Contribution activity is unavailable</p>
+                              <p class="mt-2 text-sm text-muted-foreground">The verified ledger could not be loaded right now.</p>
+                              <button data-profile-contribution-retry type="button" class="mt-4 rounded-md border border-border bg-secondary px-3 py-2 text-sm font-semibold text-foreground hover:bg-muted">Try again</button>
+                            </div>
+
+                            <div data-profile-contribution-panorama class="min-w-0">
+                              <section data-profile-contribution-skyline-panel class="min-w-0 rounded-lg border border-border bg-background">
+                                <div class="flex min-w-0 items-start justify-between gap-4 border-b border-border px-4 py-3">
+                                  <div class="min-w-0">
+                                    <h3 class="text-sm font-semibold text-foreground">Contribution skyline</h3>
+                                    <p data-profile-contribution-range class="mt-0.5 text-xs text-muted-foreground">Verified daily activity</p>
+                                  </div>
+                                  <span class="shrink-0 text-[11px] text-muted-foreground">UTC</span>
+                                </div>
+                                <div data-profile-contribution-skyline-viewport tabindex="0" aria-label="Scrollable contribution skyline" class="min-w-0">
+                                  <svg data-profile-contribution-skyline role="img" viewBox="0 0 960 360" aria-labelledby="profile-contribution-skyline-title profile-contribution-skyline-desc" preserveAspectRatio="xMinYMid meet">
+                                    <title id="profile-contribution-skyline-title">Daily contribution skyline</title>
+                                    <desc id="profile-contribution-skyline-desc">An isometric chart of verified commits, issues, pull requests, reviews, and repository publications.</desc>
+                                  </svg>
+                                </div>
+                                <div data-profile-contribution-tooltip hidden role="status" aria-live="polite"></div>
+                              </section>
+
+                              <aside data-profile-contribution-insights class="grid min-w-0 gap-4">
+                                <section class="min-w-0 rounded-lg border border-border bg-background p-4">
+                                  <div class="mb-2">
+                                    <h3 class="text-sm font-semibold text-foreground">Activity mix</h3>
+                                    <p class="text-xs text-muted-foreground">Relative contribution types</p>
+                                  </div>
+                                  <svg data-profile-contribution-radar role="img" viewBox="0 0 240 210" aria-labelledby="profile-contribution-radar-title profile-contribution-radar-desc">
+                                    <title id="profile-contribution-radar-title">Contribution activity radar</title>
+                                    <desc id="profile-contribution-radar-desc">A radar chart comparing commits, issues, pull requests, reviews, and repositories.</desc>
+                                  </svg>
+                                </section>
+                                <section class="min-w-0 rounded-lg border border-border bg-background p-4">
+                                  <div class="mb-2">
+                                    <h3 class="text-sm font-semibold text-foreground">Language footprint</h3>
+                                    <p class="text-xs text-muted-foreground">Current public default branches</p>
+                                  </div>
+                                  <svg data-profile-contribution-languages role="img" viewBox="0 0 240 190" aria-labelledby="profile-contribution-languages-title profile-contribution-languages-desc">
+                                    <title id="profile-contribution-languages-title">Contribution language donut</title>
+                                    <desc id="profile-contribution-languages-desc">A byte-weighted breakdown of supported languages across public repositories.</desc>
+                                  </svg>
+                                  <div data-profile-contribution-language-legend class="mt-3 grid gap-1.5 text-xs text-muted-foreground"></div>
+                                </section>
+                              </aside>
+
+                              <dl data-profile-contribution-metrics class="min-w-0 rounded-lg border border-border bg-background"></dl>
+                              <div class="flex min-w-0 flex-col gap-2 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+                                <p data-profile-contribution-coverage role="status" class="min-w-0"></p>
+                                <a href="/docs/contributions" class="shrink-0 font-medium text-accent hover:underline">Learn how we count contributions</a>
                               </div>
                             </div>
                           </div>
                         </section>
+
                         <section data-profile-activity-list class="grid gap-6">
                           <h2 class="text-xl font-semibold leading-7 text-foreground">Contribution activity</h2>
                           <div data-profile-activity-items class="grid gap-6"></div>
-                          <p data-profile-activity-empty class="text-sm text-muted-foreground">No contribution activity found for this year yet.</p>
+                          <p data-profile-activity-empty class="text-sm text-muted-foreground">Loading verified contribution activity...</p>
                         </section>
                         <footer data-profile-contribution-footer class="hidden items-center gap-5 pt-10 text-xs text-muted-foreground lg:flex">
-                          <i data-lucide="github" class="h-6 w-6 shrink-0"></i>
+                          <span class="font-semibold text-foreground">ForkMesh</span>
                           <span>© 2026 ForkMesh, Inc.</span>
                           <a href="/terms" class="hover:text-accent hover:underline">Terms</a>
                           <a href="/privacy" class="hover:text-accent hover:underline">Privacy</a>
@@ -800,8 +1061,6 @@
                           <a href="/docs" class="hover:text-accent hover:underline">Docs</a>
                         </footer>
                       </div>
-                      <aside data-profile-contribution-years class="hidden gap-2 text-sm xl:grid">
-                      </aside>
                     </div>
                   </div>
                 </div>
@@ -1013,71 +1272,6 @@
 	        });
 	      }
 
-	      const contributionColors = ["#1c1c1f", "#14532d", "#166534", "#22c55e", "#4ade80"];
-
-      function contributionLevel(index, year) {
-        const seed = Number(year) || 2026;
-        const value = (index * 17 + seed * 11 + Math.floor(index / 7) * 5) % 23;
-        if (value < 4) return 0;
-        if (value < 9) return 1;
-        if (value < 15) return 2;
-        if (value < 20) return 3;
-        return 4;
-      }
-
-      function renderContributionGrid(year = "2026") {
-        const grid = document.querySelector("[data-contribution-grid]");
-        if (!grid) return;
-        grid.innerHTML = "";
-
-        for (let index = 0; index < 364; index += 1) {
-          const level = contributionLevel(index, year);
-          const cell = document.createElement("span");
-          cell.setAttribute("aria-hidden", "true");
-          cell.title = `${level} contributions`;
-          cell.style.width = "10px";
-          cell.style.height = "10px";
-          cell.style.borderRadius = "2px";
-          cell.style.background = contributionColors[level];
-          grid.appendChild(cell);
-        }
-      }
-
-      function setContributionYear(button) {
-        document.querySelectorAll("[data-contribution-year]").forEach((yearButton) => {
-          const active = yearButton === button;
-          yearButton.classList.toggle("bg-primary", active);
-          yearButton.classList.toggle("text-primary-foreground", active);
-          yearButton.classList.toggle("font-semibold", active);
-          yearButton.classList.toggle("text-muted-foreground", !active);
-          yearButton.classList.toggle("hover:bg-secondary", !active);
-          yearButton.classList.toggle("hover:text-foreground", !active);
-        });
-
-        const count = document.querySelector("[data-contribution-count]");
-        if (count) count.textContent = button.dataset.count;
-        renderContributionGrid(button.dataset.contributionYear);
-      }
-
-      function initContributionActivity() {
-        const yearButtons = document.querySelectorAll("[data-contribution-year]");
-        yearButtons.forEach((button) => {
-          button.addEventListener("click", () => setContributionYear(button));
-        });
-
-        const activeYear = document.querySelector("[data-contribution-year].bg-primary") || yearButtons[0];
-        if (activeYear) setContributionYear(activeYear);
-
-        const showMoreButton = document.querySelector("[data-show-more-activity]");
-        const moreActivity = document.querySelector("[data-more-activity]");
-        if (showMoreButton && moreActivity) {
-          showMoreButton.addEventListener("click", () => {
-            const expanded = moreActivity.classList.toggle("hidden");
-            showMoreButton.textContent = expanded ? "Show more activity" : "Show less activity";
-          });
-        }
-      }
-
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") setProfilePopoverOpen(false);
       });
@@ -1236,7 +1430,6 @@
 
       // Chat is wired by /dashboard-chat.js.
 	      initProfileMenu();
-	      initContributionActivity();
 	      lucide.createIcons();
     </script>
   </body>
