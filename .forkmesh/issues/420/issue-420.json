@@ -66,6 +66,15 @@
             "sig": "DNTZxbUqp1iZhrOvIk6UHIv21LDtR8gxgIajfFK1b9H-IO_6rswFnnj75AZ9azNI_PXx3cZX26faKnqerdzYDg",
             "ts": 1783914686757,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "07a858c0-ca08-48b9-a158-2abb343f1d3c",
+            "sig": "2_ppJzwCC9Mi0Vlu6vapSV60-nqsy5vUxqxOE0StBIpjRJZ9UwaiymYeifxlJ9Ivba2KJpjNhOJiowWRiuRvCA",
+            "status": "closed",
+            "ts": 1783914686823,
+            "type": "status"
         }
     ],
     "labels": [
@@ -76,8 +85,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "it seems the website is loading all issues when we go to the issues page and not just the open ones - please fix that Loading issues from the live mirror...",
-    "updatedAt": 1783914686757,
+    "updatedAt": 1783914686823,
     "votes": 0
 }
