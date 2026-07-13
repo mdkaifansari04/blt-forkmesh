@@ -1061,7 +1061,6 @@ private:
                              const QString &accent = QString(),
                              const QString &copyLink = QString(),
                              const QString &authorId = QString());
-    QWidget *buildAboutSidebar();
     QWidget *buildRepoSecurityTab();
     QWidget *buildRepoQualityTab();
     QWidget *buildInsightsTab();
@@ -1099,6 +1098,10 @@ private:
     // Set/clear the conflict badge on a single pull-list row, in place, so async
     // badge updates don't rebuild (and flicker) the whole table.
     void setPullConflictBadge(int number, bool conflict);
+    // Tooltip for a PR's conflict badge: the "why" behind the flag — the files
+    // whose patch no longer applies, pulled from m_pullConflictCache. Falls back
+    // to the bare "has merge conflicts" line when the file list isn't cached.
+    QString pullConflictBadgeTooltip(int number) const;
     void refreshPullList();
     void showPull(int number);
     // Files-changed authorship filter: show only agent- or human-authored files
@@ -2014,7 +2017,6 @@ private:
     void deleteTag(const QString &tag);
     bool repoHasWorkingTree() const;
     void loadFileSearchIndex();
-    void loadAboutSidebar();
     // --- Top-bar global search ("search everything"). One box that, as you type,
     // searches across sections, every relay/node/repository, and (for the open
     // repo) its issues, pull requests, branches, files and commit messages, then
@@ -2062,9 +2064,6 @@ private:
     void saveRepoFediverseSettings(const QString &owner, const QString &name,
                                    bool federate, bool broadcastEvents,
                                    bool acceptComments);
-    // Async fediverse status for the About sidebar: appends follower count +
-    // newest follower handles under the "View on Mastodon" link.
-    void loadRepoFediverseStatus();
     void loadCommits();
     // Fill the Files/+/− columns of the commit list from `git log --numstat`,
     // which diffs every commit in the window and is the slow part of a load. Runs
@@ -3583,19 +3582,6 @@ private:
     QComboBox *m_vulnComponentCombo = nullptr;
     QPushButton *m_vulnSubmitButton = nullptr;
     QLabel *m_vulnStatusLabel = nullptr;
-    QPushButton *m_aboutEditButton = nullptr;
-    QLabel *m_aboutText = nullptr;
-    QLabel *m_aboutTopics = nullptr;
-    QLabel *m_aboutFiles = nullptr;
-    QLabel *m_aboutFediverse = nullptr;
-    QLabel *m_releaseHeader = nullptr;
-    QLabel *m_releaseRow = nullptr;
-    QLabel *m_langBar = nullptr;
-    QLabel *m_langLegend = nullptr;
-    QLabel *m_filesCountHeader = nullptr;
-    QLabel *m_filesCountRow = nullptr;
-    QLabel *m_contributorsHeader = nullptr;
-    QLabel *m_contributorsRow = nullptr;
     QTableWidget *m_commitsTable = nullptr;
     // What the commit table currently shows, so a repeat tab click (or the
     // redundant load when a repo first opens) can skip the full rebuild — 4 git

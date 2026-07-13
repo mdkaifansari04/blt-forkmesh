@@ -33,11 +33,13 @@ def test_badge_renderer_shape():
     assert "function renderPullBadgeTile(" in DASHBOARD_JS
     assert "background:#3fb950" in DASHBOARD_JS
     assert "background:#f85149" in DASHBOARD_JS
-    # Files cluster by directory with a "(N files)" label under the run.
+    # Files cluster by directory with a compact "…N" count under the run
+    # (no parens, no "files" word).
     start = DASHBOARD_JS.index("function renderRepoPullBadge(")
     body = DASHBOARD_JS[start:start + 4000]
     assert "lastIndexOf(\"/\")" in body
     assert "Files changed" in body
+    assert "…${formatCount(group.files.length)}" in body
     # The label shows just the folder name (not the whole path), capped to
     # 8 chars, e.g. "one/two/three" -> "three".
     assert "function dirBadgeLabel(" in DASHBOARD_JS

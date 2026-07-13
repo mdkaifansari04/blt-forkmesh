@@ -84,6 +84,24 @@ def test_worker_profile_contract_includes_avatar_updates():
     assert '"avatarPng": rec.get("avatar_png", "")' in public_lookup_body
 
 
+def test_public_lookup_reads_users_nodes_first_not_accounts_table():
+    # Users and nodes are now separate authoritative tables, so the public
+    # /api/accounts/<name> profile lookup resolves from them first and only
+    # falls back to the legacy accounts table for records that predate the
+    # split (e.g. a reserved name with no pubkey). This keeps the endpoint
+    # working for every client without treating accounts as the primary store.
+    public_lookup_start = ENTRY_TEXT.index("match = ACCOUNTS_RE.match(url.path)")
+    public_lookup_body = ENTRY_TEXT[
+        public_lookup_start:
+        ENTRY_TEXT.index('return json_response({"error": "not_found"}', public_lookup_start)
+    ]
+    primary = public_lookup_body.index("_account_identity_rec_by_bi(env, name_bi)")
+    fallback = public_lookup_body.index("_account_row(env, name)")
+    # users/nodes read comes first; accounts (_account_row) is the fallback.
+    assert primary < fallback
+    assert "if rec is None:" in public_lookup_body
+
+
 def test_worker_profile_contract_includes_bio_links_mastodon_and_privacy():
     profile_body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _account_profile"):
