@@ -2830,6 +2830,12 @@ private:
     // round-trip acknowledgement, surfaced quietly if we hold the same repo.
     void onPeerMirrorSynced(const QString &ownerName, const QString &peerName,
                             const QString &commit);
+    // Patch a peer's advertised HEAD for the "owner/name" mirror group in the
+    // live roster to `commit` the instant it reports it (mirror-update / synced
+    // ack), so the Mirror nodes panel converges immediately instead of waiting
+    // for that peer's next hello. Returns true if any advert changed.
+    bool applyPeerMirrorCommit(const QString &ownerName, const QString &peerName,
+                               const QString &commit);
     // A peer opened an encrypted cove. If this node created it (creatorKey matches
     // our identity) and the opener's signature checks out, raise a notification.
     void onCoveOpened(const QString &creatorKey, const QString &coveId,
