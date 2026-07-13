@@ -139,6 +139,13 @@ MAX_AGENT_STRING = 300
 MAX_AGENT_TITLE = 240
 MAX_AGENT_PROMPT_TEXT = 8000
 MAX_PENDING_AGENT_PROMPTS = 50
+# Pasted/attached screenshots that ride along with a "start agent" prompt from
+# the website (adhoc #78). Stored as data: URLs on the queued prompt so the
+# owner's node can drop them into the agent's working tree. Bounded so a queued
+# prompt row (and the /api/sync payload that carries it) stays modest.
+MAX_AGENT_PROMPT_IMAGES = 3
+MAX_AGENT_PROMPT_IMAGE_BYTES = 1_400_000
+MAX_AGENT_PROMPT_IMAGES_TOTAL_BYTES = 2_400_000
 # Bounded tail of an agent session's run log the desktop pushes for the website
 # detail page's live transcript (adhoc #259). Kept modest so the full-replace
 # sessions push stays small even with several sessions per repo.
@@ -13544,6 +13551,27 @@ async def agents_prompt_handler(env, request, owner, repo, agent_id):
     model_in = clean_string(data.get("model", ""), 60)
     if model_in:
         item["model"] = model_in
+    # Optional pasted/attached screenshots (adhoc #78): data: URLs the node
+    # writes into the agent's working tree so the agent can see them. Only
+    # meaningful when starting a brand-new agent; bounded in count and size.
+    images_in = data.get("images", [])
+    if isinstance(images_in, list) and images_in:
+        images = []
+        total = 0
+        for entry in images_in:
+            if len(images) >= MAX_AGENT_PROMPT_IMAGES:
+                break
+            src = entry if isinstance(entry, str) else ""
+            if not src.startswith("data:image/"):
+                continue
+            if len(src) > MAX_AGENT_PROMPT_IMAGE_BYTES:
+                return json_response({"error": "image_too_large"}, status=400)
+            total += len(src)
+            if total > MAX_AGENT_PROMPT_IMAGES_TOTAL_BYTES:
+                return json_response({"error": "images_too_large"}, status=400)
+            images.append(src)
+        if images:
+            item["images"] = images
     await d1_run(
         env,
         "INSERT INTO agent_prompts (repo_bi, agent_id, data, queued_at) "
