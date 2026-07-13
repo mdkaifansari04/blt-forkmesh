@@ -427,6 +427,14 @@ HOST_PRESENCE_REFRESH_MS = 60 * 1000
 REGISTERED_NODE_ACTIVE_MS = 60 * 60 * 1000
 STALE_NODE_PURGE_INTERVAL_MS = 60 * 1000
 STALE_NODE_PURGE_BATCH = 100
+# Reinstalling or rotating a desktop node's key mints a NEW account_devices row
+# (device_bi is keyed on the pubkey), so one account slowly accretes a row per
+# historical key — the DB side of the "one person, many identities" sprawl. A
+# device untouched for this long is pruned, but only when the account still has a
+# newer key to sign with, so a node's live/most-recent key (the one the drain
+# gate now reuses; see _owner_signing_pubkeys) is never removed.
+STALE_DEVICE_RETAIN_MS = 60 * 24 * 60 * 60 * 1000  # 60 days
+STALE_DEVICE_PURGE_BATCH = 200
 # How long a downed repo's clone traffic stays pinned to one chosen mirror (see
 # clone_sticky). Long enough that a clone's info/refs and upload-pack POST land
 # on the same node; short enough that the load still rotates across mirrors.
@@ -2436,6 +2444,40 @@ async def purge_blocked_catalog(env):
             await d1_run(
                 env, "DELETE FROM host_presence WHERE repo_bi=?", r["key_bi"])
         await d1_run(env, "DELETE FROM repositories WHERE owner_bi=?", owner_bi)
+
+
+async def purge_stale_account_devices(env):
+    # Prune the reinstall/rotate device sprawl (see STALE_DEVICE_RETAIN_MS):
+    # account_devices rows untouched for the retention window, but ONLY when the
+    # same account still has a newer device row. That guarantees a node's current
+    # key is never deleted — deleting the key the node signs with would silently
+    # 401 its drains, the very bug _owner_signing_pubkeys fixes. A pruned key that
+    # a user later rotates back to is simply re-registered on the next login
+    # (_register_account_device upserts). Returns the number of rows removed.
+    now = int(Date.now())
+    cutoff = now - STALE_DEVICE_RETAIN_MS
+    rows = await d1_all(
+        env,
+        "SELECT device_bi, account_bi, COALESCE(last_seen,0) AS last_seen "
+        "FROM account_devices WHERE COALESCE(last_seen,0) < ? "
+        "ORDER BY last_seen ASC LIMIT ?",
+        cutoff, STALE_DEVICE_PURGE_BATCH)
+    removed = 0
+    for row in rows or []:
+        account_bi = row.get("account_bi")
+        seen = int(row.get("last_seen") or 0)
+        newer = await d1_first(
+            env,
+            "SELECT 1 AS x FROM account_devices "
+            "WHERE account_bi=? AND COALESCE(last_seen,0) > ? LIMIT 1",
+            account_bi, seen)
+        if not newer:
+            continue  # the account's most-recent key — keep it so it can sign
+        await d1_run(
+            env, "DELETE FROM account_devices WHERE device_bi=?",
+            row.get("device_bi"))
+        removed += 1
+    return removed
 
 
 async def active_registered_node_bis(env, now=None):
@@ -10804,14 +10846,47 @@ async def _admin_ap_update(env, request):
     })
 
 
+async def _owner_signing_pubkeys(env, owner):
+    # Every Ed25519 pubkey allowed to sign as this owner's desktop node: the
+    # account's primary pubkey plus any still-enabled device key that carries
+    # the owner_sign capability. A reinstalled or key-rotated node stores its
+    # new keypair in account_devices (login upserts it) but login only sets the
+    # primary rec["pubkey"] when it is empty, so it is never promoted. A drain
+    # gate that trusted ONLY the primary therefore silently 401'd that node on
+    # every GET /api/sync — its issues/PRs/commits/agent-prompts/about edits and
+    # chat state stopped reaching it, with no visible error (the node just backs
+    # off). The device keys are already stored and account-bound (added only
+    # through an authenticated login/claim), so reusing them is the durable node
+    # identity the account should keep signing with.
+    keys = []
+    owner_pub = await _owner_pubkey(env, owner)
+    if owner_pub:
+        keys.append(owner_pub)
+    account_bi = await blind_index(env, owner)
+    for device in await _account_devices_list(env, account_bi):
+        pub = device.get("pubkey") or ""
+        # enabled == active and not revoked (see _account_devices_list); revoking
+        # a device in settings closes it out of the drain gate immediately.
+        if (pub and pub not in keys and device.get("enabled")
+                and "owner_sign" in (device.get("capabilities") or [])):
+            keys.append(pub)
+    return keys
+
+
+async def _verify_owner_signature(env, owner, sig, canonical):
+    for pub in await _owner_signing_pubkeys(env, owner):
+        if await ed25519_verify(pub, sig, canonical):
+            return True
+    return False
+
+
 async def _authorize_owner(env, request, owner):
     if not owner:
         return False
     params = parse_qs(urlparse(request.url).query)
     ts = params.get("ts", [""])[0]
     sig = params.get("sig", [""])[0]
-    owner_pub = await _owner_pubkey(env, owner)
-    if not owner_pub or not ts or not sig:
+    if not ts or not sig:
         return False
     try:
         skew = abs(int(Date.now()) - int(ts))
@@ -10820,7 +10895,7 @@ async def _authorize_owner(env, request, owner):
     if skew > LOGIN_MAX_SKEW_MS:
         return False
     canonical = ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).encode()
-    return await ed25519_verify(owner_pub, sig, canonical)
+    return await _verify_owner_signature(env, owner, sig, canonical)
 
 
 async def _authorize_owner_account(env, owner, data, request=None):
@@ -15761,6 +15836,17 @@ class Default(WorkerEntrypoint):
                 await log_cron_error(
                     self.env, "/cron/chat-history-prune-expired",
                     "chat_history_prune_expired failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
+        # Hourly: prune the reinstall/rotate account_devices sprawl (stale,
+        # superseded keys), never an account's current signing key.
+        if minute % 60 == 47:
+            try:
+                await ensure_schema(self.env)
+                await purge_stale_account_devices(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/purge-stale-account-devices",
+                    "purge_stale_account_devices failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
         # Hourly: the once-per-user "How are we doing?" founder feedback email
         # for accounts that crossed the 24h-after-signup mark (batched; also

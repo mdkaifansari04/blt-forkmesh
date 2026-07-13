@@ -232,7 +232,7 @@
       // until the node comes back online and drains it to the mirror.
       const ownerOffline = isRepoOwner(repo) && repoServedByMirror(repo);
       if (ownerOffline) savePendingIssue(repo, pendingItem);
-      setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status === "open").length);
+      setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status !== "closed").length);
       if (titleInput) titleInput.value = "";
       if (bodyInput) bodyInput.value = "";
       images.length = 0;
