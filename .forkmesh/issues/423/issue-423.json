@@ -20,6 +20,18 @@
             "title": "make it so that images can be pasted into the webiste issue reporting",
             "ts": 1783911859,
             "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 92,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "3f326806-fc99-4bcd-a223-576e20926e54",
+            "sig": "dNASdZ_o3uuSot3qqa_y06ZJniLwjmYbsIjNgpa_gfI14BxjdD84q3aZr2zKh98DjOEBuW4Z8G2lbTNnIGIgDQ",
+            "ts": 1783914306317,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -32,6 +44,6 @@
     "startDate": 0,
     "status": "open",
     "title": "make it so that images can be pasted into the webiste issue reporting",
-    "updatedAt": 1783911859,
+    "updatedAt": 1783914306317,
     "votes": 0
 }
