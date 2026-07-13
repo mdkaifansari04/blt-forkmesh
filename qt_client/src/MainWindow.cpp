@@ -169,6 +169,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                                  ? QStringLiteral("ERR %1 %2")
                                        .arg(code.toString(), reply->errorString())
                                  : QStringLiteral("ERR ") + reply->errorString();
+                    // Qt's errorString() for an HTTP error is generic ("server
+                    // replied: <url>") and omits the payload the server actually
+                    // sent — which for a worker 503 is exactly the explanation a
+                    // user needs. peek() (not read()) the first chunk of the body
+                    // so we surface the server's own words without consuming the
+                    // buffer out from under the real reply consumer (adhoc #68).
+                    const QByteArray body = reply->peek(512);
+                    if (!body.isEmpty()) {
+                        const QString snippet = QString::fromUtf8(body).simplified();
+                        if (!snippet.isEmpty())
+                            status += QStringLiteral(" [body: ") + snippet +
+                                      QStringLiteral("]");
+                    }
                 } else {
                     const QVariant code = reply->attribute(
                         QNetworkRequest::HttpStatusCodeAttribute);
