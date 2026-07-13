@@ -132,6 +132,23 @@
     return out.join("");
   }
 
+  // Skeleton placeholder for the file tree while the live mirror answers. Mirrors
+  // the real row grid (icon / name / commit message / date) so the panel keeps
+  // its shape and shimmers into the content, instead of a bare one-line spinner.
+  // Bars use muted-foreground/20 so they stay visible in both light and dark.
+  function repoTreeSkeletonHtml(rows = 8) {
+    const nameWidths = ["w-40", "w-28", "w-52", "w-36", "w-44", "w-24", "w-48", "w-32"];
+    const bar = "rounded bg-muted-foreground/20";
+    const cells = Array.from({ length: rows }).map((_, i) => `
+        <div class="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-2.5 sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
+          <span class="h-4 w-4 shrink-0 ${bar}"></span>
+          <span class="h-3.5 ${nameWidths[i % nameWidths.length]} max-w-full ${bar}"></span>
+          <span class="hidden h-3 w-3/4 ${bar} sm:block"></span>
+          <span class="h-3 w-16 shrink-0 ${bar}"></span>
+        </div>`).join("");
+    return `<div class="animate-pulse" role="status" aria-label="Loading tree…">${cells}<span class="sr-only">Loading tree…</span></div>`;
+  }
+
   async function loadRepositoryTree(repo, path = "") {
     const detail = $("[data-repo-detail]");
     if (!detail) return;
@@ -151,7 +168,7 @@
     // dropped it below the content was removed, owner decision 2026-07-11).
     renderRepoBreadcrumb(repo, path);
 
-    treeBody.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading tree...")}</div>`;
+    treeBody.innerHTML = repoTreeSkeletonHtml();
     renderRepoExplorer(repo, path, []);
     try {
       const requestedAt = performance.now();
