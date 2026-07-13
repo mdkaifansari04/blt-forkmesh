@@ -605,7 +605,13 @@
                   Repository
                   <select data-agent-modal-repo class="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary"></select>
                 </label>
-                <input data-repo-agent-new-input type="text" maxlength="8000" placeholder="Start a new agent - enter a prompt" class="h-9 min-w-0 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary" />
+                <input data-repo-agent-new-input type="text" maxlength="8000" placeholder="Start a new agent - enter a prompt (paste a screenshot to attach)" class="h-9 min-w-0 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary" />
+                <div class="flex items-center gap-2">
+                  <button type="button" data-repo-agent-new-attach title="Attach a screenshot" class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="paperclip" class="h-3.5 w-3.5"></i>Attach</button>
+                  <span class="text-[11px] text-muted-foreground">or paste a screenshot</span>
+                </div>
+                <input type="file" data-repo-agent-new-file-input multiple accept="image/png,image/jpeg,image/gif,image/webp" class="hidden" />
+                <div data-repo-agent-new-attachments class="flex flex-wrap gap-2"></div>
                 <div class="flex flex-wrap items-center gap-2">
                   <select data-repo-agent-new-provider title="Agent provider" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"></select>
                   <select data-repo-agent-new-model title="Agent model" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"></select>

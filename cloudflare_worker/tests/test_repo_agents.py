@@ -246,6 +246,9 @@ def _harness(accounts):
         "MAX_AGENT_TITLE": 240,
         "MAX_AGENT_PROMPT_TEXT": 8000,
         "MAX_PENDING_AGENT_PROMPTS": 50,
+        "MAX_AGENT_PROMPT_IMAGES": 3,
+        "MAX_AGENT_PROMPT_IMAGE_BYTES": 1_400_000,
+        "MAX_AGENT_PROMPT_IMAGES_TOTAL_BYTES": 2_400_000,
         "MAX_AGENT_TRANSCRIPT": 16000,
         # Session-token proof (agents-tab owner authorization).
         "hmac": hmac,
@@ -410,6 +413,51 @@ def test_prompt_enqueued_then_drained_by_desktop_get():
         env, _Request("GET", _push_url()), "alice", "proj",
     ))
     assert drained_again["data"]["prompts"] == []
+
+
+def test_new_agent_prompt_carries_pasted_screenshots():
+    # adhoc #78: a "start agent" prompt from the website can attach pasted
+    # screenshots. They ride to the node as data: URLs on the drained prompt.
+    accounts = {"alice": _owner_account()}
+    ns = _harness(accounts)
+    env = object()
+    good = "data:image/png;base64,aGVsbG8="
+    sent = asyncio.run(ns["agents_prompt_handler"](
+        env, _Request("POST", body={
+            "ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice"),
+            "text": "look at this",
+            "images": [good, "not-a-data-url", 123],
+        }),
+        "alice", "proj", "new",
+    ))
+    assert sent == {"status": 200, "data": {"ok": True}}
+
+    drained = asyncio.run(ns["agents_handler"](
+        env, _Request("GET", _push_url()), "alice", "proj",
+    ))
+    prompts = drained["data"]["prompts"]
+    assert len(prompts) == 1
+    # Only the valid data: URL survives; junk entries are dropped.
+    assert prompts[0]["images"] == [good]
+
+
+def test_new_agent_prompt_rejects_oversized_screenshot():
+    accounts = {"alice": _owner_account()}
+    ns = _harness(accounts)
+    env = object()
+    huge = "data:image/png;base64," + ("A" * ns["MAX_AGENT_PROMPT_IMAGE_BYTES"])
+    sent = asyncio.run(ns["agents_prompt_handler"](
+        env, _Request("POST", body={
+            "ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice"),
+            "text": "look at this",
+            "images": [huge],
+        }),
+        "alice", "proj", "new",
+    ))
+    assert sent["status"] == 400
+    assert sent["data"]["error"] == "image_too_large"
 
 
 def test_self_asserted_owner_without_session_is_rejected():

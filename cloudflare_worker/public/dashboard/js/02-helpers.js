@@ -560,6 +560,13 @@
   // Raw files can be much bigger than the final embedded size - anything under
   // this is accepted into the crop/compress modal rather than rejected outright.
   const ISSUE_IMAGE_RAW_MAX_BYTES = 20 * 1024 * 1024;
+  // Screenshots pasted/attached onto a "start agent" prompt (adhoc #78). More
+  // generous than issue images so a screenshot stays legible for the agent, but
+  // still bounded to keep the queued-prompt row (and /api/sync payload) modest;
+  // mirrors the worker's MAX_AGENT_PROMPT_IMAGE(S)* caps.
+  const AGENT_IMAGE_MAX_COUNT = 3;
+  const AGENT_IMAGE_MAX_BYTES = 1000 * 1024;
+  const AGENT_IMAGE_MAX_TOTAL_BYTES = 1700 * 1024;
 
   function readAsDataUrl(fileOrBlob) {
     return new Promise((resolve, reject) => {
