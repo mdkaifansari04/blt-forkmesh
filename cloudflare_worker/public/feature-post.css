@@ -194,6 +194,10 @@ h1 {
   color: var(--green);
 }
 
+html:not(.light) .body a {
+  color: var(--paragraph);
+}
+
 .body .note {
   margin: 34px 0;
   border: 1px solid var(--line);
