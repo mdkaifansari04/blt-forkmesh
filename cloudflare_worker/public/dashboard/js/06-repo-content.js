@@ -155,7 +155,13 @@
     renderRepoExplorer(repo, path, []);
     try {
       const requestedAt = performance.now();
-      const data = await fetchJson(repoLiveUrl(repo, "tree", { path }));
+      // A live-mirror read: fetch fresh (fetchRepoJson, no-store) like every
+      // other tunnel surface (issues/pulls/releases/README), never the browser-
+      // cached, account-scoped fetchJson. The router round-robins browse across
+      // whichever mirrors are online, so a cached copy could pin the page to a
+      // node that has since gone offline — the "served by mirror" view must
+      // reflect the mirror that actually answered this request.
+      const data = await fetchRepoJson(repoLiveUrl(repo, "tree", { path }));
       renderRepoServedBy(data.servedBy, performance.now() - requestedAt);
       updateRepoCommitSummary(data.latestCommit, repo);
       const entries = Array.isArray(data.entries) ? data.entries.slice() : [];
@@ -252,7 +258,9 @@
         if (renderRepoPreview(viewer, repo, path, {})) return;
       }
       const requestedAt = performance.now();
-      const data = await fetchJson(repoLiveUrl(repo, "blob", { path }));
+      // Fresh live-mirror read (see loadRepositoryTree): the blob must come from
+      // the mirror serving this request, not a stale browser cache.
+      const data = await fetchRepoJson(repoLiveUrl(repo, "blob", { path }));
       renderRepoServedBy(data.servedBy, performance.now() - requestedAt);
       if (renderRepoPreview(viewer, repo, path, data)) return;
       const content = data.content || data.text || "";
@@ -2204,7 +2212,7 @@
 
   async function loadRepoAboutContributors(repo) {
     try {
-      const data = await fetchJson(repoLiveUrl(repo, "history"));
+      const data = await fetchRepoJson(repoLiveUrl(repo, "history"));
       const commits = Array.isArray(data?.commits) ? data.commits : [];
       if (!commits.length || !repoAboutStillCurrent(repo)) return;
       const tally = {};
@@ -2431,7 +2439,6 @@
       window.lucide?.createIcons();
     }
     modal.classList.toggle("hidden", !open);
-    modal.classList.toggle("flex", open);
     if (open) modal.querySelector("[data-repo-agent-new-input]")?.focus();
   }
 
