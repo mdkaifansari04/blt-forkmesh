@@ -44,6 +44,17 @@
             "sig": "lU5A7qxZhkG1_cQKvaV9KNTh6kClw_GO2MepNeBcWxsVHE34igyiLG5wxytrR5nmOLrcZse4cQ08TBVfhz5JDQ",
             "ts": 1783914306378,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-423-make-it-so-that-images-can-be-pasted-into-the-we\".",
+            "id": "5a531d9c-39e7-4f39-af75-3de2fa88c5a9",
+            "sig": "C-nCnXNF8bglZ_RsK4dSD_qIeEzSeDJatzPxi3hjQoujcy79y33flUZZeUU3BIOPn7EfdTiwxgXB-vTadrqsCg",
+            "ts": 1783914556709,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -56,6 +67,6 @@
     "startDate": 0,
     "status": "open",
     "title": "make it so that images can be pasted into the webiste issue reporting",
-    "updatedAt": 1783914306378,
+    "updatedAt": 1783914556709,
     "votes": 0
 }
