@@ -685,6 +685,18 @@ QString MainWindow::testWorktreeAheadBehindText(const QString &branch) const
     return QString();
 }
 
+QStringList MainWindow::testWorktreeBranches() const
+{
+    QStringList branches;
+    if (!m_worktreesTable)
+        return branches;
+    for (int row = 0; row < m_worktreesTable->rowCount(); ++row) {
+        if (QTableWidgetItem *item = m_worktreesTable->item(row, 0))
+            branches << item->data(Qt::UserRole).toString();
+    }
+    return branches;
+}
+
 QString MainWindow::testWorktreeBranchLabel() const
 {
     return m_worktreeBranchLabel ? m_worktreeBranchLabel->text() : QString();
@@ -720,6 +732,18 @@ void MainWindow::testClickRepoDetailTab(int id)
         return;
     if (QAbstractButton *b = m_repoDetailTabs->button(id))
         b->click(); // emits idClicked(id) -> the same path a real click takes
+}
+
+bool MainWindow::testOpenMostRecentCommit()
+{
+    if (!m_commitsTable)
+        return false;
+    if (m_commitsTable->rowCount() == 0)
+        loadCommits();
+    if (m_commitsTable->rowCount() == 0)
+        return false;
+    openMostRecentCommit();
+    return true;
 }
 
 bool MainWindow::testWorktreesTableHasKeyboardFocus() const
@@ -997,6 +1021,15 @@ void MainWindow::startSession()
         m_setupError->show();
         return;
     }
+    if (m_accountAuthenticated &&
+        AccountCapability::normalizedAccount(m_accountName) != name) {
+        setDesktopCapability(m_accountName, false);
+        m_accountAuthenticated = false;
+        m_accountTier = QStringLiteral("free");
+        m_accountSolanaVerified = false;
+        m_isAdmin = false;
+        QSettings().remove(kAuthedAccountSetting);
+    }
 
     // No wallet, no signup: the core flow (clone, mirror, issues, PRs, chat)
     // needs only a node name. Crypto is strictly opt-in and lives behind the
@@ -1032,7 +1065,8 @@ void MainWindow::startSession()
         }
         return false;
     }();
-    if ((m_headless || publishesMirror) && !hasActiveAccountSession() &&
+    if ((m_headless || publishesMirror) &&
+        !hasOwnerSigningCapability(name) &&
         isValidNodeName(name)) {
         bool registered = false;
 #ifdef FORKMESH_WINDOW_TESTS
@@ -1073,11 +1107,15 @@ void MainWindow::startSession()
         m_serverUrlEdit->setText(serverHostDisplay(kDefaultServerUrl));
 
     saveSolanaAddress(m_solanaEdit->text().trimmed());
-    if (m_accountAuthenticated && m_accountName != name) {
+    if (m_accountAuthenticated &&
+        AccountCapability::normalizedAccount(m_accountName) !=
+            AccountCapability::normalizedAccount(name)) {
+        setDesktopCapability(m_accountName, false);
         m_accountAuthenticated = false;
         m_accountTier = QStringLiteral("free");
         m_accountSolanaVerified = false;
         m_isAdmin = false;
+        QSettings().remove(kAuthedAccountSetting);
     }
     m_accountName = name;
     QSettings().setValue(kAccountNameSetting, name);
@@ -1206,7 +1244,7 @@ void MainWindow::startSession()
                 m_connectedAtMs = 0;
                 QSettings().setValue(kConnectionTotalSetting, m_totalConnectionMs);
             }
-        } else {
+        } else if (hasOwnerSigningCapability(name)) {
             // Serve already-mirrored repos live to the web for this session.
             startRepoHosts();
             // Heartbeat so an active, online node stays eligible for the reward
@@ -1269,7 +1307,8 @@ void MainWindow::sendNodeHeartbeat()
     const QString name = m_accountName.isEmpty()
                              ? QSettings().value(kAccountNameSetting).toString().trimmed()
                              : m_accountName;
-    if (name.isEmpty() || !m_profileIdentity.isValid())
+    if (name.isEmpty() || !hasOwnerSigningCapability(name) ||
+        !m_profileIdentity.isValid())
         return;
     // Back off exponentially while the relay is failing (offline / HTTP 429) so
     // a rate-limited node stops beating every single minute into the flood.
@@ -1445,7 +1484,8 @@ void MainWindow::showOwnershipTransferPrompt(const QString &admin)
 void MainWindow::submitOwnershipTransferDecision(bool approve)
 {
     const QString node = accountOwner();
-    if (node.isEmpty() || !m_profileIdentity.isValid())
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
+        !m_profileIdentity.isValid())
         return;
     const QString action = approve ? QStringLiteral("approve")
                                    : QStringLiteral("deny");
@@ -1477,7 +1517,8 @@ void MainWindow::requestNodeOwnership()
         return;
     const QString target = m_profileNodeName;
     const QString node = accountOwner();
-    if (target.isEmpty() || node.isEmpty() || !m_profileIdentity.isValid())
+    if (target.isEmpty() || node.isEmpty() ||
+        !hasOwnerSigningCapability(node) || !m_profileIdentity.isValid())
         return;
     if (QMessageBox::question(
             this, "Take ownership",
@@ -1521,7 +1562,8 @@ void MainWindow::pollPendingUsers()
     if (!m_isAdmin)
         return;
     const QString node = accountOwner();
-    if (node.isEmpty() || !m_profileIdentity.isValid())
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
+        !m_profileIdentity.isValid())
         return;
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray canonical =
@@ -1574,7 +1616,8 @@ void MainWindow::fetchRoomPassphrase()
     if (!m_roomPassphrase.isEmpty())
         return;
     const QString node = accountOwner();
-    if (node.isEmpty() || !m_profileIdentity.isValid())
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
+        !m_profileIdentity.isValid())
         return;
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray canonical =
@@ -1605,7 +1648,8 @@ void MainWindow::fetchRoomPassphrase()
 void MainWindow::showAdminVerifyDialog()
 {
     const QString node = accountOwner();
-    if (node.isEmpty() || !m_profileIdentity.isValid())
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
+        !m_profileIdentity.isValid())
         return;
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray canonical =
@@ -1672,7 +1716,8 @@ void MainWindow::showAdminVerifyDialog()
 bool MainWindow::adminVerifyEmail(const QString &target)
 {
     const QString node = accountOwner();
-    if (node.isEmpty() || target.isEmpty() || !m_profileIdentity.isValid())
+    if (node.isEmpty() || target.isEmpty() ||
+        !hasOwnerSigningCapability(node) || !m_profileIdentity.isValid())
         return false;
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray canonical =
@@ -1704,7 +1749,7 @@ QString MainWindow::accountOwner() const
 
 QString MainWindow::hostLinkUserName()
 {
-    if (!hasActiveAccountSession())
+    if (!hasOwnerSigningCapability(accountOwner()))
         return QString();
     const QString linkedOwner = m_nodeOwnerUser.trimmed().toLower();
     if (!linkedOwner.isEmpty())
@@ -1738,7 +1783,7 @@ QString MainWindow::hostLinkSigningAccountName(QString *userName)
     if (userName)
         userName->clear();
     const QString signer = accountOwner().trimmed().toLower();
-    if (signer.isEmpty() || !hasActiveAccountSession())
+    if (signer.isEmpty() || !hasOwnerSigningCapability(signer))
         return QString();
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load())
         return QString();
@@ -1857,6 +1902,55 @@ bool MainWindow::hasActiveAccountSession() const
     return m_accountAuthenticated && m_accountTier == QStringLiteral("active");
 }
 
+bool MainWindow::hasOwnerSigningCapability(
+    const QString &signerAccount) const
+{
+    if (!AccountCapability::ownerSigningAllowed(
+            hasActiveAccountSession(), m_accountDesktopCapable,
+            m_accountName, signerAccount)) {
+        return false;
+    }
+    const QSettings settings;
+    return AccountCapability::persistedMarkerMatches(
+        settings.value(kDesktopCapableAccountSetting).toString(),
+        settings.value(kDesktopCapablePublicKeySetting).toString(),
+        m_accountName, m_profileIdentity.publicKey());
+}
+
+void MainWindow::setDesktopCapability(const QString &accountName,
+                                      bool capable)
+{
+    const QString normalized =
+        AccountCapability::normalizedAccount(accountName);
+    const QString publicKey = m_profileIdentity.publicKey().trimmed();
+    m_accountDesktopCapable =
+        capable && !normalized.isEmpty() && !publicKey.isEmpty();
+    QSettings settings;
+    if (m_accountDesktopCapable) {
+        settings.setValue(kDesktopCapableAccountSetting, normalized);
+        settings.setValue(kDesktopCapablePublicKeySetting, publicKey);
+        return;
+    }
+    settings.remove(kDesktopCapableAccountSetting);
+    settings.remove(kDesktopCapablePublicKeySetting);
+    if (m_heartbeatTimer)
+        m_heartbeatTimer->stop();
+    stopRepoHosts();
+}
+
+bool MainWindow::restoreDesktopCapability(const QString &accountName)
+{
+    const QString stored =
+        QSettings().value(kDesktopCapableAccountSetting).toString();
+    const QString storedPublicKey =
+        QSettings().value(kDesktopCapablePublicKeySetting).toString();
+    m_accountDesktopCapable =
+        AccountCapability::persistedMarkerMatches(
+            stored, storedPublicKey, accountName,
+            m_profileIdentity.publicKey());
+    return m_accountDesktopCapable;
+}
+
 QString MainWindow::catalogOwner(const RepositoryRecord &repo) const
 {
     const QString account = accountOwner();
@@ -1912,7 +2006,8 @@ QUrl MainWindow::catalogListUrl()
     // token so the relay also returns our own private repos (hidden from the public
     // catalog). Anonymous callers still receive the public-only list.
     const QString viewer = accountOwner();
-    if (m_profileIdentity.isValid() && !viewer.isEmpty()) {
+    if (m_profileIdentity.isValid() && !viewer.isEmpty() &&
+        hasOwnerSigningCapability(viewer)) {
         const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
         const QByteArray canonical =
             ("forkmesh-catalog-view-v1\n" + viewer + "\n" + ts).toUtf8();
@@ -2138,13 +2233,15 @@ bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &so
             m_accountName = accountName;
             m_accountTier = QStringLiteral("active");
             m_accountSolanaVerified = true;
+            setDesktopCapability(accountName,
+                                 m_testAccountFlowDesktopCapable);
         }
         Q_UNUSED(solana);
         return m_testAccountFlowResult;
     }
 #endif
     Q_UNUSED(solana);
-    if (m_accountAuthenticated && m_accountName == accountName)
+    if (hasOwnerSigningCapability(accountName))
         return true;
     if (!isValidNodeName(accountName)) {
         QMessageBox::warning(this, "Join the network",
@@ -2175,10 +2272,20 @@ bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &so
 // run on launch without prompting. Returns false (quietly) when it can't confirm.
 bool MainWindow::authenticateSilently(const QString &accountName)
 {
-    if (m_accountAuthenticated && m_accountName == accountName)
+    if (hasOwnerSigningCapability(accountName))
         return true;
     if (!isValidNodeName(accountName))
         return false;
+    if (m_accountAuthenticated &&
+        AccountCapability::normalizedAccount(m_accountName) !=
+            AccountCapability::normalizedAccount(accountName)) {
+        setDesktopCapability(m_accountName, false);
+        m_accountAuthenticated = false;
+        m_accountTier = QStringLiteral("free");
+        m_accountSolanaVerified = false;
+        m_isAdmin = false;
+        QSettings().remove(kAuthedAccountSetting);
+    }
     int status = 0;
     const QJsonObject lookup = getAccountSync(accountName, &status);
     if (lookup.value("exists").toBool() &&
@@ -2188,6 +2295,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
+        setDesktopCapability(accountName, true);
         m_nodeOwnerUser = lookup.value("owner").toString();
         QSettings().setValue(kAuthedAccountSetting, accountName);
         applyAccountEmailVerified(accountName,
@@ -2200,8 +2308,10 @@ bool MainWindow::authenticateSilently(const QString &accountName)
     // already verified network members, so reflect that instead of nagging
     // "verify your payout wallet" on every launch.
     if (lookup.value("exists").toBool() &&
-        lookup.value("status").toString() == "active")
+        lookup.value("status").toString() == "active") {
         m_accountSolanaVerified = true;
+        setDesktopCapability(accountName, false);
+    }
     // Trust a previously authenticated marker whenever the relay gave no
     // authoritative answer — unreachable (status 0), rate-limited or erroring
     // (429/5xx) — so a transient lookup failure doesn't demote a returning user
@@ -2210,8 +2320,11 @@ bool MainWindow::authenticateSilently(const QString &accountName)
     // pubkey matched above. Publishing and heartbeat require this desktop's
     // Ed25519 key, not just an email/password session.
     const bool cachedHere =
-        QSettings().value(kAuthedAccountSetting).toString() == accountName;
-    if (cachedHere && status != 200) {
+        AccountCapability::normalizedAccount(
+            QSettings().value(kAuthedAccountSetting).toString()) ==
+        AccountCapability::normalizedAccount(accountName);
+    if (cachedHere && status != 200 &&
+        restoreDesktopCapability(accountName)) {
         m_accountAuthenticated = true;
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
@@ -2219,6 +2332,8 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         refreshSettingsEmailVerifiedBadge();
         return true;
     }
+    if (status == 200)
+        setDesktopCapability(accountName, false);
     return false;
 }
 
@@ -2235,7 +2350,7 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
         return false;
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load())
         return false;
-    if (m_accountAuthenticated && m_accountName == accountName)
+    if (hasOwnerSigningCapability(accountName))
         return true;
 
     auto activateSession = [&](const QString &owner, bool emailVerified) {
@@ -2243,6 +2358,7 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
+        setDesktopCapability(accountName, true);
         m_nodeOwnerUser = owner;
         QSettings().setValue(kAuthedAccountSetting, accountName);
         applyAccountEmailVerified(accountName, emailVerified);
@@ -2372,6 +2488,7 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
     m_accountName = accountName;
     m_accountTier = QStringLiteral("active");
     m_accountSolanaVerified = true; // registered = active network member
+    setDesktopCapability(accountName, true);
     m_nodeOwnerUser = fresp.value("owner").toString(); // set if a link code linked it
     QSettings().setValue(kAuthedAccountSetting, accountName);
     QSettings().setValue(kAccountNameSetting, accountName);
@@ -2402,7 +2519,7 @@ void MainWindow::scheduleHeadlessRegisterRetry(const QString &accountName)
         m_headlessRegisterRetryTimer->setSingleShot(true);
         connect(m_headlessRegisterRetryTimer, &QTimer::timeout, this,
                 [this, accountName] {
-                    if (hasActiveAccountSession())
+                    if (hasOwnerSigningCapability(accountName))
                         return;
                     if (registerNodeAccountSilently(accountName)) {
                         m_headlessRegisterAttempt = 0;
@@ -2445,13 +2562,28 @@ bool MainWindow::verifyTotpLogin(const QString &email,
 {
     if (fatal)
         *fatal = false;
+    QJsonObject loginRequest{{"email", email}, {"password", password},
+                             {"totp", totp}};
+    const QString publicKey = m_profileIdentity.publicKey();
+    if (!publicKey.isEmpty()) {
+        const QString deviceTs =
+            QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray deviceCanonical =
+            ForkMeshIdentity::deviceBindCanonical(
+                accountName, publicKey, deviceTs);
+        const QString deviceSig =
+            deviceCanonical.isEmpty()
+                ? QString()
+                : m_profileIdentity.signData(deviceCanonical);
+        if (!deviceSig.isEmpty()) {
+            loginRequest.insert(QStringLiteral("pubkey"), publicKey);
+            loginRequest.insert(QStringLiteral("deviceTs"), deviceTs);
+            loginRequest.insert(QStringLiteral("deviceSig"), deviceSig);
+        }
+    }
     int status = 0;
-    const QJsonObject resp = postAccountSync(
-        "login",
-        QJsonObject{{"email", email}, {"password", password},
-                    {"totp", totp},
-                    {"pubkey", m_profileIdentity.publicKey()}},
-        &status);
+    const QJsonObject resp =
+        postAccountSync("login", loginRequest, &status);
     auto acceptLogin = [&](const QJsonObject &payload, bool ownsDesktopKey) {
         m_accountAuthenticated = true;
         m_accountName = payload.value("nodeName").toString(accountName);
@@ -2460,19 +2592,21 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         // key and can publish/host/sign owner-only actions. False is a safe
         // password-only session for viewing/using the app when the account is
         // bound to another desktop key.
-        m_accountSolanaVerified = ownsDesktopKey;
-        // Remember that this machine successfully authenticated this account so
-        // the next launch opens straight onto the app shell. Without this a
-        // password (cross-device) login — where the node key does NOT own the
-        // account — fails silent auth on every restart and is sent back to the
-        // login screen even with correct credentials.
+        m_accountSolanaVerified = true;
+        setDesktopCapability(m_accountName, ownsDesktopKey);
+        // Remember the account that completed login. Desktop signing capability
+        // is persisted separately, so a password-only marker never restores
+        // owner-signed actions on a later launch.
         QSettings().setValue(kAuthedAccountSetting, m_accountName);
         applyAccountEmailVerified(m_accountName,
                                   payload.value("emailVerified").toBool());
     };
 
     if (status == 200 && resp.value("ok").toBool()) {
-        acceptLogin(resp, true);
+        const bool ownsDesktopKey =
+            resp.value(QStringLiteral("deviceKeyMatched")).toBool(false) &&
+            resp.value(QStringLiteral("desktopCapable")).toBool(false);
+        acceptLogin(resp, ownsDesktopKey);
         return true;
     }
     const QString err = resp.value("error").toString();
@@ -2482,7 +2616,7 @@ bool MainWindow::verifyTotpLogin(const QString &email,
     // web/mobile architecture: a client may use the central Worker with
     // email/password, but only the bound desktop key can publish/host. Do not
     // silently rotate or replace the account key here.
-    if (err == "pubkey_mismatch") {
+    if (AccountCapability::allowsPasswordOnlyFallback(err)) {
         int webStatus = 0;
         const QJsonObject webResp = postAccountSync(
             "login",
@@ -2492,11 +2626,22 @@ bool MainWindow::verifyTotpLogin(const QString &email,
             acceptLogin(webResp, false);
             QMessageBox::information(
                 this, "Logged in",
-                "You are signed in with email/password, but this account is "
-                "already bound to a different desktop key. Browsing and account "
-                "features will work from this device; publishing, hosting, and "
-                "owner-signed actions require the original desktop key or an "
-                "explicit account-key rotation/import.");
+                err == QLatin1String("device_proof_required")
+                    ? "You are signed in with email/password for browsing and "
+                      "account features. This device's identity proof was not "
+                      "accepted, so publishing, hosting, and owner-signed "
+                      "actions stay disabled. Check this computer's clock and "
+                      "identity, then sign in again to restore them."
+                : err == QLatin1String("device_key_conflict")
+                    ? "You are signed in with email/password for browsing and "
+                      "account features. This desktop key belongs to another "
+                      "account, so publishing, hosting, and owner-signed actions "
+                      "stay disabled until you import or create the correct key."
+                    : "You are signed in with email/password, but this account "
+                      "is already bound to a different desktop key. Browsing and "
+                      "account features will work from this device; publishing, "
+                      "hosting, and owner-signed actions require the original "
+                      "desktop key or an explicit account-key rotation/import.");
             return true;
         }
     }
@@ -2519,6 +2664,14 @@ bool MainWindow::verifyTotpLogin(const QString &email,
                                      "desktop key, and password-only fallback also "
                                      "failed. Use the original device, import its "
                                      "identity backup, or rotate the account key."
+                             : err == "device_proof_required"
+                                   ? "This desktop could not prove possession of "
+                                     "its identity key. Reload the identity or "
+                                     "restart ForkMesh, then try again."
+                             : err == "device_key_conflict"
+                                   ? "This desktop identity is already registered "
+                                     "to another account. Import the identity for "
+                                     "this account or use a separate desktop key."
                                          : "Login failed" +
                                                (err.isEmpty() ? QString() : ": " + err) +
                                                ".");
@@ -2720,6 +2873,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
         m_accountName = name;
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true; // joined = active network member
+        setDesktopCapability(name, true);
         QSettings().setValue(kAuthedAccountSetting, name);
         joined = true;
         dialog.accept();

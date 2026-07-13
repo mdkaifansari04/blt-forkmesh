@@ -1421,6 +1421,8 @@ void MainWindow::pushAgentSessionsForRepo(RepositoryRecord repo,
         return;
 
     const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    if (!hasOwnerSigningCapability(owner))
+        return;
     const QString ts = QString::number(nowMs);
     const QByteArray canonical =
         ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
@@ -1497,6 +1499,8 @@ void MainWindow::drainAgentPromptsFor(RepositoryRecord repo)
         return;
 
     const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    if (!hasOwnerSigningCapability(owner))
+        return;
     const QString ts = QString::number(nowMs);
     const QByteArray canonical =
         ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
@@ -1529,6 +1533,8 @@ void MainWindow::drainAgentPromptsFor(RepositoryRecord repo)
 void MainWindow::applyAgentPromptsPayload(const RepositoryRecord &repo,
                                           const QJsonArray &prompts)
 {
+    if (!hasOwnerSigningCapability(repo.owner))
+        return;
     for (const QJsonValue &value : prompts) {
         const QJsonObject item = value.toObject();
         const QString text = item.value("text").toString();

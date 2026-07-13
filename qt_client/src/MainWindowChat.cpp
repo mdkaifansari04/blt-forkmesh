@@ -627,7 +627,6 @@ QWidget *MainWindow::buildNetworkLogDock()
                 refreshQuickAddModelPicker();
                 syncQuickAddAgentControls();
             });
-    syncQuickAddAgentControls();
 
     // Slash-actions button (adhoc #116): a small bordered "/" box, like the
     // Claude Code extension's, that opens the filterable actions popup —
@@ -722,6 +721,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     agentBoxRow->addWidget(m_quickAddAgentProvider);
     agentBoxRow->addWidget(m_quickAddClaudeModel);
     agentBoxRow->addWidget(m_quickAddModeSelector);
+    // Apply initial visibility only after the controls have their real parent.
+    // Showing a parentless combo and then reparenting it can leave it hidden,
+    // which made the Claude model picker depend on event-loop timing at startup.
+    syncQuickAddAgentControls();
 
     // Bottom bar nested inside the prompt frame, below the text area (adhoc
     // #99): paperclip and mic at the bottom-left (opposite the send icons),
@@ -3275,12 +3278,6 @@ QWidget *MainWindow::buildBreadcrumb()
     // Live diagnostics glyph (CPU/MEM/DISK sparklines moved up to mainRow for adhoc #121).
     navRow->addWidget(m_footerDiagnostics);
     navRow->addStretch();
-    // Right-aligned so they sit under the top-right avatar; the pencil,
-    // screenshot and resize buttons sit just left of the rebuild/restart button.
-    navRow->addWidget(m_navDrawButton);
-    navRow->addWidget(m_navScreenshotButton);
-    navRow->addWidget(m_navResizeButton);
-    navRow->addWidget(m_navRebuildButton);
     auto *navRowHost = new QWidget;
     navRowHost->setLayout(navRow);
     navRowHost->setMinimumWidth(0);
@@ -3296,7 +3293,29 @@ QWidget *MainWindow::buildBreadcrumb()
     navRowScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     navRowScroll->setMinimumWidth(0);
     navRowScroll->setFixedHeight(50);
-    layout->addWidget(navRowScroll);
+
+    // Keep the screen tools anchored at the right edge while the growing set of
+    // section links scrolls independently. Otherwise adding one section can push
+    // every utility button beyond the viewport even on a laptop-width window.
+    auto *navUtilityRow = new QHBoxLayout;
+    navUtilityRow->setContentsMargins(8, 0, 16, 0);
+    navUtilityRow->setSpacing(8);
+    navUtilityRow->addWidget(m_navDrawButton);
+    navUtilityRow->addWidget(m_navScreenshotButton);
+    navUtilityRow->addWidget(m_navResizeButton);
+    navUtilityRow->addWidget(m_navRebuildButton);
+    auto *navUtilityHost = new QWidget;
+    navUtilityHost->setLayout(navUtilityRow);
+    navUtilityHost->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+
+    auto *navBand = new QWidget;
+    auto *navBandRow = new QHBoxLayout(navBand);
+    navBandRow->setContentsMargins(0, 0, 0, 0);
+    navBandRow->setSpacing(0);
+    navBandRow->addWidget(navRowScroll, 1);
+    navBandRow->addWidget(navUtilityHost);
+    navBand->setFixedHeight(50);
+    layout->addWidget(navBand);
     // Home/Code is the initial section, so show its nav button selected up front.
     m_repoViewButton->setChecked(true);
 
@@ -3463,7 +3482,7 @@ void MainWindow::setNodeOffline(bool offline)
         // Restart the uptime clock only if we are actually attached to a relay.
         if (m_backend && m_connectedAtMs <= 0)
             m_connectedAtMs = QDateTime::currentMSecsSinceEpoch();
-        if (m_backend) {
+        if (m_backend && hasOwnerSigningCapability()) {
             startRepoHosts();
             if (!m_heartbeatTimer) {
                 m_heartbeatTimer = new QTimer(this);
@@ -5000,7 +5019,7 @@ void MainWindow::refreshRepoPinBanner()
 // protecting clones against a stale or forged mirror exactly as before.
 void MainWindow::reattestStalePins()
 {
-    if (!m_networkAccess || !hasActiveAccountSession())
+    if (!m_networkAccess || !hasOwnerSigningCapability())
         return;
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load())
         return;
@@ -5601,12 +5620,21 @@ void MainWindow::enablePaidMirroring()
             return; // user cancelled the address prompt — stay opted out
     }
 
-    if (!hasActiveAccountSession()) {
+    if (!hasOwnerSigningCapability(accountOwner())) {
         // Reuse the established join/activate path (reserve -> donate -> set
         // login, or log in to an existing account). On cancel/failure it surfaces
         // the reason itself; we simply stay opted out.
         if (!ensureNodeAccount(accountOwner(), address))
             return;
+        if (!hasOwnerSigningCapability(accountOwner())) {
+            flashMessage(
+                QStringLiteral(
+                    "This account is signed in, but this desktop cannot host or "
+                    "publish for it. Use the primary desktop identity or import "
+                    "that identity before enabling paid mirroring."),
+                /*error=*/true);
+            return;
+        }
     }
 
     // Active now: bring the live hosts up and (re)publish existing mirrors so the
@@ -10489,7 +10517,8 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     // (active account + a payout address set) it flips to an "earning" label so
     // the button doubles as a status line; it stays clickable to re-arm hosting.
     if (m_profileGetPaidButton) {
-        const bool earning = hasActiveAccountSession() && !solana.isEmpty();
+        const bool earning = hasOwnerSigningCapability(accountOwner()) &&
+                             !solana.isEmpty();
         m_profileGetPaidButton->setVisible(info.self);
         m_profileGetPaidButton->setText(
             earning ? QString::fromUtf8("\xE2\x9C\x93 Getting paid to mirror")
@@ -10709,7 +10738,7 @@ void MainWindow::refreshProfileAccountStatus()
     // A node must be a registered, key-bound account before the relay can attach
     // it to a user (it links by node name + this node's key). Until then, nudge
     // the user to register/join and disable the button.
-    if (node.isEmpty() || !hasActiveAccountSession()) {
+    if (node.isEmpty() || !hasOwnerSigningCapability(node)) {
         m_nodeOwnerUser.clear();
         m_profileLinkedNodes.clear();
         m_profileIsUserAccount = false;
@@ -10780,7 +10809,8 @@ void MainWindow::fetchLinkedNodesFromOwner(const QString &node,
 
 void MainWindow::promptLinkNodeToUser()
 {
-    if (accountOwner().isEmpty() || !hasActiveAccountSession()) {
+    if (accountOwner().isEmpty() ||
+        !hasOwnerSigningCapability(accountOwner())) {
         logSystem("Register this node before linking it to a user account.");
         return;
     }
@@ -10825,7 +10855,8 @@ void MainWindow::submitLinkNodeToUser(const QString &identifier,
                                       const QString &password)
 {
     const QString node = accountOwner();
-    if (node.isEmpty() || !m_profileIdentity.isValid())
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
+        !m_profileIdentity.isValid())
         return;
     const QString id = identifier.trimmed().toLower();
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
@@ -10911,7 +10942,7 @@ QString MainWindow::linkErrorMessage(const QString &code) const
 void MainWindow::openLinkNodeInBrowser()
 {
     const QString node = accountOwner();
-    if (node.isEmpty() || !hasActiveAccountSession() ||
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
         (!m_profileIdentity.isValid() && !m_profileIdentity.load())) {
         logSystem("Register this node first (see \"Get paid to mirror\") to "
                   "link it to a user account.");

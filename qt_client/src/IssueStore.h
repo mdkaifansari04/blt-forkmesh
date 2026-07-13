@@ -137,6 +137,9 @@ public:
     // the GUI between reads and avoid tripping the stall watchdog.
     QList<Issue> loadAll(QString *error = nullptr,
                          const std::function<void()> &tick = {}) const;
+    QList<Issue> loadAllStrict(QString *error = nullptr) const;
+    QList<Issue> loadAllStrictAtRef(const QString &ref,
+                                    QString *error = nullptr) const;
     QList<IssueLabel> loadLabels() const;
     QList<IssueMilestone> loadMilestones() const;
 
@@ -272,8 +275,10 @@ private:
     bool commit(const QString &message, QString *error) const;
 
     // Read-only access from a bare mirror via `git show`.
-    QList<Issue> loadFromMirror(QString *error) const;
-    QByteArray showFromMirror(const QString &repoRelPath, bool *ok) const;
+    QList<Issue> loadFromMirror(QString *error, bool strict = false,
+                                const QString &refOverride = QString()) const;
+    QByteArray showFromMirror(const QString &repoRelPath, bool *ok,
+                              const QString &refOverride = QString()) const;
     QString mirrorRef() const;
 
     QString m_workTree;

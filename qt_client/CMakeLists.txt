@@ -57,7 +57,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Network Svg)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Network Svg Concurrent)
 find_package(OpenSSL REQUIRED)
 
 # On Linux the screen-region capture must go through the XDG Desktop Portal
@@ -76,6 +76,7 @@ set(FORKMESH_APP_SOURCES
     src/SingleInstance.h
     src/SingleInstance.cpp
     src/Theme.h
+    src/AccountCapability.h
     src/ForkMeshIdentity.h
     src/ForkMeshIdentity.cpp
     src/ChatBackend.h
@@ -94,6 +95,11 @@ set(FORKMESH_APP_SOURCES
     src/BackoffNetworkAccessManager.cpp
     src/RepoHost.h
     src/RepoHost.cpp
+    src/RepoContributionSnapshot.h
+    src/RepoContributionSnapshotInternal.h
+    src/RepoContributionSnapshot.cpp
+    src/StrictGitReader.h
+    src/StrictGitReader.cpp
     src/RepoSecurity.h
     src/RepoSecurity.cpp
     src/IssueStore.h
@@ -285,7 +291,7 @@ set_source_files_properties(
 target_include_directories(forkmesh PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src ${FORKMESH_MOC_DIRS})
 
-target_link_libraries(forkmesh PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
+target_link_libraries(forkmesh PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg Qt6::Concurrent OpenSSL::Crypto)
 # TerminalWidget runs commands under a PTY via forkpty(); on Linux that lives in
 # libutil (macOS provides it in libSystem, so no extra link there).
 if(UNIX AND NOT APPLE)
@@ -336,8 +342,14 @@ if(FORKMESH_BUILD_TESTS)
         src/ClaudeAccountTransfer.cpp
         src/ActionFile.h
         src/ActionFile.cpp
+        src/AccountCapability.h
         src/ForkMeshIdentity.h
         src/ForkMeshIdentity.cpp
+        src/RepoContributionSnapshot.h
+        src/RepoContributionSnapshotInternal.h
+        src/RepoContributionSnapshot.cpp
+        src/StrictGitReader.h
+        src/StrictGitReader.cpp
         src/RoomCrypto.h
         src/RoomCrypto.cpp
         src/CoveCrypto.h
@@ -408,6 +420,8 @@ if(FORKMESH_BUILD_TESTS)
         src/ActionFile.cpp
         src/ForkMeshIdentity.h
         src/ForkMeshIdentity.cpp
+        src/StrictGitReader.h
+        src/StrictGitReader.cpp
         src/RoomCrypto.h
         src/RoomCrypto.cpp
         src/CoveCrypto.h
@@ -453,7 +467,7 @@ if(FORKMESH_BUILD_TESTS)
         tests/test_window_resize.cpp
         ${FORKMESH_APP_SOURCES}
     )
-    target_link_libraries(forkmesh-window-tests PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
+    target_link_libraries(forkmesh-window-tests PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg Qt6::Concurrent OpenSSL::Crypto)
     if(UNIX AND NOT APPLE)
         target_link_libraries(forkmesh-window-tests PRIVATE util Qt6::DBus)
         target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_HAVE_PORTAL)
@@ -473,7 +487,7 @@ if(FORKMESH_BUILD_TESTS)
         tests/test_perf_budgets.cpp
         ${FORKMESH_APP_SOURCES}
     )
-    target_link_libraries(forkmesh-perf-tests PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
+    target_link_libraries(forkmesh-perf-tests PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg Qt6::Concurrent OpenSSL::Crypto)
     if(UNIX AND NOT APPLE)
         target_link_libraries(forkmesh-perf-tests PRIVATE util Qt6::DBus)
         target_compile_definitions(forkmesh-perf-tests PRIVATE FORKMESH_HAVE_PORTAL)
