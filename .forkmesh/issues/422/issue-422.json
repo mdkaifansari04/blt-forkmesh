@@ -44,6 +44,17 @@
             "sig": "YHN-G4dfmPqmETkgwPtWgTB7SsZuANVNDSwspYOArxYAL50RebduYBaKXGhVkN9EILcRhVaujao3pRG8TSJXDw",
             "ts": 1783914294675,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-422-fix-the-color-of-the-diffs-on-the-commits-page-o\".",
+            "id": "09f010f5-2bf5-42ba-a065-db81ee319f75",
+            "sig": "digAa2pg8W9ul9VQng3WzcHudwYMgbaWlkKwcmGkDiw7B5wulY-yCS8t3wFjPhZDgvuU1sRIgdcNxbPf-u4CBw",
+            "ts": 1783914925033,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -56,6 +67,6 @@
     "startDate": 0,
     "status": "open",
     "title": "fix the color of the diffs on the commits page on web",
-    "updatedAt": 1783914294675,
+    "updatedAt": 1783914925033,
     "votes": 0
 }
