@@ -729,10 +729,16 @@ def test_dashboard_has_scoped_light_dark_appearance_controls():
     static_js = _read(PUBLIC / "static-page.js")
     assert 'localStorage.getItem("forkmesh.dashboard.theme")' in static_js
     assert 'localStorage.setItem("forkmesh.dashboard.theme", chosen)' in static_js
+    site_header_js = _read(PUBLIC / "site-header.js")
+    for theme_key in ("forkmesh.dashboard.theme", "forkmesh.theme"):
+        assert theme_key in site_header_js
     for docs_page in (PUBLIC / "docs.html", PUBLIC / "docs" / "index.html"):
         docs = _read(docs_page)
-        assert 'localStorage.getItem("forkmesh.dashboard.theme")' in docs
-        assert 'localStorage.setItem("forkmesh.dashboard.theme", chosen)' in docs
+        assert 'src="/site-header.js"' in docs
+        assert 'id="theme-toggle"' not in docs
+        assert "function applyTheme" not in docs
+        assert 'localStorage.getItem("forkmesh.dashboard.theme")' not in docs
+        assert 'localStorage.setItem("forkmesh.dashboard.theme", chosen)' not in docs
 
     assert "function setAppearanceModalOpen(open)" not in dashboard_js
     assert "data-appearance-settings-button" not in dashboard_js

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Static contracts for the Network command-center page."""
 
+import re
 from pathlib import Path
 
 
@@ -101,6 +102,37 @@ def test_network_command_center_decorative_accents_use_theme_tokens():
     assert "rgba(163, 113, 247" not in network_block
     assert "color-mix(in srgb, var(--primary)" in network_block
     assert "color-mix(in srgb, var(--purple)" in network_block
+
+
+def test_network_decorative_accent_selectors_keep_private_theme_tokens():
+    expected = {
+        ".network-console::before": (
+            "color-mix(in srgb, var(--primary) 16%, transparent)",
+            "color-mix(in srgb, var(--purple) 12%, transparent)",
+        ),
+        ".network-console-led": (
+            "background: var(--primary);",
+            "color-mix(in srgb, var(--primary) 62%, transparent)",
+        ),
+        ".network-route-step.is-relay": (
+            "color-mix(in srgb, var(--primary) 42%, var(--border))",
+            "color-mix(in srgb, var(--primary) 10%, var(--card))",
+        ),
+        ".network-architecture-boundary": (
+            "color-mix(in srgb, var(--purple) 24%, var(--border))",
+            "color-mix(in srgb, var(--purple) 20%, transparent)",
+        ),
+    }
+
+    for selector, markers in expected.items():
+        match = re.search(
+            rf"(?ms)^{re.escape(selector)}\s*\{{(?P<body>[^}}]*)\}}",
+            STYLES,
+        )
+        assert match, f"styles.css missing {selector} rule"
+        body = match.group("body")
+        for marker in markers:
+            assert marker in body, f"{selector} must use {marker}"
 
 
 def test_network_stats_bindings_update_all_metric_instances():

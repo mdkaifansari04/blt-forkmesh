@@ -310,14 +310,23 @@ def recognized_light_theme_strategies(page: Path, html: str) -> tuple[str, ...]:
         strategies.append("styles.css")
 
     docs_light = re.search(
-        r"html\.light\s*\{(?P<body>[^{}]*)\}",
+        r":root\s*\{(?P<body>[^{}]*)\}",
+        inline_css,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    docs_dark = re.search(
+        r"html\.dark\s*\{(?P<body>[^{}]*)\}",
         inline_css,
         flags=re.IGNORECASE | re.DOTALL,
     )
     if (
-        docs_light
+        page in (PUBLIC / "docs.html", PUBLIC / "docs" / "index.html")
+        and docs_light
         and "--docs-bg:" in docs_light.group("body")
         and re.search(r"color-scheme\s*:\s*light\b", docs_light.group("body"))
+        and docs_dark
+        and "--docs-bg:" in docs_dark.group("body")
+        and re.search(r"color-scheme\s*:\s*dark\b", docs_dark.group("body"))
     ):
         strategies.append("docs-inline-palette")
 
@@ -528,6 +537,18 @@ def test_shared_footer_defines_dark_and_light_semantic_palettes():
         },
         "site-footer.css",
     )
+
+    assert_css_declarations(
+        footer_css,
+        ".site-footer-status-pill",
+        {
+            "border": "1px solid var(--fm-footer-border)",
+            "color": "var(--fm-footer-muted)",
+        },
+        "site-footer.css",
+    )
+    status_dot = css_rule(footer_css, ".site-footer-status-dot", "site-footer.css")
+    assert "var(--green, var(--accent-bright, #28c878))" in status_dot
 
 
 def test_landing_page_remains_explicitly_dark():
