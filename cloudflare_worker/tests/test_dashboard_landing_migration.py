@@ -1202,7 +1202,12 @@ def test_dashboard_code_tree_rows_use_live_commit_messages():
     ):
         assert marker in repo_host
 
-    assert "published latest mirror metadata" in render
+    # The commit summary now paints a loading skeleton on first render and is
+    # filled by the live-commit updater; the placeholder text survives only as
+    # that updater's fallback, never as static render output.
+    assert "published latest mirror metadata" not in render
+    assert 'subject || "published latest mirror metadata"' in dashboard_js
+    assert "animate-pulse rounded bg-muted-foreground/20" in render
     assert 'entry.message || entry.commitMessage || "mirrored repository object"' not in tree_loader
 
 

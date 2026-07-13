@@ -244,6 +244,9 @@
         }
       }
     } catch (_) {
+      // The tree fetch drives the commit summary; if no mirror answered, still
+      // resolve the loading skeleton to the repo-derived fallback metadata.
+      updateRepoCommitSummary(null, repo);
       treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No live desktop host is serving this repository tree right now.</div>';
       if (!path) {
         const readmeBody = detail.querySelector("[data-repo-readme-body]");
