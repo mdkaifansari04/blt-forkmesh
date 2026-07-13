@@ -1528,6 +1528,12 @@ void MainWindow::loadMirrorNodesPanel()
             (node.self && m_repoPinMismatch);
         if (onlineOnly && !online)
             continue;
+        // An online node serving a commit that isn't the source-of-truth's is out
+        // of sync: it catches up at its next heartbeat. Computed here (ahead of the
+        // Node dot) so the dot can go amber; the Synced cell reuses it below.
+        const bool behind = online && advert && !advert->commit.isEmpty() &&
+                            !referenceCommit.isEmpty() &&
+                            advert->commit != referenceCommit;
 
         const QString nodeDisplay = displayNodeName(node, advert);
         const QString ownerDisplay = displayOwnerName(node);
@@ -1549,22 +1555,28 @@ void MainWindow::loadMirrorNodesPanel()
         // from the strip (adhoc #196).
         if (online || integrityFailing)
             activityDots.append(
-                {node.id, nodeDisplay, online, node.self, integrityFailing});
+                {node.id, nodeDisplay, online, node.self, behind, integrityFailing});
         auto *nameItem = new SortTableWidgetItem(
             nodeDisplay + (node.self ? QStringLiteral("  (you)") : QString()) +
             (isSource ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
                       : QString()));
+        // Green when online and in sync, amber when online but out of sync
+        // (behind the source of truth), grey when offline.
         nameItem->setIcon(themedOcticon(
-            "broadcast", QColor(online ? "#3fb950" : "#8b949e"), 14));
+            "broadcast",
+            QColor(!online ? "#8b949e" : behind ? "#d29922" : "#3fb950"), 14));
         nameItem->setData(Qt::UserRole, node.id);
         // Source-of-truth rows sort to the top (★ < letters), then by name.
         nameItem->setData(kTableSortRole,
                           (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
                               nodeDisplay.toLower());
-        nameItem->setToolTip(isSource
-                                 ? QString::fromUtf8("Source of truth \xC2\xB7 %1")
-                                       .arg(online ? "online" : "offline")
-                                 : (online ? "Online now" : "Offline"));
+        nameItem->setToolTip(
+            isSource ? QString::fromUtf8("Source of truth \xC2\xB7 %1")
+                           .arg(online ? "online" : "offline")
+                     : (online ? (behind ? QString::fromUtf8(
+                                               "Online \xC2\xB7 out of sync")
+                                         : QStringLiteral("Online now"))
+                               : QStringLiteral("Offline")));
         if (!node.name.trimmed().isEmpty() &&
             node.name.compare(nodeDisplay, Qt::CaseInsensitive) != 0)
             nameItem->setToolTip(nameItem->toolTip() + QStringLiteral("\nChat: ") +
@@ -1619,10 +1631,8 @@ void MainWindow::loadMirrorNodesPanel()
                 QDateTime::fromSecsSinceEpoch(syncedSecs).toString(Qt::ISODate));
         // Behind-but-online node: tag the cell so MirrorSyncDelegate draws a
         // pac-man counting down to its next heartbeat/re-sync. In-sync and
-        // offline rows carry no anchor and render as plain text.
-        const bool behind = online && advert && !advert->commit.isEmpty() &&
-                            !referenceCommit.isEmpty() &&
-                            advert->commit != referenceCommit;
+        // offline rows carry no anchor and render as plain text. (`behind` is
+        // computed above so the Node dot can also go amber for it.)
         if (behind) {
             syncedItem->setData(kPacmanAnchorRole,
                                 static_cast<qlonglong>(advert->updatedMs));
@@ -1789,11 +1799,17 @@ void MainWindow::loadMirrorNodesPanel()
                 m.value("integrity").toString() == QLatin1String("rejected");
             if (onlineOnly && !online)
                 continue;
+            // Online catalog node serving a commit other than the source of
+            // truth's is out of sync — its dot goes amber like the live rows.
+            const QString catCommit = m.value("commit").toString();
+            const bool behind = online && !catCommit.isEmpty() &&
+                                !referenceCommit.isEmpty() &&
+                                catCommit != referenceCommit;
             // Only online nodes normally get a dot; keep an offline one too
             // when it's failing the integrity pin (adhoc #196).
             if (online || integrityFailing)
                 catalogOnlyDots.append({m.value("id").toString(), nodeName,
-                                        online, false, integrityFailing});
+                                        online, false, behind, integrityFailing});
             const int row = m_mirrorNodesTable->rowCount();
             m_mirrorNodesTable->insertRow(row);
             const QString ownerUser = m.value(QStringLiteral("ownerUser"))
@@ -1804,13 +1820,16 @@ void MainWindow::loadMirrorNodesPanel()
                                 ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
                                 : QString()));
             nameItem->setIcon(themedOcticon(
-                "broadcast", QColor(online ? "#3fb950" : "#8b949e"), 14));
+                "broadcast",
+                QColor(!online ? "#8b949e" : behind ? "#d29922" : "#3fb950"),
+                14));
             nameItem->setData(kTableSortRole,
                               (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
                                   nodeName.toLower());
             nameItem->setToolTip(
                 online
-                    ? QStringLiteral("Online now")
+                    ? (behind ? QString::fromUtf8("Online \xC2\xB7 out of sync")
+                              : QStringLiteral("Online now"))
                     : QStringLiteral("Published mirror \xC2\xB7 not in the live room"));
             if (integrityFailing)
                 markPinRejected(nameItem, false);
@@ -1819,7 +1838,7 @@ void MainWindow::loadMirrorNodesPanel()
                                         makeOwnerCell(ownerUser));
             // Latest commit: the publishing node mirrors its served HEAD into the
             // catalog record, so even an offline node shows its commit (adhoc #56).
-            const QString catCommit = m.value("commit").toString();
+            // (`catCommit` is read above so the dot can go amber for out-of-sync.)
             QString catCommitText = QString::fromUtf8("\xE2\x80\x94");
             if (!catCommit.isEmpty()) {
                 catCommitText = catCommit.left(10);
