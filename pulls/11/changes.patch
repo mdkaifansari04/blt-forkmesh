@@ -1,0 +1,23 @@
+diff --git a/README.md b/README.md
+index 7698fa0d..eba7206b 100644
+--- a/README.md
++++ b/README.md
+@@ -9,7 +9,7 @@ any repository. And when the machine that owns a project goes offline, the mesh
+ keeps serving it.
+ 
+ It is open source, free-plan-hostable at the edge, and already doing real work
+-today — issues, pull requests, CI-style actions, AI coding agents, on-chain
++today — issues, pull requests, CI-style actions, AI coding agents, on-chain test
+ bounties, and a live public website — all running on the network right now.
+ 
+ > **This is early, and that's the point.** The foundation is built and working.
+@@ -18,8 +18,7 @@ bounties, and a live public website — all running on the network right now.
+ > mesh fills up. Build a node, mirror a project you care about, and you're
+ > already part of it.
+ 
+-**Docs:** [forkmesh.com/docs](https://forkmesh.com/docs) — the protocol spec,
+-desktop/relay/mobile/IDE build notes, and the
++**Docs:** [forkmesh.com/docs](https://forkmesh.com/docs) — the protocol spec, test
+ [changelog](https://forkmesh.com/changelog).
+ 
+ ---
