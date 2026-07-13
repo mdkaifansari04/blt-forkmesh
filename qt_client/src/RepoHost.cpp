@@ -486,14 +486,11 @@ QJsonObject rootCountsFor(const QString &mirrorPath, const QString &ref)
     QByteArray output;
     if (runGit(mirrorPath, {"rev-list", "--count", ref}, output))
         commits = QString::fromUtf8(output).trimmed().toInt();
-    // "issues" stays the total (open + closed) for backward compatibility; the
-    // website reads openIssues/closedIssues to badge headers with the open
-    // count only (issue #397) and to fill the panel's Open/Closed split.
+    // "issues" stays the total; the web reads openIssues/closedIssues to badge
+    // headers with the open count only (issue #397).
     int closedIssues = 0;
     const int openIssues = countOpenIssues(mirrorPath, ref, &closedIssues);
-    // Pulls live on the dedicated forkmesh/pulls branch (issue #399), not the
-    // default branch `ref` resolves to, so the tab badge must count there or it
-    // reads the stale migration-time pulls/ folder frozen on main.
+    // Pulls live on the dedicated forkmesh/pulls branch (issue #399), not `ref`.
     const QString pullsRef =
         refForRepoPath(mirrorPath, QStringLiteral("pulls/"), QString());
     return QJsonObject{
