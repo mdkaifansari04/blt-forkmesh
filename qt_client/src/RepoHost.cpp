@@ -602,6 +602,91 @@ QJsonObject treeReplyFor(const QString &mirrorPath, const QString &path,
     return reply;
 }
 
+// Repo insights for the website's About rail (adhoc #88). One round-trip that
+// replaces the browser walking the tree directory-by-directory (slow, capped)
+// and reading only the last 60 commits (an undercount). `ls-tree -r -l` yields
+// every blob's size, so the file count is exact and the language breakdown is
+// weighted by bytes rather than by file count. `shortlog -nse` tallies every
+// author across the FULL history (not the browse cap) with the email the site
+// uses to render a stable per-user icon.
+QJsonObject statsReplyFor(const QString &mirrorPath, const QString &branch)
+{
+    const QString ref = refForRepoPath(mirrorPath, QString(), branch);
+    if (ref.isEmpty())
+        return {{"ok", false}, {"error", "empty_repo"}};
+
+    QByteArray treeOut;
+    QString gitErr;
+    if (!runGit(mirrorPath, {"ls-tree", "-r", "-l", "-z", ref}, treeOut, &gitErr))
+        return {{"ok", false},
+                {"error", gitErr.isEmpty() ? QStringLiteral("ls_tree_failed") : gitErr}};
+
+    int fileCount = 0;
+    QJsonObject extensions; // "ext" -> {bytes, files}
+    for (const QByteArray &record : treeOut.split('\0')) {
+        if (record.isEmpty())
+            continue;
+        const int tab = record.indexOf('\t');
+        if (tab < 0)
+            continue;
+        const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+        if (meta.size() < 4 || meta.at(1) != "blob")
+            continue;
+        bool ok = false;
+        const qlonglong size = meta.at(3).toLongLong(&ok);
+        fileCount += 1;
+        const QString name = QString::fromUtf8(record.mid(tab + 1)).section('/', -1);
+        const int dot = name.lastIndexOf('.');
+        if (dot <= 0) // no extension (or a dotfile like ".gitignore")
+            continue;
+        const QString ext = name.mid(dot + 1).toLower();
+        if (ext.isEmpty() || ext.size() > 12)
+            continue;
+        QJsonObject bucket = extensions.value(ext).toObject();
+        bucket.insert("bytes", bucket.value("bytes").toDouble() + double(ok ? size : 0));
+        bucket.insert("files", bucket.value("files").toDouble() + 1);
+        extensions.insert(ext, bucket);
+    }
+
+    QJsonArray contributors;
+    QByteArray logOut;
+    // An explicit revision makes shortlog walk history itself; without one it
+    // would block reading stdin under QProcess (no tty). -n sorts by commit
+    // count, -s summarises, -e keeps the email.
+    if (runGit(mirrorPath, {"shortlog", "-nse", ref}, logOut, nullptr)) {
+        for (const QByteArray &line : logOut.split('\n')) {
+            const QByteArray trimmed = line.trimmed();
+            if (trimmed.isEmpty())
+                continue;
+            const int tab = trimmed.indexOf('\t');
+            if (tab < 0)
+                continue;
+            bool ok = false;
+            const int commits =
+                QString::fromUtf8(trimmed.left(tab)).trimmed().toInt(&ok);
+            QString who = QString::fromUtf8(trimmed.mid(tab + 1)).trimmed();
+            QString email;
+            const int lt = who.lastIndexOf('<');
+            const int gt = who.lastIndexOf('>');
+            if (lt >= 0 && gt > lt) {
+                email = who.mid(lt + 1, gt - lt - 1).trimmed();
+                who = who.left(lt).trimmed();
+            }
+            if (who.isEmpty() && email.isEmpty())
+                continue;
+            contributors.append(QJsonObject{{"name", who},
+                                            {"email", email},
+                                            {"commits", ok ? commits : 0}});
+        }
+    }
+
+    return QJsonObject{{"ok", true},
+                       {"fileCount", fileCount},
+                       {"extensions", extensions},
+                       {"contributors", contributors},
+                       {"contributorCount", contributors.size()}};
+}
+
 QString imageMimeForPath(const QString &path)
 {
     const QString lower = path.toLower();
@@ -1184,6 +1269,24 @@ void RepoHost::handleRequest(const QJsonObject &request)
                 reply.insert("reqId", reqId);
                 reply.insert("op", op);
                 reply.insert("path", path);
+                sendText(QJsonDocument(reply).toJson(QJsonDocument::Compact));
+            });
+        return;
+    }
+
+    // About-rail insights (adhoc #88): ls-tree -r + shortlog over the whole repo
+    // can be several git spawns, so run it off the GUI thread like tree/blob.
+    // Carries no repo path, so it bypasses the isSafeRepoPath gate.
+    if (op == "stats") {
+        const QString mirrorPath = m_mirrorPath;
+        const QString repoBranch = branch;
+        runOffThread(
+            [mirrorPath, repoBranch] { return statsReplyFor(mirrorPath, repoBranch); },
+            [this, reqId, op](QJsonObject reply) {
+                reply.insert("type", "response");
+                reply.insert("reqId", reqId);
+                reply.insert("op", op);
+                reply.insert("path", QString());
                 sendText(QJsonDocument(reply).toJson(QJsonDocument::Compact));
             });
         return;
