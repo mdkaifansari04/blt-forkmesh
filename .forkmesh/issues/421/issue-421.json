@@ -20,6 +20,15 @@
             "title": "show 25 issues and 25 prs per page please",
             "ts": 1783911726,
             "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "8b8b56fe-f711-435e-847a-9c5b208c5a0b",
+            "sig": "CPwEl55Prt-ABMdiAE2WleYa0shh3hySlrXJqMX48-OJnh-ECufWXXqvg17iPMxQ5SQ1iKPjgKZ6s6HivqKWBg",
+            "status": "closed",
+            "ts": 1783914281541,
+            "type": "status"
         }
     ],
     "labels": [
@@ -30,8 +39,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "show 25 issues and 25 prs per page please",
-    "updatedAt": 1783911726,
+    "updatedAt": 1783914281541,
     "votes": 0
 }
