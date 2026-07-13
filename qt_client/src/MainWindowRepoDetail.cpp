@@ -7593,10 +7593,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabBarScroll->setMinimumWidth(0);
     tabBarScroll->setFixedHeight(48);
 
-    // The integrity-pin warning ("clones are being rejected — reset the pin") no
-    // longer lives in an in-page banner here; refreshRepoPinBanner surfaces it in
-    // the top-bar notification toast (see showPinWarning), where its "Reset
-    // integrity pin" and "Why?" actions are clickable links.
+    // The integrity-pin warning ("clones are being rejected — reset the pin")
+    // doesn't live in an in-page banner here; refreshRepoPinBanner surfaces it as
+    // a caution triangle on the self row/dot in the Mirror nodes panel, whose
+    // header carries the "Reset integrity pin" action.
 
     m_repoPushButton = new QPushButton(this);
     m_repoPushButton->setObjectName("primaryButton");

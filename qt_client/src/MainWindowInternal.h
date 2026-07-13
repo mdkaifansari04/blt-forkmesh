@@ -1335,10 +1335,12 @@ protected:
             }
             p.setPen(Qt::NoPen);
             if (d.integrityFailing) {
-                // Offline-but-failing nodes would otherwise be an invisible
-                // gap in the strip; draw a green warning triangle in their
-                // place so the problem stays visible even while offline.
-                p.setBrush(QColor("#3fb950"));
+                // Swap the dot for an amber caution triangle instead of a red
+                // top-bar error toast (adhoc #65): it stays inline with every
+                // other node's status and doesn't vanish when the node goes
+                // offline (an offline-but-failing node would otherwise be an
+                // invisible gap in the strip).
+                p.setBrush(QColor("#d29922"));
                 const QPolygonF triangle({QPointF(x, cy - kRadius - 1.0),
                                           QPointF(x + kRadius + 1.0, cy + kRadius - 1.0),
                                           QPointF(x - kRadius - 1.0, cy + kRadius - 1.0)});
