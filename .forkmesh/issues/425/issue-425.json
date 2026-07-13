@@ -56,6 +56,15 @@
             "sig": "6MgBK5JW9yxASDfQsQKUxszHS_l0NfAm43tAf40fwnMJUhIt44cX54MZDV7wg7SsPoCPXmkh10M7iM485q41CQ",
             "ts": 1783914945050,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "fbb80514-d131-4d19-b687-8085e91d2b51",
+            "sig": "Dg2Nk_tpSrGQw6s94KhcGjgNkBvn1bZcEwhWn9TWD2ku8wtqPEOy5bMyng-8fdKAo_U9EhRR0Pe2WWhn8NgCDg",
+            "status": "closed",
+            "ts": 1783914945104,
+            "type": "status"
         }
     ],
     "labels": [
@@ -66,8 +75,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "add a button here to resize to a minimal screen size that is more common",
-    "updatedAt": 1783914945050,
+    "updatedAt": 1783914945104,
     "votes": 0
 }
