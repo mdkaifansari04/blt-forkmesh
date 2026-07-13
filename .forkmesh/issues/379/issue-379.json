@@ -8,6 +8,7 @@
     "bountyStatus": "",
     "bountyUsd": 0,
     "createdAt": 1783151437,
+    "endDate": 0,
     "events": [
         {
             "attachments": [
@@ -63,6 +64,18 @@
             "status": "closed",
             "ts": 1783882994535,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "f1da0941-3b0c-468e-8349-38b60ad24b13",
+            "sig": "d8ptsrjWXjwuo2Srg0q6X6hQAqWaDx2l6itwpxRV8Bf0lRpWHVzLViXJ_OAO-T4aZrJKiaLkdpT1VxrT4t4YDw",
+            "ts": 1783913846707,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -73,8 +86,9 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
+    "startDate": 0,
     "status": "closed",
     "title": "If user is owner of source of truth node and it’s down but a mirror is up allow for issues to be created fully to show up and then get synced back to sot when it’s online",
-    "updatedAt": 1783882994535,
+    "updatedAt": 1783913846707,
     "votes": 0
 }

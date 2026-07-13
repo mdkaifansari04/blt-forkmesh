@@ -5416,11 +5416,11 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     // down asynchronously (cleanupStreamWorktree spawns a detached thread); when the
     // user continues that session the teardown can still be in flight, so prune AND
     // force-remove any lingering registration at this path *in the same chained
-    // command* before re-adding. Otherwise `git worktree add` races the teardown and
-    // fails ("branch already used by worktree"), we silently fall back to the main
-    // checkout, and `claude --resume` — looking for a session recorded under the
-    // worktree path — bails out instantly with a red "0 turns" error instead of
-    // continuing the agent.
+    // command* before re-adding. That still isn't enough on its own — the teardown
+    // is a separate git process on the same repo, and `git worktree add` can lose
+    // the race with it ("branch already used by worktree"); the retry loop on the
+    // add's completion below covers that case so we don't silently fall back to the
+    // main checkout and leave `claude --resume` bailing with a red "0 turns" error.
     //
     // On a resume the branch already holds the agent's committed work, so check it
     // out as-is to continue from where it left off; only a fresh run (no resume id)
@@ -5434,19 +5434,56 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     const QString script =
         QStringLiteral("git worktree prune; git worktree remove --force '%1' 2>/dev/null; %2")
             .arg(wtPath, addStep);
-    auto *add = new QProcess(this);
-    add->setWorkingDirectory(repoPath);
-    connect(add, &QProcess::finished, this,
-            [this, sid, add, wtPath, repoPath, launch](int, QProcess::ExitStatus) {
-                add->deleteLater();
-                QString workdir = repoPath;
-                if (QDir(wtPath).exists()) {
-                    workdir = wtPath;
-                    m_streamWorktree[sid] = wtPath;
-                }
-                launch(workdir);
-            });
-    add->start(QStringLiteral("bash"), {QStringLiteral("-lc"), script});
+    // Chaining prune+remove+add above only serializes *within* this one script;
+    // it does NOT serialize against the previous run's teardown thread, which may
+    // still be mid-`git worktree remove`/`prune` on this same repo. When our add
+    // loses that race the worktree never appears, we drop to the main checkout,
+    // and `claude --resume` bails instantly with a red "0 turns" error — the user
+    // sees "Done" on the first Add and has to click again once the teardown has
+    // drained (adhoc #84). So on a resume, re-run the add a few times with a short
+    // delay before giving up, rather than silently launching in the wrong tree.
+    auto runAdd = std::make_shared<std::function<void(int)>>();
+    *runAdd = [this, sid, wtPath, repoPath, script, resumeId, launch,
+               runAdd](int attemptsLeft) {
+        auto *add = new QProcess(this);
+        add->setWorkingDirectory(repoPath);
+        connect(add, &QProcess::finished, this,
+                [this, sid, add, wtPath, repoPath, script, resumeId, launch, runAdd,
+                 attemptsLeft](int, QProcess::ExitStatus) {
+                    add->deleteLater();
+                    if (QDir(wtPath).exists()) {
+                        m_streamWorktree[sid] = wtPath;
+                        launch(wtPath);
+                        return;
+                    }
+                    // The add lost the race with the async teardown. Resuming in
+                    // the main checkout guarantees a 0-turn --resume failure, so
+                    // wait for the teardown to drain and retry — unless the user
+                    // stopped/deleted the session while we were waiting.
+                    if (!resumeId.isEmpty() && attemptsLeft > 0 &&
+                        m_streamSessions.value(sid)) {
+                        QTimer::singleShot(400, this,
+                                           [runAdd, attemptsLeft] {
+                                               (*runAdd)(attemptsLeft - 1);
+                                           });
+                        return;
+                    }
+                    launch(repoPath); // fresh run, or retries exhausted
+                });
+        add->start(QStringLiteral("bash"), {QStringLiteral("-lc"), script});
+    };
+    // Wait for the just-finished run's teardown thread (if any) to drain before the
+    // first add so the two `git worktree` runs never overlap — this is what makes
+    // the resume land in the worktree on the *first* Add (adhoc #84). isRunning()
+    // is true only until run() returns, and finished() is emitted after that and
+    // delivered to this GUI thread as a queued signal, so connecting here can't
+    // miss it. runAdd's own retry budget covers any teardown not tracked here.
+    if (QThread *teardown = m_worktreeTeardown.value(sid);
+        teardown && teardown->isRunning()) {
+        connect(teardown, &QThread::finished, this, [runAdd] { (*runAdd)(3); });
+    } else {
+        (*runAdd)(3);
+    }
 }
 
 // Working directory for a session: its worktree if it has one, else the repo.
@@ -7207,6 +7244,18 @@ void MainWindow::cleanupStreamWorktree(int sessionId)
         }
     });
     connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    // Let a resume of this same session wait for the teardown to finish before it
+    // re-creates the worktree (adhoc #84): both shell `git worktree` on the same
+    // repo, and racing them drops the resume into the main checkout — a red "0
+    // turns" error on the first Add. Clear the slot on finish so a stale, already-
+    // deleted QThread pointer is never handed to the resume path.
+    if (QThread *prev = m_worktreeTeardown.value(sessionId))
+        prev->disconnect(this); // an older teardown for this id is being superseded
+    m_worktreeTeardown[sessionId] = worker;
+    connect(worker, &QThread::finished, this, [this, sessionId, worker] {
+        if (m_worktreeTeardown.value(sessionId) == worker)
+            m_worktreeTeardown.remove(sessionId);
+    });
     worker->start();
 }
 
