@@ -76,7 +76,7 @@
   const $$ = (selector) => Array.from(document.querySelectorAll(selector));
   const MAX_REPO_FILE_FINDER_RESULTS = 500;
   const MAX_REPO_FILE_FINDER_SECONDS = 6;
-  const REPO_COLLECTION_PAGE_SIZE = 5;
+  const REPO_COLLECTION_PAGE_SIZE = 25;
   const DASHBOARD_THEME_KEY = "forkmesh.dashboard.theme";
   const DASHBOARD_LONG_DIFFS_KEY = "forkmesh.dashboard.longDiffs";
   const DASHBOARD_DIFF_AUTO_RENDER_MAX_CHARS = 250000;
@@ -10122,7 +10122,12 @@
         const targetPage = Number(repoCollectionPageButton.dataset.repoCollectionPageTarget);
         if (kind && Number.isFinite(targetPage)) {
           state.repoCollectionPages[kind] = targetPage;
-          loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
+          // Issues keep their open/closed/all filter (and its filter bar) that
+          // renderRepoIssues applies; routing pagination through
+          // loadRepoCollection would re-render the raw record list unfiltered,
+          // leaking closed issues into the default "open" view (issue #420).
+          if (kind === "issues") renderRepoIssues();
+          else loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
         }
         return;
       }
