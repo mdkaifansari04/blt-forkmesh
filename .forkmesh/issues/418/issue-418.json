@@ -7,6 +7,7 @@
     "bountyStatus": "",
     "bountyUsd": 0,
     "createdAt": 1783885682892,
+    "endDate": 0,
     "events": [
         {
             "attachments": [
@@ -19,6 +20,18 @@
             "title": "when we first run the install script it seems to hang on this part \"==>   git: already present\n\" - lets show more detail of what is happening so we know",
             "ts": 1783885682892,
             "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 93,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "04e44421-173c-4545-8c7c-793305063dee",
+            "sig": "crzy7lTjzj1Zt_0gVCK_WtvDV-Ix4nahLbXiAyuBnl1t-Y44Od3IuqhlPq8nulkCMXWQ1QV7vij7ojIYKDIBDQ",
+            "ts": 1783914333229,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -28,8 +41,9 @@
     "priority": 0,
     "progress": 0,
     "schema": "forkmesh-issue-v1",
+    "startDate": 0,
     "status": "open",
     "title": "when we first run the install script it seems to hang on this part \"==>   git: already present\n\" - lets show more detail of what is happening so we know",
-    "updatedAt": 1783885682892,
+    "updatedAt": 1783914333229,
     "votes": 0
 }
