@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
     "authorName": "jett",
@@ -32,6 +33,17 @@
             "sig": "dNASdZ_o3uuSot3qqa_y06ZJniLwjmYbsIjNgpa_gfI14BxjdD84q3aZr2zKh98DjOEBuW4Z8G2lbTNnIGIgDQ",
             "ts": 1783914306317,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "adfa0127-a233-4bc5-8df8-9ae37807e1b4",
+            "sig": "lU5A7qxZhkG1_cQKvaV9KNTh6kClw_GO2MepNeBcWxsVHE34igyiLG5wxytrR5nmOLrcZse4cQ08TBVfhz5JDQ",
+            "ts": 1783914306378,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -44,6 +56,6 @@
     "startDate": 0,
     "status": "open",
     "title": "make it so that images can be pasted into the webiste issue reporting",
-    "updatedAt": 1783914306317,
+    "updatedAt": 1783914306378,
     "votes": 0
 }
