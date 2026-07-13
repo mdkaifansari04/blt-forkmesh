@@ -8,4 +8,14 @@
 -- "ADD COLUMN IF NOT EXISTS", and D1 runs each migration exactly once, so a
 -- plain ADD COLUMN is safe here.
 
+-- Local Wrangler databases run migrations before the Worker has a chance to
+-- call ensure_schema(). Bootstrap the table there while preserving the
+-- existing production path, where the table already exists.
+CREATE TABLE IF NOT EXISTS release_downloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo_bi TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    ts INTEGER NOT NULL
+);
+
 ALTER TABLE release_downloads ADD COLUMN ua TEXT;
