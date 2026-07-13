@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783911859,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783911859",
+            "sig": "IzEeARuvcTMZwwVR3h13YFLmp1oNA2H4ryk4QLNpYcm1pZv6BgPv_s7Y01u-YjcYz1bdBlPRE-GY1GHk4du3AA",
+            "title": "make it so that images can be pasted into the webiste issue reporting",
+            "ts": 1783911859,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 423,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "make it so that images can be pasted into the webiste issue reporting",
+    "updatedAt": 1783911859,
+    "votes": 0
+}
