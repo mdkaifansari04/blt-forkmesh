@@ -54,9 +54,24 @@ const channelTitleEl = document.querySelector("#chat-channel-title");
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-const selfId =
-  (crypto.randomUUID && crypto.randomUUID()) ||
-  String(Math.random()).slice(2) + Date.now();
+// A stable per-browser chat id. The relay holds no roster — every participant
+// is reconstructed client-side from the senderId on decrypted frames — so a
+// fresh random id per page load made each reload/tab of the same person show up
+// as a brand-new "ghost" participant (the "lots of jett users" symptom).
+// Persisting it collapses reloads/tabs of the same browser into one entry;
+// signed-in users still display under their account name via displayName().
+const selfId = (() => {
+  const STORAGE_KEY = "forkmesh.chat.selfId";
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) return saved;
+  } catch (_) {}
+  const fresh =
+    (crypto.randomUUID && crypto.randomUUID()) ||
+    String(Math.random()).slice(2) + Date.now();
+  try { localStorage.setItem(STORAGE_KEY, fresh); } catch (_) {}
+  return fresh;
+})();
 
 let roomKey = null;
 let socket = null;
@@ -801,16 +816,33 @@ function personIsOnline(person) {
 function renderPeople() {
   if (!peopleEl) return;
   peopleEl.textContent = "";
-  const people = [...roster.values()];
+  // Collapse multiple entries for the same person into one row: a person can
+  // surface under several ids (history-replayed old senderIds, or the same
+  // account from other tabs/devices) that all carry the same display name.
+  // Dedupe WITHIN a section (users, nodes) by lowercased name — never across
+  // kinds — keeping the freshest sighting so online state wins; fall back to
+  // the id when a name is somehow missing.
+  const dedupePeople = (list) => {
+    const byIdentity = new Map();
+    for (const person of list) {
+      const key = (String(person.name || "").trim().toLowerCase() || person.id);
+      const prev = byIdentity.get(key);
+      if (!prev || person.lastSeenMs > prev.lastSeenMs) byIdentity.set(key, person);
+    }
+    return [...byIdentity.values()];
+  };
   const bySection = { user: [], node: [] };
-  for (const person of people) {
+  for (const person of roster.values()) {
     (person.kind === "node" ? bySection.node : bySection.user).push(person);
   }
+  bySection.user = dedupePeople(bySection.user);
+  bySection.node = dedupePeople(bySection.node);
   const sortPeople = (list) =>
     list.sort((a, b) =>
       (personIsOnline(b) - personIsOnline(a)) ||
       a.name.localeCompare(b.name));
-  const onlineCount = people.filter(personIsOnline).length;
+  const onlineCount =
+    [...bySection.user, ...bySection.node].filter(personIsOnline).length;
   if (peopleTitleEl) {
     peopleTitleEl.textContent = `People — ${onlineCount} online`;
   }

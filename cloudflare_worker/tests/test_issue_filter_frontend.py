@@ -62,8 +62,10 @@ def test_dashboard_js_filters_issue_list_by_state():
         : DASHBOARD_JS.index("function setIssueFilter")
     ]
     assert 'if (issuesView.filter === "all") return true;' in render
-    assert 'if (issuesView.filter === "open") return issue.status === "open";' in render
-    assert 'return issue.status !== "open";' in render
+    # "Open" is "not closed", matching the desktop advert / served counts so the
+    # tab and list don't undercount non-"open" statuses like "reopened" (adhoc #96).
+    assert 'if (issuesView.filter === "open") return issue.status !== "closed";' in render
+    assert 'return issue.status === "closed";' in render
 
 
 def test_dashboard_js_loads_issues_from_git_tree_and_counts_open():
@@ -78,9 +80,10 @@ def test_dashboard_js_loads_issues_from_git_tree_and_counts_open():
     # The default Open view is rendered through the filter, and the tab badge
     # counts the open issues.
     assert 'issuesView.filter = "open";' in load
-    # The badge counts open issues across the mirror list plus any persisted
-    # offline-owner submissions folded in (merged; see issue #379).
-    assert 'setRepoTabCount("issues", merged.filter((issue) => issue.status === "open").length);' in load
+    # The badge counts open issues (status != "closed", matching the desktop
+    # advert; adhoc #96) across the mirror list plus any persisted offline-owner
+    # submissions folded in (merged; see issue #379).
+    assert 'setRepoTabCount("issues", merged.filter((issue) => issue.status !== "closed").length);' in load
     assert "renderRepoIssues();" in load
 
 
@@ -241,8 +244,8 @@ def test_render_repo_issues_applies_the_search_filter_after_the_status_filter():
     ]
     # The three pinned status-filter lines stay exactly as before...
     assert 'if (issuesView.filter === "all") return true;' in render
-    assert 'if (issuesView.filter === "open") return issue.status === "open";' in render
-    assert 'return issue.status !== "open";' in render
+    assert 'if (issuesView.filter === "open") return issue.status !== "closed";' in render
+    assert 'return issue.status === "closed";' in render
     # ...with the search predicate layered on afterward, not replacing them.
     assert '}).filter((issue) => issueMatchesQuery(issue, issuesView.query));' in render
 

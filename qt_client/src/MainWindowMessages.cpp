@@ -808,8 +808,6 @@ void MainWindow::refreshChatMembers()
     // different people with the same name keep separate groups (and get a
     // disambiguating id below); a person's several nodes fold into one.
     auto groupKeyFor = [&](const MemberInfo &m) -> QString {
-        if (m.self)
-            return QStringLiteral("\x01self");
         const QString owner = m.ownerUser.trimmed().toLower();
         if (!owner.isEmpty())
             return owner;
@@ -819,6 +817,16 @@ void MainWindow::refreshChatMembers()
         const QString nameL = m.name.trimmed().toLower();
         if (!nameL.isEmpty() && nodeOwner.contains(nameL))
             return nodeOwner.value(nameL);
+        // "You" must fold into your OWN account's group (its directory entry and
+        // owned nodes), not form a separate "\x01self" island — otherwise the
+        // local user showed up as a second participant next to their own account
+        // (a duplicate "jett"). Only fall back to a self-only key if the account
+        // name is somehow unknown.
+        if (m.self) {
+            const QString selfOwner = accountOwner().trimmed().toLower();
+            if (!selfOwner.isEmpty())
+                return selfOwner;
+        }
         return chatUserKey(m);
     };
 
@@ -855,6 +863,10 @@ void MainWindow::refreshChatMembers()
             if (isDirectory && !curDirectory) {
                 const bool wasOnline = g.primary.online;
                 member.online = wasOnline || online;
+                // Keep the "you" marker when the canonical row becomes the
+                // directory entry, so the merged self group still sorts first
+                // and renders as you.
+                member.self = member.self || g.primary.self;
                 g.primary = member;
             }
             const bool curAvatar = !m_avatars.value(g.primary.id).isNull();

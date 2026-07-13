@@ -34,9 +34,22 @@
 
   const enc = new TextEncoder();
   const dec = new TextDecoder();
-  const selfId =
-    (crypto.randomUUID && crypto.randomUUID()) ||
-    `${Math.random()}`.slice(2) + Date.now();
+  // Stable per-browser chat id, shared with the full chat page (same storage
+  // key): the relay keeps no roster, so a fresh random id per load made every
+  // reload/tab of the same person a new "ghost" participant. Persisting it
+  // collapses them into one identity.
+  const selfId = (() => {
+    const STORAGE_KEY = "forkmesh.chat.selfId";
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) return saved;
+    } catch (_) {}
+    const fresh =
+      (crypto.randomUUID && crypto.randomUUID()) ||
+      `${Math.random()}`.slice(2) + Date.now();
+    try { localStorage.setItem(STORAGE_KEY, fresh); } catch (_) {}
+    return fresh;
+  })();
 
   let roomKey = null;
   let socket = null;
