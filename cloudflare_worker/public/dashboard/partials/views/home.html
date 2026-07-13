@@ -25,6 +25,14 @@
                   <div class="rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground"><span class="fm-spinner" aria-hidden="true"></span>Loading repositories...</div>
                 </div>
                 <button type="button" class="mt-4 text-xs font-medium text-muted-foreground hover:text-accent">Show more</button>
+
+                <div data-home-agent-sessions-panel class="mt-8 hidden">
+                  <div class="mb-3 flex items-center justify-between gap-3">
+                    <h2 class="text-sm font-semibold text-foreground">Active agent sessions</h2>
+                    <i data-lucide="bot" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
+                  </div>
+                  <div data-home-agent-sessions class="grid gap-1"></div>
+                </div>
               </aside>
 
               <section data-home-content-column class="min-w-0 px-4 py-6 sm:px-6 lg:px-8">
