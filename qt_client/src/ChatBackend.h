@@ -179,7 +179,23 @@ public:
     virtual void setMirroredRepos(const QList<MirrorAdvert> &repos) { Q_UNUSED(repos); }
     // Announce that this node just refreshed a repo's mirror from its source of
     // truth, so peers mirroring the same repo can be notified (and refresh).
-    virtual void notifyMirrorUpdated(const QString &ownerName) { Q_UNUSED(ownerName); }
+    // `commit` is the new HEAD the source advanced to, so peers can see exactly
+    // which commit is different without waiting for a fresh advert.
+    virtual void notifyMirrorUpdated(const QString &ownerName,
+                                     const QString &commit = QString())
+    {
+        Q_UNUSED(ownerName);
+        Q_UNUSED(commit);
+    }
+    // Report back that this node finished pulling a repo's mirror up to `commit`
+    // after a mirror-update signal — the closing half of the round trip, so the
+    // source (and other peers) see it converged right away.
+    virtual void notifyMirrorSynced(const QString &ownerName,
+                                    const QString &commit = QString())
+    {
+        Q_UNUSED(ownerName);
+        Q_UNUSED(commit);
+    }
     // Ask online peers mirroring a repo group to immediately re-advertise their
     // current mirror metadata. `source` is the shared source identity; `ownerName`
     // is the caller's clone/catalog identity for compatibility with older adverts.
@@ -249,7 +265,13 @@ signals:
     void privateChannelJoined(const QString &channel);
     void rosterChanged(const QList<MemberInfo> &members);
     // A peer refreshed its mirror of "owner/name" from the source of truth.
-    void mirrorUpdated(const QString &ownerName, const QString &peerName);
+    // `commit` is the new HEAD it advanced to (empty from older peers).
+    void mirrorUpdated(const QString &ownerName, const QString &peerName,
+                       const QString &commit);
+    // A peer finished pulling "owner/name" up to `commit` after a mirror-update
+    // signal — the round-trip acknowledgement that it has now converged.
+    void mirrorSynced(const QString &ownerName, const QString &peerName,
+                      const QString &commit);
     // A peer asked nodes mirroring `source` to refresh and re-advertise now.
     void mirrorRefreshRequested(const QString &source, const QString &requesterName);
     // A peer opened an encrypted cove. The UI verifies the opener's signature and,
