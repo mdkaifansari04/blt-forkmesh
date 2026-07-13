@@ -5567,11 +5567,11 @@
   }
 
   function diffRowClass(type) {
-    if (type === "add") return "bg-emerald-950/40 text-emerald-300";
-    if (type === "del") return "bg-red-950/35 text-red-300";
-    if (type === "hunk") return "bg-primary/10 text-primary";
+    if (type === "add") return "bg-primary/15 text-primary";
+    if (type === "del") return "bg-destructive/15 text-destructive";
+    if (type === "hunk") return "bg-accent/10 text-accent";
     if (type === "meta") return "text-muted-foreground";
-    return "text-zinc-300";
+    return "text-foreground";
   }
 
   function renderDiffFileRows(rows) {
