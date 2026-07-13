@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
     "authorName": "jett",
@@ -32,6 +33,17 @@
             "sig": "_sNw1tjs8vU-xvQlGEG1l5B9XyATEZkDX4fMCrYCxgmq4AmSY6TttR9Ae9UJyxy7Zxt_vzBL4JHdlWgBAfWgCw",
             "ts": 1783914294617,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "bf51c00c-3da1-44a9-af6d-cf00107d50fc",
+            "sig": "YHN-G4dfmPqmETkgwPtWgTB7SsZuANVNDSwspYOArxYAL50RebduYBaKXGhVkN9EILcRhVaujao3pRG8TSJXDw",
+            "ts": 1783914294675,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -44,6 +56,6 @@
     "startDate": 0,
     "status": "open",
     "title": "fix the color of the diffs on the commits page on web",
-    "updatedAt": 1783914294617,
+    "updatedAt": 1783914294675,
     "votes": 0
 }
