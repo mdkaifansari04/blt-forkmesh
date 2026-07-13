@@ -453,6 +453,10 @@ public:
     // streams to the terminal via the [restart +Nms] log lines.
     void headlessUpdateRestart();
     QStringList headlessStatusLines() const;
+    // `claude-auth status|export [path]|import <path>` from the headless console:
+    // move this owner's Claude Code login (and configured Claude API key) onto a
+    // host so it can service "start an agent" requests. Returns output lines.
+    QStringList headlessClaudeAuth(const QStringList &args);
     QStringList headlessRosterLines() const;
     QStringList headlessRepoLines() const;
     QStringList headlessMirrorLines() const;
@@ -2596,6 +2600,9 @@ private:
     // #368: identity key backup/export/import UI + first-run "back up" nag.
     void backUpIdentityKey();
     void refreshIdentityBackupNag();
+    // Export/import the Claude Code account (claude.ai OAuth login + Claude API
+    // key) so a host node can run "claude-code" agents as this owner.
+    void transferClaudeCodeAccount();
     void chooseAvatar();
     void setSettingsAvatar(const QByteArray &pngData);
     // Effective avatar bytes: the uploaded/generated one, or a deterministic
