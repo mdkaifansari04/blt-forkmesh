@@ -65,22 +65,20 @@ def test_docs_pages_use_home_link_instead_of_github():
 
 
 def test_docs_pages_mount_the_universal_site_header():
-    # The docs' own brand + Home/Contact/Login row was replaced by the shared
-    # session-aware header; the docs toolbar keeps only its search, theme
-    # toggle, and product tabs. A var shim maps the docs light/dark palette
-    # onto the header's variable names so it follows the docs theme toggle.
+    # The shared header is the sole visible theme controller.
+    # The docs toolbar keeps only its search and product tabs beneath it.
     for page in DOCS_PAGES:
         html = _read(page)
 
         assert 'href="/site-header.css"' in html
         assert 'src="/site-header.js"' in html
         assert '<div data-forkmesh-header="simple"></div>' in html
-        assert "--muted: var(--docs-muted);" in html
-        assert "--foreground: var(--docs-fg);" in html
         # The duplicated chrome is gone; docs-specific tools stay.
         assert 'aria-label="Docs header"' not in html
         assert ">Contact Us<" not in html
-        assert 'id="theme-toggle"' in html
+        assert 'id="theme-toggle"' not in html
+        assert "function applyTheme" not in html
+        assert "sticky top-0 z-30" in html
         assert 'id="docs-search"' in html
 
 

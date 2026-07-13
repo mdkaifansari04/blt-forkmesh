@@ -74,6 +74,7 @@ UNIVERSAL_HEADER_PAGES = SIMPLE_HEADER_PAGES + (
     PUBLIC / "forgot-password.html",
     PUBLIC / "reset-password.html",
     PUBLIC / "mirror-payouts.html",
+    PUBLIC / "outreach.html",
     PUBLIC / "security-report.html",
     PUBLIC / "404.html",
     PUBLIC / "docs.html",
@@ -136,6 +137,38 @@ def test_universal_header_organizes_all_pages():
     assert "/api/version" in js
     assert "fm-header-context" in js
     assert 'src="/assets/sol.png"' in js
+
+
+def test_universal_header_uses_private_fixed_palette():
+    css = _read(PUBLIC / "site-header.css")
+
+    expected = (
+        "--fm-header-bg: #090909;",
+        "--fm-header-surface: #141416;",
+        "--fm-header-fg: #f5f5f5;",
+        "--fm-header-muted: #a3a3a3;",
+        "--fm-header-border: #313134;",
+        "--fm-header-accent: #2ea043;",
+    )
+    missing = tuple(marker for marker in expected if marker not in css)
+
+    assert not missing, f"missing fixed header palette tokens: {missing}"
+
+
+def test_universal_header_uses_canonical_theme_glyphs():
+    js = _read(PUBLIC / "site-header.js")
+
+    assert 'button.textContent = light ? "☾" : "☀";' in js
+    assert '>☀</button>' in js
+
+
+def test_universal_header_signup_is_a_white_rounded_rectangle():
+    css = _read(PUBLIC / "site-header.css")
+    signup_rule = css.split(".fm-header-signup {", 1)[1].split("}", 1)[0]
+    expected = ("background: #ffffff;", "border-radius: 0.375rem;")
+    missing = tuple(marker for marker in expected if marker not in signup_rule)
+
+    assert not missing, f"missing Sign Up style declarations: {missing}"
 
 
 def test_blog_posts_mount_universal_header():
