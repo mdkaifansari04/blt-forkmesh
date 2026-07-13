@@ -7024,7 +7024,6 @@
       window.lucide?.createIcons();
     }
     modal.classList.toggle("hidden", !open);
-    modal.classList.toggle("flex", open);
     if (open) modal.querySelector("[data-repo-agent-new-input]")?.focus();
   }
 
@@ -9367,11 +9366,12 @@
     }
 
     if (event.target.closest("#agentModalToggle")) {
-      setAgentModalOpen(true);
+      event.stopPropagation();
+      setAgentModalOpen($("#agentModal")?.classList.contains("hidden"));
       return;
     }
 
-    if (event.target.closest("[data-agent-modal-close], [data-agent-modal-backdrop]")) {
+    if (event.target.closest("[data-agent-modal-close]")) {
       setAgentModalOpen(false);
       return;
     }
@@ -9515,6 +9515,9 @@
     }
     if (!event.target.closest("#notificationToggle, #notificationDropdown")) {
       setNotificationDropdownOpen(false);
+    }
+    if (!event.target.closest("#agentModal, #agentModalToggle")) {
+      setAgentModalOpen(false);
     }
     if (!event.target.closest("[data-repo-branch-control]")) {
       closeRepoBranchMenus();

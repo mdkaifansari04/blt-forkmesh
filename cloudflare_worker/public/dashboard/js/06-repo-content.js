@@ -2431,7 +2431,6 @@
       window.lucide?.createIcons();
     }
     modal.classList.toggle("hidden", !open);
-    modal.classList.toggle("flex", open);
     if (open) modal.querySelector("[data-repo-agent-new-input]")?.focus();
   }
 
