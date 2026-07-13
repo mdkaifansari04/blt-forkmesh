@@ -65,6 +65,18 @@
             "status": "closed",
             "ts": 1783914945104,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "5e6d7d03-48a7-4df5-b0e1-bafdca32cdb3",
+            "sig": "744RGIcP79M6O-OaL6h3NyVbWt53Q9hSpxR2_FT-_xD6nRFBC992ufdmv6blI8qd4EPK1Qn4HMAgX7hw8or2CA",
+            "ts": 1783915467161,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -77,6 +89,6 @@
     "startDate": 0,
     "status": "closed",
     "title": "add a button here to resize to a minimal screen size that is more common",
-    "updatedAt": 1783914945104,
+    "updatedAt": 1783915467161,
     "votes": 0
 }

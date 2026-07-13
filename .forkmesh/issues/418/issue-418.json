@@ -64,6 +64,18 @@
             "status": "closed",
             "ts": 1783914596859,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "928b006e-eba8-4a48-8d9a-a5b6a35ab450",
+            "sig": "dU9w_vl5s6Rqb_tiR5H_Hf4o82iIjduYBX9jFwfhWus6qe-9UCuBWG1s8nIp_2QFfL9celOsoDBUVNbu_B5zDw",
+            "ts": 1783915473513,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -76,6 +88,6 @@
     "startDate": 0,
     "status": "closed",
     "title": "when we first run the install script it seems to hang on this part \"==>   git: already present\n\" - lets show more detail of what is happening so we know",
-    "updatedAt": 1783914596859,
+    "updatedAt": 1783915473513,
     "votes": 0
 }
