@@ -9725,6 +9725,14 @@
   // awaits this promise before resolving its /owner/repo path.
   let repositoriesReady = null;
 
+  // Resolves once hydrateCanonicalProfile has refreshed the session with the
+  // authoritative nodes/isAdmin fields. The owner-only Agents tab (adhoc #182)
+  // is gated on those, so the repo page waits on this before deciding whether
+  // an /owner/repo/agents deep link is a real tab route or must collapse to
+  // Code — otherwise a hard refresh on Agents races the hydration and bounces
+  // back to the repo root (adhoc #93).
+  let canonicalProfileReady = null;
+
   // Boot/shared-chrome loads take the cached path (browser + edge cache honor
   // the server's max-age); only explicit user refresh actions pass fresh:true.
   async function loadRepositories({ fresh = false } = {}) {
@@ -9796,7 +9804,7 @@
     renderProfile(session || { nodeName: "guest" });
     if (session?.nodeName) {
       if (grant) offerLinkGrant(grant);
-      hydrateCanonicalProfile(session).then(() => loadNotifications()).catch(() => {});
+      canonicalProfileReady = hydrateCanonicalProfile(session).then(() => loadNotifications()).catch(() => {});
     }
     repositoriesReady = loadRepositories();
     return true;
@@ -9857,6 +9865,17 @@
     await (repositoriesReady || loadRepositories());
     const repo = requested ? findRepository(requested) : null;
     if (repo) {
+      // The owner-only Agents tab is only a recognized route when the session
+      // can assign agents, which is decided from nodes/isAdmin that only land
+      // after hydrateCanonicalProfile resolves. When the refreshed URL points
+      // at /owner/repo/agents and we can't yet confirm ownership, wait for the
+      // hydration so renderRepoDetail restores the tab instead of collapsing to
+      // Code and rewriting the URL back to the repo root (adhoc #93). Every
+      // other tab is unconditional, so only this case pays the wait.
+      const routeParts = repoRouteParts();
+      if (routeParts[2] === "agents" && !sessionCanAssignAgent(repo)) {
+        await (canonicalProfileReady || Promise.resolve());
+      }
       renderRepoDetail(repo);
       return;
     }
