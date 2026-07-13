@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783916694,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783916694",
+            "sig": "sEVBZGzn2c-BNAjS1XIhhQ0DLffcCAzZeQNM6QeyW4Y_8WUbfT1et_T_0c4o8PvBsaUlv3nOf6hA-UFm6wCZBA",
+            "title": "ram seems too high on the mirror nodes make sure we're not taking up too much memory",
+            "ts": 1783916694,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 428,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "ram seems too high on the mirror nodes make sure we're not taking up too much memory",
+    "updatedAt": 1783916694,
+    "votes": 0
+}
