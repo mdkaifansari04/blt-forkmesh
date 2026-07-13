@@ -2579,7 +2579,8 @@ void MainWindow::setPullThreadState(const QString &threadId, const QString &stat
 void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
                                      const QString &headerHtml, const QString &body,
                                      const QString &accent, const QString &copyLink,
-                                     const QString &authorId)
+                                     const QString &authorId,
+                                     const std::function<void()> &onDelete)
 {
     if (!layout)
         return;
@@ -2607,7 +2608,9 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
         if (!cached.isNull())
             authorAvatar = roundedRectPixmap(cached, 36, 36 * 0.28);
         else if (authorId == m_profileIdentity.publicKey())
-            authorAvatar = roundedAvatar(effectiveAvatar(), 36);
+            // Our own posts show the user avatar (jett), matching the identity we
+            // broadcast over chat — not the node's procedural badge.
+            authorAvatar = roundedAvatar(effectiveUserAvatar(), 36);
     }
     if (authorAvatar.isNull()) {
         const QString seed = authorId.isEmpty() ? who.toLower() : authorId;
@@ -2636,7 +2639,7 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
     header->setTextFormat(Qt::RichText);
     headerRow->addWidget(header);
     headerRow->addStretch();
-    if (!copyLink.isEmpty() || !body.trimmed().isEmpty()) {
+    if (!copyLink.isEmpty() || !body.trimmed().isEmpty() || bool(onDelete)) {
         auto *menu = new QMenu(card);
         if (!copyLink.isEmpty()) {
             QAction *copyLinkAction = menu->addAction("Copy link");
@@ -2651,6 +2654,12 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
                 QApplication::clipboard()->setText(body);
                 flashMessage("Markdown copied.");
             });
+        }
+        if (onDelete) {
+            menu->addSeparator();
+            QAction *deleteAction = menu->addAction("Delete comment");
+            connect(deleteAction, &QAction::triggered, this,
+                    [onDelete]() { onDelete(); });
         }
         auto *actionsButton = new QToolButton(headerBox);
         actionsButton->setObjectName("issueActionButton");

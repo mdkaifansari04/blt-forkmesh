@@ -97,66 +97,84 @@
       renderAttachmentChips();
     });
 
+    // Shared by both the file picker and clipboard paste: validate, embed (or
+    // crop/compress if oversized), then insert a placeholder into the body at
+    // the caret so pasted screenshots land right where the cursor was.
+    const addIssueImageFile = async (file, rawName) => {
+      const name = rawName.replace(/[[\]]/g, "_");
+      if (!file.type.startsWith("image/")) {
+        setAttachHint(`${name}: not an image.`, "bad");
+        return;
+      }
+      if (images.length >= ISSUE_IMAGE_MAX_COUNT) {
+        setAttachHint(`You can attach up to ${ISSUE_IMAGE_MAX_COUNT} images.`, "bad");
+        return;
+      }
+      if (file.size > ISSUE_IMAGE_RAW_MAX_BYTES) {
+        setAttachHint(`${name} is too large to attach (max ${formatSize(ISSUE_IMAGE_RAW_MAX_BYTES)}).`, "bad");
+        return;
+      }
+      const total = images.reduce((sum, img) => sum + img.size, 0);
+      const budget = Math.min(ISSUE_IMAGE_MAX_BYTES, ISSUE_IMAGE_MAX_TOTAL_BYTES - total);
+      if (budget <= 0) {
+        setAttachHint("Attached images already use up the issue's size limit - remove one to add another.", "bad");
+        return;
+      }
+      let dataUrl;
+      let size;
+      if (file.size <= budget) {
+        try {
+          dataUrl = await readAsDataUrl(file);
+          size = file.size;
+        } catch (_) {
+          setAttachHint(`Could not read ${name}.`, "bad");
+          return;
+        }
+      } else {
+        setAttachHint(`${name} is ${formatSize(file.size)} - crop or compress it to fit under ${formatSize(budget)}.`);
+        const result = await openImageResizeModal(file, budget);
+        if (!result) {
+          setAttachHint("");
+          return;
+        }
+        dataUrl = result.dataUrl;
+        size = result.size;
+      }
+      const id = `forkmesh-pending-image:${Date.now().toString(36)}${images.length}`;
+      images.push({ id, name, dataUrl, size });
+      const start = bodyInput?.selectionStart ?? bodyInput?.value.length ?? 0;
+      const end = bodyInput?.selectionEnd ?? start;
+      if (bodyInput) {
+        const insertion = `\n![${name}](${id})\n`;
+        bodyInput.value = bodyInput.value.slice(0, start) + insertion + bodyInput.value.slice(end);
+        const cursor = start + insertion.length;
+        bodyInput.selectionStart = bodyInput.selectionEnd = cursor;
+      }
+      setAttachHint("");
+    };
+
     if (attachButton && fileInput) {
       attachButton.addEventListener("click", () => fileInput.click());
       fileInput.addEventListener("change", async () => {
         const files = Array.from(fileInput.files || []);
         fileInput.value = "";
-        for (const file of files) {
-          if (!file.type.startsWith("image/")) {
-            setAttachHint(`${file.name}: not an image.`, "bad");
-            continue;
-          }
-          if (images.length >= ISSUE_IMAGE_MAX_COUNT) {
-            setAttachHint(`You can attach up to ${ISSUE_IMAGE_MAX_COUNT} images.`, "bad");
-            break;
-          }
-          if (file.size > ISSUE_IMAGE_RAW_MAX_BYTES) {
-            setAttachHint(`${file.name} is too large to attach (max ${formatSize(ISSUE_IMAGE_RAW_MAX_BYTES)}).`, "bad");
-            continue;
-          }
-          const total = images.reduce((sum, img) => sum + img.size, 0);
-          const budget = Math.min(ISSUE_IMAGE_MAX_BYTES, ISSUE_IMAGE_MAX_TOTAL_BYTES - total);
-          if (budget <= 0) {
-            setAttachHint("Attached images already use up the issue's size limit - remove one to add another.", "bad");
-            continue;
-          }
-          let dataUrl;
-          let size;
-          if (file.size <= budget) {
-            try {
-              dataUrl = await readAsDataUrl(file);
-              size = file.size;
-            } catch (_) {
-              setAttachHint(`Could not read ${file.name}.`, "bad");
-              continue;
-            }
-          } else {
-            setAttachHint(`${file.name} is ${formatSize(file.size)} - crop or compress it to fit under ${formatSize(budget)}.`);
-            const result = await openImageResizeModal(file, budget);
-            if (!result) {
-              setAttachHint("");
-              continue;
-            }
-            dataUrl = result.dataUrl;
-            size = result.size;
-          }
-          const id = `forkmesh-pending-image:${Date.now().toString(36)}${images.length}`;
-          const name = file.name.replace(/[[\]]/g, "_");
-          images.push({ id, name, dataUrl, size });
-          const start = bodyInput?.selectionStart ?? bodyInput?.value.length ?? 0;
-          const end = bodyInput?.selectionEnd ?? start;
-          if (bodyInput) {
-            const insertion = `\n![${name}](${id})\n`;
-            bodyInput.value = bodyInput.value.slice(0, start) + insertion + bodyInput.value.slice(end);
-            const cursor = start + insertion.length;
-            bodyInput.selectionStart = bodyInput.selectionEnd = cursor;
-          }
-          setAttachHint("");
-        }
+        for (const file of files) await addIssueImageFile(file, file.name);
         renderAttachmentChips();
       });
     }
+    bodyInput?.addEventListener("paste", async (event) => {
+      const imageItems = Array.from(event.clipboardData?.items || [])
+        .filter((item) => item.kind === "file" && item.type.startsWith("image/"));
+      if (!imageItems.length) return;
+      // A pasted screenshot has no useful text form, so claim the paste instead
+      // of letting the browser also dump it in as an inline object/blank text.
+      event.preventDefault();
+      for (const item of imageItems) {
+        const file = item.getAsFile();
+        if (file) await addIssueImageFile(file, file.name || "screenshot.png");
+      }
+      renderAttachmentChips();
+    });
     container.querySelector("[data-repo-issue-title]")?.focus();
   }
 

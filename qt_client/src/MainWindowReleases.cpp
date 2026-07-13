@@ -1059,7 +1059,8 @@ QWidget *MainWindow::buildMirrorNodesTab()
     auto *blurb = new QLabel(
         "Nodes across the network that keep a live mirror of this repository. "
         "Each node serves clones and browsing from its own copy; the commit and "
-        "sync time show how fresh that copy is.");
+        "sync time show how fresh that copy is. An underlined value doesn't match "
+        "the source of truth \xE2\x80\x94 that node is serving different data.");
     blurb->setObjectName("statusLine");
     blurb->setWordWrap(true);
     layout->addWidget(blurb);
@@ -1398,21 +1399,64 @@ void MainWindow::loadMirrorNodesPanel()
     QString sourceCommit;
     QString newestCommit;
     qint64 newestMs = -1;
+    // The advert those two commits came from, so the per-column mismatch check
+    // below can compare a node's advertised counts (issues/commits/branches/…)
+    // against the same reference node, not just its commit. Pointers into
+    // rosterNodes' mirrorDetails / the local selfAdvert, both live to end-of-scope.
+    const MirrorAdvert *sourceAdvert = nullptr;
+    const MirrorAdvert *newestAdvert = nullptr;
     for (const MemberInfo &node : std::as_const(rosterNodes)) {
         bool namedOnly = false;
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
         if (!advert || advert->commit.isEmpty())
             continue;
         if (advert->ownerName == source ||
-            displayNodeName(node, advert).compare(sourceOwner, Qt::CaseInsensitive) == 0)
+            displayNodeName(node, advert).compare(sourceOwner, Qt::CaseInsensitive) == 0) {
             sourceCommit = advert->commit;
+            sourceAdvert = advert;
+        }
         if (advert->updatedMs > newestMs) {
             newestMs = advert->updatedMs;
             newestCommit = advert->commit;
+            newestAdvert = advert;
         }
     }
     const QString referenceCommit =
         !sourceCommit.isEmpty() ? sourceCommit : newestCommit;
+    // The canonical per-column values every mirror should match. Prefer the
+    // source of truth's advert (the owner's), else the freshest node's, mirroring
+    // referenceCommit. A cell that differs from these gets underlined below, so a
+    // node quietly serving different data than the source is visible at a glance.
+    const MirrorAdvert *referenceAdvert =
+        sourceAdvert ? sourceAdvert : newestAdvert;
+    const int refIssues = referenceAdvert ? referenceAdvert->issueCount : -1;
+    const int refCommits = referenceAdvert ? referenceAdvert->commitCount : -1;
+    const int refBranches = referenceAdvert ? referenceAdvert->branchCount : -1;
+    const int refPulls = referenceAdvert ? referenceAdvert->pullCount : -1;
+    const int refDiscussions =
+        referenceAdvert ? referenceAdvert->discussionCount : -1;
+    const int refArtifacts = referenceAdvert ? referenceAdvert->artifactCount : -1;
+    // Underline a cell whose content-derived value doesn't match the reference
+    // node's, and note it in the tooltip. Only content columns (commit + the
+    // metadata counts) are compared — per-node facts like CPU/version/clones are
+    // expected to differ. Skipped when either side is unknown (em-dash) so an
+    // older peer that doesn't advertise a field isn't falsely flagged.
+    auto markMismatch = [](QTableWidgetItem *item, bool mismatch,
+                           const QString &refText) {
+        if (!item || !mismatch)
+            return;
+        QFont f = item->font();
+        f.setUnderline(true);
+        item->setFont(f);
+        const QString note =
+            QStringLiteral("Doesn't match the source of truth (%1)").arg(refText);
+        item->setToolTip(item->toolTip().isEmpty()
+                             ? note
+                             : item->toolTip() + QStringLiteral("\n") + note);
+    };
+    auto countMismatch = [](int value, int ref) {
+        return ref >= 0 && value >= 0 && value != ref;
+    };
 
     // Clone / website-serve tallies are per-node local counters, carried across the
     // network only in each node's published catalog record. Index the catalog cache
@@ -1618,6 +1662,11 @@ void MainWindow::loadMirrorNodesPanel()
         }
         auto *commitItem = new QTableWidgetItem(commitText);
         commitItem->setToolTip(commitTip);
+        markMismatch(commitItem,
+                     advert && !advert->commit.isEmpty() &&
+                         !referenceCommit.isEmpty() &&
+                         advert->commit != referenceCommit,
+                     referenceCommit.left(10));
         m_mirrorNodesTable->setItem(row, MirrorNodeColCommit, commitItem);
 
         // Synced: relative time since the node last fetched from source.
@@ -1687,25 +1736,37 @@ void MainWindow::loadMirrorNodesPanel()
                 QString::fromUtf8("Mirroring %1 issue%2")
                     .arg(nodeIssues)
                     .arg(nodeIssues == 1 ? "" : "s"));
+        markMismatch(issuesItem, countMismatch(nodeIssues, refIssues),
+                     QString::number(refIssues));
         m_mirrorNodesTable->setItem(row, MirrorNodeColIssues, issuesItem);
 
         // Commits / Branches / Pulls / Discussions: more per-node tallies
         // advertised alongside the issue count, so the panel shows how much
         // history each node mirrors and how busy it is. Em-dash for older peers.
-        m_mirrorNodesTable->setItem(
-            row, MirrorNodeColCommits,
-            makeCountCell(advert ? advert->commitCount : -1, "commit", "commits"));
-        m_mirrorNodesTable->setItem(
-            row, MirrorNodeColBranches,
-            makeCountCell(advert ? advert->branchCount : -1, "branch", "branches"));
-        m_mirrorNodesTable->setItem(
-            row, MirrorNodeColPulls,
-            makeCountCell(advert ? advert->pullCount : -1, "pull request",
-                          "pull requests"));
-        m_mirrorNodesTable->setItem(
-            row, MirrorNodeColDiscussions,
-            makeCountCell(advert ? advert->discussionCount : -1, "discussion",
-                          "discussions"));
+        const int nodeCommits = advert ? advert->commitCount : -1;
+        const int nodeBranches = advert ? advert->branchCount : -1;
+        const int nodePulls = advert ? advert->pullCount : -1;
+        const int nodeDiscussions = advert ? advert->discussionCount : -1;
+        auto *commitsItem = makeCountCell(nodeCommits, "commit", "commits");
+        markMismatch(commitsItem, countMismatch(nodeCommits, refCommits),
+                     QString::number(refCommits));
+        m_mirrorNodesTable->setItem(row, MirrorNodeColCommits, commitsItem);
+        auto *branchesItem = makeCountCell(nodeBranches, "branch", "branches");
+        markMismatch(branchesItem, countMismatch(nodeBranches, refBranches),
+                     QString::number(refBranches));
+        m_mirrorNodesTable->setItem(row, MirrorNodeColBranches, branchesItem);
+        auto *pullsItem =
+            makeCountCell(nodePulls, "pull request", "pull requests");
+        markMismatch(pullsItem, countMismatch(nodePulls, refPulls),
+                     QString::number(refPulls));
+        m_mirrorNodesTable->setItem(row, MirrorNodeColPulls, pullsItem);
+        auto *discussionsItem =
+            makeCountCell(nodeDiscussions, "discussion", "discussions");
+        markMismatch(discussionsItem,
+                     countMismatch(nodeDiscussions, refDiscussions),
+                     QString::number(refDiscussions));
+        m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
+                                    discussionsItem);
         m_mirrorNodesTable->setItem(
             row, MirrorNodeColWorktrees,
             makeCountCell(advert ? advert->worktreeCount : -1, "worktree",
@@ -1762,10 +1823,12 @@ void MainWindow::loadMirrorNodesPanel()
         // Artifacts: how many release binaries this node is hosting for download
         // in its content-addressed store (issue #304). A mirror replicates these
         // separately from git, so the count reflects what it can actually serve.
-        m_mirrorNodesTable->setItem(
-            row, MirrorNodeColArtifacts,
-            makeCountCell(advert ? advert->artifactCount : -1, "artifact",
-                          "artifacts"));
+        const int nodeArtifacts = advert ? advert->artifactCount : -1;
+        auto *artifactsItem =
+            makeCountCell(nodeArtifacts, "artifact", "artifacts");
+        markMismatch(artifactsItem, countMismatch(nodeArtifacts, refArtifacts),
+                     QString::number(refArtifacts));
+        m_mirrorNodesTable->setItem(row, MirrorNodeColArtifacts, artifactsItem);
         ++count;
     }
 
@@ -1849,6 +1912,10 @@ void MainWindow::loadMirrorNodesPanel()
             auto *catCommitItem = new QTableWidgetItem(catCommitText);
             if (!catCommit.isEmpty())
                 catCommitItem->setToolTip(catCommit);
+            markMismatch(catCommitItem,
+                         !catCommit.isEmpty() && !referenceCommit.isEmpty() &&
+                             catCommit != referenceCommit,
+                         referenceCommit.left(10));
             m_mirrorNodesTable->setItem(row, MirrorNodeColCommit, catCommitItem);
             const qint64 syncedSecs = qint64(m.value("lastSync").toDouble()) / 1000;
             auto *syncedItem = new SortTableWidgetItem(
@@ -1885,23 +1952,35 @@ void MainWindow::loadMirrorNodesPanel()
                 catIssuesItem->setToolTip(QString::fromUtf8("Mirroring %1 issue%2")
                                               .arg(catIssues)
                                               .arg(catIssues == 1 ? "" : "s"));
+            markMismatch(catIssuesItem, countMismatch(catIssues, refIssues),
+                         QString::number(refIssues));
             m_mirrorNodesTable->setItem(row, MirrorNodeColIssues, catIssuesItem);
-            m_mirrorNodesTable->setItem(
-                row, MirrorNodeColCommits,
-                makeCountCell(m.value("commitCount").toInt(-1), "commit",
-                              "commits"));
-            m_mirrorNodesTable->setItem(
-                row, MirrorNodeColBranches,
-                makeCountCell(m.value("branchCount").toInt(-1), "branch",
-                              "branches"));
-            m_mirrorNodesTable->setItem(
-                row, MirrorNodeColPulls,
-                makeCountCell(m.value("pullCount").toInt(-1), "pull request",
-                              "pull requests"));
-            m_mirrorNodesTable->setItem(
-                row, MirrorNodeColDiscussions,
-                makeCountCell(m.value("discussionCount").toInt(-1), "discussion",
-                              "discussions"));
+            const int catCommits = m.value("commitCount").toInt(-1);
+            const int catBranches = m.value("branchCount").toInt(-1);
+            const int catPulls = m.value("pullCount").toInt(-1);
+            const int catDiscussions = m.value("discussionCount").toInt(-1);
+            auto *catCommitsItem = makeCountCell(catCommits, "commit", "commits");
+            markMismatch(catCommitsItem, countMismatch(catCommits, refCommits),
+                         QString::number(refCommits));
+            m_mirrorNodesTable->setItem(row, MirrorNodeColCommits, catCommitsItem);
+            auto *catBranchesItem =
+                makeCountCell(catBranches, "branch", "branches");
+            markMismatch(catBranchesItem, countMismatch(catBranches, refBranches),
+                         QString::number(refBranches));
+            m_mirrorNodesTable->setItem(row, MirrorNodeColBranches,
+                                        catBranchesItem);
+            auto *catPullsItem =
+                makeCountCell(catPulls, "pull request", "pull requests");
+            markMismatch(catPullsItem, countMismatch(catPulls, refPulls),
+                         QString::number(refPulls));
+            m_mirrorNodesTable->setItem(row, MirrorNodeColPulls, catPullsItem);
+            auto *catDiscussionsItem =
+                makeCountCell(catDiscussions, "discussion", "discussions");
+            markMismatch(catDiscussionsItem,
+                         countMismatch(catDiscussions, refDiscussions),
+                         QString::number(refDiscussions));
+            m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
+                                        catDiscussionsItem);
             m_mirrorNodesTable->setItem(
                 row, MirrorNodeColWorktrees,
                 makeCountCell(m.value("worktreeCount").toInt(-1), "worktree",
@@ -1943,10 +2022,14 @@ void MainWindow::loadMirrorNodesPanel()
                 makeServeCountCell(catWebsite, websiteTip(catWebsite)));
             // Artifacts the publishing node reported hosting for download, so the
             // count shows for an offline node too.
-            m_mirrorNodesTable->setItem(
-                row, MirrorNodeColArtifacts,
-                makeCountCell(m.value("artifactCount").toInt(-1), "artifact",
-                              "artifacts"));
+            const int catArtifacts = m.value("artifactCount").toInt(-1);
+            auto *catArtifactsItem =
+                makeCountCell(catArtifacts, "artifact", "artifacts");
+            markMismatch(catArtifactsItem,
+                         countMismatch(catArtifacts, refArtifacts),
+                         QString::number(refArtifacts));
+            m_mirrorNodesTable->setItem(row, MirrorNodeColArtifacts,
+                                        catArtifactsItem);
             ++count;
         }
     }
