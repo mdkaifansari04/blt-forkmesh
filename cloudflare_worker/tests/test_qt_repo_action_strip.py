@@ -11,6 +11,6 @@ def test_action_strip_is_parented_to_repo_detail_page_not_tab_viewport():
     end = source.index("void MainWindow::updateActionStrip()")
     body = source[start:end]
 
-    assert "m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr" in body
+    assert "QWidget *page = m_repoDetailSection;" in body
     assert "m_repoActionsTab->parentWidget()" not in body
     assert "tab-bar scroll" in body
