@@ -24,6 +24,7 @@ way they import ``urls.py``. The composition is a pure string substitution, so
 it is trivially unit-testable against the on-disk partials.
 """
 
+import hashlib
 import re
 
 # Placeholder the shell uses to pull in a partial: <!--#include partial="name"-->
@@ -34,6 +35,14 @@ VIEW_INCLUDE_RE = re.compile(r"<!--#include view-->")
 
 # Per-page metadata tokens in the shell: <!--#page id-->, <!--#page title-->, ...
 PAGE_TOKEN_RE = re.compile(r"<!--#page ([a-z]+)-->")
+
+# Root-relative first-party <script src="/name.js"> tags, with an optional
+# existing ``?v=`` cache-busting query. Used by ``stamp_asset_versions`` to
+# rewrite the version to a per-build content hash so a new bundle is never
+# served from a stale edge/browser cache (the old static ``?v=public-profiles``
+# query never changed, so week-old dashboard.js kept being served until a cache
+# happened to expire — a hard refresh masked it).
+ASSET_SCRIPT_RE = re.compile(r'(src="/([\w.-]+\.js))(?:\?v=[^"]*)?"')
 
 # The dashboard's pages. Keys are page ids (also the <body data-page> value the
 # JS boot dispatch keys off). "view" names the partials/views/<view>.html file;
@@ -165,6 +174,49 @@ def mark_active_nav(html, page_id):
         return tag.replace("text-muted-foreground", "text-foreground", 1)
 
     return tag_re.sub(_activate, html)
+
+
+def content_version(text):
+    """Short, deterministic content fingerprint for a client bundle.
+
+    Only the bytes matter (not the deploy time), so an unchanged bundle keeps
+    the same ``?v=`` and warm caches survive redeploys; any change rotates it.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def asset_versions(dashboard_js, dashboard_chat_js):
+    """Version map for the two client bundles, keyed by their served filename.
+
+    Shared by the build tool and the frontend tests so the ``?v=`` stamped into
+    the built documents is reproduced identically off the same source.
+    """
+    return {
+        "dashboard.js": content_version(dashboard_js),
+        "dashboard-chat.js": content_version(dashboard_chat_js),
+    }
+
+
+def stamp_asset_versions(html, versions):
+    """Rewrite first-party ``<script src="/x.js">`` tags to carry ``?v=<hash>``.
+
+    ``versions`` maps a bundle filename (``dashboard.js``) to a per-build
+    content hash. Only listed assets are touched; any existing ``?v=`` query is
+    replaced, and a version is added where none was present. Third-party scripts
+    (posthog, tailwind, lucide) and unlisted assets pass through unchanged.
+
+    This is the deploy-time cache-buster: because the query string tracks the
+    bundle's content, every changed deploy yields a fresh URL, so no edge or
+    browser cache can serve the previous build's JS against the new HTML.
+    """
+    def _stamp(match):
+        base, name = match.group(1), match.group(2)
+        version = versions.get(name)
+        if not version:
+            return match.group(0)
+        return '%s?v=%s"' % (base, version)
+
+    return ASSET_SCRIPT_RE.sub(_stamp, html)
 
 
 def compose_page_from_reader(read, page_id):
