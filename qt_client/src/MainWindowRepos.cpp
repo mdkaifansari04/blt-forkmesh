@@ -3226,6 +3226,11 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
     logSystem(msg);
     flashMessage(msg);
 
+    // The announcement named the peer's new HEAD; reflect it in the live roster
+    // so the Mirror nodes panel shows the peer at that commit right away instead
+    // of waiting for its next hello (the source of the >30s lag).
+    applyPeerMirrorCommit(ownerName, peerName, commit);
+
     // The signal named the exact new commit. If our mirror already holds it we
     // are already converged — close the round trip instantly by reporting back
     // that we are up to date, with no redundant fetch.
@@ -3290,6 +3295,53 @@ void MainWindow::onPeerMirrorSynced(const QString &ownerName,
         msg += " at " + commit.trimmed().left(10);
     msg += ".";
     logSystem(msg);
+
+    // The ack named the exact commit the peer now holds. Reflect it in the live
+    // roster right away so this node's Mirror nodes panel shows the peer as
+    // converged the instant it reports back, rather than lagging until the
+    // peer's next hello re-advertises the new HEAD.
+    applyPeerMirrorCommit(ownerName, peerName, commit);
+}
+
+bool MainWindow::applyPeerMirrorCommit(const QString &ownerName,
+                                       const QString &peerName,
+                                       const QString &commit)
+{
+    const QString group = ownerName.trimmed();
+    const QString target = commit.trimmed().left(64);
+    const QString who = peerName.trimmed();
+    if (group.isEmpty() || target.isEmpty() || who.isEmpty())
+        return false;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    bool changed = false;
+    for (MemberInfo &node : m_homeRoster) {
+        if (node.self)
+            continue; // our own row reads the live local HEAD, never a peer ack
+        // Identify the reporting peer by its advertised name (chat or node
+        // account). A name we don't recognise leaves the roster untouched, so a
+        // stray/misrouted ack can never mark the wrong node as converged.
+        if (node.name.compare(who, Qt::CaseInsensitive) != 0 &&
+            node.nodeName.compare(who, Qt::CaseInsensitive) != 0)
+            continue;
+        for (MirrorAdvert &m : node.mirrorDetails) {
+            if (m.source.compare(group, Qt::CaseInsensitive) != 0 &&
+                m.ownerName.compare(group, Qt::CaseInsensitive) != 0)
+                continue;
+            if (m.commit != target) {
+                m.commit = target;
+                if (m.updatedMs < now)
+                    m.updatedMs = now;
+                changed = true;
+            }
+        }
+    }
+    // Repaint the open Mirror nodes panel so the peer's row updates now. The
+    // panel is rebuilt from m_homeRoster, so the patched advert flows straight
+    // through; only reload while it is actually on screen (it shells several
+    // synchronous git reads — see loadMirrorNodesPanel).
+    if (changed && m_mirrorNodesTable && m_mirrorNodesTable->isVisible())
+        loadMirrorNodesPanel();
+    return changed;
 }
 
 void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
