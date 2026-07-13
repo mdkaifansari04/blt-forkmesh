@@ -172,36 +172,6 @@
         display: block;
       }
 
-      .icon-button {
-        display: inline-grid;
-        place-items: center;
-        width: 2.5rem;
-        height: 2.5rem;
-        border: 0;
-        border-radius: 999px;
-        background: transparent;
-        color: var(--docs-soft);
-        cursor: pointer;
-      }
-
-      .icon-button:hover {
-        color: var(--docs-fg);
-        background: var(--docs-hover);
-      }
-
-      .icon-button svg {
-        width: 1rem;
-        height: 1rem;
-      }
-
-      html.dark .moon {
-        display: none;
-      }
-
-      html:not(.dark) .sun {
-        display: none;
-      }
-
       .docs-scrollbar {
         scrollbar-width: thin;
         scrollbar-color: var(--docs-line-strong) transparent;
@@ -303,26 +273,16 @@
     </style>
     <link rel="stylesheet" href="/site-header.css" />
     <script src="/site-header.js" defer></script>
-    <style>
-      /* Map the docs theme onto the universal header's variable names so it
-         follows the docs light/dark toggle (docs styles use --docs-*). */
-      :root {
-        --muted: var(--docs-muted);
-        --foreground: var(--docs-fg);
-        --border: var(--docs-line);
-        --card: var(--docs-panel);
-      }
-    </style>
   </head>
   <body class="min-h-screen bg-[var(--docs-bg)] text-[var(--docs-fg)]">
     <div data-forkmesh-header="simple"></div>
     <header
-      class="sticky top-0 z-50 border-b border-[var(--docs-line)] bg-[color-mix(in_srgb,var(--docs-bg)_94%,transparent)] backdrop-blur-xl"
+      class="sticky top-0 z-30 border-b border-[var(--docs-line)] bg-[color-mix(in_srgb,var(--docs-bg)_94%,transparent)] backdrop-blur-xl"
     >
       <div
-        class="mx-auto grid h-20 max-w-[1540px] grid-cols-[minmax(220px,520px)_minmax(0,1fr)] items-center gap-5 px-5 sm:px-8 lg:px-12 xl:grid-cols-[minmax(260px,560px)_minmax(0,1fr)] xl:gap-6"
+        class="mx-auto hidden h-20 max-w-[1540px] grid-cols-1 items-center px-5 sm:px-8 md:grid lg:px-12"
       >
-        <div class="relative hidden min-w-0 md:block">
+        <div class="relative min-w-0 max-w-[560px]">
           <label
             class="flex h-11 min-w-0 items-center justify-between gap-4 rounded-2xl border border-[var(--docs-line-strong)] bg-[var(--docs-panel)] px-4 text-left text-[0.92rem] font-semibold text-[var(--docs-soft)] shadow-[inset_0_0_0_1px_rgba(0,0,0,0.01)]"
             aria-label="Search documentation"
@@ -367,28 +327,6 @@
           </div>
         </div>
 
-        <div
-          class="flex min-w-0 items-center justify-end gap-3 sm:gap-4 xl:gap-5"
-        >
-          <button
-            id="theme-toggle"
-            class="icon-button"
-            type="button"
-            aria-label="Toggle theme"
-          >
-            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"
-              ></path>
-            </svg>
-            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="12" cy="12" r="4"></circle>
-              <path
-                d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"
-              ></path>
-            </svg>
-          </button>
-        </div>
       </div>
 
       <div
@@ -1970,12 +1908,12 @@ uvx --from workers-py pywrangler dev
             </p>
           </div>
           <button
-            class="icon-button -mr-2 -mt-2"
+            class="-mr-2 -mt-2 grid h-10 w-10 flex-none cursor-pointer place-items-center rounded-full text-[var(--docs-soft)] hover:bg-[var(--docs-hover)] hover:text-[var(--docs-fg)]"
             type="button"
             data-feedback-close
             aria-label="Close feedback"
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
+            <svg class="h-4 w-4" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M18 6 6 18"></path>
               <path d="m6 6 12 12"></path>
             </svg>
@@ -2007,33 +1945,6 @@ uvx --from workers-py pywrangler dev
 
     <script>
       (() => {
-        function applyTheme(mode) {
-          const chosen =
-            mode ||
-            localStorage.getItem("forkmesh.dashboard.theme") ||
-            localStorage.getItem("forkmesh.theme") ||
-            (window.matchMedia &&
-            window.matchMedia("(prefers-color-scheme: dark)").matches
-              ? "dark"
-              : "light");
-          document.documentElement.classList.toggle("dark", chosen === "dark");
-          localStorage.setItem("forkmesh.theme", chosen);
-          localStorage.setItem("forkmesh.dashboard.theme", chosen);
-        }
-
-        applyTheme();
-
-        const themeToggle = document.querySelector("#theme-toggle");
-        if (themeToggle) {
-          themeToggle.addEventListener("click", () => {
-            applyTheme(
-              document.documentElement.classList.contains("dark")
-                ? "light"
-                : "dark",
-            );
-          });
-        }
-
         const docsSearch = document.querySelector("#docs-search");
         const docsSearchPanel = document.querySelector("#docs-search-panel");
         const docsSearchResults = document.querySelector(
