@@ -836,7 +836,7 @@
     try {
       while (queue.length && files.length < MAX_REPO_FILE_FINDER_RESULTS && ((Date.now() - started) / 1000) < MAX_REPO_FILE_FINDER_SECONDS) {
         const path = queue.shift();
-        const data = await fetchJson(repoLiveUrl(repo, "tree", { path }));
+        const data = await fetchRepoJson(repoLiveUrl(repo, "tree", { path }));
         const entries = Array.isArray(data.entries) ? data.entries.slice() : [];
         entries.sort((a, b) => {
           if (a.type !== b.type) return a.type === "tree" ? -1 : 1;
