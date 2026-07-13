@@ -6279,8 +6279,13 @@
     const issuesView = state.issuesView;
     const filtered = issuesView.items.filter((issue) => {
       if (issuesView.filter === "all") return true;
-      if (issuesView.filter === "open") return issue.status === "open";
-      return issue.status !== "open";
+      // "Open" means "not closed", matching the desktop advert and served counts
+      // (RepoHost::countOpenIssues / mirrorOpenIssueCount both use status !=
+      // "closed"). A strict status === "open" test dropped issues with any other
+      // non-closed status (e.g. "reopened") from the Open view, so the tab and
+      // list showed fewer issues than the Mirror nodes count (adhoc #96).
+      if (issuesView.filter === "open") return issue.status !== "closed";
+      return issue.status === "closed";
     }).filter((issue) => issueMatchesQuery(issue, issuesView.query));
     const config = repoCollectionConfig.issues;
     const filterBar = `<div class="flex items-center gap-1 border-b border-border px-4 py-2">
@@ -6347,8 +6352,8 @@
       state.issuesView.items = merged;
       state.issuesView.filter = "open";
       state.issuesView.query = "";
-      setRepoTabCount("issues", merged.filter((issue) => issue.status === "open").length);
-      const openIssues = merged.filter((issue) => issue.status === "open").length;
+      setRepoTabCount("issues", merged.filter((issue) => issue.status !== "closed").length);
+      const openIssues = merged.filter((issue) => issue.status !== "closed").length;
       setRepoCollectionCounts("issues", openIssues, merged.length - openIssues);
       renderRepoIssues();
     } catch (_) {
@@ -7858,7 +7863,7 @@
       // until the node comes back online and drains it to the mirror.
       const ownerOffline = isRepoOwner(repo) && repoServedByMirror(repo);
       if (ownerOffline) savePendingIssue(repo, pendingItem);
-      setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status === "open").length);
+      setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status !== "closed").length);
       if (titleInput) titleInput.value = "";
       if (bodyInput) bodyInput.value = "";
       images.length = 0;
