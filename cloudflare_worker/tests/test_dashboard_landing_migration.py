@@ -76,7 +76,7 @@ def test_dashboard_exposes_live_hydration_targets():
     dashboard = assembled_dashboard()
 
     assert 'src="/dashboard.js?v=' in dashboard
-    assert 'src="/dashboard-chat.js"' in dashboard
+    assert 'src="/dashboard-chat.js?v=' in dashboard
     for marker in (
         "data-dashboard-profile-name",
         "data-sidebar-user-name",
@@ -1803,7 +1803,7 @@ def test_dashboard_network_chat_uses_real_room_integration_without_mock_messages
     chat_js = _read(PUBLIC / "dashboard-chat.js")
     visible = _strip_html_comments(dashboard)
 
-    assert 'src="/dashboard-chat.js"' in dashboard
+    assert 'src="/dashboard-chat.js?v=' in dashboard
     assert 'CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws"' in chat_js
     # The room key is fetched from the relay (server-derived from DATA_KEY), not a
     # public baked-in constant.
