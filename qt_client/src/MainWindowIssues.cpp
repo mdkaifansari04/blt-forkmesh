@@ -4542,6 +4542,12 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             }
         }
     }
+    // Keep the PR review page's sticky file header spanning the top of the diff
+    // viewport as it resizes (adhoc #56). Don't consume — the view still needs
+    // the resize.
+    if (event->type() == QEvent::Resize && m_pullDiff &&
+        obj == m_pullDiff->viewport())
+        layoutPullStickyHeader();
     // Right-click on selected text anywhere in the app: offer "Send to
     // Prompt" alongside the widget's normal Copy/Select-All menu (adhoc #126).
     if (event->type() == QEvent::ContextMenu) {
