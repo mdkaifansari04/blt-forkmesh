@@ -921,15 +921,37 @@ void ServerNode::setMirroredRepos(const QList<MirrorAdvert> &repos)
         sendHello(); // re-advertise so peers see the updated mirror set
 }
 
-void ServerNode::notifyMirrorUpdated(const QString &ownerName)
+void ServerNode::notifyMirrorUpdated(const QString &ownerName,
+                                     const QString &commit)
 {
     if (ownerName.trimmed().isEmpty() || !m_wsReady)
         return;
     QJsonObject message = makeMessage("mirror-update");
     message.insert("repo", ownerName.trimmed().left(160));
+    // Carry the new HEAD so peers see exactly which commit is different and can
+    // confirm when their fetch reaches it, without a separate advert round trip.
+    if (!commit.trimmed().isEmpty())
+        message.insert("commit", commit.trimmed().left(64));
     // Pre-mark our own id so the relay's echo back to us isn't surfaced as a
     // self-notification. This is an ephemeral frame (not in kDurableTypes), so
     // the relay won't retain or replay it.
+    markSeen(message.value("id").toString());
+    sendEncrypted(message, false);
+}
+
+void ServerNode::notifyMirrorSynced(const QString &ownerName,
+                                    const QString &commit)
+{
+    if (ownerName.trimmed().isEmpty() || !m_wsReady)
+        return;
+    // The closing half of the round trip: after pulling a mirror-update signal
+    // forward, announce that this node's mirror now holds `commit`, so the
+    // source and other peers learn it converged the instant the fetch lands
+    // rather than at the next advert/auto-sync tick. Ephemeral, like the update.
+    QJsonObject message = makeMessage("mirror-synced");
+    message.insert("repo", ownerName.trimmed().left(160));
+    if (!commit.trimmed().isEmpty())
+        message.insert("commit", commit.trimmed().left(64));
     markSeen(message.value("id").toString());
     sendEncrypted(message, false);
 }
@@ -1457,7 +1479,13 @@ void ServerNode::handlePlain(const QJsonObject &message)
     } else if (type == "mirror-update") {
         const QString repo = message.value("repo").toString().left(160);
         if (!repo.isEmpty())
-            emit mirrorUpdated(repo, sender);
+            emit mirrorUpdated(repo, sender,
+                               message.value("commit").toString().left(64));
+    } else if (type == "mirror-synced") {
+        const QString repo = message.value("repo").toString().left(160);
+        if (!repo.isEmpty())
+            emit mirrorSynced(repo, sender,
+                              message.value("commit").toString().left(64));
     } else if (type == "mirror-refresh") {
         if (!message.value("to").toString().isEmpty() &&
             message.value("to").toString() != m_nodeId)

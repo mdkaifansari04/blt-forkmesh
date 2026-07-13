@@ -5,6 +5,7 @@
 // the class itself is declared in MainWindow.h. Shared helpers live in
 // MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
 
+#include "ClaudeAccountTransfer.h"
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -1020,6 +1021,23 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->addRow("Claude Admin key", m_claudeAdminKeyEdit);
     agentForm->addRow("OpenAI command", m_codexCommandEdit);
     agentForm->addRow("Claude command", m_claudeCommandEdit);
+
+    // Move this owner's Claude Code login (+ Claude API key) onto a host node so
+    // it can run "claude-code" agents on the owner's behalf. The desktop is where
+    // the `claude` CLI login lives; hosts start out signed-out.
+    auto *claudeAccountBtn = new QPushButton("Transfer Claude Code account…");
+    claudeAccountBtn->setObjectName("ghostButton");
+    claudeAccountBtn->setCursor(Qt::PointingHandCursor);
+    claudeAccountBtn->setToolTip(
+        "Export your Claude Code login and API key to a bundle, or import one on a "
+        "host so it can take agent requests as you.");
+    connect(claudeAccountBtn, &QPushButton::clicked, this,
+            &MainWindow::transferClaudeCodeAccount);
+    auto *claudeAccountRow = new QHBoxLayout;
+    claudeAccountRow->addWidget(claudeAccountBtn);
+    claudeAccountRow->addStretch();
+    agentForm->addRow("Claude Code account", claudeAccountRow);
+
     agentForm->addRow("Context window", m_agentContextEdit);
     agentForm->addRow("Max output", m_agentMaxOutputEdit);
     agentForm->addRow("Agent prompt", m_agentPromptPreambleEdit);
@@ -1767,6 +1785,237 @@ void MainWindow::backUpIdentityKey()
     dialog.exec();
 }
 
+void MainWindow::transferClaudeCodeAccount()
+{
+    const QString home = QDir::homePath();
+    const QString exportedFrom =
+        QSettings().value(kAccountNameSetting).toString();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Transfer Claude Code account");
+    auto *l = new QVBoxLayout(&dialog);
+
+    auto *intro = new QLabel(
+        "Move your Claude Code login (and any Claude API key) onto a host node so "
+        "it can run \"claude-code\" agents as you. Export a bundle here, copy it to "
+        "the host (scp / paste over SSH), then Import it there. The bundle carries a "
+        "live subscription token — treat it like a password and only put it on hosts "
+        "you trust.\n\nThis machine: " +
+        ClaudeAccountTransfer::describeOauth(
+            ClaudeAccountTransfer::readOauthObject(home)));
+    intro->setWordWrap(true);
+    intro->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    l->addWidget(intro);
+
+    auto currentApiKey = [] {
+        return QSettings().value(kClaudeApiKeySetting).toString().trimmed();
+    };
+
+    auto *saveBtn = new QPushButton("Save bundle…");
+    saveBtn->setObjectName("primaryButton");
+    saveBtn->setCursor(Qt::PointingHandCursor);
+    connect(saveBtn, &QPushButton::clicked, &dialog,
+            [this, &dialog, home, exportedFrom, currentApiKey] {
+                const QJsonObject oauth =
+                    ClaudeAccountTransfer::readOauthObject(home);
+                if (oauth.value("accessToken").toString().isEmpty() &&
+                    currentApiKey().isEmpty()) {
+                    QMessageBox::warning(
+                        &dialog, "Nothing to export",
+                        "No Claude Code login or Claude API key on this machine. "
+                        "Run `claude` and sign in, or set a Claude API key first.");
+                    return;
+                }
+                const QString path = QFileDialog::getSaveFileName(
+                    &dialog, "Save Claude account bundle",
+                    "forkmesh-claude-account.txt",
+                    "ForkMesh Claude account (*.txt);;All files (*)");
+                if (path.isEmpty())
+                    return;
+                QFile f(path);
+                if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    QMessageBox::warning(&dialog, "Save failed",
+                                         "Could not write " + path);
+                    return;
+                }
+                f.write(ClaudeAccountTransfer::encodeBundle(
+                            oauth, currentApiKey(), exportedFrom)
+                            .toUtf8());
+                f.close();
+                QFile::setPermissions(
+                    path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+                QMessageBox::information(
+                    &dialog, "Exported",
+                    "Claude account bundle saved to " + path +
+                        ".\nImport it on a host with \"Transfer Claude Code "
+                        "account\" or `claude-auth import`.");
+            });
+
+    auto *copyBtn = new QPushButton("Copy bundle");
+    copyBtn->setObjectName("ghostButton");
+    copyBtn->setCursor(Qt::PointingHandCursor);
+    connect(copyBtn, &QPushButton::clicked, &dialog,
+            [this, &dialog, home, exportedFrom, currentApiKey] {
+                const QJsonObject oauth =
+                    ClaudeAccountTransfer::readOauthObject(home);
+                if (oauth.value("accessToken").toString().isEmpty() &&
+                    currentApiKey().isEmpty()) {
+                    QMessageBox::warning(
+                        &dialog, "Nothing to export",
+                        "No Claude Code login or Claude API key on this machine.");
+                    return;
+                }
+                QApplication::clipboard()->setText(
+                    ClaudeAccountTransfer::encodeBundle(oauth, currentApiKey(),
+                                                        exportedFrom));
+                QMessageBox::information(
+                    &dialog, "Copied",
+                    "Bundle copied to the clipboard. Paste it into `claude-auth "
+                    "import -` on the host.");
+            });
+
+    auto *importBtn = new QPushButton("Import bundle…");
+    importBtn->setObjectName("ghostButton");
+    importBtn->setCursor(Qt::PointingHandCursor);
+    connect(importBtn, &QPushButton::clicked, &dialog, [this, &dialog, home] {
+        const QString path = QFileDialog::getOpenFileName(
+            &dialog, "Import Claude account bundle", QString(),
+            "ForkMesh Claude account (*.txt *.json);;All files (*)");
+        if (path.isEmpty())
+            return;
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly)) {
+            QMessageBox::warning(&dialog, "Import failed",
+                                 "Could not read " + path);
+            return;
+        }
+        const QByteArray raw = f.readAll();
+        f.close();
+        QJsonObject oauth;
+        QString apiKey, err;
+        if (!ClaudeAccountTransfer::parseBundle(raw, oauth, apiKey, err)) {
+            QMessageBox::warning(&dialog, "Import failed", err);
+            return;
+        }
+        if (!ClaudeAccountTransfer::installOauth(home, oauth, err)) {
+            QMessageBox::warning(&dialog, "Import failed", err);
+            return;
+        }
+        QStringList installed;
+        if (!oauth.value("accessToken").toString().isEmpty())
+            installed << "Claude Code login";
+        if (!apiKey.isEmpty()) {
+            QSettings().setValue(kClaudeApiKeySetting, apiKey);
+            if (m_claudeApiKeyEdit)
+                m_claudeApiKeyEdit->setText(apiKey);
+            installed << "Claude API key";
+        }
+        QMessageBox::information(
+            &dialog, "Imported",
+            "Installed " + installed.join(" + ") +
+                " on this node. It can now take agent requests as the exporting "
+                "owner.");
+    });
+
+    auto *closeBtn = new QPushButton("Close");
+    closeBtn->setCursor(Qt::PointingHandCursor);
+    connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+
+    auto *row = new QHBoxLayout;
+    row->addWidget(saveBtn);
+    row->addWidget(copyBtn);
+    row->addWidget(importBtn);
+    row->addStretch(1);
+    row->addWidget(closeBtn);
+    l->addLayout(row);
+
+    dialog.exec();
+}
+
+QStringList MainWindow::headlessClaudeAuth(const QStringList &args)
+{
+    const QString home = QDir::homePath();
+    const QString sub = args.value(0).toLower();
+    auto apiKey = [] {
+        return QSettings().value(kClaudeApiKeySetting).toString().trimmed();
+    };
+
+    if (sub.isEmpty() || sub == QLatin1String("status")) {
+        QStringList out;
+        out << ClaudeAccountTransfer::describeOauth(
+            ClaudeAccountTransfer::readOauthObject(home));
+        out << (apiKey().isEmpty() ? QStringLiteral("Claude API key: not set")
+                                   : QStringLiteral("Claude API key: set"));
+        out << QStringLiteral(
+            "Use `claude-auth export [path]` to bundle this account, "
+            "`claude-auth import <path>` to install one from an owner.");
+        return out;
+    }
+
+    if (sub == QLatin1String("export")) {
+        const QJsonObject oauth = ClaudeAccountTransfer::readOauthObject(home);
+        if (oauth.value("accessToken").toString().isEmpty() && apiKey().isEmpty())
+            return {QStringLiteral(
+                "Nothing to export: no Claude Code login or Claude API key on "
+                "this node. Run `claude` and sign in first.")};
+        const QString exportedFrom =
+            QSettings().value(kAccountNameSetting).toString();
+        const QString encoded =
+            ClaudeAccountTransfer::encodeBundle(oauth, apiKey(), exportedFrom);
+        // `export -` (or no path) prints the bundle so it can be piped/copied;
+        // otherwise write a keyfile with owner-only permissions.
+        const QString path = args.value(1);
+        if (path.isEmpty() || path == QLatin1String("-"))
+            return {QStringLiteral("--- ForkMesh Claude account bundle ---"),
+                    encoded};
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            return {QStringLiteral("export failed: could not write ") + path};
+        f.write(encoded.toUtf8());
+        f.close();
+        QFile::setPermissions(path,
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        return {QStringLiteral("exported Claude account bundle to ") + path};
+    }
+
+    if (sub == QLatin1String("import")) {
+        const QString path = args.value(1);
+        if (path.isEmpty())
+            return {QStringLiteral("usage: claude-auth import <path>  "
+                                   "(use - to read the bundle from stdin/paste)")};
+        QByteArray raw;
+        if (path == QLatin1String("-")) {
+            // The remaining args are the pasted bundle (base64 has no spaces, so
+            // this also tolerates accidental splitting).
+            raw = args.mid(1).join(QString()).toUtf8();
+        } else {
+            QFile f(path);
+            if (!f.open(QIODevice::ReadOnly))
+                return {QStringLiteral("import failed: could not read ") + path};
+            raw = f.readAll();
+            f.close();
+        }
+        QJsonObject oauth;
+        QString key, err;
+        if (!ClaudeAccountTransfer::parseBundle(raw, oauth, key, err))
+            return {QStringLiteral("import failed: ") + err};
+        if (!ClaudeAccountTransfer::installOauth(home, oauth, err))
+            return {QStringLiteral("import failed: ") + err};
+        QStringList installed;
+        if (!oauth.value("accessToken").toString().isEmpty())
+            installed << QStringLiteral("Claude Code login");
+        if (!key.isEmpty()) {
+            QSettings().setValue(kClaudeApiKeySetting, key);
+            installed << QStringLiteral("Claude API key");
+        }
+        return {QStringLiteral("imported ") + installed.join(" + ") +
+                QStringLiteral("; this node can now take agent requests as the "
+                               "exporting owner")};
+    }
+
+    return {QStringLiteral("usage: claude-auth status|export [path]|import <path>")};
+}
+
 QByteArray MainWindow::effectiveAvatar()
 {
     if (!m_userAvatar.isEmpty())
@@ -2109,6 +2358,7 @@ void MainWindow::attachBackend(ChatBackend *backend)
     connect(backend, &ChatBackend::latencySampled, this,
             &MainWindow::onRelayLatencySampled);
     connect(backend, &ChatBackend::mirrorUpdated, this, &MainWindow::onPeerMirrorUpdated);
+    connect(backend, &ChatBackend::mirrorSynced, this, &MainWindow::onPeerMirrorSynced);
     connect(backend, &ChatBackend::mirrorRefreshRequested, this,
             &MainWindow::onMirrorRefreshRequested);
     connect(backend, &ChatBackend::coveOpened, this, &MainWindow::onCoveOpened);
