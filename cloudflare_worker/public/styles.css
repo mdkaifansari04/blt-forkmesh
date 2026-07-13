@@ -1924,8 +1924,16 @@ button.issue-row {
   pointer-events: none;
   opacity: 0.45;
   background:
-    radial-gradient(circle at 82% 18%, rgba(74, 222, 128, 0.16), transparent 26%),
-    radial-gradient(circle at 8% 90%, rgba(163, 113, 247, 0.12), transparent 28%),
+    radial-gradient(
+      circle at 82% 18%,
+      color-mix(in srgb, var(--primary) 16%, transparent),
+      transparent 26%
+    ),
+    radial-gradient(
+      circle at 8% 90%,
+      color-mix(in srgb, var(--purple) 12%, transparent),
+      transparent 28%
+    ),
     linear-gradient(
       90deg,
       transparent 0 31px,
@@ -1971,7 +1979,7 @@ button.issue-row {
   height: 8px;
   border-radius: 999px;
   background: var(--primary);
-  box-shadow: 0 0 18px rgba(74, 222, 128, 0.62);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--primary) 62%, transparent);
 }
 
 .network-console-metrics {
@@ -2282,7 +2290,11 @@ button.issue-row {
   border: 1px solid color-mix(in srgb, var(--purple) 24%, var(--border));
   border-radius: 8px;
   background:
-    radial-gradient(circle at 18% 14%, rgba(163, 113, 247, 0.2), transparent 34%),
+    radial-gradient(
+      circle at 18% 14%,
+      color-mix(in srgb, var(--purple) 20%, transparent),
+      transparent 34%
+    ),
     color-mix(in srgb, var(--background) 56%, var(--card));
 }
 
