@@ -91,6 +91,18 @@ def test_network_command_center_surfaces_use_theme_tokens():
     assert "color-mix(in srgb, var(--foreground)" in network_block
 
 
+def test_network_command_center_decorative_accents_use_theme_tokens():
+    network_block = STYLES[
+        STYLES.index("/* ===== Network command center ===== */"):
+        STYLES.index("/* ===== Doc content ===== */")
+    ]
+
+    assert "rgba(74, 222, 128" not in network_block
+    assert "rgba(163, 113, 247" not in network_block
+    assert "color-mix(in srgb, var(--primary)" in network_block
+    assert "color-mix(in srgb, var(--purple)" in network_block
+
+
 def test_network_stats_bindings_update_all_metric_instances():
     for marker in (
         'setText("#network-clients, [data-network-clients]"',
