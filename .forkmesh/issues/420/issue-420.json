@@ -31,6 +31,18 @@
             "sig": "OMt8kkFIrOEDYUhIJf6lYSYdij-dM4qmIYzZi5TtDtJSjsk6wHVQGbWk99PYBVpSYPRt2Otd9j817OBv8IJsDQ",
             "ts": 1783914266799,
             "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 90,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "c317af1c-bc72-4ea3-8641-e06127173be2",
+            "sig": "R930WHf5cvzWz0PDK61IyOws_kW92hPomRui1pGHs1YWifyFbeoytSvQ9_3N-FAzSDUK7-l7rw8woFWjBztoAA",
+            "ts": 1783914270945,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -43,6 +55,6 @@
     "startDate": 0,
     "status": "open",
     "title": "it seems the website is loading all issues when we go to the issues page and not just the open ones - please fix that Loading issues from the live mirror...",
-    "updatedAt": 1783914266799,
+    "updatedAt": 1783914270945,
     "votes": 0
 }
