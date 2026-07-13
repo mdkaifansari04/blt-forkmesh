@@ -969,7 +969,7 @@
             ${isPulls ? `
               <div class="mb-4 rounded-lg border border-border bg-background px-4 py-5 text-center">
                 <p class="text-sm font-semibold text-foreground">First time contributing to ${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repository")}?</p>
-                <p class="mx-auto mt-2 max-w-xl text-xs leading-5 text-muted-foreground">Review this repository's contribution notes before opening a pull request.</p>
+                <p class="mx-auto mt-2 max-w-xl text-xs leading-5 text-muted-foreground">Review this repository's <a href="${escapeHtml(repoPathUrl(repo, "blob", "CONTRIBUTING.md"))}" class="font-medium text-accent hover:underline">contribution notes</a> before opening a pull request.</p>
               </div>` : ""}
             <div data-repo-collection-toolbar="${kind}" class="mb-3 grid gap-2 lg:grid-cols-[auto_minmax(0,1fr)_auto]">
               <label class="inline-flex h-9 min-w-0 items-center overflow-hidden rounded-md border border-border bg-background text-xs lg:col-span-2">
