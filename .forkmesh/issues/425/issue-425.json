@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "BGvs0d_KmZc8BVMetu_LgoHUpW2djuIso_Oy0BtErpg",
     "authorName": "signal-kernel-5543",
@@ -33,6 +34,17 @@
             "sig": "9XG6gSBIdRbc4Jamdpzjw5yV-WQrXVgdpG_YjbG6pqdoMNJdPpXVOnYOLrR9fiW8e3b3w4nOXO3Sz1wdE1pHDg",
             "ts": 1783914352289,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "1e194e4f-1dad-4679-b4ce-5a0ebf015fd3",
+            "sig": "bhliPX_NAgaAJZfUlSTAO7-suX_wpqFrhwtHFre722YmffP4ldyeABzY5ORy1IfP4Kyblihms2JCKxmdso63Ag",
+            "ts": 1783914352355,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -45,6 +57,6 @@
     "startDate": 0,
     "status": "open",
     "title": "add a button here to resize to a minimal screen size that is more common",
-    "updatedAt": 1783914352289,
+    "updatedAt": 1783914352355,
     "votes": 0
 }
