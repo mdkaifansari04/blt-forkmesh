@@ -4993,6 +4993,9 @@
         }
       }
     } catch (_) {
+      // The tree fetch drives the commit summary; if no mirror answered, still
+      // resolve the loading skeleton to the repo-derived fallback metadata.
+      updateRepoCommitSummary(null, repo);
       treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No live desktop host is serving this repository tree right now.</div>';
       if (!path) {
         const readmeBody = detail.querySelector("[data-repo-readme-body]");
@@ -8889,8 +8892,6 @@
     const discussionsCount = repoCount(repo, ["discussions", "discussionCount"]);
     const commitsCount = repoCount(repo, ["commits", "commitCount", "commitHistory"]);
     const mirrorsCount = repoCount(repo, ["mirrors", "mirrorCount", "hosts"]);
-    const commitId = String(repo.rootCommit || repo.latestCommit || repo.commit || "").slice(0, 7) || "live";
-    const updatedAt = formatTimeAgo(repo.updatedAt || repo.lastSync);
     const live = repoIsLive(repo);
     const viaMirror = repoServedByMirror(repo);
     const canEditAbout = sessionOwnsRepo(repo);
@@ -9020,11 +9021,11 @@
 	                    <div data-repo-commit-summary class="grid gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center">
 	                      <div class="flex min-w-0 items-center gap-2">
 	                        <span data-repo-commit-avatar class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 font-mono text-[10px] font-semibold text-primary">${escapeHtml((repo.owner || "F")[0] || "F").toUpperCase()}</span>
-	                        <span data-repo-commit-author class="min-w-0 truncate text-foreground font-medium">${escapeHtml(repo.maintainer || repo.owner || "maintainer")}</span>
-	                        <span data-repo-commit-message class="min-w-0 truncate text-muted-foreground">published latest mirror metadata</span>
+	                        <span data-repo-commit-author class="min-w-0 truncate text-foreground font-medium"><span class="inline-block h-3.5 w-24 max-w-full animate-pulse rounded bg-muted-foreground/20 align-middle"></span></span>
+	                        <span data-repo-commit-message class="min-w-0 truncate text-muted-foreground"><span class="inline-block h-3.5 w-40 max-w-full animate-pulse rounded bg-muted-foreground/20 align-middle"></span></span>
 	                      </div>
-	                      <span data-repo-commit-hash class="font-mono text-muted-foreground">${escapeHtml(commitId)}</span>
-	                      <span data-repo-commit-date class="font-mono text-muted-foreground">${escapeHtml(updatedAt)}</span>
+	                      <span data-repo-commit-hash class="font-mono text-muted-foreground"><span class="inline-block h-3.5 w-14 animate-pulse rounded bg-muted-foreground/20 align-middle"></span></span>
+	                      <span data-repo-commit-date class="font-mono text-muted-foreground"><span class="inline-block h-3.5 w-16 animate-pulse rounded bg-muted-foreground/20 align-middle"></span></span>
 	                      <button type="button" data-dashboard-history-button aria-label="Open commit history" class="inline-flex items-center gap-1 font-medium text-foreground hover:text-primary transition-colors"><i data-lucide="history" class="h-3.5 w-3.5 text-muted-foreground"></i>History</button>
 	                    </div>
 	                    <div data-repo-tree></div>
