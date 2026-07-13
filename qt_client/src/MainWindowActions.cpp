@@ -495,7 +495,6 @@ void MainWindow::refreshOpenRepoDetail()
     // Re-read .forkmesh/ workflows so the "Actions (N)" badge tracks any added
     // or removed workflows a sync may have brought in.
     refreshRepoActions();
-    loadAboutSidebar();
     // loadCommits() above already refreshed the Insights counts if that tab is on
     // screen; off-screen it reloads when next opened, so no extra pass here.
     updateRepoDetailStatus();
@@ -1304,7 +1303,12 @@ void MainWindow::ensureActionStrip()
 {
     if (m_actionStrip || !m_repoActionsTab)
         return;
-    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
+    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
+    // stack now lives inside its own QScrollArea (688850a7), so its parent is
+    // that scroll's viewport. These bars float over the meta band just above the
+    // tab row, so they must be parented to the page — anchoring them to the
+    // viewport pushes them into the scrolled body, away from the tabs.
+    QWidget *page = m_repoDetailSection;
     if (!page)
         return;
     // Parented to the repo-detail page so the bars can float over the meta band
@@ -1499,7 +1503,12 @@ void MainWindow::positionRepoPushButton()
 {
     if (!m_repoPushButton || !m_repoCodeTab)
         return;
-    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
+    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
+    // stack now lives inside its own QScrollArea (688850a7), so its parent is
+    // that scroll's viewport. These bars float over the meta band just above the
+    // tab row, so they must be parented to the page — anchoring them to the
+    // viewport pushes them into the scrolled body, away from the tabs.
+    QWidget *page = m_repoDetailSection;
     if (!page)
         return;
     if (m_repoPushButton->parentWidget() != page)
@@ -1577,7 +1586,12 @@ void MainWindow::positionLooperToggle()
 {
     if (!m_looperToggle || !m_repoIssuesTab)
         return;
-    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
+    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
+    // stack now lives inside its own QScrollArea (688850a7), so its parent is
+    // that scroll's viewport. These bars float over the meta band just above the
+    // tab row, so they must be parented to the page — anchoring them to the
+    // viewport pushes them into the scrolled body, away from the tabs.
+    QWidget *page = m_repoDetailSection;
     if (!page)
         return;
     if (m_looperToggle->parentWidget() != page)
@@ -1619,7 +1633,12 @@ void MainWindow::positionMirrorActivityStrip()
     auto *strip = static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip);
     if (!strip || !m_repoMirrorsTab)
         return;
-    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
+    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
+    // stack now lives inside its own QScrollArea (688850a7), so its parent is
+    // that scroll's viewport. These bars float over the meta band just above the
+    // tab row, so they must be parented to the page — anchoring them to the
+    // viewport pushes them into the scrolled body, away from the tabs.
+    QWidget *page = m_repoDetailSection;
     if (!page)
         return;
     if (strip->parentWidget() != page)
@@ -1658,7 +1677,12 @@ void MainWindow::positionReleaseStrip()
 {
     if (!m_releaseStrip || !m_repoReleasesTab)
         return;
-    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
+    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
+    // stack now lives inside its own QScrollArea (688850a7), so its parent is
+    // that scroll's viewport. These bars float over the meta band just above the
+    // tab row, so they must be parented to the page — anchoring them to the
+    // viewport pushes them into the scrolled body, away from the tabs.
+    QWidget *page = m_repoDetailSection;
     if (!page)
         return;
     if (m_releaseStrip->parentWidget() != page)

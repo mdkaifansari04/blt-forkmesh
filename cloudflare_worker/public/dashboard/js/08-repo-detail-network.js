@@ -147,7 +147,6 @@
             }).join("")}
           </div>
         </div>
-        ${canSeeAgentsTab ? renderRepoAgentNewComposer() : ""}
 	        <div data-repo-content-grid class="grid min-w-0 gap-5 pt-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
 		          <div class="min-w-0">
 		            <section data-dashboard-repo-tab-panel="code">
@@ -958,6 +957,7 @@
       }
       $("[data-profile-settings-button]")?.classList.add("hidden");
       $("#notificationToggle")?.classList.add("hidden");
+      $("#agentModalToggle")?.classList.add("hidden");
       // Keep the presence cookie honest: localStorage says logged out, so the
       // Worker must stop 302ing / to the dashboard.
       document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
@@ -1100,6 +1100,16 @@
 
     if (event.target.closest("[data-close-notification-modal], [data-notification-modal-backdrop]")) {
       setNotificationModalOpen(false);
+      return;
+    }
+
+    if (event.target.closest("#agentModalToggle")) {
+      setAgentModalOpen(true);
+      return;
+    }
+
+    if (event.target.closest("[data-agent-modal-close], [data-agent-modal-backdrop]")) {
+      setAgentModalOpen(false);
       return;
     }
 
@@ -1682,9 +1692,11 @@
       return;
     }
     const agentNewForm = event.target.closest("[data-repo-agent-new-form]");
-    if (agentNewForm && state.selectedRepo) {
+    if (agentNewForm) {
       event.preventDefault();
-      handleRepoAgentNewSubmit(state.selectedRepo, agentNewForm);
+      // The form lives in the header modal (adhoc #62): the target repo comes
+      // from the modal's own repository picker, not the open repo page.
+      handleRepoAgentNewSubmit(agentModalSelectedRepo(), agentNewForm);
     }
   });
 
@@ -1787,6 +1799,7 @@
 	      setProfileModalOpen(false);
 	      setNotificationDropdownOpen(false);
 	      setNotificationModalOpen(false);
+	      setAgentModalOpen(false);
 	      closeRepoBranchMenus();
 	      closeRepoFileFinder();
 	      closeGlobalSearch();
