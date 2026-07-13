@@ -11,10 +11,12 @@
 #include "CoveStore.h"
 #include "ActionStore.h"
 #include "ActionFile.h"
+#include "AccountCapability.h"
 #include "AgentStore.h"
 #include "AgentRunner.h"
 #include "ClaudeSessionScan.h"
 #include "RepoSecurity.h"
+#include "RepoContributionSnapshot.h"
 
 struct CommitComment; // CommitCommentStore.h
 
@@ -254,13 +256,24 @@ public:
                                          const QString &commit,
                                          bool haveWorktree) const;
     void testSetSetupInputs(const QString &name, const QString &solana);
-    void testSetAccountFlowResult(bool result)
+    void testSetAccountFlowResult(bool result, bool desktopCapable = true)
     {
         m_testUseAccountFlowResult = true;
         m_testAccountFlowResult = result;
+        m_testAccountFlowDesktopCapable = desktopCapable;
         m_testEnsureNodeAccountCalls = 0;
     }
-    void testEnableSessionStartBypass(bool value) { m_testBypassServerStart = value; }
+    void testEnableSessionStartBypass(bool value)
+    {
+        m_testBypassServerStart = value;
+        if (value) {
+            // Keep test windows on the state selected explicitly by the test.
+            m_pendingSilentAuth = false;
+            m_pendingRestoreRepoIndex = -1;
+            m_deferredStartupRun = true;
+        }
+    }
+    void testRunDeferredStartupNow() { runDeferredStartup(); }
     void testStartSession() { startSession(); }
     void testEnablePaidMirroring() { enablePaidMirroring(); }
     int testAccountFlowCalls() const { return m_testEnsureNodeAccountCalls; }
@@ -270,6 +283,10 @@ public:
     QString testSavedSolanaAddress() const;
     bool testAccountAuthenticated() const { return m_accountAuthenticated; }
     QString testAccountTier() const { return m_accountTier; }
+    bool testHasOwnerSigningCapability() const
+    {
+        return hasOwnerSigningCapability(m_accountName);
+    }
     // Verifies makeColumnsResizable(): once rows arrive, every auto-sized column
     // (ResizeToContents and the Stretch flex column) flips to draggable
     // Interactive keeping its current width, while Fixed columns are left alone.
@@ -363,6 +380,7 @@ public:
     // Ahead/behind cell text (column 3) for the worktree row on `branch`, so a
     // test can prove the list shows how far each worktree diverges from main.
     QString testWorktreeAheadBehindText(const QString &branch) const;
+    QStringList testWorktreeBranches() const;
     // Focus the worktrees table and deliver an Up/Down key press, returning the
     // branch that ends up selected so a test can prove keyboard arrow keys move
     // the selection (and drive the detail pane) like a click does.
@@ -371,6 +389,7 @@ public:
     // test can prove the tab switch hands keyboard focus to that tab's list.
     int testWorktreesTabIndex() const { return m_worktreesTabIndex; }
     void testClickRepoDetailTab(int id);
+    bool testOpenMostRecentCommit();
     // Activation-independent: is the worktrees table the focus widget of its
     // window? (hasFocus() also requires the window to be active, which an
     // offscreen test window isn't.)
@@ -554,6 +573,10 @@ private:
     QJsonArray fetchCatalogRepos();
     int fetchNodesOnline();
     bool hasActiveAccountSession() const;
+    bool hasOwnerSigningCapability(
+        const QString &signerAccount = QString()) const;
+    void setDesktopCapability(const QString &accountName, bool capable);
+    bool restoreDesktopCapability(const QString &accountName);
     void mirrorCatalogRepo(const QString &owner, const QString &name,
                            const QString &cloneUrl, bool isPrivate = false);
     // Hosted git URL (https://<mainnode>/<owner>/<name>) for a catalog repo,
@@ -4897,6 +4920,15 @@ private:
     // every ~30s, hammering the relay's D1 for no reader-visible difference.
     QHash<QString, QByteArray> m_catalogPublishedFingerprint; // owner/name -> hash
     QHash<QString, qint64> m_catalogPublishedFingerprintAtMs; // owner/name -> ms
+    // Public-repository contribution snapshots are expensive Git reads. This
+    // bounded state coalesces one worker per immutable repo state, remembers a
+    // requested publish dialog, and applies separate success/error TTLs.
+    RepoContributionPublicationCache m_contributionPublicationCache;
+    QHash<QString, QString> m_catalogContributionScanKey;
+    QHash<QString, QString> m_catalogContributionSnapshotKey;
+    QHash<QString, QString> m_catalogContributionDependencyFingerprint;
+    QHash<QString, QString> m_catalogContributionPreparedScanKey;
+    QHash<QString, QString> m_catalogContributionPreparedSnapshotKey;
     QList<RepoHost *> m_repoHosts;
     QSet<QString> m_repoHostKeys; // owner/name + mirror/url for active hosts
     QList<MemberInfo> m_homeRoster;
@@ -4977,6 +5009,7 @@ private:
     bool m_accountAuthenticated = false;
     QString m_accountName;
     bool m_accountSolanaVerified = false;
+    bool m_accountDesktopCapable = false;
     // "free" = view-only (must mirror >=1 repo) until the user joins by
     // donating; "active" = donated + email/password set.
     QString m_accountTier = QStringLiteral("free");
@@ -5002,6 +5035,7 @@ private:
 #ifdef FORKMESH_WINDOW_TESTS
     bool m_testUseAccountFlowResult = false;
     bool m_testAccountFlowResult = true;
+    bool m_testAccountFlowDesktopCapable = true;
     int m_testEnsureNodeAccountCalls = 0;
     bool m_testBypassServerStart = false;
     TestIssueHistoryDeleteRunner m_testIssueHistoryDeleteRunner;

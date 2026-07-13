@@ -558,9 +558,11 @@ int main(int argc, char **argv)
                  runGit(workDir, {"config", "user.name", "E2E"});
     {
         QFile readme(QDir(workDir).filePath(QStringLiteral("README.md")));
-        readme.open(QIODevice::WriteOnly);
-        readme.write("# scratch\nHello mesh.\n");
-        readme.close();
+        const QByteArray contents("# scratch\nHello mesh.\n");
+        const bool written = readme.open(QIODevice::WriteOnly) &&
+                             readme.write(contents) == contents.size();
+        check(written, QStringLiteral("scratch README written"));
+        setup = setup && written;
     }
     setup = setup && runGit(workDir, {"add", "README.md"}) &&
             runGit(workDir, {"commit", "-q", "-m", "initial"}) &&

@@ -9,6 +9,9 @@
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
 
+#include <QScrollArea>
+#include <QScrollBar>
+
 #include <algorithm>
 
 using namespace forkmesh::ui;
@@ -187,7 +190,25 @@ QWidget *MainWindow::buildSourceControlPanel()
     composeRow->addWidget(m_scmCommitButton);
     composeRow->addWidget(m_scmCommitPushButton);
     composeRow->addWidget(m_scmStageCommitPushButton);
-    root->addWidget(m_scmControlsPanel);
+
+    // This is deliberately a dense power-user toolbar, but it must not impose
+    // its full one-line width on the surrounding commit-workspace splitter.
+    // Scroll just the controls when the left pane is narrow so the commit detail
+    // pane and its primary actions remain visible and every control stays usable.
+    auto *controlsScroll = new QScrollArea;
+    controlsScroll->setObjectName("sourceControlToolbarScroll");
+    controlsScroll->setWidget(m_scmControlsPanel);
+    controlsScroll->setWidgetResizable(true);
+    controlsScroll->setFrameShape(QFrame::NoFrame);
+    controlsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    controlsScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    controlsScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
+    controlsScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    controlsScroll->setMinimumWidth(0);
+    controlsScroll->setFixedHeight(
+        m_scmControlsPanel->sizeHint().height() +
+        controlsScroll->horizontalScrollBar()->sizeHint().height());
+    root->addWidget(controlsScroll);
 
     auto *header = new QHBoxLayout;
     auto *title = new QLabel("CHANGES");

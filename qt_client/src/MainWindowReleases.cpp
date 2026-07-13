@@ -2660,6 +2660,8 @@ void MainWindow::announceReleaseOnFediverse(const QString &tag,
     if (!repo.publishToNetwork)
         return; // unpublished repos have no public fediverse actor
     const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    if (!hasOwnerSigningCapability(owner))
+        return;
     QUrl url = catalogApiUrl();
     url.setPath("/api/repo/" + owner + "/" +
                 repoSegment(repo.name, QStringLiteral("repository")) +

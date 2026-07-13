@@ -65,6 +65,11 @@ struct PullRequest {
     // from base..head on demand. Working-tree/imported/cross-node PRs are not
     // branch-backed and persist a portable patch/mbox alongside pull.md.
     bool branchBacked = false;
+    // Immutable commits captured when a branch-backed pull is signed. Strict
+    // readers reconstruct the signed patch and mbox from these OIDs instead of
+    // following the mutable base/head branch names.
+    QString creationBaseOid;
+    QString creationHeadOid;
     // For a *merged* branch-backed PR, the exact base/head commits the merge
     // applied, so the historical diff stays viewable after the base absorbs the
     // commits (a live base...head would then resolve to empty). Empty otherwise.
@@ -96,6 +101,9 @@ public:
     bool canWrite() const; // has a working tree (can author/merge)
 
     QList<PullRequest> loadAll(QString *error = nullptr) const;
+    QList<PullRequest> loadAllStrict(QString *error = nullptr) const;
+    QList<PullRequest> loadAllStrictAtRef(const QString &ref,
+                                          QString *error = nullptr) const;
 
     // Owner-side: create a PR locally from an already-computed diff. `commits` is
     // the optional format-patch mbox (base..head) used to preserve authorship on
@@ -236,6 +244,7 @@ public:
     // owner assigns on merge).
     PullRequest makeSignedPull(PullRequest pr) const;
     static QByteArray canonicalString(const PullRequest &pr);
+    static QByteArray legacyCanonicalString(const PullRequest &pr);
 
     // Count files/additions/deletions from a unified diff.
     static void computeStats(PullRequest &pr);
@@ -276,8 +285,11 @@ private:
                      QString *error);
     bool commit(const QString &message, QString *error) const;
     QString mirrorRef() const;
-    QByteArray showFromMirror(const QString &repoRelPath, bool *ok) const;
-    QList<PullRequest> loadFromMirror(QString *error) const;
+    QByteArray showFromMirror(const QString &repoRelPath, bool *ok,
+                              const QString &refOverride = QString()) const;
+    QList<PullRequest> loadFromMirror(
+        QString *error, bool strict = false,
+        const QString &refOverride = QString()) const;
 
     QString m_workTree;
     QString m_mirror;

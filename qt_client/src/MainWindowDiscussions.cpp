@@ -817,6 +817,8 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactiv
         return;
 
     const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    if (!hasOwnerSigningCapability(owner))
+        return;
     const QString ts = QString::number(nowMs);
     const QByteArray canonical =
         ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
@@ -871,6 +873,8 @@ void MainWindow::applyDiscussionsInboxPayload(const RepositoryRecord &repo,
                                               const QJsonArray &pending,
                                               bool interactive)
 {
+    if (!hasOwnerSigningCapability(repo.owner))
+        return;
     if (pending.isEmpty()) {
         if (interactive)
             setDiscussionInlineNotice("No pending discussion submissions.");

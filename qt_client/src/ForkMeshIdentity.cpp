@@ -4,9 +4,11 @@
 
 #include <QByteArray>
 #include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QStandardPaths>
 
 #include <openssl/bio.h>
@@ -160,7 +162,13 @@ void ForkMeshIdentity::markWelcomeAnnounced() const
     if (m_keyDir.isEmpty())
         return;
     QFile f(m_keyDir + "/welcome_announced");
-    f.open(QIODevice::WriteOnly);
+    if (!f.open(QIODevice::WriteOnly)) {
+        qWarning().noquote()
+            << "Could not persist the welcome marker:"
+            << f.errorString().simplified().left(240);
+        return;
+    }
+    f.close();
 }
 
 QString ForkMeshIdentity::shortPublicKey() const
@@ -266,6 +274,27 @@ bool ForkMeshIdentity::verifySignature(const QString &publicKeyB64url,
         EVP_MD_CTX_free(ctx);
     EVP_PKEY_free(key);
     return ok;
+}
+
+QByteArray ForkMeshIdentity::deviceBindCanonical(
+    const QString &accountName, const QString &publicKeyB64url,
+    const QString &timestamp)
+{
+    static const QRegularExpression accountPattern(
+        QStringLiteral("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"));
+    static const QRegularExpression publicKeyPattern(
+        QStringLiteral("^[A-Za-z0-9_-]{43}$"));
+    static const QRegularExpression timestampPattern(
+        QStringLiteral("^(?:0|[1-9][0-9]{0,15})$"));
+    const QString normalizedAccount = accountName.trimmed().toLower();
+    if (!accountPattern.match(normalizedAccount).hasMatch() ||
+        !publicKeyPattern.match(publicKeyB64url).hasMatch() ||
+        !timestampPattern.match(timestamp).hasMatch()) {
+        return {};
+    }
+    return QByteArrayLiteral("forkmesh-device-bind-v1\n") +
+           normalizedAccount.toUtf8() + '\n' + publicKeyB64url.toUtf8() +
+           '\n' + timestamp.toUtf8();
 }
 
 // --- Backup, export & rotation (issue #368) -------------------------------
@@ -411,7 +440,13 @@ void ForkMeshIdentity::markBackedUp() const
     if (m_keyDir.isEmpty())
         return;
     QFile f(m_keyDir + "/backed_up");
-    f.open(QIODevice::WriteOnly);
+    if (!f.open(QIODevice::WriteOnly)) {
+        qWarning().noquote()
+            << "Could not persist the identity backup marker:"
+            << f.errorString().simplified().left(240);
+        return;
+    }
+    f.close();
 }
 
 QJsonObject ForkMeshIdentity::signRotation(const QString &newPublicKeyB64url) const

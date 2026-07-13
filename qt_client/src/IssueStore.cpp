@@ -1,6 +1,7 @@
 #include "IssueStore.h"
 
 #include "ForkMeshIdentity.h"
+#include "StrictGitReader.h"
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -17,6 +18,7 @@
 #include <QUuid>
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 
@@ -259,6 +261,82 @@ QString attachmentNameFor(const QByteArray &data, const QString &srcPath)
     if (ext.isEmpty())
         ext = "bin";
     return sha8 + "." + ext;
+}
+
+constexpr double kMaxJsonSafeInteger = 9007199254740991.0;
+
+bool strictOptionalJsonSafeInteger(const QJsonObject &object,
+                                   const QString &key)
+{
+    const QJsonValue value = object.value(key);
+    if (value.isUndefined())
+        return true;
+    if (!value.isDouble())
+        return false;
+    const double number = value.toDouble();
+    return std::isfinite(number) && number >= 0 &&
+           std::floor(number) == number && number <= kMaxJsonSafeInteger;
+}
+
+bool strictIssueObjectValid(const QJsonObject &object, int expectedNumber)
+{
+    const QJsonValue schema = object.value(QStringLiteral("schema"));
+    if (!schema.isString() ||
+        schema.toString() != QLatin1String("forkmesh-issue-v1")) {
+        return false;
+    }
+
+    const QJsonValue number = object.value(QStringLiteral("number"));
+    if (!number.isDouble() || number.toDouble() != double(expectedNumber))
+        return false;
+
+    if (!strictOptionalJsonSafeInteger(object, QStringLiteral("createdAt")) ||
+        !strictOptionalJsonSafeInteger(object, QStringLiteral("startDate")) ||
+        !strictOptionalJsonSafeInteger(object, QStringLiteral("endDate"))) {
+        return false;
+    }
+
+    const QJsonValue eventsValue = object.value(QStringLiteral("events"));
+    if (!eventsValue.isArray())
+        return false;
+    for (const QJsonValue &value : eventsValue.toArray()) {
+        if (!value.isObject())
+            return false;
+        const QJsonObject event = value.toObject();
+        const QJsonValue type = event.value(QStringLiteral("type"));
+        const QJsonValue author = event.value(QStringLiteral("author"));
+        const QJsonValue timestamp = event.value(QStringLiteral("ts"));
+        const QJsonValue signature = event.value(QStringLiteral("sig"));
+        if (!type.isString() || type.toString().isEmpty() ||
+            !author.isString() || author.toString().isEmpty() ||
+            !timestamp.isDouble() || !signature.isString() ||
+            signature.toString().isEmpty()) {
+            return false;
+        }
+        const double timestampValue = timestamp.toDouble();
+        if (!std::isfinite(timestampValue) || timestampValue < 0 ||
+            std::floor(timestampValue) != timestampValue ||
+            timestampValue > kMaxJsonSafeInteger) {
+            return false;
+        }
+        const QJsonValue attachments =
+            event.value(QStringLiteral("attachments"));
+        if (!attachments.isUndefined()) {
+            if (!attachments.isArray())
+                return false;
+            for (const QJsonValue &attachment : attachments.toArray()) {
+                if (!attachment.isString())
+                    return false;
+            }
+        }
+        if (type.toString() == QLatin1String("open") &&
+            (!event.value(QStringLiteral("title")).isString() ||
+             !event.value(QStringLiteral("body")).isString() ||
+             !event.value(QStringLiteral("attachments")).isArray())) {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace
@@ -543,6 +621,29 @@ QList<Issue> IssueStore::loadAll(QString *error, const std::function<void()> &ti
     return issues;
 }
 
+QList<Issue> IssueStore::loadAllStrict(QString *error) const
+{
+    if (error)
+        error->clear();
+    if (canWrite()) {
+        const IssueStore mirrorView(QString(), m_workTree, nullptr);
+        return mirrorView.loadFromMirror(error, true);
+    }
+    return loadFromMirror(error, true);
+}
+
+QList<Issue> IssueStore::loadAllStrictAtRef(const QString &ref,
+                                            QString *error) const
+{
+    if (error)
+        error->clear();
+    if (canWrite()) {
+        const IssueStore mirrorView(QString(), m_workTree, nullptr);
+        return mirrorView.loadFromMirror(error, true, ref);
+    }
+    return loadFromMirror(error, true, ref);
+}
+
 QString IssueStore::contentSignature() const
 {
     // Resolve the issue metadata subtree to its git object id. The oid is a
@@ -608,9 +709,10 @@ QString IssueStore::mirrorRef() const
     return m_cachedMirrorRef;
 }
 
-QByteArray IssueStore::showFromMirror(const QString &repoRelPath, bool *ok) const
+QByteArray IssueStore::showFromMirror(const QString &repoRelPath, bool *ok,
+                                      const QString &refOverride) const
 {
-    const QString ref = mirrorRef();
+    const QString ref = refOverride.isEmpty() ? mirrorRef() : refOverride;
     QByteArray output;
     const bool good = !ref.isEmpty() &&
                       runGit(m_mirror, {"show", ref + ":" + repoRelPath}, &output);
@@ -619,17 +721,47 @@ QByteArray IssueStore::showFromMirror(const QString &repoRelPath, bool *ok) cons
     return good ? output : QByteArray();
 }
 
-QList<Issue> IssueStore::loadFromMirror(QString *error) const
+QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
+                                        const QString &refOverride) const
 {
     QList<Issue> issues;
+    StrictGitReadInternal::Reader strictReader;
+    auto readGit = [&](const QStringList &args, QByteArray *output = nullptr) {
+        return strict ? strictReader.run(m_mirror, args, output)
+                      : runGit(m_mirror, args, output);
+    };
+    auto readGitInput = [&](const QStringList &args, const QByteArray &input,
+                            QByteArray *output) {
+        return strict ? strictReader.runInput(m_mirror, args, input, output)
+                      : runGitInput(m_mirror, args, input, output);
+    };
+    auto recordStrictError = [&](const QString &message) {
+        if (strict && error && error->isEmpty())
+            *error = message;
+    };
     if (m_mirror.isEmpty()) {
         if (error)
             *error = QStringLiteral("No local mirror to read issues from.");
         return issues;
     }
-    const QString ref = mirrorRef();
-    if (ref.isEmpty())
+    QString ref = refOverride;
+    if (ref.isEmpty() && strict) {
+        QByteArray output;
+        if (readGit({"rev-parse", "--verify", "-q", "HEAD"}, &output) &&
+            !output.trimmed().isEmpty()) {
+            ref = QStringLiteral("HEAD");
+        } else if (readGit({"for-each-ref", "--format=%(refname)",
+                            "--count=1", "refs/heads/"},
+                           &output)) {
+            ref = QString::fromUtf8(output).trimmed();
+        }
+    } else if (ref.isEmpty()) {
+        ref = mirrorRef();
+    }
+    if (ref.isEmpty()) {
+        recordStrictError(QStringLiteral("Could not resolve issue metadata HEAD."));
         return issues;
+    }
 
     auto fetchOids = [&](const QSet<QString> &wantedOids) {
         QHash<QString, QByteArray> contentByOid;
@@ -642,32 +774,48 @@ QList<Issue> IssueStore::loadFromMirror(QString *error) const
         for (const QString &oid : wantedOids)
             batchInput += oid.toUtf8() + '\n';
         QByteArray batch;
-        if (!runGitInput(m_mirror, {"cat-file", "--batch"}, batchInput, &batch))
+        if (!readGitInput({"cat-file", "--batch"}, batchInput, &batch)) {
+            recordStrictError(
+                QStringLiteral("Could not read issue metadata blobs."));
             return contentByOid;
+        }
 
         contentByOid.reserve(wantedOids.size());
         for (int pos = 0; pos < batch.size();) {
             const int nl = batch.indexOf('\n', pos);
-            if (nl < 0)
+            if (nl < 0) {
+                recordStrictError(
+                    QStringLiteral("Issue metadata blob framing is invalid."));
                 break;
+            }
             const QList<QByteArray> header = batch.mid(pos, nl - pos).split(' ');
             pos = nl + 1;
-            if (header.size() < 3) // "<oid> missing" or malformed — no body follows
+            if (header.size() < 3) { // "<oid> missing" or malformed, no body follows
+                recordStrictError(
+                    QStringLiteral("An issue metadata blob is missing."));
                 continue;
+            }
             bool sizeOk = false;
             const int size = header.at(2).toInt(&sizeOk);
-            if (!sizeOk || pos + size > batch.size())
+            if (!sizeOk || size < 0 || size > batch.size() - pos) {
+                recordStrictError(
+                    QStringLiteral("Issue metadata blob framing is invalid."));
                 break;
+            }
             contentByOid.insert(QString::fromUtf8(header.at(0)),
                                 batch.mid(pos, size));
             pos += size + 1; // skip body and its trailing newline
+        }
+        if (contentByOid.size() != wantedOids.size()) {
+            recordStrictError(
+                QStringLiteral("Not all issue metadata blobs could be read."));
         }
         return contentByOid;
     };
 
     // One JSON blob per issue at .forkmesh/issues/<n>/issue-<n>.json.
     QByteArray listing;
-    if (runGit(m_mirror, {"ls-tree", "-r", ref, issuesRootRel() + "/"}, &listing)) {
+    if (readGit({"ls-tree", "-r", ref, issuesRootRel() + "/"}, &listing)) {
         QMap<int, QString> issueJsonOids;
         QSet<QString> wantedOids;
         const QString prefix = issuesRootRel() + QLatin1Char('/');
@@ -700,13 +848,24 @@ QList<Issue> IssueStore::loadFromMirror(QString *error) const
 
         const QHash<QString, QByteArray> contentByOid = fetchOids(wantedOids);
         for (auto it = issueJsonOids.constBegin(); it != issueJsonOids.constEnd(); ++it) {
-            if (!contentByOid.contains(it.value()))
+            if (!contentByOid.contains(it.value())) {
+                recordStrictError(
+                    QStringLiteral("An issue metadata blob could not be read."));
                 continue;
+            }
             QJsonParseError parseError;
             const QJsonDocument doc =
                 QJsonDocument::fromJson(contentByOid.value(it.value()), &parseError);
-            if (parseError.error != QJsonParseError::NoError || !doc.isObject())
+            if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+                recordStrictError(
+                    QStringLiteral("An issue metadata file is invalid."));
                 continue;
+            }
+            if (strict && !strictIssueObjectValid(doc.object(), it.key())) {
+                recordStrictError(
+                    QStringLiteral("An issue metadata file is invalid."));
+                continue;
+            }
             Issue issue = Issue::fromJson(doc.object());
             if (issue.number <= 0)
                 issue.number = it.key();
@@ -714,6 +873,9 @@ QList<Issue> IssueStore::loadFromMirror(QString *error) const
             if (!issue.isDeleted())
                 issues.append(issue);
         }
+    } else {
+        recordStrictError(
+            QStringLiteral("Could not enumerate issue metadata."));
     }
 
     std::sort(issues.begin(), issues.end(),
