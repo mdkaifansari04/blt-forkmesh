@@ -55,6 +55,17 @@
             "sig": "xL4vcF7y6wiBi9SLM7caARvj-zTf8GXuO7Sxr1rUZjNmaXx8BBHWyUZyw62KFuzCBD4HM_JHz6ZUrAiLgbPxAA",
             "ts": 1783914271003,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-420-it-seems-the-website-is-loading-all-issues-when\".",
+            "id": "bb768838-88d8-430d-8b61-f0847508eee7",
+            "sig": "DNTZxbUqp1iZhrOvIk6UHIv21LDtR8gxgIajfFK1b9H-IO_6rswFnnj75AZ9azNI_PXx3cZX26faKnqerdzYDg",
+            "ts": 1783914686757,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -67,6 +78,6 @@
     "startDate": 0,
     "status": "open",
     "title": "it seems the website is loading all issues when we go to the issues page and not just the open ones - please fix that Loading issues from the live mirror...",
-    "updatedAt": 1783914271003,
+    "updatedAt": 1783914686757,
     "votes": 0
 }
