@@ -2521,6 +2521,11 @@ const QString kAutoSwitchToAgentSetting = QStringLiteral("agents/autoSwitchToAge
 // a manual click. Default on; can be disabled in Settings.
 const QString kAutoFixAgentConflictsSetting =
     QStringLiteral("agents/autoFixConflicts");
+// When a repo's tests or build fail (the same kind of failure this very task
+// was dispatched to fix), automatically start an agent to fix them instead of
+// waiting for a manual dispatch. Default on; can be disabled in Settings.
+const QString kAutoFixFailuresSetting =
+    QStringLiteral("agents/autoFixFailures");
 // Whether to hide external `claude` CLI sessions (ones ForkMesh didn't start
 // itself, detected by scanning the repo's Claude Code project files) from the
 // Agents tab. Default on: external sessions are excluded unless the user
