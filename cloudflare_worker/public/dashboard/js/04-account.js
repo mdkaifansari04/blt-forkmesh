@@ -927,7 +927,7 @@
         index += 1;
         const key = profileContributionHistoryKey(repo, year);
         try {
-          const data = await fetchJson(repoLiveUrl(repo, "history"));
+          const data = await fetchRepoJson(repoLiveUrl(repo, "history"));
           const commits = Array.isArray(data.commits) ? data.commits : [];
           state.profileContributions.liveHistory[key] = commits;
           writeProfileHistoryCache(repo, commits);
