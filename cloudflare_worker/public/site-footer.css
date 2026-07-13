@@ -3,6 +3,8 @@
   --fm-footer-fg: #f5f5f5;
   --fm-footer-muted: #a3a3a3;
   --fm-footer-border: #3b3b3b;
+  --fm-footer-social-border: var(--border, #313131);
+  --fm-footer-social-hover-border: rgba(232, 232, 232, 0.3);
   --fm-footer-wordmark: #0d0d0d;
   --fm-footer-glow: rgba(232, 232, 232, 0.74);
   position: relative;
@@ -18,6 +20,8 @@ html.light .forkmesh-footer {
   --fm-footer-fg: #1f2328;
   --fm-footer-muted: #656d76;
   --fm-footer-border: #d0d7de;
+  --fm-footer-social-border: #d0d7de;
+  --fm-footer-social-hover-border: #8c959f;
   --fm-footer-wordmark: #eef2f7;
   --fm-footer-glow: color-mix(in srgb, #1f2328 72%, #ffffff);
 }
@@ -143,7 +147,7 @@ html.light .forkmesh-footer {
   height: 2.25rem;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--fm-footer-border);
+  border: 1px solid var(--fm-footer-social-border);
   border-radius: 0.5rem;
   color: var(--fm-footer-muted);
   transition:
@@ -152,7 +156,7 @@ html.light .forkmesh-footer {
 }
 
 .site-footer-social-link:hover {
-  border-color: color-mix(in srgb, var(--fm-footer-fg) 30%, transparent);
+  border-color: var(--fm-footer-social-hover-border);
   color: var(--fm-footer-fg);
   text-decoration: none;
 }
