@@ -2905,6 +2905,10 @@ const Rule kNetworkLogRules[] = {
         {"commit", "#58a6ff", "GIT"},
         {"patch", "#58a6ff", "GIT"},
         {"fork", "#3fb950", "FORK"},
+        // Ad-hoc agent starts ("Started a X agent on your prompt...") mention no
+        // issue at all, so keep this above the generic "issue" match below —
+        // otherwise a prompt-only run would misleadingly badge as ISSUE.
+        {"on your prompt", "#bc8cff", "PROMPT"},
         {"issue", "#bc8cff", "ISSUE"},
         {"admin", "#db6d28", "ADMIN"},
         {"identity", "#79c0ff", "IDENTITY"},
@@ -3198,7 +3202,7 @@ void MainWindow::rebuildLogFilterButtons()
     static const char *order[] = {
         "SESSION", "STATUS", "PEER",  "NODE",   "FORK",  "FORKED", "MIRROR",
         "SYNC",    "ACCOUNT", "HOST", "ACTIONS", "PIN", "GIT",
-        "PUBLISH", "PULL",   "MERGE", "ISSUE",    "BOUNTY", "WALLET",
+        "PUBLISH", "PULL",   "MERGE", "ISSUE", "PROMPT",    "BOUNTY", "WALLET",
         "CRYPTO",  "IDENTITY", "ADMIN", "SAVE",   "CLIP",  "NETWORK", "ERROR",
         "INFO",
     };

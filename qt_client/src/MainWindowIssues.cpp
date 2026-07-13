@@ -3622,10 +3622,23 @@ void MainWindow::quickAddIssue()
                                    model) > 0) {
             m_issueQuickAdd->clear();
             clearQuickAddImages();
+            // No issue exists in this mode (that's the point of it), so saying
+            // "no issue created" is just noise — show what actually happened
+            // instead: which agent, model, and permission mode picked up the
+            // prompt.
+            QStringList details;
+            const QString modelLabel = agentModelLabel(model);
+            if (!modelLabel.isEmpty())
+                details << modelLabel;
+            if (m_quickAddModeSelector)
+                details << m_quickAddModeSelector->currentText();
+            const QString suffix =
+                details.isEmpty()
+                    ? QString()
+                    : QStringLiteral(" (%1)").arg(details.join(QStringLiteral(", ")));
             setIssueInlineNotice(
-                QStringLiteral("Started a %1 agent on your prompt \xE2\x80\x94 no "
-                               "issue created.")
-                    .arg(agentProviderName(provider)));
+                QStringLiteral("Started a %1 agent on your prompt%2.")
+                    .arg(agentProviderName(provider), suffix));
         }
         return;
     }
