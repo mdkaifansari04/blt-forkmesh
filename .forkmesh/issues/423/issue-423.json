@@ -64,6 +64,18 @@
             "status": "closed",
             "ts": 1783914556780,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "97f4cb73-3a90-47ff-8889-7f1c516ac01d",
+            "sig": "uFDlMN05WL9RH0Nvs858xTngZanIk5RRYNf5xhaw2Mcq8IzC5c8dAk3CT4diJUQD0U2mWKGP4KiocqUfZ_XsBw",
+            "ts": 1783915794098,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -76,6 +88,6 @@
     "startDate": 0,
     "status": "closed",
     "title": "make it so that images can be pasted into the webiste issue reporting",
-    "updatedAt": 1783914556780,
+    "updatedAt": 1783915794098,
     "votes": 0
 }
