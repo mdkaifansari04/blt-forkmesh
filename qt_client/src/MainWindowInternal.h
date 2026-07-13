@@ -6819,6 +6819,16 @@ inline int mirrorIssueMaxNumber(const QString &mirrorPath, const QString &branch
 }
 inline int mirrorPullCount(const QString &mirrorPath, const QString &branch)
 {
+    // Pulls live on the dedicated forkmesh/pulls metadata branch (issue #399),
+    // not the served head branch; count there when it exists, falling back to
+    // the head branch for pre-#399 mirrors that never migrated.
+    if (!mirrorPath.trimmed().isEmpty() && QDir(mirrorPath).exists() &&
+        runGitCapture(mirrorPath,
+                      {"rev-parse", "--verify", "-q",
+                       QStringLiteral("refs/heads/forkmesh/pulls^{commit}")},
+                      nullptr, nullptr))
+        return mirrorNumberedDirCount(
+            mirrorPath, QStringLiteral("forkmesh/pulls"), QStringLiteral("pulls"));
     return mirrorNumberedDirCount(mirrorPath, branch, QStringLiteral("pulls"));
 }
 inline int mirrorDiscussionCount(const QString &mirrorPath, const QString &branch)

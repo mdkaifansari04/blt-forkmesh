@@ -250,7 +250,14 @@ QString refForBranchIn(const QString &mirrorPath, const QString &branch)
 QString refForRepoPath(const QString &mirrorPath, const QString &path,
                        const QString &branch)
 {
-    if (branch.trimmed().isEmpty() && path.startsWith(QLatin1String("pulls/"))) {
+    // Match the pulls directory listing (path == "pulls") as well as the blob
+    // reads under it (path == "pulls/<N>/..."). The website enumerates which PRs
+    // exist by listing the "pulls" tree with no ref; without the bare-"pulls"
+    // case that listing fell through to the default branch, which only carries
+    // the stale pulls/ folder frozen at migration time (issue #399) — so the site
+    // showed old PRs even though fresh ones live on the forkmesh/pulls branch.
+    if (branch.trimmed().isEmpty() &&
+        (path == QLatin1String("pulls") || path.startsWith(QLatin1String("pulls/")))) {
         QByteArray probe;
         if (runGit(mirrorPath,
                    {"rev-parse", "--verify", "-q", "refs/heads/forkmesh/pulls^{commit}"},
@@ -484,11 +491,16 @@ QJsonObject rootCountsFor(const QString &mirrorPath, const QString &ref)
     // count only (issue #397) and to fill the panel's Open/Closed split.
     int closedIssues = 0;
     const int openIssues = countOpenIssues(mirrorPath, ref, &closedIssues);
+    // Pulls live on the dedicated forkmesh/pulls branch (issue #399), not the
+    // default branch `ref` resolves to, so the tab badge must count there or it
+    // reads the stale migration-time pulls/ folder frozen on main.
+    const QString pullsRef =
+        refForRepoPath(mirrorPath, QStringLiteral("pulls/"), QString());
     return QJsonObject{
         {"issues", openIssues + closedIssues},
         {"openIssues", openIssues},
         {"closedIssues", closedIssues},
-        {"pulls", countNumberedDirs(mirrorPath, ref, QStringLiteral("pulls"))},
+        {"pulls", countNumberedDirs(mirrorPath, pullsRef, QStringLiteral("pulls"))},
         {"discussions",
          countNumberedDirs(mirrorPath, ref, QStringLiteral(".forkmesh/discussions"))},
         {"commits", commits}};
