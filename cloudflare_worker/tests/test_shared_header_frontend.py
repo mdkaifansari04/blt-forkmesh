@@ -212,6 +212,34 @@ def test_universal_header_uses_private_fixed_palette():
     )
 
 
+def test_universal_header_does_not_reference_host_page_palette():
+    css = _read(PUBLIC / "site-header.css")
+    host_tokens = (
+        "--background",
+        "--bg",
+        "--foreground",
+        "--fg",
+        "--card",
+        "--surface2",
+        "--muted",
+        "--muted-foreground",
+        "--border",
+        "--accent",
+    )
+    inherited_references = tuple(
+        token
+        for token in host_tokens
+        if re.search(
+            rf"var\(\s*{re.escape(token)}(?:\s*,|\s*\))",
+            css,
+        )
+    )
+
+    assert not inherited_references, (
+        f"site-header.css still inherits host page tokens: {inherited_references}"
+    )
+
+
 def test_universal_header_uses_canonical_theme_glyphs():
     js = _read(PUBLIC / "site-header.js")
 
@@ -234,6 +262,7 @@ def test_universal_header_signup_is_a_white_rounded_rectangle():
         {
             "background": "#ffffff",
             "color": "#090909",
+            "border-radius": "0.375rem",
         },
     )
 

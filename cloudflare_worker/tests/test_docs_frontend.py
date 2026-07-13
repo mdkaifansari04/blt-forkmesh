@@ -88,6 +88,7 @@ def test_docs_pages_mount_the_universal_site_header():
         assert class_attribute, page
         header_classes = set(class_attribute.group(1).split())
         assert {"sticky", "top-0", "z-30"} <= header_classes, page
+        assert "z-50" not in header_classes, page
         assert 'id="docs-search"' in html
 
 
