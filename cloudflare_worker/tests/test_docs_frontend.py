@@ -92,6 +92,21 @@ def test_docs_pages_mount_the_universal_site_header():
         assert 'id="docs-search"' in html
 
 
+def test_docs_pages_keep_the_desktop_only_single_column_search_row():
+    for page in DOCS_PAGES:
+        html = _read(page)
+
+        assert (
+            'class="mx-auto hidden h-20 max-w-[1540px] '
+            'grid-cols-1 items-center px-5 sm:px-8 md:grid lg:px-12"'
+        ) in html
+        assert ".icon-button" not in html
+        assert "html.dark .moon" not in html
+        assert "html:not(.dark) .sun" not in html
+        assert "Map the docs theme onto the universal header" not in html
+        assert "--foreground: var(--docs-fg)" not in html
+
+
 def test_docs_pages_use_reduced_type_scale():
     for page in DOCS_PAGES:
         html = _read(page)
