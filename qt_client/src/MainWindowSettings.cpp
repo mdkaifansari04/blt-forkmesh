@@ -2358,6 +2358,7 @@ void MainWindow::attachBackend(ChatBackend *backend)
     connect(backend, &ChatBackend::latencySampled, this,
             &MainWindow::onRelayLatencySampled);
     connect(backend, &ChatBackend::mirrorUpdated, this, &MainWindow::onPeerMirrorUpdated);
+    connect(backend, &ChatBackend::mirrorSynced, this, &MainWindow::onPeerMirrorSynced);
     connect(backend, &ChatBackend::mirrorRefreshRequested, this,
             &MainWindow::onMirrorRefreshRequested);
     connect(backend, &ChatBackend::coveOpened, this, &MainWindow::onCoveOpened);

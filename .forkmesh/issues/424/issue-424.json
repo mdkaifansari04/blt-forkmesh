@@ -44,6 +44,26 @@
             "sig": "WC9_IqGoiKtMYTuCLEITKBev0SJUq5W2oBoCOHwmAMpQenOAcpX8R6vK3g2c5wgmhHH8wMkXrwM2JhVMPMI4AA",
             "ts": 1783911932395,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-424-make-the-round-trip-sync-with-latest-commits-to\".",
+            "id": "aad5339d-bd45-46ae-995d-63179660f709",
+            "sig": "ZqW4jScnymMlqsZKhERMxVikKc2Cvk75v3DYO6CtTDvIkAI941YlXm5SlIIIKhF3zc01AZEc2EURvxFiHQqwDQ",
+            "ts": 1783912585606,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "35570f8e-dfac-4b6b-a91c-2b83fcd0280c",
+            "sig": "5BEcIQugCHCfOYmGZSz80rP7UtfrHl4EiS4wtHxR6GhNiLW3004fxyp4sTo8NOFiYJBFLn6etGGeyd2r3vM_Bg",
+            "status": "closed",
+            "ts": 1783912585658,
+            "type": "status"
         }
     ],
     "labels": [
@@ -54,8 +74,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "make the round trip sync with latest commits to other nodes instant, send a signal that the commit is different and have the nodes update right away and report back right away that it was done",
-    "updatedAt": 1783911932395,
+    "updatedAt": 1783912585658,
     "votes": 0
 }
