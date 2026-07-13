@@ -44,6 +44,26 @@
             "sig": "lU5A7qxZhkG1_cQKvaV9KNTh6kClw_GO2MepNeBcWxsVHE34igyiLG5wxytrR5nmOLrcZse4cQ08TBVfhz5JDQ",
             "ts": 1783914306378,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-423-make-it-so-that-images-can-be-pasted-into-the-we\".",
+            "id": "5a531d9c-39e7-4f39-af75-3de2fa88c5a9",
+            "sig": "C-nCnXNF8bglZ_RsK4dSD_qIeEzSeDJatzPxi3hjQoujcy79y33flUZZeUU3BIOPn7EfdTiwxgXB-vTadrqsCg",
+            "ts": 1783914556709,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "447cea34-e757-46a6-a08e-7c65943d8475",
+            "sig": "jXCADurYMpPPWV1RvDsPaZEL3qIHEbrss1-WVS_8eOUDsh0zvBoFRppLcvbJiJ79ycwrn8FX73P-AoSNxE5fBg",
+            "status": "closed",
+            "ts": 1783914556780,
+            "type": "status"
         }
     ],
     "labels": [
@@ -54,8 +74,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "make it so that images can be pasted into the webiste issue reporting",
-    "updatedAt": 1783914306378,
+    "updatedAt": 1783914556780,
     "votes": 0
 }

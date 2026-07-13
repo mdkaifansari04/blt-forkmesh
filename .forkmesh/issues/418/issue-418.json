@@ -44,6 +44,26 @@
             "sig": "wUlOAnaKdJlghFBFtwLqUyup2z-D6QQOoscjhyfAkqhza7_rbVCZnyB52lqP-xkv7lJndNCkTCgnHkkIYyq3Ag",
             "ts": 1783914333292,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-418-when-we-first-run-the-install-script-it-seems-to\".",
+            "id": "b70fb551-96d3-4275-b9c8-d39a5e989f8e",
+            "sig": "xr7rrodPXKmNsJ9Ud_44Uje28cy_Cye6xQ7IZKr6LnW9NKBaM3LY-Ddn71jj5pMQX7f4rAd1eS596fkZJSmxBg",
+            "ts": 1783914596802,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "54a0396b-be9b-4ac9-a763-060b00ebac18",
+            "sig": "RpluLp9TxnfP8Fr-juCIBoAgvFvg41Lbho6fvxNDY2QaT7u5gbdY_-GxqbiSKxtHKsFGainDRQ9w0nv_NWsADQ",
+            "status": "closed",
+            "ts": 1783914596859,
+            "type": "status"
         }
     ],
     "labels": [
@@ -54,8 +74,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "when we first run the install script it seems to hang on this part \"==>   git: already present\n\" - lets show more detail of what is happening so we know",
-    "updatedAt": 1783914333292,
+    "updatedAt": 1783914596859,
     "votes": 0
 }
