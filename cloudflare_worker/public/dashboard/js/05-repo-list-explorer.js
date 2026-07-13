@@ -591,7 +591,7 @@
   function profileRepositoryGroups() {
     let groups = groupRepositories(state.repositories || []);
     if (state.publicProfile) {
-      const aliases = profileContributionAliases(state.publicProfile);
+      const aliases = profileRepositoryAliases(state.publicProfile);
       groups = groups.filter((group) =>
         repoBelongsToProfile(sourceOfTruth(group), aliases) ||
         (group.members || []).some((member) => repoBelongsToProfile(member, aliases)));
@@ -646,7 +646,6 @@
 
     renderProfileRepositoryCount();
     applyRepositoryFilter();
-    renderProfileContributionGraph();
     renderGlobalSearchResults();
   }
 

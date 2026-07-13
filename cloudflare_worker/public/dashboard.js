@@ -57,10 +57,13 @@
     repoCommitDetail: null,
     repoRecordDetail: null,
     profileContributions: {
-      year: new Date().getFullYear(),
-      liveHistory: {},
+      range: null,
+      data: null,
       loading: false,
-      loadedYears: {},
+      error: "",
+      requestKey: "",
+      selectedDay: "",
+      cache: {},
     },
     settingsView: {
       section: "public-profile",
@@ -658,6 +661,7 @@
 
   async function fetchJson(path, options = {}) {
     const fresh = options.fresh === true;
+    const cacheBust = options.cacheBust !== false;
     const baseTtl = fetchJsonCacheTtl(path);
     const ttl = fresh ? 0 : baseTtl;
     if (!state.fetchJsonInflight) state.fetchJsonInflight = {};
@@ -666,8 +670,8 @@
     const now = Date.now();
     const cached = ttl ? state.fetchJsonCache[path] : null;
     if (cached && cached.expiresAt > now) return cloneJson(cached.data);
-    const requestPath = fresh ? cacheBustedPath(path) : path;
-    const inflightKey = fresh ? requestPath : path;
+    const requestPath = fresh && cacheBust ? cacheBustedPath(path) : path;
+    const inflightKey = fresh ? `${requestPath}#fresh` : path;
     if (state.fetchJsonInflight[inflightKey]) {
       return cloneJson(await state.fetchJsonInflight[inflightKey]);
     }
@@ -691,7 +695,9 @@
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok === false) {
-        throw new Error(data.error || `HTTP ${response.status}`);
+        const error = new Error(data.error || `HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
       }
       if (ttl || (fresh && baseTtl)) {
         state.fetchJsonCache[path] = {
@@ -1499,9 +1505,8 @@
     state.publicProfile = profile;
     renderProfilePage(profile);
     applyPublicProfileChrome(profile);
-    // The catalog fetch re-renders repositories + the contribution graph when
-    // it lands (renderRepositories -> renderProfileRepositories/Graph), and
-    // those all read profileSubject() now.
+    // Repository lists still use the catalog, while the native contribution
+    // card reads its own account ledger after the public subject is installed.
     renderProfileContributionGraph();
     renderProfileRepositories();
   }
@@ -1942,102 +1947,26 @@
     }
   }
 
-  const CONTRIBUTION_COLORS = ["#161b22", "#0e4429", "#006d32", "#26a641", "#39d353"];
-  const CONTRIBUTION_GRID_COLUMNS = "2.25rem repeat(53, 0.75rem)";
-  const CONTRIBUTION_GRID_GAP = "0.1875rem";
-  const PROFILE_HISTORY_CONCURRENCY = 3;
-  const PROFILE_HISTORY_REPO_LIMIT = 12;
-  // Per-repo /history responses feed only the contribution graph and change
-  // slowly, so they are cached in sessionStorage: navigating back to a profile
-  // page must not refetch every repo (request budget, free-tier Worker).
-  const PROFILE_HISTORY_CACHE_TTL_MS = 10 * 60 * 1000;
-  const PROFILE_HISTORY_CACHE_PREFIX = "forkmesh.profileHistory:";
-
-  function profileHistoryCacheKey(repo, session = profileSubject()) {
-    const subject = String(session?.nodeName || session?.email || "guest").trim().toLowerCase();
-    return `${PROFILE_HISTORY_CACHE_PREFIX}${subject}:${repoKey(repo)}`;
+  function repoBelongsToProfile(repo, aliases) {
+    const owner = String(repo?.owner || "").trim().toLowerCase();
+    const canonical = repoCanonicalIdentity(repo);
+    const canonicalOwner = String(canonical.owner || "").trim().toLowerCase();
+    return Boolean((owner && aliases.has(owner)) || (canonicalOwner && aliases.has(canonicalOwner)));
   }
 
-  function readProfileHistoryCache(repo) {
-    try {
-      const parsed = JSON.parse(sessionStorage.getItem(profileHistoryCacheKey(repo)) || "null");
-      if (!parsed || !Array.isArray(parsed.commits)) return null;
-      if (!(Number(parsed.expiresAt) > Date.now())) return null;
-      return parsed.commits;
-    } catch (_) {
-      return null;
-    }
-  }
+  const PROFILE_CONTRIBUTION_DAY_MS = 24 * 60 * 60 * 1000;
+  const PROFILE_CONTRIBUTION_MAX_LEVEL = 6;
+  const PROFILE_CONTRIBUTION_CACHE_PREFIX = "forkmesh.profileContributions:v1:";
+  let profileContributionRequestSequence = 0;
+  const PROFILE_CONTRIBUTION_CATEGORIES = [
+    { key: "commits", label: "Commits", singular: "commit", color: "var(--contribution-commits)", icon: "git-commit-horizontal" },
+    { key: "issues", label: "Issues", singular: "issue", color: "var(--contribution-issues)", icon: "circle-dot" },
+    { key: "pulls", label: "Pull requests", singular: "pull request", color: "var(--contribution-pulls)", icon: "git-pull-request" },
+    { key: "reviews", label: "Reviews", singular: "review", color: "var(--contribution-reviews)", icon: "message-square-check" },
+    { key: "repositories", label: "Repositories", singular: "repository publication", color: "var(--contribution-repositories)", icon: "book-marked" },
+  ];
 
-  function writeProfileHistoryCache(repo, commits) {
-    try {
-      sessionStorage.setItem(profileHistoryCacheKey(repo), JSON.stringify({
-        commits,
-        expiresAt: Date.now() + PROFILE_HISTORY_CACHE_TTL_MS,
-      }));
-    } catch (_) {
-      /* best-effort: quota/private mode just means a refetch later */
-    }
-  }
-
-  function contributionDateMs(value) {
-    if (value === undefined || value === null || value === "") return null;
-    const numeric = Number(value);
-    const date = Number.isFinite(numeric) && numeric > 0
-      ? new Date(numeric < 1000000000000 ? numeric * 1000 : numeric)
-      : new Date(value);
-    const ms = date.getTime();
-    return Number.isNaN(ms) ? null : ms;
-  }
-
-  function contributionDayKey(ms) {
-    const date = new Date(ms);
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
-  }
-
-  function contributionRange(year) {
-    const selected = Number(year) || new Date().getFullYear();
-    const now = new Date();
-    if (selected === now.getFullYear()) {
-      const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-      const start = new Date(end);
-      start.setDate(start.getDate() - 364);
-      start.setHours(0, 0, 0, 0);
-      return { start, end, label: "last year" };
-    }
-    return {
-      start: new Date(selected, 0, 1, 0, 0, 0, 0),
-      end: new Date(selected, 11, 31, 23, 59, 59, 999),
-      label: String(selected),
-    };
-  }
-
-  function contributionGridStart(range) {
-    const start = new Date(range.start);
-    start.setDate(start.getDate() - start.getDay());
-    start.setHours(0, 0, 0, 0);
-    return start;
-  }
-
-  function contributionInRange(ms, range) {
-    return Number.isFinite(ms) && ms >= range.start.getTime() && ms <= range.end.getTime();
-  }
-
-  function profileContributionLevel(count, max) {
-    const value = Number(count) || 0;
-    if (value <= 0) return 0;
-    if (max <= 1) return 1;
-    const ratio = value / max;
-    if (ratio >= 0.75) return 4;
-    if (ratio >= 0.5) return 3;
-    if (ratio >= 0.25) return 2;
-    return 1;
-  }
-
-  function profileContributionAliases(session = profileSubject()) {
+  function profileRepositoryAliases(session = profileSubject()) {
     const aliases = new Set();
     const add = (value) => {
       const text = String(value || "").trim().toLowerCase();
@@ -2049,340 +1978,575 @@
     return aliases;
   }
 
-  function repoBelongsToProfile(repo, aliases) {
-    const owner = String(repo?.owner || "").trim().toLowerCase();
-    const canonical = repoCanonicalIdentity(repo);
-    const canonicalOwner = String(canonical.owner || "").trim().toLowerCase();
-    return Boolean((owner && aliases.has(owner)) || (canonicalOwner && aliases.has(canonicalOwner)));
+  function profileContributionIsoDate(date) {
+    return new Date(date).toISOString().slice(0, 10);
   }
 
-  function profileContributionGroups(session = profileSubject()) {
-    const aliases = profileContributionAliases(session);
-    return groupRepositories(state.repositories || []).filter((group) => {
-      const source = sourceOfTruth(group);
-      if (repoBelongsToProfile(source, aliases)) return true;
-      return (group.members || []).some((member) => repoBelongsToProfile(member, aliases));
-    });
+  function profileContributionDate(value) {
+    const text = String(value || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+    const date = new Date(`${text}T00:00:00.000Z`);
+    return Number.isNaN(date.getTime()) || profileContributionIsoDate(date) !== text ? null : date;
   }
 
-  function addContribution(data, ms, count, event) {
-    const amount = Math.max(0, Number(count) || 0);
-    if (!amount || !contributionInRange(ms, data.range)) return;
-    const day = contributionDayKey(ms);
-    data.days.set(day, (data.days.get(day) || 0) + amount);
-    data.total += amount;
-    if (event) {
-      data.events.push({
-        ...event,
-        ts: ms,
-        count: amount,
-        day,
-      });
+  function profileContributionRange(period = "rolling", now = new Date()) {
+    const value = String(period || "rolling");
+    const yearMatch = /^(?:year:)?(\d{4})$/.exec(value);
+    if (yearMatch) {
+      const year = Math.max(1971, Math.min(9998, Number(yearMatch[1])));
+      return {
+        value: String(year),
+        from: `${year}-01-01`,
+        to: `${year}-12-31`,
+        label: String(year),
+      };
     }
-  }
-
-  function profileContributionHistoryKey(repo, year) {
-    return `${year}:${repoKey(repo)}:${repoDataVersion(repo)}`;
-  }
-
-  function commitMatchesProfile(commit, aliases) {
-    const fields = [
-      commit?.author,
-      commit?.authorName,
-      commit?.committer,
-      commit?.name,
-      commit?.email,
-      commit?.authorEmail,
-      commit?.committerEmail,
-    ].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
-    if (!fields.length) return true;
-    return fields.some((field) => aliases.has(field));
-  }
-
-  function addLiveHistoryContributions(data, repo, commits, aliases) {
-    const byDay = new Map();
-    (Array.isArray(commits) ? commits : []).forEach((commit) => {
-      if (!commitMatchesProfile(commit, aliases)) return;
-      const ms = contributionDateMs(
-        commit?.authorDate || commit?.date || commit?.committedAt ||
-        commit?.commitDate || commit?.updatedAt || commit?.ts,
-      );
-      if (!contributionInRange(ms, data.range)) return;
-      const day = contributionDayKey(ms);
-      byDay.set(day, (byDay.get(day) || 0) + 1);
-    });
-    byDay.forEach((count, day) => {
-      const ms = new Date(`${day}T12:00:00`).getTime();
-      addContribution(data, ms, count, {
-        type: "commits",
-        repo,
-        title: `${formatCount(count)} commit${count === 1 ? "" : "s"}`,
-        icon: "git-commit-horizontal",
-      });
-    });
-  }
-
-  function addCatalogActivityWeeks(data, repo) {
-    const series = normalizeActivityWeeks(repo.activityWeeks);
-    const anchor = contributionDateMs(repo.updatedAt || repo.lastSync || repo.hostedSince);
-    if (!anchor || !series.some(Boolean)) return;
-    series.forEach((count, index) => {
-      if (!count) return;
-      const date = new Date(anchor);
-      date.setDate(date.getDate() - ((series.length - 1 - index) * 7));
-      date.setHours(12, 0, 0, 0);
-      addContribution(data, date.getTime(), count, {
-        type: "catalog_activity",
-        repo,
-        title: `${formatCount(count)} catalog-reported commit${count === 1 ? "" : "s"}`,
-        icon: "activity",
-      });
-    });
-  }
-
-  function addRepositoryContribution(data, repo) {
-    const created = contributionDateMs(repo.hostedSince || repo.createdAt);
-    const updated = contributionDateMs(repo.updatedAt || repo.lastSync || repo.hostedSince);
-    const createdMs = created || updated;
-    if (createdMs) {
-      addContribution(data, createdMs, 1, {
-        type: "repo_created",
-        repo,
-        title: "Created repository",
-        icon: "book-marked",
-      });
-    }
-  }
-
-  function profileContributionData(year = state.profileContributions.year, session = profileSubject()) {
-    const range = contributionRange(year);
-    const data = {
-      year,
-      range,
-      days: new Map(),
-      events: [],
-      total: 0,
-      max: 0,
-      loading: Boolean(state.profileContributions.loading),
+    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const start = new Date(end.getTime() - (364 * PROFILE_CONTRIBUTION_DAY_MS));
+    return {
+      value: "rolling",
+      from: profileContributionIsoDate(start),
+      to: profileContributionIsoDate(end),
+      label: "the last year",
     };
-    const aliases = profileContributionAliases(session);
-    profileContributionGroups(session).forEach((group) => {
-      const repo = sourceOfTruth(group);
-      addRepositoryContribution(data, repo);
-      const history = state.profileContributions.liveHistory[
-        profileContributionHistoryKey(repo, year)
-      ];
-      if (Array.isArray(history) && history.length) addLiveHistoryContributions(data, repo, history, aliases);
-      else addCatalogActivityWeeks(data, repo);
-    });
-    data.max = Math.max(0, ...data.days.values());
-    data.events.sort((a, b) => b.ts - a.ts || repoKey(a.repo).localeCompare(repoKey(b.repo)));
-    return data;
   }
 
-  function profileContributionYears(session = profileSubject()) {
-    const current = new Date().getFullYear();
-    const years = new Set([current, current - 1, current - 2, current - 3, current - 4]);
-    profileContributionGroups(session).forEach((group) => {
-      const repo = sourceOfTruth(group);
-      [repo.hostedSince, repo.createdAt, repo.updatedAt, repo.lastSync].forEach((value) => {
-        const ms = contributionDateMs(value);
-        if (ms) years.add(new Date(ms).getFullYear());
+  function profileContributionCount(value) {
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number > 0 ? number : 0;
+  }
+
+  function profileContributionSubjectName() {
+    const subject = profileSubject();
+    return String(publicProfileNameFromPath() || subject?.nodeName || subject?.email || "")
+      .trim().replace(/^@/, "");
+  }
+
+  function profileContributionRequestKey(name, range) {
+    return `${String(name).toLowerCase()}:${range.from}:${range.to}`;
+  }
+
+  function profileContributionCacheKey(requestKey) {
+    return PROFILE_CONTRIBUTION_CACHE_PREFIX + requestKey;
+  }
+
+  function readProfileContributionCache(requestKey, range) {
+    try {
+      const parsed = JSON.parse(sessionStorage.getItem(profileContributionCacheKey(requestKey)) || "null");
+      const data = parsed?.data;
+      if (!data || data.ok !== true || data.range?.from !== range.from || data.range?.to !== range.to) return null;
+      return data;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeProfileContributionCache(requestKey, data) {
+    try {
+      sessionStorage.setItem(profileContributionCacheKey(requestKey), JSON.stringify({ data, savedAt: Date.now() }));
+    } catch (_) {
+      // A disabled or full session store only removes the offline fallback.
+    }
+  }
+
+  function removeProfileContributionCache(requestKey) {
+    try {
+      sessionStorage.removeItem(profileContributionCacheKey(requestKey));
+    } catch (_) {}
+    delete state.profileContributions.cache[requestKey];
+  }
+
+  function profileContributionCategoryKnown(coverage, category, dateValue = "") {
+    if (category === "repositories") return true;
+    if (coverage?.status === "complete") return true;
+    if (coverage?.status === "unavailable") return false;
+    const missing = new Set(Array.isArray(coverage?.missing) ? coverage.missing : []);
+    if (category === "commits" && missing.has("commits")) return false;
+    if (["issues", "pulls", "reviews"].includes(category) && missing.has("collaboration")) return false;
+    if (category === "languages" && missing.has("languages")) return false;
+    if (["commits", "issues", "pulls", "reviews"].includes(category) &&
+        missing.has("history")) {
+      const verifiedFrom = profileContributionDate(coverage?.verifiedFrom);
+      const date = profileContributionDate(dateValue);
+      if (!verifiedFrom || !date || date < verifiedFrom) return false;
+    }
+    return true;
+  }
+
+  function normalizeProfileContributionDays(data, range = state.profileContributions.range) {
+    const start = profileContributionDate(range?.from);
+    const end = profileContributionDate(range?.to);
+    if (!start || !end || end < start) return [];
+    const sparse = new Map();
+    (Array.isArray(data?.days) ? data.days : []).forEach((row) => {
+      const date = profileContributionDate(row?.date);
+      if (!date || date < start || date > end) return;
+      const normalized = { date: profileContributionIsoDate(date) };
+      PROFILE_CONTRIBUTION_CATEGORIES.forEach(({ key }) => {
+        normalized[key] = profileContributionCount(row?.[key]);
       });
+      sparse.set(normalized.date, normalized);
     });
-    return [...years].filter((year) => Number.isFinite(year) && year > 1970).sort((a, b) => b - a);
+    const coverage = data?.coverage || {};
+    const length = Math.min(366, Math.floor((end - start) / PROFILE_CONTRIBUTION_DAY_MS) + 1);
+    return Array.from({ length }, (_, index) => {
+      const date = new Date(start.getTime() + (index * PROFILE_CONTRIBUTION_DAY_MS));
+      const key = profileContributionIsoDate(date);
+      const explicit = sparse.get(key);
+      const day = explicit || { date: key };
+      PROFILE_CONTRIBUTION_CATEGORIES.forEach(({ key: category }) => {
+        day[category] = profileContributionCount(day[category]);
+      });
+      day.known = Object.fromEntries(PROFILE_CONTRIBUTION_CATEGORIES.map(({ key: category }) => [
+        category,
+        profileContributionCategoryKnown(coverage, category, key),
+      ]));
+      day.total = PROFILE_CONTRIBUTION_CATEGORIES.reduce(
+        (sum, { key: category }) => sum + day[category], 0,
+      );
+      day.verified = PROFILE_CONTRIBUTION_CATEGORIES.every(
+        ({ key: category }) => day.known[category],
+      );
+      return day;
+    });
   }
 
-  function renderProfileContributionYears(year = state.profileContributions.year) {
-    const container = $("[data-profile-contribution-years]");
+  function profileContributionStackLevel(count) {
+    const value = profileContributionCount(count);
+    return value ? Math.min(PROFILE_CONTRIBUTION_MAX_LEVEL, 1 + Math.floor(Math.log2(value))) : 0;
+  }
+
+  function profileContributionCubeFaces(x, y, height, halfWidth = 7, depth = 4) {
+    const topY = y - height;
+    return {
+      top: `${x},${topY} ${x + halfWidth},${topY + depth} ${x},${topY + (2 * depth)} ${x - halfWidth},${topY + depth}`,
+      left: `${x - halfWidth},${topY + depth} ${x},${topY + (2 * depth)} ${x},${y + (2 * depth)} ${x - halfWidth},${y + depth}`,
+      right: `${x + halfWidth},${topY + depth} ${x},${topY + (2 * depth)} ${x},${y + (2 * depth)} ${x + halfWidth},${y + depth}`,
+    };
+  }
+
+  function profileContributionTooltipText(day) {
+    const date = profileContributionDate(day?.date);
+    const dateLabel = date
+      ? new Intl.DateTimeFormat(undefined, { dateStyle: "long", timeZone: "UTC" }).format(date)
+      : "Unknown date";
+    const counts = PROFILE_CONTRIBUTION_CATEGORIES.map(({ key, label, singular }) => {
+      const count = profileContributionCount(day?.[key]);
+      const known = day?.known?.[key] ?? Boolean(day?.verified);
+      if (!known) {
+        return count
+          ? `${formatCount(count)} known ${singular}${count === 1 ? "" : "s"} (partial)`
+          : `${label.toLowerCase()} not fully verified`;
+      }
+      return `${formatCount(count)} ${singular}${count === 1 ? "" : "s"}`;
+    });
+    return `${dateLabel}: ${counts.join(", ")}`;
+  }
+
+  function profileContributionRadarPoints(typeTotals, coverage = {}, radius = 62, centerX = 120, centerY = 88) {
+    const counts = PROFILE_CONTRIBUTION_CATEGORIES.map(({ key }) => profileContributionCount(typeTotals?.[key]));
+    const total = counts.reduce((sum, count) => sum + count, 0);
+    const shares = counts.map((count) => total ? count / total : 0);
+    return PROFILE_CONTRIBUTION_CATEGORIES.map((category, index) => {
+      const angle = (-Math.PI / 2) + ((Math.PI * 2 * index) / PROFILE_CONTRIBUTION_CATEGORIES.length);
+      const visualShare = shares[index];
+      return {
+        ...category,
+        count: counts[index],
+        share: shares[index],
+        known: profileContributionCategoryKnown(coverage, category.key),
+        x: centerX + (Math.cos(angle) * radius * visualShare),
+        y: centerY + (Math.sin(angle) * radius * visualShare),
+        axisX: centerX + (Math.cos(angle) * radius),
+        axisY: centerY + (Math.sin(angle) * radius),
+        labelX: centerX + (Math.cos(angle) * (radius + 24)),
+        labelY: centerY + (Math.sin(angle) * (radius + 19)),
+      };
+    });
+  }
+
+  function profileContributionLanguageSegments(languages) {
+    const byName = new Map();
+    (Array.isArray(languages) ? languages : []).forEach((language) => {
+      const name = String(language?.name || "").trim().slice(0, 48);
+      const bytes = profileContributionCount(language?.bytes);
+      if (!name || !bytes) return;
+      const previous = byName.get(name) || { name, bytes: 0, color: "" };
+      previous.bytes += bytes;
+      if (/^#[0-9a-f]{6}$/i.test(String(language?.color || ""))) previous.color = language.color;
+      byName.set(name, previous);
+    });
+    const explicitOther = byName.get("Other");
+    byName.delete("Other");
+    const ranked = [...byName.values()].sort((a, b) => b.bytes - a.bytes || a.name.localeCompare(b.name));
+    const top = ranked.slice(0, 5);
+    const otherBytes = ranked.slice(5).reduce((sum, item) => sum + item.bytes, 0) + (explicitOther?.bytes || 0);
+    if (otherBytes) top.push({ name: "Other", bytes: otherBytes, color: "var(--contribution-unverified)" });
+    const total = top.reduce((sum, item) => sum + item.bytes, 0);
+    let offset = 0;
+    return top.map((item) => {
+      const percentage = total ? (item.bytes / total) * 100 : 0;
+      const segment = {
+        ...item,
+        color: item.color || "var(--contribution-unverified)",
+        percentage,
+        offset,
+      };
+      offset += percentage;
+      return segment;
+    });
+  }
+
+  function profileContributionCoverageMessage(coverage, range, { cached = false } = {}) {
+    if (cached) return "Showing saved verified data because the live ledger is unavailable.";
+    const verifiedFrom = profileContributionDate(coverage?.verifiedFrom);
+    const verifiedLabel = verifiedFrom
+      ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeZone: "UTC" }).format(verifiedFrom)
+      : range?.from;
+    const missing = (Array.isArray(coverage?.missing) ? coverage.missing : [])
+      .map((item) => String(item || "").trim()).filter(Boolean).slice(0, 4);
+    const missingLabels = missing.map((item) => ({
+      commits: "commit history",
+      collaboration: "collaboration events",
+      languages: "language footprint",
+      history: "earlier history",
+    })[item] || item);
+    if (coverage?.status === "partial") {
+      return `Partial verified history from ${verifiedLabel || "the available sources"}${missingLabels.length ? `. Missing ${missingLabels.join(", ")}.` : "."}`;
+    }
+    if (coverage?.status === "unavailable") return "Verified contribution history is not available yet.";
+    return `Complete verified public history for ${range?.label || "this period"}.`;
+  }
+
+  function renderProfileContributionStatus(status, { hasData = false } = {}) {
+    const card = $("[data-profile-contribution-card]");
+    const loading = $("[data-profile-contribution-loading]");
+    const empty = $("[data-profile-contribution-empty]");
+    const error = $("[data-profile-contribution-error]");
+    const panorama = $("[data-profile-contribution-panorama]");
+    const activityItems = $("[data-profile-activity-items]");
+    const activityEmpty = $("[data-profile-activity-empty]");
+    if (card) card.setAttribute("aria-busy", status === "loading" ? "true" : "false");
+    if (loading) loading.hidden = status !== "loading";
+    if (empty) empty.hidden = status !== "empty";
+    if (error) error.hidden = status !== "error";
+    if (panorama) panorama.hidden = !hasData;
+    if (status === "loading" || status === "error") {
+      if (activityItems) activityItems.innerHTML = "";
+      if (activityEmpty) {
+        activityEmpty.classList.remove("hidden");
+        activityEmpty.textContent = status === "loading"
+          ? "Loading verified contribution activity..."
+          : "Contribution activity is unavailable right now.";
+      }
+    }
+  }
+
+  function profileContributionPeriods(data, activeValue) {
+    const periods = [{ value: "rolling", label: "Last year" }];
+    const currentYear = new Date().getUTCFullYear();
+    for (let year = currentYear - 1; year >= currentYear - 5; year -= 1) {
+      periods.push({ value: String(year), label: String(year) });
+    }
+    if (/^\d{4}$/.test(String(activeValue)) && !periods.some((period) => period.value === String(activeValue))) {
+      periods.push({ value: String(activeValue), label: String(activeValue) });
+    }
+    return periods;
+  }
+
+  function renderProfileContributionPeriods(data, activeValue) {
+    const container = $("[data-profile-contribution-periods]");
     if (!container) return;
-    container.innerHTML = profileContributionYears().map((item) => {
-      const active = Number(item) === Number(year);
-      return `
-        <button type="button" data-profile-contribution-year="${item}" class="h-10 rounded-md px-5 text-left ${active ? "bg-[#2f81f7] font-semibold text-white" : "font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"}">${item}</button>
-      `;
+    container.innerHTML = profileContributionPeriods(data, activeValue).map((period) => {
+      const active = period.value === activeValue;
+      return `<button data-profile-contribution-period="${escapeHtml(period.value)}" type="button" aria-current="${active ? "true" : "false"}" class="shrink-0 rounded-md px-3 py-1.5 font-semibold ${active ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"}">${escapeHtml(period.label)}</button>`;
     }).join("");
   }
 
-  function renderContributionMonthLabels(months, gridStart) {
-    months.innerHTML = "";
-    months.style.gridTemplateColumns = CONTRIBUTION_GRID_COLUMNS;
-    months.style.columnGap = CONTRIBUTION_GRID_GAP;
-    let lastMonth = "";
-    for (let week = 0; week < 53; week += 1) {
-      const date = new Date(gridStart);
-      date.setDate(date.getDate() + (week * 7));
-      const month = date.toLocaleString(undefined, { month: "short" });
-      if (month === lastMonth) continue;
-      lastMonth = month;
-      const label = document.createElement("span");
-      label.textContent = month;
-      label.className = "min-w-0 truncate text-xs leading-4 text-muted-foreground";
-      label.style.gridColumn = `${week + 2} / span 4`;
-      months.append(label);
+  function showProfileContributionTooltip(day, target, event) {
+    const tooltip = $("[data-profile-contribution-tooltip]");
+    const panel = $("[data-profile-contribution-skyline-panel]");
+    if (!tooltip || !panel) return;
+    tooltip.textContent = profileContributionTooltipText(day);
+    tooltip.hidden = false;
+    const panelRect = panel.getBoundingClientRect();
+    const targetRect = target?.getBoundingClientRect?.() || panelRect;
+    const pointerX = Number(event?.clientX) || targetRect.left + (targetRect.width / 2);
+    const pointerY = Number(event?.clientY) || targetRect.top;
+    const left = Math.max(12, Math.min(panelRect.width - tooltip.offsetWidth - 12, pointerX - panelRect.left + 10));
+    const top = Math.max(56, Math.min(panelRect.height - tooltip.offsetHeight - 12, pointerY - panelRect.top - tooltip.offsetHeight - 8));
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+    state.profileContributions.selectedDay = day.date;
+  }
+
+  function hideProfileContributionTooltip() {
+    const tooltip = $("[data-profile-contribution-tooltip]");
+    if (tooltip) tooltip.hidden = true;
+    state.profileContributions.selectedDay = "";
+  }
+
+  function renderProfileContributionSkyline(data, range) {
+    const svg = $("[data-profile-contribution-skyline]");
+    if (!svg) return;
+    const days = normalizeProfileContributionDays(data, range).map((day, index) => {
+      const week = Math.floor(index / 7);
+      const weekday = index % 7;
+      return {
+        ...day,
+        week,
+        weekday,
+        x: 96 + (week * 15) - (weekday * 8),
+        y: 78 + (week * 3.4) + (weekday * 4.5),
+        depth: week + weekday,
+      };
+    }).sort((a, b) => a.y - b.y || a.x - b.x);
+    const content = days.map((day) => {
+      const base = profileContributionCubeFaces(day.x, day.y, 0);
+      const fill = day.verified ? "var(--contribution-empty)" : "var(--contribution-unverified)";
+      let height = 0;
+      const segments = PROFILE_CONTRIBUTION_CATEGORIES.map((category) => {
+        const level = profileContributionStackLevel(day[category.key]);
+        if (!level) return "";
+        const segmentHeight = level * 2.5;
+        const faces = profileContributionCubeFaces(day.x, day.y - height, segmentHeight);
+        height += segmentHeight;
+        return `<g data-contribution-kind="${category.key}"><polygon points="${faces.left}" fill="${category.color}" opacity="0.62"></polygon><polygon points="${faces.right}" fill="${category.color}" opacity="0.82"></polygon><polygon points="${faces.top}" fill="${category.color}"></polygon></g>`;
+      }).join("");
+      const focus = day.total ? ` tabindex="0" role="img" aria-label="${escapeHtml(profileContributionTooltipText(day))}"` : "";
+      return `<g data-profile-contribution-day="${day.date}"${focus}><polygon points="${base.top}" fill="${fill}" stroke="var(--contribution-grid-edge)" stroke-width="0.65"></polygon>${segments}</g>`;
+    }).join("");
+    svg.innerHTML = `<title id="profile-contribution-skyline-title">Daily contribution skyline</title><desc id="profile-contribution-skyline-desc">Verified commits, issues, pull requests, reviews, and repository publications from ${escapeHtml(range.from)} through ${escapeHtml(range.to)}.</desc>${content}`;
+    const byDate = new Map(days.map((day) => [day.date, day]));
+    svg.querySelectorAll("[data-profile-contribution-day][tabindex='0']").forEach((group) => {
+      const day = byDate.get(group.dataset.profileContributionDay);
+      group.addEventListener("mouseenter", (event) => showProfileContributionTooltip(day, group, event));
+      group.addEventListener("mousemove", (event) => showProfileContributionTooltip(day, group, event));
+      group.addEventListener("mouseleave", hideProfileContributionTooltip);
+      group.addEventListener("focus", () => showProfileContributionTooltip(day, group));
+      group.addEventListener("blur", hideProfileContributionTooltip);
+    });
+    const viewport = $("[data-profile-contribution-skyline-viewport]");
+    window.requestAnimationFrame(() => {
+      const scrollToRecent = () => {
+        if (viewport && viewport.scrollWidth > viewport.clientWidth) {
+          viewport.scrollLeft = viewport.scrollWidth - viewport.clientWidth;
+        }
+      };
+      scrollToRecent();
+      window.requestAnimationFrame(scrollToRecent);
+    });
+  }
+
+  function renderProfileContributionRadar(data) {
+    const svg = $("[data-profile-contribution-radar]");
+    if (!svg) return;
+    const points = profileContributionRadarPoints(
+      data?.typeTotals || {}, data?.coverage || {},
+    );
+    const rings = [0.25, 0.5, 0.75, 1].map((scale) => {
+      const ring = points.map((point) => {
+        const x = 120 + ((point.axisX - 120) * scale);
+        const y = 88 + ((point.axisY - 88) * scale);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(" ");
+      return `<polygon points="${ring}" fill="none" stroke="var(--contribution-grid-edge)" stroke-width="1"></polygon>`;
+    }).join("");
+    const axes = points.map((point) => `<line x1="120" y1="88" x2="${point.axisX.toFixed(1)}" y2="${point.axisY.toFixed(1)}" stroke="var(--contribution-grid-edge)" stroke-width="1"></line>`).join("");
+    const shape = points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+    const labels = points.map((point) => {
+      const anchor = point.labelX < 112 ? "end" : point.labelX > 128 ? "start" : "middle";
+      const countLabel = `${formatCount(point.count)}${point.known ? "" : "+"}`;
+      return `<text x="${point.labelX.toFixed(1)}" y="${point.labelY.toFixed(1)}" text-anchor="${anchor}" fill="currentColor" font-size="9"><tspan x="${point.labelX.toFixed(1)}">${escapeHtml(point.label)}</tspan><tspan x="${point.labelX.toFixed(1)}" dy="11" fill="rgb(var(--dashboard-muted-foreground-rgb))">${countLabel}</tspan></text>`;
+    }).join("");
+    const description = points.map((point) => point.known
+      ? `${point.label}: ${formatCount(point.count)}`
+      : `${point.label}: at least ${formatCount(point.count)}, partial coverage`).join(", ");
+    svg.innerHTML = `<title id="profile-contribution-radar-title">Contribution activity mix</title><desc id="profile-contribution-radar-desc">${escapeHtml(description)}</desc><g>${rings}${axes}<polygon points="${shape}" fill="var(--contribution-commits)" fill-opacity="0.24" stroke="var(--contribution-commits)" stroke-width="2"></polygon>${labels}</g>`;
+  }
+
+  function renderProfileContributionLanguages(data) {
+    const svg = $("[data-profile-contribution-languages]");
+    const legend = $("[data-profile-contribution-language-legend]");
+    if (!svg || !legend) return;
+    const segments = profileContributionLanguageSegments(data?.languages);
+    const complete = profileContributionCategoryKnown(data?.coverage, "languages");
+    if (!segments.length) {
+      const message = complete ? "No language data" : "Language data partial";
+      const description = complete
+        ? "No supported language bytes are available."
+        : "Language coverage is not fully verified for this profile.";
+      svg.innerHTML = `<title id="profile-contribution-languages-title">Contribution language donut</title><desc id="profile-contribution-languages-desc">${description}</desc><circle cx="120" cy="82" r="48" fill="none" stroke="var(--contribution-empty)" stroke-width="18"></circle><text x="120" y="86" text-anchor="middle" fill="currentColor" font-size="11">${message}</text>`;
+      legend.innerHTML = complete ? "" : '<p class="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Partial language data</p>';
+      return;
     }
+    const circles = segments.map((segment) => `<circle cx="120" cy="82" r="48" pathLength="100" fill="none" stroke="${segment.color}" stroke-width="18" stroke-dasharray="${segment.percentage.toFixed(4)} ${(100 - segment.percentage).toFixed(4)}" stroke-dashoffset="${(-segment.offset).toFixed(4)}" transform="rotate(-90 120 82)"><title>${escapeHtml(segment.name)}: ${segment.percentage.toFixed(1)}%, ${formatCount(segment.bytes)} bytes</title></circle>`).join("");
+    const description = `${complete ? "" : "Partial language coverage. "}${segments.map((segment) => `${segment.name}: ${segment.percentage.toFixed(1)} percent`).join(", ")}`;
+    svg.innerHTML = `<title id="profile-contribution-languages-title">Contribution language donut</title><desc id="profile-contribution-languages-desc">${escapeHtml(description)}</desc>${circles}<text x="120" y="78" text-anchor="middle" fill="currentColor" font-size="11">Public code</text><text x="120" y="94" text-anchor="middle" fill="rgb(var(--dashboard-muted-foreground-rgb))" font-size="9">by bytes</text>`;
+    legend.innerHTML = `${complete ? "" : '<p class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Partial language data</p>'}${segments.map((segment) => `<div class="flex min-w-0 items-center justify-between gap-2"><span class="flex min-w-0 items-center gap-2"><span aria-hidden="true" class="h-2.5 w-2.5 shrink-0 rounded-full" style="background:${segment.color}"></span><span class="truncate">${escapeHtml(segment.name)}</span></span><span class="shrink-0 tabular-nums">${segment.percentage.toFixed(1)}%</span></div>`).join("")}`;
+  }
+
+  function renderProfileContributionMetrics(data) {
+    const metrics = $("[data-profile-contribution-metrics]");
+    if (!metrics) return;
+    metrics.innerHTML = PROFILE_CONTRIBUTION_CATEGORIES.map((category) => {
+      const known = profileContributionCategoryKnown(data?.coverage, category.key);
+      const count = formatCount(profileContributionCount(data?.typeTotals?.[category.key]));
+      return `<div><dt class="truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">${escapeHtml(category.label)}</dt><dd class="mt-1 text-lg font-semibold tabular-nums text-foreground">${count}${known ? "" : "+"}</dd>${known ? "" : '<span class="text-[10px] text-muted-foreground">partial</span>'}</div>`;
+    }).join("");
+  }
+
+  function renderProfileContributionCoverage(data, range, { cached = false } = {}) {
+    const coverage = $("[data-profile-contribution-coverage]");
+    if (!coverage) return;
+    coverage.textContent = profileContributionCoverageMessage(data?.coverage, range, { cached });
+    if (cached) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.setAttribute("data-profile-contribution-retry", "");
+      retry.className = "ml-2 font-semibold text-accent hover:underline";
+      retry.textContent = "Retry live data";
+      coverage.append(retry);
+    }
+  }
+
+  function profileContributionRepositoryUrl(repository) {
+    const supplied = String(repository?.url || "");
+    if (supplied.startsWith("/") && !supplied.startsWith("//")) return supplied;
+    const owner = String(repository?.owner || "").trim();
+    const name = String(repository?.name || "").trim();
+    return owner && name ? `/${encodeURIComponent(owner)}/${encodeURIComponent(name)}` : "/dashboard/repos";
   }
 
   function renderProfileActivity(data) {
     const container = $("[data-profile-activity-items]");
     const empty = $("[data-profile-activity-empty]");
     if (!container || !empty) return;
-    const events = data.events.slice(0, 20);
+    const events = (Array.isArray(data?.recentActivity) ? data.recentActivity : []).slice(0, 20);
     empty.classList.toggle("hidden", Boolean(events.length));
-    if (!events.length) {
-      if (data.loading) {
-        empty.innerHTML = loadingHtml("Loading live contribution history...");
-      } else {
-        empty.textContent = "No contribution activity found for this year yet.";
-      }
-      container.innerHTML = "";
-      return;
-    }
+    empty.textContent = "No contribution activity found for this period yet.";
     container.innerHTML = events.map((event) => {
-      const repo = event.repo || {};
-      const date = new Date(event.ts);
-      const repoUrl = repoPathUrl(repo);
-      return `
-        <div data-profile-activity-item class="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-4 md:grid-cols-[2.5rem_minmax(0,1fr)_8rem]">
-          <div class="flex flex-col items-center">
-            <span class="flex h-10 w-10 items-center justify-center rounded-full bg-secondary text-muted-foreground">
-              <i data-lucide="${escapeHtml(event.icon || "activity")}" class="h-5 w-5"></i>
-            </span>
-            <span class="h-12 w-px bg-border"></span>
-          </div>
-          <div class="min-w-0">
-            <p class="text-base font-semibold leading-6 text-foreground">${escapeHtml(event.title || "Contribution activity")}</p>
-            <p class="mt-2 flex min-w-0 items-center gap-2 text-sm">
-              <i data-lucide="git-fork" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
-              <a href="${escapeHtml(repoUrl)}" class="truncate text-accent hover:underline">${escapeHtml(repoKey(repo))}</a>
-            </p>
-          </div>
-          <div class="hidden items-start justify-end text-sm text-muted-foreground md:flex">
-            <span>${escapeHtml(date.toLocaleDateString(undefined, { month: "short", day: "numeric" }))}</span>
-          </div>
-        </div>
-      `;
+      const category = PROFILE_CONTRIBUTION_CATEGORIES.find((item) => item.key === event?.kind) || PROFILE_CONTRIBUTION_CATEGORIES[0];
+      const count = profileContributionCount(event?.count);
+      const repository = event?.repository || {};
+      const repoLabel = [repository.owner, repository.name].filter(Boolean).join("/") || "Public repository";
+      const date = profileContributionDate(event?.date);
+      const dateLabel = date
+        ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }).format(date)
+        : String(event?.date || "");
+      return `<div data-profile-activity-item class="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-4 md:grid-cols-[2.5rem_minmax(0,1fr)_8rem]"><div class="flex flex-col items-center"><span class="flex h-10 w-10 items-center justify-center rounded-full bg-secondary" style="color:${category.color}"><i data-lucide="${category.icon}" class="h-5 w-5"></i></span><span class="h-12 w-px bg-border"></span></div><div class="min-w-0"><p class="text-base font-semibold leading-6 text-foreground">${formatCount(count)} ${escapeHtml(category.singular)}${count === 1 ? "" : "s"}</p><p class="mt-2 flex min-w-0 items-center gap-2 text-sm"><i data-lucide="git-fork" class="h-4 w-4 shrink-0 text-muted-foreground"></i><a href="${escapeHtml(profileContributionRepositoryUrl(repository))}" class="truncate text-accent hover:underline">${escapeHtml(repoLabel)}</a></p><time datetime="${escapeHtml(event?.date || "")}" class="mt-2 block text-xs text-muted-foreground md:hidden">${escapeHtml(dateLabel)}</time></div><div class="hidden items-start justify-end text-sm text-muted-foreground md:flex"><time datetime="${escapeHtml(event?.date || "")}">${escapeHtml(dateLabel)}</time></div></div>`;
     }).join("");
+    window.lucide?.createIcons();
   }
 
-  async function loadProfileContributionHistories(year = state.profileContributions.year) {
-    // The shared-chrome catalog load renders the contribution graph on EVERY
-    // page, but only the profile documents actually ship the grid — never fan
-    // out per-repo history fetches anywhere else (request budget).
-    if (!$("[data-contribution-cells]")) return;
-    const groups = profileContributionGroups();
-    let hydratedFromCache = 0;
-    const repos = groups.map((group) => sourceOfTruth(group))
-      .filter((repo) => repoIsLive(repo))
-      .filter((repo) => {
-        const key = profileContributionHistoryKey(repo, year);
-        if (Array.isArray(state.profileContributions.liveHistory[key])) return false;
-        const cached = readProfileHistoryCache(repo);
-        if (cached) {
-          state.profileContributions.liveHistory[key] = cached;
-          hydratedFromCache += 1;
-          return false;
-        }
-        return true;
-      })
-      .slice(0, PROFILE_HISTORY_REPO_LIMIT);
-    if (!repos.length || state.profileContributions.loadedYears[year]) {
-      if (hydratedFromCache) renderProfileContributionGraph();
+  function renderProfileContributionData(data, range, { cached = false } = {}) {
+    const total = profileContributionCount(data?.total);
+    const repositoryCount = profileContributionCount(data?.repositoryCount);
+    const summary = $("[data-profile-contribution-summary]");
+    const rangeLabel = $("[data-profile-contribution-range]");
+    if (summary) {
+      summary.textContent = `${formatCount(total)} verified public contribution${total === 1 ? "" : "s"} recorded across ${formatCount(repositoryCount)} repositor${repositoryCount === 1 ? "y" : "ies"} in ${range.label}`;
+    }
+    if (rangeLabel) rangeLabel.textContent = `${range.from} to ${range.to} · UTC`;
+    renderProfileContributionPeriods(data, range.value);
+    renderProfileContributionSkyline(data, range);
+    renderProfileContributionRadar(data);
+    renderProfileContributionLanguages(data);
+    renderProfileContributionMetrics(data);
+    renderProfileContributionCoverage(data, range, { cached });
+    renderProfileActivity(data);
+    const coverageStatus = ["complete", "partial", "unavailable"].includes(data?.coverage?.status)
+      ? data.coverage.status
+      : "unavailable";
+    const status = cached ? "cached" : (!total && coverageStatus === "complete" ? "empty" : coverageStatus);
+    renderProfileContributionStatus(status, { hasData: true });
+  }
+
+  function renderProfileContributionPlaceholder(range) {
+    const placeholder = {
+      typeTotals: Object.fromEntries(PROFILE_CONTRIBUTION_CATEGORIES.map(({ key }) => [key, 0])),
+      days: [],
+      languages: [],
+      coverage: {
+        status: "unavailable",
+        verifiedFrom: null,
+        missing: ["commits", "collaboration", "languages", "history"],
+      },
+    };
+    const summary = $("[data-profile-contribution-summary]");
+    const rangeLabel = $("[data-profile-contribution-range]");
+    const coverage = $("[data-profile-contribution-coverage]");
+    if (summary) summary.textContent = `Loading verified contributions for ${range.label}`;
+    if (rangeLabel) rangeLabel.textContent = `${range.from} to ${range.to} · UTC`;
+    if (coverage) coverage.textContent = "Waiting for the verified public ledger.";
+    renderProfileContributionSkyline(placeholder, range);
+    renderProfileContributionRadar(placeholder);
+    renderProfileContributionLanguages(placeholder);
+    renderProfileContributionMetrics(placeholder);
+  }
+
+  async function renderProfileContributionGraph({ period, force = false } = {}) {
+    if (!$("[data-profile-contribution-card]")) return;
+    const activeValue = String(period || state.profileContributions.range?.value || "rolling");
+    const range = profileContributionRange(activeValue);
+    const name = profileContributionSubjectName();
+    renderProfileContributionPeriods(state.profileContributions.data, range.value);
+    renderProfileContributionPlaceholder(range);
+    if (!name) {
+      state.profileContributions.error = "Profile identity is unavailable.";
+      renderProfileContributionStatus("error", { hasData: true });
       return;
     }
+    const requestKey = profileContributionRequestKey(name, range);
+    const memory = state.profileContributions.cache[requestKey];
+    state.profileContributions.range = range;
+    if (!force && memory) {
+      profileContributionRequestSequence += 1;
+      state.profileContributions.requestKey = requestKey;
+      state.profileContributions.data = memory;
+      state.profileContributions.loading = false;
+      state.profileContributions.error = "";
+      renderProfileContributionData(memory, range);
+      return;
+    }
+    if (!force && state.profileContributions.loading && state.profileContributions.requestKey === requestKey) return;
+    const requestSequence = ++profileContributionRequestSequence;
+    state.profileContributions.requestKey = requestKey;
     state.profileContributions.loading = true;
-    renderProfileContributionGraph();
-    let index = 0;
-    const worker = async () => {
-      while (index < repos.length) {
-        const repo = repos[index];
-        index += 1;
-        const key = profileContributionHistoryKey(repo, year);
-        try {
-          const data = await fetchRepoJson(repoLiveUrl(repo, "history"));
-          const commits = Array.isArray(data.commits) ? data.commits : [];
-          state.profileContributions.liveHistory[key] = commits;
-          writeProfileHistoryCache(repo, commits);
-        } catch (_) {
-          state.profileContributions.liveHistory[key] = null;
-        }
+    state.profileContributions.error = "";
+    renderProfileContributionStatus("loading", { hasData: true });
+    const path = "/api/accounts/" + encodeURIComponent(name) + "/contributions?from=" +
+      encodeURIComponent(range.from) + "&to=" + encodeURIComponent(range.to);
+    try {
+      const data = await fetchJson(path, { fresh: force, cacheBust: false });
+      if (state.profileContributions.requestKey !== requestKey || requestSequence !== profileContributionRequestSequence) return;
+      if (data?.ok !== true || data?.range?.from !== range.from || data?.range?.to !== range.to) {
+        throw new Error("Contribution response did not match the requested period.");
       }
-    };
-    await Promise.all(Array.from({ length: Math.min(PROFILE_HISTORY_CONCURRENCY, repos.length) }, worker));
-    state.profileContributions.loadedYears[year] = true;
-    state.profileContributions.loading = false;
-    renderProfileContributionGraph();
-  }
-
-  function renderProfileContributionGraph() {
-    const months = $("[data-contribution-months]");
-    const cells = $("[data-contribution-cells]");
-    const legend = $("[data-contribution-legend]");
-    const summary = $("[data-profile-contribution-summary]");
-    const year = Number(state.profileContributions.year) || new Date().getFullYear();
-    const data = profileContributionData(year);
-    const gridStart = contributionGridStart(data.range);
-    if (summary) {
-      summary.textContent = `${formatCount(data.total)} contribution${data.total === 1 ? "" : "s"} in ${data.range.label}`;
-    }
-    if (months) renderContributionMonthLabels(months, gridStart);
-    if (cells) {
-      cells.innerHTML = "";
-      cells.style.gridTemplateColumns = CONTRIBUTION_GRID_COLUMNS;
-      cells.style.gridTemplateRows = "repeat(7, 0.75rem)";
-      cells.style.gap = CONTRIBUTION_GRID_GAP;
-      [
-        { label: "Mon", row: 2 },
-        { label: "Wed", row: 4 },
-        { label: "Fri", row: 6 },
-      ].forEach((dayLabel) => {
-        const label = document.createElement("span");
-        label.textContent = dayLabel.label;
-        label.className = "self-center text-xs leading-3 text-foreground";
-        label.style.gridColumn = "1";
-        label.style.gridRow = String(dayLabel.row);
-        cells.append(label);
-      });
-      for (let week = 0; week < 53; week += 1) {
-        for (let day = 0; day < 7; day += 1) {
-          const date = new Date(gridStart);
-          date.setDate(date.getDate() + (week * 7) + day);
-          const key = contributionDayKey(date.getTime());
-          const count = data.days.get(key) || 0;
-          const level = profileContributionLevel(count, data.max);
-          const cell = document.createElement("span");
-          cell.setAttribute("data-contribution-cell", `${week}-${day}`);
-          cell.className = "h-3 w-3 rounded-sm";
-          cell.style.backgroundColor = CONTRIBUTION_COLORS[level];
-          cell.style.gridColumn = String(week + 2);
-          cell.style.gridRow = String(day + 1);
-          cell.title = `${formatCount(count)} contribution${count === 1 ? "" : "s"} on ${formatDate(date.getTime())}`;
-          cell.setAttribute("aria-label", cell.title);
-          cell.style.opacity = contributionInRange(date.getTime(), data.range) ? "1" : "0.45";
-          cells.append(cell);
-        }
+      state.profileContributions.cache[requestKey] = data;
+      state.profileContributions.data = data;
+      state.profileContributions.loading = false;
+      writeProfileContributionCache(requestKey, data);
+      renderProfileContributionData(data, range);
+    } catch (error) {
+      if (state.profileContributions.requestKey !== requestKey || requestSequence !== profileContributionRequestSequence) return;
+      state.profileContributions.loading = false;
+      state.profileContributions.error = String(error?.message || "Contribution activity is unavailable.");
+      const status = Number(error?.status) || 0;
+      const temporaryFailure = status === 0 || status === 408 || status === 425 ||
+        status === 429 || status >= 500;
+      if (!temporaryFailure) removeProfileContributionCache(requestKey);
+      const cached = temporaryFailure
+        ? readProfileContributionCache(requestKey, range)
+        : null;
+      if (cached) {
+        state.profileContributions.data = cached;
+        renderProfileContributionData(cached, range, { cached: true });
+      } else {
+        const summary = $("[data-profile-contribution-summary]");
+        if (summary) summary.textContent = `Contribution activity is unavailable for ${range.label}`;
+        renderProfileContributionStatus("error", { hasData: true });
       }
-    }
-    if (legend) {
-      legend.innerHTML = "";
-      const low = document.createElement("span");
-      low.textContent = "Less";
-      legend.append(low);
-      CONTRIBUTION_COLORS.forEach((color) => {
-        const swatch = document.createElement("span");
-        swatch.className = "h-3 w-3 rounded-sm";
-        swatch.style.backgroundColor = color;
-        legend.append(swatch);
-      });
-      const high = document.createElement("span");
-      high.textContent = "More";
-      legend.append(high);
-    }
-    renderProfileContributionYears(year);
-    renderProfileActivity(data);
-    window.lucide?.createIcons();
-    if (!state.profileContributions.loading) {
-      loadProfileContributionHistories(year);
     }
   }
 
@@ -3817,7 +3981,7 @@
   function profileRepositoryGroups() {
     let groups = groupRepositories(state.repositories || []);
     if (state.publicProfile) {
-      const aliases = profileContributionAliases(state.publicProfile);
+      const aliases = profileRepositoryAliases(state.publicProfile);
       groups = groups.filter((group) =>
         repoBelongsToProfile(sourceOfTruth(group), aliases) ||
         (group.members || []).some((member) => repoBelongsToProfile(member, aliases)));
@@ -3872,7 +4036,6 @@
 
     renderProfileRepositoryCount();
     applyRepositoryFilter();
-    renderProfileContributionGraph();
     renderGlobalSearchResults();
   }
 
@@ -10047,10 +10210,14 @@
       return;
     }
 
-    const contributionYear = event.target.closest("[data-profile-contribution-year]");
-    if (contributionYear) {
-      state.profileContributions.year = Number(contributionYear.dataset.profileContributionYear) || new Date().getFullYear();
-      renderProfileContributionGraph();
+    const contributionPeriod = event.target.closest("[data-profile-contribution-period]");
+    if (contributionPeriod) {
+      renderProfileContributionGraph({ period: contributionPeriod.dataset.profileContributionPeriod });
+      return;
+    }
+
+    if (event.target.closest("[data-profile-contribution-retry]")) {
+      renderProfileContributionGraph({ force: true });
       return;
     }
 

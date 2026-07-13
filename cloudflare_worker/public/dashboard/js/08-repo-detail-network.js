@@ -1183,10 +1183,14 @@
       return;
     }
 
-    const contributionYear = event.target.closest("[data-profile-contribution-year]");
-    if (contributionYear) {
-      state.profileContributions.year = Number(contributionYear.dataset.profileContributionYear) || new Date().getFullYear();
-      renderProfileContributionGraph();
+    const contributionPeriod = event.target.closest("[data-profile-contribution-period]");
+    if (contributionPeriod) {
+      renderProfileContributionGraph({ period: contributionPeriod.dataset.profileContributionPeriod });
+      return;
+    }
+
+    if (event.target.closest("[data-profile-contribution-retry]")) {
+      renderProfileContributionGraph({ force: true });
       return;
     }
 

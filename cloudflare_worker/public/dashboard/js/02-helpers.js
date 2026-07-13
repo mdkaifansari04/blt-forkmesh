@@ -576,6 +576,7 @@
 
   async function fetchJson(path, options = {}) {
     const fresh = options.fresh === true;
+    const cacheBust = options.cacheBust !== false;
     const baseTtl = fetchJsonCacheTtl(path);
     const ttl = fresh ? 0 : baseTtl;
     if (!state.fetchJsonInflight) state.fetchJsonInflight = {};
@@ -584,8 +585,8 @@
     const now = Date.now();
     const cached = ttl ? state.fetchJsonCache[path] : null;
     if (cached && cached.expiresAt > now) return cloneJson(cached.data);
-    const requestPath = fresh ? cacheBustedPath(path) : path;
-    const inflightKey = fresh ? requestPath : path;
+    const requestPath = fresh && cacheBust ? cacheBustedPath(path) : path;
+    const inflightKey = fresh ? `${requestPath}#fresh` : path;
     if (state.fetchJsonInflight[inflightKey]) {
       return cloneJson(await state.fetchJsonInflight[inflightKey]);
     }
@@ -609,7 +610,9 @@
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok === false) {
-        throw new Error(data.error || `HTTP ${response.status}`);
+        const error = new Error(data.error || `HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
       }
       if (ttl || (fresh && baseTtl)) {
         state.fetchJsonCache[path] = {

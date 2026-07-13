@@ -359,7 +359,7 @@ def test_dashboard_profile_overview_uses_real_profile_data_not_placeholders():
     assert ">30<" not in profile
     assert ">19<" not in profile
     assert "data-profile-about-panel" in profile
-    assert "data-profile-contribution-grid" in profile
+    assert "data-profile-contribution-card" in profile
     assert "data-profile-activity-list" in profile
     assert "profileFollowers" in dashboard_js
     assert "profileFollowing" in dashboard_js
@@ -369,54 +369,147 @@ def test_dashboard_profile_overview_uses_real_profile_data_not_placeholders():
     assert 'rounded-lg border border-border bg-card p-4' not in profile
 
 
-def test_dashboard_profile_contribution_graph_matches_github_density():
-    dashboard_js = _read(PUBLIC / "dashboard.js")
+def test_dashboard_profile_contribution_card_has_panorama_contract():
     profile = _read(VIEWS / "profile-overview.html")
+    state_js = _read(PUBLIC / "dashboard" / "js" / "01-state.js")
 
     for marker in (
-        "data-profile-contribution-timeline-layout",
-        "data-profile-contribution-main",
-        "data-profile-contribution-years",
-        "data-profile-contribution-grid",
+        "data-profile-contribution-card",
         "data-profile-contribution-summary",
-        "data-profile-contribution-calendar",
-        "data-contribution-months",
-        "data-contribution-cells",
-        "data-contribution-legend",
+        "data-profile-contribution-skyline",
+        "data-profile-contribution-tooltip",
+        "data-profile-contribution-radar",
+        "data-profile-contribution-languages",
+        "data-profile-contribution-metrics",
+        "data-profile-contribution-coverage",
+        "data-profile-contribution-periods",
+        "data-profile-contribution-loading",
+        "data-profile-contribution-empty",
+        "data-profile-contribution-error",
+        "data-profile-contribution-retry",
         "data-profile-activity-items",
         "data-profile-activity-empty",
-        "data-profile-contribution-footer",
         "Contribution settings",
         "Learn how we count contributions",
     ):
-        assert marker in profile
+        if marker == "Contribution settings":
+            assert marker not in profile
+        else:
+            assert marker in profile
 
-    assert "Update your 2FA" not in profile
-    assert "to see contributions within the ForkMesh organization" not in profile
-    assert "grid-cols-[2rem_repeat(26,1rem)]" not in profile
-    assert "max-w-[1432px]" in profile
-    assert 'xl:grid-cols-[minmax(0,1fr)_9rem]' in profile
-    assert 'data-profile-contribution-calendar class="overflow-x-auto rounded-md border border-border bg-background px-6 py-5"' in profile
-    assert "data-profile-contribution-year" in dashboard_js
+    assert "data-profile-contribution-calendar" not in profile
+    assert "data-contribution-months" not in profile
+    assert "data-contribution-cells" not in profile
+    assert "data-contribution-legend" not in profile
+    assert "min-w-[880px]" not in profile
+    assert "#1c1c1f" not in profile
+    assert "#14532d" not in profile
+    assert 'href="/docs/contributions"' in profile
+    assert profile.count("<svg") == 3
+    assert profile.count("<title") == 3
+    assert profile.count("<desc") == 3
     assert 'data-profile-activity-list class="grid gap-6"' in profile
-    assert 'data-profile-activity-list class="rounded-md border border-border bg-card p-5"' not in profile
-    assert "min-w-[880px]" in profile
-    assert "function renderProfileContributionGraph()" in dashboard_js
-    assert "function profileContributionData(" in dashboard_js
-    assert "function loadProfileContributionHistories(" in dashboard_js
-    assert "function profileContributionYears(" in dashboard_js
-    assert "function profileContributionLevel(count, max)" in dashboard_js
-    assert "function profileContributionLevel(week, day)" not in dashboard_js
-    assert "fetchRepoJson(repoLiveUrl(repo, \"history\"))" in dashboard_js
-    assert "contributionDateMs(repo.updatedAt || repo.lastSync || repo.hostedSince)" in dashboard_js
-    assert "addCatalogActivityWeeks" in dashboard_js
-    assert 'const CONTRIBUTION_GRID_COLUMNS = "2.25rem repeat(53, 0.75rem)"' in dashboard_js
-    assert 'const CONTRIBUTION_GRID_GAP = "0.1875rem"' in dashboard_js
-    assert "for (let week = 0; week < 53; week += 1)" in dashboard_js
-    assert "for (let day = 0; day < 7; day += 1)" in dashboard_js
-    assert 'cell.className = "h-3 w-3 rounded-sm"' in dashboard_js
-    assert "data-contribution-cell" in dashboard_js
-    assert "renderProfileContributionGraph();" in dashboard_js
+    for field in (
+        "range: null",
+        "data: null",
+        "loading: false",
+        'error: ""',
+        'requestKey: ""',
+        'selectedDay: ""',
+        "cache: {}",
+    ):
+        assert field in state_js
+    for stale in ("year:", "liveHistory", "loadedYears"):
+        assert stale not in state_js
+
+
+def test_dashboard_profile_contribution_theme_is_semantic_and_responsive():
+    shell = _read(PUBLIC / "dashboard" / "shell.html")
+
+    variables = (
+        "--contribution-commits",
+        "--contribution-issues",
+        "--contribution-pulls",
+        "--contribution-reviews",
+        "--contribution-repositories",
+        "--contribution-empty",
+        "--contribution-unverified",
+        "--contribution-grid-edge",
+        "--contribution-cube-top",
+        "--contribution-cube-left",
+        "--contribution-cube-right",
+        "--contribution-tooltip-bg",
+        "--contribution-tooltip-fg",
+        "--contribution-tooltip-border",
+    )
+    dark = shell[shell.index(":root,"):shell.index('[data-dashboard-theme="light"]')]
+    light = shell[shell.index('[data-dashboard-theme="light"]'):shell.index("html {")]
+    for variable in variables:
+        assert variable in dark
+        assert variable in light
+
+    assert "[data-profile-contribution-panorama]" in shell
+    assert "grid-template-columns: minmax(0, 1fr)" in shell
+    assert "[data-profile-contribution-skyline-viewport]" in shell
+    assert "overflow-x: auto" in shell
+    assert "@media (prefers-reduced-motion: reduce)" in shell
+    assert "[hidden] {" in shell
+    assert "display: none !important" in shell
+    assert "initContributionActivity" not in shell
+    assert "contributionColors" not in shell
+
+
+def test_dashboard_profile_contribution_renderer_uses_one_native_request():
+    account_js = _read(PUBLIC / "dashboard" / "js" / "04-account.js")
+    helpers_js = _read(PUBLIC / "dashboard" / "js" / "02-helpers.js")
+    explorer_js = _read(PUBLIC / "dashboard" / "js" / "05-repo-list-explorer.js")
+    network_js = _read(PUBLIC / "dashboard" / "js" / "08-repo-detail-network.js")
+
+    for helper in (
+        "profileContributionRange",
+        "normalizeProfileContributionDays",
+        "profileContributionStackLevel",
+        "profileContributionCubeFaces",
+        "profileContributionRadarPoints",
+        "profileContributionLanguageSegments",
+        "profileContributionTooltipText",
+        "profileContributionCoverageMessage",
+        "profileContributionCategoryKnown",
+        "renderProfileContributionStatus",
+        "renderProfileActivity",
+    ):
+        assert f"function {helper}" in account_js
+
+    assert '"/api/accounts/" + encodeURIComponent(name) + "/contributions?from="' in account_js
+    assert '"&to=" + encodeURIComponent(range.to)' in account_js
+    assert "state.profileContributions.requestKey !== requestKey" in account_js
+    assert "sessionStorage.setItem(profileContributionCacheKey(requestKey)" in account_js
+    assert 'data-profile-contribution-period="${escapeHtml(period.value)}"' in account_js
+    assert 'aria-current="${active ? "true" : "false"}"' in account_js
+    assert "scrollLeft = viewport.scrollWidth - viewport.clientWidth" in account_js
+    assert "cacheBust: false" in account_js
+    assert "error.status = response.status" in helpers_js
+    assert "temporaryFailure" in account_js
+    assert "if (!temporaryFailure) removeProfileContributionCache(requestKey)" in account_js
+    assert "currentYear - 5" in account_js
+    assert "md:hidden" in account_js
+    assert "Loading verified contribution activity" in account_js
+    assert "Contribution activity is unavailable" in account_js
+
+    for stale in (
+        "loadProfileContributionHistories",
+        "PROFILE_HISTORY_REPO_LIMIT",
+        "PROFILE_HISTORY_CONCURRENCY",
+        "addCatalogActivityWeeks",
+        "commitMatchesProfile",
+        "profileContributionAliases",
+    ):
+        assert stale not in account_js
+    assert 'repoLiveUrl(repo, "history")' not in account_js
+    assert "renderProfileContributionGraph();" not in explorer_js
+    assert "data-profile-contribution-period" in network_js
+    assert "data-profile-contribution-retry" in network_js
+    assert "data-profile-contribution-year" not in network_js
 
 
 def test_dashboard_profile_tabs_are_unified_with_app_header():
