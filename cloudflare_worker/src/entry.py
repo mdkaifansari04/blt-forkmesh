@@ -18075,6 +18075,14 @@ class ForkMeshHost(DurableObject):
                     data = b""
                 if data:
                     stream["last"] = int(Date.now())
+                    if stream.get("hasher") is not None:
+                        # Fold each chunk into the running integrity hash before
+                        # it leaves for the client; verified against verify at
+                        # git-end (content-addressed release assets).
+                        try:
+                            stream["hasher"].update(data)
+                        except Exception:
+                            pass
                     try:
                         # Copy into a JS-owned buffer before it crosses into the
                         # response stream: a view into Python's WASM memory read
@@ -18101,7 +18109,16 @@ class ForkMeshHost(DurableObject):
                     fut.set_result({"ok": bool(msg.get("ok")),
                                     "error": msg.get("error")})
                 try:
-                    if msg.get("ok"):
+                    hasher = stream.get("hasher")
+                    if (msg.get("ok") and hasher is not None and
+                            hasher.hexdigest() != stream.get("verify")):
+                        # Content-addressed asset whose bytes don't hash to the
+                        # requested sha256: a tampered mirror. Abort rather than
+                        # close so the client sees a failed transfer and the
+                        # forged bytes never land as a complete (or edge-cached)
+                        # download — the integrity pin, enforced at the relay.
+                        await stream["writer"].abort("integrity check failed")
+                    elif msg.get("ok"):
                         await stream["writer"].close()
                     else:
                         # Failure after bytes already streamed: the 200 headers
@@ -18251,7 +18268,7 @@ class ForkMeshHost(DurableObject):
             result["servedBy"] = served_by
         return json_response(result)
 
-    async def _stream_request(self, host, message, headers):
+    async def _stream_request(self, host, message, headers, verify_sha256=None):
         # Send a chunked-transfer request to the host and return a Response
         # whose body STREAMS the reply: each git-chunk is written straight
         # through a TransformStream to the client as it arrives, so a full
@@ -18262,6 +18279,14 @@ class ForkMeshHost(DurableObject):
         # per-chunk watchdog aborts a mid-stream stall so a dying host fails
         # the one transfer instead of hanging the client.
         #
+        # verify_sha256 (content-addressed assets only): the relay hashes the
+        # bytes as they stream — keeping just the running hash context, never
+        # the payload — and aborts the transfer at git-end if the digest doesn't
+        # match. This is the integrity pin for release artifacts: a tampered
+        # mirror serving forged bytes for a hash gets its stream cut, so the
+        # client never sees a complete (or edge-cacheable) forged download,
+        # regardless of whether the client itself re-verifies.
+        #
         # Returns (response, error_result): exactly one is non-None. A
         # transport failure yields a ready error Response; a host-reported
         # error yields the result dict so each endpoint maps its own status.
@@ -18271,7 +18296,11 @@ class ForkMeshHost(DurableObject):
         self.pending[req_id] = future
         transform = TransformStream.new()
         writer = transform.writable.getWriter()
-        self.git_streams[req_id] = {"writer": writer, "last": int(Date.now())}
+        self.git_streams[req_id] = {
+            "writer": writer, "last": int(Date.now()),
+            "verify": verify_sha256,
+            "hasher": hashlib.sha256() if verify_sha256 else None,
+        }
         try:
             host.send(json.dumps(message))
         except Exception:
@@ -18409,8 +18438,10 @@ class ForkMeshHost(DurableObject):
         # chunk flows straight to the client (see _stream_request), so
         # arbitrarily large binaries download without the 4 MB inline /blob cap
         # and without ever holding the whole asset in DO memory. Still cached
-        # forever at the edge — the URL is content-addressed — and the client
-        # verifies the bytes against the manifest sha256 (x-content-sha256).
+        # forever at the edge — the URL is content-addressed. The relay itself
+        # now hashes the stream and aborts on mismatch (verify_sha256 below), so
+        # a tampered mirror can't serve forged bytes for this hash even to a
+        # client that doesn't re-verify; x-content-sha256 lets clients that do.
         if not valid_sha256_hex(sha256):
             return Response("not found", status=404)
         self._ensure()
@@ -18429,6 +18460,7 @@ class ForkMeshHost(DurableObject):
                 "cache-control": "public, max-age=31536000, immutable",
                 "x-content-sha256": sha256.lower(),
             },
+            verify_sha256=sha256.lower(),
         )
         if response is not None:
             if repo_bi:

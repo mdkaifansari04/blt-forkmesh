@@ -396,6 +396,10 @@ void MainWindow::renderDiscussionThread(const Discussion &discussion)
     if (discussion.number <= 0)
         return;
 
+    // Owning (writable) nodes can moderate the thread by deleting comments; a
+    // read-only clone just shows them.
+    const bool canModerate = discussionStoreForCurrentRepo().canWrite();
+    const int number = discussion.number;
     for (const DiscussionEvent &ev : discussion.events) {
         if (ev.type != QLatin1String("open") &&
             ev.type != QLatin1String("comment"))
@@ -409,8 +413,18 @@ void MainWindow::renderDiscussionThread(const Discussion &discussion)
                      isOpen ? QStringLiteral("opened")
                             : QStringLiteral("commented"),
                      formatIssueRelativeTime(ev.ts).toHtmlEscaped());
+        std::function<void()> onDelete;
+        if (!isOpen && canModerate && !ev.id.isEmpty()) {
+            const QString eventId = ev.id;
+            onDelete = [this, number, eventId] {
+                deleteDiscussionComment(number, eventId);
+            };
+        }
+        // Pass ev.author (the Ed25519 pubkey) so each card shows that author's
+        // real avatar instead of a name-seeded placeholder.
         addConversationCard(m_discussionThreadLayout, who, header, ev.body,
-                            isOpen ? QStringLiteral("#58a6ff") : QString());
+                            isOpen ? QStringLiteral("#58a6ff") : QString(),
+                            QString(), ev.author, onDelete);
     }
     if (m_discussionThreadScroll) {
         QTimer::singleShot(0, this, [this] {
@@ -654,6 +668,33 @@ void MainWindow::postDiscussionComment()
     ev.body = body;
     ev = store.makeSignedEvent(m_currentDiscussionNumber, ev);
     submitDiscussionEventToInbox(m_currentDiscussionNumber, ev);
+}
+
+void MainWindow::deleteDiscussionComment(int number, const QString &eventId)
+{
+    if (number <= 0 || eventId.isEmpty())
+        return;
+    if (QMessageBox::question(
+            this, QStringLiteral("Delete comment"),
+            QStringLiteral("Delete this comment from the discussion? This "
+                           "cannot be undone."),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    DiscussionStore store = discussionStoreForCurrentRepo();
+    QString error;
+    if (!store.deleteComment(number, eventId, &error)) {
+        setDiscussionInlineNotice(
+            error.isEmpty() ? QStringLiteral("Could not delete the comment.")
+                            : error,
+            true);
+        return;
+    }
+    reloadDiscussions();
+    showDiscussion(number);
+    propagateRepoUpdate(m_repoDetailIndex);
+    setDiscussionInlineNotice(QStringLiteral("Comment deleted."));
 }
 
 void MainWindow::submitDiscussionEventToInbox(int number, const DiscussionEvent &ev,
