@@ -7,6 +7,7 @@
   --fm-footer-social-hover-border: rgba(232, 232, 232, 0.3);
   --fm-footer-wordmark: #0d0d0d;
   --fm-footer-glow: rgba(232, 232, 232, 0.74);
+  --fm-footer-glow-filter: rgba(255, 255, 255, 0.18);
   position: relative;
   isolation: isolate;
   overflow: hidden;
@@ -24,6 +25,7 @@ html.light .forkmesh-footer {
   --fm-footer-social-hover-border: #8c959f;
   --fm-footer-wordmark: #eef2f7;
   --fm-footer-glow: color-mix(in srgb, #1f2328 72%, #ffffff);
+  --fm-footer-glow-filter: rgba(31, 35, 40, 0.18);
 }
 
 .forkmesh-footer-standard {
@@ -63,9 +65,7 @@ html.light .forkmesh-footer {
   inset: 0;
   pointer-events: none;
   color: var(--fm-footer-glow);
-  filter: drop-shadow(
-    0 0 24px color-mix(in srgb, var(--fm-footer-glow) 24%, transparent)
-  );
+  filter: drop-shadow(0 0 24px var(--fm-footer-glow-filter));
   mask-image: radial-gradient(
     7.5rem 7.5rem at var(--footer-glow-x, 50%) var(--footer-glow-y, 50%),
     black 0%,

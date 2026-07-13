@@ -506,6 +506,28 @@ def test_shared_footer_defines_dark_and_light_semantic_palettes():
         },
         "site-footer.css",
     )
+    assert_css_declarations(
+        footer_css,
+        ".forkmesh-footer",
+        {"--fm-footer-glow-filter": "rgba(255, 255, 255, 0.18)"},
+        "site-footer.css",
+    )
+    assert_css_declarations(
+        footer_css,
+        "html.light .forkmesh-footer",
+        {"--fm-footer-glow-filter": "rgba(31, 35, 40, 0.18)"},
+        "site-footer.css",
+    )
+    assert_css_declarations(
+        footer_css,
+        ".footer-glow-text",
+        {
+            "filter": (
+                "drop-shadow(0 0 24px var(--fm-footer-glow-filter))"
+            )
+        },
+        "site-footer.css",
+    )
 
 
 def test_landing_page_remains_explicitly_dark():
