@@ -78,7 +78,10 @@ public:
     void createPrivateChannel(const QString &channel) override;
     void inviteToChannel(const QString &peerId, const QString &channel) override;
     void setMirroredRepos(const QList<MirrorAdvert> &repos) override;
-    void notifyMirrorUpdated(const QString &ownerName) override;
+    void notifyMirrorUpdated(const QString &ownerName,
+                             const QString &commit = QString()) override;
+    void notifyMirrorSynced(const QString &ownerName,
+                            const QString &commit = QString()) override;
     void requestMirrorRefresh(const QString &source,
                               const QString &ownerName) override;
     void advertiseMirrorsNow() override;

@@ -3191,7 +3191,8 @@ void MainWindow::propagateRepoUpdate(int index)
 }
 
 void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
-                                     const QString &peerName)
+                                     const QString &peerName,
+                                     const QString &commit)
 {
     // Only surface it if we keep a real mirror of this repo (browse-only
     // previews don't count) — otherwise the peer's update isn't relevant here.
@@ -3225,16 +3226,70 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
     logSystem(msg);
     flashMessage(msg);
 
+    // The signal named the exact new commit. If our mirror already holds it we
+    // are already converged — close the round trip instantly by reporting back
+    // that we are up to date, with no redundant fetch.
+    const QString target = commit.trimmed();
+    const RepositoryRecord &matched = m_repositories.at(matchIndex);
+    if (!target.isEmpty() && !matched.mirrorPath.trimmed().isEmpty() &&
+        runGitCapture(matched.mirrorPath,
+                      {QStringLiteral("cat-file"), QStringLiteral("-e"),
+                       target + QStringLiteral("^{commit}")},
+                      nullptr, nullptr)) {
+        if (m_backend)
+            m_backend->notifyMirrorSynced(ownerName, target);
+        return;
+    }
+
     // Converge promptly: pull the peer's advance into our own mirror now instead
     // of waiting for the next 15-minute auto-sync. This fetches refs/heads/* and
     // refs/tags/*, so issues and pull requests (which live on refs/heads) come
-    // along with the code. Quiet so it doesn't spam unless something changed.
+    // along with the code. Quiet so it doesn't spam unless something changed. The
+    // sync's completion broadcasts notifyMirrorSynced, reporting back the moment
+    // the fetch lands the new commit.
     if (!m_syncingRepos.contains(matchIndex))
         syncRepository(matchIndex, /*quiet=*/true);
     if (notifyEnabled(kMirrorUpdateAlertSetting) && m_trayIcon &&
         QSystemTrayIcon::supportsMessages())
         m_trayIcon->showMessage("ForkMesh — mirror updated", msg,
                                 QSystemTrayIcon::Information, 6000);
+}
+
+void MainWindow::onPeerMirrorSynced(const QString &ownerName,
+                                    const QString &peerName,
+                                    const QString &commit)
+{
+    // A peer reported it finished pulling a repo's mirror up to `commit` — the
+    // closing half of the signal -> update -> done round trip. Only surface it
+    // for a repo we actually hold (same match as onPeerMirrorUpdated), and keep
+    // it to a quiet log line (no toast/tray) so a busy mesh's acknowledgements
+    // don't spam the user.
+    bool relevant = false;
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (repo.previewOnly)
+            continue;
+        const QString canonical =
+            catalogOwner(repo) + "/" +
+            repoSegment(repo.name, QStringLiteral("repository"));
+        const QString source =
+            repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
+            repoSegment(repo.name, QStringLiteral("repository"));
+        if (canonical == ownerName || source == ownerName ||
+            (repo.owner + "/" + repo.name) == ownerName) {
+            relevant = true;
+            break;
+        }
+    }
+    if (!relevant)
+        return;
+
+    const QString who =
+        peerName.trimmed().isEmpty() ? QStringLiteral("A peer") : peerName.trimmed();
+    QString msg = who + " is up to date on the mirror of " + ownerName;
+    if (!commit.trimmed().isEmpty())
+        msg += " at " + commit.trimmed().left(10);
+    msg += ".";
+    logSystem(msg);
 }
 
 void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
@@ -3627,11 +3682,22 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         // Tell connected peers that also mirror this repo that it
                         // advanced from its source of truth. Only for real mirrors
                         // that already existed (an actual update, not a first clone).
+                        // Carry the new HEAD so peers see exactly which commit is
+                        // different and can confirm once they reach it.
+                        const QString mirrorId =
+                            catalogOwner(repo) + "/" +
+                            repoSegment(repo.name, QStringLiteral("repository"));
                         if (changed && hasMirror && !stillPreview && m_backend)
-                            m_backend->notifyMirrorUpdated(
-                                catalogOwner(repo) + "/" +
-                                repoSegment(repo.name,
-                                            QStringLiteral("repository")));
+                            m_backend->notifyMirrorUpdated(mirrorId, *headCommit);
+                        // Round-trip acknowledgement: when we are a mirror pulling
+                        // from an upstream source (not the working-copy owner that
+                        // pushes it forward), report back that our mirror now holds
+                        // the new commit, closing the signal -> update -> done loop
+                        // in seconds instead of at the next advert tick.
+                        if (changed && hasMirror && !stillPreview && m_backend &&
+                            !headCommit->isEmpty() &&
+                            !repositorySource(repo).isEmpty())
+                            m_backend->notifyMirrorSynced(mirrorId, *headCommit);
                         // Quiet auto-syncs only speak up when something changed.
                         if (!quiet || changed) {
                             logSystem((stillPreview ? QStringLiteral("Preview cache: cached ")

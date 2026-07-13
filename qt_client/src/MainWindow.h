@@ -2816,8 +2816,13 @@ private:
     // for the 15-minute auto-sync, so counts and content converge right away.
     void propagateRepoUpdate(int index);
     // A peer announced it refreshed "owner/name" from source; notify if we
-    // mirror the same repo.
-    void onPeerMirrorUpdated(const QString &ownerName, const QString &peerName);
+    // mirror the same repo. `commit` is the new HEAD it advanced to.
+    void onPeerMirrorUpdated(const QString &ownerName, const QString &peerName,
+                             const QString &commit);
+    // A peer reported it finished pulling "owner/name" up to `commit` — the
+    // round-trip acknowledgement, surfaced quietly if we hold the same repo.
+    void onPeerMirrorSynced(const QString &ownerName, const QString &peerName,
+                            const QString &commit);
     // A peer opened an encrypted cove. If this node created it (creatorKey matches
     // our identity) and the opener's signature checks out, raise a notification.
     void onCoveOpened(const QString &creatorKey, const QString &coveId,
