@@ -21,6 +21,18 @@
             "title": "add a button here to resize to a minimal screen size that is more common",
             "ts": 1783912364843,
             "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 94,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "ad718ea1-5e2d-4397-8844-032c5064c3e9",
+            "sig": "9XG6gSBIdRbc4Jamdpzjw5yV-WQrXVgdpG_YjbG6pqdoMNJdPpXVOnYOLrR9fiW8e3b3w4nOXO3Sz1wdE1pHDg",
+            "ts": 1783914352289,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -33,6 +45,6 @@
     "startDate": 0,
     "status": "open",
     "title": "add a button here to resize to a minimal screen size that is more common",
-    "updatedAt": 1783912364843,
+    "updatedAt": 1783914352289,
     "votes": 0
 }
