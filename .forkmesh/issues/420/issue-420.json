@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
     "authorName": "jett",
@@ -43,6 +44,17 @@
             "sig": "R930WHf5cvzWz0PDK61IyOws_kW92hPomRui1pGHs1YWifyFbeoytSvQ9_3N-FAzSDUK7-l7rw8woFWjBztoAA",
             "ts": 1783914270945,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "08344db7-5add-4c6e-af30-6e9b9c20cf67",
+            "sig": "xL4vcF7y6wiBi9SLM7caARvj-zTf8GXuO7Sxr1rUZjNmaXx8BBHWyUZyw62KFuzCBD4HM_JHz6ZUrAiLgbPxAA",
+            "ts": 1783914271003,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -55,6 +67,6 @@
     "startDate": 0,
     "status": "open",
     "title": "it seems the website is loading all issues when we go to the issues page and not just the open ones - please fix that Loading issues from the live mirror...",
-    "updatedAt": 1783914270945,
+    "updatedAt": 1783914271003,
     "votes": 0
 }
