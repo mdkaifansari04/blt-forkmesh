@@ -939,7 +939,11 @@ def test_repository_code_page_matches_github_code_layout():
     assert "Fork" in render
     assert "Star" in render
     assert "Add file" in render
-    assert "Last commit date" in render
+    # The Name/Last-commit-message/Last-commit-date column header row was
+    # dropped (adhoc #87) so the file table reads as a compact GitHub-style
+    # commit line; the summary banner still carries commit + date.
+    assert "Last commit date" not in render
+    assert "data-repo-commit-date" in render
     assert ">Code<" in render
 
 
@@ -1038,7 +1042,10 @@ def test_dashboard_repository_folder_icons_are_grey():
         : dashboard_js.index("async function loadRepositoryBlob")
     ]
 
-    assert 'data-lucide="${isTree ? "folder" : "file"}" class="h-4 w-4 shrink-0 text-muted-foreground"' in tree_loader
+    # File rows now use the shared vscode-icons SVGs (same set as the Qt
+    # desktop file browser) via fileIconHtml, not a lucide folder/file glyph
+    # (adhoc #87). Folders stay neutral - no text-primary tint.
+    assert 'fileIconHtml(entry, "h-4 w-4 shrink-0")' in tree_loader
     assert '${isTree ? "text-primary" : "text-muted-foreground"}' not in tree_loader
 
 
@@ -1185,7 +1192,7 @@ def test_dashboard_code_tree_rows_use_live_commit_messages():
 
     for marker in (
         "QJsonObject commitSummaryForPath",
-        '"log", "-1", "--date=format:%Y-%m-%d"',
+        '"log", "-1", "--date=iso-strict"',
         '"--format=%H%x1f%an%x1f%cd%x1f%s"',
         'args << "--" << path;',
         'entry.insert(QStringLiteral("message"), commit.value(QStringLiteral("subject")));',

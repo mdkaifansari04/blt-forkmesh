@@ -473,6 +473,59 @@ bool DiscussionStore::addComment(int number, const QString &body, QString *error
     return commit(QStringLiteral("discussion #%1: comment").arg(number), error);
 }
 
+bool DiscussionStore::deleteComment(int number, const QString &eventId,
+                                    QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return false;
+    }
+    if (eventId.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Missing comment id.");
+        return false;
+    }
+
+    Discussion discussion;
+    if (!readDiscussionFile(number, discussion)) {
+        if (error)
+            *error = QStringLiteral("Discussion #%1 not found.").arg(number);
+        return false;
+    }
+
+    // Drop the matching comment event. Index 0 is the opening post, which is not
+    // deletable through this path.
+    int removed = -1;
+    for (int i = 1; i < discussion.events.size(); ++i) {
+        const DiscussionEvent &ev = discussion.events.at(i);
+        if (ev.type == "comment" && ev.id == eventId) {
+            removed = i;
+            break;
+        }
+    }
+    if (removed < 0) {
+        if (error)
+            *error = QStringLiteral("Comment not found.");
+        return false;
+    }
+    discussion.events.removeAt(removed);
+
+    // writeDiscussionFile re-numbers the surviving comments from scratch, so the
+    // stale NNNN-comment.md left over by the now-smaller count must be cleared
+    // first, or the deleted comment would resurface on the next load.
+    QDir dir(discussionDir(number));
+    for (const QString &name : dir.entryList(QDir::Files, QDir::Name)) {
+        if (commentFileRe().match(name).hasMatch())
+            dir.remove(name);
+    }
+
+    if (!writeDiscussionFile(discussion, error))
+        return false;
+    return commit(QStringLiteral("discussion #%1: delete comment").arg(number),
+                  error);
+}
+
 bool DiscussionStore::applyRemoteEvent(int number, const DiscussionEvent &ev,
                                        const QString &titleIfNew, QString *error)
 {
