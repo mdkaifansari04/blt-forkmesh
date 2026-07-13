@@ -1,0 +1,291 @@
+:root {
+  color-scheme: dark;
+  --pricing-page-bg: #090909;
+  --pricing-text: #f5f5f5;
+  --pricing-muted: #a3a3a3;
+  --pricing-border: #313131;
+  --pricing-spotlight: radial-gradient(
+    ellipse at center,
+    rgba(255, 255, 255, 0.08),
+    transparent 64%
+  );
+  --pricing-card-bg: #0d0d0d;
+  --pricing-card-featured: #101010;
+  --pricing-divider: rgba(255, 255, 255, 0.18);
+  --pricing-icon-bg: #242424;
+  --pricing-button-bg: #242424;
+  --pricing-button-text: #ffffff;
+  --pricing-check: rgba(255, 255, 255, 0.82);
+  --pricing-cta-bg: #e8e8e8;
+  --pricing-cta-text: #1f1f1f;
+  --pricing-copy: rgba(255, 255, 255, 0.9);
+  --pricing-quiet: rgba(255, 255, 255, 0.48);
+  --pricing-surface: rgba(255, 255, 255, 0.055);
+  --pricing-card-shadow: 0 1rem 2.8rem rgba(0, 0, 0, 0.72);
+  --pricing-button-hover: #343434;
+  --pricing-cta-hover: #ffffff;
+}
+
+html.light {
+  color-scheme: light;
+  --pricing-page-bg: #f6f8fb;
+  --pricing-text: #1f2328;
+  --pricing-muted: #656d76;
+  --pricing-border: #d0d7de;
+  --pricing-spotlight: radial-gradient(ellipse at center, rgba(9, 105, 218, 0.14), transparent 64%);
+  --pricing-card-bg: #ffffff;
+  --pricing-card-featured: #f0f6fc;
+  --pricing-divider: #d8dee4;
+  --pricing-icon-bg: #24292f;
+  --pricing-button-bg: #24292f;
+  --pricing-button-text: #ffffff;
+  --pricing-check: #1f883d;
+  --pricing-cta-bg: #1f2328;
+  --pricing-cta-text: #ffffff;
+  --pricing-copy: #424a53;
+  --pricing-quiet: #8c959f;
+  --pricing-surface: #eef2f7;
+  --pricing-card-shadow: 0 18px 48px rgba(31, 35, 40, 0.1);
+  --pricing-button-hover: #32383f;
+  --pricing-cta-hover: #32383f;
+  --background: var(--pricing-page-bg);
+  --foreground: var(--pricing-text);
+  --card: var(--pricing-card-bg);
+  --card-foreground: var(--pricing-text);
+  --primary: var(--pricing-cta-bg);
+  --primary-foreground: var(--pricing-cta-text);
+  --muted: var(--pricing-surface);
+  --muted-foreground: var(--pricing-muted);
+  --accent: #0969da;
+  --accent-foreground: #ffffff;
+  --border: var(--pricing-border);
+  --border-subtle: var(--pricing-border);
+  --border-muted: var(--pricing-divider);
+  --ring: #0969da;
+}
+
+/*
+ * Layered semantic mappings leave the current unlayered dark design in
+ * control. The scoped light rules below take over only for html.light.
+ */
+@layer pricing-theme {
+  body {
+    background: var(--pricing-page-bg);
+    color: var(--pricing-text);
+  }
+
+  .pricing-shell {
+    background: var(--pricing-page-bg);
+  }
+
+  .pricing-spotlight {
+    background: var(--pricing-spotlight);
+  }
+
+  .plan-card {
+    background: var(--pricing-card-bg);
+    border-color: var(--pricing-border);
+  }
+
+  .plan-card[data-featured-plan="true"] {
+    background: var(--pricing-card-featured);
+  }
+
+  .plan-card p {
+    color: var(--pricing-muted);
+  }
+
+  .plan-divider {
+    background: var(--pricing-divider);
+  }
+
+  .plan-icon {
+    background: var(--pricing-icon-bg);
+  }
+
+  .plan-button {
+    background: var(--pricing-button-bg);
+    color: var(--pricing-button-text);
+  }
+
+  .feature-check {
+    border-color: var(--pricing-check);
+  }
+
+  .button-primary {
+    background: var(--pricing-cta-bg);
+    color: var(--pricing-cta-text);
+  }
+}
+
+html.light body {
+  background: var(--pricing-page-bg);
+  color: var(--pricing-text);
+}
+
+html.light .pricing-shell {
+  background: var(--pricing-page-bg);
+  color: var(--pricing-text);
+}
+
+html.light .pricing-shell::before {
+  opacity: 0.62;
+  background:
+    linear-gradient(112deg, transparent 0 8%, rgba(9, 105, 218, 0.08) 12%, transparent 20% 100%),
+    linear-gradient(106deg, transparent 0 26%, rgba(31, 136, 61, 0.06) 31%, transparent 40% 100%),
+    linear-gradient(110deg, transparent 0 72%, rgba(130, 80, 223, 0.07) 80%, transparent 89% 100%);
+  filter: blur(13px);
+}
+
+html.light .pricing-shell::after {
+  background:
+    radial-gradient(circle at 49% 18%, transparent 0, rgba(246, 248, 251, 0.24) 24rem, rgba(246, 248, 251, 0.72) 48rem),
+    radial-gradient(circle at 50% 92%, transparent 0, rgba(246, 248, 251, 0.9) 40rem);
+  background-size: auto;
+  opacity: 0.72;
+  mix-blend-mode: normal;
+}
+
+html.light .pricing-grid-overlay {
+  opacity: 0.52;
+  background-image:
+    linear-gradient(rgba(31, 35, 40, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(31, 35, 40, 0.08) 1px, transparent 1px);
+}
+
+html.light .pricing-spotlight {
+  background: var(--pricing-spotlight);
+  opacity: 0.8;
+}
+
+html.light .pricing-shell [class~="text-white"] {
+  color: var(--pricing-text);
+}
+
+html.light .pricing-shell [class~="text-white/90"] {
+  color: var(--pricing-copy);
+}
+
+html.light .pricing-shell [class~="text-white/85"],
+html.light .pricing-shell [class~="text-white/78"],
+html.light .pricing-shell [class~="text-white/75"],
+html.light .pricing-shell [class~="text-white/74"],
+html.light .pricing-shell [class~="text-white/72"] {
+  color: var(--pricing-muted);
+}
+
+html.light .pricing-shell [class~="text-white/48"] {
+  color: var(--pricing-quiet);
+}
+
+html.light .price-badge {
+  border-color: var(--pricing-border);
+  background: var(--pricing-surface);
+  color: var(--pricing-copy);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+html.light .pricing-title,
+html.light .plan-card h2,
+html.light .plan-card h3,
+html.light .plan-card strong,
+html.light .pricing-shell main > section:last-child h2 {
+  color: var(--pricing-text);
+}
+
+html.light .pricing-title span:last-child {
+  color: var(--pricing-muted);
+}
+
+html.light .pricing-shell main > section:first-child > p:not(.price-badge),
+html.light .pricing-shell main > section:last-child p {
+  color: var(--pricing-copy);
+}
+
+html.light .billing-toggle {
+  border-color: var(--pricing-border);
+  background: var(--pricing-surface);
+  color: var(--pricing-muted);
+  box-shadow: 0 12px 32px rgba(31, 35, 40, 0.1);
+}
+
+html.light .billing-option[aria-pressed="true"] {
+  background: var(--pricing-button-bg);
+  color: var(--pricing-button-text);
+  box-shadow: 0 2px 8px rgba(31, 35, 40, 0.18);
+}
+
+html.light .plan-card {
+  background: var(--pricing-card-bg);
+  border-color: var(--pricing-border);
+  box-shadow: var(--pricing-card-shadow);
+}
+
+html.light .plan-card::before {
+  background:
+    linear-gradient(90deg, rgba(31, 35, 40, 0.035) 0 1px, transparent 1px 2rem),
+    linear-gradient(180deg, rgba(31, 35, 40, 0.025) 0 1px, transparent 1px 2rem);
+  background-size: 2rem 2rem;
+  opacity: 0.4;
+  mix-blend-mode: normal;
+}
+
+html.light .plan-card[data-featured-plan="true"] {
+  background: var(--pricing-card-featured);
+  border-color: #8c959f;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 20px 54px rgba(9, 105, 218, 0.12);
+}
+
+html.light .plan-card p,
+html.light .plan-card ul {
+  color: var(--pricing-muted);
+}
+
+html.light .plan-divider {
+  background: var(--pricing-divider);
+}
+
+html.light .plan-icon {
+  background: var(--pricing-icon-bg);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+html.light .plan-icon::before {
+  border-color: #ffffff;
+  background: var(--pricing-icon-bg);
+}
+
+html.light .pricing-shell .plan-button,
+html.light .pricing-shell .plan-card[data-featured-plan="true"] .plan-button {
+  background: var(--pricing-button-bg);
+  color: var(--pricing-button-text);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 8px 20px rgba(31, 35, 40, 0.14);
+}
+
+html.light .pricing-shell .plan-button:hover {
+  background: var(--pricing-button-hover);
+  color: var(--pricing-button-text);
+}
+
+html.light .feature-check {
+  border-color: var(--pricing-check);
+}
+
+html.light .feature-check::after {
+  border-left-color: var(--pricing-check);
+  border-bottom-color: var(--pricing-check);
+}
+
+html.light .pricing-shell .button-primary {
+  background: var(--pricing-cta-bg);
+  color: var(--pricing-cta-text);
+}
+
+html.light .pricing-shell .button-primary:hover {
+  background: var(--pricing-cta-hover);
+  color: var(--pricing-cta-text);
+}
