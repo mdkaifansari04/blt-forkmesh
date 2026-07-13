@@ -101,6 +101,25 @@ def test_chat_member_column_is_user_directory_not_online_nodes():
     assert "chatUserDisplayName(member)" in roster_body
 
 
+def test_self_row_folds_into_its_own_account_group():
+    # "You" must group under your OWN account (its directory entry + owned nodes)
+    # instead of a separate "\x01self" island, or the local user appears as a
+    # duplicate participant next to their own account (a second "jett").
+    messages = MESSAGES.read_text(encoding="utf-8")
+    roster_body = _body(
+        messages,
+        "void MainWindow::refreshChatMembers()",
+        "void MainWindow::removeChatMember",
+    )
+    # groupKeyFor no longer short-circuits self to a self-only key first; instead
+    # a self row resolves to the account owner key so it merges with the account.
+    assert 'if (m.self)\n            return QStringLiteral("\\x01self");' not in roster_body
+    assert "const QString selfOwner = accountOwner().trimmed().toLower();" in roster_body
+    # The merged canonical (directory) row keeps the self marker so it still
+    # sorts first and renders as you.
+    assert "member.self = member.self || g.primary.self;" in roster_body
+
+
 def test_chat_mentions_highlight_and_open_user_profiles():
     header = MESSAGE_ROW_HEADER.read_text(encoding="utf-8")
     row = MESSAGE_ROW.read_text(encoding="utf-8")

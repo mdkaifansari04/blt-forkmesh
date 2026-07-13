@@ -41,6 +41,7 @@ FUNCS = {
     "agents_handler", "agents_list_handler", "agents_prompt_handler",
     "agents_transcript_handler",
     "_clean_agent_session", "_authorize_owner",
+    "_verify_owner_signature", "_owner_signing_pubkeys",
     "_authorize_owner_account", "_owner_pubkey", "_login_locked_until",
     "_login_record_fail", "_login_clear", "method_name", "clean_string",
     # Session-based owner authorization (agents tab): the caller proves identity
@@ -139,6 +140,11 @@ def _harness(accounts):
         # A stand-in signature scheme: only the literal "good-sig" verifies.
         return sig == "good-sig"
 
+    async def _account_devices_list(_env, _account_bi):
+        # No extra desktop devices in these fixtures; drain auth falls back to
+        # the account's primary pubkey exactly as before.
+        return []
+
     async def encrypt_row(_env, obj):
         return dict(obj)
 
@@ -227,6 +233,7 @@ def _harness(accounts):
         "blind_index": blind_index,
         "notify_repo_host": noop_notify_repo_host,
         "_account_row": _account_row,
+        "_account_devices_list": _account_devices_list,
         "verify_password": verify_password,
         "_is_admin": _is_admin,
         "ed25519_verify": ed25519_verify,
