@@ -126,9 +126,22 @@ void HeadlessConsole::attachFeed(ChatBackend *backend)
                              .arg(members.size()));
             });
     connect(backend, &ChatBackend::mirrorUpdated, this,
-            [this](const QString &owner, const QString &peer) {
-                logEvent(QStringLiteral("mirror updated: %1 (by %2)")
-                             .arg(owner, peer));
+            [this](const QString &owner, const QString &peer,
+                   const QString &commit) {
+                logEvent(QStringLiteral("mirror updated: %1 (by %2)%3")
+                             .arg(owner, peer,
+                                  commit.isEmpty()
+                                      ? QString()
+                                      : QStringLiteral(" -> ") + commit.left(10)));
+            });
+    connect(backend, &ChatBackend::mirrorSynced, this,
+            [this](const QString &owner, const QString &peer,
+                   const QString &commit) {
+                logEvent(QStringLiteral("mirror synced: %1 (by %2)%3")
+                             .arg(owner, peer,
+                                  commit.isEmpty()
+                                      ? QString()
+                                      : QStringLiteral(" @ ") + commit.left(10)));
             });
     connect(backend, &ChatBackend::fatalError, this,
             [this](const QString &m) { logEvent(QStringLiteral("ERROR: ") + m); });
