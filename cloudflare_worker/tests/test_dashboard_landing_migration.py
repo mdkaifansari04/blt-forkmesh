@@ -407,7 +407,7 @@ def test_dashboard_profile_contribution_graph_matches_github_density():
     assert "function profileContributionYears(" in dashboard_js
     assert "function profileContributionLevel(count, max)" in dashboard_js
     assert "function profileContributionLevel(week, day)" not in dashboard_js
-    assert "fetchJson(repoLiveUrl(repo, \"history\"))" in dashboard_js
+    assert "fetchRepoJson(repoLiveUrl(repo, \"history\"))" in dashboard_js
     assert "contributionDateMs(repo.updatedAt || repo.lastSync || repo.hostedSince)" in dashboard_js
     assert "addCatalogActivityWeeks" in dashboard_js
     assert 'const CONTRIBUTION_GRID_COLUMNS = "2.25rem repeat(53, 0.75rem)"' in dashboard_js
@@ -1074,7 +1074,7 @@ def test_dashboard_repository_tabs_read_public_mirror_data_not_owner_inbox():
         'data-dashboard-repo-tab-panel="commits"',
         "data-repo-commits",
         "async function loadRepoCommits(repo)",
-        "fetchJson(repoLiveUrl(repo, \"history\"))",
+        "fetchRepoJson(repoLiveUrl(repo, \"history\"))",
         "function parseFrontMatter(markdown)",
         "async function loadRepoRecordsFromMirror(repo, config)",
         # Issues read the public git tree via loadRepoIssues; pulls and
@@ -1374,7 +1374,7 @@ def test_dashboard_commit_history_opens_live_commit_detail_not_inbox_route():
         "function renderRepoCommitDetail(repo, data)",
         "function renderRepoCommitDiff(diff, imageDiffs, key = \"\")",
         "function renderRepoCommitFiles(files)",
-        "fetchJson(repoLiveUrl(repo, \"commit\", { path: hash }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"commit\", { path: hash }))",
         "data-repo-commit-detail",
         "data-repo-commit-back",
         "data-repo-commit-files",
@@ -1488,7 +1488,7 @@ def test_dashboard_repository_go_to_file_and_add_file_controls_are_present():
         "function moveRepoFileFinderSelection(delta)",
         "MAX_REPO_FILE_FINDER_RESULTS",
         "while (queue.length && files.length < MAX_REPO_FILE_FINDER_RESULTS",
-        "fetchJson(repoLiveUrl(repo, \"tree\", { path }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path }))",
         "data-repo-file-finder-result",
         "loadRepositoryBlob(state.selectedRepo, selected.dataset.repoFileFinderPath || \"\")",
         "event.key.toLowerCase() === \"t\"",
@@ -1522,7 +1522,7 @@ def test_dashboard_repository_branch_button_lists_live_remote_branches():
         "function renderRepoBranchToolbar(repo, branch)",
         "function renderRepoBranchMenu(repo, branches, open)",
         "async function toggleRepoBranchMenu(repo, button)",
-        "fetchJson(`${repoApiBase(repo)}/branches`)",
+        "fetchRepoJson(`${repoApiBase(repo)}/branches`)",
         "filterRepoBranches(repo, branches)",
         "branches.map((branch) =>",
         "data-repo-branch-button",
@@ -1555,12 +1555,12 @@ def test_dashboard_repository_branch_selection_drives_live_mirror_requests():
         "function repoLiveUrl(repo, action, params = {})",
         'query.set("ref", repoSelectedBranch(repo));',
         'return `${repoApiBase(repo)}/${action}?${query.toString()}`;',
-        "fetchJson(repoLiveUrl(repo, \"tree\", { path }))",
-        "fetchJson(repoLiveUrl(repo, \"blob\", { path }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path }))",
         "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path: config.dir, ...refParams }))",
         "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: recordPath, ...refParams }))",
-        "fetchJson(repoLiveUrl(repo, \"history\"))",
-        "fetchJson(repoLiveUrl(repo, \"commit\", { path: hash }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"history\"))",
+        "fetchRepoJson(repoLiveUrl(repo, \"commit\", { path: hash }))",
         "resetRepoFileFinder(state.selectedRepo);",
         "loadRepositoryTree(state.selectedRepo, \"\");",
         "loadRepoFeaturePanels(state.selectedRepo);",
