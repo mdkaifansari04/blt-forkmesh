@@ -10804,14 +10804,47 @@ async def _admin_ap_update(env, request):
     })
 
 
+async def _owner_signing_pubkeys(env, owner):
+    # Every Ed25519 pubkey allowed to sign as this owner's desktop node: the
+    # account's primary pubkey plus any still-enabled device key that carries
+    # the owner_sign capability. A reinstalled or key-rotated node stores its
+    # new keypair in account_devices (login upserts it) but login only sets the
+    # primary rec["pubkey"] when it is empty, so it is never promoted. A drain
+    # gate that trusted ONLY the primary therefore silently 401'd that node on
+    # every GET /api/sync — its issues/PRs/commits/agent-prompts/about edits and
+    # chat state stopped reaching it, with no visible error (the node just backs
+    # off). The device keys are already stored and account-bound (added only
+    # through an authenticated login/claim), so reusing them is the durable node
+    # identity the account should keep signing with.
+    keys = []
+    owner_pub = await _owner_pubkey(env, owner)
+    if owner_pub:
+        keys.append(owner_pub)
+    account_bi = await blind_index(env, owner)
+    for device in await _account_devices_list(env, account_bi):
+        pub = device.get("pubkey") or ""
+        # enabled == active and not revoked (see _account_devices_list); revoking
+        # a device in settings closes it out of the drain gate immediately.
+        if (pub and pub not in keys and device.get("enabled")
+                and "owner_sign" in (device.get("capabilities") or [])):
+            keys.append(pub)
+    return keys
+
+
+async def _verify_owner_signature(env, owner, sig, canonical):
+    for pub in await _owner_signing_pubkeys(env, owner):
+        if await ed25519_verify(pub, sig, canonical):
+            return True
+    return False
+
+
 async def _authorize_owner(env, request, owner):
     if not owner:
         return False
     params = parse_qs(urlparse(request.url).query)
     ts = params.get("ts", [""])[0]
     sig = params.get("sig", [""])[0]
-    owner_pub = await _owner_pubkey(env, owner)
-    if not owner_pub or not ts or not sig:
+    if not ts or not sig:
         return False
     try:
         skew = abs(int(Date.now()) - int(ts))
@@ -10820,7 +10853,7 @@ async def _authorize_owner(env, request, owner):
     if skew > LOGIN_MAX_SKEW_MS:
         return False
     canonical = ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).encode()
-    return await ed25519_verify(owner_pub, sig, canonical)
+    return await _verify_owner_signature(env, owner, sig, canonical)
 
 
 async def _authorize_owner_account(env, owner, data, request=None):
