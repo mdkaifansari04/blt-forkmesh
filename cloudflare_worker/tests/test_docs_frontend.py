@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Static contract tests for the public docs page shell."""
 
+import re
 from pathlib import Path
 
 
@@ -78,7 +79,15 @@ def test_docs_pages_mount_the_universal_site_header():
         assert ">Contact Us<" not in html
         assert 'id="theme-toggle"' not in html
         assert "function applyTheme" not in html
-        assert "sticky top-0 z-30" in html
+        docs_header = re.search(r"<header\b[^>]*>", html, flags=re.DOTALL)
+        assert docs_header, page
+        class_attribute = re.search(
+            r'class="([^"]*)"',
+            docs_header.group(0),
+        )
+        assert class_attribute, page
+        header_classes = set(class_attribute.group(1).split())
+        assert {"sticky", "top-0", "z-30"} <= header_classes, page
         assert 'id="docs-search"' in html
 
 
