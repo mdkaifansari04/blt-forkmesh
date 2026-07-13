@@ -12,13 +12,26 @@ text assertions because entry.py imports js.
 Run: python3 -m pytest cloudflare_worker/tests/test_pull_badge.py
 """
 import importlib.util
+import struct
+import sys
+import zlib
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "src"
+# pull_badge_png rasterizes via og_card's stdlib canvas; put src on the path so
+# pull_badge's lazy ``import og_card`` resolves.
+sys.path.insert(0, str(SRC))
 spec = importlib.util.spec_from_file_location(
     "pull_badge", SRC / "pull_badge.py")
 badge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(badge)
+
+
+def _png_size(png):
+    """(width, height) from a PNG's IHDR."""
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert png[12:16] == b"IHDR"
+    return struct.unpack(">II", png[16:24])
 
 
 SAMPLE_PATCH = """diff --git a/src/auth/login.ts b/src/auth/login.ts
@@ -138,6 +151,36 @@ def test_badge_svg_binary_file_gets_neutral_bar():
     assert "logo.png" not in svg or True  # tile shows a glyph, not the path
 
 
+# --- pull_badge_png -----------------------------------------------------------
+
+def test_badge_png_is_a_square_png():
+    files = badge.patch_file_stats(SAMPLE_PATCH)
+    png = badge.pull_badge_png("Add auth", "jett", files, number=245)
+    # A real PNG (so fediverse clients render it, not "Preview not available")
+    # and square (so timelines show it as an image tile, not a wide strip).
+    w, h = _png_size(png)
+    assert w == h == badge._PNG_SIZE
+    # Decodable: the IDAT inflates to width*height*3 + one filter byte per row.
+    idat = png[png.index(b"IDAT") + 4:]
+    raw = zlib.decompress(idat)
+    assert len(raw) == h * (1 + w * 3)
+
+
+def test_badge_png_pending_number_and_empty_files():
+    # No maintainer number and no files must still produce a valid PNG.
+    png = badge.pull_badge_png("Fix", "", [])
+    assert _png_size(png) == (badge._PNG_SIZE, badge._PNG_SIZE)
+
+
+def test_badge_png_caps_tiles_to_the_square():
+    files = [{"path": "src/f%03d.py" % i, "adds": i, "dels": 1}
+             for i in range(300)]
+    png = badge.pull_badge_png("Big", "bot", files)
+    assert _png_size(png) == (badge._PNG_SIZE, badge._PNG_SIZE)
+    # The badge stays well under the federated-note media budget (64 KB).
+    assert len(png) < 64 * 1024
+
+
 # --- entry.py wiring (text assertions: entry.py imports js) --------------------
 
 ENTRY = (SRC / "entry.py").read_text(encoding="utf-8")
@@ -152,12 +195,14 @@ def test_publish_accepts_and_prepends_extra_images():
             in body)
 
 
-def test_pull_open_publish_attaches_badge_svg():
+def test_pull_open_publish_attaches_badge_png():
     start = ENTRY.index("async def pulls_handler(")
     body = ENTRY[start:ENTRY.index('"pull", "open"', start) + 400]
     assert "patch_file_stats(pull.get(\"patch\", \"\") or \"\")" in body
-    assert "pull_badge_svg(" in body
-    assert '"mediaType": "image/svg+xml"' in body
+    # The federated badge is a real PNG — fediverse clients won't preview an
+    # SVG attachment (adhoc #83).
+    assert "pull_badge_png(" in body
+    assert '"mediaType": "image/png"' in body
     assert "extra_images=[badge] if badge else None" in body
     # Best-effort: a badge failure must never block the PR submission.
     assert "except Exception:" in body
