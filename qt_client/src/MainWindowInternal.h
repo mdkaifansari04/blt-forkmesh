@@ -1205,6 +1205,10 @@ public:
         QString name;
         bool online = false;
         bool self = false;
+        // Online node serving a commit behind the source of truth: its steady
+        // dot draws amber instead of green until it catches up at its next
+        // heartbeat, so an out-of-sync mirror is visible at a glance.
+        bool behind = false;
         // Relay's integrity gate is rejecting this node's clones (adhoc #196).
         // Normally only online nodes get a dot at all, so an offline node
         // failing the check would otherwise vanish from the strip entirely;
@@ -1294,7 +1298,9 @@ protected:
                     QStringLiteral("%1%2 \xC2\xB7 %3%4")
                         .arg(d->name,
                              d->self ? QStringLiteral(" (you)") : QString(),
-                             d->online ? QStringLiteral("online")
+                             d->online ? (d->behind
+                                              ? QStringLiteral("online \xC2\xB7 out of sync")
+                                              : QStringLiteral("online"))
                                        : QStringLiteral("offline"),
                              d->integrityFailing
                                  ? QStringLiteral(" \xC2\xB7 failing integrity pin")
@@ -1319,7 +1325,8 @@ protected:
         for (int i = 0; i < shown; ++i) {
             const Dot &d = m_dots.at(i);
             const QColor base =
-                d.online ? QColor("#3fb950") : QColor("#484f58");
+                d.online ? QColor(d.behind ? "#d29922" : "#3fb950")
+                         : QColor("#484f58");
             QColor col = base;
             const Pulse ph = m_pulse.value(d.id, Pulse{});
             if (ph.level > 0.0) {
