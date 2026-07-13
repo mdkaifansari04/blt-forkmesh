@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "BGvs0d_KmZc8BVMetu_LgoHUpW2djuIso_Oy0BtErpg",
+    "authorName": "signal-kernel-5543",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783912364843,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+                "48b57834.png"
+            ],
+            "author": "BGvs0d_KmZc8BVMetu_LgoHUpW2djuIso_Oy0BtErpg",
+            "authorName": "signal-kernel-5543",
+            "body": "",
+            "id": "open-421",
+            "sig": "fIob3xeb1lLqcXa5M5owVI6IbDGYAPO86O_6iMaD33JqtovC9PjFTcEZvcZZNcH2U5TI5ygOXdgN-laBZQFpCw",
+            "title": "add a button here to resize to a minimal screen size that is more common",
+            "ts": 1783912364843,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 425,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "add a button here to resize to a minimal screen size that is more common",
+    "updatedAt": 1783912364843,
+    "votes": 0
+}

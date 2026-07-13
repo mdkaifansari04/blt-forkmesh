@@ -250,7 +250,8 @@ void MainWindow::scanActionSpool()
                 if (!r.previewOnly && m_backend)
                     m_backend->notifyMirrorUpdated(
                         catalogOwner(r) + "/" +
-                        repoSegment(r.name, QStringLiteral("repository")));
+                            repoSegment(r.name, QStringLiteral("repository")),
+                        commit);
             }
         }
         // Skip events with no branch update or a branch deletion (all-zero SHA).
