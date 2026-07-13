@@ -1554,7 +1554,12 @@
         const targetPage = Number(repoCollectionPageButton.dataset.repoCollectionPageTarget);
         if (kind && Number.isFinite(targetPage)) {
           state.repoCollectionPages[kind] = targetPage;
-          loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
+          // Issues keep their open/closed/all filter (and its filter bar) that
+          // renderRepoIssues applies; routing pagination through
+          // loadRepoCollection would re-render the raw record list unfiltered,
+          // leaking closed issues into the default "open" view (issue #420).
+          if (kind === "issues") renderRepoIssues();
+          else loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
         }
         return;
       }
