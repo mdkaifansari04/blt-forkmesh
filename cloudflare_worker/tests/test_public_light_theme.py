@@ -547,8 +547,12 @@ def test_shared_footer_defines_dark_and_light_semantic_palettes():
         },
         "site-footer.css",
     )
-    status_dot = css_rule(footer_css, ".site-footer-status-dot", "site-footer.css")
-    assert "var(--green, var(--accent-bright, #28c878))" in status_dot
+    assert_css_declarations(
+        footer_css,
+        ".site-footer-status-dot",
+        {"background": "var(--green, var(--accent-bright, #28c878))"},
+        "site-footer.css",
+    )
 
 
 def test_landing_page_remains_explicitly_dark():

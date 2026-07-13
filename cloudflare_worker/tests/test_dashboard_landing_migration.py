@@ -737,6 +737,7 @@ def test_dashboard_has_scoped_light_dark_appearance_controls():
         assert 'src="/site-header.js"' in docs
         assert 'id="theme-toggle"' not in docs
         assert "function applyTheme" not in docs
+        assert "localStorage" not in docs
         assert 'localStorage.getItem("forkmesh.dashboard.theme")' not in docs
         assert 'localStorage.setItem("forkmesh.dashboard.theme", chosen)' not in docs
 
