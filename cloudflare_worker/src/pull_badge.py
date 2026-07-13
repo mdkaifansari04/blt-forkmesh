@@ -264,3 +264,150 @@ def pull_badge_svg(title, author, files, number=0):
         '<rect width="%d" height="%d" rx="14" fill="#0d1117"/>%s%s</svg>' % (
             _BADGE_WIDTH, height, _BADGE_WIDTH, height, _BADGE_WIDTH, height,
             "".join(header), "".join(body)))
+
+
+# --- PNG badge (adhoc #83) ----------------------------------------------------
+# Mastodon and most fediverse clients refuse to render SVG media attachments
+# (they show a "Preview not available / Click to open" placeholder), so the
+# federated PR badge is rasterized to a real PNG using og_card's stdlib canvas.
+# It is rendered SQUARE so a timeline shows it as a proper image tile rather
+# than a wide letterbox strip. Colors mirror the SVG so both read alike.
+
+_PNG_SIZE = 640          # square edge
+_PNG_BG = (1, 4, 9)
+_PNG_CARD = (13, 17, 23)
+_PNG_BORDER = (48, 54, 61)
+_PNG_TILE_BG = (22, 27, 34)
+_PNG_FG = (230, 237, 243)
+_GREEN_RGB = (63, 185, 80)
+_RED_RGB = (248, 81, 73)
+_MUTED_RGB = (139, 148, 158)
+_PURPLE_RGB = (163, 113, 247)
+
+
+def _hex2rgb(value):
+    h = str(value).lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def _tile_png(canvas, x, y, file, tile):
+    from og_card import text_width
+    label, color_hex = file_glyph(file["path"])
+    canvas.fill_rect(x, y, tile, tile, _PNG_TILE_BG)
+    canvas.frame_rect(x, y, tile, tile, 1, _PNG_BORDER)
+    scale = 3 if len(label) <= 2 else 2
+    while scale > 1 and text_width(label, scale) > tile - 6:
+        scale -= 1
+    canvas.text(x + (tile - text_width(label, scale)) // 2,
+                y + (tile - 7 * scale) // 2, label, scale, _hex2rgb(color_hex))
+    # Ratio bar under the tile: green additions share left, red deletions
+    # right; a file with no counted lines (binary) gets a neutral bar.
+    adds, dels = file["adds"], file["dels"]
+    total = adds + dels
+    bar_y = y + tile + 2
+    if total:
+        green_w = round(tile * adds / total)
+        if green_w:
+            canvas.fill_rect(x, bar_y, green_w, 5, _GREEN_RGB)
+        if tile - green_w:
+            canvas.fill_rect(x + green_w, bar_y, tile - green_w, 5, _RED_RGB)
+    else:
+        canvas.fill_rect(x, bar_y, tile, 5, _PNG_BORDER)
+
+
+def pull_badge_png(title, author, files, number=0):
+    """Square PNG badge for a pull request (same inputs as pull_badge_svg).
+
+    Rasterized so it renders as an image in fediverse timelines, where SVG
+    attachments show only a "Preview not available" placeholder.
+    """
+    from og_card import _Canvas, _fit, text_width
+    files = list(files or [])
+    additions = sum(f["adds"] for f in files)
+    deletions = sum(f["dels"] for f in files)
+
+    canvas = _Canvas(_PNG_SIZE, _PNG_SIZE, _PNG_BG)
+    m = 20
+    canvas.fill_rect(m, m, _PNG_SIZE - 2 * m, _PNG_SIZE - 2 * m, _PNG_CARD)
+    canvas.frame_rect(m, m, _PNG_SIZE - 2 * m, _PNG_SIZE - 2 * m, 2,
+                      _PNG_BORDER)
+
+    pad = 40
+    inner_w = _PNG_SIZE - 2 * pad
+
+    canvas.text(pad, 48, _fit(str(title or ""), 4, inner_w), 4, _PNG_FG)
+    number_label = ("#%d" % number) if number else "pull request"
+    byline = ("%s  by %s" % (number_label, author)) if author \
+        else number_label
+    canvas.text(pad, 88, _fit(byline, 2, inner_w), 2, _PURPLE_RGB)
+
+    stats = [("+%d" % additions, "ADDITIONS", _GREEN_RGB),
+             ("-%d" % deletions, "DELETIONS", _RED_RGB),
+             ("%d" % len(files), "FILES CHANGED", _PNG_FG)]
+    cell_w = inner_w // 3
+    for i, (value, caption, color) in enumerate(stats):
+        cx = pad + i * cell_w
+        canvas.text(cx, 128, _fit(value, 4, cell_w - 16), 4, color)
+        canvas.text(cx, 164, _fit(caption, 2, cell_w - 16), 2, _MUTED_RGB)
+
+    canvas.fill_rect(pad, 190, inner_w, 2, _PNG_BORDER)
+
+    # Tile grid: file-type glyph tiles grouped by directory, flowing left to
+    # right and wrapping; a group that would split across a row but fits on a
+    # fresh one starts there, so directories mostly stay contiguous.
+    grid_top = 210
+    tile = 48
+    pitch_x = 62
+    row_pitch = 82
+    cols = max(1, inner_w // pitch_x)
+    grid_bottom = _PNG_SIZE - pad - 20
+    max_rows = max(1, (grid_bottom - grid_top) // row_pitch)
+
+    row = col = drawn = 0
+    stop = False
+    for directory, group in _group_files(files):
+        if stop:
+            break
+        if col and col + len(group) > cols and len(group) <= cols:
+            row, col = row + 1, 0
+        segments = []  # [row, first col, last col] runs this group occupies
+        for file in group:
+            if col >= cols:
+                row, col = row + 1, 0
+            if row >= max_rows:
+                stop = True
+                break
+            if segments and segments[-1][0] == row:
+                segments[-1][2] = col
+            else:
+                segments.append([row, col, col])
+            _tile_png(canvas, pad + col * pitch_x,
+                      grid_top + row * row_pitch, file, tile)
+            drawn += 1
+            col += 1
+        # Label (and underline) only multi-file directories: a single-tile
+        # group's label is wider than its tile and would collide with the
+        # neighbour's, and the glyph alone already reads the file.
+        count = sum(s[2] - s[1] + 1 for s in segments)
+        if count >= 2:
+            for seg_row, first, last in segments:
+                line_y = grid_top + seg_row * row_pitch + tile + 8
+                canvas.fill_rect(pad + first * pitch_x, line_y,
+                                 (last - first) * pitch_x + tile, 1,
+                                 _PNG_BORDER)
+            seg_row, first, last = segments[-1]
+            label = "%s (%d)" % (_dir_label(directory), count)
+            span = (last - first) * pitch_x + tile
+            lx = pad + first * pitch_x + (span - text_width(label, 2)) // 2
+            canvas.text(max(pad, lx),
+                        grid_top + seg_row * row_pitch + tile + 14,
+                        _fit(label, 2, inner_w), 2, _MUTED_RGB)
+
+    dropped = len(files) - drawn
+    if dropped > 0:
+        canvas.text(pad, _PNG_SIZE - pad - 4, _fit(
+            "+%d more file%s not shown" % (
+                dropped, "" if dropped == 1 else "s"), 2, inner_w),
+            2, _MUTED_RGB)
+
+    return canvas.png()
