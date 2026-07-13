@@ -2438,8 +2438,130 @@
       if (hint) hint.textContent = "";
       window.lucide?.createIcons();
     }
+    if (open) {
+      // Screenshot paste/attach (adhoc #78): wire the modal's file input, paste
+      // handler and chip list once, then reset any leftover attachments so each
+      // fresh open starts clean.
+      wireAgentModalImages(modal);
+      const form = modal.querySelector("[data-repo-agent-new-form]");
+      if (form) {
+        form._pendingAgentImages = [];
+        renderAgentModalChips(form);
+      }
+    }
     modal.classList.toggle("hidden", !open);
     if (open) modal.querySelector("[data-repo-agent-new-input]")?.focus();
+  }
+
+  // Pasted/attached screenshots queued alongside a "start agent" prompt
+  // (adhoc #78). They ride to the node as data: URLs; the node writes them into
+  // the agent's working tree so a coding agent can actually see the screenshot.
+  function agentModalImages(form) {
+    if (!form) return [];
+    if (!form._pendingAgentImages) form._pendingAgentImages = [];
+    return form._pendingAgentImages;
+  }
+
+  function renderAgentModalChips(form) {
+    const list = form?.querySelector("[data-repo-agent-new-attachments]");
+    if (!list) return;
+    list.innerHTML = agentModalImages(form).map((img) => `
+      <span class="inline-flex items-center gap-1.5 rounded-md border border-border bg-secondary/50 px-2 py-1 text-[11px] text-foreground">
+        <i data-lucide="image" class="h-3 w-3 text-muted-foreground"></i>${escapeHtml(img.name)}
+        <button type="button" data-repo-agent-new-attachment-remove="${img.id}" class="text-muted-foreground hover:text-destructive" aria-label="Remove ${escapeHtml(img.name)}">&times;</button>
+      </span>`).join("");
+    window.lucide?.createIcons();
+  }
+
+  async function addAgentModalImage(form, file, setHint) {
+    const images = agentModalImages(form);
+    if (!file || !file.type.startsWith("image/")) {
+      setHint?.("That's not an image.", "bad");
+      return;
+    }
+    if (images.length >= AGENT_IMAGE_MAX_COUNT) {
+      setHint?.(`You can attach up to ${AGENT_IMAGE_MAX_COUNT} screenshots.`, "bad");
+      return;
+    }
+    if (file.size > ISSUE_IMAGE_RAW_MAX_BYTES) {
+      setHint?.(`That image is too large (max ${formatSize(ISSUE_IMAGE_RAW_MAX_BYTES)}).`, "bad");
+      return;
+    }
+    const used = images.reduce((sum, img) => sum + img.size, 0);
+    const budget = Math.min(AGENT_IMAGE_MAX_BYTES, AGENT_IMAGE_MAX_TOTAL_BYTES - used);
+    if (budget <= 0) {
+      setHint?.("Attached screenshots already use the size limit - remove one to add another.", "bad");
+      return;
+    }
+    let dataUrl;
+    let size;
+    if (file.size <= budget) {
+      try {
+        dataUrl = await readAsDataUrl(file);
+        size = file.size;
+      } catch (_) {
+        setHint?.("Could not read that image.", "bad");
+        return;
+      }
+    } else {
+      // Oversized paste/pick: reuse the issue composer's crop/compress modal to
+      // squeeze it under the per-attachment budget.
+      setHint?.(`Compressing to fit under ${formatSize(budget)}…`);
+      const result = await openImageResizeModal(file, budget);
+      if (!result) {
+        setHint?.("");
+        return;
+      }
+      dataUrl = result.dataUrl;
+      size = result.size;
+    }
+    const id = `agent-image:${Date.now().toString(36)}${images.length}`;
+    const name = (file.name || "screenshot.png").replace(/[[\]]/g, "_");
+    images.push({ id, name, dataUrl, size });
+    setHint?.(`Attached ${name}.`, "good");
+    renderAgentModalChips(form);
+  }
+
+  function wireAgentModalImages(modal) {
+    if (!modal || modal._agentImagesWired) return;
+    modal._agentImagesWired = true;
+    const form = modal.querySelector("[data-repo-agent-new-form]");
+    const input = modal.querySelector("[data-repo-agent-new-input]");
+    const fileInput = modal.querySelector("[data-repo-agent-new-file-input]");
+    const attachBtn = modal.querySelector("[data-repo-agent-new-attach]");
+    const chips = modal.querySelector("[data-repo-agent-new-attachments]");
+    const hint = modal.querySelector("[data-repo-agent-new-hint]");
+    const setHint = (text, tone) => {
+      if (!hint) return;
+      hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      hint.textContent = text;
+    };
+    attachBtn?.addEventListener("click", () => fileInput?.click());
+    fileInput?.addEventListener("change", async () => {
+      const files = Array.from(fileInput.files || []);
+      fileInput.value = "";
+      for (const file of files) await addAgentModalImage(form, file, setHint);
+    });
+    input?.addEventListener("paste", async (event) => {
+      const imageItems = Array.from(event.clipboardData?.items || [])
+        .filter((it) => it.kind === "file" && it.type.startsWith("image/"));
+      if (!imageItems.length) return;
+      // A screenshot in the clipboard shouldn't also dump its (empty) text into
+      // the prompt field - claim the paste for the attachment instead.
+      event.preventDefault();
+      for (const it of imageItems) {
+        const file = it.getAsFile();
+        if (file) await addAgentModalImage(form, file, setHint);
+      }
+    });
+    chips?.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-repo-agent-new-attachment-remove]");
+      if (!button) return;
+      const images = agentModalImages(form);
+      const index = images.findIndex((img) => img.id === button.dataset.repoAgentNewAttachmentRemove);
+      if (index >= 0) images.splice(index, 1);
+      renderAgentModalChips(form);
+    });
   }
 
   function renderRepoAgentsList(agents) {
@@ -2626,6 +2748,8 @@
       setHint("Enter a prompt to start an agent.", "bad");
       return;
     }
+    // Pasted/attached screenshots (adhoc #78) ride along as data: URLs.
+    const images = agentModalImages(form).map((img) => img.dataUrl).filter(Boolean);
     if (submit) submit.disabled = true;
     setHint("Starting…");
     try {
@@ -2638,6 +2762,7 @@
           text,
           provider: String(providerSelect?.value || ""),
           model: String(modelSelect?.value || ""),
+          images,
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -2645,18 +2770,23 @@
         throw new Error(data.error || `HTTP ${response.status}`);
       }
       if (input) input.value = "";
+      form._pendingAgentImages = [];
+      renderAgentModalChips(form);
       setHint("Sent - the node will start a new agent shortly.", "good");
       // Refresh the Agents tab only when it's showing the repo we just
       // prompted - the modal can target any owned repo from any page.
       if (state.activeRepoTab === "agents" && state.selectedRepo && repoKey(state.selectedRepo).toLowerCase() === repoKey(repo).toLowerCase()) {
         loadRepoAgents(repo);
       }
+      // Close the modal now that the prompt is queued (adhoc #80).
+      setAgentModalOpen(false);
     } catch (error) {
       const code = String(error?.message || "");
       setHint(
         code === "text_required" ? "Enter a prompt to start an agent."
           : code === "text_too_long" ? "Prompt is too long."
           : code === "prompt_queue_full" ? "Too many pending prompts for this repository - try again shortly."
+          : code === "image_too_large" || code === "images_too_large" ? "The attached screenshot is too large - remove or shrink it."
           : code === "not_authorized" ? "You don't have permission to start agents."
             : "Could not start the agent. Please try again.",
         "bad");
