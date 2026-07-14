@@ -760,12 +760,20 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBarHost->setObjectName("quickAddBottomBarHost");
     bottomBarHost->setLayout(bottomBar);
     bottomBarHost->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    // The controls sit in a scroll area only so the row's own minimum width does
+    // not force the whole window wider (the scroll area keeps minimumWidth 0).
+    // The horizontal scrollbar is switched off entirely (adhoc): it used to
+    // appear whenever the row was a touch too wide and, by stealing height from
+    // the fixed-height viewport, shoved every control up out of alignment. With
+    // widgetResizable the host now tracks the viewport width, so the stretches
+    // keep the send column pinned right and the controls stay put; on a very
+    // narrow window the row clips instead of scrolling.
     auto *bottomBarScroll = new QScrollArea;
     bottomBarScroll->setObjectName("quickAddBottomBarScroll");
     bottomBarScroll->setWidget(bottomBarHost);
-    bottomBarScroll->setWidgetResizable(false);
+    bottomBarScroll->setWidgetResizable(true);
     bottomBarScroll->setFrameShape(QFrame::NoFrame);
-    bottomBarScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    bottomBarScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     bottomBarScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     bottomBarScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     bottomBarScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -6525,6 +6533,20 @@ QWidget *MainWindow::buildHostsSection()
     connect(m_hostReinstallAllButton, &QPushButton::clicked, this,
             &MainWindow::runHostReinstallAllFromBinary);
     titleRow->addWidget(m_hostReinstallAllButton);
+    // One-click "update from source" (adhoc): for every saved host, pull the
+    // latest source, rebuild the client and restart its daemon — so the fleet
+    // can be updated straight from source without cutting a release each time.
+    m_hostUpdateAllSourceButton =
+        new QPushButton(QStringLiteral("Update from source (all hosts)"));
+    m_hostUpdateAllSourceButton->setCursor(Qt::PointingHandCursor);
+    m_hostUpdateAllSourceButton->setToolTip(QStringLiteral(
+        "For every saved host: SSH in, pull the latest ForkMesh source, rebuild "
+        "the client from it and restart the node — without publishing a release. "
+        "The node's identity key and mirrored data are kept."));
+    setOcticon(m_hostUpdateAllSourceButton, "sync", 14);
+    connect(m_hostUpdateAllSourceButton, &QPushButton::clicked, this,
+            &MainWindow::runHostUpdateAllFromSource);
+    titleRow->addWidget(m_hostUpdateAllSourceButton);
     outer->addLayout(titleRow);
 
     auto *subtitle = new QLabel(QString::fromUtf8(
@@ -9230,7 +9252,7 @@ const QString kHostUploadMarker = QStringLiteral("__FORKMESH_UPLOAD__");
 
 void MainWindow::runHostInstall(bool forceUploadBinary,
                                 std::function<void(bool)> onFinished,
-                                bool reinstall)
+                                bool reinstall, bool fromSource)
 {
     if (m_hostInstallProcess &&
         m_hostInstallProcess->state() != QProcess::NotRunning) {
@@ -9272,8 +9294,12 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     // forceUploadBinary is set by the per-row / install-all "Install (binary)"
     // actions (adhoc #257), which always direct-upload regardless of whether
     // the form's checkbox happens to be ticked.
-    const bool uploadBinary = forceUploadBinary ||
-        (m_hostUploadBinaryCheck && m_hostUploadBinaryCheck->isChecked());
+    // A source build compiles on the host itself, so there is no binary to
+    // upload — fromSource forces the direct-upload path off even if the caller
+    // or the form checkbox asked for it.
+    const bool uploadBinary = !fromSource &&
+        (forceUploadBinary ||
+         (m_hostUploadBinaryCheck && m_hostUploadBinaryCheck->isChecked()));
     QByteArray uploadBytes;
     if (uploadBinary) {
         QFile self(QCoreApplication::applicationFilePath());
@@ -9314,6 +9340,13 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
         envPrefix += QStringLiteral(" FORKMESH_OWNER=%1").arg(shq(linkUser));
     if (reinstall)
         envPrefix += QStringLiteral(" FORKMESH_REINSTALL=1");
+    // Update-from-source (adhoc): FORKMESH_FROM_SOURCE=1 skips the prebuilt
+    // release download and clones/pulls + rebuilds from the latest source;
+    // FORKMESH_RESTART=1 makes the installer stop the old daemon before it
+    // relaunches so the freshly built binary cleanly takes over (the node's data
+    // is left untouched, unlike a reinstall).
+    if (fromSource)
+        envPrefix += QStringLiteral(" FORKMESH_FROM_SOURCE=1 FORKMESH_RESTART=1");
     QString pipeline =
         QStringLiteral("curl -fsSL %1 | %2 bash").arg(shq(installUrl), envPrefix);
     const bool needSudo = user != QStringLiteral("root");
@@ -9584,6 +9617,59 @@ void MainWindow::reinstallNextHostFromBinary(QList<int> remainingRows)
             reinstallNextHostFromBinary(remainingRows);
         },
         /*reinstall=*/true);
+}
+
+void MainWindow::runHostUpdateAllFromSource()
+{
+    if (!m_hostsTable || m_hostsTable->rowCount() == 0) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(QStringLiteral("No saved hosts to update."));
+        return;
+    }
+    if (m_hostInstallProcess &&
+        m_hostInstallProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("A host session is already running."));
+        return;
+    }
+    // Non-destructive, but a source build is slow (clone/pull + compile on each
+    // box) and restarts every node, so confirm the fleet-wide run up front.
+    const int rowCount = m_hostsTable->rowCount();
+    const QMessageBox::StandardButton choice = QMessageBox::question(
+        this, QStringLiteral("Update all hosts from source"),
+        QString::fromUtf8(
+            "For each of your %1 saved host(s): SSH in, pull the latest ForkMesh "
+            "source, rebuild the client from it and restart the node. Each host "
+            "keeps its identity key and mirrored data.\n\nBuilding from source on "
+            "the host can take several minutes each. Continue?")
+            .arg(rowCount),
+        QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+    if (choice != QMessageBox::Yes)
+        return;
+    QList<int> rows;
+    rows.reserve(rowCount);
+    for (int i = 0; i < rowCount; ++i)
+        rows.append(i);
+    updateNextHostFromSource(rows);
+}
+
+void MainWindow::updateNextHostFromSource(QList<int> remainingRows)
+{
+    if (remainingRows.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("Finished updating all hosts from source."));
+        return;
+    }
+    const int row = remainingRows.takeFirst();
+    loadHostIntoForm(row, 0);
+    runHostInstall(
+        /*forceUploadBinary=*/false,
+        [this, remainingRows](bool /*ok*/) {
+            updateNextHostFromSource(remainingRows);
+        },
+        /*reinstall=*/false, /*fromSource=*/true);
 }
 
 void MainWindow::runHostUninstall()
