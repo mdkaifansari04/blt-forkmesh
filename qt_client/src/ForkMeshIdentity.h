@@ -51,6 +51,9 @@ public:
     static bool verifySignature(const QString &publicKeyB64url,
                                 const QString &signatureB64url,
                                 const QByteArray &payload);
+    static QByteArray deviceBindCanonical(const QString &accountName,
+                                          const QString &publicKeyB64url,
+                                          const QString &timestamp);
 
     // --- Backup, export & rotation (issue #368) ---------------------------
     // Serialize this identity's private key to a passphrase-encrypted,

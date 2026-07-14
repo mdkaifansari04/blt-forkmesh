@@ -10,6 +10,9 @@
 #include "KebabHeaderView.h"
 
 #include <QCryptographicHash>
+#include <QFutureWatcher>
+
+#include <QtConcurrent/QtConcurrentRun>
 
 using namespace forkmesh::ui;
 
@@ -21,6 +24,7 @@ constexpr qint64 kCatalogPublishMinIntervalMs = 30LL * 1000;
 constexpr qint64 kCatalogPublishRefreshMs = 6LL * 60 * 60 * 1000;
 constexpr qint64 kCatalogPublishRateLimitRetryMs = 60LL * 1000;
 constexpr qint64 kCatalogPublishMaxRetryAfterMs = 10LL * 60 * 1000;
+constexpr qint64 kContributionScanCapacityRetryMs = 1000;
 
 struct RepoRemoteRow {
     QString name;
@@ -227,6 +231,8 @@ QStringList MainWindow::viewAuthGitArgs(const RepositoryRecord &repo,
     if (!m_profileIdentity.isValid())
         return {};
     const QString viewer = accountOwner();
+    if (viewer.isEmpty() || !hasOwnerSigningCapability(viewer))
+        return {};
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     // Two read paths (issue #9): when this node owns the repo it signs the owner
     // view token (Basic username = owner); when it's a collaborator the repo was
@@ -2240,6 +2246,8 @@ void MainWindow::deleteCatalogRepository(const QString &owner, const QString &na
     const QString safeName = repoSegment(name, QStringLiteral("repository"));
     if (safeOwner.isEmpty() || safeName.isEmpty())
         return;
+    if (!hasOwnerSigningCapability(safeOwner))
+        return;
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
         logSystem("Catalog: could not load identity to remove old website entry.");
         return;
@@ -2344,7 +2352,7 @@ void MainWindow::startRepoHosts()
     // Rebuild only when the desired set changes; many sync/publish/status paths
     // call this defensively, and restarting identical host tunnels creates noisy
     // duplicate WebSocket traffic.
-    if (!hasActiveAccountSession()) {
+    if (!hasOwnerSigningCapability()) {
         if (!m_repoHosts.isEmpty())
             stopRepoHosts();
         else
@@ -2382,6 +2390,8 @@ void MainWindow::startRepoHosts()
         const QString tokenOwner = catalogOwner(repo);
         const QString tokenRepo = repo.name;
         host->setTokenProvider([this, tokenOwner, tokenRepo]() -> QString {
+            if (!hasOwnerSigningCapability(tokenOwner))
+                return QString();
             const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
             const QByteArray canonical =
                 ("forkmesh-host-v1\n" + tokenOwner + "\n" + tokenRepo + "\n" + ts)
@@ -2616,7 +2626,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     const QString publishKey = catalogPublishKey(repo);
     if (publishKey.isEmpty())
         return;
-    if (!hasActiveAccountSession()) {
+    if (!hasOwnerSigningCapability(catalogOwner(repo))) {
         // Publishing/hosting is the opt-in, paid side of the app. Point the user
         // at the "Get paid to mirror" button on their node profile rather than
         // failing silently; the core flow (clone, mirror, issues, PRs) is
@@ -2653,7 +2663,8 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     // the same owner the host registers under.
     const QString owner = catalogOwner(repo);
     const QString name = repoSegment(repo.name, QStringLiteral("repository"));
-    const QString updatedAt = QString::number(now);
+    QString updatedAt = QString::number(now);
+    QJsonObject contributionFields;
     // A stable identity for the logical repo: its first (root) commit, shared by
     // every node mirroring it. The network page groups mirrors by this so the same
     // repo under different owners shows as one card. Not part of the signature.
@@ -2746,6 +2757,153 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
         headBranch = servedHeadBranch;
         headCommit = servedHeadCommit;
     }
+    RepoContributionSnapshotInput snapshotInput;
+    snapshotInput.workTreePath = repo.localPath;
+    snapshotInput.mirrorPath = repo.mirrorPath;
+    snapshotInput.branch = headBranch;
+    snapshotInput.head = headCommit;
+    snapshotInput.publishingKey = m_profileIdentity.publicKey();
+    snapshotInput.capturedAtMs = now;
+    const QString contributionScanKey =
+        RepoContributionPublicationCache::key(
+            owner, name, headCommit, headBranch,
+            m_profileIdentity.publicKey(),
+            QStringLiteral("dependency-scan"));
+    QString contributionSnapshotKey;
+    if (repo.isPrivate) {
+        const QString previousScanKey =
+            m_catalogContributionScanKey.take(publishKey);
+        const QString previousSnapshotKey =
+            m_catalogContributionSnapshotKey.take(publishKey);
+        m_contributionPublicationCache.invalidate(previousScanKey);
+        m_contributionPublicationCache.invalidate(previousSnapshotKey);
+        m_catalogContributionDependencyFingerprint.remove(publishKey);
+        m_catalogContributionPreparedScanKey.remove(publishKey);
+        m_catalogContributionPreparedSnapshotKey.remove(publishKey);
+        m_contributionPublicationCache.clearStaleRetry(publishKey);
+    } else {
+        const QString previousScanKey =
+            m_catalogContributionScanKey.value(publishKey);
+        if (!previousScanKey.isEmpty() &&
+            previousScanKey != contributionScanKey) {
+            m_contributionPublicationCache.invalidate(previousScanKey);
+        }
+        m_catalogContributionScanKey.insert(publishKey,
+                                            contributionScanKey);
+
+        const QString preparedScanKey =
+            m_catalogContributionPreparedScanKey.take(publishKey);
+        const QString preparedSnapshotKey =
+            m_catalogContributionPreparedSnapshotKey.take(publishKey);
+        if (preparedScanKey == contributionScanKey)
+            contributionSnapshotKey = preparedSnapshotKey;
+
+        const QString previousSnapshotKey =
+            m_catalogContributionSnapshotKey.value(publishKey);
+        std::optional<RepoContributionSnapshot> cachedSnapshot;
+        if (!contributionSnapshotKey.isEmpty()) {
+            cachedSnapshot = m_contributionPublicationCache.lookup(
+                contributionSnapshotKey, now);
+        }
+        if (!cachedSnapshot.has_value()) {
+            const auto beginResult = m_contributionPublicationCache.begin(
+                contributionScanKey, showDialogOnError);
+            if (beginResult ==
+                RepoContributionPublicationCache::BeginResult::Started) {
+                const QString expectedDependencyFingerprint =
+                    m_catalogContributionDependencyFingerprint.value(
+                        publishKey);
+                const bool cachedSnapshotAvailable =
+                    !previousSnapshotKey.isEmpty() &&
+                    m_contributionPublicationCache.lookup(
+                        previousSnapshotKey, now).has_value();
+                auto *watcher =
+                    new QFutureWatcher<RepoContributionPreparation>(this);
+                connect(
+                    watcher,
+                    &QFutureWatcher<RepoContributionPreparation>::finished,
+                    this,
+                    [this, watcher, contributionScanKey, publishKey,
+                     previousSnapshotKey, owner, name, headCommit,
+                     headBranch,
+                     accountPublicKey = m_profileIdentity.publicKey()] {
+                        const RepoContributionPreparation preparation =
+                            watcher->result();
+                        watcher->deleteLater();
+                        const auto completion =
+                            m_contributionPublicationCache.complete(
+                                contributionScanKey);
+                        if (completion.discarded ||
+                            m_catalogContributionScanKey.value(publishKey) !=
+                                contributionScanKey) {
+                            scheduleCatalogPublish(
+                                publishKey, completion.requestDialog);
+                            return;
+                        }
+
+                        const QString snapshotKey =
+                            RepoContributionPublicationCache::key(
+                                owner, name, headCommit, headBranch,
+                                accountPublicKey,
+                                preparation.dependencyFingerprint);
+                        const qint64 completedAt =
+                            QDateTime::currentMSecsSinceEpoch();
+                        if (preparation.rebuiltSnapshot.has_value()) {
+                            m_contributionPublicationCache.store(
+                                snapshotKey,
+                                *preparation.rebuiltSnapshot,
+                                completedAt);
+                        }
+                        if (!previousSnapshotKey.isEmpty() &&
+                            previousSnapshotKey != snapshotKey) {
+                            m_contributionPublicationCache.invalidate(
+                                previousSnapshotKey);
+                        }
+                        m_catalogContributionDependencyFingerprint.insert(
+                            publishKey,
+                            preparation.dependencyFingerprint);
+                        m_catalogContributionSnapshotKey.insert(
+                            publishKey, snapshotKey);
+                        if (m_contributionPublicationCache.lookup(
+                                snapshotKey, completedAt).has_value()) {
+                            m_catalogContributionPreparedScanKey.insert(
+                                publishKey, contributionScanKey);
+                            m_catalogContributionPreparedSnapshotKey.insert(
+                                publishKey, snapshotKey);
+                        }
+                        scheduleCatalogPublish(
+                            publishKey, completion.requestDialog);
+                    });
+                watcher->setFuture(QtConcurrent::run(
+                    [snapshotInput, expectedDependencyFingerprint,
+                     cachedSnapshotAvailable] {
+                        return prepareRepoContributionSnapshot(
+                            snapshotInput, expectedDependencyFingerprint,
+                            cachedSnapshotAvailable);
+                    }));
+            } else if (
+                beginResult == RepoContributionPublicationCache::BeginResult::
+                                   CapacityExceeded) {
+                scheduleCatalogPublish(publishKey, showDialogOnError,
+                                       kContributionScanCapacityRetryMs);
+            }
+            return;
+        }
+
+        if (cachedSnapshot->complete && cachedSnapshot->error.isEmpty()) {
+            const qint64 capturedAt = qint64(
+                cachedSnapshot->payload.value(QStringLiteral("capturedAt"))
+                    .toDouble(-1));
+            const QString snapshotUpdatedAt = QString::number(capturedAt);
+            const QJsonObject signedFields = signedContributionFields(
+                *cachedSnapshot, owner, name, snapshotUpdatedAt,
+                m_profileIdentity);
+            if (!signedFields.isEmpty()) {
+                updatedAt = snapshotUpdatedAt;
+                contributionFields = signedFields;
+            }
+        }
+    }
     const int issueCount = mirrorIssueCount(repo.mirrorPath, headBranch);
     // Highest issue number ever assigned (not just the open count), so the
     // relay can propose the same next number the desktop would for a ForkBot-
@@ -2816,6 +2974,13 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                                         ? QStringLiteral("remote-clone")
                                         : QStringLiteral("local-node")},
                          {"maintainer", m_profileIdentity.publicKey()}};
+    for (auto it = contributionFields.constBegin();
+         it != contributionFields.constEnd(); ++it) {
+        metadata.insert(it.key(), it.value());
+    }
+    const bool contributionSubmitted =
+        metadata.contains(QStringLiteral("contributionPayload")) &&
+        metadata.contains(QStringLiteral("contributionSig"));
     metadata.insert("signature", m_profileIdentity.signJson(metadata));
     // The server verifies this against the account's registered pubkey: only the
     // account key holder can write its namespace (prevents impersonation/dups).
@@ -2871,7 +3036,8 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
               request.url().toString() + ".");
 
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, index, publishKey, showDialogOnError, fingerprint] {
+            [this, reply, index, publishKey, showDialogOnError, fingerprint,
+             contributionSnapshotKey, contributionSubmitted] {
                 const QByteArray body = reply->readAll();
                 const int status =
                     reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -2885,8 +3051,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 m_catalogPublishQueued.remove(publishKey);
                 const bool queuedDialog =
                     m_catalogPublishDialogQueued.contains(publishKey);
-                if (publishQueued)
-                    m_catalogPublishDialogQueued.remove(publishKey);
+                m_catalogPublishDialogQueued.remove(publishKey);
 
                 auto publishQueuedUpdate = [this, publishKey, publishQueued,
                                             queuedDialog](qint64 minDelayMs = 0) {
@@ -2900,7 +3065,88 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 }
 
                 RepositoryRecord &repo = m_repositories[index];
+                const QJsonObject responseObject =
+                    QJsonDocument::fromJson(body).object();
+                const QString responseCode =
+                    responseObject.value(QStringLiteral("error")).toString();
+                if (status == 409 &&
+                    responseCode == QLatin1String("stale_update") &&
+                    !contributionSnapshotKey.isEmpty()) {
+                    m_contributionPublicationCache.invalidate(
+                        contributionSnapshotKey);
+                    if (m_catalogContributionSnapshotKey.value(publishKey) ==
+                        contributionSnapshotKey) {
+                        m_catalogContributionSnapshotKey.remove(publishKey);
+                    }
+                    const bool retry =
+                        m_contributionPublicationCache.claimStaleRetry(
+                            publishKey, contributionSnapshotKey);
+                    const bool wantsDialog =
+                        showDialogOnError || queuedDialog;
+                    if (retry) {
+                        logSystem(
+                            "Catalog: stale contribution timestamp for " +
+                            repo.owner + "/" + repo.name +
+                            "; rebuilding one fresh snapshot.");
+                        scheduleCatalogPublish(publishKey, wantsDialog);
+                    } else {
+                        const QString message =
+                            "Catalog publish stopped for " + repo.owner + "/" +
+                            repo.name +
+                            ": the relay still reports stale_update after one "
+                            "fresh snapshot retry.";
+                        logSystem(message);
+                        if (wantsDialog)
+                            flashMessage(message, /*error=*/true);
+                        publishQueuedUpdate();
+                    }
+                    return;
+                }
                 if (error == QNetworkReply::NoError && status >= 200 && status < 300) {
+                    if (repoContributionResponseNeedsRefresh(
+                            responseObject, contributionSubmitted)) {
+                        m_contributionPublicationCache.invalidate(
+                            contributionSnapshotKey);
+                        if (m_catalogContributionSnapshotKey.value(publishKey) ==
+                            contributionSnapshotKey) {
+                            m_catalogContributionSnapshotKey.remove(publishKey);
+                        }
+                        const bool retry =
+                            m_contributionPublicationCache.claimStaleRetry(
+                                publishKey, contributionSnapshotKey);
+                        const QString warning =
+                            responseObject
+                                .value(QStringLiteral("contributionWarning"))
+                                .toString()
+                                .simplified()
+                                .left(240);
+                        const bool wantsDialog =
+                            showDialogOnError || queuedDialog;
+                        if (retry) {
+                            logSystem(
+                                "Catalog: contribution was rejected for " +
+                                repo.owner + "/" + repo.name +
+                                "; rebuilding one fresh snapshot" +
+                                (warning.isEmpty()
+                                     ? QStringLiteral(".")
+                                     : QStringLiteral(": ") + warning));
+                            scheduleCatalogPublish(publishKey, wantsDialog);
+                        } else {
+                            const QString message =
+                                "Catalog contribution stopped for " +
+                                repo.owner + "/" + repo.name +
+                                " after one fresh snapshot retry" +
+                                (warning.isEmpty()
+                                     ? QStringLiteral(".")
+                                     : QStringLiteral(": ") + warning);
+                            logSystem(message);
+                            if (wantsDialog)
+                                flashMessage(message, /*error=*/true);
+                            publishQueuedUpdate();
+                        }
+                        return;
+                    }
+                    m_contributionPublicationCache.clearStaleRetry(publishKey);
                     m_catalogPublishedFingerprint.insert(publishKey, fingerprint);
                     m_catalogPublishedFingerprintAtMs.insert(
                         publishKey, QDateTime::currentMSecsSinceEpoch());
@@ -3847,6 +4093,14 @@ void MainWindow::onProfileNameChanged(const QString &name)
     const QString oldOwner =
         accountNameFromInput(m_accountName.isEmpty() ? m_userName : m_accountName,
                              QStringLiteral("owner"));
+    setDesktopCapability(m_accountName, false);
+    m_accountAuthenticated = false;
+    m_accountTier = QStringLiteral("free");
+    m_accountSolanaVerified = false;
+    m_isAdmin = false;
+    if (m_adminPollTimer)
+        m_adminPollTimer->stop();
+    QSettings().remove(kAuthedAccountSetting);
     m_userName = trimmed;
     m_accountName = trimmed;
     saveProfileName(trimmed);
@@ -3875,12 +4129,14 @@ void MainWindow::logout()
         m_heartbeatTimer->stop();
     if (m_adminPollTimer)
         m_adminPollTimer->stop();
+    setDesktopCapability(m_accountName, false);
     m_accountAuthenticated = false;
     m_accountTier = QStringLiteral("free");
     m_accountSolanaVerified = false;
     m_isAdmin = false;
     m_seenPendingUsers.clear();
     m_accountName.clear();
+    QSettings().remove(kAuthedAccountSetting);
     QSettings().remove(kAccountNameSetting);
     refreshSettingsEmailVerifiedBadge();
     leaveSession();

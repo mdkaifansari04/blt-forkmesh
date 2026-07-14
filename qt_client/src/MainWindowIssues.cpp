@@ -6286,7 +6286,8 @@ void MainWindow::shareRepoRequest(const RepositoryRecord &repo,
     // (issue #9). Owner-signed: only the repo owner may change the ACL. The
     // action is bound into the signature so an add token can't be replayed as a
     // remove and vice versa (matches the relay's forkmesh-share-v1 canonical).
-    if (!m_networkAccess || !m_profileIdentity.isValid())
+    if (!m_networkAccess || !m_profileIdentity.isValid() ||
+        !hasOwnerSigningCapability(repo.owner))
         return;
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray canonical =
@@ -6365,7 +6366,8 @@ void MainWindow::refreshRepoCollaborators()
         haveRepo ? m_repositories.at(m_repoDetailIndex) : blank;
     const bool show = haveRepo && !accountOwner().isEmpty() &&
                       repo.owner == accountOwner() && repo.isPrivate &&
-                      repo.publishToNetwork;
+                      repo.publishToNetwork &&
+                      hasOwnerSigningCapability(repo.owner);
     m_collabSection->setVisible(show);
     if (m_collabList)
         m_collabList->clear();
@@ -6525,7 +6527,8 @@ void MainWindow::showBountyWalletDialog()
     // show its deposit address + QR + live balance so it can be pre-funded. Used
     // to pay per-PR bounties in "wallet" mode without a per-merge QR.
     const QString owner = accountOwner();
-    if (owner.isEmpty() || !m_profileIdentity.isValid()) {
+    if (owner.isEmpty() || !m_profileIdentity.isValid() ||
+        !hasOwnerSigningCapability(owner)) {
         QMessageBox::information(
             this, QStringLiteral("Bounty wallet"),
             QStringLiteral("Register and sign in to a ForkMesh account first — the "
@@ -6590,6 +6593,8 @@ void MainWindow::showBountyWalletDialog()
     auto walletAddress = std::make_shared<QString>();
     const auto fetch = [this, owner, ownedRepo, qrLabel, addr, balance, copyBtn,
                         walletAddress] {
+        if (!hasOwnerSigningCapability(owner))
+            return;
         const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
         const QByteArray canonical =
             ("forkmesh-bounty-wallet-v1\n" + owner + "\n" + ts).toUtf8();
@@ -7026,6 +7031,8 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         if (!probe.canWrite())
             return;
     }
+    if (!hasOwnerSigningCapability(repo.owner))
+        return;
 
     QUrl url = issuesApiUrl(repo);
     // Auto-polls back off exponentially while the relay is failing (offline /
@@ -7077,6 +7084,8 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
                                          const QJsonArray &pending,
                                          bool interactive)
 {
+    if (!hasOwnerSigningCapability(repo.owner))
+        return;
     if (pending.isEmpty()) {
         if (interactive)
             setIssueInlineNotice("No pending submissions.");

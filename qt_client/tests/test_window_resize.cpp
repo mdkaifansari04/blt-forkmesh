@@ -14,6 +14,8 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QMenu>
+#include <QFileInfo>
+#include <QPointer>
 #include <QProcess>
 #include <QSemaphore>
 #include <QPushButton>
@@ -264,12 +266,21 @@ MemberInfo testMember(const QString &id, const QString &name, bool self = false)
 
 void stopChildProcesses(QObject &root)
 {
-    const QList<QProcess *> processes = root.findChildren<QProcess *>();
-    for (QProcess *process : processes) {
+    QList<QPointer<QProcess>> processes;
+    const QList<QProcess *> children = root.findChildren<QProcess *>();
+    processes.reserve(children.size());
+    for (QProcess *process : children)
+        processes.append(QPointer<QProcess>(process));
+
+    for (const QPointer<QProcess> &process : std::as_const(processes)) {
+        // Waiting on one process can deliver deferred deletion for another.
+        if (!process)
+            continue;
         if (process->state() == QProcess::NotRunning)
             continue;
         process->kill();
-        process->waitForFinished(3000);
+        if (process)
+            process->waitForFinished(3000);
     }
 }
 
@@ -293,25 +304,31 @@ int main(int argc, char *argv[])
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
                        settingsDir.path());
 
-    // Isolate app-data writes (QStandardPaths::AppDataLocation, e.g. the agent
-    // session store) into a temp dir so the suite never touches the developer's
-    // real ~/.local/share and stays idempotent across runs — issue #291's merge
-    // flag is persisted via AgentStore, so a re-run must not see the prior run's
-    // sessions. AppDataLocation reads XDG_DATA_HOME at call time on Linux, so set
-    // it before QApplication (and thus before MainWindow's initAgents()).
+    // AgentStore persists issue #291's merge flag under AppDataLocation, so
+    // concurrent or repeated suites must never share an application identity.
+    // This temporary directory supplies a collision-resistant per-process token;
+    // AppDataCleanup below removes the exact resolved path on normal exit.
     QTemporaryDir dataDir;
     if (!dataDir.isValid()) {
         qCritical("FAIL: could not create temporary data directory");
         return 1;
     }
-    qputenv("XDG_DATA_HOME", dataDir.path().toUtf8());
-
+    struct AppDataCleanup {
+        QString path;
+        ~AppDataCleanup()
+        {
+            if (!path.isEmpty())
+                QDir(path).removeRecursively();
+        }
+    } appDataCleanup;
     QStandardPaths::setTestModeEnabled(true);
 
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
     app.setOrganizationName("ForkMeshTests");
-    app.setApplicationName("WindowResize");
+    const QString testApplicationName =
+        QStringLiteral("WindowResize-") + QFileInfo(dataDir.path()).fileName();
+    app.setApplicationName(testApplicationName);
 
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -319,6 +336,10 @@ int main(int argc, char *argv[])
         qCritical("FAIL: could not resolve temporary app data directory");
         return 1;
     }
+    check(QFileInfo(appDataPath).fileName() == testApplicationName,
+          QString("window test app data is isolated per process (%1)")
+              .arg(appDataPath));
+    appDataCleanup.path = appDataPath;
     QDir appDataDir(appDataPath);
     if (appDataDir.exists() && !appDataDir.removeRecursively()) {
         qCritical("FAIL: could not clear temporary app data directory");
@@ -359,6 +380,8 @@ int main(int argc, char *argv[])
 
     MainWindow window;
     window.show();
+    QApplication::processEvents();
+    window.testRunDeferredStartupNow();
     QApplication::processEvents();
 
     QTemporaryDir primaryBranchRepo;
@@ -525,10 +548,27 @@ int main(int argc, char *argv[])
     check(!window.testAccountAuthenticated(),
           QStringLiteral("start does not require or fake an account"));
 
+    // A password-only login succeeds as an account session but cannot activate
+    // paid mirroring because the Worker still verifies hosting with the primary
+    // desktop key.
+    window.testResetNetworkLog();
+    window.testSetAccountFlowResult(true, false);
+    window.testEnablePaidMirroring();
+    check(window.testAccountFlowCalls() == 1,
+          QStringLiteral("password-only paid mirroring runs the account flow once"));
+    check(!window.testHasOwnerSigningCapability(),
+          QStringLiteral("password-only account flow keeps owner signing disabled"));
+    const QString passwordOnlyLog =
+        window.testNetworkLog().join(QLatin1Char('\n'));
+    check(passwordOnlyLog.contains(QStringLiteral("cannot host or publish")) &&
+              !passwordOnlyLog.contains(
+                  QStringLiteral("You're set up to get paid to mirror")),
+          QStringLiteral("password-only login never reports paid mirroring success"));
+
     // Crypto is strictly opt-in: the account/activate flow runs only when the user
     // explicitly opts in via "Get paid to mirror" (here the mocked account flow).
     // The payout address is already set, so no address prompt is triggered.
-    window.testSetAccountFlowResult(true);
+    window.testSetAccountFlowResult(true, true);
     window.testEnablePaidMirroring();
     check(window.testAccountFlowCalls() == 1,
           QStringLiteral("opting in runs the account flow exactly once"));
@@ -710,17 +750,11 @@ int main(int argc, char *argv[])
     {
         window.resize(1100, 800);
         window.testClickRepoDetailTab(1); // Commits
-        QElapsedTimer commitTimer;
-        commitTimer.start();
-        QPushButton *deleteCommit = nullptr;
-        QPushButton *restoreCommit = nullptr;
-        while (commitTimer.elapsed() < 5000) {
-            QApplication::processEvents();
-            deleteCommit = findButtonStartingWith(window, "Delete commit");
-            restoreCommit = findButtonStartingWith(window, "Restore commit");
-            if (deleteCommit && restoreCommit && restoreCommit->isVisibleTo(&window))
-                break;
-        }
+        QApplication::processEvents();
+        const bool commitOpened = window.testOpenMostRecentCommit();
+        QApplication::processEvents();
+        QPushButton *deleteCommit = findButtonStartingWith(window, "Delete commit");
+        QPushButton *restoreCommit = findButtonStartingWith(window, "Restore commit");
         bool adjacent = false;
         bool restoreOnScreen = false;
         if (deleteCommit && restoreCommit) {
@@ -732,11 +766,11 @@ int main(int argc, char *argv[])
                               restoreTopLeft.x() + restoreCommit->width() <=
                                   window.width();
         }
-        check(deleteCommit && restoreCommit && restoreCommit->isVisibleTo(&window) &&
-                  adjacent && restoreOnScreen,
+        check(commitOpened && deleteCommit && restoreCommit &&
+                  restoreCommit->isVisibleTo(&window) && adjacent && restoreOnScreen,
               QString("commit restore button is visible beside delete "
                       "(delete=%1 restore=%2 visible=%3 adjacent=%4 onScreen=%5 "
-                      "windowW=%6 restoreX=%7 restoreW=%8)")
+                      "windowW=%6 restoreX=%7 restoreW=%8 opened=%9)")
                   .arg(deleteCommit != nullptr)
                   .arg(restoreCommit != nullptr)
                   .arg(restoreCommit && restoreCommit->isVisibleTo(&window))
@@ -744,7 +778,8 @@ int main(int argc, char *argv[])
                   .arg(restoreOnScreen)
                   .arg(window.width())
                   .arg(restoreCommit ? restoreCommit->mapTo(&window, QPoint(0, 0)).x() : -1)
-                  .arg(restoreCommit ? restoreCommit->width() : -1));
+                  .arg(restoreCommit ? restoreCommit->width() : -1)
+                  .arg(commitOpened));
     }
     }
 
@@ -815,6 +850,11 @@ int main(int argc, char *argv[])
         check(abText == QString::fromUtf8("\xE2\x86\x91""1"),
               QString("worktrees list shows the branch one commit ahead of main "
                       "(ahead/behind cell = %1)").arg(abText));
+        const QStringList visibleWorktreeBranches = window.testWorktreeBranches();
+        check(!visibleWorktreeBranches.contains(QStringLiteral("forkmesh/pulls")),
+              QString("the private pull-metadata worktree stays out of the "
+                      "Worktrees tab (%1)")
+                  .arg(visibleWorktreeBranches.join(QStringLiteral(", "))));
 
         // Opening the Worktrees tab the way a user does (clicking its nav button)
         // should hand keyboard focus to the table, so arrow keys work right away
@@ -1092,6 +1132,13 @@ int main(int argc, char *argv[])
         QSettings().setValue(QStringLiteral("agents/defaultProvider"),
                              QStringLiteral("claude-code"));
         MainWindow seeded;
+        // Enter the app shell through the same start action a user takes. A
+        // single event pump does not guarantee the window's deferred-startup
+        // timer has switched away from the setup page yet.
+        seeded.testEnableSessionStartBypass(true);
+        seeded.testSetSetupInputs(window.testUserName(),
+                                  window.testSavedSolanaAddress());
+        seeded.testStartSession();
         seeded.show();
         QApplication::processEvents();
         check(seeded.testQuickAddAgentProvider() == QStringLiteral("claude-code") &&
@@ -1141,6 +1188,7 @@ int main(int argc, char *argv[])
                            }),
               QStringLiteral("Codex prompt picker does not show ChatGPT-unsupported Codex API models"));
         MainWindow rememberedPromptProvider;
+        rememberedPromptProvider.testEnableSessionStartBypass(true);
         rememberedPromptProvider.show();
         QApplication::processEvents();
         check(rememberedPromptProvider.testQuickAddAgentProvider() ==
@@ -1192,6 +1240,7 @@ int main(int argc, char *argv[])
         settings.setValue(verifiedKey, true);
 
         MainWindow verified;
+        verified.testEnableSessionStartBypass(true);
         verified.show();
         QApplication::processEvents();
         QLabel *badge =
@@ -1222,6 +1271,10 @@ int main(int argc, char *argv[])
         QTemporaryDir quickAddRepo;
         if (initGitRepo(quickAddRepo)) {
             MainWindow qaWindow;
+            qaWindow.testEnableSessionStartBypass(true);
+            qaWindow.testSetSetupInputs(window.testUserName(),
+                                        window.testSavedSolanaAddress());
+            qaWindow.testStartSession();
             qaWindow.show();
             QApplication::processEvents();
             const int idx = qaWindow.testAddLocalRepository(
@@ -1435,6 +1488,10 @@ int main(int argc, char *argv[])
         mergeSession.issueTitle = QStringLiteral("note a task merging into main");
         mergeSession.baseBranch = QStringLiteral("main");
         mergeSession.status = AgentStatus::Success;
+        check(!mergeSession.merged,
+              QStringLiteral("the merge-note fixture starts unmerged"));
+        check(window.testAgentStatusCellText(mergeSession.id).isEmpty(),
+              QStringLiteral("the merge-note fixture uses an unused session id"));
         window.testAddAgentSession(mergeSession);
 
         // Before the merge the Status cell shows the run status, not "merged".

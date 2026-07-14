@@ -2145,6 +2145,10 @@ const QString kRoomNameSetting = QStringLiteral("server/room");
 // Last account this node key authenticated as; lets the app start offline once a
 // registered account has been confirmed at least once on this machine.
 const QString kAuthedAccountSetting = QStringLiteral("account/authedName");
+const QString kDesktopCapableAccountSetting =
+    QStringLiteral("account/desktopCapableName");
+const QString kDesktopCapablePublicKeySetting =
+    QStringLiteral("account/desktopCapablePublicKey");
 const QString kEmailVerifiedSettingPrefix =
     QStringLiteral("account/emailVerified/");
 const QString kServersArray = QStringLiteral("servers/items");

@@ -12,6 +12,8 @@
 #include <QComboBox>
 #include <QTimer>
 
+#include <algorithm>
+
 using namespace forkmesh::ui;
 
 // ---- Branches panel --------------------------------------------------------
@@ -395,6 +397,14 @@ void MainWindow::loadWorktreesPanel()
         }
         if (have) wts.append(cur);
     }
+
+    // PullStore keeps PR metadata in a private linked worktree on this reserved
+    // branch. It is implementation storage, not a user or agent workspace, so
+    // keep it out of the Worktrees tab and keyboard-navigation order.
+    wts.erase(std::remove_if(wts.begin(), wts.end(), [](const WT &wt) {
+                  return wt.branch == QLatin1String("forkmesh/pulls");
+              }),
+              wts.end());
 
     const QString mainPath = QDir(repoPath).absolutePath();
     // Base branch each worktree's ahead/behind count is measured against (#272

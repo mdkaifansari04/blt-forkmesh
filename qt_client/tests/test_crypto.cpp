@@ -1,4 +1,5 @@
 #include "../src/ActionFile.h"
+#include "../src/AccountCapability.h"
 #include "../src/AgentStore.h"
 #include "../src/BackoffNetworkAccessManager.h"
 #include "../src/ClaudeAccountTransfer.h"
@@ -17,12 +18,16 @@
 #include "../src/PullReviewModel.h"
 #include "../src/PullStore.h"
 #include "../src/ReferenceLinks.h"
+#include "../src/RepoContributionSnapshot.h"
+#include "../src/RepoContributionSnapshotInternal.h"
 #include "../src/RepoSecurity.h"
 #include "../src/RoomCrypto.h"
+#include "../src/StrictGitReader.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
@@ -33,6 +38,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QFileInfo>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -40,7 +46,11 @@
 
 #include <openssl/evp.h>
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <cstring>
+#include <mutex>
+#include <thread>
 
 namespace {
 
@@ -150,6 +160,114 @@ bool verifyEd25519(const QString &pubB64Url, const QString &sigB64Url,
         EVP_MD_CTX_free(ctx);
     EVP_PKEY_free(key);
     return ok;
+}
+
+bool runTestGit(const QString &dir, const QStringList &args,
+                QByteArray *output = nullptr,
+                const QProcessEnvironment *environment = nullptr)
+{
+    QProcess process;
+    if (environment)
+        process.setProcessEnvironment(*environment);
+    process.start(QStringLiteral("git"),
+                  QStringList{QStringLiteral("-C"), dir} + args);
+    if (!process.waitForFinished(30000)) {
+        process.kill();
+        process.waitForFinished(1000);
+        return false;
+    }
+    if (output)
+        *output = process.readAllStandardOutput();
+    return process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
+}
+
+bool runTestGitInput(const QString &dir, const QStringList &args,
+                     const QByteArray &input)
+{
+    QProcess process;
+    process.start(QStringLiteral("git"),
+                  QStringList{QStringLiteral("-C"), dir} + args);
+    process.write(input);
+    process.closeWriteChannel();
+    if (!process.waitForFinished(30000)) {
+        process.kill();
+        process.waitForFinished(1000);
+        return false;
+    }
+    return process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
+}
+
+bool writeTestFile(const QString &path, const QByteArray &contents)
+{
+    if (!QDir().mkpath(QFileInfo(path).absolutePath()))
+        return false;
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    return file.write(contents) == contents.size();
+}
+
+bool commitTestTree(const QString &dir, const QString &message,
+                    const QString &timestamp, const QString &name,
+                    const QString &email,
+                    const QString &committerTimestamp = QString())
+{
+    if (!runTestGit(dir, {QStringLiteral("add"), QStringLiteral("-A")}))
+        return false;
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    environment.insert(QStringLiteral("GIT_AUTHOR_NAME"), name);
+    environment.insert(QStringLiteral("GIT_AUTHOR_EMAIL"), email);
+    environment.insert(QStringLiteral("GIT_AUTHOR_DATE"), timestamp);
+    environment.insert(QStringLiteral("GIT_COMMITTER_NAME"), name);
+    environment.insert(QStringLiteral("GIT_COMMITTER_EMAIL"), email);
+    environment.insert(QStringLiteral("GIT_COMMITTER_DATE"),
+                       committerTimestamp.isEmpty() ? timestamp
+                                                    : committerTimestamp);
+    return runTestGit(dir,
+                      {QStringLiteral("commit"), QStringLiteral("-q"),
+                       QStringLiteral("-m"), message},
+                      nullptr, &environment);
+}
+
+QString testGitHead(const QString &dir)
+{
+    QByteArray output;
+    if (!runTestGit(dir,
+                    {QStringLiteral("rev-parse"), QStringLiteral("HEAD")},
+                    &output))
+        return {};
+    return QString::fromUtf8(output).trimmed();
+}
+
+QJsonArray contributionRow(const RepoContributionSnapshot &snapshot,
+                           const QString &date, const QString &actor)
+{
+    for (const QJsonValue &value : snapshot.payload.value("days").toArray()) {
+        const QJsonArray row = value.toArray();
+        if (row.size() == 6 && row.at(0).toString() == date &&
+            row.at(1).toString() == actor)
+            return row;
+    }
+    return {};
+}
+
+qint64 utcMs(const QString &iso)
+{
+    return QDateTime::fromString(iso, Qt::ISODate).toMSecsSinceEpoch();
+}
+
+QByteArray legacyPullCanonical(const PullRequest &pull)
+{
+    const QChar nul(QChar::Null);
+    const QString content = pull.title + nul + pull.base + nul + pull.head +
+                            nul + pull.patch;
+    const QByteArray contentHash =
+        QCryptographicHash::hash(content.toUtf8(), QCryptographicHash::Sha256)
+            .toHex();
+    return QByteArrayLiteral("forkmesh-pull-event-v1\n") +
+           pull.author.toUtf8() + QByteArrayLiteral("\n") +
+           QByteArray::number(pull.ts) + QByteArrayLiteral("\n") +
+           contentHash;
 }
 
 } // namespace
@@ -456,6 +574,76 @@ int main(int argc, char *argv[])
     check(!verifyEd25519(identity.publicKey(), hostSig,
                          QByteArray("forkmesh-host-v1\nalice\nmyrepo\n2000")),
           "host-token signature is bound to its timestamp");
+
+    const QString deviceProofKey = QStringLiteral(
+        "ERERERERERERERERERERERERERERERERERERERERERE");
+    const QString deviceProofTimestamp = QStringLiteral("1783000000000");
+    const QByteArray deviceProofCanonical =
+        ForkMeshIdentity::deviceBindCanonical(
+            QStringLiteral(" Alice-Node "), deviceProofKey,
+            deviceProofTimestamp);
+    check(deviceProofCanonical ==
+              QByteArrayLiteral("forkmesh-device-bind-v1\n"
+                                "alice-node\n"
+                                "ERERERERERERERERERERERERERERERERERERERERERE\n"
+                                "1783000000000"),
+          "device-bind canonical matches the cross-language vector");
+    const QString deviceProofSignature =
+        identity.signData(ForkMeshIdentity::deviceBindCanonical(
+            QStringLiteral("Alice-Node"), identity.publicKey(),
+            deviceProofTimestamp));
+    check(ForkMeshIdentity::verifySignature(
+              identity.publicKey(), deviceProofSignature,
+              ForkMeshIdentity::deviceBindCanonical(
+                  QStringLiteral("alice-node"), identity.publicKey(),
+                  deviceProofTimestamp)) &&
+              !ForkMeshIdentity::verifySignature(
+                  identity.publicKey(), deviceProofSignature,
+                  ForkMeshIdentity::deviceBindCanonical(
+                      QStringLiteral("other-node"), identity.publicKey(),
+                      deviceProofTimestamp)),
+          "device-bind proof signs the exact normalized account canonical");
+
+    check(AccountCapability::allowsPasswordOnlyFallback(
+              QStringLiteral("pubkey_mismatch")) &&
+              AccountCapability::allowsPasswordOnlyFallback(
+                  QStringLiteral("device_proof_required")) &&
+              AccountCapability::allowsPasswordOnlyFallback(
+                  QStringLiteral("device_key_conflict")) &&
+              !AccountCapability::allowsPasswordOnlyFallback(
+                  QStringLiteral("invalid_credentials")),
+          "only device-binding errors allow safe password-only login fallback");
+    check(AccountCapability::ownerSigningAllowed(
+              true, true, QStringLiteral("Alice-Node")) &&
+              !AccountCapability::ownerSigningAllowed(
+                  true, true, QString()) &&
+              !AccountCapability::ownerSigningAllowed(
+                  true, false, QStringLiteral("Alice-Node")) &&
+              !AccountCapability::ownerSigningAllowed(
+                  false, true, QStringLiteral("Alice-Node")) &&
+              AccountCapability::ownerSigningAllowed(
+                  true, true, QStringLiteral("Alice-Node"),
+                  QStringLiteral(" alice-node ")) &&
+              !AccountCapability::ownerSigningAllowed(
+                  true, true, QStringLiteral("alice-node"),
+                  QStringLiteral("other-node")),
+          "owner signing requires an active key-capable desktop session");
+    check(AccountCapability::persistedMarkerMatches(
+              QStringLiteral("Alice-Node"), QStringLiteral("primary-key"),
+              QStringLiteral(" alice-node "), QStringLiteral("primary-key")) &&
+              !AccountCapability::persistedMarkerMatches(
+                  QStringLiteral("alice-node"), QStringLiteral("primary-key"),
+                  QStringLiteral("other-node"), QStringLiteral("primary-key")) &&
+              !AccountCapability::persistedMarkerMatches(
+                  QStringLiteral("alice-node"), QStringLiteral("primary-key"),
+                  QStringLiteral("alice-node"), QStringLiteral("rotated-key")) &&
+              !AccountCapability::persistedMarkerMatches(
+                  QStringLiteral("alice-node"), QStringLiteral(" primary-key "),
+                  QStringLiteral("alice-node"), QStringLiteral("primary-key")) &&
+              !AccountCapability::persistedMarkerMatches(
+                  QString(), QString(), QStringLiteral("alice-node"),
+                  QStringLiteral("primary-key")),
+          "desktop capability persistence is scoped to the exact account and key");
 
     // --- Issue event signing ---------------------------------------------
     // Pin the canonical byte format so the C++ client, the Python seed
@@ -806,6 +994,2663 @@ int main(int argc, char *argv[])
     check(!verifyEd25519(tampered.author, tampered.sig,
                          IssueStore::canonicalString(7, tampered)),
           "tampered issue-event signature is rejected");
+
+    // --- Repository contribution snapshot bounds --------------------------
+    {
+        using namespace RepoContributionSnapshotInternal;
+
+        DayMap exactDays;
+        DayCounts commitOnly;
+        commitOnly.commits = 1;
+        for (int i = 0; i < kMaxDayRows; ++i) {
+            exactDays.insert(dayActorKey(QStringLiteral("2026-07-13"),
+                                         QString::number(i)),
+                             commitOnly);
+        }
+        const RemovedCoverage exactDayCoverage = trimDayLimit(&exactDays);
+        check(exactDays.size() == kMaxDayRows &&
+                  !exactDayCoverage.commits &&
+                  !exactDayCoverage.collaboration,
+              "snapshot accepts exactly 2048 day rows");
+
+        DayMap overflowingDays = exactDays;
+        overflowingDays.insert(dayActorKey(QStringLiteral("2026-07-12"),
+                                            QStringLiteral("oldest")),
+                                commitOnly);
+        const RemovedCoverage overflowingDayCoverage =
+            trimDayLimit(&overflowingDays);
+        check(overflowingDays.size() == kMaxDayRows &&
+                  overflowingDayCoverage.commits &&
+                  !overflowingDayCoverage.collaboration &&
+                  !overflowingDays.contains(dayActorKey(
+                      QStringLiteral("2026-07-12"),
+                      QStringLiteral("oldest"))),
+              "snapshot trims the oldest commit-only row at 2049 rows");
+
+        DayMap mixedDays;
+        DayCounts collaborationOnly;
+        collaborationOnly.reviews = 1;
+        mixedDays.insert(dayActorKey(QStringLiteral("2026-07-12"),
+                                     QStringLiteral("commit")),
+                         commitOnly);
+        mixedDays.insert(dayActorKey(QStringLiteral("2026-07-12"),
+                                     QStringLiteral("review")),
+                         collaborationOnly);
+        const RemovedCoverage mixedCoverage = removeOldestDate(&mixedDays);
+        check(mixedDays.isEmpty() && mixedCoverage.commits &&
+                  mixedCoverage.collaboration,
+              "snapshot reports both coverage categories for mixed removed rows");
+
+        ExtensionMap exactExtensions;
+        for (int i = 0; i < kMaxExtensions; ++i) {
+            ExtensionCounts counts;
+            counts.bytes = i + 1;
+            counts.files = 1;
+            exactExtensions.insert(QStringLiteral("ext%1").arg(i, 3, 10,
+                                                                QLatin1Char('0')),
+                                   counts);
+        }
+        check(!trimExtensionLimit(&exactExtensions) &&
+                  exactExtensions.size() == kMaxExtensions,
+              "snapshot accepts exactly 256 extensions");
+
+        ExtensionCounts smallestExtension;
+        smallestExtension.files = 1;
+        exactExtensions.insert(QStringLiteral("drop"), smallestExtension);
+        check(trimExtensionLimit(&exactExtensions) &&
+                  exactExtensions.size() == kMaxExtensions &&
+                  !exactExtensions.contains(QStringLiteral("drop")),
+              "snapshot deterministically trims the smallest of 257 extensions");
+
+        int boundedCount = kMaxCount - 1;
+        check(incrementBounded(&boundedCount) && boundedCount == kMaxCount &&
+                  !incrementBounded(&boundedCount) && boundedCount == kMaxCount,
+              "snapshot count cap includes one million and rejects overflow");
+
+        const QByteArray exactEncodedBoundary(49152, 'x');
+        const QByteArray overEncodedBoundary(49153, 'x');
+        check(encodedSize(exactEncodedBoundary) == kMaxPayloadEncoded &&
+                  encodedPayloadFits(exactEncodedBoundary) &&
+                  encodedSize(overEncodedBoundary) > kMaxPayloadEncoded &&
+                  !encodedPayloadFits(overEncodedBoundary),
+              "snapshot encoded payload bound includes exactly 64 KiB");
+
+        QByteArray boundedOutput = QByteArrayLiteral("ab");
+        const bool exactOutputAccepted = appendBounded(
+            &boundedOutput, QByteArrayLiteral("cd"), 4);
+        const bool overflowOutputAccepted = appendBounded(
+            &boundedOutput, QByteArrayLiteral("e"), 4);
+        check(exactOutputAccepted && !overflowOutputAccepted &&
+                  boundedOutput == QByteArrayLiteral("abcd"),
+              "snapshot bounded append accepts the cap and rejects overflow");
+
+        qsizetype strictRemaining = 6;
+        QByteArray strictFirst;
+        QByteArray strictSecond;
+        const bool strictExactAccepted =
+            StrictGitReadInternal::appendBounded(
+                &strictFirst, QByteArrayLiteral("abcd"), 4,
+                &strictRemaining);
+        const bool strictPerCommandOverflow =
+            StrictGitReadInternal::appendBounded(
+                &strictFirst, QByteArrayLiteral("e"), 4,
+                &strictRemaining);
+        const bool strictTotalExactAccepted =
+            StrictGitReadInternal::appendBounded(
+                &strictSecond, QByteArrayLiteral("xy"), 4,
+                &strictRemaining);
+        const bool strictTotalOverflow =
+            StrictGitReadInternal::appendBounded(
+                &strictSecond, QByteArrayLiteral("z"), 4,
+                &strictRemaining);
+        check(strictExactAccepted && !strictPerCommandOverflow &&
+                  strictTotalExactAccepted && !strictTotalOverflow &&
+                  strictFirst == QByteArrayLiteral("abcd") &&
+                  strictSecond == QByteArrayLiteral("xy") &&
+                  strictRemaining == 0,
+              "strict Git budget accepts exact caps and rejects cumulative overflow");
+    }
+
+    // --- Signed repository contribution snapshot --------------------------
+    {
+        const QString originalAppName = QCoreApplication::applicationName();
+        QCoreApplication::setApplicationName(originalAppName + "SnapshotReviewer");
+        ForkMeshIdentity reviewerIdentity;
+        const bool reviewerLoaded = reviewerIdentity.load();
+        QCoreApplication::setApplicationName(originalAppName);
+        check(reviewerLoaded && reviewerIdentity.isValid() &&
+                  reviewerIdentity.publicKey() != identity.publicKey(),
+              "snapshot test creates a distinct reviewer identity");
+
+        QTemporaryDir snapshotRepo;
+        check(snapshotRepo.isValid(), "snapshot test repository is valid");
+        const QString dir = snapshotRepo.path();
+        const QString configuredCommitAuthorName = QStringLiteral("Owner Name");
+        bool setup = snapshotRepo.isValid() &&
+                     runTestGit(dir, {QStringLiteral("init"), QStringLiteral("-q"),
+                                      QStringLiteral("-b"), QStringLiteral("main")}) &&
+                     runTestGit(dir, {QStringLiteral("config"),
+                                      QStringLiteral("user.name"),
+                                      configuredCommitAuthorName}) &&
+                     runTestGit(dir, {QStringLiteral("config"),
+                                      QStringLiteral("user.email"),
+                                      QStringLiteral("owner@example.test")});
+
+        setup = setup && writeTestFile(dir + "/history.tmp", "a") &&
+                commitTestTree(dir, "outside retention", "2021-07-12T23:59:59Z",
+                               "Owner Name", "owner@example.test");
+        setup = setup && writeTestFile(dir + "/history.tmp", "bb") &&
+                commitTestTree(dir, "retention boundary", "2021-07-13T00:00:00Z",
+                               "Owner Name", "owner@example.test");
+        setup = setup && writeTestFile(dir + "/history.tmp", "ccc") &&
+                commitTestTree(dir, "in-range author date",
+                               "2026-07-09T09:00:00Z", "Owner Name",
+                               "owner@example.test", "2021-07-01T09:00:00Z");
+        setup = setup && writeTestFile(dir + "/src/main.cpp", "abcdefghij") &&
+                writeTestFile(dir + "/include/api.hpp", "1234567") &&
+                writeTestFile(dir + "/README.md", "hello") &&
+                writeTestFile(dir + "/src/binary.cpp",
+                              QByteArray("text\0binary", 11)) &&
+                writeTestFile(
+                    dir + "/src/generated.cpp",
+                    "// Code generated by the snapshot fixture. DO NOT EDIT.\n"
+                    "generated bytes\n") &&
+                writeTestFile(dir + "/assets.bin", "binary") &&
+                writeTestFile(dir + "/.forkmesh/private.json", "123456789") &&
+                commitTestTree(dir, "supported files", "2026-07-10T09:00:00Z",
+                               "Owner Name", "owner@example.test");
+        setup = setup && writeTestFile(dir + "/src/main.cpp", "ABCDEFGHIJ") &&
+                commitTestTree(dir, "other author", "2026-07-11T09:00:00Z",
+                               configuredCommitAuthorName, "other@example.test");
+        setup = setup && writeTestFile(dir + "/src/main.cpp", "abcdefghij") &&
+                commitTestTree(dir, "future commit", "2026-07-14T09:00:00Z",
+                               "Owner Name", "owner@example.test");
+        check(setup, "snapshot test Git history is created");
+
+        if (setup && reviewerLoaded) {
+            // Store commits are deliberately authored by the nonmatching Git
+            // identity so metadata writes do not become owner commit credit.
+            check(runTestGit(dir, {QStringLiteral("config"),
+                                   QStringLiteral("user.name"),
+                                   QStringLiteral("Metadata Writer")}) &&
+                      runTestGit(dir, {QStringLiteral("config"),
+                                       QStringLiteral("user.email"),
+                                       QStringLiteral("metadata@example.test")}),
+                  "snapshot test switches metadata commit identity");
+
+            IssueStore issueWriter(dir, QString(), &identity, "owner");
+            IssueStore reviewerIssueSigner(QString(), QString(), &reviewerIdentity,
+                                           "reviewer");
+            QString storeError;
+            IssueEvent validOpen;
+            validOpen.type = "open";
+            validOpen.id = "open-1";
+            validOpen.title = "Valid signed issue";
+            validOpen.body = "body";
+            validOpen.ts = utcMs("2026-07-12T23:30:00Z");
+            validOpen = reviewerIssueSigner.makeSignedEvent(1, validOpen);
+            check(issueWriter.applyRemoteEvent(1, validOpen, validOpen.title,
+                                               &storeError),
+                  "snapshot test stores a valid signed issue open");
+
+            IssueEvent invalidOpen;
+            invalidOpen.type = "open";
+            invalidOpen.id = "open-2";
+            invalidOpen.title = "Tampered issue";
+            invalidOpen.body = "before";
+            invalidOpen.ts = utcMs("2026-07-12T23:45:00Z");
+            invalidOpen = reviewerIssueSigner.makeSignedEvent(2, invalidOpen);
+            invalidOpen.body = "after";
+            check(issueWriter.applyRemoteEvent(2, invalidOpen, invalidOpen.title,
+                                               &storeError),
+                  "snapshot test stores an unverifiable issue fixture");
+
+            IssueEvent issueComment;
+            issueComment.type = "comment";
+            issueComment.body = "not a contribution";
+            issueComment.ts = utcMs("2026-07-13T01:00:00Z");
+            issueComment = reviewerIssueSigner.makeSignedEvent(1, issueComment);
+            check(issueWriter.applyRemoteEvent(1, issueComment, validOpen.title,
+                                               &storeError),
+                  "snapshot test stores a signed non-open issue event");
+
+            PullStore pullWriter(dir, QString(), &identity, "owner");
+            PullStore ownerPullSigner(QString(), QString(), &identity, "owner");
+            PullStore reviewerPullSigner(QString(), QString(), &reviewerIdentity,
+                                         "reviewer");
+            PullRequest validPull;
+            validPull.title = "Valid pull";
+            validPull.description = "description";
+            validPull.base = "main";
+            validPull.head = "feature";
+            validPull.patch =
+                "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -0,0 +1 @@\n+x\n";
+            validPull.ts = utcMs("2026-07-13T00:15:00Z");
+            validPull = ownerPullSigner.makeSignedPull(validPull);
+            check(pullWriter.applyRemotePull(validPull, &storeError),
+                  "snapshot test stores a valid signed pull");
+
+            PullRequest invalidPull = validPull;
+            invalidPull.title = "Tampered pull";
+            invalidPull.ts = utcMs("2026-07-13T00:30:00Z");
+            check(pullWriter.applyRemotePull(invalidPull, &storeError),
+                  "snapshot test stores an unverifiable pull fixture");
+
+            PullRequest legacyPull;
+            legacyPull.title = "Legacy signed pull";
+            legacyPull.description = "legacy description";
+            legacyPull.base = "main";
+            legacyPull.head = "legacy-feature";
+            legacyPull.patch =
+                "diff --git a/b b/b\n--- a/b\n+++ b/b\n@@ -0,0 +1 @@\n+y\n";
+            legacyPull.ts = utcMs("2026-07-12T22:00:00Z");
+            legacyPull.author = reviewerIdentity.publicKey();
+            legacyPull.authorName = "reviewer";
+            legacyPull.sig =
+                reviewerIdentity.signData(legacyPullCanonical(legacyPull));
+            check(verifyEd25519(legacyPull.author, legacyPull.sig,
+                                legacyPullCanonical(legacyPull)),
+                  "snapshot fixture verifies a legacy four-field pull signature");
+            check(pullWriter.applyRemotePull(legacyPull, &storeError),
+                  "snapshot test stores a legacy signed pull");
+
+            PullEvent validReview;
+            validReview.type = "review";
+            validReview.state = "approved";
+            validReview.body = "looks good";
+            validReview.ts = utcMs("2026-07-13T10:00:00Z");
+            validReview = reviewerPullSigner.makeSignedEvent(1, validReview);
+            check(pullWriter.applyRemoteEvent(1, validReview, &storeError) &&
+                      pullWriter.applyRemoteEvent(1, validReview, &storeError),
+                  "snapshot test stores a replayed signed review");
+
+            PullEvent aliasedSignatureReview = validReview;
+            const QByteArray signatureAlphabet = QByteArrayLiteral(
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_");
+            QByteArray aliasedSignature = validReview.sig.toLatin1();
+            const int signatureFinalSextet =
+                signatureAlphabet.indexOf(aliasedSignature.back());
+            if (signatureFinalSextet >= 0)
+                aliasedSignature.back() =
+                    signatureAlphabet.at(signatureFinalSextet | 1);
+            aliasedSignatureReview.sig = QString::fromLatin1(aliasedSignature);
+            check(aliasedSignatureReview.sig.size() == 86 &&
+                      aliasedSignatureReview.sig != validReview.sig &&
+                      verifyEd25519(aliasedSignatureReview.author,
+                                    aliasedSignatureReview.sig,
+                                    PullStore::canonicalString(
+                                        1, aliasedSignatureReview)),
+                  "snapshot fixture verifies a noncanonical signature alias");
+            check(pullWriter.applyRemoteEvent(1, aliasedSignatureReview,
+                                              &storeError),
+                  "snapshot test stores a noncanonical signature replay");
+
+            PullEvent nonCanonicalReview;
+            nonCanonicalReview.type = "review";
+            nonCanonicalReview.id = "noncanonical-review";
+            nonCanonicalReview.state = "approved";
+            nonCanonicalReview.body =
+                "cryptographically valid noncanonical actor";
+            nonCanonicalReview.ts = utcMs("2026-07-13T10:02:00Z");
+            QByteArray nonCanonicalActor =
+                reviewerIdentity.publicKey().toLatin1();
+            const QByteArray base64UrlAlphabet = QByteArrayLiteral(
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_");
+            const int finalSextet =
+                base64UrlAlphabet.indexOf(nonCanonicalActor.back());
+            if (finalSextet >= 0)
+                nonCanonicalActor.back() = base64UrlAlphabet.at(finalSextet | 1);
+            nonCanonicalReview.author = QString::fromLatin1(nonCanonicalActor);
+            nonCanonicalReview.sig = reviewerIdentity.signData(
+                PullStore::canonicalString(1, nonCanonicalReview));
+            check(nonCanonicalReview.author.size() == 43 &&
+                      nonCanonicalReview.author != reviewerIdentity.publicKey() &&
+                      verifyEd25519(nonCanonicalReview.author,
+                                    nonCanonicalReview.sig,
+                                    PullStore::canonicalString(
+                                        1, nonCanonicalReview)),
+                  "snapshot fixture accepts a signed noncanonical actor spelling");
+            check(pullWriter.applyRemoteEvent(1, nonCanonicalReview,
+                                              &storeError),
+                  "snapshot test stores a signed noncanonical review actor");
+
+            PullEvent pullComment;
+            pullComment.type = "comment";
+            pullComment.body = "not a review";
+            pullComment.ts = utcMs("2026-07-13T10:05:00Z");
+            pullComment = reviewerPullSigner.makeSignedEvent(1, pullComment);
+            check(pullWriter.applyRemoteEvent(1, pullComment, &storeError),
+                  "snapshot test stores a signed pull comment");
+
+            PullEvent invalidReview = validReview;
+            invalidReview.body = "tampered review";
+            invalidReview.ts = utcMs("2026-07-13T10:10:00Z");
+            check(pullWriter.applyRemoteEvent(1, invalidReview, &storeError),
+                  "snapshot test stores an unverifiable review fixture");
+
+            check(runTestGit(dir, {QStringLiteral("config"),
+                                   QStringLiteral("user.name"),
+                                   QStringLiteral("Owner Name")}) &&
+                      runTestGit(dir, {QStringLiteral("config"),
+                                       QStringLiteral("user.email"),
+                                       QStringLiteral("OWNER@EXAMPLE.TEST")}),
+                  "snapshot test restores configured owner identity");
+
+            RepoContributionSnapshotInput input;
+            input.workTreePath = dir;
+            input.branch = "main";
+            input.head = testGitHead(dir);
+            input.publishingKey = identity.publicKey();
+            input.capturedAtMs = utcMs("2026-07-13T12:00:00Z");
+            input.retentionYears = 5;
+
+            const RepoContributionSnapshot snapshot =
+                buildRepoContributionSnapshot(input);
+            const RepoContributionSnapshot repeated =
+                buildRepoContributionSnapshot(input);
+            check(snapshot.complete && snapshot.error.isEmpty(),
+                  "repository contribution snapshot builds successfully");
+            check(repeated.complete &&
+                      repeated.compactPayload == snapshot.compactPayload,
+                  "repository contribution compact bytes are deterministic");
+
+            QStringList payloadKeys = snapshot.payload.keys();
+            payloadKeys.sort();
+            QStringList expectedPayloadKeys{
+                "branch", "capturedAt", "coverage", "days", "extensions",
+                "fileCount", "from", "head", "through", "version"};
+            expectedPayloadKeys.sort();
+            QStringList coverageKeys =
+                snapshot.payload.value("coverage").toObject().keys();
+            coverageKeys.sort();
+            check(payloadKeys == expectedPayloadKeys &&
+                      coverageKeys ==
+                          (QStringList{"collaboration", "commits", "languages"}),
+                  "snapshot payload has the exact version 1 keys");
+            check(snapshot.payload.value("version").toInt() == 1 &&
+                      snapshot.payload.value("capturedAt").toVariant().toLongLong() ==
+                          input.capturedAtMs &&
+                      snapshot.payload.value("head").toString() == input.head &&
+                      snapshot.payload.value("branch").toString() == "main" &&
+                      snapshot.payload.value("from").toString() == "2021-07-13" &&
+                      snapshot.payload.value("through").toString() == "2026-07-13",
+                  "snapshot identity and five-year UTC bounds are exact");
+
+            RepoContributionSnapshotInput leapInput = input;
+            leapInput.capturedAtMs = utcMs("2024-02-29T12:00:00Z");
+            const RepoContributionSnapshot leapSnapshot =
+                buildRepoContributionSnapshot(leapInput);
+            check(leapSnapshot.complete &&
+                      leapSnapshot.payload.value("from").toString() == "2019-03-01" &&
+                      leapSnapshot.payload.value("through").toString() == "2024-02-29",
+                  "snapshot leap-day boundary stays within five calendar years");
+
+            int commitTotal = 0;
+            int issueTotal = 0;
+            int pullTotal = 0;
+            int reviewTotal = 0;
+            QString previousRowKey;
+            for (const QJsonValue &value :
+                 snapshot.payload.value("days").toArray()) {
+                const QJsonArray row = value.toArray();
+                if (row.size() != 6)
+                    continue;
+                const QString rowKey = row.at(0).toString() + "\n" +
+                                       row.at(1).toString();
+                check(previousRowKey.isEmpty() || previousRowKey < rowKey,
+                      "snapshot day rows are sorted and unique");
+                previousRowKey = rowKey;
+                commitTotal += row.at(2).toInt();
+                issueTotal += row.at(3).toInt();
+                pullTotal += row.at(4).toInt();
+                reviewTotal += row.at(5).toInt();
+            }
+            check(commitTotal == 3 && issueTotal == 1 && pullTotal == 2 &&
+                      reviewTotal == 1,
+                  "snapshot counts only matching commits and verified event types");
+            check(contributionRow(snapshot, "2021-07-13", identity.publicKey())
+                          .at(2)
+                          .toInt() == 1 &&
+                      contributionRow(snapshot, "2026-07-10", identity.publicKey())
+                              .at(2)
+                              .toInt() == 1 &&
+                      contributionRow(snapshot, "2026-07-11", identity.publicKey())
+                          .isEmpty(),
+                  "snapshot includes the UTC retention boundary only for configured email");
+            check(contributionRow(snapshot, "2026-07-12",
+                                  reviewerIdentity.publicKey())
+                          .at(3)
+                          .toInt() == 1 &&
+                      contributionRow(snapshot, "2026-07-12",
+                                      reviewerIdentity.publicKey())
+                              .at(4)
+                              .toInt() == 1 &&
+                      contributionRow(snapshot, "2026-07-13", identity.publicKey())
+                              .at(4)
+                              .toInt() == 1 &&
+                      contributionRow(snapshot, "2026-07-13",
+                                      reviewerIdentity.publicKey())
+                              .at(5)
+                              .toInt() == 1 &&
+                      contributionRow(snapshot, "2026-07-13",
+                                      nonCanonicalReview.author)
+                          .isEmpty(),
+                  "snapshot retains signed issue pull and review actor keys");
+
+            const QJsonArray extensions =
+                snapshot.payload.value("extensions").toArray();
+            check(extensions.size() == 3 &&
+                      extensions.at(0).toArray() ==
+                          QJsonArray{"cpp", 10, 1} &&
+                      extensions.at(1).toArray() ==
+                          QJsonArray{"hpp", 7, 1} &&
+                      extensions.at(2).toArray() ==
+                          QJsonArray{"md", 5, 1},
+                  "snapshot extension bytes are exact sorted and supported-only");
+            check(snapshot.payload.value("fileCount").toInt() == 7,
+                  "snapshot file count excludes internal metadata but keeps other files");
+            check(!snapshot.compactPayload.contains("owner@example.test") &&
+                      !snapshot.compactPayload.contains("Owner Name") &&
+                      !snapshot.compactPayload.contains("Metadata Writer"),
+                  "snapshot does not expose raw Git or display identities");
+
+            const QJsonObject coverage =
+                snapshot.payload.value("coverage").toObject();
+            check(coverage.value("commits").toString() == "complete" &&
+                      coverage.value("collaboration").toString() == "complete" &&
+                      coverage.value("languages").toString() == "complete",
+                  "snapshot reports complete coverage for fully readable sources");
+
+            RepoContributionSnapshotInternal::LanguageInspectionLimits
+                exactLanguageLimits;
+            exactLanguageLimits.maxBlobs = 5;
+            RepoContributionSnapshot exactLanguageSnapshot;
+            {
+                RepoContributionSnapshotInternal::
+                    ScopedLanguageInspectionLimitsForTests scoped(
+                        exactLanguageLimits);
+                exactLanguageSnapshot = buildRepoContributionSnapshot(input);
+            }
+            check(exactLanguageSnapshot.complete &&
+                      exactLanguageSnapshot.payload.value("coverage")
+                              .toObject()
+                              .value("languages")
+                              .toString() == "complete" &&
+                      exactLanguageSnapshot.payload.value("extensions") ==
+                          snapshot.payload.value("extensions"),
+                  "snapshot language inspection accepts the exact blob cap");
+
+            RepoContributionSnapshotInternal::LanguageInspectionLimits
+                overflowLanguageLimits = exactLanguageLimits;
+            overflowLanguageLimits.maxBlobs = 4;
+            RepoContributionSnapshot overflowLanguageSnapshot;
+            {
+                RepoContributionSnapshotInternal::
+                    ScopedLanguageInspectionLimitsForTests scoped(
+                        overflowLanguageLimits);
+                overflowLanguageSnapshot =
+                    buildRepoContributionSnapshot(input);
+            }
+            check(overflowLanguageSnapshot.complete &&
+                      overflowLanguageSnapshot.payload.value("coverage")
+                              .toObject()
+                              .value("languages")
+                              .toString() == "partial",
+                  "snapshot marks incomplete language inspection partial");
+            const QByteArray encoded = snapshot.compactPayload.toBase64(
+                QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals);
+            check(encoded.size() <= 64 * 1024,
+                  "snapshot transport stays within the encoded payload cap");
+
+            const QByteArray digest = QCryptographicHash::hash(
+                                          snapshot.compactPayload,
+                                          QCryptographicHash::Sha256)
+                                          .toHex();
+            const QByteArray expectedCanonical =
+                QByteArrayLiteral("forkmesh-profile-contribution-v1\nowner\nrepo\n") +
+                QByteArrayLiteral("1783944000000\n") + digest;
+            check(profileContributionCanonical(
+                      "owner", "repo", "1783944000000", snapshot.compactPayload) ==
+                      expectedCanonical,
+                  "snapshot signature canonical hashes the exact compact bytes");
+
+            const QString contributionUpdatedAt =
+                QString::number(input.capturedAtMs);
+            const QJsonObject contributionFields = signedContributionFields(
+                snapshot, QStringLiteral("owner"), QStringLiteral("repo"),
+                contributionUpdatedAt, identity);
+            QStringList contributionKeys = contributionFields.keys();
+            contributionKeys.sort();
+            const QByteArray contributionEncoded =
+                contributionFields.value("contributionPayload")
+                    .toString()
+                    .toLatin1();
+            const QByteArray contributionDecoded = QByteArray::fromBase64(
+                contributionEncoded, QByteArray::Base64UrlEncoding |
+                                         QByteArray::AbortOnBase64DecodingErrors);
+            const QString contributionSignature =
+                contributionFields.value("contributionSig").toString();
+            const QByteArray contributionCanonical =
+                profileContributionCanonical(
+                    QStringLiteral("owner"), QStringLiteral("repo"),
+                    contributionUpdatedAt, snapshot.compactPayload);
+            check(contributionKeys ==
+                          (QStringList{QStringLiteral("contributionPayload"),
+                                       QStringLiteral("contributionSig")}) &&
+                      contributionDecoded == snapshot.compactPayload &&
+                      !contributionEncoded.contains('=') &&
+                      contributionEncoded.size() <= 64 * 1024 &&
+                      ForkMeshIdentity::verifySignature(
+                          identity.publicKey(), contributionSignature,
+                          contributionCanonical),
+                  "signed contribution fields carry the exact payload and a valid signature");
+            check(!ForkMeshIdentity::verifySignature(
+                      identity.publicKey(), contributionSignature,
+                      profileContributionCanonical(
+                          QStringLiteral("owner"), QStringLiteral("other"),
+                          contributionUpdatedAt, snapshot.compactPayload)) &&
+                      !ForkMeshIdentity::verifySignature(
+                          identity.publicKey(), contributionSignature,
+                          profileContributionCanonical(
+                              QStringLiteral("owner"), QStringLiteral("repo"),
+                              contributionUpdatedAt,
+                              snapshot.compactPayload + 'x')),
+                  "signed contribution signature rejects tampered canonical inputs");
+
+            RepoContributionSnapshot invalidContribution = snapshot;
+            invalidContribution.complete = false;
+            check(signedContributionFields(
+                      invalidContribution, QStringLiteral("owner"),
+                      QStringLiteral("repo"), contributionUpdatedAt, identity)
+                      .isEmpty(),
+                  "signed contribution fields reject an incomplete snapshot");
+            invalidContribution = snapshot;
+            invalidContribution.error = QStringLiteral("snapshot error");
+            check(signedContributionFields(
+                      invalidContribution, QStringLiteral("owner"),
+                      QStringLiteral("repo"), contributionUpdatedAt, identity)
+                      .isEmpty(),
+                  "signed contribution fields reject a snapshot error");
+            invalidContribution = snapshot;
+            invalidContribution.compactPayload.clear();
+            check(signedContributionFields(
+                      invalidContribution, QStringLiteral("owner"),
+                      QStringLiteral("repo"), contributionUpdatedAt, identity)
+                      .isEmpty(),
+                  "signed contribution fields reject empty compact bytes");
+            invalidContribution = snapshot;
+            invalidContribution.compactPayload.append(' ');
+            check(signedContributionFields(
+                      invalidContribution, QStringLiteral("owner"),
+                      QStringLiteral("repo"), contributionUpdatedAt, identity)
+                      .isEmpty(),
+                  "signed contribution fields reject mismatched compact bytes");
+            check(signedContributionFields(
+                      snapshot, QStringLiteral("owner"),
+                      QStringLiteral("repo"),
+                      QString::number(input.capturedAtMs + 1), identity)
+                      .isEmpty() &&
+                      signedContributionFields(
+                          snapshot, QStringLiteral("owner"),
+                          QStringLiteral("repo"),
+                          QStringLiteral("01783944000000"), identity)
+                          .isEmpty(),
+                  "signed contribution fields require the exact canonical capture time");
+
+            RepoContributionSnapshot oversizedContribution;
+            oversizedContribution.complete = true;
+            oversizedContribution.payload =
+                QJsonObject{{QStringLiteral("capturedAt"),
+                             double(input.capturedAtMs)},
+                            {QStringLiteral("padding"),
+                             QString(50 * 1024, QLatin1Char('x'))}};
+            oversizedContribution.compactPayload =
+                QJsonDocument(oversizedContribution.payload)
+                    .toJson(QJsonDocument::Compact);
+            check(oversizedContribution.compactPayload
+                          .toBase64(QByteArray::Base64UrlEncoding |
+                                    QByteArray::OmitTrailingEquals)
+                          .size() >
+                      64 * 1024 &&
+                      signedContributionFields(
+                          oversizedContribution, QStringLiteral("owner"),
+                          QStringLiteral("repo"), contributionUpdatedAt,
+                          identity)
+                          .isEmpty(),
+                  "signed contribution fields reject an oversized transport");
+            ForkMeshIdentity unloadedIdentity;
+            check(signedContributionFields(
+                      snapshot, QStringLiteral("owner"),
+                      QStringLiteral("repo"), contributionUpdatedAt,
+                      unloadedIdentity)
+                      .isEmpty() &&
+                      signedContributionFields(
+                          snapshot, QStringLiteral("bad owner"),
+                          QStringLiteral("repo"), contributionUpdatedAt,
+                          identity)
+                          .isEmpty(),
+                  "signed contribution fields reject invalid signing inputs");
+
+            const QString contributionCacheKey =
+                RepoContributionPublicationCache::key(
+                    QStringLiteral("owner"), QStringLiteral("repo"),
+                    input.head, input.branch, identity.publicKey(),
+                    QStringLiteral("dependency-a"));
+            check(contributionCacheKey.size() == 64 &&
+                      contributionCacheKey ==
+                          RepoContributionPublicationCache::key(
+                              QStringLiteral("owner"), QStringLiteral("repo"),
+                              input.head, input.branch, identity.publicKey(),
+                              QStringLiteral("dependency-a")) &&
+                      contributionCacheKey !=
+                          RepoContributionPublicationCache::key(
+                              QStringLiteral("owne"),
+                              QStringLiteral("rrepo"), input.head,
+                              input.branch, identity.publicKey(),
+                              QStringLiteral("dependency-a")) &&
+                      contributionCacheKey !=
+                          RepoContributionPublicationCache::key(
+                              QStringLiteral("owner"), QStringLiteral("repo"),
+                              input.head, input.branch, identity.publicKey(),
+                              QStringLiteral("dependency-b")) &&
+                      RepoContributionPublicationCache::key(
+                          QStringLiteral("a"), QStringLiteral("bc"),
+                          QStringLiteral("d"), QStringLiteral("ef"),
+                          QStringLiteral("g"), QStringLiteral("h")) !=
+                          RepoContributionPublicationCache::key(
+                              QStringLiteral("ab"), QStringLiteral("c"),
+                              QStringLiteral("de"), QStringLiteral("f"),
+                              QStringLiteral("g"), QStringLiteral("h")),
+                  "contribution cache keys include stable dependency state");
+
+            using CacheBegin =
+                RepoContributionPublicationCache::BeginResult;
+            RepoContributionPublicationCache contributionCache(2, 2);
+            check(contributionCache.begin(contributionCacheKey, false) ==
+                          CacheBegin::Started &&
+                      contributionCache.begin(contributionCacheKey, true) ==
+                          CacheBegin::Coalesced &&
+                      contributionCache.inFlight(contributionCacheKey),
+                  "contribution cache coalesces in-flight work and preserves dialog intent");
+            const qint64 cacheTime = 1000000;
+            check(contributionCache.finish(contributionCacheKey, snapshot,
+                                           cacheTime) &&
+                      !contributionCache.inFlight(contributionCacheKey),
+                  "contribution cache returns preserved dialog intent on completion");
+            check(contributionCache.lookup(
+                      contributionCacheKey,
+                      cacheTime + 6LL * 60 * 60 * 1000 - 1)
+                          .has_value() &&
+                      !contributionCache.lookup(
+                           contributionCacheKey,
+                           cacheTime + 6LL * 60 * 60 * 1000)
+                           .has_value(),
+                  "successful contribution snapshots use the six-hour refresh TTL");
+
+            RepoContributionSnapshot cachedError;
+            cachedError.error = QString(500, QLatin1Char('x'));
+            const QString errorCacheKey =
+                RepoContributionPublicationCache::key(
+                    QStringLiteral("owner"), QStringLiteral("error"),
+                    input.head, input.branch, identity.publicKey(),
+                    QStringLiteral("dependency-a"));
+            check(contributionCache.begin(errorCacheKey, false) ==
+                          CacheBegin::Started &&
+                      !contributionCache.finish(errorCacheKey, cachedError,
+                                                cacheTime + 1),
+                  "contribution cache records an error without dialog intent");
+            const auto boundedCachedError = contributionCache.lookup(
+                errorCacheKey, cacheTime + 5LL * 60 * 1000);
+            check(boundedCachedError.has_value() &&
+                      !boundedCachedError->complete &&
+                      boundedCachedError->payload.isEmpty() &&
+                      boundedCachedError->compactPayload.isEmpty() &&
+                      !boundedCachedError->error.isEmpty() &&
+                      boundedCachedError->error.size() <= 240 &&
+                      !contributionCache.lookup(
+                           errorCacheKey,
+                           cacheTime + 1 + 5LL * 60 * 1000)
+                           .has_value(),
+                  "contribution errors are bounded and use the five-minute retry TTL");
+
+            const QString newestCacheKey =
+                RepoContributionPublicationCache::key(
+                    QStringLiteral("owner"), QStringLiteral("newest"),
+                    input.head, input.branch, identity.publicKey(),
+                    QStringLiteral("dependency-a"));
+            check(contributionCache.begin(newestCacheKey, false) ==
+                          CacheBegin::Started &&
+                      !contributionCache.finish(newestCacheKey, snapshot,
+                                                cacheTime + 2) &&
+                      !contributionCache.lookup(contributionCacheKey,
+                                                cacheTime + 2)
+                           .has_value() &&
+                      contributionCache.lookup(errorCacheKey, cacheTime + 2)
+                          .has_value() &&
+                      contributionCache.lookup(newestCacheKey, cacheTime + 2)
+                          .has_value(),
+                  "contribution cache evicts the oldest entry at its bound");
+
+            RepoContributionPublicationCache transitionCache(4, 2);
+            check(transitionCache.begin(contributionCacheKey, false) ==
+                          CacheBegin::Started &&
+                      !transitionCache.finish(contributionCacheKey, snapshot,
+                                              cacheTime) &&
+                      transitionCache.lookup(contributionCacheKey, cacheTime)
+                          .has_value(),
+                  "public contribution snapshot is cached before a visibility transition");
+            transitionCache.invalidate(contributionCacheKey);
+            check(!transitionCache.lookup(contributionCacheKey, cacheTime)
+                       .has_value(),
+                  "private publication invalidates the prior public snapshot");
+            check(transitionCache.begin(contributionCacheKey, true) ==
+                          CacheBegin::Started,
+                  "contribution scan starts before an in-flight invalidation");
+            transitionCache.invalidate(contributionCacheKey);
+            check(transitionCache.finish(contributionCacheKey, snapshot,
+                                         cacheTime + 1) &&
+                      !transitionCache.inFlight(contributionCacheKey) &&
+                      !transitionCache.lookup(contributionCacheKey,
+                                              cacheTime + 1)
+                           .has_value(),
+                  "invalidated in-flight contribution results are discarded");
+
+            check(transitionCache.claimStaleRetry(
+                      QStringLiteral("owner/repo"), contributionCacheKey) &&
+                      !transitionCache.claimStaleRetry(
+                          QStringLiteral("owner/repo"), contributionCacheKey) &&
+                      transitionCache.claimStaleRetry(
+                          QStringLiteral("owner/repo"), errorCacheKey),
+                  "stale-update retry is allowed once for each snapshot key");
+            transitionCache.clearStaleRetry(QStringLiteral("owner/repo"));
+            check(transitionCache.claimStaleRetry(
+                      QStringLiteral("owner/repo"), contributionCacheKey),
+                  "successful or reset publication clears the stale retry guard");
+
+            check(!repoContributionResponseNeedsRefresh(
+                      QJsonObject{{QStringLiteral("contributionsAccepted"), true}},
+                      true) &&
+                      repoContributionResponseNeedsRefresh(
+                          QJsonObject{{QStringLiteral("contributionsAccepted"),
+                                       false},
+                                      {QStringLiteral("contributionWarning"),
+                                       QStringLiteral("invalid payload")}},
+                          true) &&
+                      !repoContributionResponseNeedsRefresh(
+                          QJsonObject{{QStringLiteral("contributionsAccepted"),
+                                       false}},
+                          false) &&
+                      !repoContributionResponseNeedsRefresh(QJsonObject{}, true),
+                  "only an explicitly rejected submitted contribution requires a refresh");
+
+            QFile publicationFile(
+                QFileInfo(QString::fromUtf8(__FILE__))
+                    .absoluteDir()
+                    .filePath(QStringLiteral("../src/MainWindowRepos.cpp")));
+            const bool publicationOpened =
+                publicationFile.open(QIODevice::ReadOnly);
+            const QString publicationSource =
+                publicationOpened
+                    ? QString::fromUtf8(publicationFile.readAll())
+                    : QString();
+            check(publicationOpened &&
+                      !publicationSource.contains(
+                          QStringLiteral(
+                              "repoContributionDependencyFingerprint(")) &&
+                      publicationSource.contains(
+                          QStringLiteral(
+                              "QFutureWatcher<RepoContributionPreparation>")) &&
+                      publicationSource.contains(
+                          QStringLiteral("QtConcurrent::run(")) &&
+                      publicationSource.contains(
+                          QStringLiteral(
+                              "prepareRepoContributionSnapshot(")),
+                  "catalog dependency discovery stays inside the bounded worker path");
+
+            const int staleBranch = publicationSource.indexOf(
+                QStringLiteral(
+                    "responseCode == QLatin1String(\"stale_update\")"));
+            const int successBranch = publicationSource.indexOf(
+                QStringLiteral(
+                    "if (error == QNetworkReply::NoError"),
+                staleBranch);
+            const QString staleHandling =
+                staleBranch >= 0 && successBranch > staleBranch
+                    ? publicationSource.mid(
+                          staleBranch, successBranch - staleBranch)
+                    : QString();
+            check(staleHandling.contains(
+                      QStringLiteral("claimStaleRetry(")) &&
+                      staleHandling.contains(
+                          QStringLiteral("publishQueuedUpdate();")),
+                  "second stale contribution response preserves a queued repo update");
+
+            const int rejectionBranch = publicationSource.indexOf(
+                QStringLiteral(
+                    "repoContributionResponseNeedsRefresh("),
+                successBranch);
+            const int acceptedBranch = publicationSource.indexOf(
+                QStringLiteral(
+                    "m_contributionPublicationCache.clearStaleRetry("),
+                rejectionBranch);
+            const QString rejectionHandling =
+                rejectionBranch >= 0 && acceptedBranch > rejectionBranch
+                    ? publicationSource.mid(
+                          rejectionBranch,
+                          acceptedBranch - rejectionBranch)
+                    : QString();
+            check(rejectionHandling.contains(
+                      QStringLiteral(
+                          "m_contributionPublicationCache.invalidate(")) &&
+                      rejectionHandling.contains(
+                          QStringLiteral("claimStaleRetry(")) &&
+                      rejectionHandling.contains(
+                          QStringLiteral("scheduleCatalogPublish(")) &&
+                      rejectionHandling.contains(
+                          QStringLiteral("publishQueuedUpdate();")),
+                  "rejected submitted contributions invalidate and retry once without dropping queued work");
+
+            RepoContributionPublicationCache scanCapacityCache(8, 2);
+            check(scanCapacityCache.begin(contributionCacheKey, false) ==
+                          CacheBegin::Started &&
+                      scanCapacityCache.begin(contributionCacheKey, true) ==
+                          CacheBegin::Coalesced &&
+                      scanCapacityCache.begin(errorCacheKey, false) ==
+                          CacheBegin::Started,
+                  "contribution scan capacity accepts the exact global cap");
+            check(scanCapacityCache.begin(newestCacheKey, true) ==
+                          CacheBegin::CapacityExceeded &&
+                      !scanCapacityCache.inFlight(newestCacheKey),
+                  "contribution scan capacity rejects overflow without starting work");
+            check(scanCapacityCache.finish(contributionCacheKey, snapshot,
+                                           cacheTime) &&
+                      scanCapacityCache.begin(newestCacheKey, true) ==
+                          CacheBegin::Started &&
+                      scanCapacityCache.inFlight(newestCacheKey),
+                  "finishing a contribution scan releases one global slot");
+
+            RepoContributionPublicationCache preparationCapacityCache(8, 1);
+            check(preparationCapacityCache.begin(contributionCacheKey, true) ==
+                          CacheBegin::Started,
+                  "dependency preparation occupies one global scan slot");
+            const auto preparationCompletion =
+                preparationCapacityCache.complete(contributionCacheKey);
+            check(preparationCompletion.requestDialog &&
+                      !preparationCompletion.discarded &&
+                      preparationCapacityCache.begin(errorCacheKey, false) ==
+                          CacheBegin::Started,
+                  "dependency-only completion preserves dialog intent and releases capacity");
+
+            QTemporaryDir dependencyRepo;
+            const bool dependencySetup =
+                dependencyRepo.isValid() &&
+                runTestGit(dependencyRepo.path(),
+                           {QStringLiteral("init"), QStringLiteral("-q"),
+                            QStringLiteral("-b"), QStringLiteral("main")}) &&
+                runTestGit(dependencyRepo.path(),
+                           {QStringLiteral("config"),
+                            QStringLiteral("user.name"),
+                            QStringLiteral("Dependency Owner")}) &&
+                runTestGit(dependencyRepo.path(),
+                           {QStringLiteral("config"),
+                            QStringLiteral("user.email"),
+                            QStringLiteral("first@example.test")}) &&
+                writeTestFile(dependencyRepo.path() +
+                                  QStringLiteral("/source.cpp"),
+                              QByteArrayLiteral("x")) &&
+                commitTestTree(dependencyRepo.path(),
+                               QStringLiteral("dependency base"),
+                               QStringLiteral("2026-07-13T09:00:00Z"),
+                               QStringLiteral("Dependency Owner"),
+                               QStringLiteral("first@example.test"));
+            check(dependencySetup,
+                  "contribution dependency fingerprint repository is created");
+            if (dependencySetup) {
+                RepoContributionSnapshotInput dependencyInput;
+                dependencyInput.workTreePath = dependencyRepo.path();
+                dependencyInput.branch = QStringLiteral("main");
+                dependencyInput.head = testGitHead(dependencyRepo.path());
+                dependencyInput.publishingKey = identity.publicKey();
+                dependencyInput.capturedAtMs = input.capturedAtMs;
+                const QString firstDependency =
+                    repoContributionDependencyFingerprint(dependencyInput);
+                const QString unchangedDependency =
+                    repoContributionDependencyFingerprint(dependencyInput);
+                const RepoContributionPreparation reusedPreparation =
+                    prepareRepoContributionSnapshot(
+                        dependencyInput, firstDependency,
+                        /*cachedSnapshotAvailable=*/true);
+                const bool identityChanged = runTestGit(
+                    dependencyRepo.path(),
+                    {QStringLiteral("config"), QStringLiteral("user.email"),
+                     QStringLiteral("second@example.test")});
+                const QString identityDependency =
+                    repoContributionDependencyFingerprint(dependencyInput);
+                const RepoContributionPreparation changedPreparation =
+                    prepareRepoContributionSnapshot(
+                        dependencyInput, firstDependency,
+                        /*cachedSnapshotAvailable=*/true);
+                const bool identityRestored = runTestGit(
+                    dependencyRepo.path(),
+                    {QStringLiteral("config"), QStringLiteral("user.email"),
+                     QStringLiteral("first@example.test")});
+                const QString restoredDependency =
+                    repoContributionDependencyFingerprint(dependencyInput);
+                const bool pullRefAdded = runTestGit(
+                    dependencyRepo.path(),
+                    {QStringLiteral("update-ref"),
+                     QStringLiteral("refs/heads/forkmesh/pulls"),
+                     dependencyInput.head});
+                const QString pullDependency =
+                    repoContributionDependencyFingerprint(dependencyInput);
+                check(firstDependency.size() == 64 &&
+                          firstDependency == unchangedDependency &&
+                          reusedPreparation.dependencyFingerprint ==
+                              firstDependency &&
+                          !reusedPreparation.rebuiltSnapshot.has_value() &&
+                          identityChanged &&
+                          firstDependency != identityDependency &&
+                          changedPreparation.dependencyFingerprint ==
+                              identityDependency &&
+                          changedPreparation.rebuiltSnapshot.has_value() &&
+                          identityRestored &&
+                          firstDependency == restoredDependency &&
+                          pullRefAdded &&
+                          firstDependency != pullDependency &&
+                          !firstDependency.contains(
+                              QStringLiteral("first@example.test")),
+                      "dependency fingerprint tracks pull metadata and effective Git identity privately");
+            }
+
+            RepoContributionSnapshotInput mismatched = input;
+            mismatched.branch = "missing-branch";
+            const RepoContributionSnapshot rejected =
+                buildRepoContributionSnapshot(mismatched);
+            check(!rejected.complete && !rejected.error.isEmpty() &&
+                      rejected.error.size() <= 240,
+                  "snapshot rejects an unstable or mismatched repository ref");
+
+            RepoContributionSnapshotInput paddedBranch = input;
+            paddedBranch.branch = " main ";
+            const RepoContributionSnapshot paddedBranchResult =
+                buildRepoContributionSnapshot(paddedBranch);
+            check(!paddedBranchResult.complete &&
+                      !paddedBranchResult.error.isEmpty() &&
+                      paddedBranchResult.error.size() <= 240,
+                  "snapshot rejects a branch with surrounding whitespace");
+
+            const QString longBranch(121, QLatin1Char('b'));
+            const bool longBranchCreated =
+                runTestGit(dir, {QStringLiteral("branch"), longBranch, input.head});
+            check(longBranchCreated,
+                  "snapshot fixture creates a real 121-character branch");
+            if (longBranchCreated) {
+                RepoContributionSnapshotInput longBranchInput = input;
+                longBranchInput.branch = longBranch;
+                const RepoContributionSnapshot longBranchResult =
+                    buildRepoContributionSnapshot(longBranchInput);
+                check(!longBranchResult.complete &&
+                          !longBranchResult.error.isEmpty() &&
+                          longBranchResult.error.size() <= 240,
+                      "snapshot rejects a branch longer than 120 characters");
+            }
+
+            const QString supplementaryBranch =
+                QStringLiteral("feature-") +
+                QString::fromUtf8("\xF0\x9F\x9A\x80");
+            const bool supplementaryBranchCreated = runTestGit(
+                dir, {QStringLiteral("branch"), supplementaryBranch, input.head});
+            check(supplementaryBranchCreated,
+                  "snapshot fixture creates a supplementary-Unicode branch");
+            if (supplementaryBranchCreated) {
+                RepoContributionSnapshotInput supplementaryBranchInput = input;
+                supplementaryBranchInput.branch = supplementaryBranch;
+                const RepoContributionSnapshot supplementaryBranchResult =
+                    buildRepoContributionSnapshot(supplementaryBranchInput);
+                check(supplementaryBranchResult.complete &&
+                          supplementaryBranchResult.payload.value("branch")
+                                  .toString() == supplementaryBranch,
+                      "snapshot accepts non-control supplementary Unicode");
+            }
+
+            const QString unsafeSeparator(QChar(0x00a0));
+            RepoContributionSnapshotInput unsafeBranch = input;
+            unsafeBranch.branch = unsafeSeparator + "main" + unsafeSeparator;
+            const RepoContributionSnapshot unsafeBranchResult =
+                buildRepoContributionSnapshot(unsafeBranch);
+            check(!unsafeBranchResult.complete &&
+                      !unsafeBranchResult.error.isEmpty() &&
+                      unsafeBranchResult.error.size() <= 240,
+                  "snapshot rejects Unicode separators in a branch");
+
+            RepoContributionSnapshotInput paddedHead = input;
+            paddedHead.head = " " + input.head + " ";
+            const RepoContributionSnapshot paddedHeadResult =
+                buildRepoContributionSnapshot(paddedHead);
+            check(!paddedHeadResult.complete &&
+                      !paddedHeadResult.error.isEmpty() &&
+                      paddedHeadResult.error.size() <= 240,
+                  "snapshot rejects a head with surrounding whitespace");
+
+            RepoContributionSnapshotInput longHead = input;
+            longHead.head = QString(65, QLatin1Char('a'));
+            const RepoContributionSnapshot longHeadResult =
+                buildRepoContributionSnapshot(longHead);
+            check(!longHeadResult.complete && !longHeadResult.error.isEmpty() &&
+                      longHeadResult.error.size() <= 240,
+                  "snapshot rejects a head longer than 64 characters");
+
+            std::mutex hookMutex;
+            std::condition_variable hookCondition;
+            bool hookInstalled = false;
+            bool startHookOwner = false;
+            std::atomic<int> hookCalls = 0;
+            std::atomic<bool> hookRanOnOwner = false;
+            RepoContributionSnapshot hookOwnerSnapshot;
+            RepoContributionSnapshot otherThreadSnapshot;
+            std::thread hookOwner([&] {
+                const std::thread::id ownerId = std::this_thread::get_id();
+                RepoContributionSnapshotInternal::
+                    setBeforePullMetadataRecheckHookForTests([&] {
+                        ++hookCalls;
+                        hookRanOnOwner = std::this_thread::get_id() == ownerId;
+                    });
+                {
+                    std::lock_guard<std::mutex> lock(hookMutex);
+                    hookInstalled = true;
+                }
+                hookCondition.notify_one();
+                {
+                    std::unique_lock<std::mutex> lock(hookMutex);
+                    hookCondition.wait(lock, [&] { return startHookOwner; });
+                }
+                hookOwnerSnapshot = buildRepoContributionSnapshot(input);
+            });
+            {
+                std::unique_lock<std::mutex> lock(hookMutex);
+                hookCondition.wait(lock, [&] { return hookInstalled; });
+            }
+            std::thread otherBuilder([&] {
+                otherThreadSnapshot = buildRepoContributionSnapshot(input);
+            });
+            otherBuilder.join();
+            {
+                std::lock_guard<std::mutex> lock(hookMutex);
+                startHookOwner = true;
+            }
+            hookCondition.notify_one();
+            hookOwner.join();
+            check(hookOwnerSnapshot.complete && otherThreadSnapshot.complete &&
+                      hookCalls == 1 && hookRanOnOwner,
+                  "snapshot hooks are isolated between concurrent builders");
+
+            QTemporaryDir pullRaceMirrorRoot;
+            const QString pullRaceMirror =
+                pullRaceMirrorRoot.path() + QStringLiteral("/race.git");
+            const bool pullRaceSetup =
+                pullRaceMirrorRoot.isValid() &&
+                runTestGit(pullRaceMirrorRoot.path(),
+                           {QStringLiteral("clone"), QStringLiteral("-q"),
+                            QStringLiteral("--bare"), dir, pullRaceMirror}) &&
+                runTestGit(pullRaceMirror,
+                           {QStringLiteral("config"),
+                            QStringLiteral("user.name"),
+                            QStringLiteral("Owner Name")}) &&
+                runTestGit(pullRaceMirror,
+                           {QStringLiteral("config"),
+                            QStringLiteral("user.email"),
+                            QStringLiteral("owner@example.test")});
+            check(pullRaceSetup,
+                  "pull-ref-race snapshot mirror is created");
+            if (pullRaceSetup) {
+                RepoContributionSnapshotInput raceInput = input;
+                raceInput.workTreePath.clear();
+                raceInput.mirrorPath = pullRaceMirror;
+                bool raceHookRan = false;
+                bool pullRefMoved = false;
+                RepoContributionSnapshotInternal::
+                    setBeforePullMetadataRecheckHookForTests([&] {
+                        raceHookRan = true;
+                        pullRefMoved = runTestGit(
+                            pullRaceMirror,
+                            {QStringLiteral("update-ref"),
+                             QStringLiteral("refs/heads/forkmesh/pulls"),
+                             raceInput.head});
+                    });
+                const RepoContributionSnapshot raced =
+                    buildRepoContributionSnapshot(raceInput);
+                RepoContributionSnapshotInternal::
+                    setBeforePullMetadataRecheckHookForTests({});
+                int racedCommits = 0;
+                int racedIssues = 0;
+                int racedPulls = 0;
+                int racedReviews = 0;
+                for (const QJsonValue &value :
+                     raced.payload.value("days").toArray()) {
+                    const QJsonArray row = value.toArray();
+                    racedCommits += row.at(2).toInt();
+                    racedIssues += row.at(3).toInt();
+                    racedPulls += row.at(4).toInt();
+                    racedReviews += row.at(5).toInt();
+                }
+                check(raceHookRan && pullRefMoved && raced.complete &&
+                          raced.error.isEmpty() && racedCommits == 3 &&
+                          racedIssues == 1 && racedPulls == 0 &&
+                          racedReviews == 0 &&
+                          raced.payload.value("coverage")
+                                  .toObject()
+                                  .value("collaboration")
+                                  .toString() == "partial" &&
+                          raced.payload.value("coverage")
+                                  .toObject()
+                                  .value("languages")
+                                  .toString() == "complete",
+                      "snapshot discards pull rows when metadata ref changes");
+            }
+        }
+
+        QTemporaryDir corruptIssueRepo;
+        bool corruptIssueSetup =
+            corruptIssueRepo.isValid() &&
+            runTestGit(corruptIssueRepo.path(),
+                       {QStringLiteral("init"), QStringLiteral("-q"),
+                        QStringLiteral("-b"), QStringLiteral("main")}) &&
+            runTestGit(corruptIssueRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.name"),
+                        QStringLiteral("Owner Name")}) &&
+            runTestGit(corruptIssueRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.email"),
+                        QStringLiteral("owner@example.test")}) &&
+            writeTestFile(corruptIssueRepo.path() + "/source.cpp", "x") &&
+            writeTestFile(corruptIssueRepo.path() +
+                              "/.forkmesh/issues/1/issue-1.json",
+                          "{not-json") &&
+            commitTestTree(corruptIssueRepo.path(), "corrupt issue metadata",
+                           "2026-07-12T09:00:00Z", "Owner Name",
+                           "owner@example.test");
+        check(corruptIssueSetup,
+              "corrupt-issue snapshot repository is created");
+        if (corruptIssueSetup) {
+            RepoContributionSnapshotInput input;
+            input.workTreePath = corruptIssueRepo.path();
+            input.branch = "main";
+            input.head = testGitHead(corruptIssueRepo.path());
+            input.publishingKey = identity.publicKey();
+            input.capturedAtMs = utcMs("2026-07-13T12:00:00Z");
+            const RepoContributionSnapshot snapshot =
+                buildRepoContributionSnapshot(input);
+            check(snapshot.complete &&
+                      snapshot.payload.value("coverage")
+                              .toObject()
+                              .value("collaboration")
+                              .toString() == "partial",
+                  "snapshot marks unreadable issue metadata partial");
+        }
+
+        auto semanticIssueSnapshot = [&](const QByteArray &issueJson,
+                                         const char *setupLabel) {
+            QTemporaryDir repo;
+            const bool setup =
+                repo.isValid() &&
+                runTestGit(repo.path(),
+                           {QStringLiteral("init"), QStringLiteral("-q"),
+                            QStringLiteral("-b"), QStringLiteral("main")}) &&
+                runTestGit(repo.path(),
+                           {QStringLiteral("config"),
+                            QStringLiteral("user.name"),
+                            QStringLiteral("Owner Name")}) &&
+                runTestGit(repo.path(),
+                           {QStringLiteral("config"),
+                            QStringLiteral("user.email"),
+                            QStringLiteral("owner@example.test")}) &&
+                writeTestFile(repo.path() + "/source.cpp", "x") &&
+                writeTestFile(repo.path() +
+                                  "/.forkmesh/issues/1/issue-1.json",
+                              issueJson) &&
+                commitTestTree(repo.path(), "semantic issue corruption",
+                               "2026-07-12T09:00:00Z", "Owner Name",
+                               "owner@example.test");
+            check(setup, setupLabel);
+            if (!setup)
+                return RepoContributionSnapshot{};
+
+            IssueStore permissiveStore(QString(), repo.path(), nullptr);
+            QString permissiveError;
+            permissiveStore.loadAll(&permissiveError);
+            check(permissiveError.isEmpty(),
+                  "normal issue loading remains permissive for semantic corruption");
+
+            RepoContributionSnapshotInput input;
+            input.workTreePath = repo.path();
+            input.branch = "main";
+            input.head = testGitHead(repo.path());
+            input.publishingKey = identity.publicKey();
+            input.capturedAtMs = utcMs("2026-07-13T12:00:00Z");
+            return buildRepoContributionSnapshot(input);
+        };
+
+        const RepoContributionSnapshot missingSchemaSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral("{\"number\":1,\"events\":[]}"),
+                "missing-schema issue repository is created");
+        check(missingSchemaSnapshot.complete &&
+                  missingSchemaSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "partial",
+              "snapshot marks missing issue schema partial");
+
+        const RepoContributionSnapshot wrongSchemaSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"wrong\",\"number\":1,\"events\":[]}"),
+                "wrong-schema issue repository is created");
+        check(wrongSchemaSnapshot.complete &&
+                  wrongSchemaSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "partial",
+              "snapshot marks wrong issue schema partial");
+
+        const RepoContributionSnapshot nonArrayEventsSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"forkmesh-issue-v1\",\"number\":1,\"events\":{}}"),
+                "non-array-events issue repository is created");
+        check(nonArrayEventsSnapshot.complete &&
+                  nonArrayEventsSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "partial",
+              "snapshot marks non-array issue events partial");
+
+        const RepoContributionSnapshot nonObjectEventSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"forkmesh-issue-v1\",\"number\":1,\"events\":[7]}"),
+                "non-object-event issue repository is created");
+        check(nonObjectEventSnapshot.complete &&
+                  nonObjectEventSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "partial",
+              "snapshot marks non-object issue events partial");
+
+        const RepoContributionSnapshot maxSafeTimestampSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"forkmesh-issue-v1\",\"number\":1,"
+                    "\"events\":[{\"type\":\"open\",\"author\":\"actor\","
+                    "\"ts\":9007199254740991,\"sig\":\"signature\","
+                    "\"title\":\"title\",\"body\":\"body\","
+                    "\"attachments\":[]}]}"),
+                "max-safe-timestamp issue repository is created");
+        check(maxSafeTimestampSnapshot.complete &&
+                  maxSafeTimestampSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "complete",
+              "snapshot accepts the exact maximum JSON-safe issue timestamp");
+
+        const RepoContributionSnapshot aboveSafeTimestampSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"forkmesh-issue-v1\",\"number\":1,"
+                    "\"events\":[{\"type\":\"open\",\"author\":\"actor\","
+                    "\"ts\":9007199254740992,\"sig\":\"signature\","
+                    "\"title\":\"title\",\"body\":\"body\","
+                    "\"attachments\":[]}]}"),
+                "above-safe-timestamp issue repository is created");
+        check(aboveSafeTimestampSnapshot.complete &&
+                  aboveSafeTimestampSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "partial",
+              "snapshot rejects an issue timestamp above the JSON-safe maximum");
+
+        const RepoContributionSnapshot twoTo63TimestampSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"forkmesh-issue-v1\",\"number\":1,"
+                    "\"events\":[{\"type\":\"open\",\"author\":\"actor\","
+                    "\"ts\":9223372036854775808,\"sig\":\"signature\","
+                    "\"title\":\"title\",\"body\":\"body\","
+                    "\"attachments\":[]}]}"),
+                "two-to-63-timestamp issue repository is created");
+        check(twoTo63TimestampSnapshot.complete &&
+                  twoTo63TimestampSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "partial",
+              "snapshot rejects a two-to-the-63 issue timestamp");
+
+        const RepoContributionSnapshot emptyIssueAuthorSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"forkmesh-issue-v1\",\"number\":1,"
+                    "\"events\":[{\"type\":\"open\",\"author\":\"\","
+                    "\"ts\":1,\"sig\":\"signature\",\"title\":\"title\","
+                    "\"body\":\"body\",\"attachments\":[]}]}"),
+                "empty-author issue repository is created");
+        check(emptyIssueAuthorSnapshot.complete &&
+                  emptyIssueAuthorSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "partial",
+              "snapshot rejects an empty issue event author");
+
+        const RepoContributionSnapshot emptyIssueSignatureSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"forkmesh-issue-v1\",\"number\":1,"
+                    "\"events\":[{\"type\":\"open\",\"author\":\"actor\","
+                    "\"ts\":1,\"sig\":\"\",\"title\":\"title\","
+                    "\"body\":\"body\",\"attachments\":[]}]}"),
+                "empty-signature issue repository is created");
+        check(emptyIssueSignatureSnapshot.complete &&
+                  emptyIssueSignatureSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "partial",
+              "snapshot rejects an empty issue event signature");
+
+        const RepoContributionSnapshot nonStringAttachmentSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"forkmesh-issue-v1\",\"number\":1,"
+                    "\"events\":[{\"type\":\"open\",\"author\":\"actor\","
+                    "\"ts\":1,\"sig\":\"signature\",\"title\":\"title\","
+                    "\"body\":\"body\",\"attachments\":[7]}]}"),
+                "non-string-attachment issue repository is created");
+        check(nonStringAttachmentSnapshot.complete &&
+                  nonStringAttachmentSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "partial",
+              "snapshot rejects a non-string issue attachment");
+
+        const RepoContributionSnapshot maxSafeTopLevelDatesSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"forkmesh-issue-v1\",\"number\":1,"
+                    "\"createdAt\":9007199254740991,"
+                    "\"startDate\":9007199254740991,"
+                    "\"endDate\":9007199254740991,\"events\":[]}"),
+                "max-safe top-level issue dates repository is created");
+        check(maxSafeTopLevelDatesSnapshot.complete &&
+                  maxSafeTopLevelDatesSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "complete",
+              "snapshot accepts max-safe top-level issue dates");
+
+        const RepoContributionSnapshot aboveSafeCreatedAtSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"forkmesh-issue-v1\",\"number\":1,"
+                    "\"createdAt\":9007199254740992,\"events\":[]}"),
+                "above-safe createdAt issue repository is created");
+        check(aboveSafeCreatedAtSnapshot.complete &&
+                  aboveSafeCreatedAtSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "partial",
+              "snapshot rejects top-level createdAt above max-safe");
+
+        const RepoContributionSnapshot twoTo63StartDateSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"forkmesh-issue-v1\",\"number\":1,"
+                    "\"startDate\":9223372036854775808,\"events\":[]}"),
+                "two-to-63 startDate issue repository is created");
+        check(twoTo63StartDateSnapshot.complete &&
+                  twoTo63StartDateSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "partial",
+              "snapshot rejects top-level startDate at two-to-the-63");
+
+        const RepoContributionSnapshot negativeEndDateSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"forkmesh-issue-v1\",\"number\":1,"
+                    "\"endDate\":-1,\"events\":[]}"),
+                "negative endDate issue repository is created");
+        check(negativeEndDateSnapshot.complete &&
+                  negativeEndDateSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "partial",
+              "snapshot rejects a negative top-level endDate");
+
+        const RepoContributionSnapshot fractionalCreatedAtSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"forkmesh-issue-v1\",\"number\":1,"
+                    "\"createdAt\":1.5,\"events\":[]}"),
+                "fractional createdAt issue repository is created");
+        check(fractionalCreatedAtSnapshot.complete &&
+                  fractionalCreatedAtSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "partial",
+              "snapshot rejects a fractional top-level createdAt");
+
+        const RepoContributionSnapshot overflowingExponentSnapshot =
+            semanticIssueSnapshot(
+                QByteArrayLiteral(
+                    "{\"schema\":\"forkmesh-issue-v1\",\"number\":1,"
+                    "\"createdAt\":1e999,\"events\":[]}"),
+                "overflowing-exponent issue repository is created");
+        check(overflowingExponentSnapshot.complete &&
+                  overflowingExponentSnapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "partial",
+              "snapshot rejects a non-finite-like top-level issue date");
+
+        QTemporaryDir strictBudgetRepo;
+        auto budgetIssueJson = [](int number) {
+            const QJsonObject openEvent{
+                {QStringLiteral("type"), QStringLiteral("open")},
+                {QStringLiteral("author"), QStringLiteral("actor")},
+                {QStringLiteral("ts"), 1},
+                {QStringLiteral("sig"), QStringLiteral("signature")},
+                {QStringLiteral("title"),
+                 QStringLiteral("budget issue %1").arg(number)},
+                {QStringLiteral("body"), QString(128, QLatin1Char('x'))},
+                {QStringLiteral("attachments"), QJsonArray{}}};
+            return QJsonDocument(QJsonObject{
+                                     {QStringLiteral("schema"),
+                                      QStringLiteral("forkmesh-issue-v1")},
+                                     {QStringLiteral("number"), number},
+                                     {QStringLiteral("events"),
+                                      QJsonArray{openEvent}}})
+                .toJson(QJsonDocument::Compact);
+        };
+        const bool strictBudgetSetup =
+            strictBudgetRepo.isValid() &&
+            runTestGit(strictBudgetRepo.path(),
+                       {QStringLiteral("init"), QStringLiteral("-q"),
+                        QStringLiteral("-b"), QStringLiteral("main")}) &&
+            runTestGit(strictBudgetRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.name"),
+                        QStringLiteral("Owner Name")}) &&
+            runTestGit(strictBudgetRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.email"),
+                        QStringLiteral("owner@example.test")}) &&
+            writeTestFile(strictBudgetRepo.path() +
+                              QStringLiteral("/source.cpp"),
+                          QByteArrayLiteral("x")) &&
+            writeTestFile(strictBudgetRepo.path() +
+                              QStringLiteral(
+                                  "/.forkmesh/issues/1/issue-1.json"),
+                          budgetIssueJson(1)) &&
+            writeTestFile(strictBudgetRepo.path() +
+                              QStringLiteral(
+                                  "/.forkmesh/issues/2/issue-2.json"),
+                          budgetIssueJson(2)) &&
+            commitTestTree(strictBudgetRepo.path(),
+                           QStringLiteral("strict budget metadata"),
+                           QStringLiteral("2026-07-12T09:00:00Z"),
+                           QStringLiteral("Owner Name"),
+                           QStringLiteral("owner@example.test"));
+        check(strictBudgetSetup,
+              "strict metadata budget repository is created");
+        if (strictBudgetSetup) {
+            IssueStore permissiveStore(QString(), strictBudgetRepo.path(),
+                                       nullptr);
+            QString permissiveError;
+            check(permissiveStore.loadAll(&permissiveError).size() == 2 &&
+                      permissiveError.isEmpty(),
+                  "normal issue loading ignores strict read budgets");
+
+            StrictGitReadInternal::Limits limits;
+            limits.maxStdoutBytes = 4096;
+            limits.maxStderrBytes = 256;
+            limits.maxTotalBytes = 400;
+            const StrictGitReadInternal::ScopedLimitsForTests scopedLimits(
+                limits);
+            RepoContributionSnapshotInput input;
+            input.workTreePath = strictBudgetRepo.path();
+            input.branch = QStringLiteral("main");
+            input.head = testGitHead(strictBudgetRepo.path());
+            input.publishingKey = identity.publicKey();
+            input.capturedAtMs = utcMs(QStringLiteral("2026-07-13T12:00:00Z"));
+            const RepoContributionSnapshot snapshot =
+                buildRepoContributionSnapshot(input);
+            check(snapshot.complete &&
+                      snapshot.payload.value("coverage")
+                              .toObject()
+                              .value("collaboration")
+                              .toString() == "partial",
+                  "snapshot marks cumulative strict metadata overflow partial");
+        }
+
+        QTemporaryDir writableIssueRepo;
+        const bool writableIssueSetup =
+            writableIssueRepo.isValid() &&
+            runTestGit(writableIssueRepo.path(),
+                       {QStringLiteral("init"), QStringLiteral("-q"),
+                        QStringLiteral("-b"), QStringLiteral("main")}) &&
+            runTestGit(writableIssueRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.name"),
+                        QStringLiteral("Owner Name")}) &&
+            runTestGit(writableIssueRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.email"),
+                        QStringLiteral("owner@example.test")});
+        check(writableIssueSetup,
+              "writable strict issue repository is created");
+        if (writableIssueSetup) {
+            IssueStore writableStore(writableIssueRepo.path(), QString(),
+                                     &identity, QStringLiteral("owner"));
+            QString writeError;
+            const int firstIssue = writableStore.createIssue(
+                QStringLiteral("First"), QStringLiteral("body"), {}, QString(),
+                0, {}, {}, &writeError);
+            const QString firstIssueRef = testGitHead(writableIssueRepo.path());
+            const int secondIssue = writableStore.createIssue(
+                QStringLiteral("Second"), QStringLiteral("body"), {}, QString(),
+                0, {}, {}, &writeError);
+            const bool semanticCorruptionWritten =
+                firstIssue == 1 && secondIssue == 2 &&
+                !firstIssueRef.isEmpty() &&
+                writeTestFile(
+                    writableIssueRepo.path() +
+                        QStringLiteral("/.forkmesh/issues/2/issue-2.json"),
+                    QByteArrayLiteral("{\"number\":2,\"events\":[]}")) &&
+                commitTestTree(writableIssueRepo.path(),
+                               QStringLiteral("corrupt current issue metadata"),
+                               QStringLiteral("2026-07-12T10:00:00Z"),
+                               QStringLiteral("Owner Name"),
+                               QStringLiteral("owner@example.test"));
+            check(semanticCorruptionWritten,
+                  "writable issue history has a valid older ref and corrupt head");
+            QString atRefError;
+            const QList<Issue> historicalIssues =
+                writableStore.loadAllStrictAtRef(firstIssueRef, &atRefError);
+            QString strictHeadError;
+            writableStore.loadAllStrict(&strictHeadError);
+            check(historicalIssues.size() == 1 &&
+                      historicalIssues.constFirst().number == 1 &&
+                      atRefError.isEmpty(),
+                  "writable strict issue reads honor the supplied older ref");
+            check(!strictHeadError.isEmpty(),
+                  "writable strict issue reads validate the current ref");
+        }
+
+        QTemporaryDir corruptPullRepo;
+        bool corruptPullSetup =
+            corruptPullRepo.isValid() &&
+            runTestGit(corruptPullRepo.path(),
+                       {QStringLiteral("init"), QStringLiteral("-q"),
+                        QStringLiteral("-b"), QStringLiteral("main")}) &&
+            runTestGit(corruptPullRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.name"),
+                        QStringLiteral("Owner Name")}) &&
+            runTestGit(corruptPullRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.email"),
+                        QStringLiteral("owner@example.test")}) &&
+            writeTestFile(corruptPullRepo.path() + "/source.cpp", "x") &&
+            writeTestFile(corruptPullRepo.path() + "/pulls/1/pull.md",
+                          "not front matter\n") &&
+            commitTestTree(corruptPullRepo.path(), "corrupt pull metadata",
+                           "2026-07-12T09:00:00Z", "Owner Name",
+                           "owner@example.test");
+        check(corruptPullSetup,
+              "corrupt-pull snapshot repository is created");
+        if (corruptPullSetup) {
+            RepoContributionSnapshotInput input;
+            input.workTreePath = corruptPullRepo.path();
+            input.branch = "main";
+            input.head = testGitHead(corruptPullRepo.path());
+            input.publishingKey = identity.publicKey();
+            input.capturedAtMs = utcMs("2026-07-13T12:00:00Z");
+            const RepoContributionSnapshot snapshot =
+                buildRepoContributionSnapshot(input);
+            check(snapshot.complete &&
+                      snapshot.payload.value("coverage")
+                              .toObject()
+                              .value("collaboration")
+                              .toString() == "partial",
+                  "snapshot marks unreadable pull metadata partial");
+        }
+
+        auto pullFrontMatter = [](const QString &schema,
+                                  const QString &declaredNumber,
+                                  bool branchBacked = false) {
+            QStringList lines{QStringLiteral("---")};
+            if (!schema.isNull())
+                lines << QStringLiteral("schema: ") + schema;
+            if (!declaredNumber.isNull())
+                lines << QStringLiteral("number: ") + declaredNumber;
+            lines << QStringLiteral("title: title")
+                  << QStringLiteral("base: main")
+                  << QStringLiteral("head: feature")
+                  << QStringLiteral("status: open");
+            if (branchBacked)
+                lines << QStringLiteral("derive: branch");
+            lines << QStringLiteral("ts: 1")
+                  << QStringLiteral("author: actor")
+                  << QStringLiteral("sig: signature")
+                  << QStringLiteral("---") << QString() <<
+                QStringLiteral("description");
+            return lines.join(QLatin1Char('\n')).toUtf8() + '\n';
+        };
+
+        auto semanticPullSnapshot = [&](const QByteArray &pullMetadata,
+                                        bool includePatch, bool includeMbox,
+                                        bool expectStrictRejection,
+                                        const char *setupLabel) {
+            QTemporaryDir repo;
+            bool setup =
+                repo.isValid() &&
+                runTestGit(repo.path(),
+                           {QStringLiteral("init"), QStringLiteral("-q"),
+                            QStringLiteral("-b"), QStringLiteral("main")}) &&
+                runTestGit(repo.path(),
+                           {QStringLiteral("config"),
+                            QStringLiteral("user.name"),
+                            QStringLiteral("Owner Name")}) &&
+                runTestGit(repo.path(),
+                           {QStringLiteral("config"),
+                            QStringLiteral("user.email"),
+                            QStringLiteral("owner@example.test")}) &&
+                writeTestFile(repo.path() + QStringLiteral("/source.cpp"),
+                              QByteArrayLiteral("x")) &&
+                writeTestFile(repo.path() +
+                                  QStringLiteral("/pulls/1/pull.md"),
+                              pullMetadata);
+            if (includePatch) {
+                setup = setup &&
+                        writeTestFile(
+                            repo.path() +
+                                QStringLiteral("/pulls/1/changes.patch"),
+                            QByteArrayLiteral(
+                                "diff --git a/a b/a\n--- a/a\n+++ b/a\n"));
+            }
+            if (includeMbox) {
+                setup = setup &&
+                        writeTestFile(
+                            repo.path() +
+                                QStringLiteral("/pulls/1/commits.mbox"),
+                            QByteArrayLiteral("From fixture\n"));
+            }
+            setup = setup &&
+                    commitTestTree(repo.path(),
+                                   QStringLiteral("semantic pull corruption"),
+                                   QStringLiteral("2026-07-12T09:00:00Z"),
+                                   QStringLiteral("Owner Name"),
+                                   QStringLiteral("owner@example.test"));
+            check(setup, setupLabel);
+            if (!setup)
+                return RepoContributionSnapshot{};
+
+            PullStore permissiveStore(QString(), repo.path(), nullptr);
+            QString permissiveError;
+            const QList<PullRequest> permissivePulls =
+                permissiveStore.loadAll(&permissiveError);
+            check(permissiveError.isEmpty() && permissivePulls.size() == 1,
+                  "normal pull loading remains permissive for semantic corruption");
+            if (expectStrictRejection) {
+                QString strictError;
+                const QList<PullRequest> strictPulls =
+                    permissiveStore.loadAllStrict(&strictError);
+                check(!strictError.isEmpty() && strictPulls.isEmpty(),
+                      "strict pull loading excludes invalid front matter");
+            }
+
+            RepoContributionSnapshotInput input;
+            input.workTreePath = repo.path();
+            input.branch = QStringLiteral("main");
+            input.head = testGitHead(repo.path());
+            input.publishingKey = identity.publicKey();
+            input.capturedAtMs = utcMs(QStringLiteral("2026-07-13T12:00:00Z"));
+            return buildRepoContributionSnapshot(input);
+        };
+
+        auto collaborationIsPartial = [](const RepoContributionSnapshot &snapshot) {
+            return snapshot.complete &&
+                   snapshot.payload.value(QStringLiteral("coverage"))
+                           .toObject()
+                           .value(QStringLiteral("collaboration"))
+                           .toString() == QLatin1String("partial");
+        };
+
+        const RepoContributionSnapshot missingPullSchemaSnapshot =
+            semanticPullSnapshot(
+                pullFrontMatter(QString(), QStringLiteral("1")), true, false, true,
+                "missing-schema pull repository is created");
+        check(collaborationIsPartial(missingPullSchemaSnapshot),
+              "snapshot marks a missing pull schema partial");
+
+        const RepoContributionSnapshot wrongPullSchemaSnapshot =
+            semanticPullSnapshot(
+                pullFrontMatter(QStringLiteral("wrong"), QStringLiteral("1")),
+                true, false, true, "wrong-schema pull repository is created");
+        check(collaborationIsPartial(wrongPullSchemaSnapshot),
+              "snapshot marks a wrong pull schema partial");
+
+        const RepoContributionSnapshot missingPullNumberSnapshot =
+            semanticPullSnapshot(
+                pullFrontMatter(QStringLiteral("forkmesh-pull-v1"), QString()),
+                true, false, true,
+                "missing-number pull repository is created");
+        check(collaborationIsPartial(missingPullNumberSnapshot),
+              "snapshot marks a missing declared pull number partial");
+
+        const RepoContributionSnapshot mismatchedPullNumberSnapshot =
+            semanticPullSnapshot(
+                pullFrontMatter(QStringLiteral("forkmesh-pull-v1"),
+                                QStringLiteral("2")),
+                true, false, true,
+                "mismatched-number pull repository is created");
+        check(collaborationIsPartial(mismatchedPullNumberSnapshot),
+              "snapshot marks a mismatched declared pull number partial");
+
+        const RepoContributionSnapshot nonNumericPullNumberSnapshot =
+            semanticPullSnapshot(
+                pullFrontMatter(QStringLiteral("forkmesh-pull-v1"),
+                                QStringLiteral("one")),
+                true, false, true,
+                "nonnumeric-number pull repository is created");
+        check(collaborationIsPartial(nonNumericPullNumberSnapshot),
+              "snapshot marks a nonnumeric declared pull number partial");
+
+        const RepoContributionSnapshot zeroPullNumberSnapshot =
+            semanticPullSnapshot(
+                pullFrontMatter(QStringLiteral("forkmesh-pull-v1"),
+                                QStringLiteral("0")),
+                true, false, true,
+                "zero-number pull repository is created");
+        check(collaborationIsPartial(zeroPullNumberSnapshot),
+              "snapshot rejects a non-positive pull number");
+
+        auto pullWithField = [&](const QByteArray &field,
+                                 const QByteArray &value) {
+            QByteArray metadata =
+                pullFrontMatter(QStringLiteral("forkmesh-pull-v1"),
+                                QStringLiteral("1"));
+            metadata.replace(field + QByteArrayLiteral(": 1\n"),
+                             field + QByteArrayLiteral(": ") + value + '\n');
+            return metadata;
+        };
+        auto strictPullTimestampSnapshot = [&](const QByteArray &value,
+                                               bool rejected,
+                                               const char *label) {
+            return semanticPullSnapshot(
+                pullWithField(QByteArrayLiteral("ts"), value), true, false,
+                rejected, label);
+        };
+        const RepoContributionSnapshot maxSafePullTimestampSnapshot =
+            strictPullTimestampSnapshot(
+                QByteArrayLiteral("9007199254740991"), false,
+                "max-safe pull timestamp repository is created");
+        check(!collaborationIsPartial(maxSafePullTimestampSnapshot),
+              "snapshot accepts the exact maximum JSON-safe pull timestamp");
+        const RepoContributionSnapshot aboveSafePullTimestampSnapshot =
+            strictPullTimestampSnapshot(
+                QByteArrayLiteral("9007199254740992"), true,
+                "above-safe pull timestamp repository is created");
+        check(collaborationIsPartial(aboveSafePullTimestampSnapshot),
+              "snapshot rejects a pull timestamp above the JSON-safe maximum");
+        const RepoContributionSnapshot twoTo63PullTimestampSnapshot =
+            strictPullTimestampSnapshot(
+                QByteArrayLiteral("9223372036854775808"), true,
+                "two-to-63 pull timestamp repository is created");
+        check(collaborationIsPartial(twoTo63PullTimestampSnapshot),
+              "snapshot rejects a two-to-the-63 pull timestamp");
+        const RepoContributionSnapshot negativePullTimestampSnapshot =
+            strictPullTimestampSnapshot(
+                QByteArrayLiteral("-1"), true,
+                "negative pull timestamp repository is created");
+        check(collaborationIsPartial(negativePullTimestampSnapshot),
+              "snapshot rejects a negative pull timestamp");
+        const RepoContributionSnapshot fractionalPullTimestampSnapshot =
+            strictPullTimestampSnapshot(
+                QByteArrayLiteral("1.5"), true,
+                "fractional pull timestamp repository is created");
+        check(collaborationIsPartial(fractionalPullTimestampSnapshot),
+              "snapshot rejects a fractional pull timestamp");
+
+        QByteArray emptyPullAuthor =
+            pullFrontMatter(QStringLiteral("forkmesh-pull-v1"),
+                            QStringLiteral("1"));
+        emptyPullAuthor.replace(QByteArrayLiteral("author: actor\n"),
+                                QByteArrayLiteral("author: \n"));
+        const RepoContributionSnapshot emptyPullAuthorSnapshot =
+            semanticPullSnapshot(
+                emptyPullAuthor, true, false, true,
+                "empty-author pull repository is created");
+        check(collaborationIsPartial(emptyPullAuthorSnapshot),
+              "snapshot rejects an empty pull author");
+        QByteArray emptyPullSignature =
+            pullFrontMatter(QStringLiteral("forkmesh-pull-v1"),
+                            QStringLiteral("1"));
+        emptyPullSignature.replace(QByteArrayLiteral("sig: signature\n"),
+                                   QByteArrayLiteral("sig: \n"));
+        const RepoContributionSnapshot emptyPullSignatureSnapshot =
+            semanticPullSnapshot(
+                emptyPullSignature, true, false, true,
+                "empty-signature pull repository is created");
+        check(collaborationIsPartial(emptyPullSignatureSnapshot),
+              "snapshot rejects an empty pull signature");
+
+        const RepoContributionSnapshot mboxOnlyPullSnapshot =
+            semanticPullSnapshot(
+                pullFrontMatter(QStringLiteral("forkmesh-pull-v1"),
+                                QStringLiteral("1")),
+                false, true, false, "mbox-only pull repository is created");
+        check(collaborationIsPartial(mboxOnlyPullSnapshot),
+              "snapshot marks a stored pull with no changes patch partial");
+
+        auto pullEventFrontMatter = [](const QString &type,
+                                       const QString &timestamp,
+                                       const QString &author,
+                                       const QString &signature) {
+            const QStringList lines{
+                QStringLiteral("---"), QStringLiteral("type: ") + type,
+                QStringLiteral("id: fixture-event"),
+                QStringLiteral("author: ") + author,
+                QStringLiteral("ts: ") + timestamp,
+                QStringLiteral("sig: ") + signature,
+                QStringLiteral("---"), QString(), QStringLiteral("body")};
+            return lines.join(QLatin1Char('\n')).toUtf8() + '\n';
+        };
+        auto semanticPullEventSnapshot =
+            [&](const QByteArray &eventMetadata, bool rejected,
+                const char *setupLabel) {
+                QTemporaryDir repo;
+                const bool setup =
+                    repo.isValid() &&
+                    runTestGit(repo.path(),
+                               {QStringLiteral("init"), QStringLiteral("-q"),
+                                QStringLiteral("-b"),
+                                QStringLiteral("main")}) &&
+                    runTestGit(repo.path(),
+                               {QStringLiteral("config"),
+                                QStringLiteral("user.name"),
+                                QStringLiteral("Owner Name")}) &&
+                    runTestGit(repo.path(),
+                               {QStringLiteral("config"),
+                                QStringLiteral("user.email"),
+                                QStringLiteral("owner@example.test")}) &&
+                    writeTestFile(repo.path() +
+                                      QStringLiteral("/source.cpp"),
+                                  QByteArrayLiteral("x")) &&
+                    writeTestFile(
+                        repo.path() + QStringLiteral("/pulls/1/pull.md"),
+                        pullFrontMatter(
+                            QStringLiteral("forkmesh-pull-v1"),
+                            QStringLiteral("1"))) &&
+                    writeTestFile(
+                        repo.path() +
+                            QStringLiteral("/pulls/1/changes.patch"),
+                        QByteArrayLiteral(
+                            "diff --git a/a b/a\n--- a/a\n+++ b/a\n")) &&
+                    writeTestFile(
+                        repo.path() +
+                            QStringLiteral("/pulls/1/0001-comment.md"),
+                        eventMetadata) &&
+                    commitTestTree(
+                        repo.path(), QStringLiteral("pull event schema"),
+                        QStringLiteral("2026-07-12T09:00:00Z"),
+                        QStringLiteral("Owner Name"),
+                        QStringLiteral("owner@example.test"));
+                check(setup, setupLabel);
+                if (!setup)
+                    return RepoContributionSnapshot{};
+
+                PullStore store(QString(), repo.path(), nullptr);
+                QString permissiveError;
+                const QList<PullRequest> permissive =
+                    store.loadAll(&permissiveError);
+                check(permissiveError.isEmpty() && permissive.size() == 1 &&
+                          permissive.constFirst().events.size() == 1,
+                      "normal pull event loading remains permissive for semantic corruption");
+                QString strictError;
+                const QList<PullRequest> strict =
+                    store.loadAllStrict(&strictError);
+                check(strict.size() == 1 &&
+                          strict.constFirst().events.size() ==
+                              (rejected ? 0 : 1) &&
+                          (rejected ? !strictError.isEmpty()
+                                    : strictError.isEmpty()),
+                      rejected
+                          ? "strict pull loading excludes an invalid event"
+                          : "strict pull loading accepts a valid boundary event");
+
+                RepoContributionSnapshotInput input;
+                input.workTreePath = repo.path();
+                input.branch = QStringLiteral("main");
+                input.head = testGitHead(repo.path());
+                input.publishingKey = identity.publicKey();
+                input.capturedAtMs =
+                    utcMs(QStringLiteral("2026-07-13T12:00:00Z"));
+                return buildRepoContributionSnapshot(input);
+            };
+
+        const RepoContributionSnapshot maxSafePullEventSnapshot =
+            semanticPullEventSnapshot(
+                pullEventFrontMatter(
+                    QStringLiteral("comment"),
+                    QStringLiteral("9007199254740991"),
+                    QStringLiteral("actor"), QStringLiteral("signature")),
+                false, "max-safe pull event repository is created");
+        check(!collaborationIsPartial(maxSafePullEventSnapshot),
+              "snapshot accepts the exact maximum JSON-safe pull event timestamp");
+        const RepoContributionSnapshot aboveSafePullEventSnapshot =
+            semanticPullEventSnapshot(
+                pullEventFrontMatter(
+                    QStringLiteral("comment"),
+                    QStringLiteral("9007199254740992"),
+                    QStringLiteral("actor"), QStringLiteral("signature")),
+                true, "above-safe pull event repository is created");
+        check(collaborationIsPartial(aboveSafePullEventSnapshot),
+              "snapshot rejects a pull event timestamp above the JSON-safe maximum");
+        const RepoContributionSnapshot twoTo63PullEventSnapshot =
+            semanticPullEventSnapshot(
+                pullEventFrontMatter(
+                    QStringLiteral("comment"),
+                    QStringLiteral("9223372036854775808"),
+                    QStringLiteral("actor"), QStringLiteral("signature")),
+                true, "two-to-63 pull event repository is created");
+        check(collaborationIsPartial(twoTo63PullEventSnapshot),
+              "snapshot rejects a two-to-the-63 pull event timestamp");
+        const RepoContributionSnapshot negativePullEventSnapshot =
+            semanticPullEventSnapshot(
+                pullEventFrontMatter(
+                    QStringLiteral("comment"), QStringLiteral("-1"),
+                    QStringLiteral("actor"), QStringLiteral("signature")),
+                true, "negative pull event repository is created");
+        check(collaborationIsPartial(negativePullEventSnapshot),
+              "snapshot rejects a negative pull event timestamp");
+        const RepoContributionSnapshot fractionalPullEventSnapshot =
+            semanticPullEventSnapshot(
+                pullEventFrontMatter(
+                    QStringLiteral("comment"), QStringLiteral("1.5"),
+                    QStringLiteral("actor"), QStringLiteral("signature")),
+                true, "fractional pull event repository is created");
+        check(collaborationIsPartial(fractionalPullEventSnapshot),
+              "snapshot rejects a fractional pull event timestamp");
+        const RepoContributionSnapshot emptyPullEventTypeSnapshot =
+            semanticPullEventSnapshot(
+                pullEventFrontMatter(
+                    QString(), QStringLiteral("1"), QStringLiteral("actor"),
+                    QStringLiteral("signature")),
+                true, "empty-type pull event repository is created");
+        check(collaborationIsPartial(emptyPullEventTypeSnapshot),
+              "snapshot rejects an empty pull event type");
+        const RepoContributionSnapshot emptyPullEventAuthorSnapshot =
+            semanticPullEventSnapshot(
+                pullEventFrontMatter(
+                    QStringLiteral("comment"), QStringLiteral("1"),
+                    QString(), QStringLiteral("signature")),
+                true, "empty-author pull event repository is created");
+        check(collaborationIsPartial(emptyPullEventAuthorSnapshot),
+              "snapshot rejects an empty pull event author");
+        const RepoContributionSnapshot emptyPullEventSignatureSnapshot =
+            semanticPullEventSnapshot(
+                pullEventFrontMatter(
+                    QStringLiteral("comment"), QStringLiteral("1"),
+                    QStringLiteral("actor"), QString()),
+                true, "empty-signature pull event repository is created");
+        check(collaborationIsPartial(emptyPullEventSignatureSnapshot),
+              "snapshot rejects an empty pull event signature");
+
+        QTemporaryDir batchedPullRepo;
+        bool batchedPullSetup =
+            batchedPullRepo.isValid() &&
+            runTestGit(batchedPullRepo.path(),
+                       {QStringLiteral("init"), QStringLiteral("-q"),
+                        QStringLiteral("-b"), QStringLiteral("main")}) &&
+            runTestGit(batchedPullRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.name"),
+                        QStringLiteral("Owner Name")}) &&
+            runTestGit(batchedPullRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.email"),
+                        QStringLiteral("owner@example.test")});
+        for (int number = 1; batchedPullSetup && number <= 2; ++number) {
+            batchedPullSetup =
+                writeTestFile(
+                    batchedPullRepo.path() +
+                        QStringLiteral("/pulls/%1/pull.md").arg(number),
+                    pullFrontMatter(QStringLiteral("forkmesh-pull-v1"),
+                                    QString::number(number))) &&
+                writeTestFile(
+                    batchedPullRepo.path() +
+                        QStringLiteral("/pulls/%1/changes.patch").arg(number),
+                    QByteArrayLiteral(
+                        "diff --git a/a b/a\n--- a/a\n+++ b/a\n")) &&
+                writeTestFile(
+                    batchedPullRepo.path() +
+                        QStringLiteral("/pulls/%1/0001-comment.md")
+                            .arg(number),
+                    pullEventFrontMatter(
+                        QStringLiteral("comment"), QStringLiteral("1"),
+                        QStringLiteral("actor"),
+                        QStringLiteral("signature")));
+        }
+        batchedPullSetup =
+            batchedPullSetup &&
+            commitTestTree(batchedPullRepo.path(),
+                           QStringLiteral("batched pull metadata"),
+                           QStringLiteral("2026-07-12T09:00:00Z"),
+                           QStringLiteral("Owner Name"),
+                           QStringLiteral("owner@example.test"));
+        check(batchedPullSetup,
+              "batched strict pull repository is created");
+        if (batchedPullSetup) {
+            PullStore store(QString(), batchedPullRepo.path(), nullptr);
+            QString permissiveError;
+            const QList<PullRequest> permissive =
+                store.loadAll(&permissiveError);
+            check(permissiveError.isEmpty() && permissive.size() == 2,
+                  "normal pull loading ignores strict item and command budgets");
+
+            StrictGitReadInternal::Limits exactLimits;
+            exactLimits.maxGitCommands = 2;
+            exactLimits.maxPullItems = 2;
+            exactLimits.maxEventItems = 2;
+            QString exactError;
+            QList<PullRequest> exactPulls;
+            {
+                StrictGitReadInternal::ScopedLimitsForTests scoped(exactLimits);
+                exactPulls = store.loadAllStrictAtRef(
+                    QStringLiteral("HEAD"), &exactError);
+            }
+            check(exactError.isEmpty() && exactPulls.size() == 2 &&
+                      exactPulls.at(0).events.size() == 1 &&
+                      exactPulls.at(1).events.size() == 1,
+                  "strict pull batching accepts exact command and item caps");
+
+            auto strictLoadWithLimits =
+                [&](const StrictGitReadInternal::Limits &limits,
+                    QString *strictError) {
+                    StrictGitReadInternal::ScopedLimitsForTests scoped(limits);
+                    return store.loadAllStrictAtRef(QStringLiteral("HEAD"),
+                                                    strictError);
+                };
+            StrictGitReadInternal::Limits commandOverflow = exactLimits;
+            commandOverflow.maxGitCommands = 1;
+            QString commandError;
+            const QList<PullRequest> commandLimited =
+                strictLoadWithLimits(commandOverflow, &commandError);
+            check(!commandError.isEmpty() && commandLimited.isEmpty(),
+                  "strict pull batching rejects command-cap overflow");
+
+            StrictGitReadInternal::Limits pullOverflow = exactLimits;
+            pullOverflow.maxPullItems = 1;
+            QString pullLimitError;
+            const QList<PullRequest> pullLimited =
+                strictLoadWithLimits(pullOverflow, &pullLimitError);
+            check(!pullLimitError.isEmpty() && pullLimited.isEmpty(),
+                  "strict pull batching rejects pull-item overflow");
+
+            StrictGitReadInternal::Limits eventOverflow = exactLimits;
+            eventOverflow.maxEventItems = 1;
+            QString eventLimitError;
+            const QList<PullRequest> eventLimited =
+                strictLoadWithLimits(eventOverflow, &eventLimitError);
+            check(!eventLimitError.isEmpty() && eventLimited.isEmpty(),
+                  "strict pull batching rejects event-item overflow");
+
+            StrictGitReadInternal::Limits deadlineOverflow = exactLimits;
+            deadlineOverflow.maxElapsedMs = 0;
+            QString deadlineError;
+            const QList<PullRequest> deadlineLimited =
+                strictLoadWithLimits(deadlineOverflow, &deadlineError);
+            check(!deadlineError.isEmpty() && deadlineLimited.isEmpty(),
+                  "strict pull batching enforces one aggregate elapsed deadline");
+        }
+
+        QTemporaryDir writablePullRepo;
+        bool writablePullSetup =
+            writablePullRepo.isValid() &&
+            runTestGit(writablePullRepo.path(),
+                       {QStringLiteral("init"), QStringLiteral("-q"),
+                        QStringLiteral("-b"), QStringLiteral("main")}) &&
+            runTestGit(writablePullRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.name"),
+                        QStringLiteral("Owner Name")}) &&
+            runTestGit(writablePullRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.email"),
+                        QStringLiteral("owner@example.test")}) &&
+            writeTestFile(writablePullRepo.path() +
+                              QStringLiteral("/source.cpp"),
+                          QByteArrayLiteral("x")) &&
+            writeTestFile(writablePullRepo.path() +
+                              QStringLiteral("/pulls/1/pull.md"),
+                          pullFrontMatter(QStringLiteral("forkmesh-pull-v1"),
+                                          QStringLiteral("1"))) &&
+            writeTestFile(writablePullRepo.path() +
+                              QStringLiteral("/pulls/1/changes.patch"),
+                          QByteArrayLiteral("patch one\n")) &&
+            commitTestTree(writablePullRepo.path(),
+                           QStringLiteral("valid historical pull"),
+                           QStringLiteral("2026-07-12T09:00:00Z"),
+                           QStringLiteral("Owner Name"),
+                           QStringLiteral("owner@example.test"));
+        const QString firstPullRef =
+            writablePullSetup ? testGitHead(writablePullRepo.path()) : QString();
+        writablePullSetup =
+            writablePullSetup && !firstPullRef.isEmpty() &&
+            writeTestFile(writablePullRepo.path() +
+                              QStringLiteral("/pulls/2/pull.md"),
+                          pullFrontMatter(QString(), QStringLiteral("2"))) &&
+            writeTestFile(writablePullRepo.path() +
+                              QStringLiteral("/pulls/2/changes.patch"),
+                          QByteArrayLiteral("patch two\n")) &&
+            commitTestTree(writablePullRepo.path(),
+                           QStringLiteral("corrupt current pull metadata"),
+                           QStringLiteral("2026-07-12T10:00:00Z"),
+                           QStringLiteral("Owner Name"),
+                           QStringLiteral("owner@example.test"));
+        check(writablePullSetup,
+              "writable pull history has a valid older ref and corrupt head");
+        if (writablePullSetup) {
+            PullStore writableStore(writablePullRepo.path(), QString(),
+                                    &identity, QStringLiteral("owner"));
+            QString atRefError;
+            const QList<PullRequest> historicalPulls =
+                writableStore.loadAllStrictAtRef(firstPullRef, &atRefError);
+            QString strictHeadError;
+            writableStore.loadAllStrict(&strictHeadError);
+            check(historicalPulls.size() == 1 &&
+                      historicalPulls.constFirst().number == 1 &&
+                      atRefError.isEmpty(),
+                  "writable strict pull reads honor the supplied older ref");
+            check(!strictHeadError.isEmpty(),
+                  "writable strict pull reads validate the current ref");
+        }
+
+        QTemporaryDir strictDeriveRepo;
+        bool strictDeriveSetup =
+            strictDeriveRepo.isValid() &&
+            runTestGit(strictDeriveRepo.path(),
+                       {QStringLiteral("init"), QStringLiteral("-q"),
+                        QStringLiteral("-b"), QStringLiteral("main")}) &&
+            runTestGit(strictDeriveRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.name"),
+                        QStringLiteral("Owner Name")}) &&
+            runTestGit(strictDeriveRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.email"),
+                        QStringLiteral("owner@example.test")}) &&
+            writeTestFile(strictDeriveRepo.path() +
+                              QStringLiteral("/source.cpp"),
+                          QByteArrayLiteral("base\n")) &&
+            commitTestTree(strictDeriveRepo.path(), QStringLiteral("base"),
+                           QStringLiteral("2026-07-12T08:00:00Z"),
+                           QStringLiteral("Owner Name"),
+                           QStringLiteral("owner@example.test")) &&
+            runTestGit(strictDeriveRepo.path(),
+                       {QStringLiteral("checkout"), QStringLiteral("-q"),
+                        QStringLiteral("-b"), QStringLiteral("feature")}) &&
+            writeTestFile(strictDeriveRepo.path() +
+                              QStringLiteral("/source.cpp"),
+                          QByteArrayLiteral("feature\n")) &&
+            commitTestTree(strictDeriveRepo.path(), QStringLiteral("feature"),
+                           QStringLiteral("2026-07-12T08:30:00Z"),
+                           QStringLiteral("Owner Name"),
+                           QStringLiteral("owner@example.test")) &&
+            runTestGit(strictDeriveRepo.path(),
+                       {QStringLiteral("checkout"), QStringLiteral("-q"),
+                        QStringLiteral("main")}) &&
+            writeTestFile(
+                strictDeriveRepo.path() +
+                    QStringLiteral("/pulls/1/pull.md"),
+                pullFrontMatter(QStringLiteral("forkmesh-pull-v1"),
+                                QStringLiteral("1"), true)) &&
+            commitTestTree(strictDeriveRepo.path(),
+                           QStringLiteral("branch pull metadata"),
+                           QStringLiteral("2026-07-12T09:00:00Z"),
+                           QStringLiteral("Owner Name"),
+                           QStringLiteral("owner@example.test")) &&
+            runTestGit(strictDeriveRepo.path(),
+                       {QStringLiteral("config"),
+                        QStringLiteral("diff.external"),
+                        QStringLiteral("/definitely/missing/forkmesh-diff")});
+        check(strictDeriveSetup,
+              "strict branch-derive failure repository is created");
+        if (strictDeriveSetup) {
+            RepoContributionSnapshotInput input;
+            input.workTreePath = strictDeriveRepo.path();
+            input.branch = QStringLiteral("main");
+            input.head = testGitHead(strictDeriveRepo.path());
+            input.publishingKey = identity.publicKey();
+            input.capturedAtMs = utcMs(QStringLiteral("2026-07-13T12:00:00Z"));
+            const RepoContributionSnapshot snapshot =
+                buildRepoContributionSnapshot(input);
+            check(collaborationIsPartial(snapshot),
+                  "snapshot marks a failed strict branch derivation partial");
+        }
+
+        QTemporaryDir historicalPullRepo;
+        bool historicalPullSetup =
+            historicalPullRepo.isValid() &&
+            runTestGit(historicalPullRepo.path(),
+                       {QStringLiteral("init"), QStringLiteral("-q"),
+                        QStringLiteral("-b"), QStringLiteral("main")}) &&
+            runTestGit(historicalPullRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.name"),
+                        QStringLiteral("Owner Name")}) &&
+            runTestGit(historicalPullRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("user.email"),
+                        QStringLiteral("owner@example.test")}) &&
+            writeTestFile(historicalPullRepo.path() +
+                              QStringLiteral("/source.cpp"),
+                          QByteArrayLiteral("base\n")) &&
+            commitTestTree(historicalPullRepo.path(), QStringLiteral("base"),
+                           QStringLiteral("2026-07-14T08:00:00Z"),
+                           QStringLiteral("Owner Name"),
+                           QStringLiteral("owner@example.test")) &&
+            runTestGit(historicalPullRepo.path(),
+                       {QStringLiteral("checkout"), QStringLiteral("-q"),
+                        QStringLiteral("-b"),
+                        QStringLiteral("historical-feature")}) &&
+            writeTestFile(historicalPullRepo.path() +
+                              QStringLiteral("/source.cpp"),
+                          QByteArrayLiteral("first feature\n")) &&
+            commitTestTree(historicalPullRepo.path(),
+                           QStringLiteral("first feature"),
+                           QStringLiteral("2026-07-14T09:00:00Z"),
+                           QStringLiteral("Owner Name"),
+                           QStringLiteral("owner@example.test")) &&
+            runTestGit(historicalPullRepo.path(),
+                       {QStringLiteral("checkout"), QStringLiteral("-q"),
+                        QStringLiteral("main")});
+        check(historicalPullSetup,
+              "historical branch pull repository is created");
+        if (historicalPullSetup) {
+            PullStore historicalPullStore(historicalPullRepo.path(), QString(),
+                                          &identity,
+                                          QStringLiteral("owner"));
+            QString createError;
+            const int pullNumber = historicalPullStore.createPull(
+                QStringLiteral("Historical branch pull"),
+                QStringLiteral("description"), QStringLiteral("main"),
+                QStringLiteral("historical-feature"), QString(), QString(),
+                true, &createError);
+            const QString externalDiff =
+                historicalPullRepo.path() + QStringLiteral("/external-diff.sh");
+            const QString externalMarker = externalDiff +
+                                           QStringLiteral(".invoked");
+            const bool externalDiffConfigured =
+                pullNumber == 1 && createError.isEmpty() &&
+                writeTestFile(externalDiff,
+                              QByteArrayLiteral(
+                                  "#!/bin/sh\n: > \"$0.invoked\"\nexit 1\n")) &&
+                QFile::setPermissions(
+                    externalDiff,
+                    QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                        QFileDevice::ExeOwner) &&
+                runTestGit(historicalPullRepo.path(),
+                           {QStringLiteral("config"),
+                            QStringLiteral("diff.external"), externalDiff});
+            check(externalDiffConfigured,
+                  "strict pull external-diff marker is configured");
+            if (externalDiffConfigured) {
+                RepoContributionSnapshotInput externalInput;
+                externalInput.workTreePath = historicalPullRepo.path();
+                externalInput.branch = QStringLiteral("main");
+                externalInput.head = testGitHead(historicalPullRepo.path());
+                externalInput.publishingKey = identity.publicKey();
+                externalInput.capturedAtMs =
+                    QDateTime::currentMSecsSinceEpoch() + 60000;
+                const RepoContributionSnapshot externalSnapshot =
+                    buildRepoContributionSnapshot(externalInput);
+                int externalCreditedPulls = 0;
+                for (const QJsonValue &value :
+                     externalSnapshot.payload.value("days").toArray()) {
+                    externalCreditedPulls += value.toArray().at(4).toInt();
+                }
+                check(externalSnapshot.complete &&
+                          externalSnapshot.error.isEmpty() &&
+                          externalCreditedPulls == 1 &&
+                          !QFileInfo::exists(externalMarker),
+                      "strict pull derivation disables external diff drivers");
+            }
+            runTestGit(historicalPullRepo.path(),
+                       {QStringLiteral("config"), QStringLiteral("--unset"),
+                        QStringLiteral("diff.external")});
+            QFile::remove(externalMarker);
+            historicalPullSetup =
+                externalDiffConfigured &&
+                runTestGit(historicalPullRepo.path(),
+                           {QStringLiteral("checkout"), QStringLiteral("-q"),
+                            QStringLiteral("historical-feature")}) &&
+                writeTestFile(historicalPullRepo.path() +
+                                  QStringLiteral("/source.cpp"),
+                              QByteArrayLiteral("second feature\n")) &&
+                commitTestTree(historicalPullRepo.path(),
+                               QStringLiteral("second feature"),
+                               QStringLiteral("2026-07-14T10:00:00Z"),
+                               QStringLiteral("Owner Name"),
+                               QStringLiteral("owner@example.test")) &&
+                runTestGit(historicalPullRepo.path(),
+                           {QStringLiteral("checkout"), QStringLiteral("-q"),
+                            QStringLiteral("main")});
+            check(historicalPullSetup,
+                  "historical branch pull head advances after signing");
+            if (historicalPullSetup) {
+                RepoContributionSnapshotInput input;
+                input.workTreePath = historicalPullRepo.path();
+                input.branch = QStringLiteral("main");
+                input.head = testGitHead(historicalPullRepo.path());
+                input.publishingKey = identity.publicKey();
+                input.capturedAtMs =
+                    QDateTime::currentMSecsSinceEpoch() + 60000;
+                const RepoContributionSnapshot snapshot =
+                    buildRepoContributionSnapshot(input);
+                int creditedPulls = 0;
+                for (const QJsonValue &value :
+                     snapshot.payload.value("days").toArray()) {
+                    creditedPulls += value.toArray().at(4).toInt();
+                }
+                check(snapshot.complete && snapshot.error.isEmpty() &&
+                          creditedPulls == 1 &&
+                          snapshot.payload.value("coverage")
+                                  .toObject()
+                                  .value("collaboration")
+                                  .toString() == "complete",
+                      "strict snapshot credits a branch pull after its head advances");
+
+                QString mergeError;
+                const bool creationRefRemoved =
+                    runTestGit(historicalPullRepo.path(),
+                               {QStringLiteral("update-ref"),
+                                QStringLiteral("-d"),
+                                QStringLiteral("refs/pr/1/head")});
+                check(creationRefRemoved,
+                      "historical pull merge resolves the advanced branch head");
+                const bool merged = creationRefRemoved &&
+                                    historicalPullStore.mergePull(
+                                        pullNumber, &mergeError);
+                check(merged && mergeError.isEmpty(),
+                      "advanced historical branch pull is merged");
+                if (merged) {
+                    const QList<PullRequest> mergedRecords =
+                        historicalPullStore.loadAll();
+                    const bool distinctMergeRange =
+                        mergedRecords.size() == 1 &&
+                        !mergedRecords.first().creationHeadOid.isEmpty() &&
+                        !mergedRecords.first().mergeHead.isEmpty() &&
+                        mergedRecords.first().creationHeadOid !=
+                            mergedRecords.first().mergeHead;
+                    check(distinctMergeRange,
+                          "merged pull preserves a distinct signed creation range");
+                    input.head = testGitHead(historicalPullRepo.path());
+                    const RepoContributionSnapshot mergedSnapshot =
+                        buildRepoContributionSnapshot(input);
+                    int mergedCreditedPulls = 0;
+                    for (const QJsonValue &value :
+                         mergedSnapshot.payload.value("days").toArray()) {
+                        mergedCreditedPulls += value.toArray().at(4).toInt();
+                    }
+                    check(mergedSnapshot.complete &&
+                              mergedSnapshot.error.isEmpty() &&
+                              mergedCreditedPulls == 1 &&
+                              mergedSnapshot.payload.value("coverage")
+                                      .toObject()
+                                      .value("collaboration")
+                                      .toString() == "complete",
+                          "strict snapshot keeps signed creation credit after merge");
+                }
+            }
+        }
+
+        QTemporaryDir mirrorOnlyRoot;
+        const QString mirrorOnlyWork =
+            mirrorOnlyRoot.path() + QStringLiteral("/work");
+        const QString mirrorOnlyBare =
+            mirrorOnlyRoot.path() + QStringLiteral("/mirror.git");
+        bool mirrorOnlySetup =
+            mirrorOnlyRoot.isValid() && QDir().mkpath(mirrorOnlyWork) &&
+            runTestGit(mirrorOnlyWork,
+                       {QStringLiteral("init"), QStringLiteral("-q"),
+                        QStringLiteral("-b"), QStringLiteral("served")}) &&
+            runTestGit(mirrorOnlyWork,
+                       {QStringLiteral("config"), QStringLiteral("user.name"),
+                        QStringLiteral("Mirror Owner")}) &&
+            runTestGit(mirrorOnlyWork,
+                       {QStringLiteral("config"), QStringLiteral("user.email"),
+                        QStringLiteral("mirror@example.test")}) &&
+            writeTestFile(mirrorOnlyWork + QStringLiteral("/served.cpp"),
+                          "int x;\n") &&
+            commitTestTree(mirrorOnlyWork, "served snapshot",
+                           "2026-07-12T09:00:00Z", "Mirror Owner",
+                           "mirror@example.test") &&
+            runTestGit(mirrorOnlyRoot.path(),
+                       {QStringLiteral("clone"), QStringLiteral("-q"),
+                        QStringLiteral("--bare"), mirrorOnlyWork,
+                        mirrorOnlyBare}) &&
+            runTestGit(mirrorOnlyBare,
+                       {QStringLiteral("config"), QStringLiteral("user.name"),
+                        QStringLiteral("Mirror Owner")}) &&
+            runTestGit(mirrorOnlyBare,
+                       {QStringLiteral("config"), QStringLiteral("user.email"),
+                        QStringLiteral("mirror@example.test")}) &&
+            runTestGit(mirrorOnlyBare,
+                       {QStringLiteral("symbolic-ref"), QStringLiteral("HEAD"),
+                        QStringLiteral("refs/heads/missing")});
+        check(mirrorOnlySetup,
+              "mirror-only dangling-HEAD snapshot repository is created");
+        if (mirrorOnlySetup) {
+            RepoContributionSnapshotInput input;
+            input.mirrorPath = mirrorOnlyBare;
+            input.branch = "served";
+            input.head = testGitHead(mirrorOnlyWork);
+            input.publishingKey = identity.publicKey();
+            input.capturedAtMs = utcMs("2026-07-13T12:00:00Z");
+            const RepoContributionSnapshot snapshot =
+                buildRepoContributionSnapshot(input);
+            int commits = 0;
+            for (const QJsonValue &value :
+                 snapshot.payload.value("days").toArray()) {
+                commits += value.toArray().at(2).toInt();
+            }
+            check(snapshot.complete && commits == 1 &&
+                      snapshot.payload.value("coverage")
+                              .toObject()
+                              .value("commits")
+                              .toString() == "complete" &&
+                      snapshot.payload.value("coverage")
+                              .toObject()
+                              .value("collaboration")
+                              .toString() == "partial" &&
+                      snapshot.payload.value("coverage")
+                              .toObject()
+                              .value("languages")
+                              .toString() == "complete" &&
+                      snapshot.payload.value("extensions").toArray() ==
+                          QJsonArray{QJsonArray{"cpp", 7, 1}},
+                  "mirror-only snapshot ignores dangling HEAD and keeps exact data");
+        }
+
+        // With no configured email, normalized author-name matching is the only
+        // permitted commit fallback.
+        QTemporaryDir nameRepo;
+        bool nameSetup = nameRepo.isValid() &&
+                         runTestGit(nameRepo.path(),
+                                    {QStringLiteral("init"), QStringLiteral("-q"),
+                                     QStringLiteral("-b"), QStringLiteral("main")}) &&
+                         runTestGit(nameRepo.path(),
+                                    {QStringLiteral("config"),
+                                     QStringLiteral("user.name"),
+                                     QStringLiteral("  Owner   Name  ")}) &&
+                         writeTestFile(nameRepo.path() + "/name.cpp", "x") &&
+                         commitTestTree(nameRepo.path(), "matching name",
+                                        "2026-07-12T09:00:00Z", "owner name",
+                                        "unconfigured@example.test") &&
+                         writeTestFile(nameRepo.path() + "/name.cpp", "y") &&
+                         commitTestTree(nameRepo.path(), "different name",
+                                        "2026-07-13T09:00:00Z", "Someone Else",
+                                        "unconfigured@example.test");
+        check(nameSetup, "name-fallback snapshot repository is created");
+        if (nameSetup) {
+            const bool hadGlobal = qEnvironmentVariableIsSet("GIT_CONFIG_GLOBAL");
+            const bool hadSystem = qEnvironmentVariableIsSet("GIT_CONFIG_SYSTEM");
+            const QByteArray oldGlobal = qgetenv("GIT_CONFIG_GLOBAL");
+            const QByteArray oldSystem = qgetenv("GIT_CONFIG_SYSTEM");
+            qputenv("GIT_CONFIG_GLOBAL", QByteArrayLiteral("/dev/null"));
+            qputenv("GIT_CONFIG_SYSTEM", QByteArrayLiteral("/dev/null"));
+
+            RepoContributionSnapshotInput input;
+            input.workTreePath = nameRepo.path();
+            input.branch = "main";
+            input.head = testGitHead(nameRepo.path());
+            input.publishingKey = identity.publicKey();
+            input.capturedAtMs = utcMs("2026-07-13T12:00:00Z");
+            const RepoContributionSnapshot snapshot =
+                buildRepoContributionSnapshot(input);
+
+            if (hadGlobal)
+                qputenv("GIT_CONFIG_GLOBAL", oldGlobal);
+            else
+                qunsetenv("GIT_CONFIG_GLOBAL");
+            if (hadSystem)
+                qputenv("GIT_CONFIG_SYSTEM", oldSystem);
+            else
+                qunsetenv("GIT_CONFIG_SYSTEM");
+
+            int commits = 0;
+            for (const QJsonValue &value : snapshot.payload.value("days").toArray())
+                commits += value.toArray().at(2).toInt();
+            check(snapshot.complete && commits == 1 &&
+                      snapshot.payload.value("coverage")
+                              .toObject()
+                              .value("commits")
+                              .toString() == "complete",
+                  "snapshot falls back to normalized name only when email is unset");
+        }
+
+        // When neither repository nor global Git identity exists, commit rows
+        // are empty and commit coverage is explicitly partial.
+        QTemporaryDir noIdentityRepo;
+        bool noIdentitySetup =
+            noIdentityRepo.isValid() &&
+            runTestGit(noIdentityRepo.path(),
+                       {QStringLiteral("init"), QStringLiteral("-q"),
+                        QStringLiteral("-b"), QStringLiteral("main")}) &&
+            writeTestFile(noIdentityRepo.path() + "/none.cpp", "x") &&
+            commitTestTree(noIdentityRepo.path(), "unconfigured identity",
+                           "2026-07-12T09:00:00Z", "Transient Author",
+                           "transient@example.test");
+        check(noIdentitySetup, "missing-identity snapshot repository is created");
+        if (noIdentitySetup) {
+            const bool hadGlobal = qEnvironmentVariableIsSet("GIT_CONFIG_GLOBAL");
+            const bool hadSystem = qEnvironmentVariableIsSet("GIT_CONFIG_SYSTEM");
+            const QByteArray oldGlobal = qgetenv("GIT_CONFIG_GLOBAL");
+            const QByteArray oldSystem = qgetenv("GIT_CONFIG_SYSTEM");
+            qputenv("GIT_CONFIG_GLOBAL", QByteArrayLiteral("/dev/null"));
+            qputenv("GIT_CONFIG_SYSTEM", QByteArrayLiteral("/dev/null"));
+
+            RepoContributionSnapshotInput input;
+            input.workTreePath = noIdentityRepo.path();
+            input.branch = "main";
+            input.head = testGitHead(noIdentityRepo.path());
+            input.publishingKey = identity.publicKey();
+            input.capturedAtMs = utcMs("2026-07-13T12:00:00Z");
+            const RepoContributionSnapshot snapshot =
+                buildRepoContributionSnapshot(input);
+
+            if (hadGlobal)
+                qputenv("GIT_CONFIG_GLOBAL", oldGlobal);
+            else
+                qunsetenv("GIT_CONFIG_GLOBAL");
+            if (hadSystem)
+                qputenv("GIT_CONFIG_SYSTEM", oldSystem);
+            else
+                qunsetenv("GIT_CONFIG_SYSTEM");
+
+            int commits = 0;
+            for (const QJsonValue &value : snapshot.payload.value("days").toArray())
+                commits += value.toArray().at(2).toInt();
+            check(snapshot.complete && commits == 0 &&
+                      snapshot.payload.value("coverage")
+                              .toObject()
+                              .value("commits")
+                              .toString() == "partial",
+                  "snapshot marks commit coverage partial without a Git identity");
+        }
+
+        // A dense but bounded history must be trimmed by whole oldest dates until
+        // its base64url transport fits, without making serialization unstable.
+        QTemporaryDir denseRepo;
+        bool denseSetup = denseRepo.isValid() &&
+                          runTestGit(denseRepo.path(),
+                                     {QStringLiteral("init"), QStringLiteral("-q"),
+                                      QStringLiteral("-b"), QStringLiteral("main")}) &&
+                          runTestGit(denseRepo.path(),
+                                     {QStringLiteral("config"),
+                                      QStringLiteral("user.name"),
+                                      QStringLiteral("Dense Owner")}) &&
+                          runTestGit(denseRepo.path(),
+                                     {QStringLiteral("config"),
+                                      QStringLiteral("user.email"),
+                                      QStringLiteral("dense@example.test")});
+        QByteArray import;
+        import += "blob\nmark :1\ndata 1\nx\n";
+        const QDate denseThrough(2026, 7, 13);
+        int previousMark = 0;
+        for (int i = 0; i < 1000; ++i) {
+            const QDate day = denseThrough.addDays(i - 999);
+            const qint64 seconds =
+                QDateTime::fromString(day.toString(Qt::ISODate) + "T12:00:00Z",
+                                      Qt::ISODate)
+                    .toSecsSinceEpoch();
+            const int mark = i + 2;
+            const QByteArray message = "dense-" + QByteArray::number(i);
+            import += "commit refs/heads/main\nmark :" + QByteArray::number(mark) +
+                      "\nauthor Dense Owner <dense@example.test> " +
+                      QByteArray::number(seconds) +
+                      " +0000\ncommitter Dense Owner <dense@example.test> " +
+                      QByteArray::number(seconds) + " +0000\ndata " +
+                      QByteArray::number(message.size()) + "\n" + message + "\n";
+            if (previousMark > 0)
+                import += "from :" + QByteArray::number(previousMark) + "\n";
+            else
+                import += "M 100644 :1 dense.cpp\n";
+            import += "\n";
+            previousMark = mark;
+        }
+        import += "done\n";
+        denseSetup = denseSetup &&
+                     runTestGitInput(denseRepo.path(),
+                                     {QStringLiteral("fast-import"),
+                                      QStringLiteral("--quiet")},
+                                     import);
+        check(denseSetup, "dense snapshot history is imported");
+        if (denseSetup) {
+            RepoContributionSnapshotInput input;
+            input.workTreePath = denseRepo.path();
+            input.branch = "main";
+            input.head = testGitHead(denseRepo.path());
+            input.publishingKey = identity.publicKey();
+            input.capturedAtMs = utcMs("2026-07-13T23:00:00Z");
+            const RepoContributionSnapshot snapshot =
+                buildRepoContributionSnapshot(input);
+            const QByteArray encoded = snapshot.compactPayload.toBase64(
+                QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals);
+            const QJsonArray rows = snapshot.payload.value("days").toArray();
+            check(snapshot.complete && encoded.size() <= 64 * 1024 &&
+                      rows.size() < 1000 && !rows.isEmpty() &&
+                      rows.first().toArray().at(0).toString() > "2023-10-18" &&
+                      snapshot.payload.value("coverage")
+                              .toObject()
+                              .value("commits")
+                              .toString() == "partial",
+                  "snapshot trims whole oldest dates to the encoded size cap");
+            check(snapshot.payload.value("coverage")
+                          .toObject()
+                          .value("collaboration")
+                          .toString() == "complete",
+                  "commit-only trimming preserves complete collaboration coverage");
+            check(buildRepoContributionSnapshot(input).compactPayload ==
+                      snapshot.compactPayload,
+                  "trimmed snapshot bytes remain deterministic");
+        }
+    }
 
     // "dates" event (issue #384, planned start/end): content is
     // "<startMs>\0<endMs>" as plain base-10 integers. Pin it so the client and
@@ -1457,10 +4302,8 @@ int main(int argc, char *argv[])
             const QString baseBranch = QString::fromUtf8(
                 gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
             auto writeFile = [&](const QString &rel, const QString &text) {
-                QFile f(tmp.path() + "/" + rel);
-                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
-                f.write(text.toUtf8());
-                f.close();
+                check(writeTestFile(tmp.path() + "/" + rel, text.toUtf8()),
+                      "write pull-delete fixture file");
             };
             git({"checkout", "-q", "-b", "feat-258"});
             writeFile("alpha.txt", "alpha-1\n");
@@ -1522,10 +4365,8 @@ int main(int argc, char *argv[])
             const QString baseBranch = QString::fromUtf8(
                 gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
             auto writeFile = [&](const QString &rel, const QString &text) {
-                QFile f(tmp.path() + "/" + rel);
-                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
-                f.write(text.toUtf8());
-                f.close();
+                check(writeTestFile(tmp.path() + "/" + rel, text.toUtf8()),
+                      "write branch-backed fixture file");
             };
             git({"checkout", "-q", "-b", "feat-bb"});
             writeFile("bb1.txt", "one\n");
@@ -1600,10 +4441,8 @@ int main(int argc, char *argv[])
             const QString baseBranch = QString::fromUtf8(
                 gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
             auto writeFile = [&](const QString &rel, const QString &text) {
-                QFile f(tmp.path() + "/" + rel);
-                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
-                f.write(text.toUtf8());
-                f.close();
+                check(writeTestFile(tmp.path() + "/" + rel, text.toUtf8()),
+                      "write agent-edit fixture file");
             };
             git({"checkout", "-q", "-b", "feat-ai"});
             writeFile("ai1.txt", "first draft\n");
@@ -1664,10 +4503,8 @@ int main(int argc, char *argv[])
         // mirror) sidesteps the damaged blob entirely.
         {
             auto writeBytes = [&](const QString &rel, const QByteArray &bytes) {
-                QFile f(tmp.path() + "/" + rel);
-                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
-                f.write(bytes);
-                f.close();
+                check(writeTestFile(tmp.path() + "/" + rel, bytes),
+                      "write binary-pull fixture file");
             };
             const QString cbBase = QString::fromUtf8(
                 gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
@@ -1722,10 +4559,8 @@ int main(int argc, char *argv[])
             // (issue #399).
             const QString metaDir = plain.metaWorkTree();
             auto writeMetaBytes = [&](const QString &rel, const QByteArray &bytes) {
-                QFile f(metaDir + "/" + rel);
-                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
-                f.write(bytes);
-                f.close();
+                check(writeTestFile(metaDir + "/" + rel, bytes),
+                      "write pull metadata fixture file");
             };
             writeMetaBytes(
                 "pulls/" + QString::number(pbn) + "/commits.mbox",
@@ -1764,10 +4599,8 @@ int main(int argc, char *argv[])
         // conflicts).
         {
             auto writeFile = [&](const QString &rel, const QString &text) {
-                QFile f(tmp.path() + "/" + rel);
-                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
-                f.write(text.toUtf8());
-                f.close();
+                check(writeTestFile(tmp.path() + "/" + rel, text.toUtf8()),
+                      "write merge-tree fixture file");
             };
             const QString mtBase = QString::fromUtf8(
                 gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
@@ -2162,11 +4995,8 @@ int main(int argc, char *argv[])
                  QStringLiteral("t@t")});
             git({QStringLiteral("config"), QStringLiteral("user.name"),
                  QStringLiteral("T")});
-            {
-                QFile f(dir + QStringLiteral("/secret.env"));
-                f.open(QIODevice::WriteOnly);
-                f.write(fileContent);
-            }
+            check(writeTestFile(dir + QStringLiteral("/secret.env"), fileContent),
+                  "write secret-scan fixture file");
             git({QStringLiteral("add"), QStringLiteral("secret.env")});
             git({QStringLiteral("commit"), QStringLiteral("-m"),
                  QStringLiteral("add")});
@@ -2267,11 +5097,10 @@ int main(int argc, char *argv[])
                  QStringLiteral("t@t")});
             git({QStringLiteral("config"), QStringLiteral("user.name"),
                  QStringLiteral("T")});
-            {
-                QFile f(dir + QStringLiteral("/readme.txt"));
-                f.open(QIODevice::WriteOnly);
-                f.write("This is a benign file with no secrets.\nname: ForkMesh\n");
-            }
+            check(writeTestFile(
+                      dir + QStringLiteral("/readme.txt"),
+                      "This is a benign file with no secrets.\nname: ForkMesh\n"),
+                  "write benign secret-scan fixture file");
             git({QStringLiteral("add"), QStringLiteral("readme.txt")});
             git({QStringLiteral("commit"), QStringLiteral("-m"),
                  QStringLiteral("add")});
@@ -2297,11 +5126,9 @@ int main(int argc, char *argv[])
                  QStringLiteral("t@t")});
             git({QStringLiteral("config"), QStringLiteral("user.name"),
                  QStringLiteral("T")});
-            {
-                QFile f(dir + QStringLiteral("/fixtures.cpp"));
-                f.open(QIODevice::WriteOnly);
-                f.write("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE // forkmesh-secret-scan:ignore-line\n");  // forkmesh-secret-scan:ignore-line
-            }
+            check(writeTestFile(dir + QStringLiteral("/fixtures.cpp"),
+                                "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE // forkmesh-secret-scan:ignore-line\n"),  // forkmesh-secret-scan:ignore-line
+                  "write ignored secret-scan fixture file");
             git({QStringLiteral("add"), QStringLiteral("fixtures.cpp")});
             git({QStringLiteral("commit"), QStringLiteral("-m"),
                  QStringLiteral("add")});
@@ -2325,20 +5152,16 @@ int main(int argc, char *argv[])
             git({QStringLiteral("config"), QStringLiteral("user.name"),
                  QStringLiteral("T")});
             // Base commit — clean
-            {
-                QFile f(dir + QStringLiteral("/readme.txt"));
-                f.open(QIODevice::WriteOnly);
-                f.write("placeholder\n");
-            }
+            check(writeTestFile(dir + QStringLiteral("/readme.txt"),
+                                "placeholder\n"),
+                  "write diff-scan base fixture file");
             git({QStringLiteral("add"), QStringLiteral("readme.txt")});
             git({QStringLiteral("commit"), QStringLiteral("-m"),
                  QStringLiteral("base")});
             // HEAD commit introduces a secret
-            {
-                QFile f(dir + QStringLiteral("/creds.env"));
-                f.open(QIODevice::WriteOnly);
-                f.write("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n");  // forkmesh-secret-scan:ignore-line
-            }
+            check(writeTestFile(dir + QStringLiteral("/creds.env"),
+                                "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"),  // forkmesh-secret-scan:ignore-line
+                  "write diff-scan secret fixture file");
             git({QStringLiteral("add"), QStringLiteral("creds.env")});
             git({QStringLiteral("commit"), QStringLiteral("-m"),
                  QStringLiteral("add creds")});
@@ -2369,20 +5192,16 @@ int main(int argc, char *argv[])
             git({QStringLiteral("config"), QStringLiteral("user.name"),
                  QStringLiteral("T")});
             // Base commit WITH a secret (already in history)
-            {
-                QFile f(dir + QStringLiteral("/creds.env"));
-                f.open(QIODevice::WriteOnly);
-                f.write("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n");  // forkmesh-secret-scan:ignore-line
-            }
+            check(writeTestFile(dir + QStringLiteral("/creds.env"),
+                                "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"),  // forkmesh-secret-scan:ignore-line
+                  "write remediation base fixture file");
             git({QStringLiteral("add"), QStringLiteral("creds.env")});
             git({QStringLiteral("commit"), QStringLiteral("-m"),
                  QStringLiteral("base")});
             // HEAD commit removes the secret (remediation commit)
-            {
-                QFile f(dir + QStringLiteral("/creds.env"));
-                f.open(QIODevice::WriteOnly);
-                f.write("# credentials removed\n");
-            }
+            check(writeTestFile(dir + QStringLiteral("/creds.env"),
+                                "# credentials removed\n"),
+                  "write remediation head fixture file");
             git({QStringLiteral("add"), QStringLiteral("creds.env")});
             git({QStringLiteral("commit"), QStringLiteral("-m"),
                  QStringLiteral("remove creds")});
@@ -2407,12 +5226,9 @@ int main(int argc, char *argv[])
              QStringLiteral("t@t")});
         git({QStringLiteral("config"), QStringLiteral("user.name"),
              QStringLiteral("T")});
-        {
-            QFile f(dir + QStringLiteral("/package.json"));
-            f.open(QIODevice::WriteOnly);
-            // The scanner reads line-by-line (one "name": "version" entry per
-            // line), so the fixture must be pretty-printed, not minified.
-            f.write(R"JSON({
+        // The scanner reads line-by-line (one "name": "version" entry per
+        // line), so the fixture must be pretty-printed, not minified.
+        check(writeTestFile(dir + QStringLiteral("/package.json"), R"JSON({
   "dependencies": {
     "left-pad": "1.0.0",
     "chalk": "*"
@@ -2421,13 +5237,11 @@ int main(int argc, char *argv[])
     "jest": "^29.0.0"
   }
 }
-)JSON");
-        }
-        {
-            QFile f(dir + QStringLiteral("/requirements.txt"));
-            f.open(QIODevice::WriteOnly);
-            f.write("requests==2.31.0\nflask>=2.0\n# a comment\n\nclick\n");
-        }
+)JSON"),
+              "write package manifest fixture file");
+        check(writeTestFile(dir + QStringLiteral("/requirements.txt"),
+                            "requests==2.31.0\nflask>=2.0\n# a comment\n\nclick\n"),
+              "write requirements manifest fixture file");
         git({QStringLiteral("add"), QStringLiteral("package.json"),
              QStringLiteral("requirements.txt")});
 
