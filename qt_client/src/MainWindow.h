@@ -316,6 +316,17 @@ public:
     {
         return saveRepoAboutMetadata(about, website, nullptr);
     }
+    // Drive provisionNewRepository() without its dialog: returns the new repo
+    // index (>= 0) or -1 on failure.
+    Q_INVOKABLE int testProvisionNewRepository(const QString &dest,
+                                               const QString &name,
+                                               const QString &description,
+                                               const QString &firstPrompt,
+                                               bool addReadme)
+    {
+        return provisionNewRepository(dest, name, description, firstPrompt,
+                                      addReadme, nullptr);
+    }
     int testAddPublishedRepository(const QString &owner, const QString &name,
                                    const QString &mirrorPath);
     // adhoc #191: the git dir agents/looper would run against for a repo — a
@@ -2813,9 +2824,21 @@ private:
     // offline). Sorted, de-duplicated, and cheap to build from in-memory state.
     QStringList mentionCandidateNames() const;
     void promptAddRepository();
-    // Create a brand-new, empty Git repository: ask for a name and parent folder,
-    // run `git init`, then mirror + publish it under this node like a local repo.
+    // Create a brand-new Git repository. Opens a single screen that collects the
+    // name, a description, an optional first prompt, and a README choice, then
+    // runs `git init -b main`, seeds the repo, and mirrors + publishes it under
+    // this node like a local repo.
     void createNewRepository();
+    // Core of createNewRepository(), separated from its dialog so it can be
+    // driven by tests. `dest` must be an existing empty directory; on success it
+    // is git-init'd on main, optionally seeded with a README and
+    // .forkmesh/info.json description, initial-committed, registered, published,
+    // and (when firstPrompt is non-empty) has its first issue filed. Returns the
+    // new repository index, or -1 with a message in *error on failure.
+    int provisionNewRepository(const QString &dest, const QString &name,
+                               const QString &description,
+                               const QString &firstPrompt, bool addReadme,
+                               QString *error);
     // Clone a remote repo (GitHub/GitLab/any https git URL) into a local working
     // copy, then add it like a local repo. An optional per-host access token
     // (Settings) authenticates the clone to dodge unauthenticated rate limits.
