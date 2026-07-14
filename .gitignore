@@ -1,6 +1,7 @@
 qt_client/build-forkmesh/
 qt_client/build-ci/
 cloudflare_worker/python_modules/
+.wrangler/
 
 # Local secrets / env files (the *.example templates stay tracked).
 .env
