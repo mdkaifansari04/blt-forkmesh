@@ -4,7 +4,7 @@ number: 17
 title: Add Qt profile contribution snapshots and strict git reads
 base: main
 head: api-pr/20260714-035346/qt-profile-contribution-support
-status: open
+status: merged
 ts: 1783981717358
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
