@@ -846,10 +846,44 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
             }
         }
 
-        const QHash<QString, QByteArray> contentByOid = fetchOids(wantedOids);
+        QHash<QString, QByteArray> contentByOid = fetchOids(wantedOids);
+        // A single batched read can occasionally drop objects (framing hiccup);
+        // retry just the misses once so a transient gap doesn't quietly shrink
+        // the Issues tab below the mirror's open count. Strict callers verify
+        // exact content and want the discrepancy reported, so they skip the
+        // retry (and keep the drop-plus-error behaviour below).
+        if (!strict) {
+            QSet<QString> missingOids;
+            for (auto it = issueJsonOids.constBegin();
+                 it != issueJsonOids.constEnd(); ++it)
+                if (!contentByOid.contains(it.value()))
+                    missingOids.insert(it.value());
+            if (!missingOids.isEmpty()) {
+                const QHash<QString, QByteArray> retry = fetchOids(missingOids);
+                for (auto it = retry.constBegin(); it != retry.constEnd(); ++it)
+                    contentByOid.insert(it.key(), it.value());
+            }
+        }
         for (auto it = issueJsonOids.constBegin(); it != issueJsonOids.constEnd(); ++it) {
+            // Stand-in row for an issue folder the mirror is counting but whose
+            // JSON we still couldn't read or parse. mirrorOpenIssueCount and
+            // RepoHost::countOpenIssues both treat an unreadable blob as open,
+            // so keep a flagged placeholder (counted as open) rather than
+            // silently dropping it and disagreeing with the Mirror nodes tab.
+            auto keepPlaceholder = [&](const QString &reason) {
+                recordStrictError(reason);
+                if (strict)
+                    return; // strict verification drops and reports instead
+                Issue placeholder;
+                placeholder.number = it.key();
+                placeholder.status = QStringLiteral("open");
+                placeholder.title =
+                    QStringLiteral("issue #%1 (couldn't load from mirror)")
+                        .arg(it.key());
+                issues.append(placeholder);
+            };
             if (!contentByOid.contains(it.value())) {
-                recordStrictError(
+                keepPlaceholder(
                     QStringLiteral("An issue metadata blob could not be read."));
                 continue;
             }
@@ -857,7 +891,7 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
             const QJsonDocument doc =
                 QJsonDocument::fromJson(contentByOid.value(it.value()), &parseError);
             if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-                recordStrictError(
+                keepPlaceholder(
                     QStringLiteral("An issue metadata file is invalid."));
                 continue;
             }

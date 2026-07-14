@@ -2185,6 +2185,27 @@ int main(int argc, char *argv[])
                               .value("collaboration")
                               .toString() == "partial",
                   "snapshot marks unreadable issue metadata partial");
+
+            // adhoc #6: the Issues tab counts loadAll's rows while the Mirror
+            // nodes tab counts countOpenIssues (which treats an unreadable blob
+            // as open). A corrupt/unreadable issue-N.json must therefore survive
+            // as an open placeholder in the permissive load, not vanish, or the
+            // tab silently shrinks below the mirror's count.
+            IssueStore corruptStore(QString(), corruptIssueRepo.path(), nullptr);
+            QString corruptError;
+            const QList<Issue> corruptIssues = corruptStore.loadAll(&corruptError);
+            check(corruptIssues.size() == 1 &&
+                      corruptIssues.first().number == 1 &&
+                      corruptIssues.first().status == QStringLiteral("open"),
+                  "unreadable issue blob survives as an open placeholder row");
+
+            // Strict verification still drops the corrupt record and reports it
+            // rather than fabricating a placeholder.
+            QString corruptStrictError;
+            const QList<Issue> corruptStrict =
+                corruptStore.loadAllStrict(&corruptStrictError);
+            check(corruptStrict.isEmpty() && !corruptStrictError.isEmpty(),
+                  "strict issue load drops the corrupt record and reports it");
         }
 
         auto semanticIssueSnapshot = [&](const QByteArray &issueJson,
