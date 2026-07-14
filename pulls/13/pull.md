@@ -4,7 +4,7 @@ number: 13
 title: fix: add public light theme coverage to marketing pages
 base: main
 head: api-pr/20260714000330/public-light-theme
-status: open
+status: merged
 ts: 1783967695350
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
