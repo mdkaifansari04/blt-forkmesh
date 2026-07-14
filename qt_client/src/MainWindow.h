@@ -950,9 +950,14 @@ private:
     // — used to chain installs when running against every saved host.
     // reinstall passes FORKMESH_REINSTALL=1 to the hosted installer so it wipes
     // the host's existing install + data before installing fresh (adhoc #258).
+    // fromSource passes FORKMESH_FROM_SOURCE=1 FORKMESH_RESTART=1 to the hosted
+    // installer so it clones/pulls the latest source, rebuilds the client and
+    // stops+relaunches the daemon — an update straight from source without
+    // waiting for a published release (adhoc). A source build never uploads this
+    // app's binary, so fromSource forces the direct-upload path off.
     void runHostInstall(bool forceUploadBinary = false,
                         std::function<void(bool)> onFinished = {},
-                        bool reinstall = false);
+                        bool reinstall = false, bool fromSource = false);
     // SSH into a saved host and run the hosted uninstaller (uninstall.sh),
     // which removes the ForkMesh binary, launcher and ALL of that host's data.
     void runHostUninstall();
@@ -971,6 +976,12 @@ private:
     // re-attaches to this account.
     void runHostReinstallAllFromBinary();
     void reinstallNextHostFromBinary(QList<int> remainingRows);
+    // Update from latest source (adhoc) against every saved host, one at a time:
+    // each host clones/pulls the current source, rebuilds and restarts its
+    // daemon — no release publish required. Data (identity key, mirrors, chat)
+    // is preserved; only the binary is rebuilt.
+    void runHostUpdateAllFromSource();
+    void updateNextHostFromSource(QList<int> remainingRows);
     void appendHostInstallLog(const QString &text);
     // Save the host's server info (name/IP/user/password) from the form without running
     // the installer, so the details are remembered up front and the installer
@@ -3125,6 +3136,9 @@ private:
     QPushButton *m_hostInstallAllButton = nullptr;
     // Bulk uninstall + reinstall from binary (adhoc #258).
     QPushButton *m_hostReinstallAllButton = nullptr;
+    // Bulk update from latest source (adhoc): rebuild + restart every saved host
+    // straight from source, no release publish required.
+    QPushButton *m_hostUpdateAllSourceButton = nullptr;
     QLabel *m_hostInstallStatus = nullptr;
     QPlainTextEdit *m_hostInstallLog = nullptr;
     // ANSI parser state for the live install log: a carry buffer holding an
