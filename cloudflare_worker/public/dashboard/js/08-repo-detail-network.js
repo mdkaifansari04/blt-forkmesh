@@ -1490,6 +1490,12 @@
         return;
       }
 
+      const issuesReloadButton = event.target.closest("[data-repo-issues-reload]");
+      if (issuesReloadButton && state.selectedRepo) {
+        loadRepoIssues(state.selectedRepo);
+        return;
+      }
+
       const projectFilterButton = event.target.closest("[data-dashboard-project-filter]");
       if (projectFilterButton) {
         setProjectFilter(projectFilterButton.dataset.dashboardProjectFilter || "open");

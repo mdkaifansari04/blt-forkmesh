@@ -170,6 +170,58 @@ def test_advertised_catalog_issue_count_is_open_only():
     assert 'mirrorNumberedDirCount(mirrorPath, branch, QStringLiteral(".forkmesh/issues"))' not in issue_count
 
 
+def test_dashboard_js_surfaces_unreadable_issues_instead_of_dropping_them():
+    # adhoc: the Mirror nodes tab counted 11 issues while the Issues tab showed
+    # only 7 - loadRepoIssues silently dropped any folder whose issue-N.json blob
+    # came back null from the batched read. It must now retry the misses once and,
+    # for anything still unreadable, keep a flagged placeholder row so the count
+    # matches the mirror and the gap is visible.
+    load = DASHBOARD_JS[
+        DASHBOARD_JS.index("async function loadRepoIssues")
+        : DASHBOARD_JS.index("async function loadRepoCollection")
+    ]
+    # Null blobs are collected as misses, not dropped.
+    assert "else missing.push(number);" in load
+    # The misses are re-fetched once before giving up.
+    assert "missing.map((number) => issueJsonPath(number))" in load
+    assert "missing = stillMissing;" in load
+    # Whatever is still unreadable becomes a visible placeholder row.
+    assert "missing.forEach((number) => items.push(placeholderIssue(number)));" in load
+    # The gap (and any folders past the 50-item page cap) is recorded for the UI.
+    assert "state.issuesView.missing = missing;" in load
+    assert "state.issuesView.truncated = Math.max(0, numbered.length - dirs.length);" in load
+
+
+def test_dashboard_js_placeholder_issue_counts_as_open_and_flags_load_failure():
+    placeholder = DASHBOARD_JS[
+        DASHBOARD_JS.index("function placeholderIssue(number)")
+        : DASHBOARD_JS.index("function placeholderIssue(number)") + 500
+    ]
+    # An unreadable issue counts as open (matching the desktop's countOpenIssues)
+    # and is flagged so the row and warning banner can mark it.
+    assert 'status: "open",' in placeholder
+    assert "loadFailed: true," in placeholder
+    assert "couldn't load from mirror" in placeholder
+
+
+def test_dashboard_js_issue_panel_warns_with_a_retry_button_on_gaps():
+    render = DASHBOARD_JS[
+        DASHBOARD_JS.index("function renderRepoIssues")
+        : DASHBOARD_JS.index("function setIssueFilter")
+    ]
+    # A warning bar with a Retry button renders whenever issues are missing or the
+    # mirror holds more than the 50 we page in.
+    assert "couldn't be read from the live mirror" in render
+    assert "aren't shown" in render
+    assert "data-repo-issues-reload" in render
+    # The Retry button reloads the Issues tab from the live mirror.
+    reload = DASHBOARD_JS[
+        DASHBOARD_JS.index("[data-repo-issues-reload]")
+        : DASHBOARD_JS.index("[data-repo-issues-reload]") + 400
+    ]
+    assert "loadRepoIssues(state.selectedRepo);" in reload
+
+
 def test_homepage_links_to_active_nodes():
     # The homepage surfaces a link to the live network/active-nodes page.
     assert 'href="/network"' in INDEX
