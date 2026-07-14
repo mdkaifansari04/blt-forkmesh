@@ -477,13 +477,9 @@ QWidget *MainWindow::buildNetworkLogDock()
             this, [persistQuickAddModel](int) { persistQuickAddModel(); });
     connect(m_quickAddClaudeModel, &QComboBox::currentTextChanged, this,
             [persistQuickAddModel](const QString &) { persistQuickAddModel(); });
-    // Mode selector (issue #348): a dropdown in the same style as the
-    // provider/model pickers, mirroring the Claude Code CLI's own permission-mode
-    // picker (Ask before edits / Edit automatically / Plan mode / Auto mode).
-    // Backed by the same kClaudeAutoModeSetting the agent composer's "Auto mode /
-    // Manual approve" toggle already uses: only "Auto mode" skips permission
-    // prompts today, so the other three all mean "don't skip" until this app can
-    // drive per-tool approval headlessly.
+    // Permission/sandbox mode for both structured CLI integrations. Claude maps
+    // this to its skip-permissions switch; Codex app-server maps every option to
+    // a distinct approval policy and sandbox, including interactive requests.
     m_quickAddModeSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddModeSelector->setObjectName("quickAddModeSelector");
     m_quickAddModeSelector->setMinimumWidth(118);
@@ -499,8 +495,12 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddModeSelector->setToolTip(
         "How much freedom the agent has to make changes without asking first.");
     {
-        const int idx = m_quickAddModeSelector->findData(
-            QSettings().value(kClaudeAutoModeSetting, true).toBool());
+        const QString savedMode =
+            QSettings().value(kAgentModeSetting).toString().trimmed();
+        int idx = savedMode.isEmpty() ? -1 : m_quickAddModeSelector->findText(savedMode);
+        if (idx < 0)
+            idx = m_quickAddModeSelector->findData(
+                QSettings().value(kClaudeAutoModeSetting, true).toBool());
         m_quickAddModeSelector->setCurrentIndex(
             idx >= 0 ? idx : m_quickAddModeSelector->count() - 1);
     }
@@ -508,6 +508,8 @@ QWidget *MainWindow::buildNetworkLogDock()
             this, [this](int) {
                 QSettings().setValue(kClaudeAutoModeSetting,
                                      m_quickAddModeSelector->currentData().toBool());
+                QSettings().setValue(kAgentModeSetting,
+                                     m_quickAddModeSelector->currentText());
             });
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
@@ -610,9 +612,9 @@ QWidget *MainWindow::buildNetworkLogDock()
         const bool codex = agentIsCodexProvider(provider);
         m_quickAddClaudeModel->setVisible(claudeCode || codex);
         m_quickAddClaudeModel->setEnabled(agentRuns);
-        // The permission-mode chooser only means anything for the Claude Code
-        // CLI too (issue #348) — the API providers have no such concept.
-        m_quickAddModeSelector->setVisible(claudeCode);
+        // Both structured CLI providers support these modes; API-only providers
+        // still use their saved noninteractive defaults.
+        m_quickAddModeSelector->setVisible(claudeCode || codex);
         m_quickAddModeSelector->setEnabled(agentRuns);
     };
     connect(m_quickAddAssignAgent, &QCheckBox::toggled, this,
@@ -637,7 +639,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSlashButton->setCursor(Qt::PointingHandCursor);
     m_quickAddSlashButton->setFixedSize(22, 22);
     m_quickAddSlashButton->setToolTip(
-        "Commands and quick actions (pulled live from Claude Code)");
+        "Agent commands and quick actions");
     connect(m_quickAddSlashButton, &QPushButton::clicked, this,
             &MainWindow::openQuickAddSlashActions);
 
@@ -932,9 +934,13 @@ void MainWindow::openQuickAddSlashActions()
         m_slashActionsFilter->clear();
     }
     populateSlashActionsList();
-    // Fetches once per app run; a no-op if already loaded or a probe is in
-    // flight. Repopulates the list in place once the live commands land.
-    refreshClaudeSlashCommands();
+    // Claude exposes its command catalog through its control protocol. Codex
+    // commands are handled by app-server and do not require launching a second
+    // probe merely to open this menu.
+    if (m_quickAddAgentProvider &&
+        m_quickAddAgentProvider->currentData().toString() ==
+            QLatin1String("claude-code"))
+        refreshClaudeSlashCommands();
 
     m_slashActionsPopup->adjustSize();
     const QPoint above = m_quickAddSlashButton->mapToGlobal(
@@ -1051,18 +1057,64 @@ void MainWindow::populateSlashActionsList()
     }
 
     // --- Model section ---
-    const char *effortLevels[] = {"low", "medium", "high", "xhigh", "max"};
-    const char *effortLabels[] = {"Low", "Medium", "High", "Extra high", "Max"};
+    const bool codexProvider =
+        m_quickAddAgentProvider &&
+        agentIsCodexProvider(m_quickAddAgentProvider->currentData().toString());
+    QStringList effortLevels{QStringLiteral("low"), QStringLiteral("medium"),
+                             QStringLiteral("high"), QStringLiteral("xhigh"),
+                             QStringLiteral("max")};
+    QStringList effortLabels{QStringLiteral("Low"), QStringLiteral("Medium"),
+                             QStringLiteral("High"), QStringLiteral("Extra high"),
+                             QStringLiteral("Max")};
+    if (codexProvider && m_quickAddClaudeModel) {
+        const QString selectedModel = selectedModelComboValue(m_quickAddClaudeModel);
+        const QJsonArray models = QJsonDocument::fromJson(
+                                      QSettings()
+                                          .value(kCodexModelsCacheSetting)
+                                          .toByteArray())
+                                      .array();
+        for (const QJsonValue &value : models) {
+            const QJsonObject model = value.toObject();
+            QString id = model.value(QStringLiteral("model")).toString();
+            if (id.isEmpty())
+                id = model.value(QStringLiteral("id")).toString();
+            if (id != selectedModel)
+                continue;
+            QStringList liveLevels, liveLabels;
+            for (const QJsonValue &effortValue :
+                 model.value(QStringLiteral("supportedReasoningEfforts")).toArray()) {
+                const QJsonObject effort = effortValue.toObject();
+                const QString id =
+                    effort.value(QStringLiteral("reasoningEffort")).toString();
+                if (id.isEmpty())
+                    continue;
+                liveLevels << id;
+                QString label = id;
+                if (!label.isEmpty())
+                    label[0] = label[0].toUpper();
+                liveLabels << label;
+            }
+            if (!liveLevels.isEmpty()) {
+                effortLevels = liveLevels;
+                effortLabels = liveLabels;
+            }
+            break;
+        }
+    }
     const QString currentEffort =
         QSettings().value(kClaudeEffortSetting, QStringLiteral("high")).toString();
-    int effortIdx = 2;
-    for (int i = 0; i < 5; ++i)
-        if (currentEffort == QLatin1String(effortLevels[i]))
-            effortIdx = i;
+    int effortIdx = effortLevels.indexOf(currentEffort);
+    if (effortIdx < 0) {
+        effortIdx = qMax(0, effortLevels.indexOf(QStringLiteral("high")));
+        if (codexProvider && effortIdx < effortLevels.size())
+            QSettings().setValue(kClaudeEffortSetting,
+                                 effortLevels.at(effortIdx));
+    }
     const bool modelSectionMatches =
         matches(QStringLiteral("Switch model")) || matches(QStringLiteral("Effort")) ||
-        matches(QStringLiteral("Thinking")) ||
-        matches(QStringLiteral("Switch models when a message is flagged")) ||
+        (!codexProvider && matches(QStringLiteral("Thinking"))) ||
+        (!codexProvider &&
+         matches(QStringLiteral("Switch models when a message is flagged"))) ||
         matches(QStringLiteral("Account & usage"));
     if (modelSectionMatches) {
         addHeader(QStringLiteral("Model"));
@@ -1076,12 +1128,12 @@ void MainWindow::populateSlashActionsList()
             auto *rowLayout = new QHBoxLayout(row);
             rowLayout->setContentsMargins(12, 7, 12, 7);
             auto *title = new QLabel(
-                QStringLiteral("Effort (%1)").arg(QString::fromLatin1(effortLabels[effortIdx])));
+                QStringLiteral("Effort (%1)").arg(effortLabels.value(effortIdx)));
             title->setObjectName("slashActionRowLabel");
             rowLayout->addWidget(title, 1);
             auto *dotsLayout = new QHBoxLayout;
             dotsLayout->setSpacing(4);
-            for (int i = 0; i < 5; ++i) {
+            for (int i = 0; i < effortLevels.size(); ++i) {
                 auto *dot = new QToolButton;
                 dot->setObjectName("slashEffortDot");
                 dot->setCheckable(true);
@@ -1089,7 +1141,7 @@ void MainWindow::populateSlashActionsList()
                 dot->setFixedSize(10, 10);
                 dot->setCursor(Qt::PointingHandCursor);
                 dot->setProperty("slashKind", QStringLiteral("effortLevel"));
-                dot->setProperty("slashValue", QString::fromLatin1(effortLevels[i]));
+                dot->setProperty("slashValue", effortLevels.at(i));
                 dot->installEventFilter(this);
                 dotsLayout->addWidget(dot);
                 m_slashActionRows.append(dot); // arrow-key reachable, like the rows
@@ -1097,10 +1149,11 @@ void MainWindow::populateSlashActionsList()
             rowLayout->addLayout(dotsLayout);
             m_slashActionsListLayout->addWidget(row);
         }
-        if (matches(QStringLiteral("Thinking")))
+        if (!codexProvider && matches(QStringLiteral("Thinking")))
             addToggleRow(QStringLiteral("Thinking"), QStringLiteral("toggleThinking"),
                         QSettings().value(kClaudeThinkingSetting, true).toBool());
-        if (matches(QStringLiteral("Switch models when a message is flagged")))
+        if (!codexProvider &&
+            matches(QStringLiteral("Switch models when a message is flagged")))
             addToggleRow(QStringLiteral("Switch models when a message is flagged"),
                         QStringLiteral("toggleFallback"),
                         QSettings().value(kClaudeFallbackModelSetting, false).toBool());
@@ -1110,7 +1163,7 @@ void MainWindow::populateSlashActionsList()
     }
 
     // --- Commands section: the CLI's own slash commands, pulled live ---
-    if (!m_claudeSlashCommands.isEmpty()) {
+    if (!codexProvider && !m_claudeSlashCommands.isEmpty()) {
         bool anyCmd = false;
         for (const ClaudeSlashCommand &c : m_claudeSlashCommands)
             if (matches(c.name, c.description)) { anyCmd = true; break; }
@@ -1191,9 +1244,15 @@ void MainWindow::activateSlashActionRow(QWidget *row)
     } else if (kind == QLatin1String("switchModel")) {
         closePopup();
         if (m_quickAddAgentProvider) {
-            const int idx = m_quickAddAgentProvider->findData(QStringLiteral("claude-code"));
-            if (idx >= 0)
-                m_quickAddAgentProvider->setCurrentIndex(idx);
+            const QString provider =
+                m_quickAddAgentProvider->currentData().toString();
+            if (provider != QLatin1String("claude-code") &&
+                !agentIsCodexProvider(provider)) {
+                const int idx = m_quickAddAgentProvider->findData(
+                    QStringLiteral("claude-code"));
+                if (idx >= 0)
+                    m_quickAddAgentProvider->setCurrentIndex(idx);
+            }
         }
         if (m_quickAddClaudeModel) {
             m_quickAddClaudeModel->setFocus();
@@ -2630,9 +2689,8 @@ QWidget *MainWindow::buildBreadcrumb()
         restoreReset(false, kClaudeUsage5hResetSetting);
         restoreReset(true, kClaudeUsageWeekResetSetting);
     }
-    // Codex rides beside Claude Code using ForkMesh's locally tracked rolling
-    // usage windows. It shows remaining time in those windows because Codex does
-    // not currently feed the same live utilization events Claude Code does.
+    // Codex rides beside Claude Code. App-server updates replace the local
+    // countdown estimate with the account's live utilization and reset time.
     auto *codexUsage = new TokenUsageMiniChart(
         QStringLiteral("Codex usage remaining"), /*remainingMode=*/true);
     m_navCodexUsage = codexUsage;

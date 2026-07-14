@@ -82,7 +82,7 @@ case "${1:-run}" in
         exec "$(forkmesh_bin)"
         ;;
     test)
-        # Build and run both test suites, independently of the app. Force the test
+        # Build and run the test suites independently of the app. Force the test
         # option on so a cached FORKMESH_BUILD_TESTS=OFF can't hide the targets.
         check_stale_cache
         args=()
@@ -91,8 +91,9 @@ case "${1:-run}" in
         done < <(cmake_args)
         cmake -B build "${args[@]}" -DFORKMESH_BUILD_TESTS=ON
         cmake --build build --parallel "$(build_jobs)" \
-            --target forkmesh-tests forkmesh-window-tests
+            --target forkmesh-tests forkmesh-codex-tests forkmesh-window-tests
         QT_QPA_PLATFORM=offscreen ./build/forkmesh-tests
+        ./build/forkmesh-codex-tests
         QT_QPA_PLATFORM=offscreen exec ./build/forkmesh-window-tests
         ;;
     run)

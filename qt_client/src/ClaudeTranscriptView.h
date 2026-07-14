@@ -16,12 +16,10 @@ class QResizeEvent;
 class Collapsible;
 class ScrollJumpButtons;
 
-// Renders a Claude Code session as a native, extension-style chat transcript by
-// consuming the stream-json events from ClaudeStreamSession: assistant text,
-// foldable "thinking" (with a live token counter while it streams), tool-call
-// cards (Bash command, Edit/Write diffs, Read, TodoWrite, …) with their results
-// attached, plus the final result and rate-limit (usage) banner. Follows the
-// system light/dark color scheme.
+// Renders a CLI coding-agent session as a native, extension-style transcript.
+// Claude stream-json events and the normalized Codex app-server events share
+// this surface: assistant text, live reasoning, tool cards and output, diffs,
+// questions, usage, and final results.
 class ClaudeTranscriptView : public QScrollArea
 {
     Q_OBJECT
@@ -50,8 +48,10 @@ signals:
     void statsChanged(qint64 tokens, double costUsd);
     // The user answered an AskUserQuestion clarifying-question card. toolUseId is
     // the pending tool_use to satisfy; answer is the assembled reply text. The
-    // host sends it back to the CLI as a tool_result (see sendToolResult).
-    void questionAnswered(const QString &toolUseId, const QString &answer);
+    // host sends it back to the CLI, while sensitive keeps secrets out of the
+    // persisted transcript.
+    void questionAnswered(const QString &toolUseId, const QString &answer,
+                          bool sensitive);
     // The user clicked one of the options on a heuristically-detected inline
     // clarifying question (issue #212) — plain assistant prose that lays out a
     // numbered list of choices instead of going through the AskUserQuestion
@@ -169,6 +169,9 @@ private:
     void addToolUse(const QString &id, const QString &name,
                     const QJsonObject &input);
     void addToolResult(const QString &id, const QString &text, bool isError);
+    void appendToolOutput(const QString &id, const QString &text);
+    void appendAgentText(const QString &id, const QString &text);
+    void completeAgentText(const QString &id, const QString &text);
     void addResult(const QJsonObject &ev);
 
     // Claude Code's AskUserQuestion tool: instead of a passive tool card, render
@@ -230,14 +233,19 @@ private:
         QFrame *box = nullptr;       // the bordered IN/OUT box
         QVBoxLayout *io = nullptr;   // rows: IN, then OUT once the result lands
         bool hasResult = false;      // an OUT row was appended
+        QPointer<QLabel> liveOutput; // incrementally streamed command output
+        QString liveOutputText;
     };
     QHash<QString, ToolCard> m_toolCards;
+    QHash<QString, QPointer<QLabel>> m_liveAgentText;
+    QHash<QString, QString> m_liveAgentTextValue;
 
     // Live AskUserQuestion cards, keyed by their tool_use id: the button area to
     // lock once answered and the status line that shows the chosen reply.
     struct AskCard {
         QPointer<QWidget> buttons; // disabled on answer
         QPointer<QLabel> status;   // "✓ You answered: …"
+        bool sensitive = false;    // never reveal or persist secret input
     };
     QHash<QString, AskCard> m_askCards;
     // The single most-recently-added, still-unanswered inline-choice card (see
@@ -248,6 +256,7 @@ private:
     Collapsible *m_liveThinking = nullptr;
     QLabel *m_thinkingBody = nullptr;
     QString m_thinkingText;
+    QString m_lastFinalizedThinkingText;
     int m_thinkingTokens = 0;
     qint64 m_thinkingStartMs = 0; // wall-clock start, for "Thought for Ns"
 
