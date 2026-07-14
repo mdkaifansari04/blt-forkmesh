@@ -10,6 +10,8 @@ from pathlib import Path
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+URLS = ENTRY.parent / "urls.py"
+URLS_TEXT = URLS.read_text(encoding="utf-8")
 SCHEMA = ENTRY.parent / "schema.py"
 SCHEMA_TEXT = SCHEMA.read_text(encoding="utf-8")
 PROFILE_FOLLOW_MIGRATION = (
@@ -20,6 +22,24 @@ QT_SRC = Path(__file__).resolve().parents[2] / "qt_client" / "src"
 QT_TEXT = "\n".join(
     p.read_text(encoding="utf-8") for p in sorted(QT_SRC.glob("MainWindow*.cpp"))
 )
+
+
+def test_worker_routes_public_profile_contributions_before_account_lookup():
+    assert "ACCOUNT_CONTRIBUTIONS_RE" in URLS_TEXT
+    assert "ACCOUNT_CONTRIBUTIONS_RE," in ENTRY_TEXT
+    routes = ENTRY_TEXT[ENTRY_TEXT.index("async def accounts_handler"):]
+    assert routes.index("ACCOUNT_CONTRIBUTIONS_RE.match(url.path)") < routes.index(
+        "ACCOUNTS_RE.match(url.path)"
+    )
+    assert "return await _contribution_profile_api(" in routes
+
+
+def test_public_profile_contribution_gate_requires_active_nonprivate_profile():
+    start = ENTRY_TEXT.index("async def _contribution_profile_api")
+    body = ENTRY_TEXT[start:ENTRY_TEXT.index("async def ", start + 10)]
+    assert 'rec.get("status") != "active"' in body
+    assert 'rec.get("profile_private")' in body
+    assert '{"error": "not_found"}' in body
 
 
 def test_worker_exposes_simple_signup_endpoint():

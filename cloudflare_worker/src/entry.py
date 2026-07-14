@@ -268,6 +268,7 @@ from urls import (  # noqa: E402
     GIT_PACK_RE,
     GIT_RECEIVE_RE,
     ACCOUNTS_RE,
+    ACCOUNT_CONTRIBUTIONS_RE,
     ACCOUNT_FOLLOW_RE,
     AP_USER_RE,
     AP_USER_SUB_RE,
@@ -352,8 +353,10 @@ from catalog import (  # noqa: E402
     MAX_REPO_SEGMENT,
     clean_string,
     safe_catalog_record,
+    safe_contribution_transport,
     safe_segment,
 )
+import contributions  # noqa: E402
 
 # The D1 table/index DDL list ensure_schema() runs lives in schema.py.
 from schema import SCHEMA_STATEMENTS  # noqa: E402
@@ -766,6 +769,10 @@ async def purge_catalog_related_caches():
 CATALOG_CACHE_KEY = "https://forkmesh.internal/api/repositories"
 # Guest (viewer-less) GET /api/accounts/<name> payloads, keyed by name.
 ACCOUNT_LOOKUP_CACHE_PREFIX = "https://forkmesh.internal/api/accounts/"
+PROFILE_CONTRIBUTION_CACHE_PREFIX = (
+    "https://forkmesh.internal/api/profile-contributions/"
+)
+PROFILE_CONTRIBUTION_CACHE_TTL = 30
 NETWORK_STATS_CACHE_KEY = "https://forkmesh.internal/api/network/stats"
 NETWORK_LEADERBOARDS_CACHE_KEY = "https://forkmesh.internal/api/network/leaderboards"
 NETWORK_OVERVIEW_CACHE_KEY = "https://forkmesh.internal/api/network/overview"
@@ -2441,6 +2448,7 @@ async def purge_blocked_catalog(env):
         rows = await d1_all(
             env, "SELECT key_bi FROM repositories WHERE owner_bi=?", owner_bi)
         for r in (rows or []):
+            await _delete_repo_scoped_state(env, r["key_bi"])
             await d1_run(
                 env, "DELETE FROM host_presence WHERE repo_bi=?", r["key_bi"])
         await d1_run(env, "DELETE FROM repositories WHERE owner_bi=?", owner_bi)
@@ -3015,6 +3023,972 @@ async def totp_verify(secret_b32, code):
 
 # --- Catalog (repositories table) -------------------------------------------
 
+async def _contribution_owner_user_bi(env, account_bi, account_rec):
+    """Resolve a publishing user, linked node owner, or unlinked node fallback."""
+    account_rec = account_rec or {}
+    kind = clean_string(account_rec.get("kind", ""), 16).lower()
+    if kind == "user" or (kind != "node" and account_rec.get("pass_hash")):
+        return account_bi
+    row = await d1_first(
+        env, "SELECT user_bi FROM nodes WHERE node_bi=?", account_bi)
+    return (row or {}).get("user_bi") or account_bi
+
+
+async def _contribution_retarget_linked_nodes(
+        env, old_user_bi, old_user_name, new_user_bi, new_user_name):
+    """Persist a renamed or removed user link in every owned node record."""
+    old_user_name = clean_string(old_user_name, MAX_NODE_NAME).lower()
+    new_user_name = clean_string(new_user_name, MAX_NODE_NAME).lower()
+    if not old_user_bi or not old_user_name:
+        return
+    rows = await d1_all(
+        env,
+        "SELECT node_bi, name, data FROM nodes WHERE user_bi=? AND node_bi!=?",
+        old_user_bi, old_user_bi,
+    )
+    for row in rows:
+        mirrored_rec = await decrypt_row(env, row.get("data", "")) or {}
+        node_name = clean_string(
+            row.get("name") or mirrored_rec.get("name", ""),
+            MAX_NODE_NAME,
+        ).lower()
+        if not node_name:
+            continue
+        node_bi = row.get("node_bi")
+        authoritative_bi, authoritative_rec = await _account_row(
+            env, node_name)
+        node_rec = dict(authoritative_rec or mirrored_rec)
+        kind = clean_string(node_rec.get("kind", ""), 16).lower()
+        if kind == "user" or (kind != "node" and node_rec.get("pass_hash")):
+            continue
+        if not node_bi:
+            node_bi = authoritative_bi
+        if not node_bi:
+            continue
+        if new_user_bi and new_user_name:
+            node_rec["owner"] = new_user_name
+        else:
+            node_rec.pop("owner", None)
+        await _save_account(env, node_bi, node_rec)
+
+
+async def _contribution_actor_user_bis(env, actor_keys):
+    """Resolve registered primary, node, and active device keys to users."""
+    keys = sorted({key for key in actor_keys if isinstance(key, str) and key})
+    if not keys:
+        return {}
+    rows = await d1_all(
+        env,
+        """WITH requested(pubkey) AS (
+               SELECT CAST(value AS TEXT) FROM json_each(?)
+             ), candidates(pubkey, user_bi) AS (
+               SELECT requested.pubkey,
+                      COALESCE(NULLIF(nodes.user_bi, ''), nodes.node_bi)
+                 FROM requested
+                 JOIN nodes ON nodes.pubkey=requested.pubkey
+               UNION ALL
+               SELECT requested.pubkey,
+                      COALESCE(NULLIF(owner_node.user_bi, ''),
+                               account_devices.account_bi)
+                 FROM requested
+                 JOIN account_devices
+                   ON account_devices.pubkey=requested.pubkey
+                 LEFT JOIN nodes AS owner_node
+                   ON owner_node.node_bi=account_devices.account_bi
+                WHERE account_devices.enabled=1
+                  AND account_devices.revoked_at=0
+                  AND instr(',' || account_devices.capabilities || ',',
+                            ',contribution_key_proof,') > 0
+             ), unambiguous AS (
+               SELECT pubkey, MIN(user_bi) AS user_bi
+                 FROM candidates
+                WHERE user_bi IS NOT NULL AND user_bi != ''
+                GROUP BY pubkey
+               HAVING COUNT(DISTINCT user_bi)=1
+             )
+             SELECT pubkey, user_bi FROM unambiguous""",
+        json.dumps(keys, separators=(",", ":")),
+    )
+    return {
+        row["pubkey"]: row["user_bi"]
+        for row in rows
+        if row.get("pubkey") and row.get("user_bi")
+    }
+
+
+async def _contribution_project_bi(env, record):
+    identity = record.get("rootCommit") or (
+        record.get("owner", "") + "/" + record.get("name", "")
+    )
+    return await blind_index(env, "profile-project:" + identity.lower())
+
+
+def _contribution_publication_day():
+    value = time.gmtime(int(Date.now()) // 1000)
+    return "%04d-%02d-%02d" % (value.tm_year, value.tm_mon, value.tm_mday)
+
+
+async def _contribution_run_batch(env, statements):
+    """Execute one ordered D1 batch, with a small test-runtime fallback."""
+    database = getattr(env, "DB", None)
+    batch = getattr(database, "batch", None) if database is not None else None
+    if batch is not None:
+        prepared = []
+        for sql, args in statements:
+            statement = database.prepare(sql)
+            if args:
+                statement = statement.bind(*args)
+            prepared.append(statement)
+        await batch(prepared)
+        return
+    for sql, args in statements:
+        await d1_run(env, sql, *args)
+
+
+async def _contribution_write_catalog_state(
+        env, record, account_bi, account_rec, source_repo_bi,
+        encrypted_catalog_record):
+    """Atomically write repository visibility and its contribution boundary."""
+    is_private = 1 if record.get("visibility") == "private" else 0
+    statements = [(
+        """INSERT INTO repositories (key_bi, owner_bi, data, is_private)
+             VALUES (?,?,?,?)
+             ON CONFLICT(key_bi) DO UPDATE SET
+               owner_bi=excluded.owner_bi, data=excluded.data,
+               is_private=excluded.is_private""",
+        (source_repo_bi, account_bi, encrypted_catalog_record, is_private),
+    )]
+    if is_private:
+        statements.append((
+            "UPDATE profile_contribution_projects SET is_public=0 "
+            "WHERE source_repo_bi=?",
+            (source_repo_bi,),
+        ))
+    else:
+        owner_user_bi = await _contribution_owner_user_bi(
+            env, account_bi, account_rec)
+        project_bi = await _contribution_project_bi(env, record)
+        encrypted_labels = await encrypt_row(env, {
+            "owner": record.get("owner", ""),
+            "name": record.get("name", ""),
+        })
+        statements.append((
+            """INSERT INTO profile_contribution_projects
+                 (source_repo_bi, source_account_bi, owner_user_bi, project_bi,
+                  first_public_day, is_public, active_generation_bi,
+                  captured_at, verified_from, data)
+                 VALUES (?,?,?,?,?,1,NULL,0,NULL,?)
+                 ON CONFLICT(source_repo_bi) DO UPDATE SET
+                   is_public=1,
+                   source_account_bi=CASE
+                     WHEN profile_contribution_projects.active_generation_bi IS NULL
+                     THEN excluded.source_account_bi
+                     ELSE profile_contribution_projects.source_account_bi END,
+                   owner_user_bi=CASE
+                     WHEN profile_contribution_projects.active_generation_bi IS NULL
+                     THEN excluded.owner_user_bi
+                     ELSE profile_contribution_projects.owner_user_bi END,
+                   project_bi=CASE
+                     WHEN profile_contribution_projects.active_generation_bi IS NULL
+                     THEN excluded.project_bi
+                     ELSE profile_contribution_projects.project_bi END,
+                   data=CASE
+                     WHEN profile_contribution_projects.active_generation_bi IS NULL
+                     THEN excluded.data
+                     ELSE profile_contribution_projects.data END""",
+            (
+                source_repo_bi,
+                account_bi,
+                owner_user_bi,
+                project_bi,
+                _contribution_publication_day(),
+                encrypted_labels,
+            ),
+        ))
+    await _contribution_run_batch(env, statements)
+
+
+async def _contribution_move_repo_namespace(
+        env, old_repo_bi, new_repo_bi, old_account_bi, new_account_bi,
+        new_owner, repo, record):
+    project = await d1_first(
+        env,
+        "SELECT owner_user_bi, data FROM profile_contribution_projects "
+        "WHERE source_repo_bi=?",
+        old_repo_bi,
+    )
+    next_record = dict(record)
+    next_record["owner"] = new_owner
+    next_record["name"] = repo
+    new_project_bi = await _contribution_project_bi(env, next_record)
+    project_data = await decrypt_row(env, (project or {}).get("data")) or {}
+    project_data["owner"] = new_owner
+    project_data["name"] = repo
+    encrypted_project = await encrypt_row(env, project_data)
+
+    await d1_run(
+        env,
+        "UPDATE profile_contribution_receipts SET source_account_bi=?, "
+        "source_repo_bi=? WHERE source_repo_bi=?",
+        new_account_bi, new_repo_bi, old_repo_bi,
+    )
+    await d1_run(
+        env,
+        "UPDATE profile_contribution_days SET source_account_bi=?, "
+        "source_repo_bi=?, project_bi=?, data=? WHERE source_repo_bi=?",
+        new_account_bi, new_repo_bi, new_project_bi, encrypted_project,
+        old_repo_bi,
+    )
+    await d1_run(
+        env,
+        "UPDATE profile_contribution_languages SET source_repo_bi=?, "
+        "project_bi=?, owner_user_bi=CASE WHEN owner_user_bi=? THEN ? "
+        "ELSE owner_user_bi END WHERE source_repo_bi=?",
+        new_repo_bi, new_project_bi, old_account_bi, new_account_bi,
+        old_repo_bi,
+    )
+    await d1_run(
+        env,
+        "UPDATE profile_contribution_projects SET source_repo_bi=?, "
+        "source_account_bi=?, project_bi=?, "
+        "owner_user_bi=CASE WHEN owner_user_bi=? THEN ? ELSE owner_user_bi END, "
+        "data=? WHERE source_repo_bi=?",
+        new_repo_bi, new_account_bi, new_project_bi,
+        old_account_bi, new_account_bi, encrypted_project, old_repo_bi,
+    )
+
+
+def _contribution_generation_statements(
+        generation_bi, snapshot_hash, snapshot, account_bi, owner_user_bi,
+        source_repo_bi, project_bi, encrypted_labels, encrypted_project,
+        day_rows, language_rows, created_at):
+    return [
+        (
+            """INSERT OR IGNORE INTO profile_contribution_days
+                 (generation_bi, subject_user_bi, source_account_bi,
+                  source_repo_bi, project_bi, day, commits, issues, pulls,
+                  reviews, captured_at, data)
+                 SELECT ?, CAST(json_extract(value, '$[0]') AS TEXT), ?, ?, ?,
+                        CAST(json_extract(value, '$[1]') AS TEXT),
+                        CAST(json_extract(value, '$[2]') AS INTEGER),
+                        CAST(json_extract(value, '$[3]') AS INTEGER),
+                        CAST(json_extract(value, '$[4]') AS INTEGER),
+                        CAST(json_extract(value, '$[5]') AS INTEGER), ?, ?
+                   FROM json_each(?)""",
+            (
+                generation_bi, account_bi, source_repo_bi, project_bi,
+                snapshot["capturedAt"], encrypted_labels,
+                json.dumps(day_rows, separators=(",", ":")),
+            ),
+        ),
+        (
+            """INSERT OR IGNORE INTO profile_contribution_languages
+                 (generation_bi, owner_user_bi, source_repo_bi, project_bi,
+                  language, bytes, files, captured_at)
+                 SELECT ?, ?, ?, ?,
+                        CAST(json_extract(value, '$[0]') AS TEXT),
+                        CAST(json_extract(value, '$[1]') AS INTEGER),
+                        CAST(json_extract(value, '$[2]') AS INTEGER), ?
+                   FROM json_each(?)""",
+            (
+                generation_bi, owner_user_bi, source_repo_bi, project_bi,
+                snapshot["capturedAt"],
+                json.dumps(language_rows, separators=(",", ":")),
+            ),
+        ),
+        (
+            """INSERT OR IGNORE INTO profile_contribution_receipts
+                 (generation_bi, snapshot_hash, source_account_bi,
+                  source_repo_bi, captured_at, head, day_rows, language_rows,
+                  created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                generation_bi, snapshot_hash, account_bi, source_repo_bi,
+                snapshot["capturedAt"], snapshot["head"], len(day_rows),
+                len(language_rows), created_at,
+            ),
+        ),
+        (
+            """UPDATE profile_contribution_projects
+                  SET source_account_bi=?, owner_user_bi=?, project_bi=?,
+                      active_generation_bi=?, captured_at=?, verified_from=?,
+                      data=?
+                WHERE source_repo_bi=? AND is_public=1
+                  AND (active_generation_bi IS NULL OR captured_at < ?)
+                  AND EXISTS (
+                    SELECT 1 FROM repositories
+                     WHERE key_bi=? AND is_private=0)""",
+            (
+                account_bi, owner_user_bi, project_bi, generation_bi,
+                snapshot["capturedAt"], snapshot["from"], encrypted_project,
+                source_repo_bi, snapshot["capturedAt"], source_repo_bi,
+            ),
+        ),
+    ]
+
+
+async def _contribution_prune_inactive_generations(env, source_repo_bi):
+    statements = []
+    for table in (
+            "profile_contribution_days", "profile_contribution_languages",
+            "profile_contribution_receipts"):
+        statements.append((
+            "DELETE FROM " + table + " WHERE source_repo_bi=? "
+            "AND generation_bi NOT IN ("
+            "SELECT active_generation_bi FROM profile_contribution_projects "
+            "WHERE source_repo_bi=? AND active_generation_bi IS NOT NULL)",
+            (source_repo_bi, source_repo_bi),
+        ))
+    await _contribution_run_batch(env, statements)
+
+
+async def _contribution_ingest_snapshot(
+        env, request_data, record, account_bi, account_rec, source_repo_bi):
+    """Verify, stage, and compare-and-swap one optional public snapshot."""
+    if record.get("visibility") != "public":
+        return {"accepted": False, "warning": ""}
+    transport = safe_contribution_transport(request_data)
+    if not transport["present"]:
+        return {"accepted": False, "warning": ""}
+    if transport["warning"]:
+        return {"accepted": False, "warning": transport["warning"]}
+    try:
+        snapshot, _raw, snapshot_hash = contributions.decode_snapshot_payload(
+            transport["payload"], now_ms=int(Date.now()))
+    except ValueError:
+        return {"accepted": False, "warning": "invalid_contribution_payload"}
+    if snapshot["head"] != record.get("commit"):
+        return {"accepted": False, "warning": "contribution_head_mismatch"}
+    if snapshot["branch"] != record.get("branch"):
+        return {"accepted": False, "warning": "contribution_branch_mismatch"}
+    if str(snapshot["capturedAt"]) != record.get("updatedAt"):
+        return {"accepted": False, "warning": "contribution_time_mismatch"}
+    try:
+        canonical = contributions.snapshot_signature_canonical(
+            record["owner"], record["name"], record["updatedAt"],
+            snapshot_hash)
+    except (KeyError, ValueError):
+        return {"accepted": False, "warning": "invalid_contribution_payload"}
+    owner_pubkey = clean_string((account_rec or {}).get("pubkey", ""), 120)
+    if not owner_pubkey or not await ed25519_verify(
+            owner_pubkey, transport["signature"], canonical):
+        return {"accepted": False, "warning": "invalid_contribution_signature"}
+
+    owner_user_bi = await _contribution_owner_user_bi(
+        env, account_bi, account_rec)
+    project_bi = await _contribution_project_bi(env, record)
+    generation_bi = await blind_index(
+        env, "profile-generation:" + source_repo_bi + ":" + snapshot_hash)
+    actor_users = await _contribution_actor_user_bis(
+        env, [row[1] for row in snapshot["days"]])
+    grouped_days = {}
+    for day, actor_key, commits, issues, pulls, reviews in snapshot["days"]:
+        subject_user_bi = actor_users.get(actor_key)
+        if not subject_user_bi:
+            continue
+        counts = grouped_days.setdefault((subject_user_bi, day), [0, 0, 0, 0])
+        counts[0] += commits
+        counts[1] += issues
+        counts[2] += pulls
+        counts[3] += reviews
+    day_rows = [
+        [subject_user_bi, day, *counts]
+        for (subject_user_bi, day), counts in sorted(grouped_days.items())
+        if any(counts)
+    ]
+
+    grouped_languages = {}
+    for extension, byte_count, file_count in snapshot["extensions"]:
+        language, _color = contributions.language_for_extension(extension)
+        totals = grouped_languages.setdefault(language, [0, 0])
+        totals[0] += byte_count
+        totals[1] += file_count
+    language_rows = [
+        [language, totals[0], totals[1]]
+        for language, totals in sorted(grouped_languages.items())
+        if totals[0] or totals[1]
+    ]
+    labels = {"owner": record["owner"], "name": record["name"]}
+    encrypted_labels = await encrypt_row(env, labels)
+    project_data = {**labels, "coverage": snapshot["coverage"]}
+    encrypted_project = await encrypt_row(env, project_data)
+    statements = _contribution_generation_statements(
+        generation_bi, snapshot_hash, snapshot, account_bi, owner_user_bi,
+        source_repo_bi, project_bi, encrypted_labels, encrypted_project,
+        day_rows, language_rows, int(Date.now()))
+    await _contribution_run_batch(env, statements)
+
+    active = await d1_first(
+        env,
+        """SELECT projects.active_generation_bi, projects.captured_at,
+                  projects.is_public,
+                  receipts.snapshot_hash AS active_snapshot_hash,
+                  CASE WHEN repositories.key_bi IS NOT NULL
+                             AND repositories.is_private=0 THEN 1 ELSE 0 END
+                    AS repository_public
+             FROM profile_contribution_projects AS projects
+             LEFT JOIN profile_contribution_receipts AS receipts
+               ON receipts.generation_bi=projects.active_generation_bi
+             LEFT JOIN repositories
+               ON repositories.key_bi=projects.source_repo_bi
+            WHERE projects.source_repo_bi=?""",
+        source_repo_bi,
+    ) or {}
+    await _contribution_prune_inactive_generations(env, source_repo_bi)
+    active_generation_bi = active.get("active_generation_bi")
+    active_captured_at = int(active.get("captured_at") or 0)
+    if active_generation_bi == generation_bi:
+        return {"accepted": True, "warning": ""}
+    if not active.get("is_public") or not active.get("repository_public"):
+        return {
+            "accepted": False,
+            "warning": "contribution_repository_private",
+        }
+    if active_generation_bi and active_captured_at > snapshot["capturedAt"]:
+        return {"accepted": False, "warning": "contribution_snapshot_older"}
+    if active_generation_bi and active_captured_at == snapshot["capturedAt"]:
+        return {"accepted": False, "warning": "contribution_snapshot_conflict"}
+    return {"accepted": False, "warning": "contribution_activation_deferred"}
+
+
+def _contribution_cache_key(profile_bi, from_value, to_value, revision=""):
+    return (
+        PROFILE_CONTRIBUTION_CACHE_PREFIX + quote(str(profile_bi), safe="")
+        + "?from=" + from_value + "&to=" + to_value
+        + (("&revision=" + revision) if revision else "")
+    )
+
+
+async def _contribution_profile_revision(
+        env, subject_user_bi, from_value, to_value):
+    """Hash every public source that can affect this profile and range."""
+    rows = await d1_all(
+        env,
+        """WITH public_projects AS (
+               SELECT projects.*
+                 FROM profile_contribution_projects AS projects
+                 JOIN repositories
+                   ON repositories.key_bi=projects.source_repo_bi
+                WHERE projects.is_public=1 AND repositories.is_private=0
+             ), foreign_activity_projects AS (
+               SELECT DISTINCT sources.project_bi
+                 FROM public_projects AS sources
+                 JOIN profile_contribution_days AS days
+                   ON days.source_repo_bi=sources.source_repo_bi
+                  AND days.generation_bi=sources.active_generation_bi
+                WHERE sources.active_generation_bi IS NOT NULL
+                  AND days.subject_user_bi=?
+                  AND days.day>=? AND days.day<=?
+             ), foreign_activity_sources AS (
+               SELECT sources.*
+                 FROM public_projects AS sources
+                 JOIN foreign_activity_projects AS activity
+                   ON activity.project_bi=sources.project_bi
+                WHERE sources.owner_user_bi!=?
+             ), revision_sources AS (
+               SELECT 'owned' AS source_scope,
+                      sources.source_repo_bi, sources.source_account_bi,
+                      sources.owner_user_bi, sources.project_bi,
+                      sources.first_public_day,
+                      sources.active_generation_bi, sources.captured_at,
+                      sources.verified_from
+                 FROM public_projects AS sources
+                WHERE sources.owner_user_bi=?
+               UNION ALL
+               SELECT 'foreign' AS source_scope,
+                      sources.source_repo_bi, sources.source_account_bi,
+                      sources.owner_user_bi, sources.project_bi,
+                      sources.first_public_day,
+                      sources.active_generation_bi, sources.captured_at,
+                      sources.verified_from
+                 FROM foreign_activity_sources AS sources
+             )
+             SELECT source_scope, source_repo_bi, source_account_bi,
+                    owner_user_bi, project_bi, first_public_day,
+                    COALESCE(active_generation_bi, '') AS active_generation_bi,
+                    captured_at, COALESCE(verified_from, '') AS verified_from
+               FROM revision_sources
+              /* contribution_profile_revision */
+              ORDER BY source_scope ASC, project_bi ASC, source_repo_bi ASC""",
+        subject_user_bi, from_value, to_value,
+        subject_user_bi, subject_user_bi,
+    )
+    canonical = [
+        [
+            row.get("source_scope") or "",
+            row.get("source_repo_bi") or "",
+            row.get("source_account_bi") or "",
+            row.get("owner_user_bi") or "",
+            row.get("project_bi") or "",
+            row.get("first_public_day") or "",
+            row.get("active_generation_bi") or "",
+            int(row.get("captured_at") or 0),
+            row.get("verified_from") or "",
+        ]
+        for row in rows
+    ]
+    return hashlib.sha256(json.dumps(
+        canonical, separators=(",", ":")).encode()).hexdigest()
+
+
+async def _contribution_internal_cache_get(cache_key):
+    cached = await edge_cache_match(cache_key)
+    if cached is None:
+        return None
+    try:
+        payload = await cached.json()
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+async def _contribution_internal_cache_put(cache_key, payload):
+    cached_response = json_response(
+        payload, cache_seconds=PROFILE_CONTRIBUTION_CACHE_TTL)
+    await edge_cache_put(cache_key, cached_response)
+
+
+async def _contribution_activity_rows(
+        env, subject_user_bi, from_value, to_value):
+    return await d1_all(
+        env,
+        """WITH public_projects AS (
+               SELECT projects.*
+                 FROM profile_contribution_projects AS projects
+                 JOIN repositories
+                   ON repositories.key_bi=projects.source_repo_bi
+                WHERE projects.is_public=1 AND repositories.is_private=0
+             ), candidate_days AS (
+               SELECT DISTINCT sources.project_bi, days.day
+                 FROM public_projects AS sources
+                 JOIN profile_contribution_days AS days
+                   ON days.source_repo_bi=sources.source_repo_bi
+                  AND days.generation_bi=sources.active_generation_bi
+                WHERE sources.active_generation_bi IS NOT NULL
+                  AND days.subject_user_bi=?
+                  AND days.day>=? AND days.day<=?
+             ), ranked_day_sources AS (
+               SELECT candidates.project_bi, candidates.day,
+                      sources.source_repo_bi,
+                      sources.active_generation_bi,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY candidates.project_bi, candidates.day
+                        ORDER BY sources.captured_at DESC,
+                                 sources.source_repo_bi ASC) AS source_rank
+                 FROM candidate_days AS candidates
+                 JOIN public_projects AS sources
+                   ON sources.project_bi=candidates.project_bi
+                  AND sources.active_generation_bi IS NOT NULL
+                  AND sources.verified_from<=candidates.day
+             ), active_day_sources AS (
+               SELECT * FROM ranked_day_sources WHERE source_rank=1
+             ), selected_days AS (
+               SELECT sources.project_bi, days.day,
+                      days.commits, days.issues,
+                      days.pulls, days.reviews, days.source_repo_bi,
+                      days.captured_at, days.data
+                 FROM active_day_sources AS sources
+                 JOIN profile_contribution_days AS days
+                   ON days.source_repo_bi=sources.source_repo_bi
+                  AND days.generation_bi=sources.active_generation_bi
+                  AND days.day=sources.day
+                WHERE days.subject_user_bi=?
+             ), owned_ranked AS (
+               SELECT sources.*,
+                      MIN(sources.first_public_day) OVER (
+                        PARTITION BY sources.project_bi
+                      ) AS logical_first_public_day,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY sources.project_bi
+                        ORDER BY sources.captured_at DESC,
+                                 sources.source_repo_bi ASC) AS source_rank
+                 FROM public_projects AS sources
+                WHERE sources.owner_user_bi=?
+             ), owned_projects AS (
+               SELECT * FROM owned_ranked WHERE source_rank=1
+             ), activity_days AS (
+               SELECT day,
+                      SUM(commits) AS commits,
+                      SUM(issues) AS issues,
+                      SUM(pulls) AS pulls,
+                      SUM(reviews) AS reviews,
+                      0 AS repositories
+                 FROM selected_days GROUP BY day
+             ), repository_days AS (
+               SELECT logical_first_public_day AS day,
+                      0 AS commits, 0 AS issues, 0 AS pulls, 0 AS reviews,
+                      COUNT(*) AS repositories
+                 FROM owned_projects
+                WHERE logical_first_public_day>=?
+                  AND logical_first_public_day<=?
+                GROUP BY logical_first_public_day
+             ), combined_days AS (
+               SELECT day, SUM(commits) AS commits, SUM(issues) AS issues,
+                      SUM(pulls) AS pulls, SUM(reviews) AS reviews,
+                      SUM(repositories) AS repositories
+                 FROM (
+                   SELECT * FROM activity_days
+                   UNION ALL
+                   SELECT * FROM repository_days
+                 ) GROUP BY day
+             )
+             SELECT 0 AS row_order, 'summary' AS row_kind, '' AS day,
+                    COALESCE(SUM(commits), 0) AS commits,
+                    COALESCE(SUM(issues), 0) AS issues,
+                    COALESCE(SUM(pulls), 0) AS pulls,
+                    COALESCE(SUM(reviews), 0) AS reviews,
+                    COALESCE(SUM(repositories), 0) AS repositories,
+                    (SELECT COUNT(*) FROM owned_projects)
+                      AS repository_count
+               FROM combined_days
+             UNION ALL
+             SELECT 1 AS row_order, 'day' AS row_kind, day,
+                    commits, issues, pulls, reviews, repositories,
+                    0 AS repository_count
+               FROM combined_days
+             ORDER BY row_order ASC, day ASC""",
+        subject_user_bi, from_value, to_value, subject_user_bi,
+        subject_user_bi,
+        from_value, to_value,
+    )
+
+
+async def _contribution_recent_rows(
+        env, subject_user_bi, from_value, to_value):
+    return await d1_all(
+        env,
+        """WITH public_projects AS (
+               SELECT projects.*
+                 FROM profile_contribution_projects AS projects
+                 JOIN repositories
+                   ON repositories.key_bi=projects.source_repo_bi
+                WHERE projects.is_public=1 AND repositories.is_private=0
+             ), candidate_days AS (
+               SELECT DISTINCT sources.project_bi, days.day
+                 FROM public_projects AS sources
+                 JOIN profile_contribution_days AS days
+                   ON days.source_repo_bi=sources.source_repo_bi
+                  AND days.generation_bi=sources.active_generation_bi
+                WHERE sources.active_generation_bi IS NOT NULL
+                  AND days.subject_user_bi=?
+                  AND days.day>=? AND days.day<=?
+             ), ranked_day_sources AS (
+               SELECT candidates.project_bi, candidates.day,
+                      sources.source_repo_bi,
+                      sources.active_generation_bi,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY candidates.project_bi, candidates.day
+                        ORDER BY sources.captured_at DESC,
+                                 sources.source_repo_bi ASC) AS source_rank
+                 FROM candidate_days AS candidates
+                 JOIN public_projects AS sources
+                   ON sources.project_bi=candidates.project_bi
+                  AND sources.active_generation_bi IS NOT NULL
+                  AND sources.verified_from<=candidates.day
+             ), active_day_sources AS (
+               SELECT * FROM ranked_day_sources WHERE source_rank=1
+             ), selected_days AS (
+               SELECT days.*
+                 FROM active_day_sources AS sources
+                 JOIN profile_contribution_days AS days
+                   ON days.source_repo_bi=sources.source_repo_bi
+                  AND days.generation_bi=sources.active_generation_bi
+                  AND days.day=sources.day
+                WHERE days.subject_user_bi=?
+             ), owned_ranked AS (
+               SELECT sources.*,
+                      MIN(sources.first_public_day) OVER (
+                        PARTITION BY sources.project_bi
+                      ) AS logical_first_public_day,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY sources.project_bi
+                        ORDER BY sources.captured_at DESC,
+                                 sources.source_repo_bi ASC) AS source_rank
+                 FROM public_projects AS sources
+                WHERE sources.owner_user_bi=?
+             ), owned_projects AS (
+               SELECT * FROM owned_ranked WHERE source_rank=1
+             ), recent_candidates AS (
+               SELECT day AS activity_day, 'commits' AS kind,
+                      0 AS kind_order, commits AS activity_count,
+                      project_bi, source_repo_bi, data
+                 FROM selected_days WHERE commits>0
+               UNION ALL
+               SELECT day, 'issues', 1, issues,
+                      project_bi, source_repo_bi, data
+                 FROM selected_days WHERE issues>0
+               UNION ALL
+               SELECT day, 'pulls', 2, pulls,
+                      project_bi, source_repo_bi, data
+                 FROM selected_days WHERE pulls>0
+               UNION ALL
+               SELECT day, 'reviews', 3, reviews,
+                      project_bi, source_repo_bi, data
+                 FROM selected_days WHERE reviews>0
+               UNION ALL
+               SELECT logical_first_public_day, 'repositories', 4, 1,
+                      project_bi, source_repo_bi, data
+                 FROM owned_projects
+                WHERE logical_first_public_day>=?
+                  AND logical_first_public_day<=?
+             )
+             SELECT activity_day, kind, activity_count, project_bi,
+                    source_repo_bi, data
+               FROM recent_candidates
+              ORDER BY activity_day DESC, kind_order ASC,
+                       project_bi ASC, source_repo_bi ASC
+              LIMIT 20""",
+        subject_user_bi, from_value, to_value, subject_user_bi,
+        subject_user_bi,
+        from_value, to_value,
+    )
+
+
+async def _contribution_language_rows(env, owner_user_bi):
+    return await d1_all(
+        env,
+        """WITH ranked_sources AS (
+               SELECT projects.source_repo_bi, projects.project_bi,
+                      projects.active_generation_bi,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY projects.project_bi
+                        ORDER BY projects.captured_at DESC,
+                                 projects.source_repo_bi ASC) AS source_rank
+                 FROM profile_contribution_projects AS projects
+                 JOIN repositories
+                   ON repositories.key_bi=projects.source_repo_bi
+                WHERE projects.owner_user_bi=? AND projects.is_public=1
+                  AND repositories.is_private=0
+                  AND projects.active_generation_bi IS NOT NULL
+             ), selected_sources AS (
+               SELECT * FROM ranked_sources WHERE source_rank=1
+             )
+             SELECT languages.language, SUM(languages.bytes) AS bytes
+               FROM selected_sources AS sources
+               JOIN profile_contribution_languages AS languages
+                 ON languages.source_repo_bi=sources.source_repo_bi
+                AND languages.generation_bi=sources.active_generation_bi
+              WHERE languages.owner_user_bi=?
+              GROUP BY languages.language
+              ORDER BY languages.language ASC""",
+        owner_user_bi, owner_user_bi,
+    )
+
+
+async def _contribution_coverage_rows(
+        env, subject_user_bi, from_value, to_value):
+    return await d1_all(
+        env,
+        """WITH public_projects AS (
+               SELECT projects.*
+                 FROM profile_contribution_projects AS projects
+                 JOIN repositories
+                   ON repositories.key_bi=projects.source_repo_bi
+                WHERE projects.is_public=1 AND repositories.is_private=0
+             ), candidate_days AS (
+               SELECT DISTINCT sources.project_bi, days.day
+                 FROM public_projects AS sources
+                 JOIN profile_contribution_days AS days
+                   ON days.source_repo_bi=sources.source_repo_bi
+                  AND days.generation_bi=sources.active_generation_bi
+                WHERE sources.active_generation_bi IS NOT NULL
+                  AND days.subject_user_bi=?
+                  AND days.day>=? AND days.day<=?
+             ), ranked_day_sources AS (
+               SELECT candidates.project_bi, candidates.day,
+                      sources.source_repo_bi,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY candidates.project_bi, candidates.day
+                        ORDER BY sources.captured_at DESC,
+                                 sources.source_repo_bi ASC) AS source_rank
+                 FROM candidate_days AS candidates
+                 JOIN public_projects AS sources
+                   ON sources.project_bi=candidates.project_bi
+                  AND sources.active_generation_bi IS NOT NULL
+                  AND sources.verified_from<=candidates.day
+             ), selected_day_sources AS (
+               SELECT * FROM ranked_day_sources WHERE source_rank=1
+             ), activity_sources AS (
+               SELECT DISTINCT project_bi, source_repo_bi
+                 FROM selected_day_sources
+             ), owned_projects AS (
+               SELECT DISTINCT project_bi
+                 FROM public_projects
+                WHERE owner_user_bi=?
+             ), owned_ranked_sources AS (
+               SELECT sources.*,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY sources.project_bi
+                        ORDER BY CASE
+                           WHEN sources.active_generation_bi IS NOT NULL
+                            AND sources.verified_from IS NOT NULL
+                            AND sources.verified_from<=? THEN 0
+                           WHEN sources.active_generation_bi IS NOT NULL
+                             THEN 1
+                           ELSE 2
+                         END ASC,
+                                 sources.captured_at DESC,
+                                 sources.source_repo_bi ASC) AS source_rank
+                 FROM public_projects AS sources
+                 JOIN owned_projects
+                   ON owned_projects.project_bi=sources.project_bi
+             ), coverage_source_keys AS (
+               SELECT source_repo_bi, project_bi
+                 FROM owned_ranked_sources
+                WHERE source_rank=1
+               UNION
+               SELECT source_repo_bi, project_bi FROM activity_sources
+             )
+             SELECT sources.source_repo_bi, sources.project_bi,
+                    sources.owner_user_bi, sources.verified_from,
+                    sources.captured_at, sources.data,
+                    CASE WHEN owned.project_bi IS NOT NULL
+                         THEN 1 ELSE 0 END AS is_owned
+               FROM coverage_source_keys AS keys
+               JOIN public_projects AS sources
+                 ON sources.source_repo_bi=keys.source_repo_bi
+               LEFT JOIN owned_projects AS owned
+                 ON owned.project_bi=keys.project_bi
+              ORDER BY sources.project_bi ASC, sources.source_repo_bi ASC
+              LIMIT ?""",
+        subject_user_bi, from_value, to_value, subject_user_bi,
+        from_value, MAX_CATALOG_REPOS,
+    )
+
+
+async def _contribution_profile_payload(
+        env, profile_bi, profile_name, from_value, to_value):
+    activity_rows, recent_rows, language_rows, coverage_rows = (
+        await asyncio.gather(
+            _contribution_activity_rows(
+                env, profile_bi, from_value, to_value),
+            _contribution_recent_rows(
+                env, profile_bi, from_value, to_value),
+            _contribution_language_rows(env, profile_bi),
+            _contribution_coverage_rows(
+                env, profile_bi, from_value, to_value),
+        )
+    )
+    summary = next(
+        (row for row in activity_rows if row.get("row_kind") == "summary"),
+        {},
+    )
+    days = [
+        row for row in activity_rows if row.get("row_kind") == "day"
+    ]
+
+    decrypted = {}
+    recent_activity = []
+    for row in recent_rows[:20]:
+        encrypted = row.get("data", "")
+        if encrypted not in decrypted:
+            decrypted[encrypted] = await decrypt_row(env, encrypted) or {}
+        labels = decrypted[encrypted]
+        owner = clean_string(labels.get("owner", ""), MAX_NODE_NAME).lower()
+        repo = clean_string(labels.get("name", ""), MAX_REPO_SEGMENT)
+        if not owner or not repo:
+            continue
+        recent_activity.append({
+            "date": row.get("activity_day", ""),
+            "kind": row.get("kind", ""),
+            "count": int(row.get("activity_count") or 0),
+            "repository": {
+                "owner": owner,
+                "name": repo,
+                "url": "/" + quote(owner, safe="") + "/"
+                       + quote(repo, safe=""),
+            },
+        })
+
+    decoded_coverage = []
+    for row in coverage_rows:
+        encrypted = row.get("data", "")
+        if encrypted not in decrypted:
+            decrypted[encrypted] = await decrypt_row(env, encrypted) or {}
+        decoded_coverage.append({
+            **row,
+            "coverage": decrypted[encrypted].get("coverage"),
+        })
+    return contributions.build_profile_contribution_response(
+        profile_name, from_value, to_value, summary, days,
+        language_rows, recent_activity, decoded_coverage,
+    )
+
+
+async def _contribution_profile_api(env, request, raw_name):
+    parsed = urlparse(request.url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    if (set(params) - {"from", "to"}
+            or any(len(values) != 1 for values in params.values())):
+        return json_response(
+            {"error": "invalid_contribution_range"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+    scalar_query = {key: values[0] for key, values in params.items()}
+    try:
+        from_value, to_value = contributions.contribution_date_range(
+            scalar_query, now_ms=int(Date.now()))
+    except ValueError:
+        return json_response(
+            {"error": "invalid_contribution_range"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+
+    name = clean_string(raw_name, MAX_NODE_NAME).lower()
+    if not valid_node_name(name):
+        return json_response(
+            {"error": "not_found"}, status=404,
+            cache_control="no-store, max-age=0, must-revalidate")
+    profile_bi = await blind_index(env, name)
+    rec = await _account_identity_rec_by_bi(env, profile_bi)
+    if not rec:
+        _, rec = await _account_row(env, name)
+    if (not rec or rec.get("status") != "active"
+            or rec.get("profile_private")):
+        return json_response(
+            {"error": "not_found"}, status=404,
+            cache_control="no-store, max-age=0, must-revalidate")
+
+    profile_name = clean_string(
+        rec.get("name", name), MAX_NODE_NAME).lower() or name
+    cacheable = contributions.contribution_cacheable_range(
+        from_value, to_value, now_ms=int(Date.now()))
+    for attempt in range(2):
+        revision = await _contribution_profile_revision(
+            env, profile_bi, from_value, to_value)
+        cache_key = _contribution_cache_key(
+            profile_bi, from_value, to_value, revision)
+        if cacheable:
+            cached = await _contribution_internal_cache_get(cache_key)
+            if (cached and cached.get("ok") is True
+                    and cached.get("profile") == profile_name
+                    and cached.get("range") == {
+                        "from": from_value, "to": to_value}):
+                final_revision = await _contribution_profile_revision(
+                    env, profile_bi, from_value, to_value)
+                if final_revision == revision:
+                    return json_response(
+                        cached,
+                        cache_control="no-store, max-age=0, must-revalidate")
+                if attempt == 0:
+                    continue
+                break
+
+        payload = await _contribution_profile_payload(
+            env, profile_bi, profile_name, from_value, to_value)
+        final_revision = await _contribution_profile_revision(
+            env, profile_bi, from_value, to_value)
+        if final_revision != revision:
+            if attempt == 0:
+                continue
+            break
+        if cacheable:
+            await _contribution_internal_cache_put(cache_key, payload)
+        return json_response(
+            payload,
+            cache_control="no-store, max-age=0, must-revalidate")
+    return json_response(
+        {"error": "contribution_state_changed"}, status=503,
+        cache_control="no-store, max-age=0, must-revalidate")
+
+
 async def catalog_rate_check(env, owner_bi):
     # Throttle catalog writes per owner: at most one write per cooldown window.
     # Returns a 429 response when throttled, else None (and records this write).
@@ -3280,18 +4254,26 @@ async def catalog_handler(env, request):
             if cnt and cnt.get("c", 0) >= CATALOG_MAX_RECORDS_PER_OWNER:
                 return json_response({"error": "too_many_repos"}, status=429)
         enc = await encrypt_row(env, record)
-        # is_private is a plaintext mirror of the (signed-write-gated) visibility
-        # field so browse/clone gating can check it without decrypting the row.
-        is_private = 1 if record["visibility"] == "private" else 0
-        await d1_run(
-            env,
-            """INSERT INTO repositories (key_bi, owner_bi, data, is_private)
-               VALUES (?,?,?,?)
-               ON CONFLICT(key_bi) DO UPDATE SET
-                 owner_bi=excluded.owner_bi, data=excluded.data,
-                 is_private=excluded.is_private""",
-            key_bi, owner_bi, enc, is_private,
-        )
+        await _contribution_write_catalog_state(
+            env, record, owner_bi, publish_owner_rec, key_bi, enc)
+        contribution_result = {"accepted": False, "warning": ""}
+        if record["visibility"] == "public":
+            try:
+                contribution_result = await _contribution_ingest_snapshot(
+                    env,
+                    data,
+                    record,
+                    owner_bi,
+                    publish_owner_rec,
+                    key_bi,
+                )
+            except Exception:
+                # Optional snapshot failures do not roll back an authorized
+                # repository publication.
+                contribution_result = {
+                    "accepted": False,
+                    "warning": "contribution_ingestion_failed",
+                }
         # A working-copy holder's verified attestation also lands in the pin
         # history, which is what lets an honest mirror lag the source by a few
         # publishes without failing the clone integrity gate (clone_state_pins).
@@ -3329,9 +4311,17 @@ async def catalog_handler(env, request):
                 decoded.append((r["key_bi"], rec2.get("updatedAt", "") if rec2 else ""))
             decoded.sort(key=lambda x: x[1], reverse=True)
             for stale_key, _ in decoded[MAX_CATALOG_REPOS:]:
+                await _delete_repo_scoped_state(env, stale_key)
                 await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", stale_key)
         await purge_catalog_related_caches()
-        return json_response({"ok": True, "repository": record}, status=201)
+        payload = {
+            "ok": True,
+            "repository": record,
+            "contributionsAccepted": bool(contribution_result["accepted"]),
+        }
+        if contribution_result["warning"]:
+            payload["contributionWarning"] = contribution_result["warning"][:80]
+        return json_response(payload, status=201)
 
     if method == "DELETE":
         params = parse_qs(urlparse(request.url).query)
@@ -4377,6 +5367,16 @@ async def _move_repo_namespace(env, old_owner_bi, old_owner, new_owner_bi,
                  owner_bi=excluded.owner_bi, data=excluded.data,
                  is_private=excluded.is_private""",
             new_repo_bi, new_owner_bi, enc, int(row.get("is_private") or 0))
+        await _contribution_move_repo_namespace(
+            env,
+            old_repo_bi,
+            new_repo_bi,
+            old_owner_bi,
+            new_owner_bi,
+            new_owner,
+            repo,
+            rec,
+        )
         await _move_repo_shares(env, old_repo_bi, new_repo_bi, new_owner, repo)
         # Carry the attested pin history to the new namespace so mirrors of a
         # renamed source keep clearing the integrity gate without waiting for
@@ -4463,6 +5463,8 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
         env, name_bi, old_name, new_name_bi, new_name)
     if move_error:
         return name_bi, rec, move_error
+    await _contribution_retarget_linked_nodes(
+        env, name_bi, old_name, new_name_bi, new_name)
     await d1_run(
         env, "UPDATE account_presence SET name_bi=? WHERE name_bi=?",
         new_name_bi, name_bi)
@@ -4480,6 +5482,24 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
         new_name_bi, new_name, name_bi)
     await d1_run(
         env, "UPDATE catalog_rate SET owner_bi=? WHERE owner_bi=?",
+        new_name_bi, name_bi)
+    await d1_run(
+        env,
+        "UPDATE profile_contribution_days SET subject_user_bi=? "
+        "WHERE subject_user_bi=?",
+        new_name_bi, name_bi)
+    await d1_run(
+        env,
+        "UPDATE profile_contribution_languages SET owner_user_bi=? "
+        "WHERE owner_user_bi=?",
+        new_name_bi, name_bi)
+    await d1_run(
+        env,
+        "UPDATE profile_contribution_projects SET owner_user_bi=? "
+        "WHERE owner_user_bi=?",
+        new_name_bi, name_bi)
+    await d1_run(
+        env, "UPDATE account_devices SET account_bi=? WHERE account_bi=?",
         new_name_bi, name_bi)
     await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
@@ -4499,6 +5519,18 @@ async def _delete_bounties_namespace(env, owner, repo):
 
 
 async def _delete_repo_scoped_state(env, repo_bi):
+    await d1_run(
+        env, "DELETE FROM profile_contribution_days WHERE source_repo_bi=?",
+        repo_bi)
+    await d1_run(
+        env, "DELETE FROM profile_contribution_languages WHERE source_repo_bi=?",
+        repo_bi)
+    await d1_run(
+        env, "DELETE FROM profile_contribution_receipts WHERE source_repo_bi=?",
+        repo_bi)
+    await d1_run(
+        env, "DELETE FROM profile_contribution_projects WHERE source_repo_bi=?",
+        repo_bi)
     await d1_run(env, "DELETE FROM repo_shares WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM issue_inbox WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM pull_inbox WHERE repo_bi=?", repo_bi)
@@ -4544,6 +5576,8 @@ async def _delete_repo_namespace(env, owner_bi, owner):
 async def _delete_account_namespace(env, name_bi, rec):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     email = clean_string(rec.get("email", ""), 254).strip().lower()
+    await _contribution_retarget_linked_nodes(
+        env, name_bi, name, None, "")
     await _delete_repo_namespace(env, name_bi, name)
     await d1_run(env, "DELETE FROM repo_shares WHERE grantee_bi=?", name_bi)
     await d1_run(env, "DELETE FROM account_presence WHERE name_bi=?", name_bi)
@@ -4551,6 +5585,30 @@ async def _delete_account_namespace(env, name_bi, rec):
     await d1_run(env, "DELETE FROM notifications WHERE recipient_bi=?", name_bi)
     await d1_run(env, "DELETE FROM profile_follows WHERE follower_bi=? OR target_bi=?", name_bi, name_bi)
     await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", name_bi)
+    await d1_run(
+        env,
+        "DELETE FROM profile_contribution_days WHERE subject_user_bi=? OR "
+        "source_repo_bi IN (SELECT source_repo_bi FROM "
+        "profile_contribution_projects WHERE owner_user_bi=?)",
+        name_bi, name_bi)
+    await d1_run(
+        env,
+        "DELETE FROM profile_contribution_languages WHERE owner_user_bi=? OR "
+        "source_repo_bi IN (SELECT source_repo_bi FROM "
+        "profile_contribution_projects WHERE owner_user_bi=?)",
+        name_bi, name_bi)
+    await d1_run(
+        env,
+        "DELETE FROM profile_contribution_receipts WHERE source_repo_bi IN "
+        "(SELECT source_repo_bi FROM profile_contribution_projects "
+        "WHERE owner_user_bi=?)",
+        name_bi)
+    await d1_run(
+        env,
+        "DELETE FROM profile_contribution_projects WHERE owner_user_bi=?",
+        name_bi)
+    await d1_run(
+        env, "DELETE FROM account_devices WHERE account_bi=?", name_bi)
     if email:
         email_bi = await blind_index(env, email)
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
@@ -6426,25 +7484,110 @@ async def _login_clear(env, id_bi):
 
 DESKTOP_NODE_CAPABILITIES = "browse,comment,submit_issue,submit_pr,host_repo,mirror_repo,publish_repo,owner_sign"
 CLIENT_CAPABILITIES = "browse,comment,submit_issue,submit_pr"
+CONTRIBUTION_KEY_PROOF_CAPABILITY = "contribution_key_proof"
 
 
-async def _register_account_device(env, account_bi, pubkey, kind="desktop_node", label=""):
+def _device_bind_canonical(account, pubkey, timestamp):
+    account = account.strip().lower() if isinstance(account, str) else ""
+    if not valid_node_name(account) or not valid_node_pubkey(pubkey):
+        raise ValueError("invalid device bind identity")
+    if (not isinstance(timestamp, str) or not timestamp.isdigit()
+            or len(timestamp) > 16 or str(int(timestamp)) != timestamp):
+        raise ValueError("invalid device bind timestamp")
+    return (
+        "forkmesh-device-bind-v1\n" + account + "\n" + pubkey + "\n"
+        + timestamp
+    ).encode()
+
+
+async def _device_proven_user_bis(env, pubkey):
+    rows = await d1_all(
+        env,
+        """WITH proven_device_users(user_bi) AS (
+               SELECT COALESCE(NULLIF(user_bi, ''), node_bi)
+                 FROM nodes WHERE pubkey=?
+               UNION ALL
+               SELECT COALESCE(NULLIF(owner_node.user_bi, ''),
+                               account_devices.account_bi)
+                 FROM account_devices
+                LEFT JOIN nodes AS owner_node
+                   ON owner_node.node_bi=account_devices.account_bi
+                WHERE account_devices.pubkey=?
+                  AND instr(',' || account_devices.capabilities || ',',
+                            ',contribution_key_proof,') > 0
+             )
+             SELECT DISTINCT user_bi FROM proven_device_users
+              WHERE user_bi IS NOT NULL AND user_bi != ''""",
+        pubkey, pubkey,
+    )
+    return {row.get("user_bi") for row in rows if row.get("user_bi")}
+
+
+async def _device_retire_unproven_claims(env, account_bi, pubkey):
+    await d1_run(
+        env,
+        "DELETE FROM account_devices WHERE pubkey=? AND account_bi!=? "
+        "AND instr(',' || capabilities || ',', "
+        "',contribution_key_proof,')=0",
+        pubkey, account_bi,
+    )
+
+
+async def _register_account_device(
+        env, account_bi, pubkey, kind="desktop_node", label="",
+        proof_verified=False, target_user_bi=None):
     if not account_bi or not pubkey:
         return None
     device_bi = await blind_index(env, account_bi + ":" + pubkey)
     now = int(Date.now())
     capabilities = DESKTOP_NODE_CAPABILITIES if kind == "desktop_node" else CLIENT_CAPABILITIES
-    await d1_run(
-        env,
-        """INSERT INTO account_devices
-             (device_bi, account_bi, pubkey, kind, label, capabilities, enabled,
-              created_at, last_seen, revoked_at)
-             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 0)
-             ON CONFLICT(device_bi) DO UPDATE SET
-               last_seen=excluded.last_seen,
-               enabled=CASE WHEN account_devices.revoked_at=0 THEN 1 ELSE account_devices.enabled END""",
-        device_bi, account_bi, pubkey, kind, label, capabilities, now, now,
-    )
+    if proof_verified:
+        capabilities += "," + CONTRIBUTION_KEY_PROOF_CAPABILITY
+    base_args = (
+        device_bi, account_bi, pubkey, kind, label, capabilities, now, now)
+    if proof_verified:
+        target_user_bi = target_user_bi or account_bi
+        await d1_run(
+            env,
+            """INSERT INTO account_devices
+                 (device_bi, account_bi, pubkey, kind, label, capabilities,
+                  enabled, created_at, last_seen, revoked_at)
+                 SELECT ?, ?, ?, ?, ?, ?, 1, ?, ?, 0
+                  WHERE NOT EXISTS (
+                    SELECT 1 FROM nodes
+                     WHERE pubkey=?
+                       AND COALESCE(NULLIF(user_bi, ''), node_bi) != ?)
+                    AND NOT EXISTS (
+                    SELECT 1 FROM account_devices AS proven_claim
+                    LEFT JOIN nodes AS claim_owner
+                      ON claim_owner.node_bi=proven_claim.account_bi
+                     WHERE proven_claim.pubkey=?
+                       AND instr(',' || proven_claim.capabilities || ',',
+                                 ',contribution_key_proof,') > 0
+                       AND COALESCE(NULLIF(claim_owner.user_bi, ''),
+                                    proven_claim.account_bi) != ?)
+                 /* atomic_device_proof_claim */
+                 ON CONFLICT(device_bi) DO UPDATE SET
+                   last_seen=excluded.last_seen,
+                   capabilities=excluded.capabilities,
+                   enabled=CASE WHEN account_devices.revoked_at=0
+                                THEN 1 ELSE account_devices.enabled END""",
+            *base_args, pubkey, target_user_bi, pubkey, target_user_bi,
+        )
+    else:
+        await d1_run(
+            env,
+            """INSERT INTO account_devices
+                 (device_bi, account_bi, pubkey, kind, label, capabilities,
+                  enabled, created_at, last_seen, revoked_at)
+                 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 0)
+                 ON CONFLICT(device_bi) DO UPDATE SET
+                   last_seen=excluded.last_seen,
+                   capabilities=excluded.capabilities,
+                   enabled=CASE WHEN account_devices.revoked_at=0
+                                THEN 1 ELSE account_devices.enabled END""",
+            *base_args,
+        )
     return {"id": device_bi[:16], "kind": kind, "pubkey": pubkey,
             "capabilities": capabilities.split(",")}
 
@@ -6510,6 +7653,8 @@ async def _account_login(env, request):
     password = (data.get("password", "") or "")[:256]
     totp = clean_string(data.get("totp", ""), 10)
     pubkey = clean_string(data.get("pubkey", ""), 120)
+    device_ts = clean_string(data.get("deviceTs", ""), 20)
+    device_sig = clean_string(data.get("deviceSig", ""), 200)
 
     # Brute-force throttle, keyed by a blind index of the identifier (no plaintext
     # stored). Checked before any account lookup so it also protects nonexistent
@@ -6567,11 +7712,38 @@ async def _account_login(env, request):
     desktop_capable = False
     device_kind = ""
     if pubkey:
+        account_name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+        try:
+            device_canonical = _device_bind_canonical(
+                account_name, pubkey, device_ts)
+        except ValueError:
+            device_canonical = b""
+        if (not device_canonical or not device_sig or not _ts_ok(device_ts)
+                or not await ed25519_verify(
+                    pubkey, device_sig, device_canonical)):
+            return json_response(
+                {"error": "device_proof_required"}, status=401)
+        owner_row = await d1_first(
+            env, "SELECT user_bi FROM nodes WHERE node_bi=?", name_bi)
+        target_user_bi = (owner_row or {}).get("user_bi") or name_bi
+        proven_users = await _device_proven_user_bis(env, pubkey)
+        if any(user_bi != target_user_bi for user_bi in proven_users):
+            return json_response({"error": "device_key_conflict"}, status=409)
+        await _device_retire_unproven_claims(env, name_bi, pubkey)
+        await _register_account_device(
+            env, name_bi, pubkey, "desktop_node",
+            clean_string(data.get("deviceLabel", ""), 120),
+            proof_verified=True, target_user_bi=target_user_bi)
         device = await _account_device_for_pubkey(env, name_bi, pubkey)
-        if not device:
-            device = await _register_account_device(
-                env, name_bi, pubkey, "desktop_node",
-                clean_string(data.get("deviceLabel", ""), 120))
+        final_proven_users = await _device_proven_user_bis(env, pubkey)
+        device_caps = clean_string(
+            (device or {}).get("capabilities", ""), 512).split(",")
+        if (not device
+                or CONTRIBUTION_KEY_PROOF_CAPABILITY not in device_caps
+                or target_user_bi not in final_proven_users
+                or any(user_bi != target_user_bi
+                       for user_bi in final_proven_users)):
+            return json_response({"error": "device_key_conflict"}, status=409)
         if not rec.get("pubkey"):
             rec["pubkey"] = pubkey
             await _save_account(env, name_bi, rec)
@@ -6583,7 +7755,9 @@ async def _account_login(env, request):
         if isinstance(caps, str):
             caps = [c for c in caps.split(",") if c]
         enabled = bool(device.get("enabled", True)) and not bool(device.get("revoked_at", 0)) if device else True
-        desktop_capable = enabled and "owner_sign" in caps
+        primary_key_matched = pubkey == clean_string(rec.get("pubkey", ""), 120)
+        desktop_capable = primary_key_matched and enabled and "owner_sign" in caps
+        session_caps = caps if desktop_capable else CLIENT_CAPABILITIES.split(",")
         device_kind = device.get("kind", "desktop_node") if device else "desktop_node"
         payload = {
             **await _account_public_payload(env, rec),
@@ -6591,7 +7765,8 @@ async def _account_login(env, request):
         }
         payload = _with_session_capabilities(
             payload, session_kind="desktop_node", device_kind=device_kind,
-            key_matched=True, desktop_capable=desktop_capable, capabilities=caps)
+            key_matched=True, desktop_capable=desktop_capable,
+            capabilities=session_caps)
         return json_response(
             payload,
             extra_headers={"Set-Cookie": _admin_session_cookie(env, payload["nodeName"])
@@ -9137,6 +10312,10 @@ async def accounts_handler(env, request):
         return await _account_link_grant(env, request)
     if url.path == "/api/accounts/users" and method == "GET":
         return await _account_users_directory(env, request)
+    contributions_match = ACCOUNT_CONTRIBUTIONS_RE.match(url.path)
+    if contributions_match and method == "GET":
+        return await _contribution_profile_api(
+            env, request, contributions_match.group(1))
     follow_match = ACCOUNT_FOLLOW_RE.match(url.path)
     if follow_match and method in ("POST", "DELETE"):
         return await _account_follow(env, request, follow_match.group(1), method)
