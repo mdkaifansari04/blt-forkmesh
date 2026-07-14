@@ -344,6 +344,7 @@ QString MainWindow::adminDeleteCanonical(const QString &conversation,
 void MainWindow::confirmAdminDeleteMessage(const QString &messageId)
 {
     if (!m_backend || messageId.isEmpty() || !m_isAdmin ||
+        !hasOwnerSigningCapability(accountOwner()) ||
         !m_profileIdentity.isValid())
         return;
     const int result = QMessageBox::question(

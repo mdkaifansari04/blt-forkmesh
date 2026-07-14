@@ -6422,6 +6422,8 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
     if (idx < 0 || !m_networkAccess)
         return;
     const RepositoryRecord repo = m_repositories.at(idx);
+    if (!hasOwnerSigningCapability(repo.owner))
+        return;
     IssueStore store = issueStoreForCurrentRepo();
     if (!store.canWrite())
         return;
@@ -6530,7 +6532,8 @@ void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
     const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
-    if (repo.owner.isEmpty() || repo.owner != accountOwner())
+    if (repo.owner.isEmpty() || repo.owner != accountOwner() ||
+        !hasOwnerSigningCapability(repo.owner))
         return;
     const QString payeeNode = pr.authorName.trimmed().toLower();
     if (payeeNode.isEmpty())
@@ -7173,6 +7176,8 @@ void MainWindow::drainCommitInboxFor(RepositoryRecord repo, bool interactive)
         if (!probe.canWrite())
             return;
     }
+    if (!hasOwnerSigningCapability(repo.owner))
+        return;
     QUrl url = commitsApiUrl(repo);
     // Auto-polls back off exponentially while the relay is failing (offline /
     // HTTP 429); a manual "Sync inbox" (interactive) always tries immediately.
@@ -7222,6 +7227,8 @@ void MainWindow::applyCommitInboxPayload(const RepositoryRecord &repo,
                                          const QJsonArray &pending,
                                          bool interactive)
 {
+    if (!hasOwnerSigningCapability(repo.owner))
+        return;
     if (pending.isEmpty()) {
         if (interactive)
             QMessageBox::information(this, "Sync inbox",
@@ -7274,6 +7281,8 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
         if (!probe.canWrite())
             return;
     }
+    if (!hasOwnerSigningCapability(repo.owner))
+        return;
 
     QUrl url = pullsApiUrl(repo);
     // Auto-polls back off exponentially while the relay is failing (offline /
@@ -7324,6 +7333,8 @@ void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
                                         const QJsonArray &pending,
                                         bool interactive)
 {
+    if (!hasOwnerSigningCapability(repo.owner))
+        return;
     if (pending.isEmpty()) {
         if (interactive)
             QMessageBox::information(this, "Sync inbox",
@@ -7405,7 +7416,7 @@ void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
 
 void MainWindow::pollOwnedInboxes()
 {
-    if (!m_networkAccess)
+    if (!m_networkAccess || !hasOwnerSigningCapability())
         return;
     // Drain each owned repo's inboxes once. Dedup by owner/name so a preview and
     // its owned copy don't both poll the same inbox.
@@ -7440,6 +7451,8 @@ void MainWindow::pollOwnedInboxes()
 // drain token — the shared auth for inbox GET/DELETE and GET /api/sync.
 QUrlQuery MainWindow::signedInboxQuery(const QString &owner) const
 {
+    if (!hasOwnerSigningCapability(owner))
+        return QUrlQuery();
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray canonical =
         ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
@@ -7454,6 +7467,8 @@ QUrlQuery MainWindow::signedInboxQuery(const QString &owner) const
 // possibly across several repos' host sockets) into a single /api/sync fetch.
 void MainWindow::scheduleRelaySync()
 {
+    if (!hasOwnerSigningCapability())
+        return;
     if (!m_relaySyncDebounce) {
         m_relaySyncDebounce = new QTimer(this);
         m_relaySyncDebounce->setSingleShot(true);
@@ -7475,6 +7490,11 @@ void MainWindow::performRelaySync()
 {
     if (!m_networkAccess)
         return;
+    const QString account = m_accountName.isEmpty()
+        ? QSettings().value(kAccountNameSetting).toString().trimmed()
+        : m_accountName;
+    if (!hasOwnerSigningCapability(account) || !m_profileIdentity.isValid())
+        return;
     if (!m_relaySyncSupported) {
         // Older relay without /api/sync: keep the legacy per-topic polling.
         pollOwnedInboxes();
@@ -7482,11 +7502,6 @@ void MainWindow::performRelaySync()
         return;
     }
     if (m_relaySyncInFlight)
-        return;
-    const QString account = m_accountName.isEmpty()
-        ? QSettings().value(kAccountNameSetting).toString().trimmed()
-        : m_accountName;
-    if (account.isEmpty() || !m_profileIdentity.isValid())
         return;
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     if (!m_pollBackoff.ready(QStringLiteral("relaySync"), nowMs))
@@ -7496,9 +7511,11 @@ void MainWindow::performRelaySync()
     url.setQuery(signedInboxQuery(repoSegment(account, QStringLiteral("owner"))));
     m_relaySyncInFlight = true;
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, account] {
         m_relaySyncInFlight = false;
         reply->deleteLater();
+        if (!hasOwnerSigningCapability(account))
+            return;
         if (reply->error() != QNetworkReply::NoError) {
             const int status =
                 reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();

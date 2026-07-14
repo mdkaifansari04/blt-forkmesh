@@ -264,12 +264,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_stack->addWidget(buildChatPage());
     logStartup(QStringLiteral("chat/app page built"));
     setCentralWidget(m_stack);
-    // Avoid a flash of the login/setup screen on restart: if this machine has
-    // already authenticated a node account, open straight onto the app shell.
-    // The deferred auto-start (below) connects it; if silent auth ultimately
-    // fails it falls back to the setup page.
-    if (!QSettings().value(kAuthedAccountSetting).toString().trimmed().isEmpty())
-        m_stack->setCurrentIndex(1);
     loadRepositories();
     refreshRepositoryList();
     logStartup(QStringLiteral("repositories loaded"));
@@ -397,6 +391,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         m_setupError->setText(m_profileIdentity.errorString());
         m_setupError->show();
     } else {
+        // Avoid a flash of the login/setup screen on restart only when the
+        // persisted capability belongs to both this account and this exact
+        // local identity key. The identity must be loaded before this check.
+        const QSettings startupSettings;
+        if (AccountCapability::persistedMarkerMatches(
+                startupSettings.value(kDesktopCapableAccountSetting).toString(),
+                startupSettings.value(kDesktopCapablePublicKeySetting).toString(),
+                startupSettings.value(kAuthedAccountSetting).toString(),
+                m_profileIdentity.publicKey())) {
+            m_stack->setCurrentIndex(1);
+        }
         if (m_pubkeyLabel) {
             m_pubkeyLabel->setText("Ed25519 public key: " +
                                    m_profileIdentity.shortPublicKey());

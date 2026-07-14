@@ -6991,6 +6991,8 @@ void MainWindow::saveRepoFediverseSettings(const QString &owner,
 {
     if (owner.isEmpty() || name.isEmpty())
         return;
+    if (!hasOwnerSigningCapability(owner))
+        return;
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
         logSystem("Fediverse: could not load identity to save federation "
                   "settings.");
