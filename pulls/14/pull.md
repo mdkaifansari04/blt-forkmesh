@@ -4,7 +4,7 @@ number: 14
 title: Add native profile contributions API and history schema
 base: main
 head: api-pr/20260714-035346/worker-profile-contributions-api
-status: open
+status: merged
 ts: 1783981690105
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
