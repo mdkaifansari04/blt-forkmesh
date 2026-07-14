@@ -48,6 +48,14 @@ FORKMESH_OWNER="${FORKMESH_OWNER:-}"
 # --reinstall on the command line. Non-interactive by nature, so it assumes the
 # destructive confirmation (the Qt-side dialog is the real gate).
 FORKMESH_REINSTALL="${FORKMESH_REINSTALL:-0}"
+# Restart (adhoc): stop the node's already-running daemon just before the
+# launch step so the freshly (re)built binary cleanly takes over. A plain
+# re-run would otherwise leave the old daemon running the old binary and start a
+# SECOND one beside it. Used by the Hosts panel's "Update from source (all
+# hosts)" action (with FORKMESH_FROM_SOURCE=1) to update the fleet straight from
+# source without publishing a release. Unlike a reinstall it does NOT touch the
+# node's identity key or mirrored data — it only stops+relaunches the process.
+FORKMESH_RESTART="${FORKMESH_RESTART:-0}"
 # Link code for attaching this fresh node to the installing user's account
 # (adhoc #53). A headless launch mints one (or honours a pre-set 6-digit value),
 # prints it as "FORKMESH LINK CODE: NNNNNN", and hands it to the daemon, which
@@ -1232,6 +1240,15 @@ launch_forkmesh() {
 
 CURRENT_STEP="launch"
 LOG_PATH="${XDG_DATA_HOME:-$HOME/.local/share}/forkmesh/node.log"
+# Update-in-place restart (adhoc): the binary/build output has just been
+# refreshed, so stop the daemon that is still running the OLD build before we
+# relaunch — otherwise launch_forkmesh starts a second daemon alongside the
+# stale one. Only the process is stopped; the node's identity key and mirrored
+# data are left in place (this is not a reinstall). Skipped when nothing is
+# going to be launched anyway.
+if [ "$FORKMESH_RESTART" = "1" ] && [ "${FORKMESH_NO_LAUNCH:-0}" != "1" ]; then
+  stop_forkmesh_daemons "restart before relaunch"
+fi
 if [ "${FORKMESH_NO_LAUNCH:-0}" = "1" ]; then
   say "Done. Launch it with:  forkmesh"
   say "  On a server with no display, forkmesh opens an interactive CLI."
