@@ -2421,6 +2421,10 @@ const QString kClaudeCreditTsSetting = QStringLiteral("agents/claudeCreditTs");
 // so the agent sessions screen can count down the time left in each window.
 const QString kCodexLimit5hStartSetting = QStringLiteral("agents/codexLimit5hStart");
 const QString kCodexLimitWeekStartSetting = QStringLiteral("agents/codexLimitWeekStart");
+const QString kCodexUsage5hPctSetting = QStringLiteral("agents/codexUsage5hPct");
+const QString kCodexUsageWeekPctSetting = QStringLiteral("agents/codexUsageWeekPct");
+const QString kCodexUsage5hResetSetting = QStringLiteral("agents/codexUsage5hReset");
+const QString kCodexUsageWeekResetSetting = QStringLiteral("agents/codexUsageWeekReset");
 const QString kClaudeLimit5hStartSetting = QStringLiteral("agents/claudeLimit5hStart");
 const QString kClaudeLimitWeekStartSetting = QStringLiteral("agents/claudeLimitWeekStart");
 // Last-seen utilisation (0..100) of each Claude Code rolling window, cached so
@@ -2487,9 +2491,17 @@ const QString kClaudeCodeModelSetting = QStringLiteral("agents/claudeCodeModel")
 // startup so a model combo built before this session's first live fetch
 // completes still lists the real models instead of just "Auto".
 const QString kClaudeModelsCacheSetting = QStringLiteral("agents/claudeModelsCache");
+// App-server model/list cache. The Codex catalog includes display names,
+// supported reasoning efforts, modalities, and the current default; keep the
+// raw model objects so pickers can update without shipping a stale hard-coded
+// list or starting a CLI process merely to open a menu.
+const QString kCodexModelsCacheSetting = QStringLiteral("agents/codexModelsCache");
 // Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
 // permission prompts). Read when a transcript session launches.
 const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
+// Exact composer mode shared by CLI-backed agents. The older bool above remains
+// for settings migration and code paths that only distinguish unattended runs.
+const QString kAgentModeSetting = QStringLiteral("agents/cliPermissionMode");
 // The composer mode-selector label that runs the agent unattended. Only this
 // one skips the CLI's permission prompts today; the other labels ("Ask before
 // edits" / "Edit automatically" / "Plan mode") all mean "don't skip" until the
@@ -2822,15 +2834,18 @@ inline void populateClaudeModelCombo(QComboBox *combo)
 inline QString codexChatGptModelId(const QString &model)
 {
     const QString trimmed = model.trimmed();
-    if (trimmed.isEmpty() || trimmed == QLatin1String("gpt-5.5") ||
-        trimmed == QLatin1String("gpt-5.5-codex"))
+    if (trimmed.isEmpty())
+        return QStringLiteral("gpt-5.5");
+    if (trimmed == QLatin1String("gpt-5.5-codex"))
         return QStringLiteral("gpt-5.5");
     if (trimmed == QLatin1String("gpt-5.4"))
         return QStringLiteral("gpt-5.4");
     if (trimmed == QLatin1String("gpt-5.4-mini") ||
         trimmed == QLatin1String("gpt-5.4-Mini"))
         return QStringLiteral("gpt-5.4-mini");
-    return QStringLiteral("gpt-5.5");
+    // model/list is authoritative and evolves independently of ForkMesh.
+    // Preserve catalog model ids introduced after this binary was released.
+    return trimmed;
 }
 
 inline void populateCodexModelCombo(QComboBox *combo)
@@ -2841,10 +2856,51 @@ inline void populateCodexModelCombo(QComboBox *combo)
     combo->setEditable(false);
     combo->setInsertPolicy(QComboBox::NoInsert);
     combo->setProperty("allowAutoModel", false);
-    combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
-    combo->addItem(QStringLiteral("GPT-5.4"), QStringLiteral("gpt-5.4"));
-    combo->addItem(QStringLiteral("GPT-5.4-Mini"),
-                   QStringLiteral("gpt-5.4-mini"));
+    const QJsonArray live = QJsonDocument::fromJson(
+                                QSettings().value(kCodexModelsCacheSetting).toByteArray())
+                                .array();
+    for (const QJsonValue &value : live) {
+        const QJsonObject model = value.toObject();
+        if (model.value(QStringLiteral("hidden")).toBool())
+            continue;
+        QString id = model.value(QStringLiteral("model")).toString().trimmed();
+        if (id.isEmpty())
+            id = model.value(QStringLiteral("id")).toString().trimmed();
+        if (!id.isEmpty())
+            combo->addItem(model.value(QStringLiteral("displayName")).toString(id), id);
+    }
+    if (combo->count() == 0) {
+        combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
+        combo->addItem(QStringLiteral("GPT-5.4"), QStringLiteral("gpt-5.4"));
+        combo->addItem(QStringLiteral("GPT-5.4-Mini"),
+                       QStringLiteral("gpt-5.4-mini"));
+    }
+}
+
+inline void mergeLiveCodexModels(QComboBox *combo, const QJsonArray &models)
+{
+    if (!combo || models.isEmpty())
+        return;
+    QSignalBlocker blocker(combo);
+    const QVariant selected = combo->currentData();
+    combo->clear();
+    QString defaultId;
+    for (const QJsonValue &value : models) {
+        const QJsonObject model = value.toObject();
+        if (model.value(QStringLiteral("hidden")).toBool())
+            continue;
+        QString id = model.value(QStringLiteral("model")).toString().trimmed();
+        if (id.isEmpty())
+            id = model.value(QStringLiteral("id")).toString().trimmed();
+        if (!id.isEmpty()) {
+            combo->addItem(model.value(QStringLiteral("displayName")).toString(id), id);
+            if (model.value(QStringLiteral("isDefault")).toBool())
+                defaultId = id;
+        }
+    }
+    const int restored = combo->findData(selected);
+    const int fallback = combo->findData(defaultId);
+    combo->setCurrentIndex(restored >= 0 ? restored : qMax(0, fallback));
 }
 
 inline QString selectedModelComboValue(QComboBox *combo)
@@ -2925,10 +2981,7 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
         combo->addItem(QStringLiteral("Haiku 4.5"), QStringLiteral("claude-haiku-4-5"));
         combo->addItem(QStringLiteral("Fable 5"), QStringLiteral("claude-fable-5"));
     } else if (agentIsCodexProvider(provider)) {
-        combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
-        combo->addItem(QStringLiteral("GPT-5.4"), QStringLiteral("gpt-5.4"));
-        combo->addItem(QStringLiteral("GPT-5.4-Mini"),
-                       QStringLiteral("gpt-5.4-mini"));
+        populateCodexModelCombo(combo);
     } else if (agentUsesOpenAiKey(provider)) {
         combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
         combo->addItem(QStringLiteral("GPT-5.5 Codex"),

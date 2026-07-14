@@ -152,6 +152,8 @@ set(FORKMESH_APP_SOURCES
     src/ClaudeIdeBridge.cpp
     src/ClaudeStreamSession.h
     src/ClaudeStreamSession.cpp
+    src/CodexAppServerSession.h
+    src/CodexAppServerSession.cpp
     src/ClaudeTranscriptView.h
     src/ClaudeTranscriptView.cpp
     src/ClaudeSessionScan.h
@@ -235,6 +237,13 @@ qt_wrap_cpp(FORKMESH_MOC_SOURCES
     src/TerminalWidget.h
     TARGET forkmesh
 )
+# CodexAppServerSession is compiled as a regular moc unit rather than included
+# by the checked-in forkmesh_autogen.cpp, keeping this transport self-contained.
+qt_wrap_cpp(FORKMESH_CODEX_MOC_SOURCES
+    src/CodexAppServerSession.h
+    TARGET forkmesh
+)
+target_sources(forkmesh PRIVATE ${FORKMESH_CODEX_MOC_SOURCES})
 # The generated units are #included by forkmesh_autogen.cpp, so keep them out of
 # the object list (HEADER_FILE_ONLY) and make the unity file depend on them so
 # they are regenerated whenever a header changes.
@@ -271,6 +280,7 @@ set_source_files_properties(
     src/ChatBackend.h
     src/ClaudeIdeBridge.h
     src/ClaudeStreamSession.h
+    src/CodexAppServerSession.h
     src/ClaudeTranscriptView.h
     src/HeadlessConsole.h
     src/KebabHeaderView.h
@@ -399,6 +409,17 @@ if(FORKMESH_BUILD_TESTS)
         set_target_properties(forkmesh-ide-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
 
+    # Focused Codex app-server JSONL transport and normalization tests.
+    qt_add_executable(forkmesh-codex-tests
+        tests/test_codex_app_server.cpp
+        src/CodexAppServerSession.h
+        src/CodexAppServerSession.cpp
+    )
+    target_link_libraries(forkmesh-codex-tests PRIVATE Qt6::Core)
+    if(APPLE)
+        set_target_properties(forkmesh-codex-tests PROPERTIES MACOSX_BUNDLE FALSE)
+    endif()
+
     # Nightly end-to-end mesh-loop test (issue #352): drives the real client
     # tunnel/host + signed-issue code against an in-process relay stub through
     # the full publish -> browse -> clone -> issue -> agent PR -> merge loop.
@@ -505,7 +526,8 @@ if(FORKMESH_BUILD_TESTS)
     # explicitly, and the release/deploy builds configure with
     # FORKMESH_BUILD_TESTS=OFF anyway.
     set_target_properties(
-        forkmesh-tests forkmesh-ide-tests forkmesh-e2e-stub-agent forkmesh-e2e
+        forkmesh-tests forkmesh-ide-tests forkmesh-codex-tests
+        forkmesh-e2e-stub-agent forkmesh-e2e
         forkmesh-window-tests forkmesh-perf-tests
         PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
@@ -516,6 +538,7 @@ if(FORKMESH_BUILD_TESTS)
     enable_testing()
     add_test(NAME forkmesh-tests COMMAND forkmesh-tests)
     add_test(NAME forkmesh-ide-tests COMMAND forkmesh-ide-tests)
+    add_test(NAME forkmesh-codex-tests COMMAND forkmesh-codex-tests)
     add_test(NAME forkmesh-window-tests COMMAND forkmesh-window-tests)
     add_test(NAME forkmesh-perf-tests COMMAND forkmesh-perf-tests)
     add_test(NAME forkmesh-e2e COMMAND forkmesh-e2e)
@@ -528,6 +551,7 @@ if(FORKMESH_BUILD_TESTS)
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         USES_TERMINAL)
-    add_dependencies(check forkmesh-tests forkmesh-ide-tests forkmesh-window-tests
-        forkmesh-perf-tests forkmesh-e2e forkmesh-e2e-stub-agent)
+    add_dependencies(check forkmesh-tests forkmesh-ide-tests forkmesh-codex-tests
+        forkmesh-window-tests forkmesh-perf-tests forkmesh-e2e
+        forkmesh-e2e-stub-agent)
 endif()

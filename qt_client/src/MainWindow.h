@@ -72,6 +72,7 @@ class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
 class ClaudeStreamSession;
+class CodexAppServerSession;
 class StallWatchdog;
 class ClaudeTranscriptView;
 class RepoHost;
@@ -1530,10 +1531,10 @@ private:
     // built/switched so it reflects the last live fetch; only the hover-driven
     // refreshClaudeModelCombo() actually re-fetches.
     void applyLiveClaudeModelsToCombos();
-    // Codex currently exposes ForkMesh's locally tracked rolling-window
-    // remaining time rather than a live provider utilization API. Keep the
-    // top-bar Codex meter in sync with the Agents-page usage-limit countdown.
+    // Keep the top-bar Codex meter in sync with live app-server rate-limit
+    // updates, falling back to ForkMesh's locally tracked rolling windows.
     void refreshCodexUsageRemaining();
+    void applyCodexRateLimits(const QJsonObject &rateLimits);
     // Push one rolling-window utilisation figure (0..100) into every place that
     // shows it: the per-session usage bar, the top-bar mini chart and the
     // persisted cache. `weekly` picks the window.
@@ -4343,10 +4344,10 @@ private:
     // network write when the sessions payload hasn't changed (idle nodes used
     // to re-upload an identical snapshot every 30s).
     QHash<QString, QByteArray> m_lastAgentPushPayload;
-    // Each running Claude Code session has its own worktree + stream + buffered
-    // events, so their output never leaks across sessions; the transcript view is
-    // repainted from the selected session's buffer.
+    // Each running CLI session has its own worktree, transport, and buffered
+    // events, so output never leaks across providers or sessions.
     QHash<int, ClaudeStreamSession *> m_streamSessions;
+    QHash<int, CodexAppServerSession *> m_codexStreams;
     QHash<int, QList<QJsonObject>> m_streamEvents;
     // Which stream session's transcript is currently built into m_agentTranscript,
     // and how many events were rendered. showAgentSession() is hit on every
@@ -4427,9 +4428,9 @@ private:
     // customPrompt, when non-empty, is used as the agent's task verbatim (the
     // ad-hoc "start a new agent" composer, issue #273) instead of the prompt
     // derived from `issue`.
-    void startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
-                                   const QString &repoPath,
-                                   const QString &customPrompt = QString());
+    void startCliTranscript(AgentSession &session, const Issue &issue,
+                            const QString &repoPath,
+                            const QString &customPrompt = QString());
     // Auto model mode (adhoc #91): resolve the "auto" sentinel to a concrete
     // model before launching the CLI. A routed choice recorded earlier in this
     // session's transcript is reused; otherwise a local heuristic pass runs,
@@ -4451,6 +4452,7 @@ private:
     // session_id. The most recent one identifies the conversation to `--resume`
     // so a stopped agent is picked up with its full context (adhoc #182).
     QString lastClaudeSessionId(int sessionId) const;
+    QString lastCodexThreadId(int sessionId) const;
     void renderTranscriptForSession(int sessionId);
     // Slice the next batch of earlier events off the selected session's
     // already-in-memory buffer (m_streamEvents; loadEvents() reads the whole
