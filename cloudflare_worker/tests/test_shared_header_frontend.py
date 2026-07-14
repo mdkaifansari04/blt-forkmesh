@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Static contracts for the shared simple page header."""
 
+import re
 from pathlib import Path
 
 
@@ -18,6 +19,34 @@ SIMPLE_HEADER_PAGES = (
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _css_declarations(css: str, selector: str) -> dict[str, str]:
+    match = re.search(
+        rf"(?ms)^[ \t]*{re.escape(selector)}[ \t]*\{{(?P<body>[^}}]*)\}}",
+        css,
+    )
+    assert match, f"missing CSS rule for {selector}"
+    return {
+        name: value.strip()
+        for name, value in re.findall(
+            r"(?m)^[ \t]*([\w-]+)\s*:\s*([^;]+);",
+            match.group("body"),
+        )
+    }
+
+
+def _assert_declarations(
+    css: str,
+    selector: str,
+    expected: dict[str, str],
+) -> None:
+    declarations = _css_declarations(css, selector)
+    for name, value in expected.items():
+        assert declarations.get(name) == value, (
+            f"{selector} must set {name}: {value}; "
+            f"found {declarations.get(name)!r}"
+        )
 
 
 def test_shared_simple_header_mounts_on_requested_pages():
@@ -74,6 +103,7 @@ UNIVERSAL_HEADER_PAGES = SIMPLE_HEADER_PAGES + (
     PUBLIC / "forgot-password.html",
     PUBLIC / "reset-password.html",
     PUBLIC / "mirror-payouts.html",
+    PUBLIC / "outreach.html",
     PUBLIC / "security-report.html",
     PUBLIC / "404.html",
     PUBLIC / "docs.html",
@@ -136,6 +166,105 @@ def test_universal_header_organizes_all_pages():
     assert "/api/version" in js
     assert "fm-header-context" in js
     assert 'src="/assets/sol.png"' in js
+
+
+def test_universal_header_uses_private_fixed_palette():
+    css = _read(PUBLIC / "site-header.css")
+
+    _assert_declarations(
+        css,
+        ".forkmesh-simple-header",
+        {
+            "--fm-header-bg": "#090909",
+            "--fm-header-surface": "#141416",
+            "--fm-header-fg": "#f5f5f5",
+            "--fm-header-muted": "#a3a3a3",
+            "--fm-header-border": "#313134",
+            "--fm-header-accent": "#2ea043",
+            "background": "var(--fm-header-bg)",
+            "color": "var(--fm-header-fg)",
+            "border-bottom": "1px solid var(--fm-header-border)",
+        },
+    )
+    for selector in (".fm-header-mobile", ".fm-header-dropdown"):
+        _assert_declarations(
+            css,
+            selector,
+            {
+                "background": "var(--fm-header-surface)",
+                "border": "1px solid var(--fm-header-border)",
+            },
+        )
+    _assert_declarations(
+        css,
+        ".forkmesh-simple-brand",
+        {"color": "var(--fm-header-fg)"},
+    )
+    _assert_declarations(
+        css,
+        ".fm-nav-group-title",
+        {"color": "var(--fm-header-muted)"},
+    )
+    _assert_declarations(
+        css,
+        ".fm-header-account-chip:hover",
+        {"border-color": "var(--fm-header-accent)"},
+    )
+
+
+def test_universal_header_does_not_reference_host_page_palette():
+    css = _read(PUBLIC / "site-header.css")
+    host_tokens = (
+        "--background",
+        "--bg",
+        "--foreground",
+        "--fg",
+        "--card",
+        "--surface2",
+        "--muted",
+        "--muted-foreground",
+        "--border",
+        "--accent",
+    )
+    inherited_references = tuple(
+        token
+        for token in host_tokens
+        if re.search(
+            rf"var\(\s*{re.escape(token)}(?:\s*,|\s*\))",
+            css,
+        )
+    )
+
+    assert not inherited_references, (
+        f"site-header.css still inherits host page tokens: {inherited_references}"
+    )
+
+
+def test_universal_header_uses_canonical_theme_glyphs():
+    js = _read(PUBLIC / "site-header.js")
+
+    assert 'button.textContent = light ? "☾" : "☀";' in js
+    assert '>☀</button>' in js
+
+
+def test_universal_header_signup_is_a_white_rounded_rectangle():
+    css = _read(PUBLIC / "site-header.css")
+    expected = {
+        "background": "#ffffff",
+        "color": "#090909",
+        "border-radius": "0.375rem",
+    }
+
+    _assert_declarations(css, ".fm-header-signup", expected)
+    _assert_declarations(
+        css,
+        ".fm-header-mobile-account .fm-header-signup",
+        {
+            "background": "#ffffff",
+            "color": "#090909",
+            "border-radius": "0.375rem",
+        },
+    )
 
 
 def test_blog_posts_mount_universal_header():
