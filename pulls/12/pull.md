@@ -4,7 +4,7 @@ number: 12
 title: fix: bootstrap release download migration for local D1
 base: main
 head: api-pr/20260714000330/local-migration-bootstrap
-status: open
+status: merged
 ts: 1783967695243
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
