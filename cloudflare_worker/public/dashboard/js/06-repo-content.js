@@ -389,6 +389,30 @@
     };
   }
 
+  // Stand-in row for an issue folder the mirror is counting but whose JSON we
+  // could not read (relay hiccup, unreadable blob). The desktop's
+  // countOpenIssues treats an unreadable blob as open too, so we keep the count
+  // honest and show the row (flagged) instead of silently dropping it.
+  function placeholderIssue(number) {
+    return {
+      number: Number(number),
+      title: `issue #${Number(number)}`,
+      status: "open",
+      author: "unknown",
+      date: "",
+      labels: [],
+      meta: "open · couldn't load from mirror",
+      body: "",
+      wantsAgent: false,
+      milestone: "",
+      progress: 0,
+      startDate: 0,
+      endDate: 0,
+      createdAtMs: 0,
+      loadFailed: true,
+    };
+  }
+
   // Adapt an issue-N.json blob into the { values, body } shape that
   // renderRepoRecordDetail consumes for pulls/discussions front matter, so the
   // issue detail view renders from the same JSON the Issues list already reads.
@@ -1545,10 +1569,27 @@
     const filterBar = `<div class="flex items-center gap-1 border-b border-border px-4 py-2">
       ${["open", "closed", "all"].map((stateName) => `<button type="button" data-dashboard-issue-filter="${stateName}" aria-pressed="${stateName === "open" ? "true" : "false"}" class="inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${stateName === issuesView.filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}">${stateName[0].toUpperCase() + stateName.slice(1)}</button>`).join("")}
     </div>`;
+    // When the mirror is counting issues we couldn't fetch (unreadable blobs)
+    // or is holding more than the 50 we page in, surface the gap with a Retry
+    // button instead of letting the tab quietly disagree with the Mirror nodes
+    // count.
+    const missing = issuesView.missing || [];
+    const truncated = issuesView.truncated || 0;
+    const warnParts = [];
+    if (missing.length) {
+      warnParts.push(`${missing.length} issue${missing.length === 1 ? "" : "s"} (#${missing.slice(0, 12).join(", #")}${missing.length > 12 ? ", ..." : ""}) couldn't be read from the live mirror`);
+    }
+    if (truncated) warnParts.push(`${truncated} older issue${truncated === 1 ? "" : "s"} beyond the first 50 aren't shown`);
+    const warnBar = warnParts.length
+      ? `<div class="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-yellow-500/10 px-4 py-2 text-xs text-foreground">
+          <span class="inline-flex items-center gap-1.5"><i data-lucide="triangle-alert" class="h-3.5 w-3.5 shrink-0 text-yellow-500"></i>${escapeHtml(warnParts.join(" · "))}.</span>
+          <button type="button" data-repo-issues-reload class="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2.5 font-medium text-foreground hover:bg-secondary"><i data-lucide="refresh-cw" class="h-3 w-3"></i>Retry</button>
+        </div>`
+      : "";
     const emptyLabel = issuesView.query
       ? `No issues matching "${escapeHtml(issuesView.query)}".`
       : `No ${issuesView.filter === "all" ? "" : issuesView.filter + " "}issues.`;
-    container.innerHTML = filterBar + (filtered.length
+    container.innerHTML = filterBar + warnBar + (filtered.length
       ? renderRepoRecordList(filtered, config, "issues")
       : `<div class="px-4 py-3 text-sm text-muted-foreground">${emptyLabel}</div>`);
     window.lucide?.createIcons();
@@ -1580,24 +1621,47 @@
           state.issuesView.items = reconcilePendingIssues(repo, []);
           state.issuesView.filter = "open";
           state.issuesView.query = "";
+          state.issuesView.missing = [];
+          state.issuesView.truncated = 0;
           renderRepoIssues();
           return;
         }
         throw error;
       }
-      const dirs = (Array.isArray(tree.entries) ? tree.entries : [])
+      const numbered = (Array.isArray(tree.entries) ? tree.entries : [])
         .filter((entry) => entry.type === "tree" && /^\d+$/.test(String(entry.name || "")))
-        .sort((a, b) => Number(b.name) - Number(a.name))
-        .slice(0, 50);
+        .sort((a, b) => Number(b.name) - Number(a.name));
+      // Cap the page at 50 folders, but remember when the mirror holds more so
+      // the panel can warn instead of silently hiding them.
+      const dirs = numbered.slice(0, 50);
       // One batched request for all of them, not one /blob call per issue.
       const blobs = await fetchRepoBlobs(
         repo, dirs.map((entry) => issueJsonPath(Number(entry.name))));
-      const items = dirs.map((entry) => {
+      const items = [];
+      let missing = [];
+      dirs.forEach((entry) => {
         const number = Number(entry.name);
         const blob = blobs[issueJsonPath(number)];
-        if (!blob) return null;
-        return parseIssueJson(blobText(blob), number);
-      }).filter(Boolean);
+        if (blob) items.push(parseIssueJson(blobText(blob), number));
+        else missing.push(number);
+      });
+      // A batched read can drop entries under relay load; retry just the misses
+      // once so a transient gap doesn't quietly shrink the count vs the Mirror
+      // nodes tab (whose issueCount lists every folder). Anything still
+      // unreadable becomes a flagged placeholder row instead of vanishing.
+      if (missing.length) {
+        const retry = await fetchRepoBlobs(
+          repo, missing.map((number) => issueJsonPath(number))).catch(() => ({}));
+        const stillMissing = [];
+        missing.forEach((number) => {
+          const blob = retry[issueJsonPath(number)];
+          if (blob) items.push(parseIssueJson(blobText(blob), number));
+          else stillMissing.push(number);
+        });
+        missing = stillMissing;
+      }
+      missing.forEach((number) => items.push(placeholderIssue(number)));
+      items.sort((a, b) => Number(b.number) - Number(a.number));
       // Issue #379: fold in the owner's offline submissions (kept locally while
       // their source-of-truth node was down) so they still show up on reload,
       // dropping any the node has since drained - the numbered mirror copy wins.
@@ -1606,6 +1670,8 @@
       state.issuesView.items = merged;
       state.issuesView.filter = "open";
       state.issuesView.query = "";
+      state.issuesView.missing = missing;
+      state.issuesView.truncated = Math.max(0, numbered.length - dirs.length);
       setRepoTabCount("issues", merged.filter((issue) => issue.status !== "closed").length);
       const openIssues = merged.filter((issue) => issue.status !== "closed").length;
       setRepoCollectionCounts("issues", openIssues, merged.length - openIssues);
