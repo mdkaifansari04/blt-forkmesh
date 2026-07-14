@@ -949,69 +949,222 @@ void MainWindow::promptAddRepository()
 
 void MainWindow::createNewRepository()
 {
-    // Ask for a name, then a parent folder, and `git init` a fresh empty repo
-    // there. From there it's mirrored + published exactly like promptAddRepository.
-    bool ok = false;
-    const QString rawName =
-        QInputDialog::getText(this, "New repository", "Repository name:",
-                              QLineEdit::Normal, QString(), &ok)
-            .trimmed();
-    if (!ok || rawName.isEmpty())
-        return;
+    // A single "new repository" screen: name + description + an optional first
+    // prompt + a README choice + where on disk to create it. Everything past the
+    // dialog (git init, seeding, mirror + publish) lives in
+    // provisionNewRepository so it can be exercised without the UI.
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("New repository"));
 
-    // Keep the on-disk folder name in step with the published name: both go
-    // through repoSegment so a slash or odd character can't escape the path.
-    const QString name = repoSegment(rawName, QStringLiteral("repository"));
-    if (repoIndexFor(accountOwner(), name) >= 0) {
-        QMessageBox::warning(
-            this, "New repository",
-            QStringLiteral("You already have a repository named \"%1\".").arg(name));
-        return;
-    }
+    auto *nameEdit = new QLineEdit(&dialog);
+    nameEdit->setPlaceholderText(QStringLiteral("my-project"));
 
-    const QString parent = QFileDialog::getExistingDirectory(
-        this, QStringLiteral("Choose where to create \"%1\"").arg(name),
-        QDir::homePath());
-    if (parent.isEmpty())
-        return; // cancelled
+    auto *descriptionEdit = new QPlainTextEdit(&dialog);
+    descriptionEdit->setPlaceholderText(
+        QStringLiteral("What is this repository about?"));
+    descriptionEdit->setMaximumHeight(72);
 
-    const QString dest = QDir(parent).filePath(name);
-    if (QDir(dest).exists() && !QDir(dest).isEmpty()) {
-        QMessageBox::warning(
-            this, "New repository",
-            QStringLiteral("%1 already exists and is not empty. Choose another "
-                           "name or location.")
-                .arg(dest));
-        return;
-    }
-    if (!QDir().mkpath(dest)) {
-        QMessageBox::warning(this, "New repository",
-                             QStringLiteral("Could not create %1.").arg(dest));
-        return;
-    }
+    auto *promptEdit = new QPlainTextEdit(&dialog);
+    promptEdit->setPlaceholderText(QStringLiteral(
+        "Optional: the first thing you want done here. Filed as issue #1 so an "
+        "agent can pick it up."));
+    promptEdit->setMaximumHeight(96);
+
+    auto *readmeBox =
+        new QCheckBox(QStringLiteral("Add a README on the main branch"), &dialog);
+    readmeBox->setChecked(true);
+
+    // Where the working copy is created. Defaults to the home folder; the folder
+    // the repo lands in is <location>/<name>.
+    auto *locationEdit = new QLineEdit(QDir::homePath(), &dialog);
+    auto *browseButton = new QPushButton(QStringLiteral("Browse\xE2\x80\xA6"), &dialog);
+    browseButton->setCursor(Qt::PointingHandCursor);
+    connect(browseButton, &QPushButton::clicked, &dialog, [&dialog, locationEdit] {
+        const QString picked = QFileDialog::getExistingDirectory(
+            &dialog, QStringLiteral("Choose where to create the repository"),
+            locationEdit->text().isEmpty() ? QDir::homePath()
+                                           : locationEdit->text());
+        if (!picked.isEmpty())
+            locationEdit->setText(picked);
+    });
+    auto *locationRow = new QHBoxLayout;
+    locationRow->setContentsMargins(0, 0, 0, 0);
+    locationRow->addWidget(locationEdit, 1);
+    locationRow->addWidget(browseButton);
+    auto *locationWidget = new QWidget(&dialog);
+    locationWidget->setLayout(locationRow);
+
+    auto *form = new QFormLayout;
+    form->addRow(QStringLiteral("Name"), nameEdit);
+    form->addRow(QStringLiteral("Description"), descriptionEdit);
+    form->addRow(QStringLiteral("First prompt"), promptEdit);
+    form->addRow(QString(), readmeBox);
+    form->addRow(QStringLiteral("Location"), locationWidget);
+
+    auto *buttons =
+        new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                             Qt::Horizontal, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Create"));
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->addLayout(form);
+    layout->addWidget(buttons);
+
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+        const QString rawName = nameEdit->text().trimmed();
+        if (rawName.isEmpty()) {
+            QMessageBox::warning(&dialog, "New repository",
+                                 QStringLiteral("Enter a repository name."));
+            return;
+        }
+        // Keep the on-disk folder name in step with the published name: both go
+        // through repoSegment so a slash or odd character can't escape the path.
+        const QString name = repoSegment(rawName, QStringLiteral("repository"));
+        if (repoIndexFor(accountOwner(), name) >= 0) {
+            QMessageBox::warning(&dialog, "New repository",
+                                 QStringLiteral(
+                                     "You already have a repository named \"%1\".")
+                                     .arg(name));
+            return;
+        }
+        const QString parent = locationEdit->text().trimmed();
+        if (parent.isEmpty()) {
+            QMessageBox::warning(&dialog, "New repository",
+                                 QStringLiteral("Choose where to create it."));
+            return;
+        }
+        const QString dest = QDir(parent).filePath(name);
+        if (QDir(dest).exists() && !QDir(dest).isEmpty()) {
+            QMessageBox::warning(
+                &dialog, "New repository",
+                QStringLiteral("%1 already exists and is not empty. Choose "
+                               "another name or location.")
+                    .arg(dest));
+            return;
+        }
+        QString error;
+        const int index = provisionNewRepository(
+            dest, name, descriptionEdit->toPlainText(), promptEdit->toPlainText(),
+            readmeBox->isChecked(), &error);
+        if (index < 0) {
+            QMessageBox::warning(&dialog, "New repository",
+                                 error.isEmpty()
+                                     ? QStringLiteral("Could not create the "
+                                                      "repository.")
+                                     : error);
+            return;
+        }
+        dialog.accept();
+    });
+
+    nameEdit->setFocus();
+    dialog.exec();
+}
+
+int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
+                                       const QString &description,
+                                       const QString &firstPrompt, bool addReadme,
+                                       QString *error)
+{
+    const auto fail = [&](const QString &message) -> int {
+        if (error)
+            *error = message;
+        return -1;
+    };
+
+    if (!QDir(dest).exists() && !QDir().mkpath(dest))
+        return fail(QStringLiteral("Could not create %1.").arg(dest));
+
+    // A small git runner scoped to the new working copy. All the seeding here is
+    // local; the mirror + catalog record come later via publish.
+    const auto runGit = [&dest](const QStringList &args, QString *errOut) -> bool {
+        QProcess git;
+        git.setWorkingDirectory(dest);
+        git.start(QStringLiteral("git"), args);
+        git.waitForFinished(30000);
+        if (git.exitStatus() != QProcess::NormalExit || git.exitCode() != 0) {
+            if (errOut)
+                *errOut =
+                    QString::fromUtf8(git.readAllStandardError()).trimmed().right(200);
+            return false;
+        }
+        return true;
+    };
 
     // `git init -b main` gives the new repo a conventional default branch so the
     // first push lands on refs/heads/main like everywhere else.
-    QProcess git;
-    git.setWorkingDirectory(dest);
-    git.start(QStringLiteral("git"),
-              {QStringLiteral("init"), QStringLiteral("-b"), QStringLiteral("main")});
-    git.waitForFinished(30000);
-    if (git.exitStatus() != QProcess::NormalExit || git.exitCode() != 0) {
-        const QString err =
-            QString::fromUtf8(git.readAllStandardError()).trimmed();
-        QMessageBox::warning(
-            this, "New repository",
-            QStringLiteral("git init failed: %1").arg(err.right(200)));
-        logSystem("New repository: git init failed in " + dest + ": " +
-                  err.right(300));
-        return;
+    QString gitErr;
+    if (!runGit({QStringLiteral("init"), QStringLiteral("-b"),
+                 QStringLiteral("main")},
+                &gitErr)) {
+        logSystem("New repository: git init failed in " + dest + ": " + gitErr);
+        return fail(QStringLiteral("git init failed: %1").arg(gitErr));
+    }
+
+    const QString about = description.trimmed();
+    const QDir repoDir(dest);
+    bool seeded = false;
+
+    // README on main: a title + the description so the repo is never a blank
+    // page on the network.
+    if (addReadme) {
+        QString body = QStringLiteral("# %1\n").arg(name);
+        if (!about.isEmpty())
+            body += QStringLiteral("\n%1\n").arg(about);
+        QSaveFile readme(repoDir.filePath(QStringLiteral("README.md")));
+        if (readme.open(QIODevice::WriteOnly)) {
+            const QByteArray data = body.toUtf8();
+            if (readme.write(data) == data.size() && readme.commit())
+                seeded = true;
+        }
+        if (!seeded)
+            logSystem("New repository: could not write README.md in " + dest);
+    }
+
+    // Description lives in .forkmesh/info.json, the same canonical spot the
+    // About editor writes, so the browse UI and catalog pick it up unchanged.
+    if (!about.isEmpty() && repoDir.mkpath(QStringLiteral(".forkmesh"))) {
+        QJsonObject info;
+        info.insert(QStringLiteral("about"), about);
+        const QByteArray data =
+            QJsonDocument(info).toJson(QJsonDocument::Indented);
+        QSaveFile file(repoDir.filePath(kRepoInfoPath));
+        if (file.open(QIODevice::WriteOnly) && file.write(data) == data.size() &&
+            file.commit())
+            seeded = true;
+        else
+            logSystem("New repository: could not write " + QString(kRepoInfoPath) +
+                      " in " + dest);
+    }
+
+    // Initial commit on main. Prefer the user's configured git identity; fall
+    // back to an account-scoped identity so a fresh box with no global config
+    // still gets a valid first commit.
+    if (seeded) {
+        if (!runGit({QStringLiteral("add"), QStringLiteral("-A")}, &gitErr))
+            logSystem("New repository: git add failed in " + dest + ": " + gitErr);
+        const QStringList commitArgs{QStringLiteral("commit"), QStringLiteral("-m"),
+                                     QStringLiteral("Initial commit")};
+        if (!runGit(commitArgs, &gitErr)) {
+            const QString who = accountOwner().isEmpty() ? QStringLiteral("forkmesh")
+                                                         : accountOwner();
+            const QStringList fallback{
+                QStringLiteral("-c"),
+                QStringLiteral("user.name=%1").arg(who),
+                QStringLiteral("-c"),
+                QStringLiteral("user.email=%1@forkmesh.local").arg(who)};
+            if (!runGit(fallback + commitArgs, &gitErr))
+                logSystem("New repository: initial commit failed in " + dest +
+                          ": " + gitErr);
+        }
     }
 
     RepositoryRecord repo;
     repo.localPath = dest;
     repo.name = name;
     repo.owner = accountOwner();
+    repo.description = about;
     repo.solanaAddress = savedSolanaAddress();
     repo.publishToNetwork = true;
     repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
@@ -1020,15 +1173,31 @@ void MainWindow::createNewRepository()
                       repoSegment(repo.name, QStringLiteral("repository")) + ".git";
 
     m_repositories.append(repo);
+    const int index = m_repositories.size() - 1;
     saveRepositories();
     refreshRepositoryList();
     if (m_backend)
         m_backend->addChannel(repositoryChannel(repo));
-    const int index = m_repositories.size() - 1;
+
+    // The first prompt becomes issue #1 so the repo lands with a task an agent
+    // can immediately act on. Its own commit rides along in the same mirror.
+    const QString prompt = firstPrompt.trimmed();
+    if (!prompt.isEmpty()) {
+        const QString title = prompt.section('\n', 0, 0).trimmed().left(120);
+        const QString body = prompt == title ? QString() : prompt;
+        QString issueErr;
+        IssueStore store(repo.localPath, repo.mirrorPath, &m_profileIdentity,
+                         chatDisplayName());
+        if (store.createIssue(title, body, {}, QString(), 0, {}, {}, &issueErr) < 0)
+            logSystem("New repository: could not file first-prompt issue for " +
+                      repo.owner + "/" + repo.name + ": " + issueErr);
+    }
+
     publishRepositoryAfterMirrorRefresh(index, false);
     logSystem("New repository: created " + repo.owner + "/" + repo.name + " in " +
               dest + ".");
     flashMessage(QStringLiteral("Created %1/%2.").arg(repo.owner, repo.name));
+    return index;
 }
 
 QStringList MainWindow::importAuthGitArgs(const QString &url) const
