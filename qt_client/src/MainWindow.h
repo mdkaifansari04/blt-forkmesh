@@ -965,24 +965,53 @@ private:
     void viewHostLogsForSelection(int row);
     void runHostLogSession(const QString &ip, const QString &user,
                           const QString &pass, const QString &node);
-    // Direct-upload install (adhoc #257) against every saved host, one at a
-    // time: loads each row into the form and runs runHostInstall(true, ...),
-    // chaining to the next host once the previous one finishes.
+    // Fleet-wide deploys (adhoc): each runs against EVERY saved host in
+    // parallel, streaming into its own pane of the split live-output grid — a
+    // direct-upload binary install (#257), an uninstall+reinstall (#258), or an
+    // update straight from source. Thin wrappers over runHostDeployAllParallel.
     void runHostInstallAllFromBinary();
-    void installNextHostFromBinary(QList<int> remainingRows);
-    // Uninstall + reinstall from binary (adhoc #258) against every saved host,
-    // one at a time: each host wipes its existing install + data and then
-    // installs a fresh copy from this app's binary, re-minting a link code so it
-    // re-attaches to this account.
     void runHostReinstallAllFromBinary();
-    void reinstallNextHostFromBinary(QList<int> remainingRows);
-    // Update from latest source (adhoc) against every saved host, one at a time:
-    // each host clones/pulls the current source, rebuilds and restarts its
-    // daemon — no release publish required. Data (identity key, mirrors, chat)
-    // is preserved; only the binary is rebuilt.
     void runHostUpdateAllFromSource();
-    void updateNextHostFromSource(QList<int> remainingRows);
     void appendHostInstallLog(const QString &text);
+    // Parallel fleet deploy (adhoc): deploy against EVERY saved host at once,
+    // each host streaming into its own pane of a split live-output grid, so the
+    // whole fleet updates simultaneously and its live output is visible side by
+    // side. mode selects install-from-binary, uninstall+reinstall or
+    // update-from-source; the runHost*All* drivers above are thin wrappers that
+    // confirm and then call this.
+    enum class FleetDeployMode { InstallBinary, Reinstall, UpdateSource };
+    // One host's slice of a parallel fleet deploy: its own SSH process, output
+    // pane and its own copy of the ANSI-render + link-detect state that the
+    // single-log path keeps in the m_hostInstall* members.
+    struct HostDeploySession {
+        QString node;
+        QString ip;
+        QString user;
+        QString pass;
+        QProcess *proc = nullptr;
+        QPlainTextEdit *log = nullptr;
+        QLabel *header = nullptr;
+        QString ansiCarry;
+        int ansiFg = -1;
+        bool ansiBold = false;
+        QString linkTail;
+        bool linkPrompted = false;
+        bool finished = false;
+    };
+    void runHostDeployAllParallel(FleetDeployMode mode);
+    void startHostDeploySession(HostDeploySession *session, bool uploadBinary,
+                                bool reinstall, bool fromSource);
+    void appendHostDeployLog(HostDeploySession *session, const QString &text);
+    void onHostDeploySessionFinished(HostDeploySession *session, bool ok);
+    // Shared SSH command builder used by both the single-host runHostInstall and
+    // the parallel fleet path. Fills sshArgs/remoteCmd (and, for a binary upload,
+    // the bytes to stream on stdin); returns false with a message in *errorOut on
+    // failure (unresolved installer URL, unreadable local binary).
+    bool buildHostInstallCommand(const QString &ip, const QString &user,
+                                 const QString &node, bool uploadBinary,
+                                 bool reinstall, bool fromSource,
+                                 QStringList *sshArgs, QString *remoteCmd,
+                                 QByteArray *uploadBytes, QString *errorOut);
     // Save the host's server info (name/IP/user/password) from the form without running
     // the installer, so the details are remembered up front and the installer
     // can be run against the saved host later.
@@ -3155,6 +3184,19 @@ private:
     // per-run guard so the link popup opens once.
     QString m_hostInstallLinkTail;
     bool m_hostLinkPrompted = false;
+
+    // Parallel fleet deploy (adhoc): when an "all hosts" action runs, every
+    // saved host is deployed simultaneously, each streaming into its OWN pane in
+    // a split live-output grid instead of taking turns in the single log above.
+    // HostDeploySession (defined with the fleet-deploy methods above) carries
+    // each host's process, output pane and per-host render/link state.
+    QLabel *m_hostDeployLabel = nullptr;      // "Live output — per host" header
+    QWidget *m_hostDeployPanel = nullptr;     // container holding the per-host panes
+    QGridLayout *m_hostDeployGrid = nullptr;  // lays the panes out roughly square
+    QList<HostDeploySession *> m_hostDeploySessions;
+    int m_hostDeployRemaining = 0;            // sessions still running
+    int m_hostDeployFailed = 0;               // sessions that finished with an error
+
     // Relays section: live list of configured relays with status / latency / version.
     QTableWidget *m_relaysTable = nullptr;
     QLabel *m_relaysStatus = nullptr;       // "Probing N relays…" / last-refreshed line

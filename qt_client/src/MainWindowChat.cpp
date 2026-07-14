@@ -6719,6 +6719,25 @@ QWidget *MainWindow::buildHostsSection()
         "The SSH session and installer output will stream here\xE2\x80\xA6"));
     bodyCol->addWidget(m_hostInstallLog);
 
+    // --- Parallel fleet deploy: split live output --------------------------
+    // When an "all hosts" action runs, every saved host deploys at once and
+    // streams into its own pane here (arranged in a roughly square grid), so the
+    // whole fleet's live output is visible side by side instead of one host at a
+    // time in the single log above. Hidden until such a run starts.
+    m_hostDeployLabel = new QLabel(QStringLiteral("Live output — per host"));
+    QFont dlf = m_hostDeployLabel->font();
+    dlf.setBold(true);
+    m_hostDeployLabel->setFont(dlf);
+    m_hostDeployLabel->setVisible(false);
+    bodyCol->addWidget(m_hostDeployLabel);
+
+    m_hostDeployPanel = new QWidget;
+    m_hostDeployGrid = new QGridLayout(m_hostDeployPanel);
+    m_hostDeployGrid->setContentsMargins(0, 0, 0, 0);
+    m_hostDeployGrid->setSpacing(10);
+    m_hostDeployPanel->setVisible(false);
+    bodyCol->addWidget(m_hostDeployPanel);
+
     // --- Provisioned hosts list -------------------------------------------
     auto *hostsLabel = new QLabel(QStringLiteral("Hosts"));
     QFont hlf = hostsLabel->font();
@@ -9151,32 +9170,33 @@ int installLogXterm256(int n)
     const int v = (n - 232) * 10 + 8;
     return (v << 16) | (v << 8) | v;
 }
-} // namespace
 
-void MainWindow::appendHostInstallLog(const QString &text)
+// Render one chunk of installer output into `log`: the installer streams
+// ANSI/VT escape sequences — SGR colour codes plus a box-drawing banner — so
+// paint the SGR colours and drop every other control sequence, otherwise the
+// raw codes show up as literal "[32m"/"[0m" noise (adhoc #6). A sequence can
+// straddle two read chunks, so an unfinished tail is carried over in `carry`
+// and the running SGR style lives in `fg` (0xRRGGBB, -1 = theme default) and
+// `bold`. Factored out of appendHostInstallLog so the single live log and every
+// per-host pane of a parallel fleet deploy share one renderer.
+void appendAnsiLog(QPlainTextEdit *log, QString &carry, int &fg, bool &bold,
+                   bool dark, const QString &text)
 {
-    if (!m_hostInstallLog || text.isEmpty())
+    if (!log || text.isEmpty())
         return;
 
-    // The installer streams ANSI/VT escape sequences — SGR colour codes plus a
-    // box-drawing banner. Render the SGR colours into the log and drop every
-    // other control sequence; otherwise the raw codes show up as literal
-    // "[32m"/"[0m" noise (adhoc #6). A sequence can straddle two read chunks, so
-    // an unfinished tail is carried over to the next call.
-    QString data = m_hostInstallLogCarry + text;
-    m_hostInstallLogCarry.clear();
-    const bool dark = currentThemeIsDark();
+    QString data = carry + text;
+    carry.clear();
 
-    QTextCursor cursor(m_hostInstallLog->document());
+    QTextCursor cursor(log->document());
     cursor.movePosition(QTextCursor::End);
 
-    auto currentFormat = [this]() {
+    auto currentFormat = [&fg, &bold]() {
         QTextCharFormat fmt;
-        if (m_hostInstallLogFg >= 0)
-            fmt.setForeground(QColor((m_hostInstallLogFg >> 16) & 0xFF,
-                                     (m_hostInstallLogFg >> 8) & 0xFF,
-                                     m_hostInstallLogFg & 0xFF));
-        if (m_hostInstallLogBold)
+        if (fg >= 0)
+            fmt.setForeground(
+                QColor((fg >> 16) & 0xFF, (fg >> 8) & 0xFF, fg & 0xFF));
+        if (bold)
             fmt.setFontWeight(QFont::Bold);
         return fmt;
     };
@@ -9192,7 +9212,7 @@ void MainWindow::appendHostInstallLog(const QString &text)
     // Apply one SGR sequence's parameters (the text between ESC[ and 'm') to the
     // running style. Only the foreground colour and bold weight are rendered;
     // background and other attributes are parsed-and-ignored so they don't leak.
-    auto applySgr = [this, dark](const QString &paramStr) {
+    auto applySgr = [&fg, &bold, dark](const QString &paramStr) {
         const QStringList parts =
             paramStr.isEmpty() ? QStringList{QStringLiteral("0")}
                                : paramStr.split(QLatin1Char(';'));
@@ -9202,29 +9222,29 @@ void MainWindow::appendHostInstallLog(const QString &text)
             if (!ok)
                 continue;
             if (code == 0) {
-                m_hostInstallLogFg = -1;
-                m_hostInstallLogBold = false;
+                fg = -1;
+                bold = false;
             } else if (code == 1) {
-                m_hostInstallLogBold = true;
+                bold = true;
             } else if (code == 22) {
-                m_hostInstallLogBold = false;
+                bold = false;
             } else if (code == 39) {
-                m_hostInstallLogFg = -1;
+                fg = -1;
             } else if (code >= 30 && code <= 37) {
-                m_hostInstallLogFg = installLogAnsiFg(code - 30, dark);
+                fg = installLogAnsiFg(code - 30, dark);
             } else if (code >= 90 && code <= 97) {
-                m_hostInstallLogFg = installLogAnsiFg(8 + code - 90, dark);
+                fg = installLogAnsiFg(8 + code - 90, dark);
             } else if (code == 38 && k + 2 < parts.size() &&
                        parts.at(k + 1).toInt() == 5) {
                 const int idx = parts.at(k + 2).toInt();
-                m_hostInstallLogFg = idx < 16 ? installLogAnsiFg(idx, dark)
-                                              : installLogXterm256(idx);
+                fg = idx < 16 ? installLogAnsiFg(idx, dark)
+                              : installLogXterm256(idx);
                 k += 2;
             } else if (code == 38 && k + 4 < parts.size() &&
                        parts.at(k + 1).toInt() == 2) {
-                m_hostInstallLogFg = ((parts.at(k + 2).toInt() & 0xFF) << 16) |
-                                     ((parts.at(k + 3).toInt() & 0xFF) << 8) |
-                                     (parts.at(k + 4).toInt() & 0xFF);
+                fg = ((parts.at(k + 2).toInt() & 0xFF) << 16) |
+                     ((parts.at(k + 3).toInt() & 0xFF) << 8) |
+                     (parts.at(k + 4).toInt() & 0xFF);
                 k += 4;
             }
         }
@@ -9239,7 +9259,7 @@ void MainWindow::appendHostInstallLog(const QString &text)
             continue;
         }
         if (i + 1 >= len) { // dangling ESC: wait for the rest
-            m_hostInstallLogCarry = data.mid(i);
+            carry = data.mid(i);
             break;
         }
         const QChar kind = data.at(i + 1);
@@ -9252,7 +9272,7 @@ void MainWindow::appendHostInstallLog(const QString &text)
                 ++j;
             }
             if (j >= len) { // sequence not finished yet
-                m_hostInstallLogCarry = data.mid(i);
+                carry = data.mid(i);
                 break;
             }
             if (data.at(j) == QLatin1Char('m')) { // SGR: change the style
@@ -9279,7 +9299,7 @@ void MainWindow::appendHostInstallLog(const QString &text)
                 ++j;
             }
             if (!done) {
-                m_hostInstallLogCarry = data.mid(i);
+                carry = data.mid(i);
                 break;
             }
             i = j;
@@ -9291,13 +9311,29 @@ void MainWindow::appendHostInstallLog(const QString &text)
 
     // Guard against a never-terminating sequence pinning real output in the
     // carry buffer forever: past a sane length, give up and show it literally.
-    if (m_hostInstallLogCarry.size() > 256) {
-        cursor.insertText(m_hostInstallLogCarry, currentFormat());
-        m_hostInstallLogCarry.clear();
+    if (carry.size() > 256) {
+        cursor.insertText(carry, currentFormat());
+        carry.clear();
     }
 
-    m_hostInstallLog->moveCursor(QTextCursor::End);
-    m_hostInstallLog->ensureCursorVisible();
+    log->moveCursor(QTextCursor::End);
+    log->ensureCursorVisible();
+}
+} // namespace
+
+void MainWindow::appendHostInstallLog(const QString &text)
+{
+    appendAnsiLog(m_hostInstallLog, m_hostInstallLogCarry, m_hostInstallLogFg,
+                  m_hostInstallLogBold, currentThemeIsDark(), text);
+}
+
+void MainWindow::appendHostDeployLog(HostDeploySession *session,
+                                     const QString &text)
+{
+    if (!session)
+        return;
+    appendAnsiLog(session->log, session->ansiCarry, session->ansiFg,
+                  session->ansiBold, currentThemeIsDark(), text);
 }
 
 namespace {
@@ -9308,69 +9344,38 @@ namespace {
 const QString kHostUploadMarker = QStringLiteral("__FORKMESH_UPLOAD__");
 } // namespace
 
-void MainWindow::runHostInstall(bool forceUploadBinary,
-                                std::function<void(bool)> onFinished,
-                                bool reinstall, bool fromSource)
+bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
+                                         const QString &node, bool uploadBinary,
+                                         bool reinstall, bool fromSource,
+                                         QStringList *sshArgs, QString *remoteCmd,
+                                         QByteArray *uploadBytes,
+                                         QString *errorOut)
 {
-    if (m_hostInstallProcess &&
-        m_hostInstallProcess->state() != QProcess::NotRunning) {
-        if (m_hostInstallStatus)
-            m_hostInstallStatus->setText(
-                QStringLiteral("An install is already running."));
-        if (onFinished)
-            onFinished(false);
-        return;
-    }
-
-    const QString ip = m_hostIpEdit ? m_hostIpEdit->text().trimmed() : QString();
-    const QString user = m_hostUserEdit ? m_hostUserEdit->text().trimmed() : QString();
-    const QString pass = m_hostPassEdit ? m_hostPassEdit->text() : QString();
-    const QString node = m_hostNameEdit ? m_hostNameEdit->text().trimmed() : QString();
-    if (ip.isEmpty() || user.isEmpty() || pass.isEmpty() || node.isEmpty()) {
-        if (m_hostInstallStatus)
-            m_hostInstallStatus->setText(QString::fromUtf8(
-                "Enter the host IP, SSH username, password and a node name "
-                "first."));
-        if (onFinished)
-            onFinished(false);
-        return;
-    }
     const QString installUrl = installScriptUrl();
     if (installUrl.isEmpty()) {
-        if (m_hostInstallStatus)
-            m_hostInstallStatus->setText(
-                QStringLiteral("Could not resolve the installer URL."));
-        if (onFinished)
-            onFinished(false);
-        return;
+        if (errorOut)
+            *errorOut = QStringLiteral("Could not resolve the installer URL.");
+        return false;
     }
 
     // Direct-upload mode (adhoc #67): stream this app's own release binary to
     // the host over the SSH session's stdin instead of the host downloading it
     // from the relay's release endpoint. Read the bytes up front so a locked or
     // missing binary fails here, before anything touches the remote machine.
-    // forceUploadBinary is set by the per-row / install-all "Install (binary)"
-    // actions (adhoc #257), which always direct-upload regardless of whether
-    // the form's checkbox happens to be ticked.
     // A source build compiles on the host itself, so there is no binary to
-    // upload — fromSource forces the direct-upload path off even if the caller
-    // or the form checkbox asked for it.
-    const bool uploadBinary = !fromSource &&
-        (forceUploadBinary ||
-         (m_hostUploadBinaryCheck && m_hostUploadBinaryCheck->isChecked()));
-    QByteArray uploadBytes;
-    if (uploadBinary) {
+    // upload — fromSource forces the direct-upload path off.
+    const bool doUpload = uploadBinary && !fromSource;
+    QByteArray bytes;
+    if (doUpload) {
         QFile self(QCoreApplication::applicationFilePath());
         if (!self.open(QIODevice::ReadOnly) ||
-            (uploadBytes = self.readAll()).isEmpty()) {
-            if (m_hostInstallStatus)
-                m_hostInstallStatus->setText(
-                    QString::fromUtf8("Could not read this app's binary (%1) "
-                                      "to upload it.")
-                        .arg(QCoreApplication::applicationFilePath()));
-            if (onFinished)
-                onFinished(false);
-            return;
+            (bytes = self.readAll()).isEmpty()) {
+            if (errorOut)
+                *errorOut = QString::fromUtf8(
+                                "Could not read this app's binary (%1) to "
+                                "upload it.")
+                                .arg(QCoreApplication::applicationFilePath());
+            return false;
         }
     }
 
@@ -9408,7 +9413,7 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     QString pipeline =
         QStringLiteral("curl -fsSL %1 | %2 bash").arg(shq(installUrl), envPrefix);
     const bool needSudo = user != QStringLiteral("root");
-    if (uploadBinary) {
+    if (doUpload) {
         // The binary follows on the SSH session's stdin. Everything before the
         // marker line is discarded remotely: when sudo -S consumes the password
         // line the marker arrives first, and under passwordless sudo (or a
@@ -9433,20 +9438,89 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
                 .arg(shq(kHostUploadMarker), shq(installUrl), envPrefix,
                      shq(os), shq(QSysInfo::currentCpuArchitecture()));
     }
-    const QString remoteCmd =
+    const QString cmd =
         needSudo
             ? QStringLiteral("sudo -S -p '' -- bash -c %1").arg(shq(pipeline))
             : pipeline;
 
-    const QStringList sshArgs = {
-        QStringLiteral("-e"), QStringLiteral("ssh"),
-        QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
-        QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=no"),
-        QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/dev/null"),
-        QStringLiteral("-o"), QStringLiteral("PreferredAuthentications=password"),
-        QStringLiteral("-o"), QStringLiteral("PubkeyAuthentication=no"),
-        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
-        user + QStringLiteral("@") + ip, remoteCmd};
+    if (sshArgs)
+        *sshArgs = {
+            QStringLiteral("-e"), QStringLiteral("ssh"),
+            QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
+            QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=no"),
+            QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/dev/null"),
+            QStringLiteral("-o"), QStringLiteral("PreferredAuthentications=password"),
+            QStringLiteral("-o"), QStringLiteral("PubkeyAuthentication=no"),
+            QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
+            user + QStringLiteral("@") + ip, cmd};
+    if (remoteCmd)
+        *remoteCmd = cmd;
+    if (uploadBytes)
+        *uploadBytes = bytes;
+    return true;
+}
+
+void MainWindow::runHostInstall(bool forceUploadBinary,
+                                std::function<void(bool)> onFinished,
+                                bool reinstall, bool fromSource)
+{
+    if ((m_hostInstallProcess &&
+         m_hostInstallProcess->state() != QProcess::NotRunning) ||
+        m_hostDeployRemaining > 0) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("An install is already running."));
+        if (onFinished)
+            onFinished(false);
+        return;
+    }
+
+    const QString ip = m_hostIpEdit ? m_hostIpEdit->text().trimmed() : QString();
+    const QString user = m_hostUserEdit ? m_hostUserEdit->text().trimmed() : QString();
+    const QString pass = m_hostPassEdit ? m_hostPassEdit->text() : QString();
+    const QString node = m_hostNameEdit ? m_hostNameEdit->text().trimmed() : QString();
+    if (ip.isEmpty() || user.isEmpty() || pass.isEmpty() || node.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(QString::fromUtf8(
+                "Enter the host IP, SSH username, password and a node name "
+                "first."));
+        if (onFinished)
+            onFinished(false);
+        return;
+    }
+    const QString installUrl = installScriptUrl();
+    if (installUrl.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("Could not resolve the installer URL."));
+        if (onFinished)
+            onFinished(false);
+        return;
+    }
+
+    // Direct-upload mode (adhoc #67): stream this app's own release binary to
+    // the host over the SSH session instead of the host downloading it from the
+    // relay. forceUploadBinary is set by the per-row / install-all "Install
+    // (binary)" actions (adhoc #257), which always direct-upload regardless of
+    // the form's checkbox. A source build compiles on the host, so fromSource
+    // forces the direct-upload path off.
+    const bool uploadBinary = !fromSource &&
+        (forceUploadBinary ||
+         (m_hostUploadBinaryCheck && m_hostUploadBinaryCheck->isChecked()));
+    const bool needSudo = user != QStringLiteral("root");
+    QStringList sshArgs;
+    QString remoteCmd;
+    QByteArray uploadBytes;
+    QString buildErr;
+    if (!buildHostInstallCommand(ip, user, node, uploadBinary, reinstall,
+                                 fromSource, &sshArgs, &remoteCmd, &uploadBytes,
+                                 &buildErr)) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(buildErr);
+        if (onFinished)
+            onFinished(false);
+        return;
+    }
 
     // Persist the server info before we start so it is saved even if the install
     // fails partway through; a successful run flips the status to "installed".
@@ -9589,38 +9663,7 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
 
 void MainWindow::runHostInstallAllFromBinary()
 {
-    if (!m_hostsTable || m_hostsTable->rowCount() == 0) {
-        if (m_hostInstallStatus)
-            m_hostInstallStatus->setText(QStringLiteral("No saved hosts to install."));
-        return;
-    }
-    if (m_hostInstallProcess &&
-        m_hostInstallProcess->state() != QProcess::NotRunning) {
-        if (m_hostInstallStatus)
-            m_hostInstallStatus->setText(
-                QStringLiteral("An install is already running."));
-        return;
-    }
-    QList<int> rows;
-    rows.reserve(m_hostsTable->rowCount());
-    for (int i = 0; i < m_hostsTable->rowCount(); ++i)
-        rows.append(i);
-    installNextHostFromBinary(rows);
-}
-
-void MainWindow::installNextHostFromBinary(QList<int> remainingRows)
-{
-    if (remainingRows.isEmpty()) {
-        if (m_hostInstallStatus)
-            m_hostInstallStatus->setText(
-                QStringLiteral("Finished installing from binary on all hosts."));
-        return;
-    }
-    const int row = remainingRows.takeFirst();
-    loadHostIntoForm(row, 0);
-    runHostInstall(/*forceUploadBinary=*/true, [this, remainingRows](bool /*ok*/) {
-        installNextHostFromBinary(remainingRows);
-    });
+    runHostDeployAllParallel(FleetDeployMode::InstallBinary);
 }
 
 void MainWindow::runHostReinstallAllFromBinary()
@@ -9628,13 +9671,6 @@ void MainWindow::runHostReinstallAllFromBinary()
     if (!m_hostsTable || m_hostsTable->rowCount() == 0) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(QStringLiteral("No saved hosts to reinstall."));
-        return;
-    }
-    if (m_hostInstallProcess &&
-        m_hostInstallProcess->state() != QProcess::NotRunning) {
-        if (m_hostInstallStatus)
-            m_hostInstallStatus->setText(
-                QStringLiteral("A host session is already running."));
         return;
     }
     // Destructive: each host loses ALL of its ForkMesh data (identity key,
@@ -9652,29 +9688,7 @@ void MainWindow::runHostReinstallAllFromBinary()
         QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
     if (choice != QMessageBox::Yes)
         return;
-    QList<int> rows;
-    rows.reserve(rowCount);
-    for (int i = 0; i < rowCount; ++i)
-        rows.append(i);
-    reinstallNextHostFromBinary(rows);
-}
-
-void MainWindow::reinstallNextHostFromBinary(QList<int> remainingRows)
-{
-    if (remainingRows.isEmpty()) {
-        if (m_hostInstallStatus)
-            m_hostInstallStatus->setText(
-                QStringLiteral("Finished reinstalling from binary on all hosts."));
-        return;
-    }
-    const int row = remainingRows.takeFirst();
-    loadHostIntoForm(row, 0);
-    runHostInstall(
-        /*forceUploadBinary=*/true,
-        [this, remainingRows](bool /*ok*/) {
-            reinstallNextHostFromBinary(remainingRows);
-        },
-        /*reinstall=*/true);
+    runHostDeployAllParallel(FleetDeployMode::Reinstall);
 }
 
 void MainWindow::runHostUpdateAllFromSource()
@@ -9682,13 +9696,6 @@ void MainWindow::runHostUpdateAllFromSource()
     if (!m_hostsTable || m_hostsTable->rowCount() == 0) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(QStringLiteral("No saved hosts to update."));
-        return;
-    }
-    if (m_hostInstallProcess &&
-        m_hostInstallProcess->state() != QProcess::NotRunning) {
-        if (m_hostInstallStatus)
-            m_hostInstallStatus->setText(
-                QStringLiteral("A host session is already running."));
         return;
     }
     // Non-destructive, but a source build is slow (clone/pull + compile on each
@@ -9700,34 +9707,320 @@ void MainWindow::runHostUpdateAllFromSource()
             "For each of your %1 saved host(s): SSH in, pull the latest ForkMesh "
             "source, rebuild the client from it and restart the node. Each host "
             "keeps its identity key and mirrored data.\n\nBuilding from source on "
-            "the host can take several minutes each. Continue?")
+            "the host runs on all hosts at once — each streams into its own pane "
+            "below. Continue?")
             .arg(rowCount),
         QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
     if (choice != QMessageBox::Yes)
         return;
-    QList<int> rows;
-    rows.reserve(rowCount);
-    for (int i = 0; i < rowCount; ++i)
-        rows.append(i);
-    updateNextHostFromSource(rows);
+    runHostDeployAllParallel(FleetDeployMode::UpdateSource);
 }
 
-void MainWindow::updateNextHostFromSource(QList<int> remainingRows)
+void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
 {
-    if (remainingRows.isEmpty()) {
+    if (!m_hostsTable || m_hostsTable->rowCount() == 0) {
         if (m_hostInstallStatus)
-            m_hostInstallStatus->setText(
-                QStringLiteral("Finished updating all hosts from source."));
+            m_hostInstallStatus->setText(QStringLiteral("No saved hosts."));
         return;
     }
-    const int row = remainingRows.takeFirst();
-    loadHostIntoForm(row, 0);
-    runHostInstall(
-        /*forceUploadBinary=*/false,
-        [this, remainingRows](bool /*ok*/) {
-            updateNextHostFromSource(remainingRows);
-        },
-        /*reinstall=*/false, /*fromSource=*/true);
+    // Refuse to start on top of a single-host install or another parallel run —
+    // each would fight over the shared status line and the deploy panel.
+    if ((m_hostInstallProcess &&
+         m_hostInstallProcess->state() != QProcess::NotRunning) ||
+        m_hostDeployRemaining > 0) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(
+                QStringLiteral("A host session is already running."));
+        return;
+    }
+    if (!m_hostDeployPanel || !m_hostDeployGrid)
+        return;
+
+    // Load every saved host with its stored SSH password. Hosts saved without a
+    // password can't run unattended in parallel, so they are skipped with a note.
+    const QJsonArray hosts =
+        QJsonDocument::fromJson(QSettings().value(kHostsSetting).toString().toUtf8())
+            .array();
+    struct Target { QString node, ip, user, pass; };
+    QList<Target> targets;
+    int skipped = 0;
+    for (const QJsonValue &v : hosts) {
+        const QJsonObject h = v.toObject();
+        Target t{h.value("name").toString().trimmed(),
+                 h.value("ip").toString().trimmed(),
+                 h.value("user").toString().trimmed(),
+                 h.value("pass").toString()};
+        if (t.node.isEmpty() || t.ip.isEmpty() || t.user.isEmpty() ||
+            t.pass.isEmpty()) {
+            ++skipped;
+            continue;
+        }
+        targets.append(t);
+    }
+    if (targets.isEmpty()) {
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(QString::fromUtf8(
+                "No saved host has a stored SSH password to deploy to in "
+                "parallel. Double-click a host, re-enter its password and Add "
+                "host again, then retry."));
+        return;
+    }
+
+    // Tear down any panes left from a previous parallel run.
+    qDeleteAll(m_hostDeploySessions);
+    m_hostDeploySessions.clear();
+    while (QLayoutItem *item = m_hostDeployGrid->takeAt(0)) {
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+
+    const bool uploadBinary = mode != FleetDeployMode::UpdateSource;
+    const bool reinstall = mode == FleetDeployMode::Reinstall;
+    const bool fromSource = mode == FleetDeployMode::UpdateSource;
+
+    QFont mono(QStringLiteral("monospace"));
+    mono.setStyleHint(QFont::Monospace);
+    // Arrange the panes in a roughly square grid so many hosts stay readable.
+    int cols = 1;
+    while (cols * cols < targets.size())
+        ++cols;
+
+    for (int idx = 0; idx < targets.size(); ++idx) {
+        const Target &t = targets.at(idx);
+        auto *card = new QFrame;
+        card->setObjectName("leaderboardCard");
+        card->setFrameShape(QFrame::StyledPanel);
+        auto *col = new QVBoxLayout(card);
+        col->setContentsMargins(10, 8, 10, 8);
+        col->setSpacing(6);
+
+        auto *header = new QLabel(
+            QString::fromUtf8("%1 \xE2\x80\x94 %2@%3 \xE2\x80\xA6")
+                .arg(t.node, t.user, t.ip));
+        QFont hf = header->font();
+        hf.setBold(true);
+        header->setFont(hf);
+        header->setWordWrap(true);
+        col->addWidget(header);
+
+        auto *log = new QPlainTextEdit;
+        log->setObjectName("actionLog");
+        log->setReadOnly(true);
+        log->setLineWrapMode(QPlainTextEdit::NoWrap);
+        log->setMinimumHeight(200);
+        log->setMinimumWidth(260);
+        log->setFont(mono);
+        col->addWidget(log, 1);
+
+        m_hostDeployGrid->addWidget(card, idx / cols, idx % cols);
+
+        auto *s = new HostDeploySession;
+        s->node = t.node;
+        s->ip = t.ip;
+        s->user = t.user;
+        s->pass = t.pass;
+        s->log = log;
+        s->header = header;
+        m_hostDeploySessions.append(s);
+    }
+
+    m_hostDeployLabel->setText(
+        QString::fromUtf8("Live output \xE2\x80\x94 %1 host(s) deploying in "
+                          "parallel").arg(targets.size()));
+    m_hostDeployLabel->setVisible(true);
+    m_hostDeployPanel->setVisible(true);
+
+    m_hostDeployRemaining = m_hostDeploySessions.size();
+    m_hostDeployFailed = 0;
+    if (m_hostInstallAllButton)
+        m_hostInstallAllButton->setEnabled(false);
+    if (m_hostReinstallAllButton)
+        m_hostReinstallAllButton->setEnabled(false);
+    if (m_hostUpdateAllSourceButton)
+        m_hostUpdateAllSourceButton->setEnabled(false);
+    if (m_hostInstallButton)
+        m_hostInstallButton->setEnabled(false);
+    if (m_hostInstallStatus)
+        m_hostInstallStatus->setText(
+            QString::fromUtf8("Deploying to %1 host(s) in parallel\xE2\x80\xA6%2")
+                .arg(m_hostDeployRemaining)
+                .arg(skipped ? QString::fromUtf8(" (%1 skipped \xE2\x80\x94 no "
+                                                 "stored password)").arg(skipped)
+                             : QString()));
+
+    // Snapshot the list first: startHostDeploySession may fail synchronously and
+    // finish a session (mutating m_hostDeploySessions is not expected, but the
+    // finished callback can fire re-entrantly), so iterate a stable copy.
+    const QList<HostDeploySession *> toStart = m_hostDeploySessions;
+    for (HostDeploySession *s : toStart)
+        startHostDeploySession(s, uploadBinary, reinstall, fromSource);
+}
+
+void MainWindow::startHostDeploySession(HostDeploySession *session,
+                                        bool uploadBinary, bool reinstall,
+                                        bool fromSource)
+{
+    if (!session)
+        return;
+
+    QStringList sshArgs;
+    QString remoteCmd;
+    QByteArray uploadBytes;
+    QString buildErr;
+    if (!buildHostInstallCommand(session->ip, session->user, session->node,
+                                 uploadBinary, reinstall, fromSource, &sshArgs,
+                                 &remoteCmd, &uploadBytes, &buildErr)) {
+        appendHostDeployLog(session,
+                            QString::fromUtf8("\n\xE2\x9C\x98 %1\n").arg(buildErr));
+        onHostDeploySessionFinished(session, false);
+        return;
+    }
+
+    const bool needSudo = session->user != QStringLiteral("root");
+    appendHostDeployLog(
+        session, QString::fromUtf8("$ ssh %1@%2 \xE2\x80\xA6\nConnecting and "
+                                   "running the installer\xE2\x80\xA6\n\n")
+                     .arg(session->user, session->ip));
+    if (uploadBinary && !fromSource)
+        appendHostDeployLog(
+            session, QString::fromUtf8("Uploading this app's release binary "
+                                       "(%1 MB) over the SSH session\xE2\x80\xA6\n")
+                         .arg(QString::number(uploadBytes.size() /
+                                                  (1024.0 * 1024.0),
+                                              'f', 1)));
+
+    auto *proc = new QProcess(this);
+    session->proc = proc;
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("SSHPASS"), session->pass);
+    proc->setProcessEnvironment(env);
+
+    connect(proc, &QProcess::readyReadStandardOutput, this, [this, session, proc] {
+        const QString chunk = QString::fromUtf8(proc->readAllStandardOutput());
+        appendHostDeployLog(session, chunk);
+        // Watch this host's stream for the installer's "FORKMESH LINK CODE:
+        // NNNNNN" line (through a rolling tail so a code split across chunks
+        // still matches) and auto-link the fresh node to this account, once.
+        if (session->linkPrompted)
+            return;
+        session->linkTail = (session->linkTail + chunk).right(512);
+        static const QRegularExpression linkRe(
+            QStringLiteral("FORKMESH LINK CODE:\\s*([0-9]{6})"));
+        const QRegularExpressionMatch m = linkRe.match(session->linkTail);
+        if (!m.hasMatch())
+            return;
+        session->linkPrompted = true;
+        QString linkUser;
+        const QString signer = hostLinkSigningAccountName(&linkUser);
+        if (!signer.isEmpty()) {
+            appendHostDeployLog(
+                session, QString::fromUtf8("\nLinking node to your user account "
+                                           "(%1)\xE2\x80\xA6\n").arg(linkUser));
+            submitHostLinkCode(m.captured(1));
+        } else {
+            appendHostDeployLog(
+                session, QString::fromUtf8(
+                             "\n[warning] Not auto-linking: this app is not "
+                             "linked to a user account.\n"));
+        }
+    });
+    connect(proc, &QProcess::errorOccurred, this,
+            [this, session](QProcess::ProcessError e) {
+                if (e != QProcess::FailedToStart)
+                    return;
+                // A failed start never emits finished(), so finalize the
+                // session here or the fleet would wait on it forever.
+                appendHostDeployLog(
+                    session,
+                    QString::fromUtf8(
+                        "\n[error] Could not start sshpass/ssh. Install "
+                        "openssh-client and sshpass on this machine.\n"));
+                if (session->proc) {
+                    session->proc->deleteLater();
+                    session->proc = nullptr;
+                }
+                onHostDeploySessionFinished(session, false);
+            });
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this, session](int code, QProcess::ExitStatus status) {
+                const bool ok = status == QProcess::NormalExit && code == 0;
+                if (ok)
+                    appendHostDeployLog(
+                        session, QString::fromUtf8(
+                                     "\n\xE2\x9C\x94 Finished.\n"));
+                else
+                    appendHostDeployLog(
+                        session, QString::fromUtf8(
+                                     "\n\xE2\x9C\x98 Failed (exit %1).\n")
+                                     .arg(code));
+                if (session->proc) {
+                    session->proc->deleteLater();
+                    session->proc = nullptr;
+                }
+                onHostDeploySessionFinished(session, ok);
+            });
+
+    proc->start(QStringLiteral("sshpass"), sshArgs);
+    if (needSudo)
+        proc->write((session->pass + QStringLiteral("\n")).toUtf8());
+    if (uploadBinary && !fromSource) {
+        proc->write((kHostUploadMarker + QStringLiteral("\n")).toUtf8());
+        proc->write(uploadBytes);
+    }
+    proc->closeWriteChannel();
+}
+
+void MainWindow::onHostDeploySessionFinished(HostDeploySession *session, bool ok)
+{
+    if (!session || session->finished)
+        return;
+    session->finished = true;
+    if (!ok)
+        ++m_hostDeployFailed;
+    // Persist this host's outcome so the hosts table reflects it.
+    rememberHost(session->node, session->ip, session->user, session->pass,
+                 ok ? QStringLiteral("installed")
+                    : QStringLiteral("install failed"));
+    if (session->header) {
+        const QString glyph = ok ? QString::fromUtf8("\xE2\x9C\x94")
+                                 : QString::fromUtf8("\xE2\x9C\x98");
+        session->header->setText(
+            QString::fromUtf8("%1 %2 \xE2\x80\x94 %3@%4")
+                .arg(glyph, session->node, session->user, session->ip));
+    }
+    if (m_hostDeployRemaining > 0)
+        --m_hostDeployRemaining;
+    if (m_hostDeployRemaining == 0) {
+        if (m_hostInstallAllButton)
+            m_hostInstallAllButton->setEnabled(true);
+        if (m_hostReinstallAllButton)
+            m_hostReinstallAllButton->setEnabled(true);
+        if (m_hostUpdateAllSourceButton)
+            m_hostUpdateAllSourceButton->setEnabled(true);
+        if (m_hostInstallButton)
+            m_hostInstallButton->setEnabled(true);
+        if (m_hostInstallStatus) {
+            const int total = m_hostDeploySessions.size();
+            m_hostInstallStatus->setText(
+                m_hostDeployFailed == 0
+                    ? QString::fromUtf8("\xE2\x9C\x94 Finished deploying to all "
+                                        "%1 host(s).").arg(total)
+                    : QString::fromUtf8("Finished deploying to %1 host(s) "
+                                        "\xE2\x80\x94 %2 failed (see panes "
+                                        "above).").arg(total)
+                          .arg(m_hostDeployFailed));
+        }
+    } else if (m_hostInstallStatus) {
+        const int total = m_hostDeploySessions.size();
+        m_hostInstallStatus->setText(
+            QString::fromUtf8("Deploying\xE2\x80\xA6 %1/%2 done%3")
+                .arg(total - m_hostDeployRemaining).arg(total)
+                .arg(m_hostDeployFailed
+                         ? QString::fromUtf8(", %1 failed").arg(m_hostDeployFailed)
+                         : QString()));
+    }
 }
 
 void MainWindow::runHostUninstall()
