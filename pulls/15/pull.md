@@ -4,7 +4,7 @@ number: 15
 title: Refresh dashboard profile and contribution surfaces
 base: main
 head: api-pr/20260714-035346/dashboard-profile-contributions-ui
-status: open
+status: merged
 ts: 1783981696726
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
