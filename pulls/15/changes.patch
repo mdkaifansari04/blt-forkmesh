@@ -1,5 +1,5 @@
 diff --git a/cloudflare_worker/public/dashboard.js b/cloudflare_worker/public/dashboard.js
-index 2032ab2c..181c92cc 100644
+index 4f1b3a26..cd22cc19 100644
 --- a/cloudflare_worker/public/dashboard.js
 +++ b/cloudflare_worker/public/dashboard.js
 @@ -57,10 +57,13 @@
@@ -61,7 +61,7 @@ index 2032ab2c..181c92cc 100644
      renderProfileContributionGraph();
      renderProfileRepositories();
    }
-@@ -1922,447 +1927,606 @@
+@@ -1942,447 +1947,606 @@
      }
    }
  
@@ -1043,7 +1043,7 @@ index 2032ab2c..181c92cc 100644
      }
    }
  
-@@ -3797,7 +3961,7 @@
+@@ -3817,7 +3981,7 @@
    function profileRepositoryGroups() {
      let groups = groupRepositories(state.repositories || []);
      if (state.publicProfile) {
@@ -1052,7 +1052,7 @@ index 2032ab2c..181c92cc 100644
        groups = groups.filter((group) =>
          repoBelongsToProfile(sourceOfTruth(group), aliases) ||
          (group.members || []).some((member) => repoBelongsToProfile(member, aliases)));
-@@ -3852,7 +4016,6 @@
+@@ -3872,7 +4036,6 @@
  
      renderProfileRepositoryCount();
      applyRepositoryFilter();
@@ -1060,7 +1060,7 @@ index 2032ab2c..181c92cc 100644
      renderGlobalSearchResults();
    }
  
-@@ -9981,10 +10144,14 @@
+@@ -10047,10 +10210,14 @@
        return;
      }
  
@@ -1080,7 +1080,7 @@ index 2032ab2c..181c92cc 100644
      }
  
 diff --git a/cloudflare_worker/public/dashboard/chat/index.html b/cloudflare_worker/public/dashboard/chat/index.html
-index 309cf58f..32e755a0 100644
+index 1335ec4c..dd0e971d 100644
 --- a/cloudflare_worker/public/dashboard/chat/index.html
 +++ b/cloudflare_worker/public/dashboard/chat/index.html
 @@ -105,6 +105,20 @@
@@ -1314,16 +1314,18 @@ index 309cf58f..32e755a0 100644
        @media (max-width: 1023px) {
          [data-dashboard-root] {
            height: 100dvh;
-@@ -479,7 +682,7 @@
+@@ -479,8 +682,8 @@
          background-clip: padding-box;
        }
      </style>
--    <script src="/dashboard.js?v=5954b5da67d8" defer></script>
+-    <script src="/dashboard.js?v=28cd49043068" defer></script>
+-    <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
 +    <script src="/dashboard.js?v=c5f8d84a947a" defer></script>
-     <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
++    <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
    </head>
    <body class="bg-background text-foreground" data-page="chat">
-@@ -955,71 +1158,6 @@
+     <div data-dashboard-root data-dashboard-section="chat" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+@@ -966,71 +1169,6 @@
  	        });
  	      }
  
@@ -1395,7 +1397,7 @@ index 309cf58f..32e755a0 100644
        document.addEventListener("keydown", (event) => {
          if (event.key === "Escape") setProfilePopoverOpen(false);
        });
-@@ -1178,7 +1316,6 @@
+@@ -1189,7 +1327,6 @@
  
        // Chat is wired by /dashboard-chat.js.
  	      initProfileMenu();
@@ -1404,7 +1406,7 @@ index 309cf58f..32e755a0 100644
      </script>
    </body>
 diff --git a/cloudflare_worker/public/dashboard/index.html b/cloudflare_worker/public/dashboard/index.html
-index 9c4a9fbe..b48a9f20 100644
+index caa9fb69..d2164b3c 100644
 --- a/cloudflare_worker/public/dashboard/index.html
 +++ b/cloudflare_worker/public/dashboard/index.html
 @@ -105,6 +105,20 @@
@@ -1638,16 +1640,18 @@ index 9c4a9fbe..b48a9f20 100644
        @media (max-width: 1023px) {
          [data-dashboard-root] {
            height: 100dvh;
-@@ -479,7 +682,7 @@
+@@ -479,8 +682,8 @@
          background-clip: padding-box;
        }
      </style>
--    <script src="/dashboard.js?v=5954b5da67d8" defer></script>
+-    <script src="/dashboard.js?v=28cd49043068" defer></script>
+-    <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
 +    <script src="/dashboard.js?v=c5f8d84a947a" defer></script>
-     <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
++    <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
    </head>
    <body class="bg-background text-foreground" data-page="home">
-@@ -1042,71 +1245,6 @@
+     <div data-dashboard-root data-dashboard-section="home" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+@@ -1053,71 +1256,6 @@
  	        });
  	      }
  
@@ -1719,7 +1723,7 @@ index 9c4a9fbe..b48a9f20 100644
        document.addEventListener("keydown", (event) => {
          if (event.key === "Escape") setProfilePopoverOpen(false);
        });
-@@ -1265,7 +1403,6 @@
+@@ -1276,7 +1414,6 @@
  
        // Chat is wired by /dashboard-chat.js.
  	      initProfileMenu();
@@ -1783,7 +1787,7 @@ index c3da2368..46d6efdb 100644
        if (ttl || (fresh && baseTtl)) {
          state.fetchJsonCache[path] = {
 diff --git a/cloudflare_worker/public/dashboard/js/04-account.js b/cloudflare_worker/public/dashboard/js/04-account.js
-index 657cb6f8..f8a345e5 100644
+index b3fb0dcd..44d309f1 100644
 --- a/cloudflare_worker/public/dashboard/js/04-account.js
 +++ b/cloudflare_worker/public/dashboard/js/04-account.js
 @@ -147,9 +147,8 @@
@@ -1798,7 +1802,7 @@ index 657cb6f8..f8a345e5 100644
      renderProfileContributionGraph();
      renderProfileRepositories();
    }
-@@ -570,448 +569,607 @@
+@@ -590,448 +589,607 @@
      }
    }
  
@@ -2802,10 +2806,10 @@ index 0a0fde4a..6256b4ca 100644
    }
  
 diff --git a/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js b/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
-index 539a22f8..1ea74837 100644
+index 5891ee57..86ec89cb 100644
 --- a/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
 +++ b/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
-@@ -1185,10 +1185,14 @@
+@@ -1183,10 +1183,14 @@
        return;
      }
  
@@ -2825,7 +2829,7 @@ index 539a22f8..1ea74837 100644
      }
  
 diff --git a/cloudflare_worker/public/dashboard/network/index.html b/cloudflare_worker/public/dashboard/network/index.html
-index 6dd27c71..f00792e5 100644
+index 091d89f8..71148bb1 100644
 --- a/cloudflare_worker/public/dashboard/network/index.html
 +++ b/cloudflare_worker/public/dashboard/network/index.html
 @@ -105,6 +105,20 @@
@@ -3059,16 +3063,18 @@ index 6dd27c71..f00792e5 100644
        @media (max-width: 1023px) {
          [data-dashboard-root] {
            height: 100dvh;
-@@ -479,7 +682,7 @@
+@@ -479,8 +682,8 @@
          background-clip: padding-box;
        }
      </style>
--    <script src="/dashboard.js?v=5954b5da67d8" defer></script>
+-    <script src="/dashboard.js?v=28cd49043068" defer></script>
+-    <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
 +    <script src="/dashboard.js?v=c5f8d84a947a" defer></script>
-     <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
++    <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
    </head>
    <body class="bg-background text-foreground" data-page="network">
-@@ -1015,71 +1218,6 @@
+     <div data-dashboard-root data-dashboard-section="network" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+@@ -1026,71 +1229,6 @@
  	        });
  	      }
  
@@ -3140,7 +3146,7 @@ index 6dd27c71..f00792e5 100644
        document.addEventListener("keydown", (event) => {
          if (event.key === "Escape") setProfilePopoverOpen(false);
        });
-@@ -1238,7 +1376,6 @@
+@@ -1249,7 +1387,6 @@
  
        // Chat is wired by /dashboard-chat.js.
  	      initProfileMenu();
@@ -3273,7 +3279,7 @@ index 56fb70ba..b3b5bf02 100644
                    </div>
                  </div>
 diff --git a/cloudflare_worker/public/dashboard/profile/index.html b/cloudflare_worker/public/dashboard/profile/index.html
-index 297ad22c..87f8d4c3 100644
+index 776c2c2f..90883b27 100644
 --- a/cloudflare_worker/public/dashboard/profile/index.html
 +++ b/cloudflare_worker/public/dashboard/profile/index.html
 @@ -105,6 +105,20 @@
@@ -3507,16 +3513,18 @@ index 297ad22c..87f8d4c3 100644
        @media (max-width: 1023px) {
          [data-dashboard-root] {
            height: 100dvh;
-@@ -479,7 +682,7 @@
+@@ -479,8 +682,8 @@
          background-clip: padding-box;
        }
      </style>
--    <script src="/dashboard.js?v=5954b5da67d8" defer></script>
+-    <script src="/dashboard.js?v=28cd49043068" defer></script>
+-    <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
 +    <script src="/dashboard.js?v=c5f8d84a947a" defer></script>
-     <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
++    <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
    </head>
    <body class="bg-background text-foreground" data-page="profile">
-@@ -753,34 +956,92 @@
+     <div data-dashboard-root data-dashboard-section="profile-overview" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+@@ -764,34 +967,92 @@
                          <p class="text-muted-foreground">Pinned profile content and public activity will live here.</p>
                        </div>
                      </section>
@@ -3627,7 +3635,7 @@ index 297ad22c..87f8d4c3 100644
                            <span>© 2026 ForkMesh, Inc.</span>
                            <a href="/terms" class="hover:text-accent hover:underline">Terms</a>
                            <a href="/privacy" class="hover:text-accent hover:underline">Privacy</a>
-@@ -789,8 +1050,6 @@
+@@ -800,8 +1061,6 @@
                            <a href="/docs" class="hover:text-accent hover:underline">Docs</a>
                          </footer>
                        </div>
@@ -3636,7 +3644,7 @@ index 297ad22c..87f8d4c3 100644
                      </div>
                    </div>
                  </div>
-@@ -1002,71 +1261,6 @@
+@@ -1013,71 +1272,6 @@
  	        });
  	      }
  
@@ -3708,7 +3716,7 @@ index 297ad22c..87f8d4c3 100644
        document.addEventListener("keydown", (event) => {
          if (event.key === "Escape") setProfilePopoverOpen(false);
        });
-@@ -1225,7 +1419,6 @@
+@@ -1236,7 +1430,6 @@
  
        // Chat is wired by /dashboard-chat.js.
  	      initProfileMenu();
@@ -3717,7 +3725,7 @@ index 297ad22c..87f8d4c3 100644
      </script>
    </body>
 diff --git a/cloudflare_worker/public/dashboard/profile/repositories/index.html b/cloudflare_worker/public/dashboard/profile/repositories/index.html
-index 3ae061ff..ee6ff435 100644
+index e3bc11ac..d01e2fcd 100644
 --- a/cloudflare_worker/public/dashboard/profile/repositories/index.html
 +++ b/cloudflare_worker/public/dashboard/profile/repositories/index.html
 @@ -105,6 +105,20 @@
@@ -3951,16 +3959,18 @@ index 3ae061ff..ee6ff435 100644
        @media (max-width: 1023px) {
          [data-dashboard-root] {
            height: 100dvh;
-@@ -479,7 +682,7 @@
+@@ -479,8 +682,8 @@
          background-clip: padding-box;
        }
      </style>
--    <script src="/dashboard.js?v=5954b5da67d8" defer></script>
+-    <script src="/dashboard.js?v=28cd49043068" defer></script>
+-    <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
 +    <script src="/dashboard.js?v=c5f8d84a947a" defer></script>
-     <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
++    <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
    </head>
    <body class="bg-background text-foreground" data-page="profile-repositories">
-@@ -960,71 +1163,6 @@
+     <div data-dashboard-root data-dashboard-section="profile-repositories" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+@@ -971,71 +1174,6 @@
  	        });
  	      }
  
@@ -4032,7 +4042,7 @@ index 3ae061ff..ee6ff435 100644
        document.addEventListener("keydown", (event) => {
          if (event.key === "Escape") setProfilePopoverOpen(false);
        });
-@@ -1183,7 +1321,6 @@
+@@ -1194,7 +1332,6 @@
  
        // Chat is wired by /dashboard-chat.js.
  	      initProfileMenu();
@@ -4041,7 +4051,7 @@ index 3ae061ff..ee6ff435 100644
      </script>
    </body>
 diff --git a/cloudflare_worker/public/dashboard/repo.html b/cloudflare_worker/public/dashboard/repo.html
-index 1f887b7a..26d98b1d 100644
+index befd37d5..2bdc6885 100644
 --- a/cloudflare_worker/public/dashboard/repo.html
 +++ b/cloudflare_worker/public/dashboard/repo.html
 @@ -105,6 +105,20 @@
@@ -4275,16 +4285,18 @@ index 1f887b7a..26d98b1d 100644
        @media (max-width: 1023px) {
          [data-dashboard-root] {
            height: 100dvh;
-@@ -479,7 +682,7 @@
+@@ -479,8 +682,8 @@
          background-clip: padding-box;
        }
      </style>
--    <script src="/dashboard.js?v=5954b5da67d8" defer></script>
+-    <script src="/dashboard.js?v=28cd49043068" defer></script>
+-    <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
 +    <script src="/dashboard.js?v=c5f8d84a947a" defer></script>
-     <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
++    <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
    </head>
    <body class="bg-background text-foreground" data-page="repo">
-@@ -957,71 +1160,6 @@
+     <div data-dashboard-root data-dashboard-section="explore" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+@@ -968,71 +1171,6 @@
  	        });
  	      }
  
@@ -4356,7 +4368,7 @@ index 1f887b7a..26d98b1d 100644
        document.addEventListener("keydown", (event) => {
          if (event.key === "Escape") setProfilePopoverOpen(false);
        });
-@@ -1180,7 +1318,6 @@
+@@ -1191,7 +1329,6 @@
  
        // Chat is wired by /dashboard-chat.js.
  	      initProfileMenu();
@@ -4365,7 +4377,7 @@ index 1f887b7a..26d98b1d 100644
      </script>
    </body>
 diff --git a/cloudflare_worker/public/dashboard/repos/index.html b/cloudflare_worker/public/dashboard/repos/index.html
-index c3639be9..3b3ca5c9 100644
+index b3095942..f9f6b386 100644
 --- a/cloudflare_worker/public/dashboard/repos/index.html
 +++ b/cloudflare_worker/public/dashboard/repos/index.html
 @@ -105,6 +105,20 @@
@@ -4599,16 +4611,18 @@ index c3639be9..3b3ca5c9 100644
        @media (max-width: 1023px) {
          [data-dashboard-root] {
            height: 100dvh;
-@@ -479,7 +682,7 @@
+@@ -479,8 +682,8 @@
          background-clip: padding-box;
        }
      </style>
--    <script src="/dashboard.js?v=5954b5da67d8" defer></script>
+-    <script src="/dashboard.js?v=28cd49043068" defer></script>
+-    <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
 +    <script src="/dashboard.js?v=c5f8d84a947a" defer></script>
-     <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
++    <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
    </head>
    <body class="bg-background text-foreground" data-page="repos">
-@@ -988,71 +1191,6 @@
+     <div data-dashboard-root data-dashboard-section="repos" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+@@ -999,71 +1202,6 @@
  	        });
  	      }
  
@@ -4680,7 +4694,7 @@ index c3639be9..3b3ca5c9 100644
        document.addEventListener("keydown", (event) => {
          if (event.key === "Escape") setProfilePopoverOpen(false);
        });
-@@ -1211,7 +1349,6 @@
+@@ -1222,7 +1360,6 @@
  
        // Chat is wired by /dashboard-chat.js.
  	      initProfileMenu();
@@ -4689,7 +4703,7 @@ index c3639be9..3b3ca5c9 100644
      </script>
    </body>
 diff --git a/cloudflare_worker/public/dashboard/settings/index.html b/cloudflare_worker/public/dashboard/settings/index.html
-index 3cee202f..c02560af 100644
+index d7ab902f..aabcfc68 100644
 --- a/cloudflare_worker/public/dashboard/settings/index.html
 +++ b/cloudflare_worker/public/dashboard/settings/index.html
 @@ -105,6 +105,20 @@
@@ -4923,16 +4937,18 @@ index 3cee202f..c02560af 100644
        @media (max-width: 1023px) {
          [data-dashboard-root] {
            height: 100dvh;
-@@ -479,7 +682,7 @@
+@@ -479,8 +682,8 @@
          background-clip: padding-box;
        }
      </style>
--    <script src="/dashboard.js?v=5954b5da67d8" defer></script>
+-    <script src="/dashboard.js?v=28cd49043068" defer></script>
+-    <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
 +    <script src="/dashboard.js?v=c5f8d84a947a" defer></script>
-     <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
++    <script src="/dashboard-chat.js?v=0dc2a9a92752" defer></script>
    </head>
    <body class="bg-background text-foreground" data-page="settings">
-@@ -1378,71 +1581,6 @@
+     <div data-dashboard-root data-dashboard-section="profile" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
+@@ -1389,71 +1592,6 @@
  	        });
  	      }
  
@@ -5004,7 +5020,7 @@ index 3cee202f..c02560af 100644
        document.addEventListener("keydown", (event) => {
          if (event.key === "Escape") setProfilePopoverOpen(false);
        });
-@@ -1601,7 +1739,6 @@
+@@ -1612,7 +1750,6 @@
  
        // Chat is wired by /dashboard-chat.js.
  	      initProfileMenu();
@@ -5328,7 +5344,7 @@ index 29f7d225..9d30ba9e 100644
      </script>
    </body>
 diff --git a/cloudflare_worker/tests/test_dashboard_landing_migration.py b/cloudflare_worker/tests/test_dashboard_landing_migration.py
-index d42cad96..46f615c1 100644
+index 54997c31..0fe2a86f 100644
 --- a/cloudflare_worker/tests/test_dashboard_landing_migration.py
 +++ b/cloudflare_worker/tests/test_dashboard_landing_migration.py
 @@ -359,7 +359,7 @@ def test_dashboard_profile_overview_uses_real_profile_data_not_placeholders():
