@@ -8,6 +8,7 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
+#include "CodexAppServerSession.h"
 
 using namespace forkmesh::ui;
 
@@ -726,20 +727,28 @@ QWidget *MainWindow::buildAgentsTab()
     // answer in the session buffer (persists + replays the answered card), and
     // flip the session back to Running.
     connect(m_agentTranscript, &ClaudeTranscriptView::questionAnswered, this,
-            [this](const QString &toolUseId, const QString &answer) {
+            [this](const QString &toolUseId, const QString &answer,
+                   bool sensitive) {
                 const int sid = m_selectedAgentSessionId;
                 if (sid < 0)
                     return;
-                ClaudeStreamSession *s = m_streamSessions.value(sid);
-                if (!s || !s->running())
+                ClaudeStreamSession *claude = m_streamSessions.value(sid);
+                CodexAppServerSession *codex = m_codexStreams.value(sid);
+                if ((!claude || !claude->running()) &&
+                    (!codex || !codex->running()))
                     return;
                 applyTranscriptEvent(
                     sid,
                     QJsonObject{
                         {QStringLiteral("type"), QStringLiteral("_local_ask_answer")},
                         {QStringLiteral("tool_use_id"), toolUseId},
-                        {QStringLiteral("text"), answer}});
-                s->sendToolResult(toolUseId, answer);
+                        {QStringLiteral("text"),
+                         sensitive ? QStringLiteral("[secret answer hidden]")
+                                   : answer}});
+                if (codex && codex->running())
+                    codex->respondToRequest(toolUseId, answer);
+                else
+                    claude->sendToolResult(toolUseId, answer);
                 if (AgentSession *as = findAgentSession(sid);
                     as && as->status != AgentStatus::Running) {
                     as->status = AgentStatus::Running;
@@ -1193,10 +1202,11 @@ void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
     // the new model up — a still-running process can't be retargeted mid-turn
     // — but stashing it on the session now means the very next resume honors it.
     if (AgentSession *session = findAgentSession(m_selectedAgentSessionId);
-        session && session->provider == QLatin1String("claude-code")) {
+        session && (session->provider == QLatin1String("claude-code") ||
+                    agentIsCodexProvider(session->provider))) {
         bool changed = false;
         if (m_quickAddClaudeModel) {
-            const QString chosen = m_quickAddClaudeModel->currentData().toString();
+            const QString chosen = selectedModelComboValue(m_quickAddClaudeModel);
             if (session->model != chosen) {
                 session->model = chosen;
                 changed = true;
@@ -1227,15 +1237,27 @@ void MainWindow::sendPromptToAgentSession(int sessionId, const QString &prompt)
 {
     if (prompt.isEmpty() || sessionId < 0)
         return;
-    if (ClaudeStreamSession *s = m_streamSessions.value(sessionId);
-        s && s->running()) {
+    ClaudeStreamSession *claude = m_streamSessions.value(sessionId);
+    CodexAppServerSession *codex = m_codexStreams.value(sessionId);
+    if ((claude && claude->running()) || (codex && codex->running())) {
         // Steer the live Claude Code transcript session: record the turn in
         // this session's buffer so it survives view switches, then send it.
         const int sid = sessionId;
         QJsonObject turn{{QStringLiteral("type"), QStringLiteral("_local_user")},
                          {QStringLiteral("text"), prompt}};
         applyTranscriptEvent(sid, turn);
-        s->sendUserText(prompt);
+        if (codex && codex->running()) {
+            if (const AgentSession *session = findAgentSession(sid)) {
+                const QString effort =
+                    QSettings()
+                        .value(kClaudeEffortSetting, QStringLiteral("high"))
+                        .toString();
+                codex->setTurnOptions(session->model, session->mode, effort);
+            }
+            codex->sendUserText(prompt);
+        } else {
+            claude->sendUserText(prompt);
+        }
         // Replying puts the agent back to work — clear "Waiting", or the
         // Failed left by an error result whose process stayed alive, so the
         // list shows the session running again.
@@ -1256,7 +1278,8 @@ void MainWindow::sendPromptToAgentSession(int sessionId, const QString &prompt)
         // instruction so the queued message actually takes effect (adhoc #177).
         const int sid = session->id;
         m_pendingSteerMessage.insert(sid, prompt);
-        if (session->provider == QLatin1String("claude-code"))
+        if (session->provider == QLatin1String("claude-code") ||
+            agentIsCodexProvider(session->provider))
             applyTranscriptEvent(
                 sid, QJsonObject{
                          {QStringLiteral("type"), QStringLiteral("_local_user")},
@@ -1274,7 +1297,7 @@ void MainWindow::sendPromptToAgentSession(int sessionId, const QString &prompt)
 // to the currently-open agent session (adhoc #256). Lets the user recover
 // when the agent missed the context the first time — e.g. a resumed session
 // only ever gets a bare "Continue where you left off." (see
-// startClaudeCodeTranscript), which carries none of it.
+// startCliTranscript), which carries none of it.
 void MainWindow::sendIssueContextToSelectedAgent()
 {
     AgentSession *session = findAgentSession(m_selectedAgentSessionId);
@@ -2066,7 +2089,21 @@ void MainWindow::refreshCodexUsageRemaining()
     auto *chart = static_cast<TokenUsageMiniChart *>(m_navCodexUsage);
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     QSettings settings;
-    auto update = [&](bool weekly, const QString &key, qint64 windowMs) {
+    auto update = [&](bool weekly, const QString &key, qint64 windowMs,
+                      const QString &pctKey, const QString &resetKey) {
+        const qint64 providerReset = settings.value(resetKey).toLongLong();
+        if (providerReset > now && settings.contains(pctKey)) {
+            const int used = qBound(0, settings.value(pctKey).toInt(), 100);
+            chart->setRemaining(
+                weekly, 100 - used,
+                QStringLiteral("resets in %1")
+                    .arg(humanizeRemaining(providerReset - now)));
+            return;
+        }
+        if (providerReset > 0 && providerReset <= now) {
+            settings.remove(pctKey);
+            settings.remove(resetKey);
+        }
         const qint64 start = settings.value(key).toLongLong();
         if (start <= 0) {
             chart->setRemaining(weekly, 100, QStringLiteral("ready"));
@@ -2083,8 +2120,55 @@ void MainWindow::refreshCodexUsageRemaining()
             weekly, pct,
             QStringLiteral("resets in %1").arg(humanizeRemaining(remaining)));
     };
-    update(false, kCodexLimit5hStartSetting, kAgentLimit5hMs);
-    update(true, kCodexLimitWeekStartSetting, kAgentLimitWeekMs);
+    update(false, kCodexLimit5hStartSetting, kAgentLimit5hMs,
+           kCodexUsage5hPctSetting, kCodexUsage5hResetSetting);
+    update(true, kCodexLimitWeekStartSetting, kAgentLimitWeekMs,
+           kCodexUsageWeekPctSetting, kCodexUsageWeekResetSetting);
+}
+
+void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
+{
+    if (rateLimits.isEmpty())
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QSettings settings;
+    auto apply = [&](bool weekly, const QJsonObject &window,
+                     const QString &pctKey, const QString &resetKey,
+                     const QString &anchorKey) {
+        if (window.isEmpty())
+            return;
+        const int used = qBound(0, window.value(QStringLiteral("usedPercent")).toInt(),
+                               100);
+        qint64 resetMs = static_cast<qint64>(
+            window.value(QStringLiteral("resetsAt")).toDouble());
+        if (resetMs > 0 && resetMs < 10'000'000'000LL)
+            resetMs *= 1000; // app-server uses Unix seconds today
+        settings.setValue(pctKey, used);
+        if (resetMs > 0)
+            settings.setValue(resetKey, resetMs);
+        const qint64 durationMs = static_cast<qint64>(
+                                      window.value(QStringLiteral("windowDurationMins"))
+                                          .toDouble()) *
+                                  60 * 1000;
+        if (resetMs > 0 && durationMs > 0)
+            settings.setValue(anchorKey, resetMs - durationMs);
+        if (m_navCodexUsage) {
+            const qint64 remaining = resetMs - now;
+            static_cast<TokenUsageMiniChart *>(m_navCodexUsage)
+                ->setRemaining(weekly, 100 - used,
+                               remaining > 0
+                                   ? QStringLiteral("resets in %1")
+                                         .arg(humanizeRemaining(remaining))
+                                   : QString());
+        }
+    };
+    apply(false, rateLimits.value(QStringLiteral("primary")).toObject(),
+          kCodexUsage5hPctSetting, kCodexUsage5hResetSetting,
+          kCodexLimit5hStartSetting);
+    apply(true, rateLimits.value(QStringLiteral("secondary")).toObject(),
+          kCodexUsageWeekPctSetting, kCodexUsageWeekResetSetting,
+          kCodexLimitWeekStartSetting);
+    refreshAgentLimitLabel();
 }
 
 void MainWindow::updateAgentTotalSpend()
@@ -3363,12 +3447,16 @@ void MainWindow::showAgentSession(int sessionId)
         // Permission mode this Claude Code session runs under (the composer's
         // mode selector, captured on the last follow-up). Older sessions have no
         // stored mode, so show the current composer default they'd resume with.
-        if (session->provider == QLatin1String("claude-code")) {
+        if (session->provider == QLatin1String("claude-code") ||
+            agentIsCodexProvider(session->provider)) {
             const QString modeLabel =
                 session->mode.isEmpty()
-                    ? (QSettings().value(kClaudeAutoModeSetting, true).toBool()
-                           ? kClaudeAutoModeLabel
-                           : QStringLiteral("Ask before edits"))
+                    ? QSettings()
+                          .value(kAgentModeSetting,
+                                 QSettings().value(kClaudeAutoModeSetting, true).toBool()
+                                     ? kClaudeAutoModeLabel
+                                     : QStringLiteral("Ask before edits"))
+                          .toString()
                     : session->mode;
             lines << labeled(QStringLiteral("Mode"), modeLabel.toHtmlEscaped());
         }
@@ -3750,6 +3838,9 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     session.provider = provider;
     session.createPr = createPr;
     session.model = model.trimmed(); // empty leaves the provider's own default
+    if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
+        m_quickAddModeSelector)
+        session.mode = m_quickAddModeSelector->currentText();
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     session = m_agentStore->createSession(session);
@@ -4106,6 +4197,9 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     session.provider = provider;
     session.createPr = createPr;
     session.model = model.trimmed(); // empty leaves the provider's own default
+    if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
+        m_quickAddModeSelector)
+        session.mode = m_quickAddModeSelector->currentText();
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     // A short title from the prompt's first line, for the list row and the PR.
@@ -4137,10 +4231,10 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         QStringLiteral("==> Started from a prompt (%1).\n")
             .arg(agentProviderName(provider)));
 
-    if (provider == QLatin1String("claude-code")) {
-        // Claude Code renders as a native stream-json transcript; the typed
-        // prompt is its task verbatim.
-        startClaudeCodeTranscript(session, Issue(), repo.localPath, task);
+    if (provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) {
+        // Both CLI-backed agents render through their structured protocols; the
+        // typed prompt is their task verbatim.
+        startCliTranscript(session, Issue(), repo.localPath, task);
     } else {
         // API-key agents run headlessly through a runner. There's no issue to
         // anchor to, so the task rides through the config as an override prompt.
@@ -4179,9 +4273,12 @@ void MainWindow::startAgentFromComposer()
     const QString provider = m_agentComposeProvider->currentData().toString();
     // Claude Code honours the model saved by the footer/model chooser; the API
     // providers fall back to their own default (empty).
-    const QString model = provider == QLatin1String("claude-code")
-                              ? QSettings().value(kClaudeCodeModelSetting).toString()
-                              : QString();
+    const QString model =
+        provider == QLatin1String("claude-code")
+            ? QSettings().value(kClaudeCodeModelSetting).toString()
+            : (agentIsCodexProvider(provider)
+                   ? QSettings().value(kCodexModelSetting).toString()
+                   : QString());
     if (startAdHocAgentForRepo(repoIndex, prompt, provider, /*createPr=*/true,
                                model) > 0)
         m_agentComposePrompt->clear();
@@ -4278,7 +4375,8 @@ void MainWindow::fixAgentConflictsWithAgent(int sessionId)
             .arg(base);
     const int sid = s->id;
     m_pendingSteerMessage.insert(sid, prompt);
-    if (s->provider == QLatin1String("claude-code"))
+    if (s->provider == QLatin1String("claude-code") ||
+        agentIsCodexProvider(s->provider))
         applyTranscriptEvent(
             sid,
             QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
@@ -4348,7 +4446,7 @@ bool MainWindow::deleteStoredAgentSession(int sessionId)
     // A live Claude Code stream session (no runner) is killed by its own Stop
     // path; deleting it from the list must stop it too, then release its worktree
     // so the branch is freed (issue #74).
-    if (m_streamSessions.contains(snapshot.id))
+    if (m_streamSessions.contains(snapshot.id) || m_codexStreams.contains(snapshot.id))
         stopStreamSession(snapshot.id, /*refreshUi=*/false);
     cleanupStreamWorktree(snapshot.id);
     m_agentQueue.removeAll(snapshot.id);
@@ -4398,6 +4496,8 @@ void MainWindow::purgeSessionState(int sessionId)
     if (sessionId <= 0)
         return;
     if (ClaudeStreamSession *stream = m_streamSessions.take(sessionId))
+        stream->deleteLater();
+    if (CodexAppServerSession *stream = m_codexStreams.take(sessionId))
         stream->deleteLater();
     m_streamEvents.remove(sessionId);
     m_streamRaw.remove(sessionId);
@@ -4577,9 +4677,28 @@ AgentRunner *MainWindow::runnerForSession(int sessionId) const
 
 bool MainWindow::anyAgentRunning() const
 {
+    auto sessionIsActive = [this](int id) {
+        for (const AgentSession &session : m_agentSessions) {
+            if (session.id == id)
+                return session.status == AgentStatus::Running ||
+                       session.status == AgentStatus::Waiting;
+        }
+        const auto pending = m_streamSessionInfo.constFind(id);
+        return pending != m_streamSessionInfo.constEnd() &&
+               (pending->status == AgentStatus::Running ||
+                pending->status == AgentStatus::Waiting);
+    };
     for (AgentRunner *runner : m_agentRunners)
         if (runner->busy())
             return true;
+    for (auto it = m_streamSessions.constBegin(); it != m_streamSessions.constEnd(); ++it) {
+        if (it.value() && it.value()->running() && sessionIsActive(it.key()))
+            return true;
+    }
+    for (auto it = m_codexStreams.constBegin(); it != m_codexStreams.constEnd(); ++it) {
+        if (it.value() && it.value()->running() && sessionIsActive(it.key()))
+            return true;
+    }
     return false;
 }
 
@@ -4660,8 +4779,9 @@ void MainWindow::processAgentQueue()
         // Claude Code renders as a native stream-json transcript on the agent
         // detail screen (with a Raw-output toggle), not headlessly through a
         // runner. startClaudeCodeTerminal remains for the legacy embedded-TUI.
-        if (session->provider == QLatin1String("claude-code")) {
-            startClaudeCodeTranscript(*session, issue, agentGitDir, session->prompt);
+        if (session->provider == QLatin1String("claude-code") ||
+            agentIsCodexProvider(session->provider)) {
+            startCliTranscript(*session, issue, agentGitDir, session->prompt);
             continue;
         }
         const AgentSession snapshot = *session;
@@ -5108,13 +5228,14 @@ QString MainWindow::issueContextPrompt(const Issue &issue) const
     return out;
 }
 
-void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
-                                           const QString &repoPath,
-                                           const QString &customPrompt)
+void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
+                                    const QString &repoPath,
+                                    const QString &customPrompt)
 {
     if (!m_agentTranscript || !m_agentStore)
         return;
     const int sid = session.id;
+    const bool codex = agentIsCodexProvider(session.provider);
 
     auto gitOut = [](const QString &dir, const QStringList &args) -> QString {
         QProcess git;
@@ -5221,7 +5342,9 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     // full-prompt replay when there's no recoverable session id (e.g. a legacy
     // transcript or a fresh run), so those still resume the way they used to.
     const QString steer = m_pendingSteerMessage.take(sid);
-    const QString resumeId = resuming ? lastClaudeSessionId(sid) : QString();
+    const QString resumeId =
+        resuming ? (codex ? lastCodexThreadId(sid) : lastClaudeSessionId(sid))
+                 : QString();
     if (!resumeId.isEmpty()) {
         if (steer.isEmpty()) {
             prompt = QStringLiteral("Continue where you left off.");
@@ -5245,8 +5368,8 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     m_streamSessionInfo[sid] = session;
     if (ClaudeStreamSession *old = m_streamSessions.take(sid))
         old->deleteLater();
-    auto *stream = new ClaudeStreamSession(this);
-    m_streamSessions.insert(sid, stream);
+    if (CodexAppServerSession *old = m_codexStreams.take(sid))
+        old->deleteLater();
     // Record the initial user turn so it replays when switching back to this view.
     // On a resume the preserved transcript already holds the original prompt, so
     // only a fresh run logs it here.
@@ -5254,9 +5377,10 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         applyTranscriptEvent(sid, QJsonObject{
                                       {QStringLiteral("type"), QStringLiteral("_local_user")},
                                       {QStringLiteral("text"), prompt}});
-    connect(stream, &ClaudeStreamSession::event, this,
-            [this, sid](const QJsonObject &ev) { applyTranscriptEvent(sid, ev); });
-    connect(stream, &ClaudeStreamSession::rawLine, this, [this, sid](const QString &line) {
+    auto onEvent = [this, sid](const QJsonObject &ev) {
+        applyTranscriptEvent(sid, ev);
+    };
+    auto onRaw = [this, sid](const QString &line) {
         noteAgentActivity(sid, line.size()); // pulse the list's night-rider light
         QString &buf = m_streamRaw[sid];
         // Separate each JSON object with a blank line so the raw view is readable.
@@ -5265,8 +5389,21 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             buf = buf.right(300000);
         if (sid == m_selectedAgentSessionId)
             appendAgentRawLog(line + QStringLiteral("\n\n"));
-    });
-    connect(stream, &ClaudeStreamSession::finished, this, [this, sid](int) {
+    };
+    auto onStderr = [this, sid](const QString &text) {
+        if (text.isEmpty())
+            return;
+        noteAgentActivity(sid, text.size());
+        QString &buf = m_streamRaw[sid];
+        buf += QStringLiteral("[stderr] ") + text;
+        if (!buf.endsWith(QLatin1Char('\n')))
+            buf += QLatin1Char('\n');
+        if (buf.size() > 400000)
+            buf = buf.right(300000);
+        if (sid == m_selectedAgentSessionId)
+            appendAgentRawLog(QStringLiteral("[stderr] ") + text);
+    };
+    auto onFinished = [this, sid, codex](int exitCode) {
         // The CLI process is meant to stay alive across turns — a genuinely
         // finished turn is what the `result` event handler above marks Success
         // (or Failed on an error result). Landing here with the session still
@@ -5280,26 +5417,85 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
         if (AgentSession *as = findAgentSession(sid)) {
             if (as->status == AgentStatus::Running ||
                 as->status == AgentStatus::Waiting) {
-                as->status = AgentStatus::Queued;
-                as->lastError.clear();
+                const bool launchFailed =
+                    codex && lastCodexThreadId(sid).isEmpty();
+                if (launchFailed) {
+                    as->status = AgentStatus::Failed;
+                    as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+                    as->lastError = QStringLiteral(
+                        "Codex app-server exited before starting a thread (exit %1).")
+                                        .arg(exitCode);
+                } else {
+                    as->status = AgentStatus::Queued;
+                    as->lastError.clear();
+                    if (!m_agentQueue.contains(sid))
+                        m_agentQueue.append(sid);
+                }
                 m_agentStore->saveSession(*as);
                 scheduleAgentSessionsPush(); // adhoc #182
-                if (!m_agentQueue.contains(sid))
-                    m_agentQueue.append(sid);
             }
         }
         maybeCreatePullForStreamSession(sid);
         // The PR captured the diff as a patch, so the worktree is no longer
         // needed; drop it to free the branch for checkout (issue #74).
         cleanupStreamWorktree(sid);
-        if (ClaudeStreamSession *done = m_streamSessions.take(sid))
+        if (codex) {
+            if (CodexAppServerSession *done = m_codexStreams.take(sid))
+                done->deleteLater();
+        } else if (ClaudeStreamSession *done = m_streamSessions.take(sid)) {
             done->deleteLater();
+        }
         reloadAgents();
         if (sid == m_selectedAgentSessionId)
             showAgentSession(sid);
         looperOnSessionFinished(sid); // adhoc #92: chain to the next open issue
         processAgentQueue(); // pick the re-queued session back up
-    });
+    };
+    if (codex) {
+        auto *stream = new CodexAppServerSession(this);
+        m_codexStreams.insert(sid, stream);
+        connect(stream, &CodexAppServerSession::event, this, onEvent);
+        connect(stream, &CodexAppServerSession::rawLine, this, onRaw);
+        connect(stream, &CodexAppServerSession::stderrText, this, onStderr);
+        connect(stream, &CodexAppServerSession::finished, this, onFinished);
+        connect(stream, &CodexAppServerSession::modelsListed, this,
+                [this](const QJsonArray &models) {
+                    if (models.isEmpty())
+                        return;
+                    QSettings().setValue(
+                        kCodexModelsCacheSetting,
+                        QJsonDocument(models).toJson(QJsonDocument::Compact));
+                    if (m_quickAddAgentProvider && m_quickAddClaudeModel &&
+                        agentIsCodexProvider(
+                            m_quickAddAgentProvider->currentData().toString())) {
+                        mergeLiveCodexModels(m_quickAddClaudeModel, models);
+                        const QString selected =
+                            selectedModelComboValue(m_quickAddClaudeModel);
+                        QSettings().setValue(kCodexModelSetting, selected);
+                        if (m_codexModelEdit)
+                            m_codexModelEdit->setText(selected);
+                    }
+                    if (m_branchFixAgentCombo && m_branchFixModelCombo &&
+                        agentIsCodexProvider(
+                            m_branchFixAgentCombo->currentData().toString()))
+                        mergeLiveCodexModels(m_branchFixModelCombo, models);
+                    if (m_actionFixAgentCombo && m_actionFixModelCombo &&
+                        agentIsCodexProvider(
+                            m_actionFixAgentCombo->currentData().toString()))
+                        mergeLiveCodexModels(m_actionFixModelCombo, models);
+                    if (m_issueAgentProvider && m_issueAgentModel &&
+                        agentIsCodexProvider(
+                            m_issueAgentProvider->currentData().toString()))
+                        mergeLiveCodexModels(m_issueAgentModel, models);
+                });
+    } else {
+        auto *stream = new ClaudeStreamSession(this);
+        m_streamSessions.insert(sid, stream);
+        connect(stream, &ClaudeStreamSession::event, this, onEvent);
+        connect(stream, &ClaudeStreamSession::rawLine, this, onRaw);
+        connect(stream, &ClaudeStreamSession::stderrText, this, onStderr);
+        connect(stream, &ClaudeStreamSession::finished, this, onFinished);
+    }
 
     // Snapshot the fields the async continuation needs *before* reloadAgents()
     // below rebuilds m_agentSessions and leaves the `session` reference dangling.
@@ -5352,14 +5548,47 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
     // otherwise fall back to the footer quick-add bar's persisted choice (adhoc
     // #261). Empty leaves the CLI on its own default; otherwise it's passed
     // through as `--model`.
-    const QString claudeModel =
-        !model.isEmpty() ? model
-                         : QSettings().value(kClaudeCodeModelSetting).toString().trimmed();
+    const QString selectedModel =
+        !model.isEmpty()
+            ? model
+            : QSettings()
+                  .value(codex ? kCodexModelSetting : kClaudeCodeModelSetting)
+                  .toString()
+                  .trimmed();
     // Auto mode (adhoc #91) routes on the task itself, not the full workflow
     // prompt — `lead` carries the user's ask (or the issue + its comments).
     const QString routeTask = lead;
     auto launch = [this, sid, prompt, autoMode, branchName, resumeId,
-                   claudeModel, routeTask](const QString &workdir) {
+                   selectedModel, routeTask, codex,
+                   sessionMode](const QString &workdir) {
+        if (codex) {
+            CodexAppServerSession *live = m_codexStreams.value(sid);
+            if (!live)
+                return;
+            if (AgentSession *as = findAgentSession(sid))
+                m_agentStore->appendLog(
+                    *as,
+                    QStringLiteral("\n==> Running Codex app-server transcript on "
+                                   "branch %1 in %2\n")
+                        .arg(branchName, workdir));
+            const QString mode =
+                sessionMode.isEmpty()
+                    ? (autoMode ? kClaudeAutoModeLabel
+                                : QStringLiteral("Ask before edits"))
+                    : sessionMode;
+            const QString effort =
+                QSettings().value(kClaudeEffortSetting, QStringLiteral("high"))
+                    .toString();
+            // Codex should use the user's normal ChatGPT/Codex login just like
+            // the official IDE extension. Do not let inherited API-key variables
+            // silently switch this path to API billing.
+            live->start(workdir,
+                        {QStringLiteral("OPENAI_API_KEY"),
+                         QStringLiteral("CODEX_API_KEY")},
+                        prompt, resumeId, selectedModel, mode, effort);
+            return;
+        }
+
         ClaudeStreamSession *live = m_streamSessions.value(sid);
         if (!live)
             return; // session was stopped or deleted while the worktree was building
@@ -5398,10 +5627,10 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
             live->start(workdir, launchEnv, prompt, /*skipPermissions=*/autoMode,
                         resumeId, chosenModel, effort, fallback);
         };
-        if (claudeModel == kClaudeAutoModelId)
+        if (selectedModel == kClaudeAutoModelId)
             resolveAutoClaudeModel(sid, routeTask, workdir, live, std::move(begin));
         else
-            begin(claudeModel);
+            begin(selectedModel);
     };
 
     // Give the agent its own worktree + branch so concurrent agents never share a
@@ -5467,7 +5696,7 @@ void MainWindow::startClaudeCodeTranscript(AgentSession &session, const Issue &i
                     // wait for the teardown to drain and retry — unless the user
                     // stopped/deleted the session while we were waiting.
                     if (!resumeId.isEmpty() && attemptsLeft > 0 &&
-                        m_streamSessions.value(sid)) {
+                        (m_streamSessions.value(sid) || m_codexStreams.value(sid))) {
                         QTimer::singleShot(400, this,
                                            [runAdd, attemptsLeft] {
                                                (*runAdd)(attemptsLeft - 1);
@@ -5549,7 +5778,8 @@ QString MainWindow::cachedSessionWorktree(int sessionId, const QString &repoLoca
 
 bool MainWindow::isStreamTranscriptSession(int sessionId) const
 {
-    return m_streamSessions.contains(sessionId) || m_streamEvents.contains(sessionId);
+    return m_streamSessions.contains(sessionId) || m_codexStreams.contains(sessionId) ||
+           m_streamEvents.contains(sessionId);
 }
 
 // Stop the Claude Code CLI for a session and transition it to Stopped. The
@@ -5559,10 +5789,22 @@ bool MainWindow::isStreamTranscriptSession(int sessionId) const
 void MainWindow::stopStreamSession(int sessionId, bool refreshUi)
 {
     ClaudeStreamSession *stream = m_streamSessions.take(sessionId);
-    if (!stream)
+    CodexAppServerSession *codex = m_codexStreams.take(sessionId);
+    if (!stream && !codex)
         return;
-    stream->stop();
-    stream->deleteLater();
+    if (stream) {
+        stream->stop();
+        stream->deleteLater();
+    }
+    if (codex) {
+        codex->interrupt();
+        // Give app-server a short window to acknowledge the native interrupt
+        // before closing its long-lived transport.
+        QTimer::singleShot(150, codex, [codex] {
+            codex->stop();
+            codex->deleteLater();
+        });
+    }
 
     QString &raw = m_streamRaw[sessionId];
     raw += QStringLiteral("\n==> Stop requested by user.\n");
@@ -5570,7 +5812,8 @@ void MainWindow::stopStreamSession(int sessionId, bool refreshUi)
         appendAgentRawLog(QStringLiteral("\n==> Stop requested by user.\n"));
 
     if (AgentSession *as = findAgentSession(sessionId);
-        as && as->status == AgentStatus::Running) {
+        as && (as->status == AgentStatus::Running ||
+               as->status == AgentStatus::Waiting)) {
         as->status = AgentStatus::Stopped;
         as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
         if (m_agentStore)
@@ -5973,6 +6216,7 @@ void MainWindow::renderExternalTranscript(int sessionId, bool full)
 // render it live. Also collect the files it edits for the side panel.
 void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
 {
+    const QString type = ev.value(QStringLiteral("type")).toString();
     m_streamEvents[sessionId].append(ev);
     // Persist the turn so the transcript survives an app restart (issue #41).
     if (m_agentStore && m_streamSessionInfo.contains(sessionId))
@@ -5993,6 +6237,10 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
             const QString t = ev.value(QStringLiteral("text")).toString().trimmed();
             if (!t.isEmpty())
                 logText = QStringLiteral("\n> ") + t + QLatin1Char('\n');
+        } else if (etype == QLatin1String("_codex_agent_complete")) {
+            const QString text = ev.value(QStringLiteral("text")).toString().trimmed();
+            if (!text.isEmpty())
+                logText = QLatin1Char('\n') + text + QLatin1Char('\n');
         } else if (etype == QLatin1String("assistant")) {
             const QJsonArray content = ev.value(QStringLiteral("message")).toObject()
                                            .value(QStringLiteral("content")).toArray();
@@ -6048,6 +6296,7 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
                                        .value(QStringLiteral("content")).toArray();
         QString assistantText;
         bool askedQuestion = false;
+        bool needsPermission = false;
         for (const QJsonValue &bv : content) {
             const QJsonObject b = bv.toObject();
             const QString btype = b.value(QStringLiteral("type")).toString();
@@ -6056,14 +6305,27 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
             if (btype != QLatin1String("tool_use"))
                 continue;
             const QString name = b.value(QStringLiteral("name")).toString();
-            if (name == QLatin1String("AskUserQuestion"))
+            if (name == QLatin1String("AskUserQuestion")) {
                 askedQuestion = true;
+                needsPermission =
+                    b.value(QStringLiteral("id")).toString().contains(
+                        QStringLiteral("approval"), Qt::CaseInsensitive);
+            }
             if (name == QLatin1String("Edit") || name == QLatin1String("Write")
                 || name == QLatin1String("MultiEdit") || name == QLatin1String("NotebookEdit")) {
                 const QString p = b.value(QStringLiteral("input")).toObject()
                                       .value(QStringLiteral("file_path")).toString();
                 if (!p.isEmpty() && !m_streamFiles[sessionId].contains(p))
                     m_streamFiles[sessionId].append(p);
+            } else if (name == QLatin1String("FileChange")) {
+                const QJsonArray changes = b.value(QStringLiteral("input")).toObject()
+                                               .value(QStringLiteral("changes")).toArray();
+                for (const QJsonValue &change : changes) {
+                    const QString p =
+                        change.toObject().value(QStringLiteral("path")).toString();
+                    if (!p.isEmpty() && !m_streamFiles[sessionId].contains(p))
+                        m_streamFiles[sessionId].append(p);
+                }
             }
         }
         if (!assistantText.trimmed().isEmpty())
@@ -6082,7 +6344,45 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
         // user's answer, so flag it "Waiting" and notify just as an ended turn
         // would.
         if (askedQuestion)
-            notifyAgentWaiting(sessionId, false);
+            notifyAgentWaiting(sessionId, needsPermission);
+    }
+
+    if (type == QLatin1String("_codex_agent_complete")) {
+        const QString text = ev.value(QStringLiteral("text")).toString().trimmed();
+        if (!text.isEmpty()) {
+            m_lastAssistantText[sessionId] = text;
+            QStringList inlineOptions;
+            if (ClaudeTranscriptView::parseInlineChoices(text, inlineOptions))
+                notifyAgentWaiting(sessionId, false);
+        }
+    } else if (type == QLatin1String("_codex_usage")) {
+        if (AgentSession *as = findAgentSession(sessionId)) {
+            as->promptTokens = static_cast<int>(qMin<qint64>(
+                static_cast<qint64>(ev.value(QStringLiteral("input_tokens")).toDouble()),
+                2'000'000'000));
+            as->completionTokens = static_cast<int>(qMin<qint64>(
+                static_cast<qint64>(ev.value(QStringLiteral("output_tokens")).toDouble()),
+                2'000'000'000));
+            as->totalTokens = static_cast<int>(qMin<qint64>(
+                static_cast<qint64>(ev.value(QStringLiteral("total_tokens")).toDouble()),
+                2'000'000'000));
+            as->contextTokens = as->totalTokens;
+            const int contextWindow = static_cast<int>(qMin<qint64>(
+                static_cast<qint64>(ev.value(QStringLiteral("context_window")).toDouble()),
+                2'000'000'000));
+            if (contextWindow > 0)
+                as->contextWindow = contextWindow;
+            m_sessionTokens[sessionId] = as->totalTokens;
+            if (m_agentStore && !isExternalSession(sessionId))
+                m_agentStore->saveSession(*as);
+            updateAgentTokenCell(sessionId);
+        }
+    } else if (type == QLatin1String("_codex_rate_limits") ||
+               type == QLatin1String("rate_limit_event")) {
+        QJsonObject limits = ev.value(QStringLiteral("rateLimits")).toObject();
+        if (limits.isEmpty())
+            limits = ev.value(QStringLiteral("codex_rate_limits")).toObject();
+        applyCodexRateLimits(limits);
     }
 
     // The CLI is asking to use a tool while in manual mode: the agent is blocked
@@ -6091,7 +6391,6 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
     // NOT a wait: it's handled below as a successful completion. Only genuine
     // input-required states — a permission prompt here, or an AskUserQuestion
     // multiple-choice handled above — mark the session "Waiting" (adhoc #163).
-    const QString type = ev.value(QStringLiteral("type")).toString();
     if (type == QLatin1String("control_request"))
         notifyAgentWaiting(sessionId, /*needsPermission=*/true);
 
@@ -6126,8 +6425,10 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
             // the red error state instead of a green "Success" — the finished()
             // handler only promotes Running/Waiting to Success, so this sticks.
             const QString subtype = ev.value(QStringLiteral("subtype")).toString();
-            if (ev.value(QStringLiteral("is_error")).toBool()
-                || subtype.startsWith(QLatin1String("error"))) {
+            const bool userStopped = as->status == AgentStatus::Stopped;
+            if (!userStopped &&
+                (ev.value(QStringLiteral("is_error")).toBool() ||
+                 subtype.startsWith(QLatin1String("error")))) {
                 as->status = AgentStatus::Failed;
                 as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
                 const QString detail = ev.value(QStringLiteral("result")).toString().trimmed();
@@ -6148,6 +6449,14 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
             updateAgentCostCell(sessionId);
             updateAgentRunSummaryCells(sessionId); // fill the Turns/Time columns
             updateAgentStatusCell(sessionId);
+        }
+        // app-server remains alive between turns, unlike the one-shot runner.
+        // Capture/open the PR as soon as a clean Codex turn completes instead of
+        // waiting for the long-lived transport process to exit.
+        if (m_codexStreams.contains(sessionId) &&
+            !ev.value(QStringLiteral("is_error")).toBool()) {
+            maybeCreatePullForStreamSession(sessionId);
+            looperOnSessionFinished(sessionId);
         }
     }
 
@@ -6180,7 +6489,13 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &ev)
             // so refreshing on every one perpetually restarted (starved) the timer and
             // the `git diff` never fired while the agent streamed — the panel only
             // caught up once output paused. Partial deltas can't change the file set.
-            if (type != QLatin1String("stream_event"))
+            const bool streamingOnly =
+                type == QLatin1String("stream_event") ||
+                type == QLatin1String("_codex_agent_delta") ||
+                type == QLatin1String("_codex_tool_delta") ||
+                type == QLatin1String("_codex_usage") ||
+                type == QLatin1String("_codex_rate_limits");
+            if (!streamingOnly)
                 refreshAgentFilesPanel(sessionId);
             // The view was just kept in sync incrementally, so the render guard's
             // count must track the append — otherwise the next reload would force a
@@ -6207,6 +6522,26 @@ QString MainWindow::lastClaudeSessionId(int sessionId) const
     const QList<QJsonObject> &events = m_streamEvents.value(sessionId);
     for (auto it = events.crbegin(); it != events.crend(); ++it) {
         const QString id = it->value(QStringLiteral("session_id")).toString();
+        if (!id.isEmpty())
+            return id;
+    }
+    return QString();
+}
+
+// Codex app-server threads are the native conversation identity used by the
+// official IDE extension. The transport records it on the normalized init
+// event, so a ForkMesh restart can resume the real thread rather than replaying
+// a clipped plain-text transcript into a new process.
+QString MainWindow::lastCodexThreadId(int sessionId) const
+{
+    const QList<QJsonObject> &events = m_streamEvents.value(sessionId);
+    for (auto it = events.crbegin(); it != events.crend(); ++it) {
+        QString id = it->value(QStringLiteral("thread_id")).toString();
+        if (id.isEmpty()
+            && it->value(QStringLiteral("provider")).toString()
+                   == QLatin1String("codex")) {
+            id = it->value(QStringLiteral("session_id")).toString();
+        }
         if (!id.isEmpty())
             return id;
     }
@@ -6608,6 +6943,15 @@ static void buildStreamSideBuffers(const QList<QJsonObject> &events, QString *ra
                                       .value(QStringLiteral("file_path")).toString();
                 if (!p.isEmpty() && !files->contains(p))
                     files->append(p);
+            } else if (name == QLatin1String("FileChange")) {
+                const QJsonArray changes = b.value(QStringLiteral("input")).toObject()
+                                               .value(QStringLiteral("changes")).toArray();
+                for (const QJsonValue &change : changes) {
+                    const QString p =
+                        change.toObject().value(QStringLiteral("path")).toString();
+                    if (!p.isEmpty() && !files->contains(p))
+                        files->append(p);
+                }
             }
         }
     }
@@ -6660,7 +7004,8 @@ bool MainWindow::ensureStreamEventsLoadedAsync(int sessionId)
             if (out.events.isEmpty()) {
                 m_streamEventsAbsent.insert(sessionId); // don't re-probe per click
             } else if (!m_streamEvents.contains(sessionId) &&
-                       !m_streamSessions.contains(sessionId)) {
+                       !m_streamSessions.contains(sessionId) &&
+                       !m_codexStreams.contains(sessionId)) {
                 // A live stream may have (re)started while we read — it owns the
                 // buffers then, and this now-stale snapshot is dropped.
                 m_streamEvents[sessionId] = std::move(out.events);
@@ -7403,8 +7748,11 @@ void MainWindow::updateAgentActionState()
     // Claude Code stream-json session (no runner) is still attached.
     ClaudeStreamSession *stream =
         selected ? m_streamSessions.value(m_selectedAgentSessionId) : nullptr;
+    CodexAppServerSession *codex =
+        selected ? m_codexStreams.value(m_selectedAgentSessionId) : nullptr;
     const bool running = selected && (runnerForSession(m_selectedAgentSessionId) ||
-                                      (stream && stream->running()));
+                                      (stream && stream->running()) ||
+                                      (codex && codex->running()));
     // External rows have negative ids (so `running` is false), but a live one can
     // still be stopped by signalling its CLI process. See stopExternalSession.
     const bool externalRunning =
