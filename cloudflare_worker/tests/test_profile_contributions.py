@@ -7,12 +7,18 @@ import hashlib
 import json
 import re
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, urlparse
 
 import pytest
+
+# Allow ``import src.*`` regardless of the working directory pytest is run from
+# (the collector may load this module from the repo root, where the worker
+# package dir is not otherwise on sys.path).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import src.contributions as contributions
 from src.contributions import (
