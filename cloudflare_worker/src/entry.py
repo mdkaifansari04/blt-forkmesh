@@ -3362,6 +3362,26 @@ async def _contribution_ingest_snapshot(
         return {"accepted": False, "warning": "contribution_branch_mismatch"}
     if str(snapshot["capturedAt"]) != record.get("updatedAt"):
         return {"accepted": False, "warning": "contribution_time_mismatch"}
+
+    # Fast path for a re-attestation republish: it re-sends the SAME snapshot, so
+    # its content hash -> generation_bi is unchanged. If that generation is
+    # already the active one for this repo, the ingest is a pure no-op (the
+    # staging batch below is all INSERT OR IGNORE plus a captured_at<? UPDATE that
+    # can't advance for an equal capturedAt). Skip the expensive signature verify,
+    # actor lookups, staging batch, and prune entirely — re-running the full
+    # ingest on every drifted-pin re-attest was a major driver of the Worker CPU
+    # (Cloudflare 1102) overload the desktop then hammered with retries.
+    generation_bi = await blind_index(
+        env, "profile-generation:" + source_repo_bi + ":" + snapshot_hash)
+    active_row = await d1_first(
+        env,
+        "SELECT active_generation_bi FROM profile_contribution_projects "
+        "WHERE source_repo_bi=?",
+        source_repo_bi,
+    )
+    if active_row and active_row.get("active_generation_bi") == generation_bi:
+        return {"accepted": True, "warning": ""}
+
     try:
         canonical = contributions.snapshot_signature_canonical(
             record["owner"], record["name"], record["updatedAt"],
@@ -3376,8 +3396,6 @@ async def _contribution_ingest_snapshot(
     owner_user_bi = await _contribution_owner_user_bi(
         env, account_bi, account_rec)
     project_bi = await _contribution_project_bi(env, record)
-    generation_bi = await blind_index(
-        env, "profile-generation:" + source_repo_bi + ":" + snapshot_hash)
     actor_users = await _contribution_actor_user_bis(
         env, [row[1] for row in snapshot["days"]])
     grouped_days = {}
