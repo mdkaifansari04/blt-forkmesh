@@ -610,8 +610,24 @@ QList<Issue> IssueStore::loadAll(QString *error, const std::function<void()> &ti
         if (!numeric)
             continue;
         Issue issue;
-        if (readIssueFile(number, issue) && !issue.isDeleted())
-            issues.append(issue);
+        if (readIssueFile(number, issue)) {
+            if (!issue.isDeleted())
+                issues.append(issue);
+        } else {
+            // The issue folder exists (mirrorOpenIssueCount counts it, treating an
+            // unreadable/unparseable blob as open), but we couldn't open or parse
+            // issue-<n>.json. Keep a flagged open placeholder instead of silently
+            // dropping the row and undercounting the Issues tab below the Mirror
+            // nodes tab — the same reconciliation loadFromMirror does for the
+            // read-only path (commit 70768d95). Without this the node's own
+            // writable checkout disagreed with its mirror's open count.
+            Issue placeholder;
+            placeholder.number = number;
+            placeholder.status = QStringLiteral("open");
+            placeholder.title =
+                QStringLiteral("issue #%1 (couldn't load from mirror)").arg(number);
+            issues.append(placeholder);
+        }
         if (tick)
             tick();
     }
