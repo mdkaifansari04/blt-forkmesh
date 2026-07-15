@@ -2227,6 +2227,24 @@ int main(int argc, char *argv[])
                 corruptStore.loadAllStrict(&corruptStrictError);
             check(corruptStrict.isEmpty() && !corruptStrictError.isEmpty(),
                   "strict issue load drops the corrupt record and reports it");
+
+            // adhoc #7: the node's OWN writable checkout (canWrite() == true) took
+            // a separate on-disk loop that silently dropped an unreadable
+            // issue-N.json, so the Issues tab undercounted below the mirror's open
+            // count for the source-of-truth node. It must keep the same open
+            // placeholder the read-only mirror load does.
+            IssueStore writableStore(corruptIssueRepo.path(), QString(), &identity,
+                                     "owner");
+            check(writableStore.canWrite(),
+                  "writable issue store recognises the local checkout");
+            QString writableError;
+            const QList<Issue> writableIssues =
+                writableStore.loadAll(&writableError);
+            check(writableIssues.size() == 1 &&
+                      writableIssues.first().number == 1 &&
+                      writableIssues.first().status == QStringLiteral("open"),
+                  "unreadable issue blob survives as open placeholder on the "
+                  "writable path too");
         }
 
         auto semanticIssueSnapshot = [&](const QByteArray &issueJson,

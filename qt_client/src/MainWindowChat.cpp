@@ -701,7 +701,13 @@ QWidget *MainWindow::buildNetworkLogDock()
         sendPromptToSelectedAgent(prompt);
     });
 
-    m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // Vertically Expanding (not Fixed) so the text area absorbs any spare height
+    // in the prompt frame. With the fixed-height bottom bar below it, that keeps
+    // the toolbar pinned flush to the foot of the frame instead of floating up
+    // with a gap when the frame is taller than the two rows' combined hint
+    // (adhoc: the interface items must stay fixed to the bottom, not drift with
+    // the text).
+    m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     // Two send icons stacked in a column at the prompt's bottom-right corner.
     auto *sendColumn = new QVBoxLayout;
@@ -791,8 +797,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     auto *promptLayout = new QVBoxLayout(promptWrapper);
     promptLayout->setContentsMargins(0, 0, 0, 0);
     promptLayout->setSpacing(0);
-    promptLayout->addWidget(m_issueQuickAdd);
-    promptLayout->addWidget(bottomBarScroll);
+    // The editor takes all the stretch so it grows/shrinks with the frame; the
+    // bottom bar carries none and keeps its fixed 56px height welded to the foot.
+    promptLayout->addWidget(m_issueQuickAdd, 1);
+    promptLayout->addWidget(bottomBarScroll, 0);
 
     // "Agents:" status strip above the prompt input (adhoc #111): a clickable
     // label plus one small colored dot per known agent session — a status
@@ -7079,7 +7087,7 @@ void MainWindow::refreshNodesTable()
         MemberInfo best;
         bool found = false;
         for (const MemberInfo &m : std::as_const(m_homeRoster)) {
-            if (m.name != name)
+            if (nodeListIdentityKey(m) != name)
                 continue;
             if (!found || (m.online && !best.online)) {
                 best = m;
@@ -7249,7 +7257,7 @@ void MainWindow::showNodeDetailForRow(int row)
     MemberInfo mi;
     bool inRoster = false;
     for (const MemberInfo &m : std::as_const(m_homeRoster)) {
-        if (m.name != node)
+        if (nodeListIdentityKey(m) != node)
             continue;
         // Prefer an online entry when a reinstall left the name twice (adhoc #46),
         // but backfill blank identity fields from the other duplicate so the

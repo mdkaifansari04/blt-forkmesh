@@ -6770,6 +6770,22 @@ inline int mirrorNumberedDirMax(const QString &mirrorPath, const QString &branch
     return maxNumber;
 }
 
+// Stable identity used to group a roster member into one row of the Nodes list
+// (and to look its telemetry back up). A headless mirror node often shares — or
+// omits — the chat display name of the account that owns it, which collapsed
+// several distinct mirror nodes into a single row: mirror2/mirror3 vanished from
+// the Nodes list even though the per-repo Mirror nodes view (which keys on the
+// advert / nodeName via displayNodeName) listed them correctly. Prefer the
+// registered nodeName so each physical node keeps its own row; our own node
+// keeps its chat name so the "(you)" row still reads naturally.
+inline QString nodeListIdentityKey(const MemberInfo &m)
+{
+    const QString nodeName = m.nodeName.trimmed();
+    if (!m.self && !nodeName.isEmpty())
+        return nodeName;
+    return m.name.trimmed();
+}
+
 // Open issue count for the advertised catalog issueCount. Closed issues keep
 // their .forkmesh/issues/<n>/ directory on disk, so a bare directory count
 // (mirrorNumberedDirCount) overstates the open total the website badges the
