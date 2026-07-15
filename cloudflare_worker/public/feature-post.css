@@ -171,13 +171,6 @@ h1 {
   background: var(--image-placeholder);
 }
 
-/* A diagram/infographic hero carries its own text and layout, so it must be
-   shown in full rather than cropped to the standard 16:9 abstract-art frame. */
-.hero-img.is-square {
-  aspect-ratio: 1/1;
-  object-fit: contain;
-}
-
 .body {
   max-width: 790px;
   margin: 44px auto 0;
@@ -212,6 +205,27 @@ html:not(.light) .body a {
   border-radius: 14px;
   padding: 22px;
   color: var(--muted);
+}
+
+.body-figure {
+  margin: 34px 0;
+}
+
+.body-figure img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--image-placeholder);
+}
+
+.body-figure figcaption {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+  text-align: center;
 }
 
 .next {
