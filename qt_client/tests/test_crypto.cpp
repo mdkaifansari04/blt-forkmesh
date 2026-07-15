@@ -1850,6 +1850,27 @@ int main(int argc, char *argv[])
                           QStringLiteral("publishQueuedUpdate();")),
                   "rejected submitted contributions invalidate and retry once without dropping queued work");
 
+            // A persistently-overloaded relay (Cloudflare 1102 -> HTTP 503)
+            // must not be re-POSTed at a fixed 60s cadence forever: the retry
+            // delay escalates per consecutive failure and resets on success.
+            check(publicationSource.contains(
+                      QStringLiteral(
+                          "catalogPublishRetryDelayMs(const QNetworkReply "
+                          "*reply, int status,")) &&
+                      publicationSource.contains(
+                          QStringLiteral("int consecutiveFailures)")) &&
+                      publicationSource.contains(QStringLiteral(
+                          "kCatalogPublishRateLimitRetryMs << shift")),
+                  "catalog publish retry delay grows exponentially with consecutive failures");
+            check(publicationSource.contains(QStringLiteral(
+                      "catalogPublishRetryDelayMs(reply, status, "
+                      "priorFailures)")) &&
+                      publicationSource.contains(QStringLiteral(
+                          "m_catalogPublishConsecutiveFailures.insert(")) &&
+                      publicationSource.contains(QStringLiteral(
+                          "m_catalogPublishConsecutiveFailures.remove(publishKey)")),
+                  "consecutive publish failures are counted, escalated, and cleared on success");
+
             RepoContributionPublicationCache scanCapacityCache(8, 2);
             check(scanCapacityCache.begin(contributionCacheKey, false) ==
                           CacheBegin::Started &&
