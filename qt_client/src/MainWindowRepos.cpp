@@ -419,9 +419,14 @@ void MainWindow::refreshRepositoryList()
                   return a.name.localeAwareCompare(b.name) < 0;
               });
     for (const MemberInfo &m : std::as_const(ranked)) {
-        if (m.name.isEmpty())
+        // Key by the node's stable identity, not just its chat display name, so a
+        // headless mirror that shares/omits the owner's chat name still gets its
+        // own row instead of collapsing into the owner (adhoc: mirror2/mirror3
+        // missing from the Nodes list).
+        const QString nodeKey = nodeListIdentityKey(m);
+        if (nodeKey.isEmpty())
             continue;
-        if (!nodes.contains(m.name)) {
+        if (!nodes.contains(nodeKey)) {
             NodeInfo ni;
             ni.inRoster = true;
             ni.online = m.online;
@@ -432,10 +437,10 @@ void MainWindow::refreshRepositoryList()
             ni.balance = m.solanaBalance.trimmed();
             ni.platform = m.platform;
             ni.mirrors = m.mirrors;
-            nodes.insert(m.name, ni);
-            nodeOrder.append(m.name);
+            nodes.insert(nodeKey, ni);
+            nodeOrder.append(nodeKey);
         } else {
-            NodeInfo &ni = nodes[m.name];
+            NodeInfo &ni = nodes[nodeKey];
             if (m.online)
                 ni.online = true;
             if (ni.platform.isEmpty())
