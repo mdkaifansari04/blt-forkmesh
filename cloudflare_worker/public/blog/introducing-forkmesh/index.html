@@ -204,15 +204,22 @@
         <p>
           Collaboration history shouldn't live in a proprietary silo either. ForkMesh
           issues and PRs are signed, append-only events that can be represented as files
-          inside the repository:
+          inside the repository. A PR carries a patch — and an optional
+          <code>git format-patch</code> commit series — so it can be submitted with no
+          push access, no fork, and no branch at all; it can also ride a real branch when
+          a contributor has one. Every comment and review is signed too, each bound to
+          its own PR:
         </p>
         <pre><code>forkmesh-pull-event-v1
 &lt;author pubkey&gt;
 &lt;ts&gt;
-sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
+sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code></pre>
         <p>
-          When a maintainer merges, the accepted record becomes part of normal Git
-          history — so the conversation around your code travels with the code, forever.
+          When a maintainer merges, ForkMesh runs a real <code>git merge</code> whenever
+          there's a resolvable commit behind the PR, falling back to replaying the stored
+          patch when there isn't — and the accepted PR, with its whole discussion thread,
+          is committed straight into the repository on its own branch. So the
+          conversation around your code travels with the code, forever.
         </p>
 
         <h2><span class="num">06</span>No center to capture</h2>
@@ -232,10 +239,12 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
         <h2>This is an MVP — and that's exciting</h2>
         <p>
           We'll be honest about where we are: ForkMesh is an early prototype. Live file
-          browsing and clone need at least one host online. <code>git push</code> over the
-          relay isn't production-ready yet, and pull requests today are signed patch
-          records rather than full branch refs. The relay is still a trusted jump layer
-          for connection metadata.
+          browsing, clone, and <code>git push</code> all need at least one host online —
+          the relay itself holds no Git objects, it only routes to whichever mirror is
+          live. Git hosting is scoped to a single relay instance today: a self-hosted
+          relay can already federate with the main relay for node coordination and
+          payouts, but repos don't yet move or merge across independent relay instances.
+          The relay is still a trusted jump layer for connection metadata.
         </p>
         <p>
           But the foundation that matters is already standing: real Ed25519 identity, real

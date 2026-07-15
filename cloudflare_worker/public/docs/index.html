@@ -844,16 +844,26 @@ sha256hex(content)</code></pre>
             Pull requests
           </h2>
           <p class="mt-4 text-[0.95rem] leading-8 text-[var(--docs-muted)]">
-            Current PRs are signed patch submissions. A maintainer can review
-            and merge them into the repo, at which point the accepted record
-            becomes part of Git-managed project history.
+            A PR is a signed record built around a patch: either a plain diff
+            plus an optional <code>git format-patch</code> commit series a
+            contributor attaches directly (no branch, fork, or push access
+            required), or a pointer to a real branch, whose diff is derived
+            from the live ref instead of stored. The whole PR object, and
+            every comment and review on it, carries its own Ed25519
+            signature bound to that PR's number. A maintainer verifies the
+            signatures and merges &mdash; a real <code>git merge</code> when
+            there is a resolvable commit, falling back to replaying the
+            stored patch/commit series otherwise &mdash; and the accepted
+            record is committed straight into the repository itself, on its
+            own <code>forkmesh/pulls</code> branch, so it travels with the
+            project rather than living only in the relay's database.
           </p>
           <pre
             class="doc-card mt-6 overflow-x-auto p-5 text-sm leading-7 text-[var(--docs-fg)]"
           ><code>forkmesh-pull-event-v1
 &lt;author pubkey&gt;
 &lt;ts&gt;
-sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
+sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code></pre>
         </section>
 
         <section
@@ -1149,10 +1159,13 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
               Collaboration, agents, and private access
             </h3>
             <p class="mt-2 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
-              Cross-user work is staged as signed records in D1, then the repo
-              owner drains and merges it into Git. Today the desktop polls owned
-              inboxes every minute and agent prompts every 30 seconds, with
-              exponential backoff on relay failures.
+              Cross-user work is staged as signed records in D1 &mdash; a
+              temporary inbox, not the permanent record &mdash; then the repo
+              owner's node drains it and merges/commits it into Git. Delivery
+              is event-driven: a minimal push frame on the repo's host tunnel
+              triggers one consolidated sync fetch, with a 5-minute poll as
+              the fallback for dropped events, and exponential backoff on
+              relay failures.
             </p>
             <div class="mt-5">
               <div class="route-row">
@@ -1703,7 +1716,7 @@ uvx --from workers-py pywrangler dev
           id="limitations"
           class="mt-16 scroll-mt-44"
           data-search-title="Current limitations"
-          data-search-body="Cloudflare metadata host online Git push receive-pack pull requests Durable Objects storage limitations"
+          data-search-body="Cloudflare metadata host online Git push receive-pack cross-relay federation Durable Objects storage limitations"
         >
           <h2 class="text-[1.5rem] font-black text-[var(--docs-fg)]">
             Current limitations
@@ -1717,12 +1730,14 @@ uvx --from workers-py pywrangler dev
                 metadata.
               </li>
               <li>
-                Fresh file browsing and clone require at least one host online.
+                Fresh file browsing, clone, and push require at least one host
+                online &mdash; the relay itself holds no Git objects.
               </li>
-              <li>Git push and receive-pack are not production-ready yet.</li>
               <li>
-                Pull requests are signed patch records, not full branch or ref
-                PRs.
+                Git hosting and mirroring are scoped to one relay instance
+                today; a self-hosted relay federates with the main relay for
+                node coordination and payouts, but repos don't yet move or
+                merge across independent relay instances.
               </li>
               <li>
                 Durable Objects should not be used as heavy long-term Git

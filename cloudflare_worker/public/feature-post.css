@@ -207,6 +207,27 @@ html:not(.light) .body a {
   color: var(--muted);
 }
 
+.body-figure {
+  margin: 34px 0;
+}
+
+.body-figure img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--image-placeholder);
+}
+
+.body-figure figcaption {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .next {
   margin-top: 56px;
   padding-top: 26px;
