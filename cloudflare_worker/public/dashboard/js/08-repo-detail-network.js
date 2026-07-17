@@ -35,8 +35,9 @@
     const routePath = routeMatchesRepo && routeParts.length > 3 ? routeParts.slice(3).map(decodeURIComponent).join("/") : "";
     // /owner/repo/pulls/<N> is a record deep link (the desktop client's
     // "View on website" button, or a refreshed/shared PR detail URL): keep
-    // the number in the address bar and open that PR's detail page below.
-    const recordRoute = ["pulls", "discussions"].includes(routeKind) && /^\d+$/.test(routePath)
+    // the number in the address bar and open that record's detail page below.
+    // Issues deep-link the same way so a refresh on an open issue stays on it.
+    const recordRoute = ["pulls", "discussions", "issues"].includes(routeKind) && /^\d+$/.test(routePath)
       ? { kind: routeKind, number: routePath }
       : null;
     const detailPath = recordRoute
@@ -1527,7 +1528,7 @@
         // Mirror the opened record into the address bar (/owner/repo/pulls/4)
         // so refresh and the desktop client's "View on website" button land on
         // this same detail page. Pending records have no mirror number yet.
-        if (["pulls", "discussions"].includes(kind) && /^\d+$/.test(number)) {
+        if (["pulls", "discussions", "issues"].includes(kind) && /^\d+$/.test(number)) {
           navigateHistory(`${repoPathUrl(state.selectedRepo)}/${kind}/${number}`);
         }
         loadRepoRecordDetail(state.selectedRepo, kind, number);
@@ -1537,12 +1538,15 @@
       const recordBackButton = event.target.closest("[data-repo-record-back]");
       if (recordBackButton && state.selectedRepo) {
         const kind = recordBackButton.dataset.repoRecordBack || "";
-        if (["pulls", "discussions"].includes(kind)) {
+        if (["pulls", "discussions", "issues"].includes(kind)) {
           navigateHistory(`${repoPathUrl(state.selectedRepo)}/${kind}`);
         }
         state.repoRecordDetail = null;
         if (kind === "issues") {
-          renderRepoIssues();
+          // A deep-linked refresh straight into the issue detail never loaded
+          // the list, so fetch it now instead of flashing an empty "No issues".
+          if (state.issuesView.items.length) renderRepoIssues();
+          else loadRepoIssues(state.selectedRepo);
         } else {
           loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
         }
@@ -1787,6 +1791,21 @@
     updateRepositoryPagination();
   });
 
+  // New-repository modal (adhoc #30): open from the Repos header, collect the
+  // create-and-mirror details, then hand off to the desktop node (see
+  // handleNewRepoSubmit — the signed publish + git mirror are desktop-only).
+  $("[data-new-repo-open]")?.addEventListener("click", () => setNewRepoModalOpen(true));
+  $("[data-new-repo-close]")?.addEventListener("click", () => setNewRepoModalOpen(false));
+  $("[data-new-repo-backdrop]")?.addEventListener("click", () => setNewRepoModalOpen(false));
+  $("[data-new-repo-cancel]")?.addEventListener("click", () => setNewRepoModalOpen(false));
+  $$("[data-new-repo-source]").forEach((btn) => {
+    btn.addEventListener("click", () => setNewRepoSource(btn.dataset.newRepoSource));
+  });
+  $("[data-new-repo-form]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    handleNewRepoSubmit();
+  });
+
   // [data-profile-settings-button] is a real link to /dashboard/settings now,
   // and [data-settings-section-link] clicks are handled by the delegated
   // document click handler above (with push: true for URL reflection).
@@ -1839,6 +1858,7 @@
 	      setNotificationDropdownOpen(false);
 	      setNotificationModalOpen(false);
 	      setAgentModalOpen(false);
+	      setNewRepoModalOpen(false);
 	      closeRepoBranchMenus();
 	      closeRepoFileFinder();
 	      closeGlobalSearch();
@@ -1905,12 +1925,20 @@
           // records since they cache in state.
           setRepoTab(kind);
           // Step Back/Forward between a record detail (/pulls/4) and its list.
-          if (["pulls", "discussions"].includes(kind)) {
+          if (["pulls", "discussions", "issues"].includes(kind)) {
             if (/^\d+$/.test(path)) {
               loadRepoRecordDetail(repo, kind, path);
             } else if (state.repoRecordDetail?.kind === kind) {
               state.repoRecordDetail = null;
-              loadRepoCollection(repo, kind, `[data-repo-${kind}]`);
+              // Issues re-render through their filtered list (loadRepoCollection
+              // would leak closed issues into the default Open view); fetch it
+              // if a deep-link landing never populated the list.
+              if (kind === "issues") {
+                if (state.issuesView.items.length) renderRepoIssues();
+                else loadRepoIssues(repo);
+              } else {
+                loadRepoCollection(repo, kind, `[data-repo-${kind}]`);
+              }
             }
           }
         } else if (kind === "blob" && path) {
