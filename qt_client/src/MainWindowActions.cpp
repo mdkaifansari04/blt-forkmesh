@@ -1233,40 +1233,27 @@ void MainWindow::refreshCommitTableStatusGlyphs()
         return;
     for (int row = 0; row < m_commitsTable->rowCount(); ++row) {
         QTableWidgetItem *summary = m_commitsTable->item(row, kCommitSummaryCol);
-        if (!summary)
-            continue;
+        if (!summary || summary->data(kCommitRowKindRole).toInt() != 0)
+            continue; // expanded file rows carry the same sha — commits only
         const QString sha = summary->data(Qt::UserRole).toString();
         if (sha.isEmpty())
             continue;
-        QString shortHash = sha.left(8);
-        if (const QTableWidgetItem *hashItem =
-                m_commitsTable->item(row, kCommitHashCol)) {
-            const QString sortHash = hashItem->data(kTableSortRole).toString();
-            if (!sortHash.isEmpty())
-                shortHash = sortHash;
-        }
         switch (commitStatusCode(sha)) {
         case 1:
             summary->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
-            summary->setToolTip(QString::fromUtf8("Checks passed \xC2\xB7 %1")
-                                    .arg(shortHash));
             break;
         case 2:
             summary->setIcon(themedOcticon("x", QColor("#f85149"), 14));
-            summary->setToolTip(QString::fromUtf8("Checks failed \xC2\xB7 %1")
-                                    .arg(shortHash));
             break;
         case 3:
             summary->setIcon(themedOcticon("sync", QColor("#58a6ff"), 14));
-            summary->setToolTip(QString::fromUtf8("Checks running \xC2\xB7 %1")
-                                    .arg(shortHash));
             break;
         default:
             summary->setIcon(QIcon());
-            summary->setToolTip(
-                QStringLiteral("Click to view the diff for %1").arg(shortHash));
             break;
         }
+        // The check state is part of the summary's hover box; rebuild it.
+        updateCommitRowHover(row);
     }
 }
 
