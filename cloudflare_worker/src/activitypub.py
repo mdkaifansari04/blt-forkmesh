@@ -553,8 +553,54 @@ def actor_essentials(doc):
     }
 
 
+def note_mentions(obj):
+    """Actor URLs the note's Mention tags point at (Mastodon puts one tag per
+    @-mention). Bounded: a hostile note can't make us walk thousands of tags."""
+    tags = obj.get("tag")
+    mentions = []
+    if isinstance(tags, list):
+        for tag in tags[:32]:
+            if not isinstance(tag, dict):
+                continue
+            if str(tag.get("type", "")) != "Mention":
+                continue
+            href = activity_object_id(tag.get("href"))
+            if href:
+                mentions.append(href)
+    return mentions
+
+
+def note_image_attachments(obj):
+    """Image attachments as [{url, mediaType, name}]. Mastodon attaches media
+    as type "Document" with an image/* mediaType; some servers use "Image"."""
+    atts = obj.get("attachment")
+    if isinstance(atts, dict):
+        atts = [atts]
+    images = []
+    if isinstance(atts, list):
+        for att in atts[:16]:
+            if not isinstance(att, dict):
+                continue
+            if str(att.get("type", "")) not in ("Document", "Image"):
+                continue
+            media_type = str(att.get("mediaType", "") or "")
+            media_type = media_type.split(";")[0].strip().lower()
+            if not media_type.startswith("image/"):
+                continue
+            url = activity_object_id(att.get("url"))
+            if not url:
+                continue
+            images.append({
+                "url": url,
+                "mediaType": media_type,
+                "name": str(att.get("name", "") or ""),
+            })
+    return images
+
+
 def note_essentials(obj):
-    """Pull the fields we keep from an inbound Note (a remote reply)."""
+    """Pull the fields we keep from an inbound Note (a remote reply or a
+    repo-actor mention)."""
     if not isinstance(obj, dict) or not obj.get("id"):
         return None
     if str(obj.get("type", "")) not in ("Note", "Article", "Question",
@@ -567,6 +613,8 @@ def note_essentials(obj):
         "attributedTo": activity_object_id(obj.get("attributedTo")),
         "url": activity_object_id(obj.get("url")) or str(obj["id"]),
         "published": str(obj.get("published", "") or ""),
+        "mentions": note_mentions(obj),
+        "images": note_image_attachments(obj),
     }
 
 
