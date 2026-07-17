@@ -20,6 +20,17 @@
             "title": "have teh ability for the repo owner to delete posts from mastodon",
             "ts": 1783916191297,
             "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "this can be a feature on the website have a dropdown to manage all aspects of ths posts ",
+            "id": "1946fd1e-418a-4054-bb5d-a792367dc06e",
+            "sig": "bgHkyC95E93hZXyIsVIKwH7dwqA29uro5Zzp53bVkTVRsZe_ZUshqmj5VAhRDNdr4u4nVJgRI0evruw1vf_bCg",
+            "ts": 1784325417311,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -32,6 +43,6 @@
     "startDate": 0,
     "status": "open",
     "title": "have teh ability for the repo owner to delete posts from mastodon",
-    "updatedAt": 1783916191297,
+    "updatedAt": 1784325417311,
     "votes": 0
 }
