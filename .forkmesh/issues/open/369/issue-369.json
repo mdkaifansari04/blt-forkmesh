@@ -56,6 +56,17 @@
             "sig": "VIYyYpC8NtDWUYPCV4gnXahWXqTjtqiVn1rmTWaTBpgvw439WXIDrHcovGT0HdRBSwdKZnQMjE7Dysj2JdJlAQ",
             "ts": 1784328884574,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "we're not using issue bounties anymore ",
+            "id": "5d9a8043-97e0-44fb-8785-66ea2f079f86",
+            "sig": "aUQQDez9rjs80E1-CwHxgL59KePi3g870mRqQyIhCxQrfqbYtgJB7kln39lADfMVfFDtOuMOj5FhFliPLODQCw",
+            "ts": 1784330900958,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -70,6 +81,6 @@
     "startDate": 0,
     "status": "open",
     "title": "[code + business: needs legal review] Non-custodial on-chain bounty escrow",
-    "updatedAt": 1784328884574,
+    "updatedAt": 1784330900958,
     "votes": 0
 }
