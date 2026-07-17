@@ -968,13 +968,10 @@ int main(int argc, char *argv[])
             check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 1) ==
                       QStringLiteral("alice"),
                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 10) ==
-                      QStringLiteral("3"),
-                  QStringLiteral("Mirror nodes Worktrees column is populated before CPU/RAM/Disk"));
-            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 13)
+            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 12)
                       .startsWith(QStringLiteral("Disk:")),
                   QStringLiteral("Mirror nodes Disk column contains disk usage, not platform text"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 14) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 13) ==
                       QStringLiteral("linux"),
                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
             window.testSetMirrorNodesOnlineOnly(false);
@@ -1154,11 +1151,12 @@ int main(int argc, char *argv[])
             for (int i = 0; i < quickProvider->count(); ++i)
                 providerLabels << quickProvider->itemText(i);
         }
-        check(providerLabels == QStringList({QStringLiteral("Codex"),
+        check(providerLabels == QStringList({QStringLiteral("Manual (create issue)"),
+                                             QStringLiteral("Codex"),
                                              QStringLiteral("OpenAI API"),
                                              QStringLiteral("Claude API"),
                                              QStringLiteral("Claude Code")}),
-              QStringLiteral("quick-add agent dropdown offers Codex plus existing providers"));
+              QStringLiteral("quick-add agent dropdown offers Manual plus the agent providers"));
         check(quickProvider && quickProvider->maxVisibleItems() >= quickProvider->count() &&
                   quickProvider->view() &&
                   quickProvider->view()->verticalScrollBarPolicy() ==

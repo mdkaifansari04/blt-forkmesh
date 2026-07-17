@@ -835,6 +835,11 @@ private:
     // actually visible (chat section shown, or window regains focus while
     // already on it) — called from showSection() and changeEvent().
     void clearActiveConversationUnread();
+    // Show/hide the in-transcript unread banner and update its count text.
+    void updateChatUnreadBanner();
+    // Mark every conversation read at once (from the unread banner's arrow) and
+    // jump the current transcript to the newest messages.
+    void markAllChatRead();
     void updateConnectionStatus(); // top-right "● Connected · N nodes online"
     // Take this node online / offline from the top-bar toggle. Offline stops the
     // reward heartbeat and live repo serving (so the node stops collecting
@@ -1401,6 +1406,10 @@ private:
     void noteAgentActivity(int sessionId, int bytes = 0);
     void onScannerTick();
     void showAgentSession(int sessionId);
+    // Rebuild only the detail header's meta lines (identity + issue/branch/worktree
+    // /PR chips + run Stats), without a transcript rebuild — used by the live
+    // token/cost/run-summary update paths and the running-row ticker (adhoc #42).
+    void refreshAgentDetailMeta(int sessionId);
     // Detail-header permission-mode selector (adhoc #26): sync the combo to the
     // shown session (and hide it for providers without a mode), and apply a live
     // change back onto the selected session.
@@ -3287,6 +3296,10 @@ private:
     QLabel *m_firewallBannerLabel;
     QPushButton *m_firewallAllowButton;
     QString m_firewallPrivilegedCommand;
+    // In-transcript "N unread messages" strip with a jump-to-newest arrow that
+    // marks every conversation read in one click. Hidden when nothing is unread.
+    QWidget *m_chatUnreadBanner = nullptr;
+    QLabel *m_chatUnreadBannerLabel = nullptr;
     QScrollArea *m_messageScroll;
     QWidget *m_messageContainer;
     QVBoxLayout *m_messageLayout; // message rows + a trailing stretch
@@ -3373,7 +3386,9 @@ private:
     // Shift+Enter inserts a newline; Up/Down still walk the prompt history.
     QPlainTextEdit *m_issueQuickAdd = nullptr;
     QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
-    QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
+    // Agent/model chooser (adhoc #29): also carries a "Manual (create issue)"
+    // entry that replaces the old Agent / Create-issue checkboxes — picking it
+    // files an issue from the prompt instead of starting an agent.
     QComboBox *m_quickAddAgentProvider = nullptr;
     // Prompt-row model chooser (adhoc #261/#349): Claude Code gets the live
     // Claude model list; Codex gets an editable OpenAI model list.
@@ -3383,10 +3398,6 @@ private:
     // backed by the same kClaudeAutoModeSetting as the agent composer's toggle.
     QComboBox *m_quickAddModeSelector = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
-    // "Create issue" toggle (adhoc #99): off by default (remembered via
-    // kQuickAddCreateIssueSetting) — unchecked means the typed prompt starts an
-    // agent directly and skips filing an issue at all.
-    QCheckBox *m_quickAddCreateIssue = nullptr;
     // Up-pointing paper-airplane stacked above the normal send icon (adhoc #99):
     // sends the typed prompt as a follow-up message to the currently-selected
     // agent session instead of the quick-add issue/new-agent flow.
@@ -5149,6 +5160,11 @@ private:
     // (adhoc #141), so the per-minute heartbeat doesn't reopen the dialog
     // while the request is still pending a decision.
     QString m_lastOwnershipTransferAdminShown;
+    // Accepted peer mirror requests (issue #385) delivered on the heartbeat:
+    // ids we've already started mirroring this session (so we don't re-clone),
+    // and ids still awaiting acknowledgement to the relay on the next beat.
+    QSet<QString> m_handledMirrorRequests;
+    QStringList m_pendingMirrorRequestAcks;
     // User/avatar controls in the top-right account cluster. m_avatarNavButton
     // is the node avatar with the connection dot; m_userAvatarNavButton is the
     // signed-in/linked user account avatar.

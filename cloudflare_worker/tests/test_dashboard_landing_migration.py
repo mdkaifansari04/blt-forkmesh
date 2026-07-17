@@ -1190,7 +1190,7 @@ def test_dashboard_repository_tabs_read_public_mirror_data_not_owner_inbox():
         "loadRepoCollection(state.selectedRepo, tab,",
         'dir: ".forkmesh/issues", file: (number) => `issue-${Number(number)}.json`',
         'dir: "pulls", file: "pull.md"',
-        'dir: "discussions", file: "discussion.md"',
+        'dir: ".forkmesh/discussions", file: "discussion.md"',
         "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path: config.dir, ...refParams }))",
         "fetchRepoBlobs(repo, dirs.map(recordPath), refParams)",
         "Create from desktop client for signed submissions",

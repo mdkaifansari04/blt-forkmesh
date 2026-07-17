@@ -2,6 +2,7 @@
 #include "../src/AccountCapability.h"
 #include "../src/AgentStore.h"
 #include "../src/BackoffNetworkAccessManager.h"
+#include "../src/ChatHistoryLimits.h"
 #include "../src/ClaudeAccountTransfer.h"
 #include "../src/CommitCommentStore.h"
 #include "../src/CoveCrypto.h"
@@ -309,6 +310,60 @@ int main(int argc, char *argv[])
         const QString linked = ReferenceLinks::linkifyMarkdownReferences(input);
         check(linked == input,
               "reference linker skips existing links, URLs, inline code, and code blocks");
+    }
+
+    {
+        // Bounded chat history (issue #428): a mirror node must not retain
+        // unlimited chat frames — or huge file payloads — in RAM.
+        QList<QJsonObject> history;
+        QStringList evicted;
+        const int overflow = ChatHistoryLimits::kMaxEntriesPerChannel + 25;
+        for (int i = 0; i < overflow; ++i) {
+            QJsonObject msg{{"id", QStringLiteral("m%1").arg(i)},
+                            {"channel", QStringLiteral("#general")},
+                            {"text", QStringLiteral("hello %1").arg(i)}};
+            evicted += ChatHistoryLimits::appendBounded(history, msg);
+        }
+        check(history.size() == ChatHistoryLimits::kMaxEntriesPerChannel,
+              "chat history keeps at most kMaxEntriesPerChannel entries");
+        check(evicted.size() == 25 && evicted.first() == "m0",
+              "chat history evicts oldest entries first and reports their ids");
+        check(history.last().value("id").toString() ==
+                  QStringLiteral("m%1").arg(overflow - 1),
+              "chat history keeps the newest entry after eviction");
+
+        // A handful of large file messages must not pin unbounded RAM: the
+        // char budget evicts older entries even when the count cap is far off.
+        QList<QJsonObject> fileHistory;
+        const QString bigPayload(ChatHistoryLimits::kMaxCharsPerChannel / 2, 'A');
+        QStringList fileEvicted;
+        for (int i = 0; i < 6; ++i) {
+            QJsonObject msg{{"id", QStringLiteral("f%1").arg(i)},
+                            {"channel", QStringLiteral("#general")},
+                            {"fileName", QStringLiteral("blob.bin")},
+                            {"file", bigPayload}};
+            fileEvicted += ChatHistoryLimits::appendBounded(fileHistory, msg);
+        }
+        qsizetype totalChars = 0;
+        for (const QJsonObject &entry : std::as_const(fileHistory))
+            totalChars += ChatHistoryLimits::entryCost(entry);
+        check(totalChars <= ChatHistoryLimits::kMaxCharsPerChannel,
+              "chat history stays within the per-channel char budget");
+        check(!fileEvicted.isEmpty() && fileEvicted.first() == "f0",
+              "char budget evicts oldest file messages first");
+
+        // One message bigger than the whole budget is kept, but without its
+        // file body, so a single huge transfer can't pin the budget's worth.
+        QList<QJsonObject> oversized;
+        QJsonObject huge{{"id", QStringLiteral("huge")},
+                         {"channel", QStringLiteral("#general")},
+                         {"fileName", QStringLiteral("huge.bin")},
+                         {"file", QString(ChatHistoryLimits::kMaxCharsPerChannel + 1,
+                                          'B')}};
+        ChatHistoryLimits::appendBounded(oversized, huge);
+        check(oversized.size() == 1 && !oversized.first().contains("file") &&
+                  oversized.first().value("fileName").toString() == "huge.bin",
+              "oversized file payloads are stripped from stored history");
     }
 
     {

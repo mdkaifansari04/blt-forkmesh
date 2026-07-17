@@ -105,20 +105,14 @@ class _HomeShellState extends State<HomeShell> {
                 color: FmTheme.textTertiary(context),
               ),
               selectedIndex: _index,
-              onDestinationSelected: (i) {
-                if (i == _destinations.length - 1) {
-                  _showToolsSheet(context);
-                  return;
-                }
-                setState(() => _index = i);
-              },
+              onDestinationSelected: _select,
               labelType: NavigationRailLabelType.all,
               destinations: [
                 for (final d in _destinations)
                   NavigationRailDestination(
                     icon: _RailIcon(
                       icon: d.icon,
-                      badge: d.label == 'Chat' ? relay.unread.length : 0,
+                      badge: d.label == 'Chat' ? relay.totalUnread : 0,
                     ),
                     label: Text(d.label),
                   ),
@@ -135,16 +129,25 @@ class _HomeShellState extends State<HomeShell> {
       bottomNavigationBar: _CompactBottomMenu(
         destinations: _destinations,
         selectedIndex: _index,
-        chatBadge: relay.unread.length,
-        onSelected: (i) {
-          if (i == _destinations.length - 1) {
-            _showToolsSheet(context);
-            return;
-          }
-          setState(() => _index = i);
-        },
+        chatBadge: relay.totalUnread,
+        onSelected: _select,
       ),
     );
+  }
+
+  /// Central nav handler: opens the Tools sheet for the trailing slot, and marks
+  /// the active chat conversation read as soon as the Chat tab is opened so the
+  /// nav badge clears once messages have actually been seen.
+  void _select(int i) {
+    if (i == _destinations.length - 1) {
+      _showToolsSheet(context);
+      return;
+    }
+    if (_destinations[i].label == 'Chat') {
+      final relay = context.read<RelayService>();
+      relay.markConversationRead(relay.currentConversation);
+    }
+    setState(() => _index = i);
   }
 
   void _showToolsSheet(BuildContext context) {

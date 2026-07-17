@@ -1,0 +1,93 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783916694,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783916694",
+            "sig": "sEVBZGzn2c-BNAjS1XIhhQ0DLffcCAzZeQNM6QeyW4Y_8WUbfT1et_T_0c4o8PvBsaUlv3nOf6hA-UFm6wCZBA",
+            "title": "ram seems too high on the mirror nodes make sure we're not taking up too much memory",
+            "ts": 1783916694,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 35,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "59e32af7-ce6b-42bb-b733-b0f1c482246a",
+            "sig": "gNfsykt_31qbvP5dPY-c8U88kU-u_ET99Idt-bVZ0s2s77gqMdfGslIegWSwX4lKAiqzL-DajtSFqwinMgqaBQ",
+            "ts": 1784325058381,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "ec7d032c-671e-4e6b-a3f7-1d3462505f10",
+            "sig": "caLBQ1QnMSztPMom1ZpaqZTfBntkli6p12xnJHa6uNJ7hMsiOKYyfkVOTpJu53xWcNhLu3SyaU_ILZR0LFg9BQ",
+            "ts": 1784325058445,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-428-ram-seems-too-high-on-the-mirror-nodes-make-sure\".",
+            "id": "8b8a2cb2-f8fe-48dd-96a8-48977f98c112",
+            "sig": "F2JD7xuqqEAaO9n_iivGQG97ShQmyZPYzPa6qRld6fu5xhIvJqshNHDfDieO5VIoinzCJvFFhO9mLkMQvkdIDA",
+            "ts": 1784325779411,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "659fc1d3-da05-46e6-9703-743e653a4b8b",
+            "sig": "XYgDkx7Gz9_pOVVYWKXPvP_ndZNfKFH06WRHrbg0SbMP17zwpALPkaalnnOPEnz85UHUarPssXF0-CTRR3SEDg",
+            "status": "closed",
+            "ts": 1784325779472,
+            "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "7eb05c9a-c31b-4ad2-86fe-5d0d6c68c8bd",
+            "sig": "m8UMn1FU_Bsquz7qxNzIos4q0N0lH1_LmHuxPiU1ENXpERKG2BR20F0I9bD8DkcAVv0IFk17HpWsh83dWyOfDg",
+            "ts": 1784329644738,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 428,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "ram seems too high on the mirror nodes make sure we're not taking up too much memory",
+    "updatedAt": 1784329644738,
+    "votes": 0
+}

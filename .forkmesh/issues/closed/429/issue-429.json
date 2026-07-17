@@ -1,0 +1,105 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783992940914,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+                "93a4834d.png"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "![forkmesh-paste-oHedwW.png](93a4834d.png)",
+            "id": "open-429",
+            "sig": "zu_l4e--dHzh71CiFxgaXIc1bQsDHUu8bHFtOLhjHYxCzWWNpXDjxdReW-bMX_pRSY6rYpgE-FCEddeJbXjOBQ",
+            "title": "when the bounty is received it can close the window",
+            "ts": 1783992940914,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "lets make sure to close the bounty window when it's received also show a spinner when it's confimring and green checkbox when it's confirmed - also if we can make it so that the amount is transfered with the qr code that would be convienent ",
+            "id": "ef182758-2689-4522-9424-c652cc56793f",
+            "sig": "rZFfHV2O_y8JcvbjLRfa7fiO9yYuaYPsGFG4jY160cz-t75UEQAh3JlmCOfhJKlpikS0BiDQxV4UNQWLko3YBA",
+            "ts": 1784325006678,
+            "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 34,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "34dfa9e9-2f01-4970-ba07-7966dfa37d93",
+            "sig": "WZiynxih7rc4BWaxkrn5X_x9kil1JNj1EiQwKnkqukL5xLohrQUflJCUZA1ueDbRb05zLXhfoL-3BJaqfP4iAQ",
+            "ts": 1784325020706,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "af78ba1c-6e58-498d-99ff-0098c2015a58",
+            "sig": "NNlIEoWkJ47A_C-cXy8hfeW4AXBP_kCup-8-nh2IDc2-D6z8ho_2j8ZxdQROqvn6HW0lq1ySJXft4dhHqxXZBg",
+            "ts": 1784325020761,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-429-when-the-bounty-is-received-it-can-close-the-win\".",
+            "id": "d3edab03-140c-4774-b0b4-ec000c539abb",
+            "sig": "4qGnhZcXKcwyA1vaCr9OrqjsFHEBUpFblgDatS2jn9rQVSS1HVDXeK9Q7x4U-ZwAVmOYevR-K4yIZATQT4RJCA",
+            "ts": 1784325355828,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "30d308c1-c871-4f17-888e-6c8dd23b35a2",
+            "sig": "7fh-pRcpQn2Q87-gGsghhVgNJBHJriaiDz1Nj2zWmMnGg0q8vSPXMz33Y7Uvmllh0-gK2eZgXU3QOwQNjxlhCQ",
+            "status": "closed",
+            "ts": 1784325355890,
+            "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e38e87b2-8659-469d-9424-361c63529882",
+            "sig": "cEkQzvGfaeF47jLKVIlod5d7vsQ_igCTmEg7cxVJqTCqzkymC8hVOM3ig7Xim2NL1uU9bMNInMe4sHTWeujlAw",
+            "ts": 1784329641558,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 429,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "when the bounty is received it can close the window",
+    "updatedAt": 1784329641558,
+    "votes": 0
+}
