@@ -1,4 +1,5 @@
 #include "ForkMeshVersion.h"
+#include "ChatHistoryLimits.h"
 #include "ServerNode.h"
 #include "SystemStats.h"
 
@@ -24,6 +25,15 @@
 namespace {
 
 constexpr int kSeenCacheLimit = 4096;
+// Cap on the message-id -> conversation/sender maps used for edit/delete
+// lookups. Anything older than the newest few thousand messages can no longer
+// be edited or deleted through this node, which is fine — its history entry
+// has been evicted long before then (issue #428).
+constexpr int kMessageIndexLimit = 4096;
+// Peers unseen for this long are erased outright (not just hidden from the
+// roster like kPeerStaleMs does). Every transient visitor id otherwise leaves
+// a Peer entry — mirror adverts included — in m_peers forever (issue #428).
+constexpr qint64 kPeerReapMs = 3600000; // 1 hour
 const QString kKnownRosterGroup = QStringLiteral("mainnode/knownRoster");
 // Each connected node rebroadcasts a lightweight presence frame on this cadence
 // so peers keep its "last seen" fresh; a peer not heard from for longer than the
@@ -364,6 +374,7 @@ bool ServerNode::start()
         m_presenceTimer->setInterval(kPresenceIntervalMs);
         connect(m_presenceTimer, &QTimer::timeout, this, [this] {
             sendPresence();
+            reapStalePeers();
             updateRosterAndStatus(); // re-evaluate staleness even with no traffic
         });
     }
@@ -1620,10 +1631,15 @@ void ServerNode::handlePlain(const QJsonObject &message)
         const QString emoji = message.value("emoji").toString();
         const QString reactorId = message.value("reactorId").toString();
         const QString reactorName = message.value("reactorName").toString();
-        if (message.value("added").toBool())
-            m_reactions[target][emoji].insert(reactorId, reactorName);
-        else
-            m_reactions[target][emoji].remove(reactorId);
+        // Only track reactions for messages we actually hold (everything the
+        // UI shows is indexed via emitChat/emitDm); a frame targeting an
+        // arbitrary unknown id must not grow m_reactions without bound.
+        if (m_messageConversation.contains(target)) {
+            if (message.value("added").toBool())
+                m_reactions[target][emoji].insert(reactorId, reactorName);
+            else
+                m_reactions[target][emoji].remove(reactorId);
+        }
         emit reactionChanged(message.value("conversation").toString(), target,
                              emoji, reactorName, message.value("added").toBool());
     } else if (type == "edit") {
@@ -1734,8 +1750,7 @@ void ServerNode::emitChat(const QJsonObject &message)
     out.self = out.senderId == m_nodeId;
     out.edited = message.value("edited").toBool();
     out.deleted = message.value("deleted").toBool();
-    m_messageConversation.insert(out.id, out.conversation);
-    m_messageSender.insert(out.id, out.senderId);
+    indexMessage(out.id, out.conversation, out.senderId);
     emit messageArrived(out);
 }
 
@@ -1757,8 +1772,7 @@ void ServerNode::emitDm(const QJsonObject &message, const QString &conversationP
     out.self = out.senderId == m_nodeId;
     out.edited = message.value("edited").toBool();
     out.deleted = message.value("deleted").toBool();
-    m_messageConversation.insert(out.id, out.conversation);
-    m_messageSender.insert(out.id, out.senderId);
+    indexMessage(out.id, out.conversation, out.senderId);
     emit messageArrived(out);
 }
 
@@ -1886,8 +1900,48 @@ void ServerNode::persistKnownPeers() const
 void ServerNode::storeHistory(const QJsonObject &message)
 {
     const QString channel = message.value("channel").toString();
-    if (!channel.isEmpty())
-        m_channelHistory[channel].append(message);
+    if (channel.isEmpty())
+        return;
+    const QStringList evicted =
+        ChatHistoryLimits::appendBounded(m_channelHistory[channel], message);
+    for (const QString &id : evicted)
+        dropMessageIndex(id);
+}
+
+void ServerNode::indexMessage(const QString &id, const QString &conversation,
+                              const QString &senderId)
+{
+    if (id.isEmpty())
+        return;
+    if (!m_messageConversation.contains(id))
+        m_messageIndexOrder.enqueue(id);
+    m_messageConversation.insert(id, conversation);
+    m_messageSender.insert(id, senderId);
+    // Ids already dropped by history eviction linger in the queue until they
+    // reach the front; dropping them again is a no-op, and the maps can never
+    // outgrow the queue, so the cap still holds.
+    while (m_messageIndexOrder.size() > kMessageIndexLimit)
+        dropMessageIndex(m_messageIndexOrder.dequeue());
+}
+
+void ServerNode::dropMessageIndex(const QString &id)
+{
+    m_messageConversation.remove(id);
+    m_messageSender.remove(id);
+    m_reactions.remove(id);
+}
+
+void ServerNode::reapStalePeers()
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (auto it = m_peers.begin(); it != m_peers.end();) {
+        if (now - it->lastSeenMs > kPeerReapMs) {
+            m_lastHelloReplyMs.remove(it.key());
+            it = m_peers.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 bool ServerNode::messageIsAuthoredBy(const QString &messageId, const QString &senderId) const

@@ -169,6 +169,18 @@ private:
     void updateRosterAndStatus();
     void flushRosterAndStatus(); // does the actual roster build + emit
     void storeHistory(const QJsonObject &message);
+    // Record a message's conversation + sender for later edit/delete lookups,
+    // bounded FIFO-style so months of traffic can't grow the maps without
+    // limit on a long-running node (issue #428).
+    void indexMessage(const QString &id, const QString &conversation,
+                      const QString &senderId);
+    // Drop every per-message record (conversation, sender, reactions) for an
+    // id that no longer needs them (evicted from history or the index FIFO).
+    void dropMessageIndex(const QString &id);
+    // Erase peers not heard from in kPeerReapMs — they've long been hidden
+    // from the roster, but their Peer entries (mirror adverts included) would
+    // otherwise accumulate in RAM forever on a long-running node (issue #428).
+    void reapStalePeers();
     void updateStoredMessage(const QString &messageId, const QString &text, bool deleted);
     bool messageIsAuthoredBy(const QString &messageId, const QString &senderId) const;
     void applyEdit(const QString &conversation, const QString &target,
@@ -264,6 +276,9 @@ private:
     QHash<QString, QList<QJsonObject>> m_channelHistory;
     QHash<QString, QString> m_messageConversation;
     QHash<QString, QString> m_messageSender;
+    // Insertion order of the ids in the two maps above; oldest are dropped
+    // once the index outgrows its cap (see indexMessage).
+    QQueue<QString> m_messageIndexOrder;
     QHash<QString, QHash<QString, QHash<QString, QString>>> m_reactions;
     QByteArray m_avatarPng;
     QSet<QString> m_seenIds;

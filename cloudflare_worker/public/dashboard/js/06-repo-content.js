@@ -1649,9 +1649,14 @@
           <button type="button" data-repo-issues-reload class="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2.5 font-medium text-foreground hover:bg-secondary"><i data-lucide="refresh-cw" class="h-3 w-3"></i>Retry</button>
         </div>`
       : "";
-    const emptyLabel = issuesView.query
-      ? `No issues matching "${escapeHtml(issuesView.query)}".`
-      : `No ${issuesView.filter === "all" ? "" : issuesView.filter + " "}issues.`;
+    // While the closed history is still being paged in (issue #427), show a
+    // loader in place of the "No issues" empty state so the Closed view doesn't
+    // flash empty before its rows arrive.
+    const emptyLabel = issuesView.closedLoading
+      ? loadingHtml("Loading closed issues from the live mirror...")
+      : issuesView.query
+        ? `No issues matching "${escapeHtml(issuesView.query)}".`
+        : `No ${issuesView.filter === "all" ? "" : issuesView.filter + " "}issues.`;
     container.innerHTML = filterBar + warnBar + (filtered.length
       ? renderRepoRecordList(filtered, config, "issues")
       : `<div class="px-4 py-3 text-sm text-muted-foreground">${emptyLabel}</div>`);
@@ -1664,6 +1669,14 @@
       btn.setAttribute("aria-pressed", btn.dataset.dashboardIssueFilter === filter ? "true" : "false");
       btn.className = `inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${btn.dataset.dashboardIssueFilter === filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`;
     });
+    // Closed issues are paged in lazily (issue #427); fetch them the first time
+    // the Closed or All view is opened. loadClosedIssues renders a loading state
+    // and then the results itself.
+    if ((filter === "closed" || filter === "all")
+        && !state.issuesView.closedLoaded && !state.issuesView.closedLoading) {
+      loadClosedIssues();
+      return;
+    }
     renderRepoIssues();
   }
 
@@ -1687,19 +1700,26 @@
           state.issuesView.query = "";
           state.issuesView.missing = [];
           state.issuesView.truncated = 0;
+          state.issuesView.repo = repo;
+          state.issuesView.closedPaths = new Map();
+          state.issuesView.closedLoaded = true;
+          state.issuesView.closedLoading = false;
           renderRepoIssues();
           return;
         }
         throw error;
       }
       const rootEntries = Array.isArray(tree.entries) ? tree.entries : [];
-      // number -> the record path for that issue. Pre-split legacy folders sit
-      // directly under the root; the open//closed/ subdirs are listed next and
-      // win over a stale legacy copy of the same number.
-      const pathByNumber = new Map();
+      // number -> record path, split by status. The open/ and closed/ subdirs
+      // (adhoc #14) hold the numbered folders; pre-split legacy mirrors keep
+      // them directly under the root with no status until their blob is read.
+      // A number living in a status subdir supersedes a stale legacy copy.
+      const openPaths = new Map();
+      const closedPaths = new Map();
+      const legacyPaths = new Map();
       rootEntries
         .filter((entry) => entry.type === "tree" && /^\d+$/.test(String(entry.name || "")))
-        .forEach((entry) => pathByNumber.set(Number(entry.name), issueJsonPath(Number(entry.name))));
+        .forEach((entry) => legacyPaths.set(Number(entry.name), issueJsonPath(Number(entry.name))));
       const statusDirs = rootEntries
         .filter((entry) => entry.type === "tree" && ["open", "closed"].includes(String(entry.name || "")))
         .map((entry) => String(entry.name));
@@ -1710,40 +1730,26 @@
         } catch (error) {
           if (!isMissingMirrorFolder(error)) throw error;
         }
+        const target = statusDir === "closed" ? closedPaths : openPaths;
         (Array.isArray(subTree?.entries) ? subTree.entries : [])
           .filter((entry) => entry.type === "tree" && /^\d+$/.test(String(entry.name || "")))
-          .forEach((entry) => pathByNumber.set(Number(entry.name), issueJsonPath(Number(entry.name), statusDir)));
+          .forEach((entry) => {
+            const number = Number(entry.name);
+            target.set(number, issueJsonPath(Number(entry.name), statusDir));
+            legacyPaths.delete(number);
+          });
       }
+      // The Issues tab defaults to Open (issue #427): page in only the open
+      // (and unknown-status legacy) titles now so they show fast, and defer the
+      // closed history - often far larger - to loadClosedIssues, run the first
+      // time the Closed/All filter is opened. Legacy folders ride the open page
+      // and get reclassified once their blob reveals a status.
+      const pathByNumber = new Map([...legacyPaths, ...openPaths]);
       const numbered = Array.from(pathByNumber.keys()).sort((a, b) => b - a);
       // Cap the page at 50 folders, but remember when the mirror holds more so
       // the panel can warn instead of silently hiding them.
       const dirs = numbered.slice(0, 50);
-      // One batched request for all of them, not one /blob call per issue.
-      const blobs = await fetchRepoBlobs(
-        repo, dirs.map((number) => pathByNumber.get(number)));
-      const items = [];
-      let missing = [];
-      dirs.forEach((number) => {
-        const blob = blobs[pathByNumber.get(number)];
-        if (blob) items.push(parseIssueJson(blobText(blob), number));
-        else missing.push(number);
-      });
-      // A batched read can drop entries under relay load; retry just the misses
-      // once so a transient gap doesn't quietly shrink the count vs the Mirror
-      // nodes tab (whose issueCount lists every folder). Anything still
-      // unreadable becomes a flagged placeholder row instead of vanishing.
-      if (missing.length) {
-        const retry = await fetchRepoBlobs(
-          repo, missing.map((number) => pathByNumber.get(number))).catch(() => ({}));
-        const stillMissing = [];
-        missing.forEach((number) => {
-          const blob = retry[pathByNumber.get(number)];
-          if (blob) items.push(parseIssueJson(blobText(blob), number));
-          else stillMissing.push(number);
-        });
-        missing = stillMissing;
-      }
-      missing.forEach((number) => items.push(placeholderIssue(number)));
+      const { items, missing } = await fetchIssuePage(repo, pathByNumber, dirs);
       items.sort((a, b) => Number(b.number) - Number(a.number));
       // Issue #379: fold in the owner's offline submissions (kept locally while
       // their source-of-truth node was down) so they still show up on reload,
@@ -1755,18 +1761,101 @@
       state.issuesView.query = "";
       state.issuesView.missing = missing;
       state.issuesView.truncated = Math.max(0, numbered.length - dirs.length);
-      // An issue its creator deleted isn't open or closed; an unauthorized
-      // deletion attempt leaves it counted (adhoc #16), matching the desktop tab
-      // and the served open count.
-      const openIssues = merged.filter(
+      state.issuesView.repo = repo;
+      state.issuesView.closedPaths = closedPaths;
+      // Closed folders live only in closed/; there is nothing left to lazy-load
+      // once that subdir is empty (a pure-legacy mirror keeps its closed items
+      // in `items` already, classified by status).
+      state.issuesView.closedLoaded = closedPaths.size === 0;
+      state.issuesView.closedLoading = false;
+      // Counts come from the folder listing, not the paged-in blobs, so they
+      // stay right past the 50-per-page cap and match the folder-based tally the
+      // Mirror nodes tab shows (adhoc #96 / issue #397). Legacy pre-split folders
+      // carry no status in the tree, so fold in their loaded split - a
+      // creator-deleted issue is excluded, an unauthorized deletion attempt
+      // still counts (adhoc #16).
+      const loadedLegacy = items.filter((issue) => legacyPaths.has(Number(issue.number)));
+      const legacyOpen = loadedLegacy.filter(
         (issue) => issue.status !== "closed" && !issue.deleted).length;
-      const closedIssues = merged.filter(
+      const legacyClosed = loadedLegacy.filter(
         (issue) => issue.status === "closed" && !issue.deleted).length;
+      const openIssues = openPaths.size + legacyOpen;
+      const closedIssues = closedPaths.size + legacyClosed;
       setRepoTabCount("issues", openIssues);
       setRepoCollectionCounts("issues", openIssues, closedIssues);
       renderRepoIssues();
     } catch (_) {
       container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a live desktop host serves the .forkmesh/issues/ folder.</div>';
+    }
+  }
+
+  // Reads and parses the issue-N.json blobs for a page of numbered folders in
+  // ONE batched request. A batched read can drop entries under relay load, so
+  // retry just the misses once - a transient gap must not quietly shrink the
+  // count vs the Mirror nodes tab (whose issueCount lists every folder).
+  // Anything still unreadable becomes a flagged placeholder row instead of
+  // vanishing. Returns { items, missing } (missing = still-unreadable numbers).
+  async function fetchIssuePage(repo, pathByNumber, dirs) {
+    const items = [];
+    let missing = [];
+    if (!dirs.length) return { items, missing };
+    const blobs = await fetchRepoBlobs(
+      repo, dirs.map((number) => pathByNumber.get(number)));
+    dirs.forEach((number) => {
+      const blob = blobs[pathByNumber.get(number)];
+      if (blob) items.push(parseIssueJson(blobText(blob), number));
+      else missing.push(number);
+    });
+    if (missing.length) {
+      const retry = await fetchRepoBlobs(
+        repo, missing.map((number) => pathByNumber.get(number))).catch(() => ({}));
+      const stillMissing = [];
+      missing.forEach((number) => {
+        const blob = retry[pathByNumber.get(number)];
+        if (blob) items.push(parseIssueJson(blobText(blob), number));
+        else stillMissing.push(number);
+      });
+      missing = stillMissing;
+    }
+    missing.forEach((number) => items.push(placeholderIssue(number)));
+    return { items, missing };
+  }
+
+  // Lazily pages in the closed issues the first time the Closed or All filter is
+  // opened (issue #427). The initial Issues load only pages the open set for
+  // speed, so this fills the closed history in on demand, appends it to the
+  // already-loaded open items, and re-renders. The open/closed counts are not
+  // touched - they were already derived from the full folder listing.
+  async function loadClosedIssues() {
+    const view = state.issuesView;
+    if (view.closedLoaded || view.closedLoading) return;
+    const closedPaths = view.closedPaths instanceof Map ? view.closedPaths : new Map();
+    const numbers = Array.from(closedPaths.keys()).sort((a, b) => b - a);
+    const dirs = numbers.slice(0, 50);
+    if (!dirs.length) {
+      view.closedLoaded = true;
+      renderRepoIssues();
+      return;
+    }
+    view.closedLoading = true;
+    renderRepoIssues();
+    try {
+      const { items, missing } = await fetchIssuePage(
+        view.repo || state.selectedRepo, closedPaths, dirs);
+      // A number already loaded (e.g. a legacy closed copy) keeps its existing
+      // row; the status-subdir copy would be identical.
+      const have = new Set((view.items || []).map((issue) => Number(issue.number)));
+      const fresh = items.filter((issue) => !have.has(Number(issue.number)));
+      view.items = [...(view.items || []), ...fresh];
+      view.items.sort((a, b) => Number(b.number) - Number(a.number));
+      if (missing.length) view.missing = [...(view.missing || []), ...missing];
+      view.truncated = (view.truncated || 0) + Math.max(0, numbers.length - dirs.length);
+      view.closedLoaded = true;
+    } catch (_) {
+      /* leave closedLoaded false so a later toggle retries */
+    } finally {
+      view.closedLoading = false;
+      renderRepoIssues();
     }
   }
 
