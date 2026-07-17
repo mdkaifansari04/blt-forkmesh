@@ -55,6 +55,17 @@
             "sig": "G68ifZq0kuoH1Mz975sM2Tge_IO4PTP-pHTKr29FSvjIsFCJsRDvahWswR-IS437o5MnDOFl8IF1rdFGZQDSDg",
             "ts": 1784325903765,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-385-let-users-ask-other-nodes-to-mirror-for-them\".",
+            "id": "a36040c7-92e3-445e-a30a-dbf3b6873928",
+            "sig": "_Yap2SYkz6ppW_mw7wJ6hHSfk_vXgFtUdWFMVctBzCXnC59JXqTLovISZxprsmJ_ZlA8tWfkkHGAI0PrJZXdDw",
+            "ts": 1784327803856,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -67,6 +78,6 @@
     "startDate": 0,
     "status": "open",
     "title": "let users ask other nodes to mirror for them",
-    "updatedAt": 1784325903765,
+    "updatedAt": 1784327803856,
     "votes": 0
 }
