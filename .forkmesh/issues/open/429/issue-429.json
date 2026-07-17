@@ -56,6 +56,17 @@
             "sig": "NNlIEoWkJ47A_C-cXy8hfeW4AXBP_kCup-8-nh2IDc2-D6z8ho_2j8ZxdQROqvn6HW0lq1ySJXft4dhHqxXZBg",
             "ts": 1784325020761,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-429-when-the-bounty-is-received-it-can-close-the-win\".",
+            "id": "d3edab03-140c-4774-b0b4-ec000c539abb",
+            "sig": "4qGnhZcXKcwyA1vaCr9OrqjsFHEBUpFblgDatS2jn9rQVSS1HVDXeK9Q7x4U-ZwAVmOYevR-K4yIZATQT4RJCA",
+            "ts": 1784325355828,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -68,6 +79,6 @@
     "startDate": 0,
     "status": "open",
     "title": "when the bounty is received it can close the window",
-    "updatedAt": 1784325020761,
+    "updatedAt": 1784325355828,
     "votes": 0
 }
