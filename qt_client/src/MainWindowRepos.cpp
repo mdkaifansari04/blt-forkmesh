@@ -512,9 +512,27 @@ void MainWindow::refreshRepositoryList()
                                     : "  \xC2\xB7 public";
         if (m_syncingRepos.contains(i))
             label += repo.previewOnly ? "  \xC2\xB7 caching" : "  \xC2\xB7 syncing";
+        // Two entries can share the same owner+name when a catalog preview of a
+        // repo coexists with a locally hosted copy of it (issue: dropdown showed
+        // duplicate-looking names with no explanation). Spell out the difference
+        // in a tooltip since the label alone has no room for it.
+        QString detail;
+        if (repo.previewOnly) {
+            detail = QStringLiteral("Cached preview \xE2\x80\x94 browsed from the "
+                                    "network, not added to this device");
+            if (!repo.cloneUrl.isEmpty())
+                detail += QStringLiteral("\nSource: %1").arg(repo.cloneUrl);
+        } else {
+            detail = QStringLiteral("Hosted on this device");
+            if (!repo.localPath.isEmpty())
+                detail += QStringLiteral("\nLocal path: %1").arg(repo.localPath);
+            if (!repo.cloneUrl.isEmpty())
+                detail += QStringLiteral("\nImported from: %1").arg(repo.cloneUrl);
+        }
         RepoMenuEntry entry;
         entry.label = label;
         entry.index = i;
+        entry.detail = detail;
         // A repo glyph: green when published+online on the web, grey otherwise.
         entry.icon = themedOcticon(
             repo.previewOnly ? QStringLiteral("cloud") : QStringLiteral("repo"),
