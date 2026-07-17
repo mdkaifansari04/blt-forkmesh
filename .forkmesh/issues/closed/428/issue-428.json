@@ -55,6 +55,15 @@
             "sig": "F2JD7xuqqEAaO9n_iivGQG97ShQmyZPYzPa6qRld6fu5xhIvJqshNHDfDieO5VIoinzCJvFFhO9mLkMQvkdIDA",
             "ts": 1784325779411,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "659fc1d3-da05-46e6-9703-743e653a4b8b",
+            "sig": "XYgDkx7Gz9_pOVVYWKXPvP_ndZNfKFH06WRHrbg0SbMP17zwpALPkaalnnOPEnz85UHUarPssXF0-CTRR3SEDg",
+            "status": "closed",
+            "ts": 1784325779472,
+            "type": "status"
         }
     ],
     "labels": [
@@ -65,8 +74,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "ram seems too high on the mirror nodes make sure we're not taking up too much memory",
-    "updatedAt": 1784325779411,
+    "updatedAt": 1784325779472,
     "votes": 0
 }
