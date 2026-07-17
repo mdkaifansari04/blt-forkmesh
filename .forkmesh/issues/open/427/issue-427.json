@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
     "authorName": "jett",
@@ -32,6 +33,17 @@
             "sig": "Gd2NF7VeucPlym2JAjm_UlrbCsHB94o4_bb3ZuJ7nl67820dciyWDVrnsZIRzJcOqte3Ryg6sUp7O031Nc3VBw",
             "ts": 1784325072197,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "0706e1a6-35a0-420e-86a9-f9bb9250031a",
+            "sig": "3OuULJv5FH9NnGW7fpHC2ob05vYvKt5DUkYUZYC7lG1j6TF3QRPmgvrypT4Se9o78dAgQhK9jeDFDjcjx8nmBQ",
+            "ts": 1784325072262,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -44,6 +56,6 @@
     "startDate": 0,
     "status": "open",
     "title": "issues are loading too slow on the web please make it faster it only needs to load the titles of the open issues and show them fast also the open / closed counts are wrong fix those too",
-    "updatedAt": 1784325072197,
+    "updatedAt": 1784325072262,
     "votes": 0
 }
