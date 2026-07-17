@@ -5553,6 +5553,21 @@ bool MainWindow::isChatViewVisible() const
            m_sectionStack->currentIndex() == 2;
 }
 
+void MainWindow::clearActiveConversationUnread()
+{
+    if (!isChatViewVisible() || m_currentConversation.isEmpty())
+        return;
+    if (m_unread.remove(m_currentConversation)) {
+        m_unreadCounts.remove(m_currentConversation);
+        refreshChannelList();
+        refreshDmList();
+        // Unread state persists across restarts now; flush the cleared
+        // marker so it doesn't come back after a restart.
+        scheduleChatSave();
+    }
+    updateChatButton();
+}
+
 QWidget *MainWindow::buildSolanaNotice()
 {
     m_solanaBanner = new QWidget;
@@ -5752,16 +5767,7 @@ void MainWindow::showSection(int index)
         updateHomeStats();
     else if (index == 2) {
         // Entering Chat clears the unread marker for the open conversation.
-        if (!m_currentConversation.isEmpty() &&
-            m_unread.remove(m_currentConversation)) {
-            m_unreadCounts.remove(m_currentConversation);
-            refreshChannelList();
-            refreshDmList();
-            // Unread state persists across restarts now; flush the cleared
-            // marker so it doesn't come back after a restart.
-            scheduleChatSave();
-        }
-        updateChatButton();
+        clearActiveConversationUnread();
     } else if (index == 3) {
         refreshNotificationsTable();
     } else if (index == 4 && m_settingsLog) {

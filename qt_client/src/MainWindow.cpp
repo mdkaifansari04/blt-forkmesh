@@ -601,4 +601,10 @@ void MainWindow::changeEvent(QEvent *event)
         refreshSourceControl();
         refreshCommitMarkersIfStale();
     }
+    // Regaining focus while already parked on the open conversation counts as
+    // reading it too — messages that arrived while the window was in the
+    // background otherwise leave the unread badge stuck until the user
+    // switches away and back.
+    if (event->type() == QEvent::ActivationChange && isActiveWindow())
+        clearActiveConversationUnread();
 }
