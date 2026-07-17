@@ -600,6 +600,17 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
 #firewallBannerLabel {
     color: #f0b72f; font-size: 13px; background: transparent;
 }
+/* Clickable "N unread messages" strip above the transcript. */
+#chatUnreadBanner {
+    background-color: #0d2136;
+    border-bottom: 1px solid #1f6feb;
+}
+#chatUnreadBanner QLabel { color: #58a6ff; font-size: 13px; font-weight: 600; background: transparent; }
+#chatUnreadBannerButton {
+    background: transparent; border: none; color: #58a6ff; font-weight: 700;
+    padding: 4px 10px; border-radius: 6px;
+}
+#chatUnreadBannerButton:hover { background-color: #1f6feb; color: #ffffff; }
 #solanaBanner {
     background-color: #12261a;
     border-bottom: 1px solid #2ea043;
@@ -1739,6 +1750,17 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #firewallBannerLabel {
     color: #7d4e00; font-size: 13px; background: transparent;
 }
+/* Clickable "N unread messages" strip above the transcript. */
+#chatUnreadBanner {
+    background-color: #ddf4ff;
+    border-bottom: 1px solid #54aeff;
+}
+#chatUnreadBanner QLabel { color: #0969da; font-size: 13px; font-weight: 600; background: transparent; }
+#chatUnreadBannerButton {
+    background: transparent; border: none; color: #0969da; font-weight: 700;
+    padding: 4px 10px; border-radius: 6px;
+}
+#chatUnreadBannerButton:hover { background-color: #0969da; color: #ffffff; }
 #solanaBanner {
     background-color: #dafbe1;
     border-bottom: 1px solid #1f883d;
