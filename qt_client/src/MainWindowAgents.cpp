@@ -3357,6 +3357,154 @@ void MainWindow::applySelectedAgentMode()
         showAgentSession(m_selectedAgentSessionId);
 }
 
+// Rebuild only the detail header's key/value meta lines for a session — the
+// identity block, the issue/branch/worktree/PR button chips and the run Stats
+// (turns/time/cost/tokens). Split out of showAgentSession (adhoc #42) so the
+// live-update paths (token/cost/run-summary events, the running-row ticker) can
+// keep the header current without triggering a full transcript rebuild.
+void MainWindow::refreshAgentDetailMeta(int sessionId)
+{
+    if (!m_agentMeta)
+        return;
+    const AgentSession *session = findAgentSession(sessionId);
+    if (!session)
+        return;
+    // Issue #291: a "merged into <base>" note appended to the meta line once
+    // the session's worktree/PR has landed in the base branch. Joined with the
+    // block's separator below, like every other part.
+    const QString mergedMeta =
+        session->merged
+            ? QStringLiteral("<span style='color:#a371f7'>merged into %1</span>")
+                  .arg(agentMergeBase(*session).toHtmlEscaped())
+            : QString();
+    // Resolve this session's worktree folder from its branch so the header can
+    // show its location next to the branch and link straight to it (adhoc #123).
+    QString worktreePath;
+    if (!session->branchName.isEmpty()) {
+        const int repoIdx = repoIndexFor(session->owner, session->name);
+        if (repoIdx >= 0)
+            worktreePath = cachedSessionWorktree(
+                sessionId, m_repositories.at(repoIdx).localPath,
+                session->branchName);
+    }
+    if (isExternalSession(sessionId)) {
+        // Rich text so the branch name links to its Branches-tab row and the
+        // worktree location links to its Worktrees-tab row (issue #265, adhoc
+        // #123); every other part is HTML-escaped to stay literal. Each part
+        // sits on its own line (adhoc #156).
+        const QString sep = QStringLiteral("<br>");
+        QString meta = QStringLiteral("External Claude Code") + sep +
+                       QStringLiteral("%1/%2")
+                           .arg(session->owner.toHtmlEscaped(),
+                                session->name.toHtmlEscaped()) +
+                       sep + agentStatusText(session->status).toHtmlEscaped();
+        if (!session->branchName.isEmpty()) {
+            meta += sep + chipBranchLinkHtml(session->branchName);
+            if (!worktreePath.isEmpty())
+                meta += sep + worktreeLinkHtml(session->branchName, worktreePath);
+        }
+        meta += sep + QStringLiteral("watch-only");
+        if (!mergedMeta.isEmpty())
+            meta += sep + mergedMeta;
+        m_agentMeta->setText(meta);
+        return;
+    }
+    // PR status, spelled out so it's always visible. When a PR exists it
+    // links straight to that pull request's tab from the header (adhoc #53).
+    QString pr =
+        session->prNumber > 0
+            ? pullLinkHtml(session->prNumber)
+            : (session->createPr ? QStringLiteral("PR opens on finish")
+                                 : QStringLiteral("no PR"))
+                  .toHtmlEscaped();
+    // Rich text so the branch name, worktree location, PR and issue are links
+    // (issues #265, adhoc #53, adhoc #123, adhoc #138); every other part is
+    // HTML-escaped to stay literal. Each part sits on its own line (adhoc #156),
+    // captioned with a muted "Field:" label so the header reads as a key/value
+    // list rather than a bare stack of strings (adhoc #189).
+    const QString sep = QStringLiteral("<br>");
+    auto labeled = [](const QString &label, const QString &valueHtml) {
+        return QStringLiteral("<span style='color:#8b949e'>%1:</span> %2")
+            .arg(label.toHtmlEscaped(), valueHtml);
+    };
+    // Linked issue line — always shown so the tracking state is explicit: a
+    // link to the issue when one exists, otherwise a hint pointing at the
+    // "Create linked issue" button in the header above (adhoc #189).
+    const QString issueValue =
+        session->issueNumber > 0
+            ? issueLinkHtml(session->issueNumber, session->issueTitle)
+            : QStringLiteral("<span style='color:#8b949e'>none yet</span>");
+    QStringList lines;
+    lines << labeled(QStringLiteral("Agent"),
+                     agentProviderName(session->provider).toHtmlEscaped());
+    // Which LLM actually did the work. If the session was launched without an
+    // explicit model preference, fall back to the actual model reported by the
+    // CLI's system:init event (first event in the stream), so the header never
+    // shows a blank Model: line when the CLI used its own default.
+    QString displayModel = session->model;
+    if (displayModel.isEmpty()) {
+        const auto &evts = m_streamEvents.value(sessionId);
+        for (const QJsonObject &ev : evts) {
+            if (ev.value(QStringLiteral("type")).toString() == QLatin1String("system")
+                && ev.value(QStringLiteral("subtype")).toString() == QLatin1String("init")) {
+                displayModel = ev.value(QStringLiteral("model")).toString().trimmed();
+                break;
+            }
+        }
+    }
+    lines << labeled(QStringLiteral("Model"),
+                     agentModelLabel(displayModel).toHtmlEscaped());
+    // Permission mode this Claude Code session runs under (the composer's
+    // mode selector, captured on the last follow-up). Older sessions have no
+    // stored mode, so show the current composer default they'd resume with.
+    if (session->provider == QLatin1String("claude-code") ||
+        agentIsCodexProvider(session->provider)) {
+        const QString modeLabel =
+            session->mode.isEmpty()
+                ? QSettings()
+                      .value(kAgentModeSetting,
+                             QSettings().value(kClaudeAutoModeSetting, true).toBool()
+                                 ? kClaudeAutoModeLabel
+                                 : QStringLiteral("Ask before edits"))
+                      .toString()
+                : session->mode;
+        lines << labeled(QStringLiteral("Mode"), modeLabel.toHtmlEscaped());
+    }
+    lines << labeled(QStringLiteral("Repo"),
+                     QStringLiteral("%1/%2").arg(session->owner.toHtmlEscaped(),
+                                                 session->name.toHtmlEscaped()));
+    lines << labeled(QStringLiteral("Status"),
+                     agentStatusText(session->status).toHtmlEscaped());
+    lines << labeled(QStringLiteral("Issue"), issueValue);
+    lines << labeled(QStringLiteral("Branch"),
+                     session->branchName.isEmpty()
+                         ? QStringLiteral("(no branch)")
+                         : chipBranchLinkHtml(session->branchName));
+    if (!worktreePath.isEmpty())
+        lines << labeled(QStringLiteral("Worktree"),
+                         worktreeLinkHtml(session->branchName, worktreePath));
+    lines << labeled(QStringLiteral("PR"), pr);
+    // Run stats — turns/time/cost/tokens, moved off the sessions table into
+    // the detail header so all of a session's figures read together in one
+    // place (adhoc #42). Rendered as a single muted, dot-separated row.
+    const qint64 dur = agentEffectiveDurationMs(*session);
+    QStringList stats;
+    if (session->numTurns > 0)
+        stats << QStringLiteral("%1 turns").arg(session->numTurns);
+    if (dur > 0)
+        stats << QStringLiteral("%1s").arg(dur / 1000);
+    stats << agentCostText(session->costUsd).toHtmlEscaped();
+    const qint64 toks = sessionTokenTotal(*session);
+    if (toks > 0)
+        stats << QStringLiteral("%1 tokens").arg(formatCount(toks));
+    lines << labeled(QStringLiteral("Stats"),
+                     QStringLiteral("<span style='color:#8b949e'>%1</span>")
+                         .arg(stats.join(QStringLiteral(" &middot; "))));
+    if (!mergedMeta.isEmpty())
+        lines << mergedMeta;
+    m_agentMeta->setText(lines.join(sep));
+}
+
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
@@ -3429,140 +3577,10 @@ void MainWindow::showAgentSession(int sessionId)
                                    : session->issueTitle));
         }
     }
-    // Issue #291: a "merged into <base>" note appended to the meta line once
-    // the session's worktree/PR has landed in the base branch. Joined with the
-    // block's separator below, like every other part.
-    const QString mergedMeta =
-        session->merged
-            ? QStringLiteral("<span style='color:#a371f7'>merged into %1</span>")
-                  .arg(agentMergeBase(*session).toHtmlEscaped())
-            : QString();
-    // Resolve this session's worktree folder from its branch so the header can
-    // show its location next to the branch and link straight to it (adhoc #123).
-    QString worktreePath;
-    if (!session->branchName.isEmpty()) {
-        const int repoIdx = repoIndexFor(session->owner, session->name);
-        if (repoIdx >= 0)
-            worktreePath = cachedSessionWorktree(
-                sessionId, m_repositories.at(repoIdx).localPath,
-                session->branchName);
-    }
-    if (m_agentMeta && isExternalSession(sessionId)) {
-        // Rich text so the branch name links to its Branches-tab row and the
-        // worktree location links to its Worktrees-tab row (issue #265, adhoc
-        // #123); every other part is HTML-escaped to stay literal. Each part
-        // sits on its own line (adhoc #156).
-        const QString sep = QStringLiteral("<br>");
-        QString meta = QStringLiteral("External Claude Code") + sep +
-                       QStringLiteral("%1/%2")
-                           .arg(session->owner.toHtmlEscaped(),
-                                session->name.toHtmlEscaped()) +
-                       sep + agentStatusText(session->status).toHtmlEscaped();
-        if (!session->branchName.isEmpty()) {
-            meta += sep + chipBranchLinkHtml(session->branchName);
-            if (!worktreePath.isEmpty())
-                meta += sep + worktreeLinkHtml(session->branchName, worktreePath);
-        }
-        meta += sep + QStringLiteral("watch-only");
-        if (!mergedMeta.isEmpty())
-            meta += sep + mergedMeta;
-        m_agentMeta->setText(meta);
-    } else if (m_agentMeta) {
-        // PR status, spelled out so it's always visible. When a PR exists it
-        // links straight to that pull request's tab from the header (adhoc #53).
-        QString pr =
-            session->prNumber > 0
-                ? pullLinkHtml(session->prNumber)
-                : (session->createPr ? QStringLiteral("PR opens on finish")
-                                     : QStringLiteral("no PR"))
-                      .toHtmlEscaped();
-        // Rich text so the branch name, worktree location, PR and issue are links
-        // (issues #265, adhoc #53, adhoc #123, adhoc #138); every other part is
-        // HTML-escaped to stay literal. Each part sits on its own line (adhoc #156),
-        // captioned with a muted "Field:" label so the header reads as a key/value
-        // list rather than a bare stack of strings (adhoc #189).
-        const QString sep = QStringLiteral("<br>");
-        auto labeled = [](const QString &label, const QString &valueHtml) {
-            return QStringLiteral("<span style='color:#8b949e'>%1:</span> %2")
-                .arg(label.toHtmlEscaped(), valueHtml);
-        };
-        // Linked issue line — always shown so the tracking state is explicit: a
-        // link to the issue when one exists, otherwise a hint pointing at the
-        // "Create linked issue" button in the header above (adhoc #189).
-        const QString issueValue =
-            session->issueNumber > 0
-                ? issueLinkHtml(session->issueNumber, session->issueTitle)
-                : QStringLiteral("<span style='color:#8b949e'>none yet</span>");
-        QStringList lines;
-        lines << labeled(QStringLiteral("Agent"),
-                         agentProviderName(session->provider).toHtmlEscaped());
-        // Which LLM actually did the work. If the session was launched without an
-        // explicit model preference, fall back to the actual model reported by the
-        // CLI's system:init event (first event in the stream), so the header never
-        // shows a blank Model: line when the CLI used its own default.
-        QString displayModel = session->model;
-        if (displayModel.isEmpty()) {
-            const auto &evts = m_streamEvents.value(sessionId);
-            for (const QJsonObject &ev : evts) {
-                if (ev.value(QStringLiteral("type")).toString() == QLatin1String("system")
-                    && ev.value(QStringLiteral("subtype")).toString() == QLatin1String("init")) {
-                    displayModel = ev.value(QStringLiteral("model")).toString().trimmed();
-                    break;
-                }
-            }
-        }
-        lines << labeled(QStringLiteral("Model"),
-                         agentModelLabel(displayModel).toHtmlEscaped());
-        // Permission mode this Claude Code session runs under (the composer's
-        // mode selector, captured on the last follow-up). Older sessions have no
-        // stored mode, so show the current composer default they'd resume with.
-        if (session->provider == QLatin1String("claude-code") ||
-            agentIsCodexProvider(session->provider)) {
-            const QString modeLabel =
-                session->mode.isEmpty()
-                    ? QSettings()
-                          .value(kAgentModeSetting,
-                                 QSettings().value(kClaudeAutoModeSetting, true).toBool()
-                                     ? kClaudeAutoModeLabel
-                                     : QStringLiteral("Ask before edits"))
-                          .toString()
-                    : session->mode;
-            lines << labeled(QStringLiteral("Mode"), modeLabel.toHtmlEscaped());
-        }
-        lines << labeled(QStringLiteral("Repo"),
-                         QStringLiteral("%1/%2").arg(session->owner.toHtmlEscaped(),
-                                                     session->name.toHtmlEscaped()));
-        lines << labeled(QStringLiteral("Status"),
-                         agentStatusText(session->status).toHtmlEscaped());
-        lines << labeled(QStringLiteral("Issue"), issueValue);
-        lines << labeled(QStringLiteral("Branch"),
-                         session->branchName.isEmpty()
-                             ? QStringLiteral("(no branch)")
-                             : chipBranchLinkHtml(session->branchName));
-        if (!worktreePath.isEmpty())
-            lines << labeled(QStringLiteral("Worktree"),
-                             worktreeLinkHtml(session->branchName, worktreePath));
-        lines << labeled(QStringLiteral("PR"), pr);
-        // Run stats — turns/time/cost/tokens, moved off the sessions table into
-        // the detail header so all of a session's figures read together in one
-        // place (adhoc #42). Rendered as a single muted, dot-separated row.
-        const qint64 dur = agentEffectiveDurationMs(*session);
-        QStringList stats;
-        if (session->numTurns > 0)
-            stats << QStringLiteral("%1 turns").arg(session->numTurns);
-        if (dur > 0)
-            stats << QStringLiteral("%1s").arg(dur / 1000);
-        stats << agentCostText(session->costUsd).toHtmlEscaped();
-        const qint64 toks = sessionTokenTotal(*session);
-        if (toks > 0)
-            stats << QStringLiteral("%1 tokens").arg(formatCount(toks));
-        lines << labeled(QStringLiteral("Stats"),
-                         QStringLiteral("<span style='color:#8b949e'>%1</span>")
-                             .arg(stats.join(QStringLiteral(" &middot; "))));
-        if (!mergedMeta.isEmpty())
-            lines << mergedMeta;
-        m_agentMeta->setText(lines.join(sep));
-    }
+    // The detail header's key/value meta lines (identity, issue/branch/worktree/PR
+    // chips, run Stats). Split out so the live-update paths can refresh just the
+    // header text without a costly transcript rebuild (adhoc #42).
+    refreshAgentDetailMeta(sessionId);
     setAgentUsageLabel(*session);
     refreshAgentStatusPill(sessionId);
     syncAgentModeSelector(*session);
@@ -6822,9 +6840,10 @@ void MainWindow::animateRunningAgentIcons()
         // itself now lives in the detail header (adhoc #42), refreshed below.
         if (QTableWidgetItem *speed = m_agentTable->item(r, 5))
             applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
-        // Tick the detail header's run stats (time/speed) for the open session.
+        // Tick the detail header's run stats (elapsed time) for the open session —
+        // meta only, so the live transcript isn't rebuilt every second.
         if (s->id == m_selectedAgentSessionId)
-            showAgentSession(s->id);
+            refreshAgentDetailMeta(s->id);
     }
 }
 
@@ -6892,11 +6911,12 @@ void MainWindow::updateAgentTokenCell(int sessionId)
     }
     // Keep the open detail header's token/cost stats + the "Session token usage"
     // line in step with the live counter so they climb in real time instead of
-    // only on the next reload.
+    // only on the next reload. Meta only — never rebuild the transcript here (the
+    // stream handler already renders it incrementally on each event).
     if (sessionId == m_selectedAgentSessionId)
         if (const AgentSession *s = findAgentSession(sessionId)) {
             setAgentUsageLabel(*s);
-            showAgentSession(sessionId);
+            refreshAgentDetailMeta(sessionId);
         }
 }
 
@@ -6906,8 +6926,8 @@ void MainWindow::updateAgentTokenCell(int sessionId)
 // (adhoc #42), so this only touches the open session's header (issue #296).
 void MainWindow::updateAgentCostCell(int sessionId)
 {
-    if (sessionId == m_selectedAgentSessionId && findAgentSession(sessionId))
-        showAgentSession(sessionId);
+    if (sessionId == m_selectedAgentSessionId)
+        refreshAgentDetailMeta(sessionId);
 }
 
 // Refresh the Speed cell and the detail header's run stats (turns/time) when a
@@ -6932,7 +6952,7 @@ void MainWindow::updateAgentRunSummaryCells(int sessionId)
         break;
     }
     if (sessionId == m_selectedAgentSessionId)
-        showAgentSession(sessionId);
+        refreshAgentDetailMeta(sessionId);
 }
 
 // Pulse a session's night-rider light so its activity column sweeps while raw
