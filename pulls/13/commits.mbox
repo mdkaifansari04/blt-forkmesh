@@ -1,0 +1,3489 @@
+From c19267830c752eb20d78d4528edaa1fa2cd7b81d Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Fri, 17 Jul 2026 00:13:23 +0530
+Subject: [PATCH] feat(mobile): add local iOS repository foundation
+
+---
+ docs/mobile/phase2a-local-ios-status.md       | 111 +++++
+ .../phase2a_ios_keychain_probe_test.dart      |  46 ++
+ ...ase2a_ios_local_repository_probe_test.dart | 129 ++++++
+ .../ios/Runner.xcodeproj/project.pbxproj      |   8 +
+ flutter_app/ios/Runner/AppDelegate.swift      |   7 +
+ .../ios/Runner/ForkMeshAppDirectories.swift   |  32 ++
+ .../ios/Runner/ForkMeshSecureStore.swift      | 142 ++++++
+ .../lib/core/platform/app_directories.dart    | 165 +++++++
+ .../lib/core/security/secure_store.dart       | 205 +++++++++
+ .../nodes/data/node_identity_store.dart       | 141 ++++++
+ .../features/nodes/domain/node_identity.dart  |  37 ++
+ .../data/local_repository_runtime.dart        |  36 ++
+ .../data/local_repository_store.dart          | 419 ++++++++++++++++++
+ .../data/owned_git_engine_adapter.dart        | 238 ++++++++++
+ .../domain/local_git_capabilities.dart        |  98 ++++
+ .../domain/repository_identity.dart           |  52 +++
+ .../domain/repository_replica.dart            | 116 +++++
+ flutter_app/lib/main.dart                     | 116 ++++-
+ flutter_app/lib/screens/chat_screen.dart      | 113 ++---
+ flutter_app/lib/services/auth_service.dart    | 120 ++++-
+ flutter_app/lib/services/identity.dart        |  49 +-
+ .../lib/widgets/compose_identity_bar.dart     |   2 +-
+ flutter_app/pubspec.lock                      |  56 ++-
+ flutter_app/pubspec.yaml                      |   4 +
+ flutter_app/test/api_service_test.dart        |   2 +-
+ flutter_app/test/chat_screen_test.dart        |   6 +-
+ flutter_app/test/flutter_test_config.dart     |   8 +
+ .../phase2a_local_repository_store_test.dart  | 168 +++++++
+ .../test/phase2a_local_runtime_test.dart      |  38 ++
+ .../test/phase2a_owned_git_adapter_test.dart  |  96 ++++
+ .../test/phase2a_secure_migration_test.dart   | 167 +++++++
+ 31 files changed, 2802 insertions(+), 125 deletions(-)
+ create mode 100644 docs/mobile/phase2a-local-ios-status.md
+ create mode 100644 flutter_app/integration_test/phase2a_ios_keychain_probe_test.dart
+ create mode 100644 flutter_app/integration_test/phase2a_ios_local_repository_probe_test.dart
+ create mode 100644 flutter_app/ios/Runner/ForkMeshAppDirectories.swift
+ create mode 100644 flutter_app/ios/Runner/ForkMeshSecureStore.swift
+ create mode 100644 flutter_app/lib/core/platform/app_directories.dart
+ create mode 100644 flutter_app/lib/core/security/secure_store.dart
+ create mode 100644 flutter_app/lib/features/nodes/data/node_identity_store.dart
+ create mode 100644 flutter_app/lib/features/nodes/domain/node_identity.dart
+ create mode 100644 flutter_app/lib/features/repositories/data/local_repository_runtime.dart
+ create mode 100644 flutter_app/lib/features/repositories/data/local_repository_store.dart
+ create mode 100644 flutter_app/lib/features/repositories/data/owned_git_engine_adapter.dart
+ create mode 100644 flutter_app/lib/features/repositories/domain/local_git_capabilities.dart
+ create mode 100644 flutter_app/lib/features/repositories/domain/repository_identity.dart
+ create mode 100644 flutter_app/lib/features/repositories/domain/repository_replica.dart
+ create mode 100644 flutter_app/test/flutter_test_config.dart
+ create mode 100644 flutter_app/test/phase2a_local_repository_store_test.dart
+ create mode 100644 flutter_app/test/phase2a_local_runtime_test.dart
+ create mode 100644 flutter_app/test/phase2a_owned_git_adapter_test.dart
+ create mode 100644 flutter_app/test/phase2a_secure_migration_test.dart
+
+diff --git a/docs/mobile/phase2a-local-ios-status.md b/docs/mobile/phase2a-local-ios-status.md
+new file mode 100644
+index 00000000..e1c95f34
+--- /dev/null
++++ b/docs/mobile/phase2a-local-ios-status.md
+@@ -0,0 +1,111 @@
++# Phase 2A local iOS repository foundation status
++
++## Verdict
++
++`VALIDATED ON IOS SIMULATOR`
++
++This status applies only to Phase 2A local-only behavior on the validated iOS simulator.
++
++It is not a release-readiness or cross-platform claim.
++
++## Security boundary
++
++The owned iOS method channel stores only the Ed25519 seed and account session token in Keychain.
++
++Both use `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`.
++
++This accessibility supports the intended post-unlock local background needs while preventing migration to a different device through backup restore.
++
++The Keychain queries set `kSecAttrSynchronizable` to false, so neither secret uses iCloud Keychain synchronization.
++
++The Keychain service and account names are fixed and bounded in the Swift boundary.
++
++No secret bytes, bearer tokens, authorization headers, or private keys are emitted in application logs or diagnostic UI.
++
++The Dart boundary reports typed unavailable, locked, malformed, and OS-status failures.
++
++Duplicate Keychain writes are resolved with the explicit update path rather than being treated as a successful new insert.
++
++Android returns the typed `platformUnsupported` failure from the secure-store boundary.
++
++No Android fallback to SharedPreferences was added.
++
++## Migration and identity behavior
++
++The legacy `identity/ed25519Seed` value is copied to Keychain only after 32-byte validation.
++
++The write is read back byte-for-byte before the legacy preference is removed.
++
++Conflicting valid legacy and Keychain seeds fail closed without rotation or deletion.
++
++The schema-defined opaque `nodeId` is stored separately from the Ed25519 public key.
++
++The legacy `auth/session` JSON retains non-secret metadata only after its non-empty session token has been written to and verified from Keychain.
++
++Session loading combines that metadata with the Keychain token in memory.
++
++Logout removes the session token and retains the node seed.
++
++## Local repository behavior
++
++Canonical repositories live at `<Application Support>/ForkMesh/repositories/<repoId>/worktree`.
++
++They are never created in Documents or shared storage.
++
++The app uses the iOS sandbox's default restrictive directory permissions.
++
++Canonical repositories are persistent user state rather than disposable caches, so Phase 2A does not exclude them from backup.
++
++Phase 2A creates no disposable repository cache that requires a backup-exclusion attribute.
++
++All generated path components are validated, and malformed identifiers, separators, traversal, NUL bytes, symlink targets, and non-directory repository roots fail closed.
++
++Each app-created repository has a cryptographically random canonical 128-bit `fmrepo_` ID.
++
++Its exact immutable `.forkmesh/repository.json` manifest is written atomically, validated by read-back, and committed as the bootstrap commit.
++
++One app-private replica metadata record binds the repository ID, local node ID, and sandbox location.
++
++Replica metadata is written atomically and records the local canonical head.
++
++Create and explicit local-replica removal use an operation journal that is recovered before the repository boundary is exposed.
++
++Removing a local replica requires an explicit `removeLocalReplica` intent and has no remote or catalog effect.
++
++## Capability boundary
++
++Enabled local capabilities are `git.localRepository`, `git.localAuthoring`, `git.offlineBrowse`, `git.localBranch`, and `git.localCommit`.
++
++`git.clone`, `git.fetch`, `git.push`, and `git.untrustedSha1Import` are disabled with `awaitingIndependentCryptographyReview`.
++
++`git.remoteHosting` is disabled with `phaseNotImplemented`.
++
++`git.androidRuntime` is disabled with `androidSdkUnavailable`.
++
++The physical-device validation blocker remains `physicalDeviceValidationPending`.
++
++The production adapter returns typed errors for every disabled operation below the UI boundary.
++
++It uses only the local ForkMesh-owned `forkmesh_git` package and has no process or system-Git fallback.
++
++## Validation evidence
++
++The focused Flutter tests cover seed and session migration, restart, failed secure writes, conflicting seeds, repository creation and reopening, local text and binary authoring, branch checkout, path safety, crash recovery, and typed remote denial.
++
++The iOS simulator `EA3FD115-8BD0-478B-8340-F273CCB0BAEE` passed the Keychain/Application Support probe and the full Phase 2A local repository probe on 2026-07-16.
++
++The local probe migrated real simulator Keychain state, restarted identity, created and reopened an app-sandbox repository, committed text and binary files, created and checked out an offline branch, read history and blobs, and verified every remote or untrusted operation is denied.
++
++The simulator build completed without changing the production iOS deployment target, which remains iOS 13.0.
++
++## Explicit remaining blockers
++
++G4.5 remains `AWAITING INDEPENDENT REVIEW`.
++
++This Phase 2A work does not approve SHA-1 collision screening, clone, fetch, push, import, hosting, G5, G6, or G7.
++
++Android is `NOT VALIDATED - SDK unavailable`.
++
++No physical iPhone runtime validation has been performed.
++
++The overall mobile phase remains `PARTIAL` until Android validation and an independent cryptography/security review are complete.
+diff --git a/flutter_app/integration_test/phase2a_ios_keychain_probe_test.dart b/flutter_app/integration_test/phase2a_ios_keychain_probe_test.dart
+new file mode 100644
+index 00000000..a38e3997
+--- /dev/null
++++ b/flutter_app/integration_test/phase2a_ios_keychain_probe_test.dart
+@@ -0,0 +1,46 @@
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:forkmesh/core/platform/app_directories.dart';
++import 'package:forkmesh/core/security/secure_store.dart';
++import 'package:integration_test/integration_test.dart';
++
++void main() {
++  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
++
++  testWidgets(
++    'uses iOS Keychain and Application Support without persistence leaks',
++    (tester) async {
++      expect(Platform.isIOS, isTrue);
++      final secureStore = MethodChannelSecureStore.forCurrentPlatform();
++
++      await secureStore.write(
++        SecureStoreKey.accountSessionToken,
++        <int>[1, 2, 3, 4],
++        accessibility: SecureStoreAccessibility.afterFirstUnlockThisDeviceOnly,
++      );
++      expect(
++        await secureStore.contains(SecureStoreKey.accountSessionToken),
++        isTrue,
++      );
++      expect(await secureStore.read(SecureStoreKey.accountSessionToken), <int>[
++        1,
++        2,
++        3,
++        4,
++      ]);
++      await secureStore.delete(SecureStoreKey.accountSessionToken);
++      expect(
++        await secureStore.read(SecureStoreKey.accountSessionToken),
++        isNull,
++      );
++
++      final directories = await AppDirectories.forCurrentPlatform();
++      final repositoryRoot = await directories.repositoryRootFor(
++        'fmrepo_AAAAAAAAAAAAAAAAAAAAAA',
++      );
++      expect(await repositoryRoot.exists(), isTrue);
++      expect(repositoryRoot.path.contains('/Documents/'), isFalse);
++    },
++  );
++}
+diff --git a/flutter_app/integration_test/phase2a_ios_local_repository_probe_test.dart b/flutter_app/integration_test/phase2a_ios_local_repository_probe_test.dart
+new file mode 100644
+index 00000000..e72d6df2
+--- /dev/null
++++ b/flutter_app/integration_test/phase2a_ios_local_repository_probe_test.dart
+@@ -0,0 +1,129 @@
++import 'dart:convert';
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:forkmesh/core/platform/app_directories.dart';
++import 'package:forkmesh/core/security/secure_store.dart';
++import 'package:forkmesh/features/nodes/data/node_identity_store.dart';
++import 'package:forkmesh/features/repositories/data/local_repository_runtime.dart';
++import 'package:forkmesh/features/repositories/data/local_repository_store.dart';
++import 'package:forkmesh/features/repositories/domain/local_git_capabilities.dart';
++import 'package:forkmesh/services/auth_service.dart';
++import 'package:forkmesh/services/identity.dart';
++import 'package:forkmesh/services/settings_service.dart';
++import 'package:integration_test/integration_test.dart';
++import 'package:shared_preferences/shared_preferences.dart';
++
++void main() {
++  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
++
++  testWidgets(
++    'migrates local identity and authors an offline repository on iOS',
++    (tester) async {
++      expect(Platform.isIOS, isTrue);
++      final secureStore = MethodChannelSecureStore.forCurrentPlatform();
++      final preferences = await SharedPreferences.getInstance();
++      addTearDown(() async {
++        await secureStore.delete(SecureStoreKey.nodeSeed);
++        await secureStore.delete(SecureStoreKey.accountSessionToken);
++        await preferences.remove(NodeIdentityStore.legacySeedKey);
++        await preferences.remove(NodeIdentityStore.metadataKey);
++        await preferences.remove('auth/session');
++      });
++      await secureStore.delete(SecureStoreKey.nodeSeed);
++      await secureStore.delete(SecureStoreKey.accountSessionToken);
++      await preferences.remove(NodeIdentityStore.metadataKey);
++      final seed = List<int>.generate(32, (index) => index);
++      await preferences.setString(
++        NodeIdentityStore.legacySeedKey,
++        base64.encode(seed),
++      );
++      await preferences.setString(
++        'auth/session',
++        jsonEncode(<String, Object>{
++          'nodeName': 'ios-probe',
++          'email': 'ios-probe@example.test',
++          'sessionToken': 'simulator-session-token',
++        }),
++      );
++
++      final identity = await Identity.loadOrCreate(
++        store: NodeIdentityStore(
++          secureStore: secureStore,
++          preferences: preferences,
++        ),
++      );
++      final auth = await AuthService.create(
++        SettingsService(preferences),
++        identity,
++        secureStore: secureStore,
++      );
++      expect(identity.nodeId, startsWith('fmnode_'));
++      expect(auth.session!.sessionToken, 'simulator-session-token');
++      expect(preferences.containsKey(NodeIdentityStore.legacySeedKey), isFalse);
++      expect(
++        jsonDecode(preferences.getString('auth/session')!),
++        isNot(contains('sessionToken')),
++      );
++
++      final restarted = await Identity.loadOrCreate(
++        store: NodeIdentityStore(
++          secureStore: secureStore,
++          preferences: preferences,
++        ),
++      );
++      expect(restarted.nodeId, identity.nodeId);
++      expect(restarted.publicKeyB64url, identity.publicKeyB64url);
++
++      final runtime = await Phase2ALocalRuntime.bootstrap(
++        directories: await AppDirectories.forCurrentPlatform(),
++        nodeIdentity: identity.nodeIdentity,
++      );
++      final local = await runtime.git.initializeLocal(createdBy: 'ios-probe');
++      await File(
++        '${local.worktree.path}${Platform.pathSeparator}note.txt',
++      ).writeAsString('offline iOS authoring\n');
++      await File(
++        '${local.worktree.path}${Platform.pathSeparator}binary.bin',
++      ).writeAsBytes(<int>[0, 1, 255]);
++      await local.stage(<String>['note.txt', 'binary.bin']);
++      final commit = await local.commit(
++        message: 'iOS local commit\n',
++        authorName: 'iOS Probe',
++        authorEmail: 'ios-probe@example.test',
++        timestampSeconds: 0,
++      );
++      await local.createBranch('offline');
++      await local.checkout('offline');
++      await local.dispose();
++
++      final reopened = await runtime.git.openLocal(local.repoId);
++      expect((await reopened.history()).first.objectId, commit);
++      expect(await reopened.readBlobFromHead('binary.bin'), <int>[0, 1, 255]);
++      expect((await reopened.status()).isClean, isTrue);
++      for (final operation in <Future<void> Function()>[
++        runtime.git.clone,
++        runtime.git.fetch,
++        runtime.git.push,
++        runtime.git.importRemoteRepository,
++        runtime.git.hostRemoteRepository,
++        runtime.git.installUntrustedSha1Object,
++      ]) {
++        await expectLater(
++          operation,
++          throwsA(isA<LocalGitCapabilityException>()),
++        );
++      }
++      await reopened.dispose();
++      await reopened.removeLocalReplica(
++        intent: LocalReplicaDeletionIntent.removeLocalReplica,
++      );
++      await auth.logout();
++      expect(
++        await secureStore.read(SecureStoreKey.accountSessionToken),
++        isNull,
++      );
++      expect((await secureStore.read(SecureStoreKey.nodeSeed))!.length, 32);
++    },
++  );
++}
+diff --git a/flutter_app/ios/Runner.xcodeproj/project.pbxproj b/flutter_app/ios/Runner.xcodeproj/project.pbxproj
+index 78a32327..6d07e55b 100644
+--- a/flutter_app/ios/Runner.xcodeproj/project.pbxproj
++++ b/flutter_app/ios/Runner.xcodeproj/project.pbxproj
+@@ -7,6 +7,8 @@
+ 	objects = {
+ 
+ /* Begin PBXBuildFile section */
++		A20B00011F2A000100000001 /* ForkMeshSecureStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20B00021F2A000100000001 /* ForkMeshSecureStore.swift */; };
++		A20B00031F2A000100000001 /* ForkMeshAppDirectories.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20B00041F2A000100000001 /* ForkMeshAppDirectories.swift */; };
+ 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
+ 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
+ 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
+@@ -42,6 +44,8 @@
+ /* End PBXCopyFilesBuildPhase section */
+ 
+ /* Begin PBXFileReference section */
++		A20B00021F2A000100000001 /* ForkMeshSecureStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForkMeshSecureStore.swift; sourceTree = "<group>"; };
++		A20B00041F2A000100000001 /* ForkMeshAppDirectories.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForkMeshAppDirectories.swift; sourceTree = "<group>"; };
+ 		1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GeneratedPluginRegistrant.h; sourceTree = "<group>"; };
+ 		1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = GeneratedPluginRegistrant.m; sourceTree = "<group>"; };
+ 		331C807B294A618700263BE5 /* RunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerTests.swift; sourceTree = "<group>"; };
+@@ -115,6 +119,8 @@
+ 		97C146F01CF9000F007C117D /* Runner */ = {
+ 			isa = PBXGroup;
+ 			children = (
++				A20B00021F2A000100000001 /* ForkMeshSecureStore.swift */,
++				A20B00041F2A000100000001 /* ForkMeshAppDirectories.swift */,
+ 				97C146FA1CF9000F007C117D /* Main.storyboard */,
+ 				97C146FD1CF9000F007C117D /* Assets.xcassets */,
+ 				97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */,
+@@ -281,6 +287,8 @@
+ 			isa = PBXSourcesBuildPhase;
+ 			buildActionMask = 2147483647;
+ 			files = (
++				A20B00011F2A000100000001 /* ForkMeshSecureStore.swift in Sources */,
++				A20B00031F2A000100000001 /* ForkMeshAppDirectories.swift in Sources */,
+ 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
+ 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
+ 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,
+diff --git a/flutter_app/ios/Runner/AppDelegate.swift b/flutter_app/ios/Runner/AppDelegate.swift
+index c30b367e..a38834c3 100644
+--- a/flutter_app/ios/Runner/AppDelegate.swift
++++ b/flutter_app/ios/Runner/AppDelegate.swift
+@@ -12,5 +12,12 @@ import UIKit
+ 
+   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
+     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
++    guard let registrar = engineBridge.pluginRegistry.registrar(
++      forPlugin: "ForkMeshPlatformChannels"
++    ) else {
++      return
++    }
++    ForkMeshSecureStore.register(with: registrar.messenger())
++    ForkMeshAppDirectories.register(with: registrar.messenger())
+   }
+ }
+diff --git a/flutter_app/ios/Runner/ForkMeshAppDirectories.swift b/flutter_app/ios/Runner/ForkMeshAppDirectories.swift
+new file mode 100644
+index 00000000..d7d0abfa
+--- /dev/null
++++ b/flutter_app/ios/Runner/ForkMeshAppDirectories.swift
+@@ -0,0 +1,32 @@
++import Flutter
++import Foundation
++
++enum ForkMeshAppDirectories {
++  private static let channelName = "dev.forkmesh.platform/directories-v1"
++
++  static func register(with messenger: FlutterBinaryMessenger) {
++    let channel = FlutterMethodChannel(name: channelName, binaryMessenger: messenger)
++    channel.setMethodCallHandler { call, result in
++      guard call.method == "appDirectories.applicationSupport" else {
++        result(FlutterMethodNotImplemented)
++        return
++      }
++      guard let directory = FileManager.default.urls(
++        for: .applicationSupportDirectory,
++        in: .userDomainMask
++      ).first else {
++        result(FlutterError(code: "unavailable", message: "Application Support is unavailable.", details: nil))
++        return
++      }
++      do {
++        try FileManager.default.createDirectory(
++          at: directory,
++          withIntermediateDirectories: true
++        )
++        result(directory.path)
++      } catch {
++        result(FlutterError(code: "unavailable", message: "Application Support is unavailable.", details: nil))
++      }
++    }
++  }
++}
+diff --git a/flutter_app/ios/Runner/ForkMeshSecureStore.swift b/flutter_app/ios/Runner/ForkMeshSecureStore.swift
+new file mode 100644
+index 00000000..a7591121
+--- /dev/null
++++ b/flutter_app/ios/Runner/ForkMeshSecureStore.swift
+@@ -0,0 +1,142 @@
++import Flutter
++import Security
++
++enum ForkMeshSecureStore {
++  private static let channelName = "dev.forkmesh.platform/security-v1"
++  private static let service = "dev.forkmesh.secure-store.v1"
++  private static let allowedAccounts: Set<String> = [
++    "identity.ed25519.seed.v1",
++    "auth.account-session-token.v1",
++  ]
++
++  static func register(with messenger: FlutterBinaryMessenger) {
++    let channel = FlutterMethodChannel(name: channelName, binaryMessenger: messenger)
++    channel.setMethodCallHandler { call, result in
++      switch call.method {
++      case "secureStore.read":
++        read(call, result: result)
++      case "secureStore.write":
++        write(call, result: result)
++      case "secureStore.delete":
++        delete(call, result: result)
++      case "secureStore.contains":
++        contains(call, result: result)
++      default:
++        result(FlutterMethodNotImplemented)
++      }
++    }
++  }
++
++  private static func account(_ call: FlutterMethodCall, result: FlutterResult) -> String? {
++    guard let arguments = call.arguments as? [String: Any],
++          let account = arguments["key"] as? String,
++          allowedAccounts.contains(account) else {
++      result(FlutterError(code: "malformed", message: "Invalid secure-store request.", details: nil))
++      return nil
++    }
++    return account
++  }
++
++  private static func baseQuery(_ account: String) -> [String: Any] {
++    return [
++      kSecClass as String: kSecClassGenericPassword,
++      kSecAttrService as String: service,
++      kSecAttrAccount as String: account,
++      kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
++    ]
++  }
++
++  private static func read(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
++    guard let account = account(call, result: result) else { return }
++    var query = baseQuery(account)
++    query[kSecReturnData as String] = kCFBooleanTrue
++    query[kSecMatchLimit as String] = kSecMatchLimitOne
++    var output: CFTypeRef?
++    let status = SecItemCopyMatching(query as CFDictionary, &output)
++    if status == errSecItemNotFound {
++      result(["state": "missing"])
++      return
++    }
++    guard status == errSecSuccess, let data = output as? Data else {
++      result(error(for: status))
++      return
++    }
++    result(["state": "found", "value": FlutterStandardTypedData(bytes: data)])
++  }
++
++  private static func write(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
++    guard let account = account(call, result: result),
++          let arguments = call.arguments as? [String: Any],
++          let typedData = arguments["value"] as? FlutterStandardTypedData,
++          typedData.data.count > 0,
++          typedData.data.count <= 4096,
++          arguments["accessibility"] as? String == "afterFirstUnlockThisDeviceOnly" else {
++      result(FlutterError(code: "malformed", message: "Invalid secure-store write.", details: nil))
++      return
++    }
++    let attributes: [String: Any] = [
++      kSecValueData as String: typedData.data,
++      kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
++    ]
++    let updateStatus = SecItemUpdate(baseQuery(account) as CFDictionary, attributes as CFDictionary)
++    if updateStatus == errSecSuccess {
++      result(nil)
++      return
++    }
++    guard updateStatus == errSecItemNotFound else {
++      result(error(for: updateStatus))
++      return
++    }
++    var addQuery = baseQuery(account)
++    for (key, value) in attributes {
++      addQuery[key] = value
++    }
++    let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
++    if addStatus == errSecSuccess {
++      result(nil)
++    } else if addStatus == errSecDuplicateItem {
++      let retryStatus = SecItemUpdate(baseQuery(account) as CFDictionary, attributes as CFDictionary)
++      retryStatus == errSecSuccess ? result(nil) : result(error(for: retryStatus))
++    } else {
++      result(error(for: addStatus))
++    }
++  }
++
++  private static func delete(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
++    guard let account = account(call, result: result) else { return }
++    let status = SecItemDelete(baseQuery(account) as CFDictionary)
++    if status == errSecSuccess || status == errSecItemNotFound {
++      result(nil)
++    } else {
++      result(error(for: status))
++    }
++  }
++
++  private static func contains(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
++    guard let account = account(call, result: result) else { return }
++    var query = baseQuery(account)
++    query[kSecReturnAttributes as String] = kCFBooleanTrue
++    query[kSecMatchLimit as String] = kSecMatchLimitOne
++    let status = SecItemCopyMatching(query as CFDictionary, nil)
++    if status == errSecSuccess {
++      result(true)
++    } else if status == errSecItemNotFound {
++      result(false)
++    } else {
++      result(error(for: status))
++    }
++  }
++
++  private static func error(for status: OSStatus) -> FlutterError {
++    let code: String
++    switch status {
++    case errSecInteractionNotAllowed:
++      code = "locked"
++    case errSecParam, errSecDecode:
++      code = "malformed"
++    default:
++      code = "osStatus"
++    }
++    return FlutterError(code: code, message: "Secure-store operation failed.", details: nil)
++  }
++}
+diff --git a/flutter_app/lib/core/platform/app_directories.dart b/flutter_app/lib/core/platform/app_directories.dart
+new file mode 100644
+index 00000000..fe60c43f
+--- /dev/null
++++ b/flutter_app/lib/core/platform/app_directories.dart
+@@ -0,0 +1,165 @@
++import 'dart:io';
++
++import 'package:flutter/services.dart';
++
++enum AppDirectoryErrorCode {
++  platformUnsupported,
++  malformedPlatformPath,
++  unsafePath,
++}
++
++final class AppDirectoryException implements Exception {
++  const AppDirectoryException(this.code);
++
++  final AppDirectoryErrorCode code;
++
++  @override
++  String toString() => 'AppDirectoryException(${code.name})';
++}
++
++abstract interface class AppDirectories {
++  Future<Directory> repositoriesDirectory();
++
++  Future<Directory> repositoryRootFor(String repoId);
++
++  Future<Directory?> existingRepositoryRootFor(String repoId);
++
++  Future<Directory> worktreeFor(String repoId);
++
++  static Future<AppDirectories> forCurrentPlatform() async {
++    if (!Platform.isIOS) {
++      throw const AppDirectoryException(
++        AppDirectoryErrorCode.platformUnsupported,
++      );
++    }
++    const channel = MethodChannel('dev.forkmesh.platform/directories-v1');
++    try {
++      final path = await channel.invokeMethod<String>(
++        'appDirectories.applicationSupport',
++      );
++      if (path == null) {
++        throw const AppDirectoryException(
++          AppDirectoryErrorCode.malformedPlatformPath,
++        );
++      }
++      return MethodChannelAppDirectories(Directory(path));
++    } on PlatformException {
++      throw const AppDirectoryException(
++        AppDirectoryErrorCode.malformedPlatformPath,
++      );
++    } on MissingPluginException {
++      throw const AppDirectoryException(
++        AppDirectoryErrorCode.platformUnsupported,
++      );
++    }
++  }
++}
++
++final class MethodChannelAppDirectories implements AppDirectories {
++  MethodChannelAppDirectories(this._applicationSupport);
++
++  final Directory _applicationSupport;
++
++  @override
++  Future<Directory> repositoriesDirectory() async {
++    final support = await _safeDirectory(_applicationSupport, create: true);
++    final forkMesh = await _safeChild(support, 'ForkMesh');
++    return _safeChild(forkMesh, 'repositories');
++  }
++
++  @override
++  Future<Directory> repositoryRootFor(String repoId) async {
++    _validateRepoId(repoId);
++    return _safeChild(await repositoriesDirectory(), repoId);
++  }
++
++  @override
++  Future<Directory?> existingRepositoryRootFor(String repoId) async {
++    _validateRepoId(repoId);
++    return _existingSafeChild(await repositoriesDirectory(), repoId);
++  }
++
++  @override
++  Future<Directory> worktreeFor(String repoId) async =>
++      _safeChild(await repositoryRootFor(repoId), 'worktree');
++
++  Future<Directory> _safeChild(Directory parent, String name) async {
++    _validatePathComponent(name);
++    return _safeDirectory(
++      Directory('${parent.path}${Platform.pathSeparator}$name'),
++      create: true,
++    );
++  }
++
++  Future<Directory?> _existingSafeChild(Directory parent, String name) async {
++    _validatePathComponent(name);
++    final child = Directory('${parent.path}${Platform.pathSeparator}$name');
++    final type = await FileSystemEntity.type(child.path, followLinks: false);
++    if (type == FileSystemEntityType.notFound) return null;
++    if (type != FileSystemEntityType.directory) {
++      throw const AppDirectoryException(AppDirectoryErrorCode.unsafePath);
++    }
++    return _safeDirectory(child, create: false);
++  }
++
++  void _validatePathComponent(String name) {
++    if (name.isEmpty ||
++        name.contains('/') ||
++        name.contains('\\') ||
++        name.contains('\u0000') ||
++        name == '.' ||
++        name == '..') {
++      throw const AppDirectoryException(AppDirectoryErrorCode.unsafePath);
++    }
++  }
++
++  Future<Directory> _safeDirectory(
++    Directory directory, {
++    required bool create,
++  }) async {
++    final absolute = directory.absolute;
++    if (!absolute.path.startsWith(Platform.pathSeparator)) {
++      throw const AppDirectoryException(AppDirectoryErrorCode.unsafePath);
++    }
++    final type = await FileSystemEntity.type(absolute.path, followLinks: false);
++    if (type == FileSystemEntityType.link) {
++      throw const AppDirectoryException(AppDirectoryErrorCode.unsafePath);
++    }
++    if (type == FileSystemEntityType.notFound && create) {
++      await absolute.create();
++    }
++    if (await FileSystemEntity.type(absolute.path, followLinks: false) !=
++        FileSystemEntityType.directory) {
++      throw const AppDirectoryException(AppDirectoryErrorCode.unsafePath);
++    }
++    return absolute;
++  }
++}
++
++final class FixedAppDirectories implements AppDirectories {
++  FixedAppDirectories(Directory applicationSupport)
++    : _delegate = MethodChannelAppDirectories(applicationSupport);
++
++  final MethodChannelAppDirectories _delegate;
++
++  @override
++  Future<Directory> repositoriesDirectory() =>
++      _delegate.repositoriesDirectory();
++
++  @override
++  Future<Directory> repositoryRootFor(String repoId) =>
++      _delegate.repositoryRootFor(repoId);
++
++  @override
++  Future<Directory?> existingRepositoryRootFor(String repoId) =>
++      _delegate.existingRepositoryRootFor(repoId);
++
++  @override
++  Future<Directory> worktreeFor(String repoId) => _delegate.worktreeFor(repoId);
++}
++
++void _validateRepoId(String repoId) {
++  if (!RegExp(r'^fmrepo_[A-Za-z0-9_-]{21}[AQgw]$').hasMatch(repoId)) {
++    throw const AppDirectoryException(AppDirectoryErrorCode.unsafePath);
++  }
++}
+diff --git a/flutter_app/lib/core/security/secure_store.dart b/flutter_app/lib/core/security/secure_store.dart
+new file mode 100644
+index 00000000..be74582b
+--- /dev/null
++++ b/flutter_app/lib/core/security/secure_store.dart
+@@ -0,0 +1,205 @@
++import 'dart:io';
++
++import 'package:flutter/services.dart';
++
++enum SecureStoreKey {
++  nodeSeed('identity.ed25519.seed.v1'),
++  accountSessionToken('auth.account-session-token.v1');
++
++  const SecureStoreKey(this.accountName);
++
++  final String accountName;
++}
++
++enum SecureStoreAccessibility { afterFirstUnlockThisDeviceOnly }
++
++enum SecureStoreErrorCode { platformUnsupported, locked, malformed, osStatus }
++
++final class SecureStoreException implements Exception {
++  const SecureStoreException(this.code, this.message);
++
++  final SecureStoreErrorCode code;
++  final String message;
++
++  @override
++  String toString() => 'SecureStoreException(${code.name})';
++}
++
++abstract interface class SecureStore {
++  Future<Uint8List?> read(SecureStoreKey key);
++
++  Future<void> write(
++    SecureStoreKey key,
++    List<int> value, {
++    required SecureStoreAccessibility accessibility,
++  });
++
++  Future<void> delete(SecureStoreKey key);
++
++  Future<bool> contains(SecureStoreKey key);
++}
++
++final class MethodChannelSecureStore implements SecureStore {
++  MethodChannelSecureStore._(this._channel);
++
++  static const channelName = 'dev.forkmesh.platform/security-v1';
++
++  final MethodChannel _channel;
++
++  static SecureStore forCurrentPlatform() {
++    if (!Platform.isIOS) {
++      throw const SecureStoreException(
++        SecureStoreErrorCode.platformUnsupported,
++        'secure storage is unavailable on this platform',
++      );
++    }
++    return MethodChannelSecureStore._(const MethodChannel(channelName));
++  }
++
++  @override
++  Future<Uint8List?> read(SecureStoreKey key) async {
++    try {
++      final result = await _channel.invokeMapMethod<String, dynamic>(
++        'secureStore.read',
++        <String, Object>{'key': key.accountName},
++      );
++      final state = result?['state'];
++      if (state == 'missing') return null;
++      final value = result?['value'];
++      if (state != 'found' || value is! Uint8List) {
++        throw const SecureStoreException(
++          SecureStoreErrorCode.malformed,
++          'secure storage returned malformed data',
++        );
++      }
++      return Uint8List.fromList(value);
++    } on PlatformException catch (error) {
++      throw _platformError(error);
++    } on MissingPluginException {
++      throw const SecureStoreException(
++        SecureStoreErrorCode.platformUnsupported,
++        'secure storage plugin is unavailable',
++      );
++    }
++  }
++
++  @override
++  Future<void> write(
++    SecureStoreKey key,
++    List<int> value, {
++    required SecureStoreAccessibility accessibility,
++  }) async {
++    if (value.isEmpty || value.length > 4096) {
++      throw const SecureStoreException(
++        SecureStoreErrorCode.malformed,
++        'secure storage value has an invalid length',
++      );
++    }
++    try {
++      await _channel.invokeMethod<void>('secureStore.write', <String, Object>{
++        'key': key.accountName,
++        'value': Uint8List.fromList(value),
++        'accessibility': accessibility.name,
++      });
++    } on PlatformException catch (error) {
++      throw _platformError(error);
++    } on MissingPluginException {
++      throw const SecureStoreException(
++        SecureStoreErrorCode.platformUnsupported,
++        'secure storage plugin is unavailable',
++      );
++    }
++  }
++
++  @override
++  Future<void> delete(SecureStoreKey key) async {
++    try {
++      await _channel.invokeMethod<void>('secureStore.delete', <String, Object>{
++        'key': key.accountName,
++      });
++    } on PlatformException catch (error) {
++      throw _platformError(error);
++    } on MissingPluginException {
++      throw const SecureStoreException(
++        SecureStoreErrorCode.platformUnsupported,
++        'secure storage plugin is unavailable',
++      );
++    }
++  }
++
++  @override
++  Future<bool> contains(SecureStoreKey key) async {
++    try {
++      return await _channel.invokeMethod<bool>(
++            'secureStore.contains',
++            <String, Object>{'key': key.accountName},
++          ) ??
++          false;
++    } on PlatformException catch (error) {
++      throw _platformError(error);
++    } on MissingPluginException {
++      throw const SecureStoreException(
++        SecureStoreErrorCode.platformUnsupported,
++        'secure storage plugin is unavailable',
++      );
++    }
++  }
++
++  SecureStoreException _platformError(PlatformException error) {
++    final code = switch (error.code) {
++      'locked' => SecureStoreErrorCode.locked,
++      'malformed' => SecureStoreErrorCode.malformed,
++      'platformUnsupported' => SecureStoreErrorCode.platformUnsupported,
++      _ => SecureStoreErrorCode.osStatus,
++    };
++    return SecureStoreException(code, 'secure storage operation failed');
++  }
++}
++
++final class InMemorySecureStore implements SecureStore {
++  final Map<SecureStoreKey, Uint8List> _values = <SecureStoreKey, Uint8List>{};
++
++  @override
++  Future<bool> contains(SecureStoreKey key) async => _values.containsKey(key);
++
++  @override
++  Future<void> delete(SecureStoreKey key) async {
++    _values.remove(key);
++  }
++
++  @override
++  Future<Uint8List?> read(SecureStoreKey key) async {
++    final value = _values[key];
++    return value == null ? null : Uint8List.fromList(value);
++  }
++
++  @override
++  Future<void> write(
++    SecureStoreKey key,
++    List<int> value, {
++    required SecureStoreAccessibility accessibility,
++  }) async {
++    _values[key] = Uint8List.fromList(value);
++  }
++}
++
++final class SecureStoreTestBinding {
++  SecureStoreTestBinding._();
++
++  static SecureStore? _store;
++
++  static void install(SecureStore store) {
++    _store = store;
++  }
++
++  static SecureStore requireStore() {
++    final store = _store;
++    if (store == null) {
++      throw const SecureStoreException(
++        SecureStoreErrorCode.platformUnsupported,
++        'a secure store must be supplied outside iOS production startup',
++      );
++    }
++    return store;
++  }
++}
+diff --git a/flutter_app/lib/features/nodes/data/node_identity_store.dart b/flutter_app/lib/features/nodes/data/node_identity_store.dart
+new file mode 100644
+index 00000000..e924e29d
+--- /dev/null
++++ b/flutter_app/lib/features/nodes/data/node_identity_store.dart
+@@ -0,0 +1,141 @@
++import 'dart:convert';
++import 'dart:math';
++import 'dart:typed_data';
++
++import 'package:forkmesh/core/security/secure_store.dart';
++import 'package:forkmesh/features/nodes/domain/node_identity.dart';
++import 'package:shared_preferences/shared_preferences.dart';
++
++enum NodeIdentityStoreErrorCode {
++  seedConflict,
++  malformedSeed,
++  malformedMetadata,
++}
++
++final class NodeIdentityStoreException implements Exception {
++  const NodeIdentityStoreException(this.code);
++
++  final NodeIdentityStoreErrorCode code;
++
++  @override
++  String toString() => 'NodeIdentityStoreException(${code.name})';
++}
++
++final class NodeIdentityStore {
++  NodeIdentityStore({
++    required this.secureStore,
++    required this.preferences,
++    Random? random,
++  }) : _random = random ?? Random.secure();
++
++  static const legacySeedKey = 'identity/ed25519Seed';
++  static const metadataKey = 'identity/nodeMetadata';
++
++  final SecureStore secureStore;
++  final SharedPreferences preferences;
++  final Random _random;
++
++  Future<Uint8List> loadOrCreateSeed() async {
++    final secured = await secureStore.read(SecureStoreKey.nodeSeed);
++    final legacy = _legacySeed();
++    if (secured != null && secured.length != 32) {
++      throw const NodeIdentityStoreException(
++        NodeIdentityStoreErrorCode.malformedSeed,
++      );
++    }
++    if (secured != null) {
++      if (legacy != null && !_sameBytes(secured, legacy)) {
++        throw const NodeIdentityStoreException(
++          NodeIdentityStoreErrorCode.seedConflict,
++        );
++      }
++      if (legacy != null) await preferences.remove(legacySeedKey);
++      return Uint8List.fromList(secured);
++    }
++    if (legacy != null) {
++      await _writeAndVerify(legacy);
++      await preferences.remove(legacySeedKey);
++      return legacy;
++    }
++    if (preferences.containsKey(legacySeedKey)) {
++      throw const NodeIdentityStoreException(
++        NodeIdentityStoreErrorCode.malformedSeed,
++      );
++    }
++    final generated = Uint8List.fromList(
++      List<int>.generate(32, (_) => _random.nextInt(256)),
++    );
++    await _writeAndVerify(generated);
++    return generated;
++  }
++
++  Future<NodeIdentity> loadOrCreateNodeIdentity(String publicKey) async {
++    final raw = preferences.getString(metadataKey);
++    if (raw == null || raw.isEmpty) {
++      final identity = NodeIdentity(
++        nodeId: 'fmnode_${NodeIdentity.canonicalBase64Url(_randomBytes(16))}',
++        publicKey: publicKey,
++      );
++      await preferences.setString(metadataKey, jsonEncode(identity.toJson()));
++      return identity;
++    }
++    try {
++      final decoded = jsonDecode(raw);
++      if (decoded is! Map) throw const FormatException();
++      final identity = NodeIdentity.fromJson(
++        Map<String, Object?>.from(decoded),
++      );
++      if (identity.publicKey != publicKey) {
++        throw const NodeIdentityStoreException(
++          NodeIdentityStoreErrorCode.seedConflict,
++        );
++      }
++      return identity;
++    } on NodeIdentityStoreException {
++      rethrow;
++    } on Object {
++      throw const NodeIdentityStoreException(
++        NodeIdentityStoreErrorCode.malformedMetadata,
++      );
++    }
++  }
++
++  Uint8List? _legacySeed() {
++    final raw = preferences.getString(legacySeedKey);
++    if (raw == null || raw.isEmpty) return null;
++    try {
++      final value = Uint8List.fromList(base64.decode(raw));
++      if (value.length != 32 || base64.encode(value) != raw) return null;
++      return value;
++    } on FormatException {
++      return null;
++    }
++  }
++
++  Future<void> _writeAndVerify(List<int> seed) async {
++    await secureStore.write(
++      SecureStoreKey.nodeSeed,
++      seed,
++      accessibility: SecureStoreAccessibility.afterFirstUnlockThisDeviceOnly,
++    );
++    final readBack = await secureStore.read(SecureStoreKey.nodeSeed);
++    if (readBack == null || !_sameBytes(readBack, seed)) {
++      throw const NodeIdentityStoreException(
++        NodeIdentityStoreErrorCode.malformedSeed,
++      );
++    }
++  }
++
++  Uint8List _randomBytes(int length) => Uint8List.fromList(
++    List<int>.generate(length, (_) => _random.nextInt(256)),
++  );
++}
++
++bool _sameBytes(List<int> left, List<int> right) {
++  if (left.length != right.length) return false;
++  var difference = 0;
++  for (var index = 0; index < left.length; index += 1) {
++    difference |= left[index] ^ right[index];
++  }
++  return difference == 0;
++}
+diff --git a/flutter_app/lib/features/nodes/domain/node_identity.dart b/flutter_app/lib/features/nodes/domain/node_identity.dart
+new file mode 100644
+index 00000000..df7421d3
+--- /dev/null
++++ b/flutter_app/lib/features/nodes/domain/node_identity.dart
+@@ -0,0 +1,37 @@
++import 'dart:convert';
++
++final class NodeIdentity {
++  NodeIdentity({required this.nodeId, required this.publicKey}) {
++    if (!RegExp(r'^fmnode_[A-Za-z0-9_-]{21}[AQgw]$').hasMatch(nodeId)) {
++      throw ArgumentError.value(nodeId, 'nodeId');
++    }
++    if (!RegExp(r'^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$').hasMatch(publicKey)) {
++      throw ArgumentError.value(publicKey, 'publicKey');
++    }
++  }
++
++  final String nodeId;
++  final String publicKey;
++
++  Map<String, Object> toJson() => <String, Object>{
++    'version': 1,
++    'nodeId': nodeId,
++    'publicKey': publicKey,
++  };
++
++  factory NodeIdentity.fromJson(Map<String, Object?> json) {
++    if (json.length != 3 ||
++        json['version'] != 1 ||
++        json['nodeId'] is! String ||
++        json['publicKey'] is! String) {
++      throw const FormatException('node identity metadata is invalid');
++    }
++    return NodeIdentity(
++      nodeId: json['nodeId']! as String,
++      publicKey: json['publicKey']! as String,
++    );
++  }
++
++  static String canonicalBase64Url(List<int> bytes) =>
++      base64UrlEncode(bytes).replaceAll('=', '');
++}
+diff --git a/flutter_app/lib/features/repositories/data/local_repository_runtime.dart b/flutter_app/lib/features/repositories/data/local_repository_runtime.dart
+new file mode 100644
+index 00000000..6412f2c1
+--- /dev/null
++++ b/flutter_app/lib/features/repositories/data/local_repository_runtime.dart
+@@ -0,0 +1,36 @@
++import 'package:forkmesh/core/platform/app_directories.dart';
++import 'package:forkmesh/features/nodes/domain/node_identity.dart';
++import 'package:forkmesh/features/repositories/data/local_repository_store.dart';
++import 'package:forkmesh/features/repositories/data/owned_git_engine_adapter.dart';
++import 'package:forkmesh/features/repositories/domain/local_git_capabilities.dart';
++
++/// The local-only repository boundary available during Phase 2A.
++///
++/// It owns no network transport and only opens repositories created beneath the
++/// app's Application Support sandbox.
++final class Phase2ALocalRuntime {
++  const Phase2ALocalRuntime._({
++    required this.repositoryStore,
++    required this.git,
++  });
++
++  final LocalRepositoryStore repositoryStore;
++  final OwnedGitEngineAdapter git;
++
++  LocalGitCapabilities get capabilities => git.capabilities;
++
++  static Future<Phase2ALocalRuntime> bootstrap({
++    required AppDirectories directories,
++    required NodeIdentity nodeIdentity,
++  }) async {
++    final repositoryStore = LocalRepositoryStore(
++      directories: directories,
++      nodeIdentity: nodeIdentity,
++    );
++    await repositoryStore.recover();
++    return Phase2ALocalRuntime._(
++      repositoryStore: repositoryStore,
++      git: OwnedGitEngineAdapter(repositoryStore),
++    );
++  }
++}
+diff --git a/flutter_app/lib/features/repositories/data/local_repository_store.dart b/flutter_app/lib/features/repositories/data/local_repository_store.dart
+new file mode 100644
+index 00000000..e4df6464
+--- /dev/null
++++ b/flutter_app/lib/features/repositories/data/local_repository_store.dart
+@@ -0,0 +1,419 @@
++import 'dart:convert';
++import 'dart:io';
++import 'dart:math';
++
++import 'package:forkmesh/core/platform/app_directories.dart';
++import 'package:forkmesh/features/nodes/domain/node_identity.dart';
++import 'package:forkmesh/features/repositories/domain/repository_identity.dart';
++import 'package:forkmesh/features/repositories/domain/repository_replica.dart';
++import 'package:forkmesh_git/forkmesh_git.dart';
++
++enum LocalRepositoryStoreErrorCode {
++  alreadyExists,
++  notFound,
++  malformedManifest,
++  malformedReplica,
++  mismatchedIdentity,
++  interruptedOperation,
++}
++
++enum LocalReplicaDeletionIntent { removeLocalReplica }
++
++final class LocalRepositoryStoreException implements Exception {
++  const LocalRepositoryStoreException(this.code);
++
++  final LocalRepositoryStoreErrorCode code;
++
++  @override
++  String toString() => 'LocalRepositoryStoreException(${code.name})';
++}
++
++final class LocalRepositoryRecord {
++  const LocalRepositoryRecord({
++    required this.repository,
++    required this.replica,
++    required this.nodeIdentity,
++    required this.root,
++    required this.worktree,
++  });
++
++  final RepositoryIdentity repository;
++  final RepositoryReplica replica;
++  final NodeIdentity nodeIdentity;
++  final Directory root;
++  final Directory worktree;
++}
++
++final class LocalRepositoryStore {
++  LocalRepositoryStore({
++    required this.directories,
++    required this.nodeIdentity,
++    String Function()? repositoryIdGenerator,
++    String Function()? replicaIdGenerator,
++    int Function()? clock,
++  }) : _repositoryIdGenerator = repositoryIdGenerator ?? _newRepositoryId,
++       _replicaIdGenerator = replicaIdGenerator ?? _newReplicaId,
++       _clock = clock ?? (() => DateTime.now().millisecondsSinceEpoch);
++
++  final AppDirectories directories;
++  final NodeIdentity nodeIdentity;
++  final String Function() _repositoryIdGenerator;
++  final String Function() _replicaIdGenerator;
++  final int Function() _clock;
++
++  Future<LocalRepositoryRecord> create({
++    required String createdBy,
++    String defaultBranch = 'main',
++  }) async {
++    final repository = RepositoryIdentity(
++      repoId: _repositoryIdGenerator(),
++      createdBy: createdBy,
++      createdAt: _clock(),
++      defaultBranch: defaultBranch,
++    );
++    final root = await directories.repositoryRootFor(repository.repoId);
++    if (!await root.list(followLinks: false).isEmpty) {
++      throw const LocalRepositoryStoreException(
++        LocalRepositoryStoreErrorCode.alreadyExists,
++      );
++    }
++    final journal = File('${root.path}${Platform.pathSeparator}operation.json');
++    await _writeNewAtomically(journal, <String, Object>{
++      'version': 1,
++      'operation': 'create',
++      'repoId': repository.repoId,
++    });
++    final worktree = await directories.worktreeFor(repository.repoId);
++    final gitRepository = await GitRepository.init(GitRepositoryInit(worktree));
++    try {
++      await _writeNewAtomically(_manifestFile(worktree), repository.toJson());
++      final writtenManifest = await _readManifest(_manifestFile(worktree));
++      if (!_sameRepositoryIdentity(writtenManifest, repository)) {
++        throw const LocalRepositoryStoreException(
++          LocalRepositoryStoreErrorCode.malformedManifest,
++        );
++      }
++      await gitRepository.add(<GitWorktreePath>[
++        GitWorktreePath('.forkmesh/repository.json'),
++      ]);
++      final bootstrapCommit = await gitRepository.commit(
++        GitCommitRequest(
++          message: 'Initialize ForkMesh repository identity\n',
++          author: GitIdentity(
++            name: repository.createdBy,
++            email: '${repository.createdBy}@forkmesh.local',
++            timestampSeconds: repository.createdAt ~/ 1000,
++            timezoneOffsetMinutes: 0,
++          ),
++          committer: GitIdentity(
++            name: repository.createdBy,
++            email: '${repository.createdBy}@forkmesh.local',
++            timestampSeconds: repository.createdAt ~/ 1000,
++            timezoneOffsetMinutes: 0,
++          ),
++        ),
++      );
++      final replica = RepositoryReplica(
++        replicaId: _replicaIdGenerator(),
++        repoId: repository.repoId,
++        nodeId: nodeIdentity.nodeId,
++        storageBytes: await _directoryBytes(root),
++        canonicalHead: <String, String>{
++          'ref': 'refs/heads/${repository.defaultBranch}',
++          'sha': bootstrapCommit.hex,
++        },
++      );
++      await _writeNewAtomically(_replicaFile(root), replica.toJson());
++      final writtenReplica = await _readReplica(_replicaFile(root));
++      if (!_sameReplicaIdentity(writtenReplica, replica)) {
++        throw const LocalRepositoryStoreException(
++          LocalRepositoryStoreErrorCode.malformedReplica,
++        );
++      }
++      await journal.delete();
++      return LocalRepositoryRecord(
++        repository: repository,
++        replica: replica,
++        nodeIdentity: nodeIdentity,
++        root: root,
++        worktree: worktree,
++      );
++    } finally {
++      await gitRepository.dispose();
++    }
++  }
++
++  Future<LocalRepositoryRecord> open(String repoId) async {
++    final root = await directories.existingRepositoryRootFor(repoId);
++    if (root == null) {
++      throw const LocalRepositoryStoreException(
++        LocalRepositoryStoreErrorCode.notFound,
++      );
++    }
++    await _recoverCreate(root, repoId);
++    if (!await root.exists()) {
++      throw const LocalRepositoryStoreException(
++        LocalRepositoryStoreErrorCode.notFound,
++      );
++    }
++    final worktree = Directory('${root.path}${Platform.pathSeparator}worktree');
++    final repository = await _readManifest(_manifestFile(worktree));
++    if (repository.repoId != repoId) {
++      throw const LocalRepositoryStoreException(
++        LocalRepositoryStoreErrorCode.mismatchedIdentity,
++      );
++    }
++    final replica = await _readReplica(_replicaFile(root));
++    if (replica.repoId != repoId || replica.nodeId != nodeIdentity.nodeId) {
++      throw const LocalRepositoryStoreException(
++        LocalRepositoryStoreErrorCode.mismatchedIdentity,
++      );
++    }
++    try {
++      final validationRepository = await GitRepository.open(
++        GitRepositoryOpen(worktree),
++      );
++      await validationRepository.dispose();
++    } on GitException {
++      throw const LocalRepositoryStoreException(
++        LocalRepositoryStoreErrorCode.interruptedOperation,
++      );
++    }
++    return LocalRepositoryRecord(
++      repository: repository,
++      replica: replica,
++      nodeIdentity: nodeIdentity,
++      root: root,
++      worktree: worktree,
++    );
++  }
++
++  Future<void> recover() async {
++    final repositories = await directories.repositoriesDirectory();
++    await for (final entity in repositories.list(followLinks: false)) {
++      if (entity is! Directory) {
++        throw const LocalRepositoryStoreException(
++          LocalRepositoryStoreErrorCode.interruptedOperation,
++        );
++      }
++      final repoId = entity.uri.pathSegments
++          .where((segment) => segment.isNotEmpty)
++          .last;
++      if (!RegExp(r'^fmrepo_[A-Za-z0-9_-]{21}[AQgw]$').hasMatch(repoId)) {
++        throw const LocalRepositoryStoreException(
++          LocalRepositoryStoreErrorCode.interruptedOperation,
++        );
++      }
++      await _recoverOperation(entity, repoId);
++    }
++  }
++
++  Future<RepositoryReplica> recordLocalHead(
++    LocalRepositoryRecord record, {
++    required String ref,
++    required String objectId,
++  }) async {
++    final replica = RepositoryReplica(
++      replicaId: record.replica.replicaId,
++      repoId: record.repository.repoId,
++      nodeId: record.nodeIdentity.nodeId,
++      storageBytes: await _directoryBytes(record.root),
++      canonicalHead: <String, String>{'ref': ref, 'sha': objectId},
++      fetchedHead: record.replica.fetchedHead,
++      lastSyncedAt: record.replica.lastSyncedAt,
++      lastServedAt: record.replica.lastServedAt,
++    );
++    await _replaceAtomically(_replicaFile(record.root), replica.toJson());
++    return replica;
++  }
++
++  Future<void> removeLocalReplica(
++    LocalRepositoryRecord record, {
++    required LocalReplicaDeletionIntent intent,
++  }) async {
++    switch (intent) {
++      case LocalReplicaDeletionIntent.removeLocalReplica:
++        break;
++    }
++    final expectedRoot = await directories.existingRepositoryRootFor(
++      record.repository.repoId,
++    );
++    if (expectedRoot == null ||
++        expectedRoot.absolute.path != record.root.absolute.path) {
++      throw const LocalRepositoryStoreException(
++        LocalRepositoryStoreErrorCode.notFound,
++      );
++    }
++    final journal = File(
++      '${expectedRoot.path}${Platform.pathSeparator}operation.json',
++    );
++    await _writeNewAtomically(journal, <String, Object>{
++      'version': 1,
++      'operation': 'delete',
++      'repoId': record.repository.repoId,
++    });
++    await expectedRoot.delete(recursive: true);
++  }
++
++  Future<void> _recoverOperation(Directory root, String repoId) async {
++    final journal = File('${root.path}${Platform.pathSeparator}operation.json');
++    if (!await journal.exists()) return;
++    final operation = await _readJournal(journal, repoId);
++    if (operation == 'delete') {
++      await root.delete(recursive: true);
++      return;
++    }
++    await _recoverCreate(root, repoId);
++  }
++
++  Future<void> _recoverCreate(Directory root, String repoId) async {
++    final journal = File('${root.path}${Platform.pathSeparator}operation.json');
++    if (!await journal.exists()) return;
++    final operation = await _readJournal(journal, repoId);
++    if (operation != 'create') {
++      throw const LocalRepositoryStoreException(
++        LocalRepositoryStoreErrorCode.interruptedOperation,
++      );
++    }
++    final manifest = _manifestFile(
++      Directory('${root.path}${Platform.pathSeparator}worktree'),
++    );
++    final replica = _replicaFile(root);
++    if (await manifest.exists() && await replica.exists()) {
++      await journal.delete();
++      return;
++    }
++    await root.delete(recursive: true);
++  }
++
++  Future<String> _readJournal(File journal, String repoId) async {
++    try {
++      final decoded = jsonDecode(await journal.readAsString());
++      if (decoded is! Map ||
++          decoded.length != 3 ||
++          decoded['version'] != 1 ||
++          (decoded['operation'] != 'create' &&
++              decoded['operation'] != 'delete') ||
++          decoded['repoId'] != repoId) {
++        throw const FormatException();
++      }
++      return decoded['operation']! as String;
++    } on Object {
++      throw const LocalRepositoryStoreException(
++        LocalRepositoryStoreErrorCode.interruptedOperation,
++      );
++    }
++  }
++}
++
++File _manifestFile(Directory worktree) => File(
++  '${worktree.path}${Platform.pathSeparator}.forkmesh'
++  '${Platform.pathSeparator}repository.json',
++);
++
++File _replicaFile(Directory root) =>
++    File('${root.path}${Platform.pathSeparator}replica.json');
++
++Future<RepositoryIdentity> _readManifest(File file) async {
++  try {
++    final value = jsonDecode(await file.readAsString());
++    if (value is! Map) throw const FormatException();
++    return RepositoryIdentity.fromJson(Map<String, Object?>.from(value));
++  } on Object {
++    throw const LocalRepositoryStoreException(
++      LocalRepositoryStoreErrorCode.malformedManifest,
++    );
++  }
++}
++
++Future<RepositoryReplica> _readReplica(File file) async {
++  try {
++    final value = jsonDecode(await file.readAsString());
++    if (value is! Map) throw const FormatException();
++    return RepositoryReplica.fromJson(Map<String, Object?>.from(value));
++  } on Object {
++    throw const LocalRepositoryStoreException(
++      LocalRepositoryStoreErrorCode.malformedReplica,
++    );
++  }
++}
++
++bool _sameRepositoryIdentity(
++  RepositoryIdentity left,
++  RepositoryIdentity right,
++) =>
++    left.repoId == right.repoId &&
++    left.createdBy == right.createdBy &&
++    left.createdAt == right.createdAt &&
++    left.defaultBranch == right.defaultBranch;
++
++bool _sameReplicaIdentity(RepositoryReplica left, RepositoryReplica right) =>
++    left.replicaId == right.replicaId &&
++    left.repoId == right.repoId &&
++    left.nodeId == right.nodeId &&
++    left.storageBytes == right.storageBytes &&
++    _sameHead(left.canonicalHead, right.canonicalHead) &&
++    _sameHead(left.fetchedHead, right.fetchedHead) &&
++    left.lastSyncedAt == right.lastSyncedAt &&
++    left.lastServedAt == right.lastServedAt;
++
++bool _sameHead(Map<String, String>? left, Map<String, String>? right) =>
++    left?['ref'] == right?['ref'] && left?['sha'] == right?['sha'];
++
++Future<void> _writeNewAtomically(
++  File destination,
++  Map<String, Object?> json,
++) async {
++  await destination.parent.create(recursive: true);
++  if (await destination.exists()) {
++    throw const LocalRepositoryStoreException(
++      LocalRepositoryStoreErrorCode.alreadyExists,
++    );
++  }
++  final temporary = File(
++    '${destination.path}.tmp-${DateTime.now().microsecondsSinceEpoch}',
++  );
++  try {
++    await temporary.writeAsString(jsonEncode(json), flush: true);
++    await temporary.rename(destination.path);
++  } finally {
++    if (await temporary.exists()) await temporary.delete();
++  }
++}
++
++Future<void> _replaceAtomically(
++  File destination,
++  Map<String, Object?> json,
++) async {
++  final temporary = File(
++    '${destination.path}.tmp-${DateTime.now().microsecondsSinceEpoch}',
++  );
++  try {
++    await temporary.writeAsString(jsonEncode(json), flush: true);
++    await temporary.rename(destination.path);
++  } finally {
++    if (await temporary.exists()) await temporary.delete();
++  }
++}
++
++Future<int> _directoryBytes(Directory directory) async {
++  var total = 0;
++  await for (final entity in directory.list(
++    recursive: true,
++    followLinks: false,
++  )) {
++    if (entity is File) total += await entity.length();
++  }
++  return total;
++}
++
++String _newRepositoryId() => 'fmrepo_${_randomIdentifier()}';
++
++String _newReplicaId() => 'fmreplica_${_randomIdentifier()}';
++
++String _randomIdentifier() {
++  final random = Random.secure();
++  return NodeIdentity.canonicalBase64Url(
++    List<int>.generate(16, (_) => random.nextInt(256)),
++  );
++}
+diff --git a/flutter_app/lib/features/repositories/data/owned_git_engine_adapter.dart b/flutter_app/lib/features/repositories/data/owned_git_engine_adapter.dart
+new file mode 100644
+index 00000000..dbcb800e
+--- /dev/null
++++ b/flutter_app/lib/features/repositories/data/owned_git_engine_adapter.dart
+@@ -0,0 +1,238 @@
++import 'dart:convert';
++import 'dart:io';
++import 'dart:typed_data';
++
++import 'package:forkmesh/features/repositories/domain/local_git_capabilities.dart';
++import 'package:forkmesh_git/forkmesh_git.dart';
++
++import 'local_repository_store.dart';
++
++final class LocalGitStatus {
++  const LocalGitStatus({
++    required this.stagedPaths,
++    required this.worktreePaths,
++  });
++
++  final List<String> stagedPaths;
++  final List<String> worktreePaths;
++
++  bool get isClean => stagedPaths.isEmpty && worktreePaths.isEmpty;
++}
++
++final class LocalGitHistoryEntry {
++  const LocalGitHistoryEntry({required this.objectId, required this.message});
++
++  final String objectId;
++  final String message;
++}
++
++final class LocalGitTreeEntry {
++  const LocalGitTreeEntry({
++    required this.name,
++    required this.objectId,
++    required this.kind,
++  });
++
++  final String name;
++  final String objectId;
++  final String kind;
++}
++
++final class OwnedGitEngineAdapter {
++  OwnedGitEngineAdapter(this._store)
++    : capabilities = LocalGitCapabilities.phase2A();
++
++  final LocalRepositoryStore _store;
++  final LocalGitCapabilities capabilities;
++
++  Future<OwnedLocalRepository> initializeLocal({
++    required String createdBy,
++  }) async => _openRecord(await _store.create(createdBy: createdBy));
++
++  Future<OwnedLocalRepository> openLocal(String repoId) async =>
++      _openRecord(await _store.open(repoId));
++
++  Future<void> clone() => _deny(LocalGitCapability.clone);
++
++  Future<void> fetch() => _deny(LocalGitCapability.fetch);
++
++  Future<void> push() => _deny(LocalGitCapability.push);
++
++  Future<void> importRemoteRepository() =>
++      _deny(LocalGitCapability.untrustedSha1Import);
++
++  Future<void> hostRemoteRepository() =>
++      _deny(LocalGitCapability.remoteHosting);
++
++  Future<void> installUntrustedSha1Object() =>
++      _deny(LocalGitCapability.untrustedSha1Import);
++
++  Future<OwnedLocalRepository> _openRecord(LocalRepositoryRecord record) async {
++    final repository = await GitRepository.open(
++      GitRepositoryOpen(record.worktree),
++    );
++    return OwnedLocalRepository._(_store, record, repository);
++  }
++
++  Future<void> _deny(LocalGitCapability capability) {
++    final status = capabilities.statusFor(capability);
++    return Future<void>.error(
++      LocalGitCapabilityException(capability, status.reason!),
++    );
++  }
++}
++
++final class OwnedLocalRepository {
++  OwnedLocalRepository._(this._store, this._record, this._repository);
++
++  final LocalRepositoryStore _store;
++  LocalRepositoryRecord _record;
++  final GitRepository _repository;
++
++  String get repoId => _record.repository.repoId;
++  Directory get worktree => _record.worktree;
++
++  Future<LocalGitStatus> status() async {
++    final status = await _repository.status();
++    return LocalGitStatus(
++      stagedPaths: List<String>.unmodifiable(
++        status.staged.map((entry) => entry.path.value),
++      ),
++      worktreePaths: List<String>.unmodifiable(
++        status.worktree.map((entry) => entry.path.value),
++      ),
++    );
++  }
++
++  Future<void> stage(Iterable<String> paths) =>
++      _repository.add(paths.map(GitWorktreePath.new));
++
++  Future<void> remove(Iterable<String> paths) =>
++      _repository.remove(paths.map(GitWorktreePath.new));
++
++  Future<String> commit({
++    required String message,
++    required String authorName,
++    required String authorEmail,
++    required int timestampSeconds,
++  }) async {
++    final identity = GitIdentity(
++      name: authorName,
++      email: authorEmail,
++      timestampSeconds: timestampSeconds,
++      timezoneOffsetMinutes: 0,
++    );
++    final objectId = await _repository.commit(
++      GitCommitRequest(message: message, author: identity, committer: identity),
++    );
++    final head = await _repository.readHead();
++    final replica = await _store.recordLocalHead(
++      _record,
++      ref: head.target,
++      objectId: objectId.hex,
++    );
++    _record = LocalRepositoryRecord(
++      repository: _record.repository,
++      replica: replica,
++      nodeIdentity: _record.nodeIdentity,
++      root: _record.root,
++      worktree: _record.worktree,
++    );
++    return objectId.hex;
++  }
++
++  Future<void> createBranch(String name) =>
++      _repository.createBranch(GitBranchName(name));
++
++  Future<void> checkout(String name) =>
++      _repository.checkout(GitCheckoutRequest.branch(GitBranchName(name)));
++
++  Future<Uint8List> readBlob(String objectId) =>
++      _repository.readBlob(GitObjectId.parseSha1(objectId));
++
++  Future<List<LocalGitTreeEntry>> readTree(String objectId) async {
++    final tree = await _repository.readTree(GitObjectId.parseSha1(objectId));
++    return List<LocalGitTreeEntry>.unmodifiable(
++      tree.entries.map(
++        (entry) => LocalGitTreeEntry(
++          name: utf8.decode(entry.name),
++          objectId: entry.objectId.hex,
++          kind: entry.mode.name,
++        ),
++      ),
++    );
++  }
++
++  Future<Uint8List> readBlobFromHead(String path) async {
++    final worktreePath = GitWorktreePath(path);
++    final head = await _repository.readHeadObjectId();
++    if (head == null) {
++      throw const GitException(
++        GitErrorCode.invalidObject,
++        'repository is empty',
++      );
++    }
++    final commit = await _repository.readCommit(head);
++    return _readBlobAt(commit.tree, worktreePath.components, 0);
++  }
++
++  Future<Uint8List> _readBlobAt(
++    GitObjectId treeId,
++    List<String> components,
++    int index,
++  ) async {
++    final tree = await _repository.readTree(treeId);
++    final entry = tree.entries.firstWhere(
++      (candidate) => utf8.decode(candidate.name) == components[index],
++      orElse: () => throw const GitException(
++        GitErrorCode.invalidObject,
++        'path is absent from HEAD',
++      ),
++    );
++    if (index == components.length - 1) {
++      if (entry.mode == GitTreeMode.directory) {
++        throw const GitException(
++          GitErrorCode.invalidObject,
++          'path is a directory',
++        );
++      }
++      return _repository.readBlob(entry.objectId);
++    }
++    if (entry.mode != GitTreeMode.directory) {
++      throw const GitException(
++        GitErrorCode.invalidObject,
++        'path is not a directory',
++      );
++    }
++    return _readBlobAt(entry.objectId, components, index + 1);
++  }
++
++  Future<List<LocalGitHistoryEntry>> history({int maximumEntries = 100}) async {
++    if (maximumEntries <= 0 || maximumEntries > 1000) {
++      throw ArgumentError.value(maximumEntries, 'maximumEntries');
++    }
++    final entries = <LocalGitHistoryEntry>[];
++    var current = await _repository.readHeadObjectId();
++    while (current != null && entries.length < maximumEntries) {
++      final commit = await _repository.readCommit(current);
++      entries.add(
++        LocalGitHistoryEntry(
++          objectId: current.hex,
++          message: utf8.decode(commit.message, allowMalformed: false),
++        ),
++      );
++      current = commit.parents.isEmpty ? null : commit.parents.first;
++    }
++    return List<LocalGitHistoryEntry>.unmodifiable(entries);
++  }
++
++  /// Removes only this device's local replica after an explicit caller intent.
++  ///
++  /// It neither changes a remote catalog nor implies deletion of the logical
++  /// repository outside this app sandbox.
++  Future<void> removeLocalReplica({
++    required LocalReplicaDeletionIntent intent,
++  }) => _store.removeLocalReplica(_record, intent: intent);
++
++  Future<void> dispose() => _repository.dispose();
++}
+diff --git a/flutter_app/lib/features/repositories/domain/local_git_capabilities.dart b/flutter_app/lib/features/repositories/domain/local_git_capabilities.dart
+new file mode 100644
+index 00000000..4fd8b8d4
+--- /dev/null
++++ b/flutter_app/lib/features/repositories/domain/local_git_capabilities.dart
+@@ -0,0 +1,98 @@
++enum LocalGitCapability {
++  localRepository('git.localRepository'),
++  localAuthoring('git.localAuthoring'),
++  offlineBrowse('git.offlineBrowse'),
++  localBranch('git.localBranch'),
++  localCommit('git.localCommit'),
++  clone('git.clone'),
++  fetch('git.fetch'),
++  push('git.push'),
++  remoteHosting('git.remoteHosting'),
++  untrustedSha1Import('git.untrustedSha1Import'),
++  androidRuntime('git.androidRuntime');
++
++  const LocalGitCapability(this.id);
++
++  final String id;
++}
++
++enum LocalGitDisableReason {
++  awaitingIndependentCryptographyReview,
++  androidSdkUnavailable,
++  physicalDeviceValidationPending,
++  phaseNotImplemented,
++}
++
++final class LocalGitCapabilityStatus {
++  const LocalGitCapabilityStatus.enabled(this.capability)
++    : enabled = true,
++      reason = null;
++
++  const LocalGitCapabilityStatus.disabled(this.capability, this.reason)
++    : enabled = false;
++
++  final LocalGitCapability capability;
++  final bool enabled;
++  final LocalGitDisableReason? reason;
++}
++
++final class LocalGitCapabilities {
++  const LocalGitCapabilities._(this._statuses);
++
++  final Map<LocalGitCapability, LocalGitCapabilityStatus> _statuses;
++
++  factory LocalGitCapabilities.phase2A() => LocalGitCapabilities._(
++    <LocalGitCapability, LocalGitCapabilityStatus>{
++      for (final capability in <LocalGitCapability>[
++        LocalGitCapability.localRepository,
++        LocalGitCapability.localAuthoring,
++        LocalGitCapability.offlineBrowse,
++        LocalGitCapability.localBranch,
++        LocalGitCapability.localCommit,
++      ])
++        capability: LocalGitCapabilityStatus.enabled(capability),
++      LocalGitCapability.clone: LocalGitCapabilityStatus.disabled(
++        LocalGitCapability.clone,
++        LocalGitDisableReason.awaitingIndependentCryptographyReview,
++      ),
++      LocalGitCapability.fetch: LocalGitCapabilityStatus.disabled(
++        LocalGitCapability.fetch,
++        LocalGitDisableReason.awaitingIndependentCryptographyReview,
++      ),
++      LocalGitCapability.push: LocalGitCapabilityStatus.disabled(
++        LocalGitCapability.push,
++        LocalGitDisableReason.awaitingIndependentCryptographyReview,
++      ),
++      LocalGitCapability.remoteHosting: LocalGitCapabilityStatus.disabled(
++        LocalGitCapability.remoteHosting,
++        LocalGitDisableReason.phaseNotImplemented,
++      ),
++      LocalGitCapability.untrustedSha1Import: LocalGitCapabilityStatus.disabled(
++        LocalGitCapability.untrustedSha1Import,
++        LocalGitDisableReason.awaitingIndependentCryptographyReview,
++      ),
++      LocalGitCapability.androidRuntime: LocalGitCapabilityStatus.disabled(
++        LocalGitCapability.androidRuntime,
++        LocalGitDisableReason.androidSdkUnavailable,
++      ),
++    },
++  );
++
++  LocalGitCapabilityStatus statusFor(LocalGitCapability capability) =>
++      _statuses[capability]!;
++
++  List<LocalGitDisableReason> get validationBlockers =>
++      const <LocalGitDisableReason>[
++        LocalGitDisableReason.physicalDeviceValidationPending,
++      ];
++}
++
++final class LocalGitCapabilityException implements Exception {
++  const LocalGitCapabilityException(this.capability, this.reason);
++
++  final LocalGitCapability capability;
++  final LocalGitDisableReason reason;
++
++  @override
++  String toString() => 'LocalGitCapabilityException(${capability.id})';
++}
+diff --git a/flutter_app/lib/features/repositories/domain/repository_identity.dart b/flutter_app/lib/features/repositories/domain/repository_identity.dart
+new file mode 100644
+index 00000000..fda141a7
+--- /dev/null
++++ b/flutter_app/lib/features/repositories/domain/repository_identity.dart
+@@ -0,0 +1,52 @@
++import 'dart:convert';
++
++final class RepositoryIdentity {
++  RepositoryIdentity({
++    required this.repoId,
++    required this.createdBy,
++    required this.createdAt,
++    required this.defaultBranch,
++  }) {
++    if (!RegExp(r'^fmrepo_[A-Za-z0-9_-]{21}[AQgw]$').hasMatch(repoId) ||
++        !RegExp(r'^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$').hasMatch(createdBy) ||
++        createdAt < 0 ||
++        createdAt > 253402300799999 ||
++        !RegExp(
++          r'^(?!.*\.\.)(?!.*\.lock$)[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9_-])?$',
++        ).hasMatch(defaultBranch)) {
++      throw ArgumentError('repository identity is invalid');
++    }
++  }
++
++  final String repoId;
++  final String createdBy;
++  final int createdAt;
++  final String defaultBranch;
++
++  Map<String, Object> toJson() => <String, Object>{
++    'version': 1,
++    'repoId': repoId,
++    'createdBy': createdBy,
++    'createdAt': createdAt,
++    'defaultBranch': defaultBranch,
++  };
++
++  factory RepositoryIdentity.fromJson(Map<String, Object?> value) {
++    if (value.length != 5 ||
++        value['version'] != 1 ||
++        value['repoId'] is! String ||
++        value['createdBy'] is! String ||
++        value['createdAt'] is! int ||
++        value['defaultBranch'] is! String) {
++      throw const FormatException('repository manifest is invalid');
++    }
++    return RepositoryIdentity(
++      repoId: value['repoId']! as String,
++      createdBy: value['createdBy']! as String,
++      createdAt: value['createdAt']! as int,
++      defaultBranch: value['defaultBranch']! as String,
++    );
++  }
++
++  String encode() => jsonEncode(toJson());
++}
+diff --git a/flutter_app/lib/features/repositories/domain/repository_replica.dart b/flutter_app/lib/features/repositories/domain/repository_replica.dart
+new file mode 100644
+index 00000000..9cc45e52
+--- /dev/null
++++ b/flutter_app/lib/features/repositories/domain/repository_replica.dart
+@@ -0,0 +1,116 @@
++import 'dart:convert';
++
++final class RepositoryReplica {
++  RepositoryReplica({
++    required this.replicaId,
++    required this.repoId,
++    required this.nodeId,
++    required this.storageBytes,
++    this.canonicalHead,
++    this.fetchedHead,
++    this.lastSyncedAt,
++    this.lastServedAt,
++  }) {
++    if (!RegExp(r'^fmreplica_[A-Za-z0-9_-]{21}[AQgw]$').hasMatch(replicaId) ||
++        !RegExp(r'^fmrepo_[A-Za-z0-9_-]{21}[AQgw]$').hasMatch(repoId) ||
++        !RegExp(r'^fmnode_[A-Za-z0-9_-]{21}[AQgw]$').hasMatch(nodeId) ||
++        storageBytes < 0 ||
++        storageBytes > 9007199254740991) {
++      throw ArgumentError('repository replica is invalid');
++    }
++  }
++
++  final String replicaId;
++  final String repoId;
++  final String nodeId;
++  final int storageBytes;
++  final Map<String, String>? canonicalHead;
++  final Map<String, String>? fetchedHead;
++  final int? lastSyncedAt;
++  final int? lastServedAt;
++
++  Map<String, Object?> toJson() => <String, Object?>{
++    'version': 1,
++    'replicaId': replicaId,
++    'repoId': repoId,
++    'nodeId': nodeId,
++    'completeness': 'full',
++    'availability': 'offline',
++    'canonicalHead': canonicalHead,
++    'fetchedHead': fetchedHead,
++    'lastSyncedAt': lastSyncedAt,
++    'lastServedAt': lastServedAt,
++    'storageBytes': storageBytes,
++    'servingCapabilities': const <String>[],
++  };
++
++  factory RepositoryReplica.fromJson(Map<String, Object?> value) {
++    const required = <String>{
++      'version',
++      'replicaId',
++      'repoId',
++      'nodeId',
++      'completeness',
++      'availability',
++      'canonicalHead',
++      'fetchedHead',
++      'lastSyncedAt',
++      'lastServedAt',
++      'storageBytes',
++      'servingCapabilities',
++    };
++    if (value.length != required.length ||
++        !value.keys.toSet().containsAll(required) ||
++        value['version'] != 1 ||
++        value['replicaId'] is! String ||
++        value['repoId'] is! String ||
++        value['nodeId'] is! String ||
++        value['completeness'] != 'full' ||
++        value['availability'] != 'offline' ||
++        value['storageBytes'] is! int ||
++        value['servingCapabilities'] is! List ||
++        (value['servingCapabilities'] as List).isNotEmpty) {
++      throw const FormatException('repository replica metadata is invalid');
++    }
++    return RepositoryReplica(
++      replicaId: value['replicaId']! as String,
++      repoId: value['repoId']! as String,
++      nodeId: value['nodeId']! as String,
++      storageBytes: value['storageBytes']! as int,
++      canonicalHead: _head(value['canonicalHead']),
++      fetchedHead: _head(value['fetchedHead']),
++      lastSyncedAt: _nullableInt(value['lastSyncedAt']),
++      lastServedAt: _nullableInt(value['lastServedAt']),
++    );
++  }
++
++  String encode() => jsonEncode(toJson());
++}
++
++Map<String, String>? _head(Object? value) {
++  if (value == null) return null;
++  if (value is! Map ||
++      value.length != 2 ||
++      value['ref'] is! String ||
++      value['sha'] is! String ||
++      !RegExp(
++        r'^refs/heads/[A-Za-z0-9._/-]{1,244}$',
++      ).hasMatch(value['ref']! as String) ||
++      !RegExp(
++        r'^(?!(?:0{40}|0{64})$)(?:[0-9a-f]{40}|[0-9a-f]{64})$',
++      ).hasMatch(value['sha']! as String)) {
++    throw const FormatException('replica head is invalid');
++  }
++  return <String, String>{
++    'ref': value['ref']! as String,
++    'sha': value['sha']! as String,
++  };
++}
++
++int? _nullableInt(Object? value) {
++  if (value == null) return null;
++  if (value is! int || value < 0 || value > 253402300799999) {
++    throw const FormatException('replica timestamp is invalid');
++  }
++  return value;
++}
+diff --git a/flutter_app/lib/main.dart b/flutter_app/lib/main.dart
+index 09ce6cd1..891dc9ce 100644
+--- a/flutter_app/lib/main.dart
++++ b/flutter_app/lib/main.dart
+@@ -2,7 +2,12 @@ import 'dart:async';
+ 
+ import 'package:flutter/material.dart';
+ import 'package:provider/provider.dart';
++import 'package:shared_preferences/shared_preferences.dart';
+ 
++import 'core/platform/app_directories.dart';
++import 'core/security/secure_store.dart';
++import 'features/nodes/data/node_identity_store.dart';
++import 'features/repositories/data/local_repository_runtime.dart';
+ import 'screens/home_shell.dart';
+ import 'services/api_service.dart';
+ import 'services/auth_service.dart';
+@@ -19,28 +24,52 @@ import 'widgets/dev_performance_overlay.dart';
+ Future<void> main() async {
+   WidgetsFlutterBinding.ensureInitialized();
+   final performanceMonitor = PerformanceMonitorService();
+-  final settings = await performanceMonitor.track(
+-    'startup.settings',
+-    SettingsService.create,
+-  );
+-  final identity = await performanceMonitor.track(
+-    'startup.identity',
+-    Identity.loadOrCreate,
+-  );
++  late final SettingsService settings;
++  late final Identity identity;
++  late final AuthService auth;
++  late final Phase2ALocalRuntime localRuntime;
++  try {
++    final secureStore = MethodChannelSecureStore.forCurrentPlatform();
++    final preferences = await SharedPreferences.getInstance();
++    settings = await performanceMonitor.track(
++      'startup.settings',
++      () async => SettingsService(preferences),
++    );
++    identity = await performanceMonitor.track(
++      'startup.identity',
++      () => Identity.loadOrCreate(
++        store: NodeIdentityStore(
++          secureStore: secureStore,
++          preferences: preferences,
++        ),
++      ),
++    );
++    auth = await performanceMonitor.track(
++      'startup.auth',
++      () => AuthService.create(
++        settings,
++        identity,
++        performanceMonitor: performanceMonitor,
++        secureStore: secureStore,
++      ),
++    );
++    localRuntime = await performanceMonitor.track(
++      'startup.localRepository',
++      () async => Phase2ALocalRuntime.bootstrap(
++        directories: await AppDirectories.forCurrentPlatform(),
++        nodeIdentity: identity.nodeIdentity,
++      ),
++    );
++  } on Object catch (error) {
++    runApp(ForkMeshBootstrapBlockedApp(_bootstrapBlockerFor(error)));
++    return;
++  }
+   final relay = RelayService(
+     settings,
+     identity,
+     performanceMonitor: performanceMonitor,
+   );
+   final api = ApiService(settings, performanceMonitor: performanceMonitor);
+-  final auth = await performanceMonitor.track(
+-    'startup.auth',
+-    () => AuthService.create(
+-      settings,
+-      identity,
+-      performanceMonitor: performanceMonitor,
+-    ),
+-  );
+   // Let API calls carry the logged-in account's session token so per-account
+   // endpoints authorize this account rather than a self-asserted node name.
+   api.sessionTokenProvider = () => auth.session?.sessionToken ?? '';
+@@ -64,11 +93,62 @@ Future<void> main() async {
+       api: api,
+       auth: auth,
+       inbox: inbox,
++      localRuntime: localRuntime,
+       performanceMonitor: performanceMonitor,
+     ),
+   );
+ }
+ 
++enum Phase2ABootstrapBlocker {
++  secureStorageUnavailable,
++  identityMigrationFailed,
++  sessionMigrationFailed,
++  localRepositoryRecoveryFailed,
++}
++
++Phase2ABootstrapBlocker _bootstrapBlockerFor(Object error) {
++  if (error is SecureStoreException || error is AppDirectoryException) {
++    return Phase2ABootstrapBlocker.secureStorageUnavailable;
++  }
++  if (error is NodeIdentityStoreException) {
++    return Phase2ABootstrapBlocker.identityMigrationFailed;
++  }
++  if (error is AuthException) {
++    return Phase2ABootstrapBlocker.sessionMigrationFailed;
++  }
++  return Phase2ABootstrapBlocker.localRepositoryRecoveryFailed;
++}
++
++class ForkMeshBootstrapBlockedApp extends StatelessWidget {
++  const ForkMeshBootstrapBlockedApp(this.blocker, {super.key});
++
++  final Phase2ABootstrapBlocker blocker;
++
++  @override
++  Widget build(BuildContext context) => MaterialApp(
++    title: 'ForkMesh',
++    debugShowCheckedModeBanner: false,
++    theme: buildForkMeshLightTheme(),
++    home: Scaffold(
++      body: Center(
++        child: Padding(
++          padding: const EdgeInsets.all(24),
++          child: Text(switch (blocker) {
++            Phase2ABootstrapBlocker.secureStorageUnavailable =>
++              'Secure local storage is unavailable on this device.',
++            Phase2ABootstrapBlocker.identityMigrationFailed =>
++              'The saved node identity needs recovery before local signing can continue.',
++            Phase2ABootstrapBlocker.sessionMigrationFailed =>
++              'The saved account session needs recovery before it can be used.',
++            Phase2ABootstrapBlocker.localRepositoryRecoveryFailed =>
++              'Local repository recovery needs attention before it can be used.',
++          }, textAlign: TextAlign.center),
++        ),
++      ),
++    ),
++  );
++}
++
+ class ForkMeshApp extends StatefulWidget {
+   const ForkMeshApp({
+     super.key,
+@@ -78,6 +158,7 @@ class ForkMeshApp extends StatefulWidget {
+     required this.api,
+     required this.auth,
+     required this.inbox,
++    this.localRuntime,
+     this.performanceMonitor,
+   });
+ 
+@@ -87,6 +168,7 @@ class ForkMeshApp extends StatefulWidget {
+   final ApiService api;
+   final AuthService auth;
+   final InboxService inbox;
++  final Phase2ALocalRuntime? localRuntime;
+   final PerformanceMonitorService? performanceMonitor;
+ 
+   @override
+@@ -125,6 +207,8 @@ class _ForkMeshAppState extends State<ForkMeshApp> {
+         ChangeNotifierProvider.value(value: widget.auth),
+         ChangeNotifierProvider.value(value: _notifications),
+         Provider.value(value: widget.inbox),
++        if (widget.localRuntime != null)
++          Provider.value(value: widget.localRuntime!),
+       ],
+       child: MaterialApp(
+         title: 'ForkMesh',
+diff --git a/flutter_app/lib/screens/chat_screen.dart b/flutter_app/lib/screens/chat_screen.dart
+index 454ec282..01981bcf 100644
+--- a/flutter_app/lib/screens/chat_screen.dart
++++ b/flutter_app/lib/screens/chat_screen.dart
+@@ -121,18 +121,14 @@ class _ChannelTile extends StatelessWidget {
+   const _ChannelTile({
+     required this.title,
+     required this.selected,
+-    this.subtitle,
+     this.icon,
+-    this.statusColor,
+     this.unread = false,
+     this.onTap,
+   });
+ 
+   final String title;
+   final bool selected;
+-  final String? subtitle;
+   final IconData? icon;
+-  final Color? statusColor;
+   final bool unread;
+   final VoidCallback? onTap;
+ 
+@@ -154,16 +150,13 @@ class _ChannelTile extends StatelessWidget {
+             ),
+             child: Row(
+               children: [
+-                if (statusColor != null)
+-                  Icon(Icons.circle, size: 10, color: statusColor)
+-                else
+-                  Icon(
+-                    icon ?? Icons.circle,
+-                    size: 17,
+-                    color: selected
+-                        ? FmTheme.accent(context)
+-                        : FmTheme.textTertiary(context),
+-                  ),
++                Icon(
++                  icon ?? Icons.circle,
++                  size: 17,
++                  color: selected
++                      ? FmTheme.accent(context)
++                      : FmTheme.textTertiary(context),
++                ),
+                 const SizedBox(width: FmSpace.x3),
+                 Expanded(
+                   child: Column(
+@@ -184,18 +177,6 @@ class _ChannelTile extends StatelessWidget {
+                               : FontWeight.w600,
+                         ),
+                       ),
+-                      if (subtitle != null) ...[
+-                        const SizedBox(height: FmSpace.x1),
+-                        Text(
+-                          subtitle!,
+-                          maxLines: 1,
+-                          overflow: TextOverflow.ellipsis,
+-                          style: TextStyle(
+-                            fontSize: 11,
+-                            color: FmTheme.textTertiary(context),
+-                          ),
+-                        ),
+-                      ],
+                     ],
+                   ),
+                 ),
+@@ -252,9 +233,7 @@ class _MemberGroupTile extends StatelessWidget {
+                     child: Icon(
+                       Icons.circle,
+                       size: 10,
+-                      color: group.online
+-                          ? FmColors.success
+-                          : FmColors.offline,
++                      color: group.online ? FmColors.success : FmColors.offline,
+                     ),
+                   ),
+                   const SizedBox(width: FmSpace.x3),
+@@ -431,49 +410,49 @@ class _Transcript extends StatelessWidget {
+                   Expanded(
+                     child: TextField(
+                       controller: composer,
+-                  minLines: 1,
+-                  maxLines: 5,
+-                  decoration: InputDecoration(
+-                    hintText: 'Message...',
+-                    filled: true,
+-                    fillColor: FmTheme.bgBase(context),
+-                    contentPadding: const EdgeInsets.symmetric(
+-                      horizontal: FmSpace.x4,
+-                      vertical: FmSpace.x3,
+-                    ),
+-                    enabledBorder: OutlineInputBorder(
+-                      borderRadius: BorderRadius.circular(FmRadius.lg),
+-                      borderSide: BorderSide.none,
+-                    ),
+-                    focusedBorder: OutlineInputBorder(
+-                      borderRadius: BorderRadius.circular(FmRadius.lg),
+-                      borderSide: BorderSide(
+-                        color: FmTheme.accent(context),
+-                        width: 1.2,
++                      minLines: 1,
++                      maxLines: 5,
++                      decoration: InputDecoration(
++                        hintText: 'Message...',
++                        filled: true,
++                        fillColor: FmTheme.bgBase(context),
++                        contentPadding: const EdgeInsets.symmetric(
++                          horizontal: FmSpace.x4,
++                          vertical: FmSpace.x3,
++                        ),
++                        enabledBorder: OutlineInputBorder(
++                          borderRadius: BorderRadius.circular(FmRadius.lg),
++                          borderSide: BorderSide.none,
++                        ),
++                        focusedBorder: OutlineInputBorder(
++                          borderRadius: BorderRadius.circular(FmRadius.lg),
++                          borderSide: BorderSide(
++                            color: FmTheme.accent(context),
++                            width: 1.2,
++                          ),
++                        ),
+                       ),
++                      onSubmitted: connected ? (_) => onSend() : null,
+                     ),
+                   ),
+-                  onSubmitted: connected ? (_) => onSend() : null,
+-                ),
+-              ),
+-              const SizedBox(width: FmSpace.x2),
+-              SizedBox(
+-                width: 48,
+-                height: 48,
+-                child: IconButton.filled(
+-                  onPressed: connected ? onSend : () => relay.connect(),
+-                  style: IconButton.styleFrom(
+-                    backgroundColor: FmTheme.accent(context),
+-                    foregroundColor: Colors.white,
+-                    disabledBackgroundColor: FmTheme.bgElevated(context),
+-                    disabledForegroundColor: FmTheme.textTertiary(context),
+-                    shape: RoundedRectangleBorder(
+-                      borderRadius: BorderRadius.circular(FmRadius.md),
++                  const SizedBox(width: FmSpace.x2),
++                  SizedBox(
++                    width: 48,
++                    height: 48,
++                    child: IconButton.filled(
++                      onPressed: connected ? onSend : () => relay.connect(),
++                      style: IconButton.styleFrom(
++                        backgroundColor: FmTheme.accent(context),
++                        foregroundColor: Colors.white,
++                        disabledBackgroundColor: FmTheme.bgElevated(context),
++                        disabledForegroundColor: FmTheme.textTertiary(context),
++                        shape: RoundedRectangleBorder(
++                          borderRadius: BorderRadius.circular(FmRadius.md),
++                        ),
++                      ),
++                      icon: const Icon(Icons.send, size: 18),
+                     ),
+                   ),
+-                  icon: const Icon(Icons.send, size: 18),
+-                ),
+-              ),
+                 ],
+               ),
+             ],
+diff --git a/flutter_app/lib/services/auth_service.dart b/flutter_app/lib/services/auth_service.dart
+index 8491c40e..c70e83cc 100644
+--- a/flutter_app/lib/services/auth_service.dart
++++ b/flutter_app/lib/services/auth_service.dart
+@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
+ import 'package:http/http.dart' as http;
+ import 'package:shared_preferences/shared_preferences.dart';
+ 
++import '../core/security/secure_store.dart';
+ import 'identity.dart';
+ import 'performance_monitor_service.dart';
+ import 'settings_service.dart';
+@@ -48,10 +49,8 @@ class AuthSession {
+   final bool desktopCapable;
+   final List<String> capabilities;
+   final List<AccountDevice> devices;
+-  // Signed account session token returned by the Worker on login/signup. Sent
+-  // as an `Authorization: Bearer` header so per-account endpoints (notifications,
+-  // agent list/prompt, repo metadata) authorize this account rather than a
+-  // self-asserted node name. Persisted with the rest of the session.
++  // Signed account session token returned by the Worker on login/signup.
++  // It is held in memory and persisted only through the platform secure store.
+   final String sessionToken;
+ 
+   bool get canSubmitIssue => capabilities.contains('submit_issue');
+@@ -114,6 +113,33 @@ class AuthSession {
+     'sessionToken': sessionToken,
+   };
+ 
++  Map<String, dynamic> toMetadataJson() {
++    final metadata = toJson();
++    metadata.remove('sessionToken');
++    return metadata;
++  }
++
++  AuthSession copyWithSessionToken(String value) => AuthSession(
++    nodeName: nodeName,
++    email: email,
++    status: status,
++    pubkey: pubkey,
++    emailVerified: emailVerified,
++    isAdmin: isAdmin,
++    solana: solana,
++    hasPayoutAddress: hasPayoutAddress,
++    avatarPng: avatarPng,
++    avatarUpdatedAt: avatarUpdatedAt,
++    createdAt: createdAt,
++    savedAt: savedAt,
++    sessionKind: sessionKind,
++    deviceKind: deviceKind,
++    desktopCapable: desktopCapable,
++    capabilities: capabilities,
++    devices: devices,
++    sessionToken: value,
++  );
++
+   static int _asInt(dynamic value) {
+     if (value is int) return value;
+     if (value is num) return value.toInt();
+@@ -228,12 +254,15 @@ class AuthException implements Exception {
+ }
+ 
+ class AuthService extends ChangeNotifier {
++  @visibleForTesting
+   AuthService(
+     this._settings,
+     this._identity,
+     this._prefs, {
+     PerformanceMonitorService? performanceMonitor,
+-  }) : _performanceMonitor = performanceMonitor {
++    SecureStore? secureStore,
++  }) : _performanceMonitor = performanceMonitor,
++       _secureStore = secureStore ?? SecureStoreTestBinding.requireStore() {
+     _session = _loadSession();
+   }
+ 
+@@ -241,6 +270,7 @@ class AuthService extends ChangeNotifier {
+   final Identity _identity;
+   final SharedPreferences _prefs;
+   final PerformanceMonitorService? _performanceMonitor;
++  final SecureStore _secureStore;
+ 
+   static const _sessionKey = 'auth/session';
+   static final nodeNamePattern = RegExp(r'^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$');
+@@ -253,12 +283,18 @@ class AuthService extends ChangeNotifier {
+     SettingsService settings,
+     Identity identity, {
+     PerformanceMonitorService? performanceMonitor,
+-  }) async => AuthService(
+-    settings,
+-    identity,
+-    await SharedPreferences.getInstance(),
+-    performanceMonitor: performanceMonitor,
+-  );
++    SecureStore? secureStore,
++  }) async {
++    final service = AuthService(
++      settings,
++      identity,
++      await SharedPreferences.getInstance(),
++      performanceMonitor: performanceMonitor,
++      secureStore: secureStore ?? SecureStoreTestBinding.requireStore(),
++    );
++    await service._migrateAndLoadSession();
++    return service;
++  }
+ 
+   Uri _base(String path) {
+     final ws = Uri.parse(_settings.serverUrl);
+@@ -362,6 +398,7 @@ class AuthService extends ChangeNotifier {
+   }
+ 
+   Future<void> logout() async {
++    await _secureStore.delete(SecureStoreKey.accountSessionToken);
+     await _prefs.remove(_sessionKey);
+     _session = null;
+     notifyListeners();
+@@ -387,7 +424,7 @@ class AuthService extends ChangeNotifier {
+   }
+ 
+   Future<AuthSession> _saveSession(AuthSession session) async {
+-    await _prefs.setString(_sessionKey, jsonEncode(session.toJson()));
++    await _writeTokenAndMetadata(session, _secureStore);
+     if (session.nodeName.isNotEmpty) {
+       await _settings.setDisplayName(session.nodeName);
+     }
+@@ -399,6 +436,65 @@ class AuthService extends ChangeNotifier {
+     return session;
+   }
+ 
++  Future<void> _migrateAndLoadSession() async {
++    final legacy = _loadSession();
++    if (legacy == null) {
++      await _secureStore.delete(SecureStoreKey.accountSessionToken);
++      _session = null;
++      return;
++    }
++    final secureToken = await _secureStore.read(
++      SecureStoreKey.accountSessionToken,
++    );
++    final tokenFromSecure = secureToken == null ? '' : utf8.decode(secureToken);
++    final tokenFromLegacy = legacy.sessionToken;
++    if (tokenFromSecure.isNotEmpty &&
++        tokenFromLegacy.isNotEmpty &&
++        tokenFromSecure != tokenFromLegacy) {
++      throw const AuthException(
++        'secure_session_conflict',
++        'The saved session could not be migrated safely.',
++      );
++    }
++    final session = legacy.copyWithSessionToken(
++      tokenFromSecure.isNotEmpty ? tokenFromSecure : tokenFromLegacy,
++    );
++    if (session.sessionToken.isNotEmpty) {
++      await _writeTokenAndMetadata(session, _secureStore);
++    } else {
++      await _prefs.setString(_sessionKey, jsonEncode(session.toMetadataJson()));
++      _session = null;
++      return;
++    }
++    _session = session;
++  }
++
++  Future<void> _writeTokenAndMetadata(
++    AuthSession session,
++    SecureStore secureStore,
++  ) async {
++    if (session.sessionToken.isNotEmpty) {
++      final token = utf8.encode(session.sessionToken);
++      await secureStore.write(
++        SecureStoreKey.accountSessionToken,
++        token,
++        accessibility: SecureStoreAccessibility.afterFirstUnlockThisDeviceOnly,
++      );
++      final readBack = await secureStore.read(
++        SecureStoreKey.accountSessionToken,
++      );
++      if (readBack == null || utf8.decode(readBack) != session.sessionToken) {
++        throw const AuthException(
++          'secure_session_write_failed',
++          'The session could not be saved securely.',
++        );
++      }
++    } else {
++      await secureStore.delete(SecureStoreKey.accountSessionToken);
++    }
++    await _prefs.setString(_sessionKey, jsonEncode(session.toMetadataJson()));
++  }
++
+   Future<Map<String, dynamic>> _getJson(String path) async {
+     Future<Map<String, dynamic>> load() async {
+       final resp = await http
+diff --git a/flutter_app/lib/services/identity.dart b/flutter_app/lib/services/identity.dart
+index 9c71b0eb..ca274556 100644
+--- a/flutter_app/lib/services/identity.dart
++++ b/flutter_app/lib/services/identity.dart
+@@ -3,23 +3,27 @@ import 'dart:convert';
+ import 'package:cryptography/cryptography.dart';
+ import 'package:shared_preferences/shared_preferences.dart';
+ 
+-/// This node's Ed25519 identity. The public key, base64url-encoded without
+-/// padding, is the canonical node id — used as the chat sender id, the repo
+-/// owner namespace, and the `author` on signed inbox events. This matches
+-/// ForkMeshIdentity in the Qt client (raw 32-byte key, base64url) and the
+-/// worker's ed25519_verify, so events this app signs are accepted on the relay.
++import '../core/security/secure_store.dart';
++import '../features/nodes/data/node_identity_store.dart';
++import '../features/nodes/domain/node_identity.dart';
++
++/// This node's Ed25519 identity.
++///
++/// The stable schema-defined node ID and the base64url public key are distinct
++/// values.
++/// The public key remains the value used to verify events on the relay.
+ class Identity {
+-  Identity._(this.keyPair, this.publicKeyBytes);
++  Identity._(this.keyPair, this.publicKeyBytes, this.nodeIdentity);
+ 
+   final SimpleKeyPair keyPair;
+   final List<int> publicKeyBytes;
++  final NodeIdentity nodeIdentity;
+ 
+-  static const _seedKey = 'identity/ed25519Seed';
+   static final _ed25519 = Ed25519();
+ 
+-  /// base64url(raw 32-byte public key) with no padding.
++  /// Base64url-encoded raw 32-byte public key with no padding.
+   String get publicKeyB64url => _b64url(publicKeyBytes);
+-  String get nodeId => publicKeyB64url;
++  String get nodeId => nodeIdentity.nodeId;
+   String get shortKey {
+     final k = publicKeyB64url;
+     return k.length <= 16
+@@ -27,22 +31,23 @@ class Identity {
+         : '${k.substring(0, 8)}...${k.substring(k.length - 8)}';
+   }
+ 
+-  static Future<Identity> loadOrCreate() async {
+-    final prefs = await SharedPreferences.getInstance();
+-    final stored = prefs.getString(_seedKey);
+-    SimpleKeyPair pair;
+-    if (stored != null) {
+-      pair = await _ed25519.newKeyPairFromSeed(base64.decode(stored));
+-    } else {
+-      pair = await _ed25519.newKeyPair();
+-      final seed = await pair.extractPrivateKeyBytes();
+-      await prefs.setString(_seedKey, base64.encode(seed));
+-    }
++  static Future<Identity> loadOrCreate({NodeIdentityStore? store}) async {
++    final resolvedStore = store ?? await _testStore();
++    final seed = await resolvedStore.loadOrCreateSeed();
++    final pair = await _ed25519.newKeyPairFromSeed(seed);
+     final pub = await pair.extractPublicKey();
+-    return Identity._(pair, pub.bytes);
++    final identity = await resolvedStore.loadOrCreateNodeIdentity(
++      _b64url(pub.bytes),
++    );
++    return Identity._(pair, pub.bytes, identity);
+   }
+ 
+-  /// Detached Ed25519 signature over [data], base64url with no padding —
++  static Future<NodeIdentityStore> _testStore() async => NodeIdentityStore(
++    secureStore: SecureStoreTestBinding.requireStore(),
++    preferences: await SharedPreferences.getInstance(),
++  );
++
++  /// Detached Ed25519 signature over [data], base64url with no padding.
+   /// the `sig` field on inbox events.
+   Future<String> sign(List<int> data) async {
+     final sig = await _ed25519.sign(data, keyPair: keyPair);
+diff --git a/flutter_app/lib/widgets/compose_identity_bar.dart b/flutter_app/lib/widgets/compose_identity_bar.dart
+index 46f76917..57a1b581 100644
+--- a/flutter_app/lib/widgets/compose_identity_bar.dart
++++ b/flutter_app/lib/widgets/compose_identity_bar.dart
+@@ -6,7 +6,7 @@ import 'package:provider/provider.dart';
+ import '../services/auth_service.dart';
+ import '../theme.dart';
+ 
+-/// A compact "you are posting as <username>" header shown above every compose
++/// A compact "you are posting as `username`" header shown above every compose
+ /// surface (chat, issues, PRs, discussions, reviews, comments). Renders the
+ /// account's real avatar (base64 PNG) when present, otherwise an initials
+ /// circle matching [AvatarWithDot].
+diff --git a/flutter_app/pubspec.lock b/flutter_app/pubspec.lock
+index c5f46c4f..62643cf9 100644
+--- a/flutter_app/pubspec.lock
++++ b/flutter_app/pubspec.lock
+@@ -94,6 +94,11 @@ packages:
+     description: flutter
+     source: sdk
+     version: "0.0.0"
++  flutter_driver:
++    dependency: transitive
++    description: flutter
++    source: sdk
++    version: "0.0.0"
+   flutter_lints:
+     dependency: "direct dev"
+     description:
+@@ -112,6 +117,18 @@ packages:
+     description: flutter
+     source: sdk
+     version: "0.0.0"
++  forkmesh_git:
++    dependency: "direct main"
++    description:
++      path: "packages/forkmesh_git"
++      relative: true
++    source: path
++    version: "0.0.0"
++  fuchsia_remote_debug_protocol:
++    dependency: transitive
++    description: flutter
++    source: sdk
++    version: "0.0.0"
+   http:
+     dependency: "direct main"
+     description:
+@@ -128,6 +145,11 @@ packages:
+       url: "https://pub.dev"
+     source: hosted
+     version: "4.1.2"
++  integration_test:
++    dependency: "direct dev"
++    description: flutter
++    source: sdk
++    version: "0.0.0"
+   intl:
+     dependency: "direct main"
+     description:
+@@ -188,10 +210,10 @@ packages:
+     dependency: transitive
+     description:
+       name: meta
+-      sha256: "23f08335362185a5ea2ad3a4e597f1375e78bce8a040df5c600c8d3552ef2394"
++      sha256: "1741988757a65eb6b36abe716829688cf01910bbf91c34354ff7ec1c3de2b349"
+       url: "https://pub.dev"
+     source: hosted
+-    version: "1.17.0"
++    version: "1.18.0"
+   nested:
+     dependency: transitive
+     description:
+@@ -248,6 +270,14 @@ packages:
+       url: "https://pub.dev"
+     source: hosted
+     version: "2.1.8"
++  process:
++    dependency: transitive
++    description:
++      name: process
++      sha256: c6248e4526673988586e8c00bb22a49210c258dc91df5227d5da9748ecf79744
++      url: "https://pub.dev"
++    source: hosted
++    version: "5.0.5"
+   provider:
+     dependency: "direct main"
+     description:
+@@ -349,6 +379,14 @@ packages:
+       url: "https://pub.dev"
+     source: hosted
+     version: "1.4.1"
++  sync_http:
++    dependency: transitive
++    description:
++      name: sync_http
++      sha256: "7f0cd72eca000d2e026bcd6f990b81d0ca06022ef4e32fb257b30d3d1014a961"
++      url: "https://pub.dev"
++    source: hosted
++    version: "0.3.1"
+   term_glyph:
+     dependency: transitive
+     description:
+@@ -361,10 +399,10 @@ packages:
+     dependency: transitive
+     description:
+       name: test_api
+-      sha256: "8161c84903fd860b26bfdefb7963b3f0b68fee7adea0f59ef805ecca346f0c7a"
++      sha256: "949a932224383300f01be9221c39180316445ecb8e7547f70a41a35bf421fb9e"
+       url: "https://pub.dev"
+     source: hosted
+-    version: "0.7.10"
++    version: "0.7.11"
+   typed_data:
+     dependency: transitive
+     description:
+@@ -413,6 +451,14 @@ packages:
+       url: "https://pub.dev"
+     source: hosted
+     version: "3.0.3"
++  webdriver:
++    dependency: transitive
++    description:
++      name: webdriver
++      sha256: "2f3a14ca026957870cfd9c635b83507e0e51d8091568e90129fbf805aba7cade"
++      url: "https://pub.dev"
++    source: hosted
++    version: "3.1.0"
+   xdg_directories:
+     dependency: transitive
+     description:
+@@ -422,5 +468,5 @@ packages:
+     source: hosted
+     version: "1.1.0"
+ sdks:
+-  dart: ">=3.11.5 <4.0.0"
++  dart: ">=3.12.0 <4.0.0"
+   flutter: ">=3.38.0"
+diff --git a/flutter_app/pubspec.yaml b/flutter_app/pubspec.yaml
+index ef38ce11..0b4eb8b2 100644
+--- a/flutter_app/pubspec.yaml
++++ b/flutter_app/pubspec.yaml
+@@ -41,6 +41,8 @@ dependencies:
+   intl: ^0.20.2
+   shared_preferences: ^2.5.5
+   crypto: ^3.0.7
++  forkmesh_git:
++    path: packages/forkmesh_git
+ 
+ dev_dependencies:
+   flutter_test:
+@@ -52,6 +54,8 @@ dev_dependencies:
+   # package. See that file for information about deactivating specific lint
+   # rules and activating additional ones.
+   flutter_lints: ^6.0.0
++  integration_test:
++    sdk: flutter
+ 
+ # For information on the generic Dart part of this file, see the
+ # following page: https://dart.dev/tools/pub/pubspec
+diff --git a/flutter_app/test/api_service_test.dart b/flutter_app/test/api_service_test.dart
+index 91f51e76..7569e3ea 100644
+--- a/flutter_app/test/api_service_test.dart
++++ b/flutter_app/test/api_service_test.dart
+@@ -871,7 +871,7 @@ LGTM from mobile.''',
+         request.response.statusCode = HttpStatus.serviceUnavailable;
+         request.response.write(jsonEncode({'error': 'offline'}));
+       } else if (request.uri.path == '/api/repo/owner/repo/tree') {
+-        expect(request.uri.queryParameters['path'], 'releases');
++        expect(request.uri.queryParameters['path'], '.forkmesh/releases');
+         request.response.statusCode = HttpStatus.notFound;
+         request.response.write(jsonEncode({'error': 'not_found'}));
+       } else {
+diff --git a/flutter_app/test/chat_screen_test.dart b/flutter_app/test/chat_screen_test.dart
+index 133c7df2..b04d1bb4 100644
+--- a/flutter_app/test/chat_screen_test.dart
++++ b/flutter_app/test/chat_screen_test.dart
+@@ -205,6 +205,7 @@ class _RelayHarness {
+     );
+     final identity = await Identity.loadOrCreate();
+     final relay = RelayService(settings, identity);
++    relay.roomPassphraseProvider = () async => 'chat-test-room-key';
+     await relay.connect().timeout(
+       const Duration(seconds: 5),
+       onTimeout: () => throw TimeoutException('relay.connect timed out'),
+@@ -214,7 +215,10 @@ class _RelayHarness {
+       onTimeout: () =>
+           throw TimeoutException('test WebSocket was not accepted'),
+     );
+-    final crypto = await RoomCrypto.shared(settings.room);
++    final crypto = await RoomCrypto.withPassphrase(
++      settings.room,
++      'chat-test-room-key',
++    );
+ 
+     final harness = _RelayHarness._(
+       server: server,
+diff --git a/flutter_app/test/flutter_test_config.dart b/flutter_app/test/flutter_test_config.dart
+new file mode 100644
+index 00000000..b301222b
+--- /dev/null
++++ b/flutter_app/test/flutter_test_config.dart
+@@ -0,0 +1,8 @@
++import 'dart:async';
++
++import 'package:forkmesh/core/security/secure_store.dart';
++
++Future<void> testExecutable(FutureOr<void> Function() testMain) async {
++  SecureStoreTestBinding.install(InMemorySecureStore());
++  await testMain();
++}
+diff --git a/flutter_app/test/phase2a_local_repository_store_test.dart b/flutter_app/test/phase2a_local_repository_store_test.dart
+new file mode 100644
+index 00000000..0cdbba3f
+--- /dev/null
++++ b/flutter_app/test/phase2a_local_repository_store_test.dart
+@@ -0,0 +1,168 @@
++import 'dart:convert';
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:forkmesh/core/platform/app_directories.dart';
++import 'package:forkmesh/features/nodes/domain/node_identity.dart';
++import 'package:forkmesh/features/repositories/data/local_repository_store.dart';
++
++void main() {
++  late Directory root;
++  late LocalRepositoryStore store;
++
++  setUp(() async {
++    root = await Directory.systemTemp.createTemp('forkmesh-phase2a-store-');
++    final node = NodeIdentity(
++      nodeId:
++          'fmnode_${NodeIdentity.canonicalBase64Url(List<int>.filled(16, 1))}',
++      publicKey: NodeIdentity.canonicalBase64Url(List<int>.filled(32, 2)),
++    );
++    store = LocalRepositoryStore(
++      directories: FixedAppDirectories(root),
++      nodeIdentity: node,
++      repositoryIdGenerator: () =>
++          'fmrepo_${NodeIdentity.canonicalBase64Url(List<int>.filled(16, 3))}',
++      replicaIdGenerator: () =>
++          'fmreplica_${NodeIdentity.canonicalBase64Url(List<int>.filled(16, 4))}',
++      clock: () => 1,
++    );
++  });
++
++  tearDown(() => root.delete(recursive: true));
++
++  test(
++    'creates and reopens an app-owned manifest and one local replica',
++    () async {
++      final created = await store.create(createdBy: 'ada');
++      final manifestFile = File(
++        '${created.worktree.path}${Platform.pathSeparator}.forkmesh'
++        '${Platform.pathSeparator}repository.json',
++      );
++      final manifest = jsonDecode(await manifestFile.readAsString());
++
++      expect(manifest, <String, Object>{
++        'version': 1,
++        'repoId': created.repository.repoId,
++        'createdBy': 'ada',
++        'createdAt': 1,
++        'defaultBranch': 'main',
++      });
++      expect(created.replica.repoId, created.repository.repoId);
++      expect(created.replica.nodeId, created.nodeIdentity.nodeId);
++
++      final reopened = await store.open(created.repository.repoId);
++
++      expect(reopened.repository.repoId, created.repository.repoId);
++      expect(reopened.replica.replicaId, created.replica.replicaId);
++      expect(reopened.worktree.path, created.worktree.path);
++    },
++  );
++
++  test('rejects a duplicate creation without replacing the manifest', () async {
++    final created = await store.create(createdBy: 'ada');
++    final manifestFile = File(
++      '${created.worktree.path}${Platform.pathSeparator}.forkmesh'
++      '${Platform.pathSeparator}repository.json',
++    );
++    final before = await manifestFile.readAsString();
++
++    await expectLater(
++      () => store.create(createdBy: 'ada'),
++      throwsA(isA<LocalRepositoryStoreException>()),
++    );
++
++    expect(await manifestFile.readAsString(), before);
++  });
++
++  test('fails closed for malformed manifests and path traversal', () async {
++    final created = await store.create(createdBy: 'ada');
++    final manifestFile = File(
++      '${created.worktree.path}${Platform.pathSeparator}.forkmesh'
++      '${Platform.pathSeparator}repository.json',
++    );
++    await manifestFile.writeAsString('{"repoId":"different"}');
++    final before = await manifestFile.readAsString();
++
++    await expectLater(
++      () => store.open(created.repository.repoId),
++      throwsA(isA<LocalRepositoryStoreException>()),
++    );
++    expect(await manifestFile.readAsString(), before);
++    await expectLater(
++      () => FixedAppDirectories(root).repositoryRootFor('../outside'),
++      throwsA(isA<AppDirectoryException>()),
++    );
++  });
++
++  test('rejects a repository-root symlink escape without opening it', () async {
++    const repoId = 'fmrepo_AwMDAwMDAwMDAwMDAwMDAw';
++    final directories = FixedAppDirectories(root);
++    final repositoryRoot = await directories.repositoryRootFor(repoId);
++    await repositoryRoot.delete(recursive: true);
++    final outside = await Directory.systemTemp.createTemp(
++      'forkmesh-phase2a-outside-',
++    );
++    addTearDown(() => outside.delete(recursive: true));
++    await Link(repositoryRoot.path).create(outside.path);
++
++    await expectLater(
++      () => store.open(repoId),
++      throwsA(isA<AppDirectoryException>()),
++    );
++  });
++
++  test(
++    'recovers an interrupted local repository creation before use',
++    () async {
++      const repoId = 'fmrepo_AwMDAwMDAwMDAwMDAwMDAw';
++      final partialRoot = await FixedAppDirectories(
++        root,
++      ).repositoryRootFor(repoId);
++      final journal = File(
++        '${partialRoot.path}${Platform.pathSeparator}operation.json',
++      );
++      await journal.writeAsString(
++        jsonEncode(<String, Object>{
++          'version': 1,
++          'operation': 'create',
++          'repoId': repoId,
++        }),
++        flush: true,
++      );
++
++      await store.recover();
++
++      expect(await partialRoot.exists(), isFalse);
++    },
++  );
++
++  test('removes a local replica only after explicit local intent', () async {
++    final created = await store.create(createdBy: 'ada');
++
++    await store.removeLocalReplica(
++      created,
++      intent: LocalReplicaDeletionIntent.removeLocalReplica,
++    );
++
++    expect(await created.root.exists(), isFalse);
++  });
++
++  test('recovers an interrupted local replica deletion before use', () async {
++    final created = await store.create(createdBy: 'ada');
++    final journal = File(
++      '${created.root.path}${Platform.pathSeparator}operation.json',
++    );
++    await journal.writeAsString(
++      jsonEncode(<String, Object>{
++        'version': 1,
++        'operation': 'delete',
++        'repoId': created.repository.repoId,
++      }),
++      flush: true,
++    );
++
++    await store.recover();
++
++    expect(await created.root.exists(), isFalse);
++  });
++}
+diff --git a/flutter_app/test/phase2a_local_runtime_test.dart b/flutter_app/test/phase2a_local_runtime_test.dart
+new file mode 100644
+index 00000000..6d3175b9
+--- /dev/null
++++ b/flutter_app/test/phase2a_local_runtime_test.dart
+@@ -0,0 +1,38 @@
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:forkmesh/core/platform/app_directories.dart';
++import 'package:forkmesh/features/nodes/domain/node_identity.dart';
++import 'package:forkmesh/features/repositories/data/local_repository_runtime.dart';
++import 'package:forkmesh/features/repositories/domain/local_git_capabilities.dart';
++
++void main() {
++  test(
++    'bootstraps recovered local storage with remote capabilities disabled',
++    () async {
++      final root = await Directory.systemTemp.createTemp(
++        'forkmesh-phase2a-runtime-',
++      );
++      addTearDown(() => root.delete(recursive: true));
++      final runtime = await Phase2ALocalRuntime.bootstrap(
++        directories: FixedAppDirectories(root),
++        nodeIdentity: NodeIdentity(
++          nodeId:
++              'fmnode_${NodeIdentity.canonicalBase64Url(List<int>.filled(16, 1))}',
++          publicKey: NodeIdentity.canonicalBase64Url(List<int>.filled(32, 2)),
++        ),
++      );
++
++      expect(
++        runtime.capabilities
++            .statusFor(LocalGitCapability.localRepository)
++            .enabled,
++        isTrue,
++      );
++      expect(
++        runtime.capabilities.statusFor(LocalGitCapability.clone).reason,
++        LocalGitDisableReason.awaitingIndependentCryptographyReview,
++      );
++    },
++  );
++}
+diff --git a/flutter_app/test/phase2a_owned_git_adapter_test.dart b/flutter_app/test/phase2a_owned_git_adapter_test.dart
+new file mode 100644
+index 00000000..dea2f56e
+--- /dev/null
++++ b/flutter_app/test/phase2a_owned_git_adapter_test.dart
+@@ -0,0 +1,96 @@
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:forkmesh/core/platform/app_directories.dart';
++import 'package:forkmesh/features/nodes/domain/node_identity.dart';
++import 'package:forkmesh/features/repositories/data/local_repository_store.dart';
++import 'package:forkmesh/features/repositories/data/owned_git_engine_adapter.dart';
++import 'package:forkmesh/features/repositories/domain/local_git_capabilities.dart';
++
++void main() {
++  late Directory root;
++  late OwnedGitEngineAdapter adapter;
++
++  setUp(() async {
++    root = await Directory.systemTemp.createTemp('forkmesh-phase2a-git-');
++    adapter = OwnedGitEngineAdapter(
++      LocalRepositoryStore(
++        directories: FixedAppDirectories(root),
++        nodeIdentity: NodeIdentity(
++          nodeId:
++              'fmnode_${NodeIdentity.canonicalBase64Url(List<int>.filled(16, 1))}',
++          publicKey: NodeIdentity.canonicalBase64Url(List<int>.filled(32, 2)),
++        ),
++        repositoryIdGenerator: () =>
++            'fmrepo_${NodeIdentity.canonicalBase64Url(List<int>.filled(16, 3))}',
++        replicaIdGenerator: () =>
++            'fmreplica_${NodeIdentity.canonicalBase64Url(List<int>.filled(16, 4))}',
++        clock: () => 1,
++      ),
++    );
++  });
++
++  tearDown(() => root.delete(recursive: true));
++
++  test(
++    'authors and reopens text and binary history through the owned adapter',
++    () async {
++      final local = await adapter.initializeLocal(createdBy: 'ada');
++      await File(
++        '${local.worktree.path}${Platform.pathSeparator}note.txt',
++      ).writeAsString('local\n');
++      await File(
++        '${local.worktree.path}${Platform.pathSeparator}binary.bin',
++      ).writeAsBytes(<int>[0, 1, 255]);
++
++      await local.stage(<String>['note.txt', 'binary.bin']);
++      final commit = await local.commit(
++        message: 'Local-only commit\n',
++        authorName: 'Ada',
++        authorEmail: 'ada@example.test',
++        timestampSeconds: 0,
++      );
++      expect((await local.status()).isClean, isTrue);
++      await local.createBranch('feature');
++      await local.checkout('feature');
++      await local.dispose();
++
++      final reopened = await adapter.openLocal(local.repoId);
++      final history = await reopened.history();
++
++      expect(history.first.objectId, commit);
++      expect(history.first.message, 'Local-only commit\n');
++      expect(history, hasLength(2));
++      expect(await reopened.readBlobFromHead('binary.bin'), <int>[0, 1, 255]);
++      expect((await reopened.status()).isClean, isTrue);
++    },
++  );
++
++  test(
++    'denies every remote and untrusted operation below the UI boundary',
++    () async {
++      for (final operation in <Future<void> Function()>[
++        adapter.clone,
++        adapter.fetch,
++        adapter.push,
++        adapter.importRemoteRepository,
++        adapter.hostRemoteRepository,
++        adapter.installUntrustedSha1Object,
++      ]) {
++        await expectLater(
++          operation,
++          throwsA(
++            isA<LocalGitCapabilityException>().having(
++              (error) => error.reason,
++              'reason',
++              anyOf(
++                LocalGitDisableReason.awaitingIndependentCryptographyReview,
++                LocalGitDisableReason.phaseNotImplemented,
++              ),
++            ),
++          ),
++        );
++      }
++    },
++  );
++}
+diff --git a/flutter_app/test/phase2a_secure_migration_test.dart b/flutter_app/test/phase2a_secure_migration_test.dart
+new file mode 100644
+index 00000000..ede516d6
+--- /dev/null
++++ b/flutter_app/test/phase2a_secure_migration_test.dart
+@@ -0,0 +1,167 @@
++import 'dart:convert';
++import 'dart:typed_data';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:forkmesh/core/security/secure_store.dart';
++import 'package:forkmesh/features/nodes/data/node_identity_store.dart';
++import 'package:forkmesh/services/auth_service.dart';
++import 'package:forkmesh/services/identity.dart';
++import 'package:forkmesh/services/settings_service.dart';
++import 'package:shared_preferences/shared_preferences.dart';
++
++void main() {
++  test(
++    'verified seed and token migration survive restart while logout preserves identity',
++    () async {
++      final seed = List<int>.generate(32, (index) => index);
++      SharedPreferences.setMockInitialValues(<String, Object>{
++        'identity/ed25519Seed': base64.encode(seed),
++        'auth/session': jsonEncode(<String, Object>{
++          'nodeName': 'ada',
++          'email': 'ada@example.test',
++          'sessionToken': 'account-session-secret',
++        }),
++      });
++      final preferences = await SharedPreferences.getInstance();
++      final secureStore = InMemorySecureStore();
++      final identityStore = NodeIdentityStore(
++        secureStore: secureStore,
++        preferences: preferences,
++      );
++
++      final first = await Identity.loadOrCreate(store: identityStore);
++      final settings = SettingsService(preferences);
++      final auth = await AuthService.create(
++        settings,
++        first,
++        secureStore: secureStore,
++      );
++
++      expect(await secureStore.read(SecureStoreKey.nodeSeed), seed);
++      expect(
++        await secureStore.read(SecureStoreKey.accountSessionToken),
++        utf8.encode('account-session-secret'),
++      );
++      expect(preferences.containsKey('identity/ed25519Seed'), isFalse);
++      final storedSession = jsonDecode(preferences.getString('auth/session')!);
++      expect(storedSession, isA<Map<String, dynamic>>());
++      expect(storedSession, isNot(contains('sessionToken')));
++      expect(auth.session!.sessionToken, 'account-session-secret');
++
++      final restarted = await Identity.loadOrCreate(
++        store: NodeIdentityStore(
++          secureStore: secureStore,
++          preferences: preferences,
++        ),
++      );
++      expect(restarted.nodeId, first.nodeId);
++      expect(restarted.publicKeyB64url, first.publicKeyB64url);
++
++      final restartedAuth = await AuthService.create(
++        SettingsService(preferences),
++        restarted,
++        secureStore: secureStore,
++      );
++      expect(restartedAuth.session!.nodeName, 'ada');
++      expect(restartedAuth.session!.sessionToken, 'account-session-secret');
++
++      await auth.logout();
++
++      expect(
++        await secureStore.read(SecureStoreKey.accountSessionToken),
++        isNull,
++      );
++      expect(await secureStore.read(SecureStoreKey.nodeSeed), seed);
++    },
++  );
++
++  test(
++    'mismatched secure and legacy seeds fail closed without rotation',
++    () async {
++      final secureStore = InMemorySecureStore();
++      await secureStore.write(
++        SecureStoreKey.nodeSeed,
++        List<int>.filled(32, 1),
++        accessibility: SecureStoreAccessibility.afterFirstUnlockThisDeviceOnly,
++      );
++      SharedPreferences.setMockInitialValues(<String, Object>{
++        'identity/ed25519Seed': base64.encode(List<int>.filled(32, 2)),
++      });
++      final preferences = await SharedPreferences.getInstance();
++
++      await expectLater(
++        () => Identity.loadOrCreate(
++          store: NodeIdentityStore(
++            secureStore: secureStore,
++            preferences: preferences,
++          ),
++        ),
++        throwsA(
++          isA<NodeIdentityStoreException>().having(
++            (error) => error.code,
++            'code',
++            NodeIdentityStoreErrorCode.seedConflict,
++          ),
++        ),
++      );
++      expect(
++        await secureStore.read(SecureStoreKey.nodeSeed),
++        List<int>.filled(32, 1),
++      );
++      expect(preferences.containsKey('identity/ed25519Seed'), isTrue);
++    },
++  );
++
++  test(
++    'does not rewrite a legacy session after a failed secure write',
++    () async {
++      final legacySession = jsonEncode(<String, Object>{
++        'nodeName': 'ada',
++        'email': 'ada@example.test',
++        'sessionToken': 'account-session-secret',
++      });
++      SharedPreferences.setMockInitialValues(<String, Object>{
++        'auth/session': legacySession,
++      });
++      final preferences = await SharedPreferences.getInstance();
++      final secureStore = _FailingWriteSecureStore();
++      final identity = await Identity.loadOrCreate(
++        store: NodeIdentityStore(
++          secureStore: InMemorySecureStore(),
++          preferences: preferences,
++        ),
++      );
++
++      await expectLater(
++        () => AuthService.create(
++          SettingsService(preferences),
++          identity,
++          secureStore: secureStore,
++        ),
++        throwsA(isA<SecureStoreException>()),
++      );
++      expect(preferences.getString('auth/session'), legacySession);
++    },
++  );
++}
++
++final class _FailingWriteSecureStore implements SecureStore {
++  @override
++  Future<bool> contains(SecureStoreKey key) async => false;
++
++  @override
++  Future<void> delete(SecureStoreKey key) async {}
++
++  @override
++  Future<Uint8List?> read(SecureStoreKey key) async => null;
++
++  @override
++  Future<void> write(
++    SecureStoreKey key,
++    List<int> value, {
++    required SecureStoreAccessibility accessibility,
++  }) async => throw const SecureStoreException(
++    SecureStoreErrorCode.osStatus,
++    'secure storage operation failed',
++  );
++}
+-- 
+2.50.1 (Apple Git-155)
+
