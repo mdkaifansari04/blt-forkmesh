@@ -2780,6 +2780,11 @@ inline QString quickAddAgentProvider()
 {
     const QString value =
         QSettings().value(kQuickAddAgentProviderSetting).toString().trimmed();
+    // "Manual (create issue)" is a quick-add-only pseudo-provider (adhoc #29): it
+    // files an issue instead of running an agent, so it's not in the known-agent
+    // set but must still be restorable across launches.
+    if (value == QLatin1String("manual"))
+        return value;
     return agentProviderIsKnown(value) ? value : defaultAgentProvider();
 }
 
