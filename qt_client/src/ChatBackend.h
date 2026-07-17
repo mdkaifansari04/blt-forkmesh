@@ -41,6 +41,12 @@ struct MemberInfo {
     QString name;      // chat/user display name
     QString nodeName;  // registered node account name, when known
     QString ownerUser; // user account that owns this node, when linked/known
+    // "node" (default) or "user" — stamped from the sender's accountKind, so a
+    // user-only profile (e.g. a bot's relayed chat, or a desktop client signed
+    // in as a plain user account, not a linked node) can be told apart from a
+    // real serving node. Empty for older peers that never advertised it, which
+    // callers should treat the same as "node" for backward compatibility.
+    QString accountKind;
     QString note;     // e.g. "(discovered)"
     bool self = false;
     bool online = false; // live link right now (green dot)

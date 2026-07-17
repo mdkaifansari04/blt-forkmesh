@@ -98,6 +98,7 @@ private:
         QString name;
         QString nodeName;
         QString ownerUser;
+        QString accountKind; // "node" or "user", from the peer's advertised accountKind
         QString solanaAddress;
         QString platform;
         QString version;
@@ -156,6 +157,7 @@ private:
     void rememberPeer(const QString &peerId, const QString &name,
                       const QString &nodeName = QString(),
                       const QString &ownerUser = QString(),
+                      const QString &accountKind = QString(),
                       const QString &solanaAddress = QString(),
                       const QString &platform = QString(),
                       const QString &version = QString(), bool online = true);
