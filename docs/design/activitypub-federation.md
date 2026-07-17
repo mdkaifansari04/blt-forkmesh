@@ -144,7 +144,14 @@ Every actor ships an avatar (`icon`) and profile header (`image`):
   follow-from-Mastodon card with the copyable handle). The gear editor
   uploads/removes the logo and banner and edits the description; the page's
   displayed About text prefers the repo's committed `.forkmesh/info.json`
-  (about + website), matching the desktop app.
+  (about + website), matching the desktop app. The About rail also carries an
+  owner-only **Fediverse posts** dropdown (issue #426): `POST /api/repo/{o}/{r}
+  /ap-posts` (session/owner-key authed, `action: list|delete`) lists the repo
+  actor's federated posts and deletes one. A delete drops the local `ap_objects`
+  row (the `/ap/o/{uuid}` Note starts 404ing and it leaves the profile feed) and
+  queues a `Delete(Tombstone)` to every follower inbox through `ap_outbox`, so
+  the post disappears from Mastodon timelines too. The `actor_bi` filter keeps
+  one owner's token from reaching another actor's objects.
 
 ## Configuration
 

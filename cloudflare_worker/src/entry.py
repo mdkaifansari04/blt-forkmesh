@@ -285,6 +285,7 @@ from urls import (  # noqa: E402
     AP_OBJECT_MEDIA_RE,
     REPO_FEDI_COMMENTS_RE,
     REPO_AP_PUBLISH_RE,
+    REPO_AP_POSTS_RE,
     REPO_CARD_RE,
     REPO_MEDIA_RE,
     REPO_STAR_RE,
@@ -12860,6 +12861,115 @@ async def ap_publish_handler(env, request, owner, repo):
     return json_response({"ok": True}, status=202)
 
 
+async def _authorize_repo_owner_web(env, request, owner, repo, data):
+    """True when the caller may manage this repo's fediverse presence from the
+    web: the repo owner proven by their session token (or an admin acting on
+    the owner's behalf), or the owner's desktop node proving its Ed25519 key —
+    the same trust gate as the About editor / ap-publish, with a distinct
+    canonical so a signed token can't be replayed onto another endpoint."""
+    actor = await _authed_account_name(env, request, data)
+    if actor and (await _account_owns_node(env, actor, owner)
+                  or await _is_admin(env, actor)):
+        return True
+    if data.get("ownerSig") and data.get("ts"):
+        ts = str(data.get("ts", "") or "")
+        owner_pub = await _owner_pubkey(env, owner)
+        canonical = ("forkmesh-ap-posts-v1\n" + owner + "\n" + repo +
+                     "\n" + ts).encode()
+        if owner_pub and _ts_ok(ts) and await ed25519_verify(
+                owner_pub, str(data.get("ownerSig", "") or ""), canonical):
+            return True
+    return False
+
+
+async def ap_posts_handler(env, request, owner, repo):
+    # Repo-owner fediverse-post management (dashboard "manage posts" dropdown,
+    # issue #426): list the repo actor's federated posts, or delete one. A
+    # delete broadcasts a Delete(Tombstone) to every follower inbox so the post
+    # disappears from Mastodon timelines, then drops the local object. POST-only
+    # so the session token rides in the body, never a query string / access log.
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    if not await _authorize_repo_owner_web(env, request, owner, repo, data):
+        return json_response({"error": "not_authorized"}, status=403)
+    action = clean_string(data.get("action", "list"), 12).lower()
+    handle = ap.repo_handle(owner.lower(), repo.lower())
+    actor_bi = await _ap_actor_bi(env, AP_ACTOR_REPO, handle)
+    if action == "list":
+        rows = await d1_all(
+            env,
+            "SELECT object_uuid, data, published FROM ap_objects"
+            " WHERE actor_bi=? ORDER BY published DESC LIMIT 50", actor_bi)
+        posts = []
+        for row in rows or []:
+            rec = await decrypt_row(env, row.get("data"))
+            note = (rec or {}).get("note") or {}
+            posts.append({
+                "id": row.get("object_uuid"),
+                "content": note.get("content") or "",  # our own safe HTML
+                "url": note.get("url") or "",
+                "published": int(row.get("published") or 0),
+            })
+        return json_response({"ok": True, "posts": posts})
+    if action != "delete":
+        return json_response({"error": "bad_action"}, status=400)
+    object_uuid = clean_string(data.get("id", ""), 64).strip()
+    if not object_uuid:
+        return json_response({"error": "missing_id"}, status=400)
+    # Only delete a post the repo actor actually authored: the actor_bi filter
+    # stops one owner's token from reaching another actor's objects.
+    row = await d1_first(
+        env,
+        "SELECT object_uuid FROM ap_objects WHERE object_uuid=? AND actor_bi=?",
+        object_uuid, actor_bi)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    # Drop the local object first: even with federation disabled or zero
+    # followers the owner's intent (remove the post) is honored — /ap/o/<uuid>
+    # starts 404ing and it vanishes from the repo's fediverse profile feed.
+    await d1_run(env, "DELETE FROM ap_objects WHERE object_uuid=?", object_uuid)
+    origin = _ap_origin(env, request)
+    object_url = origin + "/ap/o/" + object_uuid
+    # Drop the edge-parked Note (max-age 300) so the object 404s immediately
+    # rather than lingering a cache TTL after the owner deleted it.
+    await edge_cache_delete(object_url)
+    actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, handle)
+    now = int(Date.now())
+    queued = False
+    if await _ap_enabled(env):
+        followers = await d1_all(
+            env,
+            "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
+            actor_bi)
+        body_str = json.dumps(ap.delete_activity(
+            actor_url, object_url, actor_url + "/followers", now))
+        out_data = await encrypt_row(env, {
+            "body": body_str, "actorKind": AP_ACTOR_REPO,
+            "actorHandle": handle, "actorUrl": actor_url})
+        seen = set()
+        for follower in followers or []:
+            inbox = ((follower.get("shared_inbox") or "").strip()
+                     or (follower.get("inbox") or "").strip())
+            if not inbox or inbox in seen:
+                continue
+            seen.add(inbox)
+            await d1_run(
+                env,
+                "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
+                " created_at) VALUES (?,?,0,?,?)",
+                inbox, out_data, now, now)
+            queued = True
+        if queued:
+            await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
+    return json_response({"ok": True, "deleted": object_uuid,
+                          "federated": queued})
+
+
 # --- Admin: fediverse configuration ------------------------------------------
 # Same signed-admin gate as the relay allowlist: the admin proves control of
 # their node key and carries is_admin. GET returns the switch + blocklist +
@@ -18583,6 +18693,14 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await ap_publish_handler(self.env, request, owner, repo)
+
+        ap_posts_match = REPO_AP_POSTS_RE.match(url.path)
+        if ap_posts_match:
+            owner = safe_segment(ap_posts_match.group(1))
+            repo = safe_segment(ap_posts_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await ap_posts_handler(self.env, request, owner, repo)
 
         repo_media_match = REPO_MEDIA_RE.match(url.path)
         if repo_media_match:
