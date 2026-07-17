@@ -510,6 +510,96 @@ def release_blob_mirror_candidates(owner, repo, rows, presence, now, stale_ms):
     return ordered
 
 
+# --- Peer mirror requests (issue #385) --------------------------------------
+# A repo owner can ask another node to mirror their repo ("ask node to mirror
+# your repo"): the target gets a notification and, if its holder accepts, its
+# node starts mirroring. The request lifecycle (pending -> accepted/rejected)
+# is parked as a small bounded list on the TARGET account record (the same
+# heartbeat-delivered-marker pattern as claim_pending / ownership_transfer),
+# and accepted requests ride back on that node's signed heartbeat so the
+# desktop node clones the repo. These helpers are pure list/dict manipulation
+# (no I/O), unit-testable like the mirror-grouping functions above; entry.py
+# imports them and persists the list inside the encrypted account blob.
+MAX_MIRROR_REQUESTS = 50
+MIRROR_REQUEST_STATUSES = ("pending", "accepted", "rejected")
+
+
+def mirror_request_id(owner, repo, target):
+    # Stable id so re-asking the same node to mirror the same repo updates the
+    # one pending request instead of piling up duplicates.
+    owner_l = str(owner or "").strip().lower()
+    repo_l = str(repo or "").strip().lower()
+    target_l = str(target or "").strip().lower()
+    return owner_l + "/" + repo_l + "@" + target_l
+
+
+def add_mirror_request(requests, entry):
+    # Insert (or replace, by id) a request into the bounded, newest-first list.
+    # Returns a new list; the caller assigns it back onto the account record.
+    entry_id = str((entry or {}).get("id") or "").strip()
+    if not entry_id:
+        return list(requests or [])
+    kept = [r for r in (requests or []) if str((r or {}).get("id") or "") != entry_id]
+    kept.insert(0, dict(entry))
+    return kept[:MAX_MIRROR_REQUESTS]
+
+
+def find_mirror_request(requests, entry_id):
+    entry_id = str(entry_id or "").strip()
+    for r in requests or []:
+        if str((r or {}).get("id") or "") == entry_id:
+            return r
+    return None
+
+
+def set_mirror_request_status(requests, entry_id, status, ts=0):
+    # Mutate the matching request's status in place (pending -> accepted/rejected).
+    # Returns (new_list, updated_entry_or_None).
+    entry_id = str(entry_id or "").strip()
+    status = status if status in MIRROR_REQUEST_STATUSES else "pending"
+    out = []
+    updated = None
+    for r in requests or []:
+        rec = dict(r or {})
+        if str(rec.get("id") or "") == entry_id:
+            rec["status"] = status
+            if ts:
+                rec["resolvedAt"] = int(ts)
+            updated = rec
+        out.append(rec)
+    return out, updated
+
+
+def accepted_mirror_requests(requests):
+    # The accepted-and-not-yet-acknowledged repos this node should mirror, as the
+    # minimal {id, owner, repo} the heartbeat reply carries to the desktop node.
+    out = []
+    for r in requests or []:
+        rec = r or {}
+        if str(rec.get("status") or "") != "accepted":
+            continue
+        owner = str(rec.get("owner") or "").strip()
+        repo = str(rec.get("repo") or "").strip()
+        entry_id = str(rec.get("id") or "").strip()
+        if not owner or not repo or not entry_id:
+            continue
+        out.append({"id": entry_id, "owner": owner, "repo": repo})
+    return out
+
+
+def ack_mirror_requests(requests, ids):
+    # Drop the accepted requests the node has confirmed it acted on (it reports
+    # their ids in its next signed heartbeat), so they stop being redelivered.
+    ack = {str(i or "").strip() for i in (ids or []) if str(i or "").strip()}
+    if not ack:
+        return list(requests or [])
+    return [
+        r for r in (requests or [])
+        if not (str((r or {}).get("id") or "") in ack
+                and str((r or {}).get("status") or "") == "accepted")
+    ]
+
+
 # How many recent owner-attested state pins are kept (and accepted) per repo.
 # The window is the availability/rollback trade: a mirror may lag the source by
 # up to this many publishes and still clone, while a rollback older than the

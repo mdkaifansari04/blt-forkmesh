@@ -965,7 +965,11 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
         ensureActivity(); // a tool came back; the agent keeps going
     } else if (type == QLatin1String("rate_limit_event")) {
         const QJsonObject info = ev.value(QStringLiteral("rate_limit_info")).toObject();
-        const int pct = qRound(info.value(QStringLiteral("utilization")).toDouble() * 100);
+        // utilization arrives either as a 0..1 fraction or an already-scaled
+        // 0..100 percentage depending on the CLI build; scale a fraction but pass
+        // a percentage through so the gauge isn't 100x too high (adhoc #47).
+        const double u = info.value(QStringLiteral("utilization")).toDouble();
+        const int pct = qRound(u <= 1.0 ? u * 100.0 : u);
         const QString rlt = info.value(QStringLiteral("rateLimitType")).toString();
         const bool weekly = rlt.contains(QStringLiteral("seven"))
                             || rlt.contains(QStringLiteral("week"));

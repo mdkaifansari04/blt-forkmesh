@@ -2627,11 +2627,16 @@ void MainWindow::renderIssueThread(const Issue &issue)
     }
     cancelIssueSidebarEditors();
 
-    // Pre-compute edits (target -> latest edit) and deletions.
+    // Pre-compute edits (target -> latest edit), deletions, and the opening
+    // event id (so an edit targeting it reads as "the description" rather than
+    // "a comment").
     QHash<QString, IssueEvent> edits;
     QSet<QString> deleted;
+    QString openId;
     for (const IssueEvent &ev : issue.events) {
-        if (ev.type == "edit" && !ev.target.isEmpty())
+        if (ev.type == "open")
+            openId = ev.id;
+        else if (ev.type == "edit" && !ev.target.isEmpty())
             edits.insert(ev.target, ev); // later edits overwrite
         else if (ev.type == "delete" && !ev.target.isEmpty() && ev.target != "self")
             deleted.insert(ev.target);
@@ -2807,12 +2812,25 @@ void MainWindow::renderIssueThread(const Issue &issue)
             auto *save = new QPushButton("Save", bodyContainer);
             save->setObjectName("primaryButton");
             save->setCursor(Qt::PointingHandCursor);
-            save->style()->unpolish(save);
-            save->style()->polish(save);
             buttonRow->addStretch();
             buttonRow->addWidget(cancel);
             buttonRow->addWidget(save);
             bodyLayout->addLayout(buttonRow);
+            // Repolishing right after construction can race Qt's own first-show
+            // polish for a widget that was just parented and isn't under layout
+            // management yet, leaving the primaryButton fill/text unpainted
+            // (border-only). Defer it a tick so it runs after the button is
+            // actually part of the shown layout; QPointer guards against the
+            // editor being torn down (Cancel/Save swap the body back out) before
+            // the deferred call fires.
+            QPointer<QPushButton> saveGuard(save);
+            QTimer::singleShot(0, this, [saveGuard]() {
+                if (!saveGuard)
+                    return;
+                saveGuard->style()->unpolish(saveGuard);
+                saveGuard->style()->polish(saveGuard);
+                saveGuard->update();
+            });
             connect(cancel, &QPushButton::clicked, this, [this, num]() { showIssue(num); });
             connect(save, &QPushButton::clicked, this,
                     [this, num, eid, eventAttachments, editor]() {
@@ -2993,7 +3011,38 @@ void MainWindow::renderIssueThread(const Issue &issue)
                     text += QStringLiteral(" (%1)").arg(agentStatusText(ev.agentStatus));
             }
             addActivity(text, ev.ts, who);
-        }
+        } else if (ev.type == "title")
+            addActivity(ev.title.isEmpty()
+                            ? QStringLiteral("cleared the title")
+                            : QStringLiteral("changed the title to \"%1\"").arg(ev.title),
+                        ev.ts, who);
+        else if (ev.type == "progress")
+            addActivity(QStringLiteral("set progress to %1%").arg(ev.progress), ev.ts, who);
+        else if (ev.type == "dates")
+            addActivity(QStringLiteral("updated the schedule dates"), ev.ts, who);
+        else if (ev.type == "bounty")
+            addActivity(ev.bountyUsd > 0
+                            ? QStringLiteral("set a $%1 bounty%2")
+                                  .arg(QString::number(ev.bountyUsd),
+                                       ev.bountyStatus.isEmpty()
+                                           ? QString()
+                                           : QStringLiteral(" (%1)").arg(ev.bountyStatus))
+                            : QStringLiteral("cleared the bounty"),
+                        ev.ts, who);
+        else if (ev.type == "edit")
+            addActivity(ev.target == openId ? QStringLiteral("edited the description")
+                                            : QStringLiteral("edited a comment"),
+                        ev.ts, who);
+        else if (ev.type == "delete")
+            addActivity(ev.target == "self" ? QStringLiteral("deleted this issue")
+                                            : QStringLiteral("deleted a comment"),
+                        ev.ts, who);
+        else if (ev.type == "vote")
+            addActivity(QStringLiteral("voted on this issue"), ev.ts, who);
+        else if (!ev.type.isEmpty())
+            // Surface unknown/future action types rather than silently dropping
+            // them, so the timeline shows every action stored in the issue JSON.
+            addActivity(QStringLiteral("recorded a %1 action").arg(ev.type), ev.ts, who);
     }
     m_issueThreadLayout->addStretch();
 }
@@ -7476,6 +7525,27 @@ QWidget *MainWindow::buildChatSection()
     connect(firewallDismiss, &QPushButton::clicked, m_firewallBanner,
             &QWidget::hide);
 
+    // Unread banner: a thin clickable strip above the transcript that appears
+    // whenever other conversations hold unread messages. Its arrow marks every
+    // conversation read at once and jumps to the newest messages, so the badge
+    // can be cleared without visiting each channel and DM by hand.
+    m_chatUnreadBanner = new QWidget;
+    m_chatUnreadBanner->setObjectName("chatUnreadBanner");
+    m_chatUnreadBannerLabel = new QLabel;
+    auto *unreadReadButton = new QPushButton(QStringLiteral("Mark all read"));
+    unreadReadButton->setObjectName("chatUnreadBannerButton");
+    unreadReadButton->setCursor(Qt::PointingHandCursor);
+    unreadReadButton->setToolTip(
+        QStringLiteral("Mark every conversation read and jump to the newest messages"));
+    setOcticon(unreadReadButton, "chevron-up", 16);
+    auto *unreadLayout = new QHBoxLayout(m_chatUnreadBanner);
+    unreadLayout->setContentsMargins(18, 6, 12, 6);
+    unreadLayout->setSpacing(10);
+    unreadLayout->addWidget(m_chatUnreadBannerLabel, 1);
+    unreadLayout->addWidget(unreadReadButton);
+    m_chatUnreadBanner->hide();
+    connect(unreadReadButton, &QPushButton::clicked, this, &MainWindow::markAllChatRead);
+
     // Scrollable column of message-row widgets (supports avatars, inline
     // images, animated GIFs, file chips, and reaction bars).
     m_messageScroll = new QScrollArea;
@@ -7599,6 +7669,7 @@ QWidget *MainWindow::buildChatSection()
     mainColumn->setSpacing(0);
     mainColumn->addWidget(header);
     mainColumn->addWidget(m_firewallBanner);
+    mainColumn->addWidget(m_chatUnreadBanner);
     mainColumn->addWidget(m_messageScroll, 1);
     mainColumn->addWidget(m_typingLabel);
     mainColumn->addWidget(composer);

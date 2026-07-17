@@ -5421,6 +5421,8 @@
     const labels = labelsList.join(", ");
     return {
       number,
+      events,
+      creator,
       title: issue.title || open.title || `issue #${number}`,
       status,
       deleted,
@@ -5478,7 +5480,118 @@
         createdAt: issue.createdAtMs,
       },
       body: issue.body,
+      // Every signed event on the issue (comment, status, labels, milestone,
+      // assignees, agent, title, dates, progress, bounty, edit, delete, vote)
+      // so the detail view can render the full activity timeline, not just the
+      // opening comment.
+      issueEvents: issue.events,
     };
+  }
+
+  // Icon + human-readable description for a non-comment issue event, mirroring
+  // the desktop timeline (MainWindowIssues.cpp addActivity). The default branch
+  // still surfaces unknown/future event types so the detail view shows every
+  // action the JSON carries rather than silently dropping it.
+  function issueEventIcon(type) {
+    return ({
+      status: "circle-dot",
+      labels: "tag",
+      milestone: "milestone",
+      priority: "flag",
+      assignees: "user-plus",
+      agent: "bot",
+      title: "pencil",
+      progress: "gauge",
+      dates: "calendar",
+      bounty: "coins",
+      edit: "pencil",
+      delete: "trash-2",
+      vote: "thumbs-up",
+    })[type] || "activity";
+  }
+
+  function issueEventDescription(ev) {
+    switch (ev.type) {
+      case "status":
+        return ev.status === "closed" ? "closed this issue" : "reopened this issue";
+      case "labels":
+        return Array.isArray(ev.labels) && ev.labels.length
+          ? `set labels: ${ev.labels.join(", ")}` : "cleared the labels";
+      case "milestone":
+        return ev.milestone ? `set milestone: ${ev.milestone}` : "cleared the milestone";
+      case "priority":
+        return Number(ev.priority) > 0 ? `set priority: ${Number(ev.priority)}` : "cleared the priority";
+      case "assignees":
+        return Array.isArray(ev.assignees) && ev.assignees.length
+          ? `set assignees: ${ev.assignees.join(", ")}` : "cleared the assignees";
+      case "title":
+        return ev.title ? `changed the title to "${ev.title}"` : "cleared the title";
+      case "progress":
+        return `set progress to ${Number(ev.progress) || 0}%`;
+      case "dates":
+        return "updated the schedule dates";
+      case "bounty":
+        return Number(ev.bountyUsd) > 0
+          ? `set a $${Number(ev.bountyUsd)} bounty${ev.bountyStatus ? ` (${ev.bountyStatus})` : ""}`
+          : "cleared the bounty";
+      case "agent": {
+        const sid = Number(ev.agentSessionId) || 0;
+        if (sid <= 0 || ev.agentStatus === "cleared") return "cleared the agent assignment";
+        let text = `assigned ${ev.agentProvider || "an"} agent session #${sid}`;
+        if (ev.agentCreatePr) text += " with PR creation requested";
+        if (ev.agentStatus) text += ` (${ev.agentStatus})`;
+        return text;
+      }
+      case "edit":
+        return ev.target ? "edited a comment" : "edited the description";
+      case "delete":
+        return ev.target === "self" ? "deleted this issue" : "deleted a comment";
+      case "vote":
+        return "voted on this issue";
+      default:
+        return ev.type ? `recorded a ${ev.type} action` : "recorded an action";
+    }
+  }
+
+  // Full issue activity timeline: comment events render as bodied cards and
+  // every other event as an activity line, in chronological order, so the
+  // detail view shows every action stored in the issue JSON (adhoc #45). The
+  // opening event is omitted here since it's already shown as the issue body.
+  function renderIssueTimeline(events) {
+    const rows = (Array.isArray(events) ? events : [])
+      .filter(Boolean)
+      .slice()
+      .sort((a, b) => (Number(a.ts) || 0) - (Number(b.ts) || 0));
+    const deletedComments = new Set(
+      rows.filter((ev) => ev.type === "delete" && ev.target && ev.target !== "self")
+        .map((ev) => ev.target));
+    const items = [];
+    for (const ev of rows) {
+      if (ev.type === "open") continue;
+      const who = ev.authorName || ev.author || "unknown";
+      const when = formatRecordDate(ev.ts);
+      if (ev.type === "comment") {
+        if (deletedComments.has(ev.id)) continue;
+        const body = String(ev.body || "").trim();
+        items.push(`
+          <div class="border-t border-border px-4 py-3 text-sm first:border-t-0">
+            <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span class="font-medium text-foreground">${escapeHtml(who)}</span>
+              <span>commented</span><span>&middot;</span><span>${escapeHtml(when)}</span>
+            </div>
+            ${body ? `<div class="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">${escapeHtml(body)}</div>` : ""}
+          </div>`);
+        continue;
+      }
+      items.push(`
+        <div class="flex flex-wrap items-center gap-1.5 border-t border-border px-4 py-2.5 text-xs text-muted-foreground first:border-t-0">
+          <i data-lucide="${issueEventIcon(ev.type)}" class="h-3.5 w-3.5 text-primary"></i>
+          <span class="font-medium text-foreground">${escapeHtml(who)}</span>
+          <span>${escapeHtml(issueEventDescription(ev))}</span>
+          <span>&middot;</span><span>${escapeHtml(when)}</span>
+        </div>`);
+    }
+    return items.join("");
   }
 
   function projectJsonPath(number) {
@@ -6299,6 +6412,10 @@
     const metadata = recordDetailMeta(kind, values);
     const pendingNotice = options.pending ? `
         <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
+    const issueTimeline = (!isPulls && !isDiscussions) ? renderIssueTimeline(parsed.issueEvents) : "";
+    const issueTimelineSection = issueTimeline
+      ? `<div data-repo-issue-timeline class="border-t border-border">${issueTimeline}</div>`
+      : "";
     const pullPatch = parsed.pullPatch || { patch: "", files: [], unavailable: false };
     const pullConversation = parsed.pullConversation || [];
     const pullConversationSection = isPulls ? `
@@ -6369,6 +6486,7 @@
                   <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Contributor</span>
                 </div>
                 <div data-repo-record-body class="whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-foreground">${escapeHtml(body)}</div>
+                ${issueTimelineSection}
                 ${pullConversationSection}
               </section>`}
             ${pullFilesSection}
@@ -7269,6 +7387,111 @@
       throw new Error(body?.error || "about_update_failed");
     }
     return body;
+  }
+
+  // --- Manage federated posts (issue #426) ---------------------------------
+  //
+  // The owner-only "Fediverse posts" dropdown in the About rail lists the
+  // repo actor's posts and lets the owner delete one. A delete makes the relay
+  // broadcast a Delete(Tombstone) to every follower's server, so the post also
+  // disappears from Mastodon — not just the repo's own profile feed. The
+  // backend re-checks ownership from the session token, so this is only the
+  // client surface (same session-auth shape as saveRepoAboutFromWeb).
+
+  async function fetchRepoFediPosts(repo) {
+    const response = await fetch(`${repoApiBase(repo)}/ap-posts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ownerAccount: state.session?.nodeName || "",
+        sessionToken: state.session?.sessionToken || "",
+        action: "list",
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body?.ok === false) {
+      throw new Error(body?.error || "fedi_posts_failed");
+    }
+    return Array.isArray(body.posts) ? body.posts : [];
+  }
+
+  async function deleteRepoFediPost(repo, id) {
+    const response = await fetch(`${repoApiBase(repo)}/ap-posts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ownerAccount: state.session?.nodeName || "",
+        sessionToken: state.session?.sessionToken || "",
+        action: "delete",
+        id,
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body?.ok === false) {
+      throw new Error(body?.error || "fedi_post_delete_failed");
+    }
+    return body;
+  }
+
+  function renderRepoFediPosts(posts) {
+    const list = $("[data-repo-fedi-posts-list]");
+    if (!list) return;
+    if (!posts.length) {
+      list.innerHTML = `<p class="text-[11px] text-muted-foreground">No federated posts yet — new issues, pull requests, discussions and releases will appear here.</p>`;
+      return;
+    }
+    list.innerHTML = posts.map((post) => {
+      const id = escapeHtml(String(post.id || ""));
+      const when = relativeTimeLabel(Number(post.published || 0));
+      // Strip our own generated HTML down to a plain-text preview.
+      const preview = String(post.content || "")
+        .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      const text = escapeHtml(preview.slice(0, 140) || "(no text)");
+      const link = String(post.url || "");
+      const view = /^https?:\/\//i.test(link)
+        ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link hover:underline">View</a>`
+        : "";
+      return `<div data-repo-fedi-post class="grid gap-1 rounded-md border border-border p-2">
+        <p class="text-[11px] leading-4 text-foreground">${text}</p>
+        <div class="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+          <span>${escapeHtml(when)}</span>
+          <span class="inline-flex items-center gap-2">${view}<button type="button" data-repo-fedi-post-delete="${id}" class="inline-flex items-center gap-1 rounded-md border border-destructive/40 px-2 py-0.5 font-medium text-destructive hover:bg-destructive/10"><i data-lucide="trash-2" class="h-3 w-3"></i>Delete</button></span>
+        </div>
+      </div>`;
+    }).join("");
+    window.lucide?.createIcons();
+  }
+
+  async function loadRepoFediPosts(repo) {
+    const list = $("[data-repo-fedi-posts-list]");
+    if (!list) return;
+    list.innerHTML = `<p class="text-[11px] text-muted-foreground">Loading…</p>`;
+    try {
+      const posts = await fetchRepoFediPosts(repo);
+      if (!repoAboutStillCurrent(repo)) return;
+      renderRepoFediPosts(posts);
+    } catch (_) {
+      list.innerHTML = `<p class="text-[11px] text-destructive">Couldn't load federated posts.</p>`;
+    }
+  }
+
+  async function removeRepoFediPost(repo, id, trigger) {
+    if (!id) return;
+    if (!window.confirm("Delete this post? It will be removed from your Mastodon followers' timelines.")) return;
+    if (trigger) trigger.disabled = true;
+    try {
+      await deleteRepoFediPost(repo, id);
+      // Drop the row in place; the follower count/profile feed catch up on
+      // the next reload.
+      trigger?.closest("[data-repo-fedi-post]")?.remove();
+      const list = $("[data-repo-fedi-posts-list]");
+      if (list && !list.querySelector("[data-repo-fedi-post]")) {
+        renderRepoFediPosts([]);
+      }
+    } catch (_) {
+      if (trigger) trigger.disabled = false;
+      window.alert("Couldn't delete that post. Please try again.");
+    }
   }
 
   // --- About rail: fediverse badge + desktop-parity sections ---------------
@@ -8817,6 +9040,8 @@
 
   async function loadRepoMirrors(repo) {
     const container = $("[data-repo-mirrors]");
+    // Owner-only "ask a node to mirror your repo" control (issue #385).
+    renderMirrorRequestForm(repo);
     if (container) container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading mirrors...")}</div>`;
     try {
       const data = await fetchJson(`${repoApiBase(repo)}/mirrors`);
@@ -9598,7 +9823,7 @@
             ${renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))}
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
-            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-repo-mirrors></div></div></section>
+            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a notification; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
           </div>
           <aside data-repo-about data-repo-about-rail class="min-w-0 rounded-lg border border-border bg-background p-4">
@@ -9656,6 +9881,12 @@
               <a href="${escapeHtml(readmeHref)}" data-repo-readme-link data-repo-readme-path="${escapeHtml(readmePath)}" class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="book-open" class="h-3.5 w-3.5"></i><span>Readme</span></a>
               <a href="${escapeHtml(`${repoPathUrl(repo)}/insights`)}" data-repo-activity-link class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="activity" class="h-3.5 w-3.5"></i><span>Activity</span></a>
             </div>
+            ${canEditAbout && !repo.isPrivate ? `
+            <details data-repo-fedi-posts class="mt-5 border-t border-border pt-4">
+              <summary class="flex cursor-pointer list-none items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><span class="inline-flex items-center gap-1.5"><i data-lucide="megaphone" class="h-3.5 w-3.5"></i>Fediverse posts</span><i data-lucide="chevron-down" class="h-3.5 w-3.5 shrink-0 transition-transform"></i></summary>
+              <p class="mt-2 text-[11px] leading-4 text-muted-foreground">Posts this repository published to its Mastodon followers. Deleting one sends a removal to every follower's server so it disappears from their timelines.</p>
+              <div data-repo-fedi-posts-list class="mt-2 grid gap-2"></div>
+            </details>` : ""}
             <div data-repo-about-release class="mt-5 hidden border-t border-border pt-4">
               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Latest release</h4>
               <div data-repo-about-release-body class="mt-2 text-xs text-muted-foreground"></div>
@@ -9964,6 +10195,7 @@
       host_online: "wifi",
       host_offline: "wifi-off",
       pending_inbox: "inbox",
+      mirror_request: "radio",
     })[kind] || "bell";
   }
 
@@ -10025,9 +10257,125 @@
         </div>
       </div>
       <p class="mt-5 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">${escapeHtml(item.body || "ForkMesh notification")}</p>
+      ${mirrorRequestActionsHtml(item)}
       ${item.href ? `<a href="${escapeHtml(item.href)}" class="mt-5 inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Open context</a>` : ""}
     `;
     window.lucide?.createIcons();
+  }
+
+  // Accept/Reject controls on an incoming "someone asked your node to mirror
+  // their repo" notification (issue #385). Only the still-pending request the
+  // recipient can act on gets buttons; replies ("X accepted…") carry none.
+  function mirrorRequestActionsHtml(item) {
+    if (!item || item.kind !== "mirror_request") return "";
+    const meta = item.meta && typeof item.meta === "object" ? item.meta : {};
+    if (String(meta.state || "") !== "pending") return "";
+    const id = String(meta.requestId || "");
+    if (!id) return "";
+    const enc = escapeHtml(id);
+    return `
+      <div data-mirror-request-actions="${enc}" class="mt-5 flex items-center gap-2">
+        <button type="button" data-mirror-request-accept="${enc}" class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors">Accept &amp; mirror</button>
+        <button type="button" data-mirror-request-reject="${enc}" class="inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Decline</button>
+        <span data-mirror-request-hint class="text-[11px] text-muted-foreground"></span>
+      </div>
+    `;
+  }
+
+  async function resolveMirrorRequest(id, action, trigger) {
+    const node = state.session?.nodeName || "";
+    if (!node || !id) return;
+    const container = trigger?.closest("[data-mirror-request-actions]");
+    const hint = container?.querySelector("[data-mirror-request-hint]");
+    container?.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    if (hint) hint.textContent = action === "accept" ? "Accepting…" : "Declining…";
+    try {
+      const res = await fetch("/api/mirror-requests", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          node, action, requestId: id,
+          sessionToken: state.session?.sessionToken || "",
+        }),
+      });
+      if (!res.ok) throw new Error("request failed");
+      if (hint) hint.textContent = action === "accept"
+        ? "Accepted — your node will start mirroring it shortly."
+        : "Declined.";
+      if (container) container.querySelectorAll("button").forEach((b) => b.remove());
+      await loadNotifications();
+    } catch (_) {
+      if (hint) hint.textContent = "Could not update the request. Try again.";
+      container?.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+    }
+  }
+
+  // "Ask a node to mirror your repo" (issue #385): the owner types a node name;
+  // that node's holder gets a notification and, if they accept, their node
+  // starts mirroring this repo. Only shown to the repo owner (see
+  // renderMirrorRequestForm) — the worker re-checks ownership from the session.
+  async function askNodeToMirror(trigger) {
+    const repo = state.selectedRepo;
+    if (!repo || !isRepoOwner(repo)) return;
+    const wrap = trigger.closest("[data-mirror-request]") || document;
+    const input = wrap.querySelector("[data-mirror-request-target]");
+    const hint = wrap.querySelector("[data-mirror-request-hint]");
+    const setHint = (text, tone) => {
+      if (!hint) return;
+      hint.className = `mt-1.5 text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      hint.textContent = text;
+    };
+    const target = String(input?.value || "").trim().toLowerCase();
+    if (!target) {
+      setHint("Enter the node name to ask.", "bad");
+      input?.focus();
+      return;
+    }
+    if (target === String(repo.owner || "").trim().toLowerCase()) {
+      setHint("That's this repo's own node.", "bad");
+      return;
+    }
+    trigger.disabled = true;
+    setHint("Sending request…");
+    try {
+      const res = await fetch("/api/mirror-requests", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          node: state.session?.nodeName || "",
+          action: "create",
+          target,
+          owner: String(repo.owner || ""),
+          repo: String(repo.name || ""),
+          sessionToken: state.session?.sessionToken || "",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) {
+        const reason = {
+          target_not_found: "No node by that name.",
+          repo_not_found: "This repo isn't published yet.",
+          private_repo: "Only public repos can be mirrored this way.",
+          forbidden: "You can only ask others to mirror your own repos.",
+          self_target: "That's this repo's own node.",
+        }[String(body.error || "")] || "Could not send the request.";
+        setHint(reason, "bad");
+        trigger.disabled = false;
+        return;
+      }
+      if (input) input.value = "";
+      setHint(`Asked ${target} to mirror this repo.`, "good");
+    } catch (_) {
+      setHint("Could not send the request. Try again.", "bad");
+    } finally {
+      trigger.disabled = false;
+    }
+  }
+
+  function renderMirrorRequestForm(repo) {
+    const form = $("[data-mirror-request]");
+    if (!form) return;
+    form.hidden = !isRepoOwner(repo);
   }
 
   function renderNotificationModal() {
@@ -10484,6 +10832,25 @@
       return;
     }
 
+    const mirrorAccept = event.target.closest("[data-mirror-request-accept]");
+    if (mirrorAccept) {
+      event.stopPropagation();
+      await resolveMirrorRequest(mirrorAccept.dataset.mirrorRequestAccept || "", "accept", mirrorAccept);
+      return;
+    }
+    const mirrorReject = event.target.closest("[data-mirror-request-reject]");
+    if (mirrorReject) {
+      event.stopPropagation();
+      await resolveMirrorRequest(mirrorReject.dataset.mirrorRequestReject || "", "reject", mirrorReject);
+      return;
+    }
+    const mirrorAsk = event.target.closest("[data-mirror-request-send]");
+    if (mirrorAsk) {
+      event.stopPropagation();
+      await askNodeToMirror(mirrorAsk);
+      return;
+    }
+
     const notificationOpen = event.target.closest("[data-notification-open]");
     if (notificationOpen) {
       await openNotification(notificationOpen.dataset.notificationOpen || "", Boolean(event.target.closest("#notificationModal")));
@@ -10754,6 +11121,26 @@
       if (event.target.closest("[data-repo-about-cancel]")) {
         setRepoAboutStatus("");
         setRepoAboutEditing(false);
+        return;
+      }
+
+      // Owner "Fediverse posts" dropdown: load the post list the moment it's
+      // expanded (setTimeout so the <details> default toggle has applied), and
+      // delete a post from its trash button.
+      const fediPostsSummary = event.target.closest("[data-repo-fedi-posts] > summary");
+      if (fediPostsSummary && state.selectedRepo) {
+        const repo = state.selectedRepo;
+        const details = fediPostsSummary.parentElement;
+        setTimeout(() => { if (details.open) loadRepoFediPosts(repo); }, 0);
+        return;
+      }
+
+      const fediPostDelete = event.target.closest("[data-repo-fedi-post-delete]");
+      if (fediPostDelete && state.selectedRepo) {
+        removeRepoFediPost(
+          state.selectedRepo,
+          fediPostDelete.getAttribute("data-repo-fedi-post-delete"),
+          fediPostDelete);
         return;
       }
 

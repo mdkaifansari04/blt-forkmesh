@@ -2279,11 +2279,17 @@ void MainWindow::refreshClaudeCodeUsage()
         }
         m_pollBackoff.noteSuccess(QStringLiteral("claude-usage"));
         const QJsonObject root = QJsonDocument::fromJson(body).object();
+        // This endpoint has shipped utilization in two shapes — a 0..1 fraction
+        // (0.42) and an already-scaled 0..100 percentage (42.0). Multiplying a
+        // percentage by 100 pinned every gauge at its clamp, so the figures read
+        // as maxed even when barely used (adhoc #47). Treat anything <= 1 as a
+        // fraction and pass a percentage straight through so both are correct.
         auto pctOf = [&root](const QString &key) {
-            return qRound(root.value(key)
-                              .toObject()
-                              .value(QStringLiteral("utilization"))
-                              .toDouble() * 100.0);
+            const double u = root.value(key)
+                                 .toObject()
+                                 .value(QStringLiteral("utilization"))
+                                 .toDouble();
+            return qRound(u <= 1.0 ? u * 100.0 : u);
         };
         // resets_at is the wall-clock instant the window clears. Accept either an
         // ISO 8601 string or a numeric Unix timestamp (seconds), and tolerate the
