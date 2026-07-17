@@ -65,7 +65,22 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   final Map<String, List<ChatMessage>> _history = {};
   final Set<String> _seenIds = {};
   final Set<String> _seenNotificationIds = {};
-  final Set<String> unread = {};
+  // conversation -> number of unread (incoming) messages. Kept as counts, not a
+  // plain set, so the nav badge and the chat banner can show how many messages
+  // are waiting rather than just how many conversations have any.
+  final Map<String, int> _unread = {};
+
+  /// Conversations that currently hold at least one unread message.
+  Iterable<String> get unreadConversations => _unread.keys;
+
+  /// Whether [conversation] has messages the user has not read yet.
+  bool hasUnread(String conversation) => (_unread[conversation] ?? 0) > 0;
+
+  /// Unread message count for a single conversation.
+  int unreadCountFor(String conversation) => _unread[conversation] ?? 0;
+
+  /// Total unread messages across every conversation — the nav badge count.
+  int get totalUnread => _unread.values.fold(0, (sum, n) => sum + n);
 
   String get _nodeId => _identity.nodeId;
   String get _name => _settings.displayName.isEmpty
@@ -200,7 +215,7 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   List<ChatMessage> get unreadMessages => recentMessages
-      .where((m) => !m.self && unread.contains(m.conversation))
+      .where((m) => !m.self && _unread.containsKey(m.conversation))
       .toList();
 
   List<ChatMessage> get notificationMessages =>
@@ -468,7 +483,19 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
 
   void switchConversation(String conversation) {
     currentConversation = conversation;
-    unread.remove(conversation);
+    _unread.remove(conversation);
+    notifyListeners();
+  }
+
+  /// Mark a single conversation's messages as read (e.g. when it is opened).
+  void markConversationRead(String conversation) {
+    if (_unread.remove(conversation) != null) notifyListeners();
+  }
+
+  /// Mark every conversation as read, clearing the nav badge in one step.
+  void markAllRead() {
+    if (_unread.isEmpty) return;
+    _unread.clear();
     notifyListeners();
   }
 
@@ -570,7 +597,7 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
     final next = <ChatMessage>[...list, msg]..sort(_compareMessages);
     _history[msg.conversation] = List.unmodifiable(next);
     if (!msg.self && msg.conversation != currentConversation) {
-      unread.add(msg.conversation);
+      _unread[msg.conversation] = (_unread[msg.conversation] ?? 0) + 1;
     }
     return true;
   }
