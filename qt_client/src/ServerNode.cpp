@@ -1434,12 +1434,13 @@ void ServerNode::handlePlain(const QJsonObject &message)
     const QString sender = message.value("sender").toString();
     const QString nodeName = boundedText(message, "nodeName", kMaxDisplayNameChars);
     const QString ownerUser = boundedText(message, "ownerUser", kMaxDisplayNameChars);
+    const QString accountKind = message.value("accountKind").toString().left(16);
     const QString solanaAddress = boundedText(message, "solana", kMaxSolanaAddressChars);
     const QString platform = message.value("platform").toString().left(16);
     const QString version = boundedText(message, "version", kMaxVersionChars);
     if (!senderId.isEmpty())
-        rememberPeer(senderId, sender, nodeName, ownerUser, solanaAddress, platform,
-                     version);
+        rememberPeer(senderId, sender, nodeName, ownerUser, accountKind,
+                     solanaAddress, platform, version);
 
     // Host resource telemetry (CPU/RAM/disk) the sender advertised; refresh the
     // peer's cached figures so the Mirror nodes view's bars track live load.
@@ -1737,6 +1738,7 @@ void ServerNode::emitDm(const QJsonObject &message, const QString &conversationP
 
 void ServerNode::rememberPeer(const QString &peerId, const QString &name,
                               const QString &nodeName, const QString &ownerUser,
+                              const QString &accountKind,
                               const QString &solanaAddress,
                               const QString &platform,
                               const QString &version, bool online)
@@ -1749,6 +1751,8 @@ void ServerNode::rememberPeer(const QString &peerId, const QString &name,
         peer.nodeName = nodeName.trimmed().left(kMaxDisplayNameChars);
     if (!ownerUser.trimmed().isEmpty())
         peer.ownerUser = ownerUser.trimmed().left(kMaxDisplayNameChars);
+    if (!accountKind.trimmed().isEmpty())
+        peer.accountKind = accountKind.trimmed().left(16);
     if (!solanaAddress.trimmed().isEmpty())
         peer.solanaAddress = solanaAddress.trimmed().left(kMaxSolanaAddressChars);
     if (!platform.isEmpty())
@@ -1786,6 +1790,7 @@ void ServerNode::flushRosterAndStatus()
     self.name = m_userName;
     self.nodeName = m_nodeName.isEmpty() ? m_userName : m_nodeName;
     self.ownerUser = m_ownerUser;
+    self.accountKind = m_accountKind;
     self.self = true;
     self.online = m_wsReady;
     self.solanaAddress = m_solanaAddress;
@@ -1813,6 +1818,7 @@ void ServerNode::flushRosterAndStatus()
         member.name = it->name;
         member.nodeName = it->nodeName;
         member.ownerUser = it->ownerUser;
+        member.accountKind = it->accountKind;
         member.note = QString();
         member.online = it->online;
         member.solanaAddress = it->solanaAddress;
