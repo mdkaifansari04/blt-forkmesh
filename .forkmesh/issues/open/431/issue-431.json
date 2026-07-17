@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1784327691035,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+                "4ba50f90.png"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "![forkmesh-paste-oSfluh.png](4ba50f90.png)",
+            "id": "open-431",
+            "sig": "2N0mIJ_O3o1jt2aw4J71iqgZUSbQLacRYHnRcCFcRysh0Zs6OApi-_znliB5tnFqyaY6ObqMG6YZ-e5B2g2iCA",
+            "title": "fix the light / dark mode on the header and remove extra vertical info so the scrollbar is not needed",
+            "ts": 1784327691035,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 431,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "fix the light / dark mode on the header and remove extra vertical info so the scrollbar is not needed",
+    "updatedAt": 1784327691035,
+    "votes": 0
+}
