@@ -89,6 +89,9 @@ public:
                           const QString &coveName, const QString &openerKey,
                           const QString &openerName, qint64 ts,
                           const QString &signature) override;
+    void notifyCoveInvited(const QString &inviteeAccount, const QString &coveId,
+                           const QString &coveName, const QString &inviterName,
+                           qint64 ts) override;
     QList<QJsonObject> networkDiagnostics() const override;
     void shutdown() override;
     QString modeName() const override { return "Mainnode"; }
