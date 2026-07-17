@@ -4039,6 +4039,102 @@
     renderGlobalSearchResults();
   }
 
+  // New-repository flow (adhoc #30). Publishing a signed catalog record and
+  // running the git mirror both require the account's Ed25519 key, which lives
+  // on the desktop node — the browser only holds a separate web-issue identity.
+  // So this "Create & mirror" modal collects the repo details on the web, then
+  // hands off the concrete steps to complete it in the desktop node's Repos
+  // page, rather than pretending the pure-web path can publish.
+  function setNewRepoModalOpen(open) {
+    const modal = $("[data-new-repo-modal]");
+    if (!modal) return;
+    modal.classList.toggle("hidden", !open);
+    modal.classList.toggle("flex", open);
+    if (open) {
+      setNewRepoHint("");
+      $("[data-new-repo-steps]")?.classList.add("hidden");
+      window.setTimeout(() => $("[data-new-repo-name]")?.focus(), 0);
+      window.lucide?.createIcons();
+    }
+  }
+
+  function newRepoSource() {
+    return $('[data-new-repo-source][aria-pressed="true"]')?.dataset.newRepoSource || "remote";
+  }
+
+  function setNewRepoSource(source) {
+    $$("[data-new-repo-source]").forEach((btn) => {
+      const active = btn.dataset.newRepoSource === source;
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+      btn.classList.toggle("bg-secondary", active);
+      btn.classList.toggle("text-foreground", active);
+      btn.classList.toggle("text-muted-foreground", !active);
+    });
+    const value = $("[data-new-repo-source-value]");
+    const hint = $("[data-new-repo-source-hint]");
+    if (source === "local") {
+      if (value) value.placeholder = "/home/you/code/my-project";
+      if (hint) hint.textContent = "The desktop node reads this local repo directly — the path never leaves your machine.";
+    } else {
+      if (value) value.placeholder = "https://github.com/owner/repo.git";
+      if (hint) hint.textContent = "ForkMesh clones this URL into a bare mirror you then keep in sync.";
+    }
+  }
+
+  function setNewRepoHint(text, cls) {
+    const hint = $("[data-new-repo-hint]");
+    if (!hint) return;
+    hint.textContent = text || "";
+    hint.className = "min-h-4 text-xs " + (cls === "bad" ? "text-destructive" : cls === "good" ? "text-primary" : "text-muted-foreground");
+  }
+
+  function renderNewRepoSteps(details) {
+    const list = $("[data-new-repo-steps-list]");
+    const panel = $("[data-new-repo-steps]");
+    if (!list || !panel) return;
+    const sourceLabel = details.source === "local" ? "Local repository" : "Remote clone URL";
+    const pick = details.source === "local" ? "Select the local repository" : "Paste the clone URL";
+    const sourceValue = details.sourceValue
+      ? ` (<span class="font-mono text-foreground">${escapeHtml(details.sourceValue)}</span>)` : "";
+    const steps = [
+      `Open the ForkMesh desktop node and go to the <span class="text-foreground">Repos</span> page.`,
+      `Click <span class="text-foreground">+ Add</span>, then choose <span class="text-foreground">${sourceLabel}</span>.`,
+      `${pick}${sourceValue} and name it <span class="font-mono text-foreground">${escapeHtml(details.name)}</span>.`,
+      `Set visibility to <span class="text-foreground">${details.visibility === "private" ? "Private" : "Public"}</span>${details.description ? ` and add your description` : ""}.`,
+      `Publish — the node mirrors it and it appears here in your repositories.`,
+    ];
+    list.innerHTML = steps
+      .map((step, index) => `<li class="flex gap-2"><span class="shrink-0 font-mono text-foreground">${index + 1}.</span><span>${step}</span></li>`)
+      .join("");
+    panel.classList.remove("hidden");
+    window.lucide?.createIcons();
+  }
+
+  function handleNewRepoSubmit() {
+    const name = String($("[data-new-repo-name]")?.value || "").trim();
+    const source = newRepoSource();
+    const sourceValue = String($("[data-new-repo-source-value]")?.value || "").trim();
+    const visibility = $("[data-new-repo-visibility]")?.value === "private" ? "private" : "public";
+    const description = String($("[data-new-repo-description]")?.value || "").trim();
+    if (!name) {
+      setNewRepoHint("Enter a repository name.", "bad");
+      $("[data-new-repo-name]")?.focus();
+      return;
+    }
+    if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+      setNewRepoHint("Use letters, numbers, dots, dashes, or underscores in the name.", "bad");
+      $("[data-new-repo-name]")?.focus();
+      return;
+    }
+    if (!sourceValue) {
+      setNewRepoHint(source === "local" ? "Enter the local repository path." : "Enter a clone URL.", "bad");
+      $("[data-new-repo-source-value]")?.focus();
+      return;
+    }
+    setNewRepoHint("Ready — finish the create & mirror from your desktop node.", "good");
+    renderNewRepoSteps({ name, source, sourceValue, visibility, description });
+  }
+
   function setRepoTab(tab) {
     const detail = $(`[data-dashboard-repo-tab-panel="${tab}"]`)?.closest("[data-repo-detail]") || $("[data-repo-detail]");
     if (!detail) return;
@@ -10983,6 +11079,21 @@
     updateRepositoryPagination();
   });
 
+  // New-repository modal (adhoc #30): open from the Repos header, collect the
+  // create-and-mirror details, then hand off to the desktop node (see
+  // handleNewRepoSubmit — the signed publish + git mirror are desktop-only).
+  $("[data-new-repo-open]")?.addEventListener("click", () => setNewRepoModalOpen(true));
+  $("[data-new-repo-close]")?.addEventListener("click", () => setNewRepoModalOpen(false));
+  $("[data-new-repo-backdrop]")?.addEventListener("click", () => setNewRepoModalOpen(false));
+  $("[data-new-repo-cancel]")?.addEventListener("click", () => setNewRepoModalOpen(false));
+  $$("[data-new-repo-source]").forEach((btn) => {
+    btn.addEventListener("click", () => setNewRepoSource(btn.dataset.newRepoSource));
+  });
+  $("[data-new-repo-form]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    handleNewRepoSubmit();
+  });
+
   // [data-profile-settings-button] is a real link to /dashboard/settings now,
   // and [data-settings-section-link] clicks are handled by the delegated
   // document click handler above (with push: true for URL reflection).
@@ -11035,6 +11146,7 @@
 	      setNotificationDropdownOpen(false);
 	      setNotificationModalOpen(false);
 	      setAgentModalOpen(false);
+	      setNewRepoModalOpen(false);
 	      closeRepoBranchMenus();
 	      closeRepoFileFinder();
 	      closeGlobalSearch();
