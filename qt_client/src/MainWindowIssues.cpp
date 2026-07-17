@@ -2627,11 +2627,16 @@ void MainWindow::renderIssueThread(const Issue &issue)
     }
     cancelIssueSidebarEditors();
 
-    // Pre-compute edits (target -> latest edit) and deletions.
+    // Pre-compute edits (target -> latest edit), deletions, and the opening
+    // event id (so an edit targeting it reads as "the description" rather than
+    // "a comment").
     QHash<QString, IssueEvent> edits;
     QSet<QString> deleted;
+    QString openId;
     for (const IssueEvent &ev : issue.events) {
-        if (ev.type == "edit" && !ev.target.isEmpty())
+        if (ev.type == "open")
+            openId = ev.id;
+        else if (ev.type == "edit" && !ev.target.isEmpty())
             edits.insert(ev.target, ev); // later edits overwrite
         else if (ev.type == "delete" && !ev.target.isEmpty() && ev.target != "self")
             deleted.insert(ev.target);
@@ -2993,7 +2998,38 @@ void MainWindow::renderIssueThread(const Issue &issue)
                     text += QStringLiteral(" (%1)").arg(agentStatusText(ev.agentStatus));
             }
             addActivity(text, ev.ts, who);
-        }
+        } else if (ev.type == "title")
+            addActivity(ev.title.isEmpty()
+                            ? QStringLiteral("cleared the title")
+                            : QStringLiteral("changed the title to \"%1\"").arg(ev.title),
+                        ev.ts, who);
+        else if (ev.type == "progress")
+            addActivity(QStringLiteral("set progress to %1%").arg(ev.progress), ev.ts, who);
+        else if (ev.type == "dates")
+            addActivity(QStringLiteral("updated the schedule dates"), ev.ts, who);
+        else if (ev.type == "bounty")
+            addActivity(ev.bountyUsd > 0
+                            ? QStringLiteral("set a $%1 bounty%2")
+                                  .arg(QString::number(ev.bountyUsd),
+                                       ev.bountyStatus.isEmpty()
+                                           ? QString()
+                                           : QStringLiteral(" (%1)").arg(ev.bountyStatus))
+                            : QStringLiteral("cleared the bounty"),
+                        ev.ts, who);
+        else if (ev.type == "edit")
+            addActivity(ev.target == openId ? QStringLiteral("edited the description")
+                                            : QStringLiteral("edited a comment"),
+                        ev.ts, who);
+        else if (ev.type == "delete")
+            addActivity(ev.target == "self" ? QStringLiteral("deleted this issue")
+                                            : QStringLiteral("deleted a comment"),
+                        ev.ts, who);
+        else if (ev.type == "vote")
+            addActivity(QStringLiteral("voted on this issue"), ev.ts, who);
+        else if (!ev.type.isEmpty())
+            // Surface unknown/future action types rather than silently dropping
+            // them, so the timeline shows every action stored in the issue JSON.
+            addActivity(QStringLiteral("recorded a %1 action").arg(ev.type), ev.ts, who);
     }
     m_issueThreadLayout->addStretch();
 }
