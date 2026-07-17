@@ -188,6 +188,31 @@ void MainWindow::onCoveOpened(const QString &creatorKey, const QString &coveId,
                                 QSystemTrayIcon::Information, 6000);
 }
 
+void MainWindow::onCoveInvited(const QString &inviteeAccount, const QString &coveId,
+                               const QString &coveName, const QString &inviterName,
+                               qint64 ts)
+{
+    Q_UNUSED(coveId);
+    Q_UNUSED(ts);
+    const QString account = coveAccountName();
+    if (account.isEmpty() ||
+        inviteeAccount.compare(account, Qt::CaseInsensitive) != 0)
+        return; // this invite wasn't for us
+
+    const QString who =
+        inviterName.trimmed().isEmpty() ? QStringLiteral("Someone") : inviterName.trimmed();
+    const QString name =
+        coveName.trimmed().isEmpty() ? QStringLiteral("a cove") : coveName.trimmed();
+    const QString body =
+        QString::fromUtf8("%1 invited you to the cove \xE2\x80\x9C%2\xE2\x80\x9D.")
+            .arg(who, name);
+    logSystem(body);
+    addNotification(QStringLiteral("Cove invitation"), body);
+    if (coveAlertEnabled() && m_trayIcon && QSystemTrayIcon::supportsMessages())
+        m_trayIcon->showMessage(QStringLiteral("ForkMesh — cove invitation"), body,
+                                QSystemTrayIcon::Information, 6000);
+}
+
 // ---- Opening / viewing -----------------------------------------------------
 
 void MainWindow::openCove(const QString &relPath)
