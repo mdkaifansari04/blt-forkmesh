@@ -55,6 +55,17 @@
             "sig": "Kphd8eOqUKzLf7Lg0oB62eZE6NgfN70lCuRKeYhcAsq6Ag8S6fEozi62pYOf-W5oj6rCJZ_DHo14hkxnj8YeBw",
             "ts": 1784325727147,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-388-create-orgs-and-teams\".",
+            "id": "b3370243-1990-4765-b177-6b607d5092ee",
+            "sig": "yjHhGCg72wqn_qUxXcScZ-8r1hfW8jdBaonpgNaX2oYRgRxELctjLqv-qioPVhL0E4rsGfowbnht3cg-uoj-Dw",
+            "ts": 1784326868388,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -67,6 +78,6 @@
     "startDate": 0,
     "status": "open",
     "title": "create orgs and teams",
-    "updatedAt": 1784325727147,
+    "updatedAt": 1784326868388,
     "votes": 0
 }
