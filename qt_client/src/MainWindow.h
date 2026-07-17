@@ -1401,6 +1401,11 @@ private:
     void noteAgentActivity(int sessionId, int bytes = 0);
     void onScannerTick();
     void showAgentSession(int sessionId);
+    // Detail-header permission-mode selector (adhoc #26): sync the combo to the
+    // shown session (and hide it for providers without a mode), and apply a live
+    // change back onto the selected session.
+    void syncAgentModeSelector(const AgentSession &session);
+    void applySelectedAgentMode();
     // Populate the raw-log QPlainTextEdit (m_agentLog) only when the content
     // actually changed. setPlainText()+moveCursor(End) forces a full document
     // layout, which for a large transcript blocks the GUI thread for seconds
@@ -4359,6 +4364,12 @@ private:
     QLabel *m_agentStatusPill = nullptr; // connected/working/done status
     QLabel *m_agentMeta = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
+    // Permission-mode selector in the detail header (adhoc #26): change the
+    // selected agent's mode in place ("Ask before edits" / "Edit automatically"
+    // / "Plan mode" / "Auto mode"). Persists onto the session and, for a live
+    // Codex session, retargets the next turn so the switch takes effect without
+    // needing to retype the mode in the composer.
+    QComboBox *m_agentModeSelector = nullptr;
     QPushButton *m_agentViewPrButton = nullptr;
     // "Create linked issue" — shown for ad-hoc sessions with no issue yet, so the
     // run can be promoted to a tracked issue from the detail header (adhoc #189).

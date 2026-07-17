@@ -654,6 +654,30 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentStatusPill->setTextFormat(Qt::RichText);
     m_agentStatusPill->setAlignment(Qt::AlignCenter);
 
+    // Permission-mode selector (adhoc #26): change the open session's mode in
+    // place rather than only when a follow-up is sent from the composer. Mirrors
+    // the composer's mode selector items — the "Auto mode" data flag marks the
+    // unattended preset. Shown only for providers that carry a mode.
+    m_agentModeSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
+    m_agentModeSelector->setObjectName("quickAddModeSelector");
+    m_agentModeSelector->setCursor(Qt::PointingHandCursor);
+    m_agentModeSelector->setMinimumContentsLength(10);
+    m_agentModeSelector->setSizeAdjustPolicy(
+        QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_agentModeSelector->addItem(QStringLiteral("Ask before edits"), false);
+    m_agentModeSelector->addItem(QStringLiteral("Edit automatically"), false);
+    m_agentModeSelector->addItem(QStringLiteral("Plan mode"), false);
+    m_agentModeSelector->addItem(kClaudeAutoModeLabel, true);
+    m_agentModeSelector->setMaxVisibleItems(30);
+    m_agentModeSelector->setToolTip(
+        "Change how much freedom this agent has to edit without asking first. "
+        "Takes effect on its next turn \xE2\x80\x94 a running Codex session "
+        "picks it up immediately.");
+    m_agentModeSelector->hide(); // revealed per-session in syncAgentModeSelector
+    connect(m_agentModeSelector,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int) { applySelectedAgentMode(); });
+
     auto *titleCol = new QVBoxLayout;
     titleCol->setContentsMargins(0, 0, 0, 0);
     titleCol->setSpacing(4);
@@ -663,6 +687,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *topRow = new QHBoxLayout;
     topRow->setContentsMargins(0, 0, 0, 0);
     topRow->addLayout(titleCol, 1);
+    topRow->addWidget(m_agentModeSelector, 0, Qt::AlignTop);
     topRow->addWidget(m_agentCreateIssueButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentViewPrButton, 0, Qt::AlignTop);
     topRow->addWidget(m_agentStopButton, 0, Qt::AlignTop);
@@ -3290,6 +3315,73 @@ static QString issueLinkHtml(int issueNumber, const QString &title)
         .arg(href, label);
 }
 
+// Point the detail header's mode selector at the shown session (adhoc #26).
+// Only Claude Code and Codex carry a permission mode, so the selector hides for
+// API-key agents and watch-only rows. An unset mode falls back to the composer's
+// saved default, matching the "Mode:" meta line so the two never disagree.
+void MainWindow::syncAgentModeSelector(const AgentSession &session)
+{
+    if (!m_agentModeSelector)
+        return;
+    const bool hasMode =
+        !isExternalSession(session.id) &&
+        (session.provider == QLatin1String("claude-code") ||
+         agentIsCodexProvider(session.provider));
+    m_agentModeSelector->setVisible(hasMode);
+    if (!hasMode)
+        return;
+    const QString modeLabel =
+        session.mode.isEmpty()
+            ? QSettings()
+                  .value(kAgentModeSetting,
+                         QSettings().value(kClaudeAutoModeSetting, true).toBool()
+                             ? kClaudeAutoModeLabel
+                             : QStringLiteral("Ask before edits"))
+                  .toString()
+            : session.mode;
+    int idx = m_agentModeSelector->findText(modeLabel);
+    if (idx < 0)
+        idx = m_agentModeSelector->count() - 1;
+    // Guard the programmatic set so it doesn't re-enter applySelectedAgentMode
+    // and write the just-synced value straight back onto the session.
+    const QSignalBlocker block(m_agentModeSelector);
+    m_agentModeSelector->setCurrentIndex(idx);
+}
+
+// Apply the detail header's mode selector back onto the selected session (adhoc
+// #26). Persists the label and mirrors it to the website/other nodes; a live
+// Codex session maps the mode to its approval policy + sandbox at the start of
+// each turn, so retargeting it now makes the switch take effect on the very next
+// reply. Claude Code bakes the mode in at launch, so its stored label is instead
+// picked up on the next resume.
+void MainWindow::applySelectedAgentMode()
+{
+    if (!m_agentModeSelector)
+        return;
+    AgentSession *session = findAgentSession(m_selectedAgentSessionId);
+    if (!session)
+        return;
+    const QString chosenMode = m_agentModeSelector->currentText();
+    if (session->mode == chosenMode)
+        return;
+    session->mode = chosenMode;
+    if (m_agentStore)
+        m_agentStore->saveSession(*session);
+    scheduleAgentSessionsPush(); // adhoc #182 — mirror to the website/other nodes
+    if (CodexAppServerSession *codex =
+            m_codexStreams.value(m_selectedAgentSessionId);
+        codex && codex->running()) {
+        const QString effort =
+            QSettings()
+                .value(kClaudeEffortSetting, QStringLiteral("high"))
+                .toString();
+        codex->setTurnOptions(session->model, session->mode, effort);
+    }
+    // Refresh the "Mode:" meta line so the header value tracks the new choice.
+    if (m_agentMeta)
+        showAgentSession(m_selectedAgentSessionId);
+}
+
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
@@ -3312,6 +3404,8 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentFixConflictsButton->hide();
         if (m_agentCreateIssueButton)
             m_agentCreateIssueButton->hide();
+        if (m_agentModeSelector)
+            m_agentModeSelector->hide();
         if (m_agentLog)
             m_agentLog->clear();
         m_agentLogSession = -1; // log emptied out-of-band; force the next set to render
@@ -3484,6 +3578,7 @@ void MainWindow::showAgentSession(int sessionId)
     }
     setAgentUsageLabel(*session);
     refreshAgentStatusPill(sessionId);
+    syncAgentModeSelector(*session);
 
     // View PR button appears once a pull request exists for this session.
     if (m_agentViewPrButton) {
