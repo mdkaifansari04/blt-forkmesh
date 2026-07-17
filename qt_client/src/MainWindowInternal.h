@@ -6847,14 +6847,43 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
         return found;
     };
     // Post-split layout (adhoc #14): the folder IS the status — open/<n>
-    // counts as open, closed/<n> as closed, no blob reads needed.
+    // counts as open, closed/<n> as closed. A deleted (tombstoned) issue keeps
+    // its open/ folder for federation but is not open — the Issues tab and lists
+    // drop it (Issue::isDeleted), so the advertised count must too, or it drifts
+    // above the tab (adhoc #16). Detecting a delete/self event needs the record,
+    // so read the open/ blobs (open issues are few); closed/ folders are never
+    // open regardless.
+    auto recordTombstoned = [&](const QString &name) {
+        QByteArray blob;
+        if (!runGitCapture(
+                mirrorPath,
+                {"cat-file", "-p",
+                 branch + QStringLiteral(":.forkmesh/issues/open/%1/issue-%1.json")
+                              .arg(name)},
+                &blob, nullptr))
+            return false; // unreadable -> treat as live (matches loadAll)
+        const QJsonArray events = QJsonDocument::fromJson(blob)
+                                      .object()
+                                      .value(QStringLiteral("events"))
+                                      .toArray();
+        for (const QJsonValue &value : events) {
+            const QJsonObject event = value.toObject();
+            if (event.value(QStringLiteral("type")).toString() ==
+                    QLatin1String("delete") &&
+                event.value(QStringLiteral("target")).toString() ==
+                    QLatin1String("self"))
+                return true;
+        }
+        return false;
+    };
     QSet<QString> counted;
     int open = 0;
     for (const QString &name :
          numberedNames(QStringLiteral(".forkmesh/issues/open")))
         if (!counted.contains(name)) {
             counted.insert(name);
-            ++open;
+            if (!recordTombstoned(name))
+                ++open;
         }
     for (const QString &name :
          numberedNames(QStringLiteral(".forkmesh/issues/closed")))
