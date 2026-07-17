@@ -3734,7 +3734,6 @@ void MainWindow::loadCommits()
     // stay frozen on screen until the new ones snap in (one repaint when the guard
     // unwinds, including on the early returns below). Matches every other loader.
     TableRepaintGuard repaintGuard(m_commitsTable);
-    m_commitsTable->setSortingEnabled(false);
     m_commitsTable->setRowCount(0);
     showCommitList(); // always land on the list when (re)loading
     updateRepoCommitCount();
@@ -3746,10 +3745,8 @@ void MainWindow::loadCommits()
         m_repoDetailStack->currentIndex() == m_insightsTabIndex)
         loadRepoInsights();
     const QString dir = repoGitDir();
-    if (dir.isEmpty()) {
-        m_commitsTable->setSortingEnabled(true);
+    if (dir.isEmpty())
         return;
-    }
     QByteArray out;
     // Reset to the base depth whenever the branch being viewed changes; an
     // in-place reload (Refresh, or scroll-to-load-more) keeps the deepened window.
@@ -3772,21 +3769,15 @@ void MainWindow::loadCommits()
     const int rowLimit = m_commitsShowingAll ? kCommitSearchDepth : m_commitsLimit;
     QStringList logArgs{
         "log",
-        "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P"};
+        "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P%x1f%D"};
     logArgs << "-n" << QString::number(rowLimit + 1);
     logArgs << currentRef();
-    if (!runGitCapture(dir, logArgs, &out, nullptr)) {
-        m_commitsTable->setSortingEnabled(true);
+    if (!runGitCapture(dir, logArgs, &out, nullptr))
         return;
-    }
     // Local commits the network mirror doesn't have yet, so the list can flag
     // (and the banner can count) what hasn't synced.
     const QSet<QString> unpushed = unpushedCommitHashes();
-    int unpushedShown = 0;
-    // Rewriting history is only meaningful on the source of truth (the node that
-    // holds the working copy). On a browse-only mirror the delete button is shown
-    // disabled, matching the Branches panel.
-    const bool writable = repoHasWorkingTree();
+    m_commitsUnsyncedHashes.clear();
     // The newest commit (git log's first record, before the table is sorted) is
     // the branch tip; remember it so a later tab click can skip an identical rebuild.
     QString loadedTip;
@@ -3888,28 +3879,51 @@ void MainWindow::loadCommits()
         auto *summary = new SortTableWidgetItem(f.at(5));
         summary->setData(Qt::UserRole, f.at(0));
         summary->setData(kTableSortRole, f.at(5).toLower());
+        // Roles CommitSummaryDelegate paints from: the author at the row's right
+        // edge, the amber unsynced marker, and the expand chevron state.
+        summary->setData(kCommitRowKindRole, 0);
+        summary->setData(kCommitExpandedRole, false);
+        summary->setData(kCommitAuthorRole, f.at(2));
+        summary->setData(kCommitUnsyncedRole, isUnpushed);
+        // Branch / tag pills (git log %D), drawn ahead of the summary text like
+        // the VS Code graph. Capped: a tip carrying many refs would otherwise
+        // crowd out the message.
+        {
+            QStringList refs;
+            const QStringList rawRefs = f.value(7).split(
+                QStringLiteral(", "), Qt::SkipEmptyParts);
+            for (QString ref : rawRefs) {
+                ref = ref.trimmed();
+                if (ref.startsWith(QLatin1String("HEAD -> ")))
+                    ref = ref.mid(8);
+                else if (ref == QLatin1String("HEAD"))
+                    continue; // detached HEAD marker, not a ref
+                if (ref.startsWith(QLatin1String("tag: ")))
+                    ref = ref.mid(5);
+                refs << ref;
+                if (refs.size() >= 3)
+                    break;
+            }
+            if (!refs.isEmpty())
+                summary->setData(kCommitRefsRole, refs);
+        }
         // Action/check status badge for this commit (green check / red x /
         // spinning-blue dot), shown as a leading icon when a workflow ran for it.
         switch (commitStatusCode(f.at(0))) {
         case 1:
             summary->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
-            summary->setToolTip(QString::fromUtf8("Checks passed \xC2\xB7 %1").arg(f.at(1)));
             break;
         case 2:
             summary->setIcon(themedOcticon("x", QColor("#f85149"), 14));
-            summary->setToolTip(QString::fromUtf8("Checks failed \xC2\xB7 %1").arg(f.at(1)));
             break;
         case 3:
             summary->setIcon(themedOcticon("sync", QColor("#58a6ff"), 14));
-            summary->setToolTip(QString::fromUtf8("Checks running \xC2\xB7 %1").arg(f.at(1)));
             break;
         default:
-            summary->setToolTip(
-                QStringLiteral("Click to view the diff for %1").arg(f.at(1)));
             break;
         }
         // Summary (with the commit hash on UserRole) sits last; the metadata
-        // columns are to its left.
+        // columns are to its left (hidden — their data feeds the hover box).
         m_commitsTable->setItem(row, kCommitSummaryCol, summary);
 
         auto *author = new SortTableWidgetItem(f.at(2));
@@ -3925,7 +3939,7 @@ void MainWindow::loadCommits()
             isUnpushed ? QString::fromUtf8("\xE2\x96\xB2 ") + f.at(1) : f.at(1));
         hashItem->setData(kTableSortRole, f.at(1));
         if (isUnpushed) {
-            ++unpushedShown;
+            m_commitsUnsyncedHashes << f.at(0);
             hashItem->setForeground(QColor("#d29922"));
             hashItem->setToolTip(
                 QStringLiteral("%1 — not yet synced to the network mirror").arg(f.at(1)));
@@ -3948,30 +3962,9 @@ void MainWindow::loadCommits()
         delsItem->setForeground(QColor("#f85149"));
         delsItem->setData(kTableSortRole, 0);
         m_commitsTable->setItem(row, 5, delsItem);
-
-        // Per-row "delete from history" button. Enabled only on the source of
-        // truth; on a browse-only mirror it stays visible but disabled so the
-        // reason is discoverable.
-        const QString fullHash = f.at(0);
-        auto *del = new QPushButton;
-        del->setObjectName("issueIconButton");
-        del->setFlat(true);
-        del->setCursor(Qt::PointingHandCursor);
-        // Don't let the per-row button take keyboard focus: as a focusable cell
-        // widget it makes the table scroll itself to keep it visible, which read
-        // as the list "jumping" on click. The row click still selects/opens the
-        // commit; the trash button is mouse-only.
-        del->setFocusPolicy(Qt::NoFocus);
-        del->setIcon(themedOcticon("trash", QColor("#f85149"), 15));
-        del->setIconSize(QSize(15, 15));
-        del->setEnabled(writable);
-        del->setToolTip(writable
-                            ? QStringLiteral("Remove %1 from history").arg(f.at(1))
-                            : QStringLiteral("Read-only mirror — no working tree to "
-                                             "rewrite history in"));
-        connect(del, &QPushButton::clicked, this,
-                [this, fullHash] { deleteCommit(fullHash); });
-        m_commitsTable->setCellWidget(row, kCommitActionCol, del);
+        // The per-row delete button is gone: deleting a commit now lives on the
+        // commit's detail page (double-click / Enter), next to Restore.
+        updateCommitRowHover(row);
     }
     // Size the graph gutter to the widest the lanes ever got, then re-assert the
     // Date-descending sort so rows stay in git-log order (the order the lanes were
@@ -3981,23 +3974,23 @@ void MainWindow::loadCommits()
         m_commitsTable->horizontalHeader()->resizeSection(
             kCommitGraphCol, std::clamp(laneSpan, 22, 140));
     }
-    // Repaints stay suspended (TableRepaintGuard) through the sort, banner update
-    // and filter re-apply below, so the whole reload lands in a single repaint when
-    // the guard unwinds at function scope. Only sorting needs re-enabling by hand.
-    m_commitsTable->setSortingEnabled(true);
-    m_commitsTable->sortByColumn(1, Qt::DescendingOrder);
+    // Repaints stay suspended (TableRepaintGuard) through the banner update and
+    // filter re-apply below, so the whole reload lands in a single repaint when
+    // the guard unwinds at function scope. The rows stay in git-log order (no
+    // header sorting) so the graph lanes always match the topology.
 
-    if (m_commitsUnsyncedBanner) {
-        if (unpushedShown > 0) {
-            showCommitsBanner(
-                QString::fromUtf8(
-                    "<span style='color:#d29922'>\xE2\x96\xB2 %1 commit%2 not yet "
-                    "synced to the network mirror.</span>")
-                    .arg(unpushedShown)
-                    .arg(unpushedShown == 1 ? QString() : QStringLiteral("s")));
-        } else {
-            hideCommitsBanner();
-        }
+    // Banner + expandable file view for the commits still waiting to sync
+    // (m_commitsUnsyncedHashes was rebuilt by the row loop above).
+    updateCommitsUnsyncedFilesPanel();
+    // Pull only makes sense where this node holds the working tree.
+    if (m_commitsPullButton) {
+        const bool writable = repoHasWorkingTree();
+        m_commitsPullButton->setEnabled(writable);
+        m_commitsPullButton->setToolTip(
+            writable ? QStringLiteral("Fast-forward the working tree to the "
+                                      "latest fetched history (git pull --ff-only)")
+                     : QStringLiteral("Read-only mirror \xE2\x80\x94 no working "
+                                      "tree to pull into"));
     }
 
     // Re-apply any active search filter so a reload doesn't drop the user's
@@ -4088,8 +4081,8 @@ void MainWindow::fillCommitStats(int loadGen)
     m_commitsTable->setSortingEnabled(false);
     for (int row = 0; row < m_commitsTable->rowCount(); ++row) {
         const QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
-        if (!sum)
-            continue;
+        if (!sum || sum->data(kCommitRowKindRole).toInt() != 0)
+            continue; // expanded file rows share the hash — commits only
         const auto it = stats.constFind(sum->data(Qt::UserRole).toString());
         if (it == stats.constEnd())
             continue;
@@ -4106,6 +4099,7 @@ void MainWindow::fillCommitStats(int loadGen)
             d->setText(QString::fromUtf8("\xE2\x88\x92%1").arg(s.dels));
             d->setData(kTableSortRole, s.dels);
         }
+        updateCommitRowHover(row); // the hover box shows these counts
     }
     m_commitsTable->setSortingEnabled(wasSorting);
 }
@@ -4124,130 +4118,343 @@ void MainWindow::loadMoreCommits()
     m_commitsLoadingMore = false;
 }
 
-void MainWindow::generatePostFromSelectedCommits()
+// Per-file change counts for one commit, in git-log order. Shared by the
+// in-place row expansion and the pending-sync file view.
+struct CommitFileStat {
+    QString path;
+    int adds = 0;
+    int dels = 0;
+};
+
+static QList<CommitFileStat> commitFileStats(const QString &dir,
+                                             const QString &hash)
+{
+    QList<CommitFileStat> files;
+    QByteArray out;
+    // --root so a repository's first commit lists its files too.
+    if (!runGitCapture(dir,
+                       {QStringLiteral("diff-tree"), QStringLiteral("--root"),
+                        QStringLiteral("--no-commit-id"),
+                        QStringLiteral("--numstat"), QStringLiteral("-r"),
+                        QStringLiteral("-M"), hash},
+                       &out, nullptr))
+        return files;
+    const QStringList lines =
+        QString::fromUtf8(out).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString &line : lines) {
+        const QStringList cols = line.split(QLatin1Char('\t'));
+        if (cols.size() < 3)
+            continue;
+        CommitFileStat f;
+        f.path = cols.mid(2).join(QLatin1Char('\t'));
+        f.adds = cols.at(0).toInt(); // "-" for binary → 0
+        f.dels = cols.at(1).toInt();
+        files << f;
+    }
+    return files;
+}
+
+void MainWindow::toggleCommitFilesRows(int row)
 {
     if (!m_commitsTable)
         return;
-    // Collect the selected rows (de-duped across selection ranges), in the table's
-    // display order (newest first).
-    QSet<int> rowSet;
-    const auto ranges = m_commitsTable->selectedRanges();
-    for (const QTableWidgetSelectionRange &r : ranges)
-        for (int row = r.topRow(); row <= r.bottomRow(); ++row)
-            rowSet.insert(row);
-    QList<int> rows(rowSet.cbegin(), rowSet.cend());
-    std::sort(rows.begin(), rows.end());
-    if (rows.isEmpty()) {
-        flashMessage(
-            QStringLiteral("Select one or more commits first (Ctrl/Shift-click)."),
-            true);
+    QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
+    if (!sum || sum->data(kCommitRowKindRole).toInt() != 0)
+        return;
+    const QString hash = sum->data(Qt::UserRole).toString();
+    QSignalBlocker block(m_commitsTable);
+    if (sum->data(kCommitExpandedRole).toBool()) {
+        while (row + 1 < m_commitsTable->rowCount()) {
+            QTableWidgetItem *next =
+                m_commitsTable->item(row + 1, kCommitSummaryCol);
+            if (!next || next->data(kCommitRowKindRole).toInt() != 1)
+                break;
+            m_commitsTable->removeRow(row + 1);
+        }
+        sum->setData(kCommitExpandedRole, false);
         return;
     }
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || hash.isEmpty())
+        return;
+    const QList<CommitFileStat> files = commitFileStats(dir, hash);
+    if (files.isEmpty())
+        return;
+    // File rows continue the graph's pass-through lanes so the coloured lines
+    // run unbroken behind the expansion; the summary indents one step past the
+    // commit's own lane (CommitSummaryDelegate reads these roles).
+    const QTableWidgetItem *graphIt = m_commitsTable->item(row, kCommitGraphCol);
+    const QVariantList lanes =
+        graphIt ? graphIt->data(kGraphBottomLanesRole).toList() : QVariantList();
+    const int lane = graphIt ? graphIt->data(kGraphNodeLaneRole).toInt() : 0;
+    int at = row + 1;
+    for (const CommitFileStat &f : files) {
+        m_commitsTable->insertRow(at);
+        auto *graph = new QTableWidgetItem;
+        graph->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        graph->setData(kGraphLanesRole, lanes);
+        graph->setData(kGraphBottomLanesRole, lanes);
+        graph->setData(kGraphNodeLaneRole, -1); // no dot: lanes pass through
+        m_commitsTable->setItem(at, kCommitGraphCol, graph);
+        auto *item = new QTableWidgetItem(f.path);
+        item->setData(kCommitRowKindRole, 1);
+        item->setData(Qt::UserRole, hash);
+        item->setData(kCommitFilePathRole, f.path);
+        item->setData(kCommitFileAddsRole, f.adds);
+        item->setData(kCommitFileDelsRole, f.dels);
+        item->setData(kGraphNodeLaneRole, lane); // indent under the commit
+        item->setToolTip(
+            QString::fromUtf8("%1 \xC2\xB7 +%2 \xE2\x88\x92%3<br>"
+                              "Click to open this file's diff")
+                .arg(f.path.toHtmlEscaped())
+                .arg(f.adds)
+                .arg(f.dels));
+        m_commitsTable->setItem(at, kCommitSummaryCol, item);
+        ++at;
+    }
+    sum->setData(kCommitExpandedRole, true);
+}
 
-    QStringList subjects;
-    QStringList bullets;
-    for (int row : std::as_const(rows)) {
-        const QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
-        const QTableWidgetItem *hashIt = m_commitsTable->item(row, kCommitHashCol);
+void MainWindow::collapseAllCommitFileRows()
+{
+    if (!m_commitsTable)
+        return;
+    QSignalBlocker block(m_commitsTable);
+    for (int row = m_commitsTable->rowCount() - 1; row >= 0; --row) {
+        QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
         if (!sum)
             continue;
-        const QString subject = sum->text().trimmed();
-        if (subject.isEmpty())
-            continue;
-        // Strip the leading "▲ " unsynced marker from the hash cell, if present.
-        const QString shortHash =
-            hashIt ? hashIt->text().remove(QChar(0x25B2)).trimmed() : QString();
-        subjects << subject;
-        bullets << (shortHash.isEmpty()
-                        ? QStringLiteral("- %1").arg(subject)
-                        : QStringLiteral("- %1 (%2)").arg(subject, shortHash));
+        if (sum->data(kCommitRowKindRole).toInt() == 1)
+            m_commitsTable->removeRow(row);
+        else
+            sum->setData(kCommitExpandedRole, false);
     }
-    if (subjects.isEmpty()) {
-        flashMessage(QStringLiteral("Couldn't read the selected commits."), true);
+}
+
+void MainWindow::updateCommitRowHover(int row)
+{
+    if (!m_commitsTable)
+        return;
+    QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
+    if (!sum || sum->data(kCommitRowKindRole).toInt() != 0)
+        return;
+    const QTableWidgetItem *author = m_commitsTable->item(row, 0);
+    const QTableWidgetItem *date = m_commitsTable->item(row, 1);
+    const QTableWidgetItem *hashIt = m_commitsTable->item(row, kCommitHashCol);
+    const QTableWidgetItem *filesIt = m_commitsTable->item(row, 3);
+    const QTableWidgetItem *addsIt = m_commitsTable->item(row, 4);
+    const QTableWidgetItem *delsIt = m_commitsTable->item(row, 5);
+    const QString hash = sum->data(Qt::UserRole).toString();
+    const QString shortHash =
+        hashIt ? hashIt->data(kTableSortRole).toString() : hash.left(8);
+    // The date cell keeps the full "x ago" form on its own tooltip.
+    const QString when = date ? date->toolTip() : QString();
+    QString html = QStringLiteral("<b>%1</b>").arg(sum->text().toHtmlEscaped());
+    html += QStringLiteral("<br>%1 committed %2")
+                .arg((author ? author->text() : QString()).toHtmlEscaped(),
+                     when.toHtmlEscaped());
+    html += QStringLiteral("<br><code>%1</code>").arg(shortHash.toHtmlEscaped());
+    const QStringList refs = sum->data(kCommitRefsRole).toStringList();
+    if (!refs.isEmpty())
+        html += QStringLiteral("<br><span style='color:#58a6ff'>%1</span>")
+                    .arg(refs.join(QString::fromUtf8(" \xC2\xB7 ")).toHtmlEscaped());
+    // Files / adds / dels arrive from the deferred stat fill; before that the
+    // cells hold the "·" pending dot.
+    const QString filesTxt = filesIt ? filesIt->text() : QString();
+    if (!filesTxt.isEmpty() && filesTxt != QString::fromUtf8("\xC2\xB7"))
+        html += QString::fromUtf8("<br>%1 file%2 changed \xC2\xB7 "
+                                  "<span style='color:#3fb950'>%3</span> "
+                                  "<span style='color:#f85149'>%4</span>")
+                    .arg(filesTxt, filesTxt == QStringLiteral("1") ? "" : "s",
+                         addsIt ? addsIt->text() : QString(),
+                         delsIt ? delsIt->text() : QString());
+    switch (commitStatusCode(hash)) {
+    case 1:
+        html += QString::fromUtf8(
+            "<br><span style='color:#3fb950'>Checks passed</span>");
+        break;
+    case 2:
+        html += QString::fromUtf8(
+            "<br><span style='color:#f85149'>Checks failed</span>");
+        break;
+    case 3:
+        html += QString::fromUtf8(
+            "<br><span style='color:#58a6ff'>Checks running</span>");
+        break;
+    default:
+        break;
+    }
+    if (sum->data(kCommitUnsyncedRole).toBool())
+        html += QString::fromUtf8("<br><span style='color:#d29922'>\xE2\x96\xB2 "
+                                  "Not yet synced to the network mirror</span>");
+    html += QString::fromUtf8("<br><span style='color:#8b949e'>Click to show "
+                              "files \xC2\xB7 double-click for the full "
+                              "diff</span>");
+    sum->setToolTip(html);
+}
+
+void MainWindow::updateCommitsUnsyncedFilesPanel()
+{
+    const int pending = m_commitsUnsyncedHashes.size();
+    if (m_commitsUnsyncedBanner) {
+        if (pending > 0)
+            showCommitsBanner(
+                QString::fromUtf8(
+                    "<span style='color:#d29922'>\xE2\x96\xB2 %1 commit%2 pending "
+                    "sync to the network mirror.</span> "
+                    "<a href='files' style='color:#d29922'>%3</a>")
+                    .arg(pending)
+                    .arg(pending == 1 ? QString() : QStringLiteral("s"))
+                    .arg(m_commitsUnsyncedExpanded
+                             ? QString::fromUtf8("Hide files \xE2\x96\xB4")
+                             : QString::fromUtf8("Show files \xE2\x96\xBE")));
+        else
+            hideCommitsBanner(); // also hides the file view
+    }
+    if (!m_commitsUnsyncedFiles)
+        return;
+    if (pending == 0 || !m_commitsUnsyncedExpanded) {
+        m_commitsUnsyncedFiles->hide();
         return;
     }
-
-    const QString repoName =
-        (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
-            ? m_repositories.at(m_repoDetailIndex).name
-            : QString();
-    const int n = subjects.size();
-
-    // Release-notes style message.
-    const QString message =
-        QString::fromUtf8("What\xE2\x80\x99s new%1\n\n%2")
-            .arg(repoName.isEmpty() ? QStringLiteral(":")
-                                    : QStringLiteral(" in %1:").arg(repoName),
-                 bullets.join(QLatin1Char('\n')));
-
-    // X/Twitter post: a header plus as many subjects as fit under 280 characters.
-    QString post = QString::fromUtf8("\xF0\x9F\x9A\x80 ");
-    post += repoName.isEmpty()
-                ? QStringLiteral("%1 update%2").arg(n).arg(n == 1 ? QString() : "s")
-                : QStringLiteral("%1: %2 update%3")
-                      .arg(repoName)
-                      .arg(n)
-                      .arg(n == 1 ? QString() : "s");
-    const QString tail = QStringLiteral(" #buildinpublic");
-    QStringList fragments;
-    int budget = 280 - post.size() - tail.size() - 2; // " — " + joins
-    for (const QString &s : std::as_const(subjects)) {
-        const QString frag = s.length() > 70 ? s.left(67) + QStringLiteral("…") : s;
-        const int cost = frag.size() + 2; // "; "
-        if (cost > budget)
-            break;
-        fragments << frag;
-        budget -= cost;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+    m_commitsUnsyncedFiles->clear();
+    // Bounded: the pending set is normally a handful; anything deeper is still
+    // reachable per commit from the list below.
+    const int cap = qMin(pending, 20);
+    for (int i = 0; i < cap; ++i) {
+        const QString hash = m_commitsUnsyncedHashes.at(i);
+        QByteArray meta;
+        runGitCapture(dir,
+                      {QStringLiteral("show"), QStringLiteral("--no-patch"),
+                       QStringLiteral("--format=%h%x1f%s"), hash},
+                      &meta, nullptr);
+        const QStringList mf =
+            QString::fromUtf8(meta).trimmed().split(QLatin1Char('\x1f'));
+        auto *top = new QTreeWidgetItem(
+            m_commitsUnsyncedFiles,
+            {QStringLiteral("%1  %2").arg(mf.value(0), mf.value(1))});
+        top->setIcon(0, themedOcticon("upload", QColor("#d29922"), 14));
+        top->setData(0, Qt::UserRole, hash);
+        top->setToolTip(0, QStringLiteral(
+                               "Waiting to sync \xE2\x80\x94 click to view the "
+                               "commit"));
+        const QList<CommitFileStat> files = commitFileStats(dir, hash);
+        for (const CommitFileStat &f : files) {
+            auto *child = new QTreeWidgetItem(
+                top, {QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
+                          .arg(f.path)
+                          .arg(f.adds)
+                          .arg(f.dels)});
+            child->setData(0, Qt::UserRole, hash);
+            child->setData(0, Qt::UserRole + 1, f.path);
+            child->setToolTip(0, f.path);
+        }
+        top->setExpanded(true);
     }
-    if (!fragments.isEmpty())
-        post += QString::fromUtf8(" \xE2\x80\x94 ") + fragments.join(QStringLiteral("; "));
-    post += tail;
-    if (post.size() > 280)
-        post = post.left(279) + QString::fromUtf8("\xE2\x80\xA6");
+    if (pending > cap)
+        new QTreeWidgetItem(
+            m_commitsUnsyncedFiles,
+            {QString::fromUtf8("\xE2\x80\xA6 and %1 more commit%2")
+                 .arg(pending - cap)
+                 .arg(pending - cap == 1 ? QString() : QStringLiteral("s"))});
+    m_commitsUnsyncedFiles->show();
+}
 
-    // Show both in a copyable dialog.
-    QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("Generate post — %1 commit%2")
-                              .arg(n)
-                              .arg(n == 1 ? QString() : "s"));
-    dialog.resize(560, 460);
-    auto *outer = new QVBoxLayout(&dialog);
+void MainWindow::fetchCurrentRepo()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    // Refresh the served mirror from its source; quiet — the flashes below are
+    // the user feedback for this click.
+    syncRepository(m_repoDetailIndex, /*quiet=*/true);
+    const bool hasWorkTree = !repo.localPath.isEmpty() &&
+                             QDir(repo.localPath).exists(QStringLiteral(".git"));
+    if (!hasWorkTree) {
+        flashMessage(QStringLiteral("Fetching %1/%2 from the network\xE2\x80\xA6")
+                         .arg(repo.owner, repo.name));
+        return;
+    }
+    if (m_commitsFetchButton)
+        m_commitsFetchButton->setEnabled(false);
+    // Also refresh every remote the working copy tracks (no-op without remotes).
+    runGitDetached(repo.localPath,
+                   {QStringLiteral("fetch"), QStringLiteral("--all"),
+                    QStringLiteral("--prune"), QStringLiteral("--tags")},
+                   [this](bool ok, const QByteArray &) {
+                       if (m_commitsFetchButton)
+                           m_commitsFetchButton->setEnabled(true);
+                       flashMessage(ok ? QStringLiteral(
+                                             "Fetched the latest history.")
+                                       : QStringLiteral("Fetch failed \xE2\x80\x94 "
+                                                        "check the remotes."),
+                                    !ok);
+                       if (ok)
+                           loadCommits();
+                   });
+}
 
-    auto addBlock = [&](const QString &title, const QString &body, bool small) {
-        auto *label = new QLabel(title);
-        label->setObjectName("sectionLabel");
-        outer->addWidget(label);
-        auto *edit = new QPlainTextEdit;
-        edit->setPlainText(body);
-        edit->setReadOnly(true);
-        if (small)
-            edit->setMaximumHeight(90);
-        outer->addWidget(edit, small ? 0 : 1);
-        auto *copyBtn = new QPushButton(QStringLiteral("Copy"));
-        copyBtn->setProperty("buttonSize", "sm");
-        copyBtn->setCursor(Qt::PointingHandCursor);
-        connect(copyBtn, &QPushButton::clicked, this, [this, body, title] {
-            QApplication::clipboard()->setText(body);
-            flashMessage(title + QStringLiteral(" copied to the clipboard."));
-        });
-        auto *copyRow = new QHBoxLayout;
-        copyRow->addStretch();
-        copyRow->addWidget(copyBtn);
-        outer->addLayout(copyRow);
-    };
-    addBlock(QString::fromUtf8("X / Twitter post (%1 chars)").arg(post.size()), post,
-             true);
-    addBlock(QStringLiteral("Release notes"), message, false);
-
-    auto *closeBtn = new QPushButton(QStringLiteral("Close"));
-    closeBtn->setCursor(Qt::PointingHandCursor);
-    connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
-    auto *closeRow = new QHBoxLayout;
-    closeRow->addStretch();
-    closeRow->addWidget(closeBtn);
-    outer->addLayout(closeRow);
-
-    dialog.exec();
+void MainWindow::pullCurrentRepo()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    if (repo.localPath.isEmpty() ||
+        !QDir(repo.localPath).exists(QStringLiteral(".git"))) {
+        flashMessage(QStringLiteral("Read-only mirror \xE2\x80\x94 no working "
+                                    "tree to pull into."),
+                     true);
+        return;
+    }
+    // Prefer the configured upstream; with none (a relay-published repo), fast-
+    // forward from the served mirror instead so commits that arrived over the
+    // mesh land in the working copy.
+    QStringList args{QStringLiteral("pull"), QStringLiteral("--ff-only")};
+    if (!runGitCapture(repo.localPath,
+                       {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                        QStringLiteral("--symbolic-full-name"),
+                        QStringLiteral("@{upstream}")},
+                       nullptr, nullptr)) {
+        if (repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists()) {
+            flashMessage(QStringLiteral("No upstream branch or mirror to pull "
+                                        "from."),
+                         true);
+            return;
+        }
+        QByteArray branch;
+        runGitCapture(repo.localPath,
+                      {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                       QStringLiteral("HEAD")},
+                      &branch, nullptr);
+        args << repo.mirrorPath << QString::fromUtf8(branch).trimmed();
+    }
+    if (m_commitsPullButton)
+        m_commitsPullButton->setEnabled(false);
+    runGitDetached(repo.localPath, args,
+                   [this](bool ok, const QByteArray &out) {
+                       if (m_commitsPullButton)
+                           m_commitsPullButton->setEnabled(true);
+                       const QString text = QString::fromUtf8(out).trimmed();
+                       if (ok)
+                           flashMessage(
+                               text.contains(QLatin1String("Already up to date"))
+                                   ? QStringLiteral("Already up to date.")
+                                   : QStringLiteral("Pulled the latest history."));
+                       else
+                           flashMessage(QStringLiteral(
+                                            "Pull failed \xE2\x80\x94 the branch "
+                                            "has diverged or has nothing to pull "
+                                            "from (fetch first, or resolve by "
+                                            "hand)."),
+                                        true);
+                       if (ok) {
+                           refreshSourceControl(true);
+                           loadCommits();
+                       }
+                   });
 }
 
 // ---------------------------------------------------------------------------
@@ -5493,6 +5700,9 @@ void MainWindow::showCommitsBanner(const QString &html)
 
 void MainWindow::hideCommitsBanner()
 {
+    // Nothing pending: the expandable file view under the banner goes with it.
+    if (m_commitsUnsyncedFiles)
+        m_commitsUnsyncedFiles->hide();
     if (!m_commitsUnsyncedBanner || m_commitsUnsyncedBanner->isHidden())
         return;
     // Ease the note away instead of snapping it off, so it stays readable a
@@ -5511,6 +5721,9 @@ void MainWindow::filterCommits(const QString &query)
 {
     if (!m_commitsTable)
         return;
+    // Fold any expanded file rows back in first: they aren't commits, so they
+    // have no business matching (or surviving) a history filter.
+    collapseAllCommitFileRows();
     const QString needle = query.trimmed().toLower();
     // A search should reach well past the lazily-paged window, so a hash or
     // message deeper than the loaded rows still turns up. The first keystroke
@@ -6083,6 +6296,18 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
             m_commitFileList->addItem(item);
         }
         fitFileListToWidestEntry(m_commitFileList);
+    }
+    // A click on an expanded file row (or a pending-sync file) asked for this
+    // specific file: select it now the list exists — outside the blocker, so the
+    // selection scrolls the diff to that file's anchor.
+    if (m_commitFileList && !m_pendingCommitFileScroll.isEmpty()) {
+        for (int i = 0; i < files.size(); ++i) {
+            if (files.at(i).path == m_pendingCommitFileScroll) {
+                m_commitFileList->setCurrentRow(i);
+                break;
+            }
+        }
+        m_pendingCommitFileScroll.clear();
     }
 
     // --- Theme-aware diff styling, then the rendered HTML.
@@ -7882,40 +8107,31 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     // --- Page 0: the commit list.
     auto *listPage = new QWidget;
+    // VS-Code-style graph list: just the graph gutter and the summary line (the
+    // summary carries the author at its right edge; author / date / hash /
+    // files / adds / dels moved into the summary's hover box). The metadata
+    // columns still exist — hidden — so search, stats backfill and the detail
+    // view keep reading the same cells as before.
     m_commitsTable = new QTableWidget(0, 9);
     m_commitsTable->setObjectName("commitsList");
-    installColumnHeaderMenu(m_commitsTable); // 3-dots per-column menu (issue #318)
     enableHoverRowHighlight(m_commitsTable); // green outline selection (issue #252)
-    m_commitsTable->setHorizontalHeaderLabels(
-        {"Author", "Date", "Commit", "Files", "+adds", "-dels", "Summary", "", ""});
+    m_commitsTable->horizontalHeader()->setVisible(false);
     m_commitsTable->verticalHeader()->setVisible(false);
     m_commitsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    // Extended selection so several commits can be picked (Ctrl/Shift-click) and
-    // turned into a summary message / X post; a plain click still opens the diff.
-    m_commitsTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_commitsTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_commitsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_commitsTable->setShowGrid(false);
     m_commitsTable->setWordWrap(false);
-    m_commitsTable->setSortingEnabled(true);
-    m_commitsTable->setToolTip("Click a column header to sort");
+    // No header sorting: the rows stay in git-log order so the graph lanes (and
+    // the indented summaries beside them) always line up with the topology.
+    m_commitsTable->setSortingEnabled(false);
     m_commitsTable->setTextElideMode(Qt::ElideRight);
-    // Fixed default column widths instead of ResizeToContents: the latter
-    // rescans every row on each resize, which makes dragging the splitter
-    // beside a 300-row table choppy. Interactive sections stay smooth.
     QHeaderView *commitHeader = m_commitsTable->horizontalHeader();
     commitHeader->setHighlightSections(false);
-    commitHeader->setSectionResizeMode(QHeaderView::Interactive);
-    // Commit column (index 2) is wider so the short hash — plus the leading
-    // "▲" unsynced marker — isn't clipped.
-    const int commitColWidths[kCommitSummaryCol] = {150, 72, 120, 60, 66, 66};
-    for (int i = 0; i < kCommitSummaryCol; ++i) {
-        commitHeader->setSectionResizeMode(i, QHeaderView::Interactive);
-        commitHeader->resizeSection(i, commitColWidths[i]);
-    }
+    for (int i = 0; i < kCommitSummaryCol; ++i)
+        m_commitsTable->setColumnHidden(i, true);
+    m_commitsTable->setColumnHidden(kCommitActionCol, true);
     commitHeader->setSectionResizeMode(kCommitSummaryCol, QHeaderView::Stretch);
-    // Trailing action column: a fixed, narrow slot for the per-row delete button.
-    commitHeader->setSectionResizeMode(kCommitActionCol, QHeaderView::Fixed);
-    commitHeader->resizeSection(kCommitActionCol, 38);
     // Git-graph gutter: a fixed, narrow column drawn by CommitGraphDelegate and
     // moved to the far left so it reads like a git log graph. Its width is
     // recomputed per load once the lane count is known (see loadCommits).
@@ -7924,27 +8140,36 @@ QWidget *MainWindow::buildRepoCommitsTab()
     commitHeader->moveSection(commitHeader->visualIndex(kCommitGraphCol), 0);
     m_commitsTable->setItemDelegateForColumn(kCommitGraphCol,
                                              new CommitGraphDelegate(m_commitsTable));
-    // Freeze the Summary flex column to a draggable width once rows arrive, so
-    // every column drags independently like a spreadsheet (#263); the Fixed graph
-    // and action columns are left as-is.
-    makeColumnsResizable(m_commitsTable);
-    // Most recent first: sort by the Date column (which sorts on the raw commit
-    // timestamp), matching git-log order so the graph lanes line up.
-    m_commitsTable->sortByColumn(1, Qt::DescendingOrder);
+    m_commitsTable->setItemDelegateForColumn(
+        kCommitSummaryCol, new CommitSummaryDelegate(m_commitsTable));
+    // Single click: expand/collapse the commit's files in place (VS-Code style).
+    // Clicking a file row opens the commit's diff scrolled to that file.
     connect(m_commitsTable, &QTableWidget::cellClicked, this,
             [this](int row, int) {
                 QTableWidgetItem *item = m_commitsTable->item(row, kCommitSummaryCol);
-                if (item)
+                if (!item)
+                    return;
+                if (item->data(kCommitRowKindRole).toInt() == 1) {
+                    m_pendingCommitFileScroll =
+                        item->data(kCommitFilePathRole).toString();
+                    showCommit(item->data(Qt::UserRole).toString());
+                    return;
+                }
+                toggleCommitFilesRows(row);
+            });
+    // Double click (or Enter) on a commit opens its full detail page — diff,
+    // conversation, and the Delete / Restore commit actions.
+    connect(m_commitsTable, &QTableWidget::cellDoubleClicked, this,
+            [this](int row, int) {
+                QTableWidgetItem *item = m_commitsTable->item(row, kCommitSummaryCol);
+                if (item && item->data(kCommitRowKindRole).toInt() == 0)
                     showCommit(item->data(Qt::UserRole).toString());
             });
-    // Arrow-key navigation: when the current row changes (e.g. via Up/Down keys),
-    // load and display the newly selected commit so the diff view stays in sync.
-    connect(m_commitsTable, &QTableWidget::currentCellChanged, this,
-            [this](int row, int, int prevRow, int) {
-                if (row == prevRow || row < 0)
-                    return;
-                QTableWidgetItem *item = m_commitsTable->item(row, kCommitSummaryCol);
-                if (item)
+    connect(m_commitsTable, &QTableWidget::itemActivated, this,
+            [this](QTableWidgetItem *it) {
+                QTableWidgetItem *item =
+                    it ? m_commitsTable->item(it->row(), kCommitSummaryCol) : nullptr;
+                if (item && item->data(kCommitRowKindRole).toInt() == 0)
                     showCommit(item->data(Qt::UserRole).toString());
             });
     // Banner above the list flagging local commits that haven't reached the
@@ -7954,6 +8179,14 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsUnsyncedBanner->setObjectName("statusLine");
     m_commitsUnsyncedBanner->setTextFormat(Qt::RichText);
     m_commitsUnsyncedBanner->setWordWrap(true);
+    // The banner's "Show files" link expands the pending commits into the files
+    // they touch (mirroring how a commit row expands in the list below).
+    m_commitsUnsyncedBanner->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+    connect(m_commitsUnsyncedBanner, &QLabel::linkActivated, this,
+            [this](const QString &) {
+                m_commitsUnsyncedExpanded = !m_commitsUnsyncedExpanded;
+                updateCommitsUnsyncedFilesPanel();
+            });
     // A card background sets the note apart from the rows beneath it.
     m_commitsUnsyncedBanner->setStyleSheet(
         "#statusLine {"
@@ -7988,43 +8221,29 @@ QWidget *MainWindow::buildRepoCommitsTab()
     connect(m_commitSearch, &QLineEdit::textChanged, this,
             &MainWindow::filterCommits);
 
-    // Refresh: force a full rebuild that re-checks which commits are still
-    // waiting to sync. Switching away and back skips the rebuild when nothing
-    // changed, so this is the explicit way to re-scan after a commit/publish.
-    m_commitsRefreshButton = new QPushButton("Refresh");
-    m_commitsRefreshButton->setObjectName("ghostButton");
-    m_commitsRefreshButton->setCursor(Qt::PointingHandCursor);
-    // Idle icon drawn by refreshPixmap (angle 0) so the spinning state is the
-    // same glyph rotating, not a different icon swapping in.
-    m_commitsRefreshButton->setIcon(
-        QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
-    m_commitsRefreshButton->setToolTip(
-        "Reload the commit list and re-check which commits are waiting to sync");
-    connect(m_commitsRefreshButton, &QPushButton::clicked, this, [this] {
-        startCommitsRefreshSpin();
-        // Defer the (synchronous) git + table rebuild one event-loop turn: the
-        // click returns immediately so the button feels responsive and the
-        // spinner paints before the reload briefly blocks the UI thread.
-        QTimer::singleShot(0, this, [this] {
-            loadCommits();
-            // The reload is near-instant, so stop on a short delay: that lets the
-            // spinner actually rotate a few frames as confirmation. The list is
-            // already rebuilt and interactive by now, so this tail is feedback,
-            // not blocking latency.
-            QTimer::singleShot(250, this, [this] { stopCommitsRefreshSpin(); });
-        });
-    });
+    // Fetch / Pull, VS-Code style. Fetch refreshes this repo's refs from the
+    // network (mirror + any upstream remote) without touching the working tree;
+    // Pull fast-forwards the working tree from its upstream (or the served
+    // mirror when no upstream is configured).
+    m_commitsFetchButton = new QPushButton("Fetch");
+    m_commitsFetchButton->setObjectName("ghostButton");
+    m_commitsFetchButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_commitsFetchButton, "cloud", 16);
+    m_commitsFetchButton->setToolTip(
+        "Fetch the latest history from the network without changing your "
+        "working tree, then reload this list");
+    connect(m_commitsFetchButton, &QPushButton::clicked, this,
+            &MainWindow::fetchCurrentRepo);
 
-    // Turn the multi-selected commits into a shareable summary / X post.
-    m_commitsGenerateButton = new QPushButton("Generate post");
-    m_commitsGenerateButton->setObjectName("ghostButton");
-    m_commitsGenerateButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_commitsGenerateButton, "broadcast", 16);
-    m_commitsGenerateButton->setToolTip(
-        "Select one or more commits (Ctrl/Shift-click), then draft a release note "
-        "and an X/Twitter post from them");
-    connect(m_commitsGenerateButton, &QPushButton::clicked, this,
-            &MainWindow::generatePostFromSelectedCommits);
+    m_commitsPullButton = new QPushButton("Pull");
+    m_commitsPullButton->setObjectName("ghostButton");
+    m_commitsPullButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_commitsPullButton, "download", 16);
+    m_commitsPullButton->setToolTip(
+        "Fast-forward the working tree to the latest fetched history "
+        "(git pull --ff-only)");
+    connect(m_commitsPullButton, &QPushButton::clicked, this,
+            &MainWindow::pullCurrentRepo);
 
     // Current-branch indicator + switcher: shows the checked-out branch and opens
     // a dropdown to check out another branch (or create one), like a git client.
@@ -8039,8 +8258,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
     searchRow->setSpacing(8);
     searchRow->addWidget(m_commitsBranchButton);
     searchRow->addWidget(m_commitSearch, 1);
-    searchRow->addWidget(m_commitsGenerateButton);
-    searchRow->addWidget(m_commitsRefreshButton);
+    searchRow->addWidget(m_commitsFetchButton);
+    searchRow->addWidget(m_commitsPullButton);
 
     // Infinite scroll: when the list reaches the bottom and older history remains,
     // deepen the window and rebuild (loadMoreCommits preserves the scroll spot).
@@ -8062,6 +8281,27 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // flags. When hidden it collapses to zero height and the table reclaims it.
     listLayout->addLayout(searchRow);
     listLayout->addWidget(m_commitsUnsyncedBanner);
+    // Files touched by the pending-sync commits, shown when the banner's
+    // "Show files" link is toggled: one expandable entry per pending commit.
+    m_commitsUnsyncedFiles = new QTreeWidget(listPage);
+    m_commitsUnsyncedFiles->setObjectName("commitsUnsyncedFiles");
+    m_commitsUnsyncedFiles->setHeaderHidden(true);
+    m_commitsUnsyncedFiles->setRootIsDecorated(true);
+    m_commitsUnsyncedFiles->setMaximumHeight(180);
+    enableHoverRowHighlight(m_commitsUnsyncedFiles);
+    connect(m_commitsUnsyncedFiles, &QTreeWidget::itemClicked, this,
+            [this](QTreeWidgetItem *item, int) {
+                if (!item)
+                    return;
+                const QString hash = item->data(0, Qt::UserRole).toString();
+                if (hash.isEmpty())
+                    return;
+                m_pendingCommitFileScroll =
+                    item->data(0, Qt::UserRole + 1).toString();
+                showCommit(hash);
+            });
+    m_commitsUnsyncedFiles->hide();
+    listLayout->addWidget(m_commitsUnsyncedFiles);
     listLayout->addWidget(m_commitsTable);
 
     // --- Page 1: the GitHub-style commit diff view.
@@ -8078,17 +8318,24 @@ QWidget *MainWindow::buildRepoCommitsTab()
     setOcticon(m_commitNextButton, "chevron-right", 16);
     m_commitPrevButton->setToolTip("Show the previous (newer) commit");
     m_commitNextButton->setToolTip("Show the next (older) commit");
-    auto goToCommitRow = [this](int row) {
-        if (!m_commitsTable || row < 0 || row >= m_commitsTable->rowCount())
+    // Walks in `dir` (-1 newer / +1 older) past any expanded file rows to the
+    // next actual commit row.
+    auto goToCommitRow = [this](int row, int dir) {
+        if (!m_commitsTable)
             return;
-        QTableWidgetItem *it = m_commitsTable->item(row, kCommitSummaryCol);
-        if (it)
-            showCommit(it->data(Qt::UserRole).toString());
+        while (row >= 0 && row < m_commitsTable->rowCount()) {
+            QTableWidgetItem *it = m_commitsTable->item(row, kCommitSummaryCol);
+            if (it && it->data(kCommitRowKindRole).toInt() == 0) {
+                showCommit(it->data(Qt::UserRole).toString());
+                return;
+            }
+            row += dir;
+        }
     };
     connect(m_commitPrevButton, &QPushButton::clicked, this,
-            [this, goToCommitRow] { goToCommitRow(m_currentCommitRow - 1); });
+            [this, goToCommitRow] { goToCommitRow(m_currentCommitRow - 1, -1); });
     connect(m_commitNextButton, &QPushButton::clicked, this,
-            [this, goToCommitRow] { goToCommitRow(m_currentCommitRow + 1); });
+            [this, goToCommitRow] { goToCommitRow(m_currentCommitRow + 1, +1); });
 
     m_commitTitle = new QLabel;
     m_commitTitle->setObjectName("repoHeaderTitle");
@@ -8498,32 +8745,6 @@ void MainWindow::stopRefreshSpin()
     if (m_refreshButton)
         m_refreshButton->setIcon(
             QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 22)));
-}
-
-void MainWindow::startCommitsRefreshSpin()
-{
-    if (!m_commitsRefreshButton)
-        return;
-    if (!m_commitsRefreshSpinTimer) {
-        m_commitsRefreshSpinTimer = new QTimer(this);
-        connect(m_commitsRefreshSpinTimer, &QTimer::timeout, this, [this] {
-            m_commitsRefreshAngle = (m_commitsRefreshAngle + 30) % 360;
-            if (m_commitsRefreshButton)
-                m_commitsRefreshButton->setIcon(QIcon(refreshPixmap(
-                    QColor(Theme::kTextTertiary), m_commitsRefreshAngle, 16)));
-        });
-    }
-    m_commitsRefreshSpinTimer->start(60);
-}
-
-void MainWindow::stopCommitsRefreshSpin()
-{
-    if (m_commitsRefreshSpinTimer)
-        m_commitsRefreshSpinTimer->stop();
-    m_commitsRefreshAngle = 0;
-    if (m_commitsRefreshButton)
-        m_commitsRefreshButton->setIcon(
-            QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
 }
 
 void MainWindow::startCommitDiffSpin()

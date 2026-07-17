@@ -173,11 +173,15 @@ QWidget *MainWindow::buildSourceControlPanel()
         b->setCursor(Qt::PointingHandCursor);
     }
 
+    // The message field gets the full panel width on its own row (VS-Code
+    // style), with the generation and stage/commit controls in a row beneath it
+    // — so the compose area stays usable in a narrow pane.
+    root->addWidget(m_scmMessage);
+
     m_scmControlsPanel = new QWidget;
     auto *composeRow = new QHBoxLayout(m_scmControlsPanel);
     composeRow->setContentsMargins(0, 0, 0, 0);
     composeRow->setSpacing(6);
-    composeRow->addWidget(m_scmMessage, 1);
     composeRow->addWidget(m_scmGenerateButton);
     composeRow->addWidget(m_scmGenModel);
     composeRow->addWidget(m_scmGenKind);
@@ -190,6 +194,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     composeRow->addWidget(m_scmCommitButton);
     composeRow->addWidget(m_scmCommitPushButton);
     composeRow->addWidget(m_scmStageCommitPushButton);
+    composeRow->addStretch();
 
     // This is deliberately a dense power-user toolbar, but it must not impose
     // its full one-line width on the surrounding commit-workspace splitter.
