@@ -117,7 +117,7 @@ def _inbox_env(log, known_remote=False):
     async def _ap_forget_remote(env, actor_id):
         log.append(("forget", actor_id))
 
-    return _load("ap_inbox_handler", extra_globals={
+    return _load("ap_inbox_handler", "_ap_note_repo_mention", extra_globals={
         "json": json,
         "urlparse": urlparse,
         "method_name": lambda request: request.method,

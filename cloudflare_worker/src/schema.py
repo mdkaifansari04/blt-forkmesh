@@ -431,6 +431,12 @@ SCHEMA_STATEMENTS = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, context_bi TEXT NOT NULL,
         remote_id_bi TEXT UNIQUE, data TEXT NOT NULL, ts INTEGER NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_ap_comments_context ON ap_comments(context_bi, ts)",
+    # Inbound repo-actor mentions already processed into an issue-inbox
+    # submission (or confidently classified as not-an-issue), keyed by
+    # blind_index("ap-mention:<note id>") — dedupes fediverse redeliveries so
+    # one Mastodon post can never file the same issue twice (migration 0037).
+    """CREATE TABLE IF NOT EXISTS ap_mentions (
+        remote_id_bi TEXT PRIMARY KEY, ts INTEGER NOT NULL)""",
     # Outbound delivery queue (no Cloudflare Queues on the free plan): one row
     # per (activity, destination inbox). A publish inserts rows and best-effort
     # drains a few inline; the cron drains the rest with capped backoff.
