@@ -32,6 +32,18 @@
             "sig": "rZFfHV2O_y8JcvbjLRfa7fiO9yYuaYPsGFG4jY160cz-t75UEQAh3JlmCOfhJKlpikS0BiDQxV4UNQWLko3YBA",
             "ts": 1784325006678,
             "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 34,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "34dfa9e9-2f01-4970-ba07-7966dfa37d93",
+            "sig": "WZiynxih7rc4BWaxkrn5X_x9kil1JNj1EiQwKnkqukL5xLohrQUflJCUZA1ueDbRb05zLXhfoL-3BJaqfP4iAQ",
+            "ts": 1784325020706,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -44,6 +56,6 @@
     "startDate": 0,
     "status": "open",
     "title": "when the bounty is received it can close the window",
-    "updatedAt": 1784325006678,
+    "updatedAt": 1784325020706,
     "votes": 0
 }
