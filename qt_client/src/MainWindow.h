@@ -1401,6 +1401,10 @@ private:
     void noteAgentActivity(int sessionId, int bytes = 0);
     void onScannerTick();
     void showAgentSession(int sessionId);
+    // Rebuild only the detail header's meta lines (identity + issue/branch/worktree
+    // /PR chips + run Stats), without a transcript rebuild — used by the live
+    // token/cost/run-summary update paths and the running-row ticker (adhoc #42).
+    void refreshAgentDetailMeta(int sessionId);
     // Detail-header permission-mode selector (adhoc #26): sync the combo to the
     // shown session (and hide it for providers without a mode), and apply a live
     // change back onto the selected session.
