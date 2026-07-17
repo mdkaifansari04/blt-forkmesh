@@ -9966,6 +9966,7 @@
       host_online: "wifi",
       host_offline: "wifi-off",
       pending_inbox: "inbox",
+      mirror_request: "radio",
     })[kind] || "bell";
   }
 
