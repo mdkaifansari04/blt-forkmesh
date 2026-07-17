@@ -149,7 +149,14 @@
     return `<div class="animate-pulse" role="status" aria-label="Loading tree…">${cells}<span class="sr-only">Loading tree…</span></div>`;
   }
 
-  async function loadRepositoryTree(repo, path = "") {
+  async function loadRepositoryTree(repo, path = "", options = {}) {
+    // background: warm the Code tab's tree/README underneath another visible
+    // tab. A refresh on /owner/repo/issues restores the Issues tab first and
+    // then preloads the tree — that preload must not steal the visible tab
+    // (setRepoTab) or rewrite the address bar back to the repo root
+    // (navigateHistory), which is what used to snap every refreshed feature
+    // tab back to the main repo page.
+    const background = options.background === true;
     const detail = $("[data-repo-detail]");
     if (!detail) return;
     const treeBody = detail.querySelector("[data-repo-tree]");
@@ -158,7 +165,7 @@
     const readmePanel = detail.querySelector("[data-repo-readme]");
     if (!treeBody) return;
 
-    setRepoTab("code");
+    if (!background) setRepoTab("code");
     treePanel?.classList.remove("hidden");
     viewer?.classList.add("hidden");
     readmePanel?.classList.toggle("hidden", Boolean(path));
@@ -191,7 +198,7 @@
       setRepoExplorerSelection(path, "tree");
       if (!entries.length) {
         treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">This directory is empty.</div>';
-        navigateHistory(repoPathUrl(repo, "tree", path));
+        if (!background) navigateHistory(repoPathUrl(repo, "tree", path));
         window.lucide?.createIcons();
         return;
       }
@@ -208,7 +215,7 @@
               <span class="shrink-0 text-xs text-muted-foreground font-mono">${escapeHtml(date)}</span>
             </button>`;
       }).join("");
-      navigateHistory(repoPathUrl(repo, "tree", path));
+      if (!background) navigateHistory(repoPathUrl(repo, "tree", path));
       window.lucide?.createIcons();
       if (!path) {
         const readmeEntry = entries.find((e) => e.type === "blob" && /^readme(\.md|\.txt|\.rst)?$/i.test(String(e.name || "")));
