@@ -164,7 +164,6 @@ def test_dashboard_profile_page_exposes_account_settings_and_danger_zone():
         "Password and authentication",
         "SSH and GPG keys",
         "Credentials",
-        "Organizations",
         "Enterprises",
         "Teams",
         "Moderation",
@@ -181,6 +180,7 @@ def test_dashboard_profile_page_exposes_account_settings_and_danger_zone():
         "notifications",
         "payout",
         "nodes",
+        "organizations",
         "danger",
     ):
         assert f'data-settings-section-link="{section}"' in dashboard

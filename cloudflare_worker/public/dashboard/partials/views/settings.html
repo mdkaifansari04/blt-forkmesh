@@ -70,6 +70,11 @@
                       <i data-lucide="radio-tower" class="h-5 w-5"></i>
                       Nodes
                     </button>
+                    <button data-settings-section-link="organizations" type="button" aria-current="false" class="relative flex h-10 items-center gap-3 rounded-md px-4 text-left text-muted-foreground hover:bg-secondary hover:text-foreground">
+                      <span data-settings-active-indicator class="absolute left-0 top-1/2 hidden h-6 w-1 -translate-y-1/2 rounded-full bg-[#2f81f7]"></span>
+                      <i data-lucide="building-2" class="h-5 w-5"></i>
+                      Organizations
+                    </button>
                     <button data-settings-section-link="danger" type="button" aria-current="false" class="relative flex h-10 items-center gap-3 rounded-md px-4 text-left text-muted-foreground hover:bg-secondary hover:text-foreground">
                       <span data-settings-active-indicator class="absolute left-0 top-1/2 hidden h-6 w-1 -translate-y-1/2 rounded-full bg-[#2f81f7]"></span>
                       <i data-lucide="circle-alert" class="h-5 w-5"></i>
@@ -368,6 +373,14 @@
                           Link node
                         </button>
                       </div>
+                    </div>
+                  </section>
+
+                  <section id="settings-organizations" data-settings-section="organizations" class="hidden pb-8">
+                    <h2 class="text-2xl font-semibold tracking-normal text-foreground">Organizations</h2>
+                    <p class="mt-1 text-sm text-muted-foreground">Create organizations to serve your repos at <span class="font-mono">/&lt;org&gt;/&lt;repo&gt;</span>, invite members, group them into permission teams, and link the repos an org fronts.</p>
+                    <div data-orgs-root class="mt-5 max-w-3xl">
+                      <p class="text-sm text-muted-foreground">Loading organizations…</p>
                     </div>
                   </section>
 
