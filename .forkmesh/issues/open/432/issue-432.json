@@ -32,6 +32,18 @@
             "sig": "tB4ZAp-mgdAfYpLxp4B89rv52y1CkOg-l4CMo36mvgBkk0dNqZqrhJ7YXVD8zeyf1sr0XE6XDp0YnnvWz5nkCQ",
             "ts": 1784332674755,
             "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "codex",
+            "agentSessionId": 64,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "6bdeb4b6-0a95-4156-bc1c-493b4d116eba",
+            "sig": "hjt1QXj7fi0P1myso73UpdSiyDJd_Efj5DzS1Fmed5S1MasFnISYKVNzl6uWhD6orcODG6qC_iLj1IcfoOzwBQ",
+            "ts": 1784332686245,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -44,6 +56,6 @@
     "startDate": 0,
     "status": "open",
     "title": "on this solana bounty popup show more info like who is the auhtor and all addresses involved with links to their explorer",
-    "updatedAt": 1784332674755,
+    "updatedAt": 1784332686245,
     "votes": 0
 }
