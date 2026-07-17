@@ -1,32 +1,48 @@
 {
-  "schema": "forkmesh-issue-v1",
-  "number": 385,
-  "title": "let users ask other nodes to mirror for them",
-  "status": "open",
-  "labels": [],
-  "milestone": "",
-  "priority": 0,
-  "progress": 0,
-  "assignees": [],
-  "createdAt": 1783218522,
-  "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
-  "authorName": "jett",
-  "bountyUsd": 0.0,
-  "bountyAddress": "",
-  "bountyStatus": "",
-  "events": [
-    {
-      "type": "open",
-      "id": "open-web-1783218522",
-      "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
-      "authorName": "jett",
-      "ts": 1783218522,
-      "title": "let users ask other nodes to mirror for them",
-      "body": "",
-      "attachments": [],
-      "sig": "fz58f8zQmhTEkVLEOFGqDDzv-AYPwQBxKyuiOv04kqxbt5BDYUlRoVTMvjfniUM_XXfjfslE8wbV5ii28AVwCg"
-    }
-  ],
-  "votes": 0,
-  "updatedAt": 1783218522
+    "assignees": [
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783218522,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783218522",
+            "sig": "fz58f8zQmhTEkVLEOFGqDDzv-AYPwQBxKyuiOv04kqxbt5BDYUlRoVTMvjfniUM_XXfjfslE8wbV5ii28AVwCg",
+            "title": "let users ask other nodes to mirror for them",
+            "ts": 1783218522,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "for instance if I am a user on a separate instance and I want to have a node from another instnace mirror my repo I can click a button \"ask node to mirror your repo\" and then they will get a notification and if they accept their node will start mirroring my repo ",
+            "id": "e6eef370-0a90-45b2-a2b4-670a4b34f0c7",
+            "sig": "lmRsEtdzb8CCWAiS_FiYvwP9dqMwpX0Qf_nCRRMgG9Du4Barc00XdUuZUuxp-W0XNreAGcw0QkGNDckzDvExCQ",
+            "ts": 1784325886135,
+            "type": "comment"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 385,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "let users ask other nodes to mirror for them",
+    "updatedAt": 1784325886135,
+    "votes": 0
 }
