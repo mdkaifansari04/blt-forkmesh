@@ -2932,6 +2932,10 @@ private:
     void onCoveOpened(const QString &creatorKey, const QString &coveId,
                       const QString &coveName, const QString &openerKey,
                       const QString &openerName, qint64 ts, const QString &signature);
+    // A peer granted us (inviteeAccount matches our account) access to an
+    // account-scoped cove. Raise a notification so we know to go look.
+    void onCoveInvited(const QString &inviteeAccount, const QString &coveId,
+                       const QString &coveName, const QString &inviterName, qint64 ts);
     void quickRebuildRestart();
     void changeMirrorLocation();
     void changePreviewCacheLocation();
