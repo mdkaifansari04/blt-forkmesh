@@ -867,7 +867,10 @@ public:
         : QWidget(parent), m_title(title), m_remainingMode(remainingMode)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedSize(60, 30);
+        // Two thin vertical bars (5h + weekly) that ride in the prompt toolbar
+        // (adhoc #47). No inline text — the label/figures live in the hover
+        // tooltip only, so the strip stays tiny next to the send buttons.
+        setFixedSize(15, 22);
         refreshTooltip();
     }
 
@@ -939,32 +942,29 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
-        QFont f = font();
-        f.setPointSizeF(qMax(6.0, f.pointSizeF() - 2.0));
-        p.setFont(f);
-        const QFontMetrics fm(f);
 
-        const char *labels[2] = {"5h", "wk"};
+        // Two vertical gauges side by side: 5-hour on the left, weekly on the
+        // right. Each is an empty track filling from the bottom to its
+        // utilisation and tinted by barColor(); -1 (unknown) leaves it empty.
         const int vals[2] = {m_fiveHour, m_weekly};
-        const int labelW = fm.horizontalAdvance(QStringLiteral("wk")) + 4;
-        const int barH = 5;
-        const int rowH = height() / 2;
+        const qreal barW = 4.0;
+        const qreal gap = 3.0;
+        const qreal totalW = 2 * barW + gap;
+        qreal x = (width() - totalW) / 2.0;
+        const qreal top = 1.0;
+        const qreal trackH = height() - 2.0;
         for (int i = 0; i < 2; ++i) {
-            const QRect rowRect(0, i * rowH, width(), rowH);
-            p.setPen(textColor(170));
-            p.drawText(QRect(rowRect.left(), rowRect.top(), labelW, rowRect.height()),
-                       Qt::AlignVCenter | Qt::AlignLeft, QString::fromLatin1(labels[i]));
-            const qreal top = rowRect.center().y() - barH / 2.0;
-            const QRectF track(labelW, top, width() - labelW, barH);
+            const QRectF track(x, top, barW, trackH);
             p.setPen(Qt::NoPen);
             p.setBrush(textColor(38));
-            p.drawRoundedRect(track, barH / 2.0, barH / 2.0);
+            p.drawRoundedRect(track, barW / 2.0, barW / 2.0);
             if (vals[i] > 0) {
-                QRectF fill(track);
-                fill.setWidth(track.width() * vals[i] / 100.0);
+                const qreal fillH = trackH * qBound(0, vals[i], 100) / 100.0;
+                const QRectF fill(x, top + trackH - fillH, barW, fillH);
                 p.setBrush(barColor(vals[i]));
-                p.drawRoundedRect(fill, barH / 2.0, barH / 2.0);
+                p.drawRoundedRect(fill, barW / 2.0, barW / 2.0);
             }
+            x += barW + gap;
         }
     }
 
