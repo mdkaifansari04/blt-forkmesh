@@ -6847,12 +6847,12 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
         return found;
     };
     // Post-split layout (adhoc #14): the folder IS the status — open/<n>
-    // counts as open, closed/<n> as closed. A deleted (tombstoned) issue keeps
-    // its open/ folder for federation but is not open — the Issues tab and lists
-    // drop it (Issue::isDeleted), so the advertised count must too, or it drifts
-    // above the tab (adhoc #16). Detecting a delete/self event needs the record,
-    // so read the open/ blobs (open issues are few); closed/ folders are never
-    // open regardless.
+    // counts as open, closed/<n> as closed. An issue its own creator deleted is
+    // not open — the Issues tab and lists drop it (Issue::isDeleted), so the
+    // advertised count must too, or it drifts above the tab (adhoc #16). A
+    // delete/self event from anyone else is an unauthorized attempt that still
+    // counts. Deciding needs the record, so read the open/ blobs (open issues
+    // are few); closed/ folders are never open regardless.
     auto recordTombstoned = [&](const QString &name) {
         QByteArray blob;
         if (!runGitCapture(
@@ -6866,12 +6866,23 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
                                       .object()
                                       .value(QStringLiteral("events"))
                                       .toArray();
+        QString creator;
+        for (const QJsonValue &value : events) {
+            const QJsonObject event = value.toObject();
+            if (event.value(QStringLiteral("type")).toString() ==
+                QLatin1String("open")) {
+                creator = event.value(QStringLiteral("author")).toString();
+                break;
+            }
+        }
         for (const QJsonValue &value : events) {
             const QJsonObject event = value.toObject();
             if (event.value(QStringLiteral("type")).toString() ==
                     QLatin1String("delete") &&
                 event.value(QStringLiteral("target")).toString() ==
-                    QLatin1String("self"))
+                    QLatin1String("self") &&
+                !creator.isEmpty() &&
+                event.value(QStringLiteral("author")).toString() == creator)
                 return true;
         }
         return false;

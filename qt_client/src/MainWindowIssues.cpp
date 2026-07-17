@@ -1849,6 +1849,13 @@ void MainWindow::refreshIssueList()
             continue;
         if (!msFilter.isEmpty() && issue.milestone != msFilter)
             continue;
+        // An issue its creator deleted is still shown (adhoc #16 — surface it,
+        // don't hide it) but only under the "All" view, badged as Deleted, so it
+        // doesn't pad the Open/Closed lists that the tab count tracks. An
+        // unauthorized deletion attempt does NOT delete the issue, so it stays in
+        // its normal Open/Closed list with a warning badge below.
+        if (issue.isDeleted() && statusFilter != "All")
+            continue;
         // Free-text search over number, title, priority, labels and milestone.
         if (!search.isEmpty()) {
             const QString hay = QStringLiteral("#%1 %2 %3 %4 %5")
@@ -1888,10 +1895,26 @@ void MainWindow::refreshIssueList()
         priority->setToolTip("1 is highest priority; 99 is lowest");
         m_issueTable->setItem(row, 2, priority);
 
-        auto *status = new QTableWidgetItem(issue.status == "closed" ? "Closed"
-                                                                     : "Open");
-        status->setForeground(QColor(issue.status == "closed" ? "#f85149"
-                                                              : "#3fb950"));
+        QString statusText = issue.status == "closed" ? "Closed" : "Open";
+        QColor statusColor(issue.status == "closed" ? "#f85149" : "#3fb950");
+        QString statusTip;
+        if (issue.isDeleted()) {
+            statusText = QStringLiteral("Deleted");
+            statusColor = QColor("#8b949e");
+            statusTip = QStringLiteral("Deleted by its author.");
+        } else if (issue.hasUnauthorizedDeleteAttempt()) {
+            // Kept visible on purpose (adhoc #16): flag the attempt rather than
+            // let a non-author silently hide the issue.
+            statusText += QStringLiteral(" ⚠");
+            statusColor = QColor("#d29922");
+            statusTip = QStringLiteral(
+                "Someone who did not open this issue tried to delete it; the "
+                "deletion was not applied.");
+        }
+        auto *status = new QTableWidgetItem(statusText);
+        status->setForeground(statusColor);
+        if (!statusTip.isEmpty())
+            status->setToolTip(statusTip);
         m_issueTable->setItem(row, 3, status);
         auto *votes = new QTableWidgetItem;
         votes->setData(Qt::DisplayRole, issue.votes); // numeric sort

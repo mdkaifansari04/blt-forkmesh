@@ -87,8 +87,10 @@ def test_dashboard_js_loads_issues_from_git_tree_and_counts_open():
     assert 'issuesView.filter = "open";' in load
     # The badge counts open issues (status != "closed", matching the desktop
     # advert; adhoc #96) across the mirror list plus any persisted offline-owner
-    # submissions folded in (merged; see issue #379).
-    assert 'setRepoTabCount("issues", merged.filter((issue) => issue.status !== "closed").length);' in load
+    # submissions folded in (merged; see issue #379). A creator-deleted issue is
+    # excluded; an unauthorized deletion attempt still counts (adhoc #16).
+    assert 'issue.status !== "closed" && !issue.deleted).length' in load
+    assert 'setRepoTabCount("issues", openIssues);' in load
     assert "renderRepoIssues();" in load
 
 
