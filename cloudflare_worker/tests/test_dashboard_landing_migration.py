@@ -2033,7 +2033,10 @@ def test_dashboard_restores_feature_tab_on_hard_refresh():
     # the account that can see it, so tab-route membership goes through
     # repoTabRoutesFor(repo) (REPO_TAB_ROUTES + "agents" when owner/admin)
     # instead of the bare REPO_TAB_ROUTES constant.
-    assert 'setRepoTab(repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code");' in render_body
+    # adhoc #61: the restored tab is computed once (initialTab) so the Code
+    # tree warm-up below it can be gated to background mode when it isn't Code.
+    assert 'const initialTab = repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code";' in render_body
+    assert "setRepoTab(initialTab);" in render_body
 
 
 def test_dashboard_hard_refresh_preserves_tab_through_404_bounce():
