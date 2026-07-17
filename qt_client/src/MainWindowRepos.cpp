@@ -4348,6 +4348,8 @@ void MainWindow::onAvatarChosen(const QByteArray &pngData)
     updateAvatarButton();
     updateUserAvatarButton();
     updateChatIdentity();
+    // Persist to the account so the web dashboard shows the same avatar.
+    pushAccountAvatar();
 }
 
 void MainWindow::logout()
