@@ -503,12 +503,12 @@ const QLatin1String kAgentLinkScheme("forkmesh-agent:");
 
 // Lane geometry, shared between the column-width calc and the delegate so the
 // dots line up with the section width.
-constexpr int kGraphLaneWidth = 14;
-constexpr int kGraphMargin = 9;
+constexpr int kGraphLaneWidth = 12;
+constexpr int kGraphMargin = 8;
 // Commit node is drawn as a "bullseye": a hollow ring with a filled centre,
-// matching the VS Code git-graph look.
-constexpr qreal kGraphNodeOuter = 4.5; // outer ring radius
-constexpr qreal kGraphNodeInner = 1.8; // centre-dot radius
+// matching the VS Code git-graph look. Kept compact so the rows read tight.
+constexpr qreal kGraphNodeOuter = 3.8; // outer ring radius
+constexpr qreal kGraphNodeInner = 1.6; // centre-dot radius
 
 // Stable per-lane colour so a branch keeps its hue down the whole graph.
 inline QColor commitGraphLaneColor(int lane)
@@ -584,16 +584,27 @@ public:
         // S-curve that bends across the middle (the git-graph house style).
         auto connect = [&](qreal x0, qreal y0, qreal x1, qreal y1,
                            const QColor &c) {
-            painter->setPen(QPen(c, 2));
+            // Round caps/joins keep the lanes and their curves smooth where they
+            // meet nodes and each other; a slightly thinner stroke reads cleaner
+            // at the compact row height.
+            QPen pen(c, 1.8);
+            pen.setCapStyle(Qt::RoundCap);
+            pen.setJoinStyle(Qt::RoundJoin);
+            painter->setPen(pen);
+            painter->setBrush(Qt::NoBrush);
             if (qFuzzyCompare(x0, x1)) {
-                painter->setBrush(Qt::NoBrush);
                 painter->drawLine(QPointF(x0, y0), QPointF(x1, y1));
                 return;
             }
+            // A rounded elbow: run vertically out of each endpoint, then turn
+            // through a tight corner near the row's midline instead of a lazy
+            // full-height S — the GitLens/VS Code graph look. Control points sit
+            // close to the mid-row so the bend is rounder and more compact.
             QPainterPath path(QPointF(x0, y0));
-            const qreal cy = (y0 + y1) / 2.0;
-            path.cubicTo(QPointF(x0, cy), QPointF(x1, cy), QPointF(x1, y1));
-            painter->setBrush(Qt::NoBrush);
+            const qreal dir = (y1 > y0) ? 1.0 : -1.0;
+            const qreal bend = qMin(qAbs(y1 - y0) / 2.0, qreal(kGraphLaneWidth));
+            path.cubicTo(QPointF(x0, y0 + dir * bend),
+                         QPointF(x1, y1 - dir * bend), QPointF(x1, y1));
             painter->drawPath(path);
         };
 
@@ -667,10 +678,10 @@ public:
         const QFontMetrics fm(option.font);
         // Messages align at a fixed left edge (flush with the grid) rather than
         // tracking the commit's coloured lane, so every row's text lines up no
-        // matter how deep its branch sits in the graph. The left inset is kept
-        // tight so the text sits right up against the graph gutter's lanes with
-        // no dead gap (issue #52).
-        QRect r = option.rect.adjusted(1, 0, -8, 0);
+        // matter how deep its branch sits in the graph. A small left gap keeps the
+        // text clearly to the right of the graph gutter's lanes instead of sitting
+        // right up against them (adhoc #59).
+        QRect r = option.rect.adjusted(6, 0, -8, 0);
         const QColor dim("#8b949e");
 
         painter->save();
