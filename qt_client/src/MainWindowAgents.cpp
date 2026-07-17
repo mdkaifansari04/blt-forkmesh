@@ -1093,23 +1093,18 @@ QWidget *MainWindow::buildAgentsTab()
     agentOutputLayout->addWidget(m_agentOutputToggle);
     agentOutputLayout->addWidget(m_agentOutputStack, 1);
 
-    // The new "row with two tabs" (issue #131): Agent | Files changed.
-    m_agentDetailTabs = new QTabWidget;
-    m_agentDetailTabs->setObjectName("agentDetailTabs");
-    m_agentDetailTabs->addTab(agentOutputPage, QStringLiteral("Agent"));
-    m_agentFilesTabIndex =
-        m_agentDetailTabs->addTab(filesChangedPage, QStringLiteral("Files changed"));
-    // Opening the Files-changed tab recomputes the diff straight from git, so the
-    // panel always reflects the branch's current state. It used to refresh only on
-    // transcript events, so after a quiet spell (or once a run finished) it went
-    // stale and the user had to click the branch link to see the real changes
-    // (adhoc #20).
-    connect(m_agentDetailTabs, &QTabWidget::currentChanged, this, [this](int index) {
-        if (index == m_agentFilesTabIndex && m_selectedAgentSessionId > 0)
-            refreshAgentFilesPanel(m_selectedAgentSessionId);
-    });
+    // The "Files changed" tab (issue #131) has been removed (adhoc #42): it had
+    // stopped reflecting the branch reliably, and the workflow settled on opening
+    // the branch itself to review and merge. Dropping the tab strip opens the
+    // detail container straight onto the Agent transcript — no double tab row, no
+    // border, more vertical room. The files-changed widgets are still built (kept
+    // parented + hidden) so the code that updates them stays a harmless no-op
+    // rather than touching destroyed widgets; m_agentDetailTabs stays null, so the
+    // remaining `if (m_agentDetailTabs ...)` guards short-circuit.
+    filesChangedPage->setParent(detailPane);
+    filesChangedPage->hide();
 
-    auto *outputContainer = m_agentDetailTabs;
+    auto *outputContainer = agentOutputPage;
     outputContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     // Issue #84: the 5-hour/weekly usage gauges and the live token/cost counter
@@ -1167,7 +1162,7 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->addLayout(topRow);
     detailLayout->addWidget(m_agentMeta);
     detailLayout->addWidget(m_agentNetPanel);
-    detailLayout->addWidget(outputContainer, 1); // the Agent | Files changed tabs
+    detailLayout->addWidget(outputContainer, 1); // the Agent transcript + Raw toggle
 
     m_agentDetail = detailPane;
     // Open full width: the table fills the page until a session is selected, at
