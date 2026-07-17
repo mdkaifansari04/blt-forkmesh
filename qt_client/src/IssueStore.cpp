@@ -649,6 +649,53 @@ QString IssueStore::substituteAttachmentPlaceholders(
 
 // ---- Loading ---------------------------------------------------------------
 
+// The issue's creator is the author of its "open" event.
+static QString issueCreatorAuthor(const Issue &issue)
+{
+    for (const IssueEvent &ev : issue.events)
+        if (ev.type == QLatin1String("open"))
+            return ev.author;
+    return QString();
+}
+
+// A delete/self tombstone is only authoritative when signed by the issue's own
+// creator (a self-deletion) or the repo owner (moderation — the owner's Delete
+// button signs the tombstone with the owner key). Anyone else's delete event is
+// unauthorized: honouring a stranger's tombstone silently drops a valid open
+// issue from every list and count. adhoc #16 — issues #414/#415, created by
+// k4oWb, were tombstoned by w0F5 (neither their author nor the repo owner),
+// which dragged the Issues tab down to 7 when the real open count is 9.
+static bool deleteAuthorAuthorized(const QString &deleteAuthor,
+                                   const QString &creator,
+                                   const QString &ownerPubkey)
+{
+    if (deleteAuthor.isEmpty())
+        return false;
+    if (!creator.isEmpty() && deleteAuthor == creator)
+        return true;
+    return !ownerPubkey.isEmpty() && deleteAuthor == ownerPubkey;
+}
+
+// Drop any delete/self tombstone on `issue` that neither its creator nor the
+// repo owner signed. Returns true when something was removed (the issue is no
+// longer tombstoned and should be healed back to visible/counted). Comment
+// deletes (target == an event id) are left alone here.
+static bool stripUnauthorizedTombstones(Issue &issue, const QString &ownerPubkey)
+{
+    const QString creator = issueCreatorAuthor(issue);
+    const int before = issue.events.size();
+    issue.events.erase(
+        std::remove_if(issue.events.begin(), issue.events.end(),
+                       [&](const IssueEvent &ev) {
+                           return ev.type == QLatin1String("delete") &&
+                                  ev.target == QLatin1String("self") &&
+                                  !deleteAuthorAuthorized(ev.author, creator,
+                                                          ownerPubkey);
+                       }),
+        issue.events.end());
+    return issue.events.size() != before;
+}
+
 QList<Issue> IssueStore::loadAll(QString *error, const std::function<void()> &tick) const
 {
     if (!canWrite())
@@ -682,9 +729,22 @@ QList<Issue> IssueStore::loadAll(QString *error, const std::function<void()> &ti
                 if (!root.second.isEmpty())
                     folderStatus.insert(number, root.second);
             }
+    // Heal issues a stranger tombstoned before ingest authorization existed:
+    // strip the unauthorized delete/self events and rewrite the record so the
+    // wrongly-hidden issue comes back for everyone once this node republishes
+    // (adhoc #16). Only the owning node (canWrite) does this, and only when it
+    // actually removes something, so a clean repo commits nothing.
+    const QString ownerPubkey =
+        m_identity ? m_identity->publicKey() : QString();
+    bool healed = false;
     for (int number : std::as_const(numbers)) {
         Issue issue;
         if (readIssueFile(number, issue)) {
+            if (stripUnauthorizedTombstones(issue, ownerPubkey)) {
+                recomputeMetadata(issue);
+                if (writeIssueFile(issue, nullptr))
+                    healed = true;
+            }
             const QString folder = folderStatus.value(number);
             if (!folder.isEmpty())
                 issue.status = folder;
@@ -708,6 +768,9 @@ QList<Issue> IssueStore::loadAll(QString *error, const std::function<void()> &ti
         if (tick)
             tick();
     }
+
+    if (healed)
+        commit(QStringLiteral("issues: drop unauthorized delete events"), nullptr);
 
     std::sort(issues.begin(), issues.end(),
               [](const Issue &a, const Issue &b) { return a.number < b.number; });
@@ -1874,6 +1937,16 @@ bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
         placeholder.ts = ev.ts;
         issue.events.append(placeholder);
     }
+    // Only the issue's own creator or the repo owner may tombstone it (adhoc
+    // #16). Drop a delete/self event from anyone else instead of applying it —
+    // returning true so the relay inbox acks and stops resending, but the issue
+    // stays visible. Without this, any signed submitter could delete any repo's
+    // issues (issues #414/#415 were hidden exactly this way).
+    if (ev.type == QLatin1String("delete") &&
+        ev.target == QLatin1String("self") &&
+        !deleteAuthorAuthorized(ev.author, issueCreatorAuthor(issue),
+                                m_identity ? m_identity->publicKey() : QString()))
+        return true;
     // Voters may cast several votes (one per credit), so we no longer collapse
     // to one-per-author. We still ignore an event we've already merged (same id)
     // so re-syncing the inbox doesn't double-count the same vote.
