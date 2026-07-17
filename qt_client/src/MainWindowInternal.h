@@ -444,6 +444,16 @@ constexpr int kGraphLanesRole = Qt::UserRole + 20;    // QVariantList<int> lanes
 constexpr int kGraphNodeLaneRole = Qt::UserRole + 21; // int lane of this commit's dot
 constexpr int kGraphBottomLanesRole =
     Qt::UserRole + 22; // QVariantList<int> lanes at the row's bottom edge
+// VS-Code-style commit rows: a commit row expands in place to show the files it
+// touched. These roles live on the Summary item and drive CommitSummaryDelegate.
+constexpr int kCommitRowKindRole = Qt::UserRole + 23; // 0 = commit, 1 = file child row
+constexpr int kCommitExpandedRole = Qt::UserRole + 24; // bool: commit row is expanded
+constexpr int kCommitAuthorRole = Qt::UserRole + 25;   // author drawn right of the summary
+constexpr int kCommitUnsyncedRole = Qt::UserRole + 26; // bool: not yet on the mirror
+constexpr int kCommitFileAddsRole = Qt::UserRole + 27; // file row: added lines
+constexpr int kCommitFileDelsRole = Qt::UserRole + 28; // file row: deleted lines
+constexpr int kCommitFilePathRole = Qt::UserRole + 29; // file row: repo-relative path
+constexpr int kCommitRefsRole = Qt::UserRole + 30;     // branch/tag badges (QStringList)
 
 // URL scheme for the clickable worktree-location link in the agent session
 // header; the percent-encoded branch name follows. Clicking it opens that
@@ -621,6 +631,146 @@ public:
             painter->setBrush(c);
             painter->drawEllipse(QPointF(nx, yMid), kGraphNodeInner, kGraphNodeInner);
         }
+        painter->restore();
+    }
+};
+
+// Paints the commits list's Summary column the way VS Code's source-control
+// graph does: the text starts right beside the commit's own lane (so it shifts
+// with the graph), a chevron flags that the row expands into its files, the
+// author sits dimmed at the right edge, and expanded file rows show their
+// per-file +/− counts. All the metadata that used to live in table columns
+// (author / date / hash / files / adds / dels) now rides the item's tooltip.
+class CommitSummaryDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        // Background only (no default text/icon): strip the selection band the
+        // same way HoverRowDelegate does, then draw the green outline on top.
+        QStyleOptionViewItem opt(option);
+        initStyleOption(&opt, index);
+        opt.text.clear();
+        opt.icon = QIcon();
+        opt.features &= ~QStyleOptionViewItem::HasDecoration;
+        opt.state &= ~(QStyle::State_MouseOver | QStyle::State_Selected);
+        const QWidget *w = option.widget;
+        QStyle *style = w ? w->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, w);
+        paintRowSelectionBorder(painter, option, index);
+
+        const bool fileRow = index.data(kCommitRowKindRole).toInt() == 1;
+        // Indent to the commit's lane so the text tracks the coloured graph
+        // lines. Commit rows read the lane off their graph-gutter sibling; file
+        // rows carry their parent commit's lane on the item itself.
+        int lane = 0;
+        const QVariant ownLane = index.data(kGraphNodeLaneRole);
+        if (ownLane.isValid())
+            lane = ownLane.toInt();
+        else
+            lane = index.sibling(index.row(), kCommitGraphCol)
+                       .data(kGraphNodeLaneRole)
+                       .toInt();
+        lane = std::max(0, lane);
+
+        const QFontMetrics fm(option.font);
+        QRect r = option.rect.adjusted(6 + lane * kGraphLaneWidth, 0, -8, 0);
+        const QColor dim("#8b949e");
+
+        painter->save();
+        if (fileRow) {
+            r.adjust(18, 0, 0, 0); // nest files under their commit
+            const int adds = index.data(kCommitFileAddsRole).toInt();
+            const int dels = index.data(kCommitFileDelsRole).toInt();
+            const QString addsTxt = QStringLiteral("+%1").arg(adds);
+            const QString delsTxt =
+                QString::fromUtf8("\xE2\x88\x92%1").arg(dels);
+            const int delsW = fm.horizontalAdvance(delsTxt);
+            const int addsW = fm.horizontalAdvance(addsTxt);
+            painter->setPen(QColor("#f85149"));
+            painter->drawText(QRect(r.right() - delsW, r.top(), delsW, r.height()),
+                              Qt::AlignVCenter | Qt::AlignRight, delsTxt);
+            painter->setPen(QColor("#2ea043"));
+            painter->drawText(
+                QRect(r.right() - delsW - 6 - addsW, r.top(), addsW, r.height()),
+                Qt::AlignVCenter | Qt::AlignRight, addsTxt);
+            const int textW = r.width() - delsW - addsW - 20;
+            painter->setPen(dim);
+            painter->drawText(
+                QRect(r.left(), r.top(), std::max(0, textW), r.height()),
+                Qt::AlignVCenter | Qt::AlignLeft,
+                fm.elidedText(index.data(Qt::DisplayRole).toString(),
+                              Qt::ElideMiddle, std::max(0, textW)));
+            painter->restore();
+            return;
+        }
+
+        // Commit row: chevron (expand affordance) + checks icon + summary,
+        // author (and the amber unsynced marker) right-aligned.
+        const bool expanded = index.data(kCommitExpandedRole).toBool();
+        painter->setPen(dim);
+        painter->drawText(QRect(r.left(), r.top(), 12, r.height()),
+                          Qt::AlignVCenter | Qt::AlignLeft,
+                          expanded ? QString::fromUtf8("\xE2\x96\xBE")
+                                   : QString::fromUtf8("\xE2\x96\xB8"));
+        int x = r.left() + 16;
+        const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+        if (!icon.isNull()) {
+            const QRect ir(x, r.center().y() - 7, 14, 14);
+            icon.paint(painter, ir);
+            x += 18;
+        }
+        int rightEdge = r.right();
+        // Branch / tag badges (the VS Code graph's ref pills) lead the summary.
+        const QStringList refs = index.data(kCommitRefsRole).toStringList();
+        if (!refs.isEmpty()) {
+            painter->setRenderHint(QPainter::Antialiasing, true);
+            for (const QString &ref : refs) {
+                const int rw = fm.horizontalAdvance(ref) + 12;
+                if (x + rw > rightEdge - 80)
+                    break; // keep room for the summary itself
+                const QRect br(x, r.center().y() - fm.height() / 2 - 1, rw,
+                               fm.height() + 2);
+                painter->setPen(QPen(QColor("#58a6ff"), 1));
+                painter->setBrush(QColor(88, 166, 255, 26));
+                painter->drawRoundedRect(br, 6, 6);
+                painter->drawText(br, Qt::AlignCenter, ref);
+                x += rw + 5;
+            }
+            painter->setBrush(Qt::NoBrush);
+        }
+        const QString author = index.data(kCommitAuthorRole).toString();
+        if (!author.isEmpty()) {
+            const QString a =
+                fm.elidedText(author, Qt::ElideRight,
+                              std::max(40, r.width() / 4));
+            const int aw = fm.horizontalAdvance(a);
+            painter->setPen(dim);
+            painter->drawText(
+                QRect(rightEdge - aw, r.top(), aw, r.height()),
+                Qt::AlignVCenter | Qt::AlignRight, a);
+            rightEdge -= aw + 10;
+        }
+        if (index.data(kCommitUnsyncedRole).toBool()) {
+            const QString mark = QString::fromUtf8("\xE2\x96\xB2");
+            const int mw = fm.horizontalAdvance(mark);
+            painter->setPen(QColor("#d29922"));
+            painter->drawText(QRect(rightEdge - mw, r.top(), mw, r.height()),
+                              Qt::AlignVCenter | Qt::AlignRight, mark);
+            rightEdge -= mw + 8;
+        }
+        const QVariant fgVar = index.data(Qt::ForegroundRole);
+        painter->setPen(fgVar.isValid()
+                            ? qvariant_cast<QBrush>(fgVar).color()
+                            : option.palette.color(QPalette::Text));
+        const int textW = std::max(0, rightEdge - x);
+        painter->drawText(QRect(x, r.top(), textW, r.height()),
+                          Qt::AlignVCenter | Qt::AlignLeft,
+                          fm.elidedText(index.data(Qt::DisplayRole).toString(),
+                                        Qt::ElideRight, textW));
         painter->restore();
     }
 };
