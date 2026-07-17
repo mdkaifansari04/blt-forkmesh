@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
     "authorName": "jett",
@@ -32,6 +33,17 @@
             "sig": "gNfsykt_31qbvP5dPY-c8U88kU-u_ET99Idt-bVZ0s2s77gqMdfGslIegWSwX4lKAiqzL-DajtSFqwinMgqaBQ",
             "ts": 1784325058381,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "ec7d032c-671e-4e6b-a3f7-1d3462505f10",
+            "sig": "caLBQ1QnMSztPMom1ZpaqZTfBntkli6p12xnJHa6uNJ7hMsiOKYyfkVOTpJu53xWcNhLu3SyaU_ILZR0LFg9BQ",
+            "ts": 1784325058445,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -44,6 +56,6 @@
     "startDate": 0,
     "status": "open",
     "title": "ram seems too high on the mirror nodes make sure we're not taking up too much memory",
-    "updatedAt": 1784325058381,
+    "updatedAt": 1784325058445,
     "votes": 0
 }
