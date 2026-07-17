@@ -6822,27 +6822,49 @@ inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch
         if (cached != cache.constEnd() && cached->tip == tip)
             return cached->count;
     }
-    QByteArray out;
-    if (!runGitCapture(mirrorPath,
-                       {"ls-tree", "-z", branch + ":.forkmesh/issues"}, &out,
-                       nullptr))
-        return 0; // no .forkmesh/issues/ folder yet -> nothing filed
     static const QRegularExpression numericName(QStringLiteral("^[0-9]+$"));
-    QStringList names;
-    for (const QByteArray &record : out.split('\0')) {
-        if (record.isEmpty())
-            continue;
-        const int tab = record.indexOf('\t');
-        if (tab < 0)
-            continue;
-        const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
-        if (meta.size() < 2 || meta.at(1) != "tree")
-            continue;
-        const QString name = QString::fromUtf8(record.mid(tab + 1));
-        if (numericName.match(name).hasMatch())
-            names.append(name);
-    }
+    // Numeric child folders of one tree on the served branch; empty when the
+    // folder is absent.
+    auto numberedNames = [&](const QString &path) {
+        QStringList found;
+        QByteArray out;
+        if (!runGitCapture(mirrorPath, {"ls-tree", "-z", branch + ":" + path},
+                           &out, nullptr))
+            return found;
+        for (const QByteArray &record : out.split('\0')) {
+            if (record.isEmpty())
+                continue;
+            const int tab = record.indexOf('\t');
+            if (tab < 0)
+                continue;
+            const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+            if (meta.size() < 2 || meta.at(1) != "tree")
+                continue;
+            const QString name = QString::fromUtf8(record.mid(tab + 1));
+            if (numericName.match(name).hasMatch())
+                found.append(name);
+        }
+        return found;
+    };
+    // Post-split layout (adhoc #14): the folder IS the status — open/<n>
+    // counts as open, closed/<n> as closed, no blob reads needed.
+    QSet<QString> counted;
     int open = 0;
+    for (const QString &name :
+         numberedNames(QStringLiteral(".forkmesh/issues/open")))
+        if (!counted.contains(name)) {
+            counted.insert(name);
+            ++open;
+        }
+    for (const QString &name :
+         numberedNames(QStringLiteral(".forkmesh/issues/closed")))
+        counted.insert(name);
+    // Pre-split legacy folders (numbered dirs directly under the root) still
+    // carry the status only inside the record; batch-read those as before.
+    QStringList names;
+    for (const QString &name : numberedNames(QStringLiteral(".forkmesh/issues")))
+        if (!counted.contains(name))
+            names.append(name);
     if (!names.isEmpty()) {
         QByteArray batchIn;
         for (const QString &name : std::as_const(names))
@@ -6900,7 +6922,17 @@ inline int mirrorIssueCount(const QString &mirrorPath, const QString &branch)
 }
 inline int mirrorIssueMaxNumber(const QString &mirrorPath, const QString &branch)
 {
-    return mirrorNumberedDirMax(mirrorPath, branch, QStringLiteral(".forkmesh/issues"));
+    // Issues are split into open/ and closed/ status folders (adhoc #14);
+    // pre-split mirrors keep numbered dirs directly under the root. The max
+    // spans all three.
+    return qMax(mirrorNumberedDirMax(mirrorPath, branch,
+                                     QStringLiteral(".forkmesh/issues")),
+                qMax(mirrorNumberedDirMax(
+                         mirrorPath, branch,
+                         QStringLiteral(".forkmesh/issues/open")),
+                     mirrorNumberedDirMax(
+                         mirrorPath, branch,
+                         QStringLiteral(".forkmesh/issues/closed"))));
 }
 inline int mirrorPullCount(const QString &mirrorPath, const QString &branch)
 {

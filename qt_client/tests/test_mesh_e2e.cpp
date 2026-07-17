@@ -680,8 +680,8 @@ int main(int argc, char **argv)
                 item.value("titleIfNew").toString(), &drainError);
         }
         check(drained, QStringLiteral("owner drains inbox and commits the issue"));
-        check(QFileInfo::exists(
-                  QDir(workDir).filePath(QStringLiteral(".forkmesh/issues/1/issue-1.json"))),
+        check(QFileInfo::exists(QDir(workDir).filePath(QStringLiteral(
+                  ".forkmesh/issues/open/1/issue-1.json"))),
               QStringLiteral("drained issue is stored as one JSON file under .forkmesh"));
     }
 

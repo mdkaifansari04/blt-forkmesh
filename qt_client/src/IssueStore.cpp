@@ -27,6 +27,18 @@ constexpr int kGitRewriteTimeoutMs = 120000;
 
 QString issuesRootRel() { return QStringLiteral(".forkmesh/issues"); }
 
+// Issues are split by status: open ones live under .forkmesh/issues/open/<n>/,
+// closed ones under .forkmesh/issues/closed/<n>/ (the folder moves when the
+// status flips). Pre-split repos kept everything at .forkmesh/issues/<n>/;
+// readers accept that legacy layout too.
+QString openDirName() { return QStringLiteral("open"); }
+QString closedDirName() { return QStringLiteral("closed"); }
+
+QString statusDirNameFor(const QString &status)
+{
+    return status == QLatin1String("closed") ? closedDirName() : openDirName();
+}
+
 QString issueJsonFileName(int number)
 {
     return QStringLiteral("issue-%1.json").arg(number);
@@ -35,6 +47,34 @@ QString issueJsonFileName(int number)
 QString issueMediaDirName(int number)
 {
     return QString::number(number);
+}
+
+// Candidate repo-relative folders for issue <n>, in the order readers probe
+// them: open/<n>, closed/<n>, then the pre-split legacy <n>.
+QStringList issueDirRelCandidates(int number)
+{
+    const QString name = issueMediaDirName(number);
+    return {issuesRootRel() + QLatin1Char('/') + openDirName() +
+                QLatin1Char('/') + name,
+            issuesRootRel() + QLatin1Char('/') + closedDirName() +
+                QLatin1Char('/') + name,
+            issuesRootRel() + QLatin1Char('/') + name};
+}
+
+// Numeric issue folders directly under `dir` (a status subdir or the legacy
+// root).
+QList<int> numericDirEntries(const QString &dir)
+{
+    QList<int> numbers;
+    const QStringList entries =
+        QDir(dir).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QString &entry : entries) {
+        bool numeric = false;
+        const int n = entry.toInt(&numeric);
+        if (numeric)
+            numbers.append(n);
+    }
+    return numbers;
 }
 
 // Run git in `dir`, capturing stdout. Returns false (with optional error text)
@@ -499,9 +539,21 @@ QString IssueStore::issuesDir() const
     return QDir(m_workTree).filePath(issuesRootRel());
 }
 
+QString IssueStore::issueDirPath(const QString &workTree, int number)
+{
+    const QStringList candidates = issueDirRelCandidates(number);
+    for (const QString &rel : candidates) {
+        const QString abs = QDir(workTree).filePath(rel);
+        if (QDir(abs).exists())
+            return abs;
+    }
+    // Not on disk yet: a new issue starts out open.
+    return QDir(workTree).filePath(candidates.first());
+}
+
 QString IssueStore::issueDir(int number) const
 {
-    return QDir(issuesDir()).filePath(issueMediaDirName(number));
+    return issueDirPath(m_workTree, number);
 }
 
 QString IssueStore::issueFilePath(int number) const
@@ -601,14 +653,24 @@ QList<Issue> IssueStore::loadAll(QString *error, const std::function<void()> &ti
     if (!canWrite())
         return loadFromMirror(error);
 
+    // Fold any pre-split .forkmesh/issues/<n>/ folders into open//closed/
+    // before reading, so existing repos are reorganized the first time their
+    // issues are loaded on the owning node.
+    migrateLegacyLayout();
+
     QList<Issue> issues;
-    const QStringList entries =
-        QDir(issuesDir()).entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
-    for (const QString &entry : entries) {
-        bool numeric = false;
-        const int number = entry.toInt(&numeric);
-        if (!numeric)
-            continue;
+    QList<int> numbers;
+    QSet<int> seen;
+    const QStringList roots{issuesDir() + QLatin1Char('/') + openDirName(),
+                            issuesDir() + QLatin1Char('/') + closedDirName(),
+                            issuesDir()};
+    for (const QString &root : roots)
+        for (int number : numericDirEntries(root))
+            if (!seen.contains(number)) {
+                seen.insert(number);
+                numbers.append(number);
+            }
+    for (int number : std::as_const(numbers)) {
         Issue issue;
         if (readIssueFile(number, issue)) {
             if (!issue.isDeleted())
@@ -829,7 +891,8 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
         return contentByOid;
     };
 
-    // One JSON blob per issue at .forkmesh/issues/<n>/issue-<n>.json.
+    // One JSON blob per issue at .forkmesh/issues/{open,closed}/<n>/issue-<n>.json
+    // (or .forkmesh/issues/<n>/ on a pre-split mirror).
     QByteArray listing;
     if (readGit({"ls-tree", "-r", ref, issuesRootRel() + "/"}, &listing)) {
         QMap<int, QString> issueJsonOids;
@@ -846,7 +909,13 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
             const QString path = line.mid(tab + 1);
             if (!path.startsWith(prefix))
                 continue;
-            const QString rel = path.mid(prefix.size());
+            QString rel = path.mid(prefix.size());
+            // Skip the open//closed/ status segment (legacy pre-split repos
+            // have the numbered folder directly under the root).
+            if (rel.startsWith(openDirName() + QLatin1Char('/')))
+                rel = rel.mid(openDirName().size() + 1);
+            else if (rel.startsWith(closedDirName() + QLatin1Char('/')))
+                rel = rel.mid(closedDirName().size() + 1);
             const int slash = rel.indexOf('/');
             if (slash < 0)
                 continue;
@@ -978,7 +1047,6 @@ QList<IssueMilestone> IssueStore::loadMilestones() const
 
 bool IssueStore::writeIssueFile(const Issue &issue, QString *error) const
 {
-    QDir().mkpath(issueDir(issue.number));
     if (issue.events.isEmpty()) {
         if (error)
             *error = QStringLiteral("Issue #%1 has no events.").arg(issue.number);
@@ -986,8 +1054,30 @@ bool IssueStore::writeIssueFile(const Issue &issue, QString *error) const
     }
     Issue stored = issue;
     recomputeMetadata(stored);
+    // The folder encodes the current status: open issues live under open/<n>,
+    // closed ones under closed/<n>. When the status no longer matches where the
+    // issue sits on disk (a status flip, or a pre-split legacy folder), move
+    // the whole folder — attachments ride along, and the caller's commit()
+    // stages the rename with everything else.
+    const QString desired =
+        QDir(issuesDir())
+            .filePath(statusDirNameFor(stored.status) + QLatin1Char('/') +
+                      issueMediaDirName(stored.number));
+    const QString current = issueDir(stored.number);
+    if (QDir(current).exists() && current != desired) {
+        QDir().mkpath(QFileInfo(desired).absolutePath());
+        if (!QDir().rename(current, desired)) {
+            if (error)
+                *error = QStringLiteral("Could not move issue #%1 to %2.")
+                             .arg(stored.number)
+                             .arg(statusDirNameFor(stored.status));
+            return false;
+        }
+    }
+    QDir().mkpath(desired);
     const QByteArray bytes = QJsonDocument(stored.toJson()).toJson(QJsonDocument::Indented);
-    if (!writeTextFile(issueFilePath(issue.number), QString::fromUtf8(bytes), error))
+    if (!writeTextFile(QDir(desired).filePath(issueJsonFileName(stored.number)),
+                       QString::fromUtf8(bytes), error))
         return false;
     return true;
 }
@@ -1088,16 +1178,54 @@ bool IssueStore::commit(const QString &message, QString *error) const
 
 int IssueStore::nextNumber() const
 {
+    // Closed and legacy (pre-split) issues still occupy their numbers, so the
+    // max spans all three locations.
     int max = 0;
-    const QStringList entries =
-        QDir(issuesDir()).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-    for (const QString &entry : entries) {
-        bool numeric = false;
-        const int n = entry.toInt(&numeric);
-        if (numeric && n > max)
-            max = n;
-    }
+    const QStringList roots{issuesDir() + QLatin1Char('/') + openDirName(),
+                            issuesDir() + QLatin1Char('/') + closedDirName(),
+                            issuesDir()};
+    for (const QString &root : roots)
+        for (int n : numericDirEntries(root))
+            max = std::max(max, n);
     return max + 1;
+}
+
+void IssueStore::migrateLegacyLayout() const
+{
+    if (!canWrite())
+        return;
+    const QList<int> legacy = numericDirEntries(issuesDir());
+    if (legacy.isEmpty())
+        return;
+    bool moved = false;
+    for (int number : legacy) {
+        const QString from =
+            QDir(issuesDir()).filePath(issueMediaDirName(number));
+        // Read the record straight from the legacy folder (not via
+        // issueFilePath, which prefers an already-split copy) to pick its side;
+        // an unreadable record files under open/, matching how every reader
+        // counts it.
+        QString status = QStringLiteral("open");
+        QFile jsonFile(QDir(from).filePath(issueJsonFileName(number)));
+        if (jsonFile.open(QIODevice::ReadOnly)) {
+            Issue issue = Issue::fromJson(
+                QJsonDocument::fromJson(jsonFile.readAll()).object());
+            recomputeMetadata(issue);
+            status = issue.status;
+        }
+        const QString to =
+            QDir(issuesDir())
+                .filePath(statusDirNameFor(status) + QLatin1Char('/') +
+                          issueMediaDirName(number));
+        if (QDir(to).exists())
+            continue; // both layouts hold this number; readers prefer the split copy
+        QDir().mkpath(QFileInfo(to).absolutePath());
+        if (QDir().rename(from, to))
+            moved = true;
+    }
+    if (moved)
+        commit(QStringLiteral("issues: split into open/ and closed/ folders"),
+               nullptr);
 }
 
 // ---- Mutations -------------------------------------------------------------
@@ -1513,8 +1641,9 @@ bool IssueStore::deleteIssue(int number, QString *error)
 {
     if (!canWrite())
         return false;
-    const QString relPath = issuesRootRel() + QLatin1Char('/') + QString::number(number);
-    QStringList relPaths{relPath};
+    // Purge every place the issue may (have) lived: open/<n>, closed/<n>, and
+    // the pre-split legacy <n> — history rewritten below can hold any of them.
+    const QStringList relPaths = issueDirRelCandidates(number);
     QString err;
     if (hasUnrelatedTrackedChanges(m_workTree, relPaths, error))
         return false;
@@ -1531,9 +1660,14 @@ bool IssueStore::deleteIssue(int number, QString *error)
             *error = QStringLiteral("Could not remove issue folder.");
         return false;
     }
+    // Commit scoped to the issues root, not the candidate paths: a pathspec
+    // that never matched any tracked file (the issue only ever lived in one of
+    // the three locations) makes `git commit -- <path>` fail outright, and
+    // hasUnrelatedTrackedChanges above already guarantees nothing else under
+    // the root is dirty.
     if (!runGit(m_workTree,
-                QStringList{"commit", "-m", QStringLiteral("delete issue"), "--"} +
-                    relPaths,
+                QStringList{"commit", "-m", QStringLiteral("delete issue"), "--",
+                            issuesRootRel()},
                 nullptr, &err)) {
         if (!err.contains(QStringLiteral("nothing to commit")) && !err.isEmpty()) {
             if (error)
@@ -1553,7 +1687,8 @@ bool IssueStore::deleteIssue(int number, QString *error)
         return true;
 
     const QString indexFilter =
-        QStringLiteral("git rm -r --cached --ignore-unmatch -- %1").arg(relPath);
+        QStringLiteral("git rm -r --cached --ignore-unmatch -- %1")
+            .arg(relPaths.join(QLatin1Char(' ')));
     QByteArray out;
     if (!runGit(m_workTree,
                 {"filter-branch", "--force", "--index-filter", indexFilter,

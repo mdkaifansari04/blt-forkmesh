@@ -4911,14 +4911,21 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
     const QString promptFile =
         dir + QStringLiteral("/issue-%1.md").arg(session.issueNumber);
     if (QFile pf(promptFile); pf.open(QIODevice::WriteOnly)) {
+        // Point at the issue JSON where it actually lives (open/<n>/ or
+        // closed/<n>/, legacy <n>/ on a pre-split checkout).
+        const QString issueJsonRel =
+            QDir(repoPath).relativeFilePath(
+                IssueStore::issueDirPath(repoPath, session.issueNumber)) +
+            QStringLiteral("/issue-%1.json").arg(session.issueNumber);
         const QString prompt =
             QStringLiteral(
                 "Resolve ForkMesh issue #%1: %2\n\n"
-                "The full issue is in .forkmesh/issues/%1/issue-%1.json. Implement the change end "
+                "The full issue is in %3. Implement the change end "
                 "to end, consistent with the surrounding code, then summarize what "
                 "you changed and how to verify it.\n")
                 .arg(session.issueNumber)
-                .arg(issue.title);
+                .arg(issue.title)
+                .arg(issueJsonRel);
         pf.write(prompt.toUtf8());
         pf.close();
     }
@@ -5268,6 +5275,14 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // embedded directly (adhoc #256) — pointing only at the issue JSON left
     // the agent to go dig it up itself, and it sometimes never did. Both share
     // the same worktree/commit/PR workflow tail so the run lands as a pull request.
+    // Name the issue JSON where it actually lives (open/<n>/ or closed/<n>/,
+    // legacy <n>/ on a pre-split checkout) so the agent's reference path works.
+    const QString issueJsonRel =
+        session.issueNumber > 0
+            ? QDir(repoPath).relativeFilePath(
+                  IssueStore::issueDirPath(repoPath, session.issueNumber)) +
+                  QStringLiteral("/issue-%1.json").arg(session.issueNumber)
+            : QString();
     const QString lead =
         customPrompt.trimmed().isEmpty()
             ? QStringLiteral(
@@ -5275,10 +5290,10 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                   "%1\n"
                   "You are working in a dedicated git worktree on branch `%2` "
                   "(forked from `%3`). The description and comments above are "
-                  "the full issue context; .forkmesh/issues/%4/issue-%4.json holds the same "
+                  "the full issue context; %4 holds the same "
                   "description verbatim if you need to reference the raw file.\n")
                   .arg(issueContextPrompt(issue), session.branchName, baseName,
-                       QString::number(session.issueNumber))
+                       issueJsonRel)
             : QStringLiteral(
                   "%1\n\n"
                   "You are working in a dedicated git worktree on branch `%2` "

@@ -40,6 +40,7 @@ FUNCS = {
     "_forkbot_repo_host_json",
     "_forkbot_missing_tree",
     "_forkbot_issue_json_path",
+    "_forkbot_issue_json_candidates",
     "_forkbot_blob_text",
     "_forkbot_parse_issue_record",
     "_forkbot_recent_issue_numbers",
@@ -141,11 +142,14 @@ class _HostResponse:
 
 class _FakeHost:
     """Stands in for env.FORKMESH_HOST: idFromName/get return self, fetch
-    answers the tree/blobs/search tunnel actions with canned payloads."""
+    answers the tree/blobs/search tunnel actions with canned payloads.
+    `tree` answers every /tree read; `trees` (path -> payload) answers per
+    path instead, for split open//closed/ layout fixtures."""
 
-    def __init__(self, tree=None, blobs=None, search=None):
+    def __init__(self, tree=None, blobs=None, search=None, trees=None):
         self.urls = []
         self._tree = tree
+        self._trees = trees
         self._blobs = blobs
         self._search = search
 
@@ -158,7 +162,12 @@ class _FakeHost:
     async def fetch(self, url):
         self.urls.append(url)
         if "/tree?" in url:
-            data = self._tree
+            if self._trees is not None:
+                from urllib.parse import parse_qs, urlparse
+                path = parse_qs(urlparse(url).query).get("path", [""])[0]
+                data = self._trees.get(path)
+            else:
+                data = self._tree
         elif "/blobs?" in url:
             data = self._blobs
         elif "/search?" in url:
@@ -798,6 +807,49 @@ def test_forkbot_lists_recent_issues_from_live_mirror():
     # One tree listing + one batched blob read, over the internal tunnel.
     assert any("/tree?" in url for url in host.urls)
     assert any("/blobs?" in url for url in host.urls)
+
+
+def test_forkbot_lists_issues_from_split_open_closed_folders():
+    # Post-split mirrors (adhoc #14) file issues under .forkmesh/issues/open/
+    # and .forkmesh/issues/closed/; the root tree lists the status folders plus
+    # any pre-split leftover numbered dir. All three locations must be found
+    # and each record read from wherever it lives.
+    def _blob(path, record):
+        return (path, {"ok": True, "encoding": "utf8",
+                       "content": json.dumps(record)})
+
+    host = _FakeHost(
+        trees={
+            ".forkmesh/issues": {"ok": True, "entries": [
+                {"type": "tree", "name": "open"},
+                {"type": "tree", "name": "closed"},
+                {"type": "tree", "name": "2"},
+            ]},
+            ".forkmesh/issues/open": _issue_tree([3]),
+            ".forkmesh/issues/closed": _issue_tree([1]),
+        },
+        blobs={"ok": True, "blobs": dict([
+            _blob(".forkmesh/issues/open/3/issue-3.json",
+                  {"number": 3, "title": "Split open", "status": "open",
+                   "authorName": "jett"}),
+            _blob(".forkmesh/issues/closed/1/issue-1.json",
+                  {"number": 1, "title": "Split closed", "status": "closed",
+                   "authorName": "jett"}),
+            _blob(".forkmesh/issues/2/issue-2.json",
+                  {"number": 2, "title": "Legacy spot", "status": "open",
+                   "authorName": "jett"}),
+        ])},
+    )
+    env, _calls, ns = _env_and_calls(host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot list the last 3 issues",
+    })))
+    assert response["data"]["action"] == "issues_listed"
+    assert [i["number"] for i in response["data"]["issues"]] == [3, 2, 1]
+    message = response["data"]["botMessage"]
+    assert "#3 Split open (open, by jett)" in message
+    assert "#2 Legacy spot (open, by jett)" in message
+    assert "#1 Split closed (closed, by jett)" in message
 
 
 def test_forkbot_list_honors_requested_count():

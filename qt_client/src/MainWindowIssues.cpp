@@ -2616,8 +2616,9 @@ void MainWindow::renderIssueThread(const Issue &issue)
 
     const int idx = issuesRepoIndex();
     const QString imageBase =
-        idx >= 0 ? m_repositories.at(idx).localPath + "/.forkmesh/issues/" +
-                       QString::number(issue.number) + "/"
+        idx >= 0 ? IssueStore::issueDirPath(m_repositories.at(idx).localPath,
+                                           issue.number) +
+                       "/"
                  : QString();
     const bool haveLocalFiles = !imageBase.isEmpty() &&
                                 QFileInfo::exists(
@@ -2756,9 +2757,8 @@ void MainWindow::renderIssueThread(const Issue &issue)
                                               : "Type your comment here...");
             const int repoIdx = issuesRepoIndex();
             if (repoIdx >= 0)
-                editor->setPreviewBasePath(m_repositories.at(repoIdx).localPath +
-                                           "/.forkmesh/issues/" +
-                                           QString::number(num));
+                editor->setPreviewBasePath(IssueStore::issueDirPath(
+                    m_repositories.at(repoIdx).localPath, num));
             bodyLayout->addWidget(editor);
             auto *attach = new QPushButton("Paste, drop, or click to add files");
             attach->setObjectName("ghostButton");

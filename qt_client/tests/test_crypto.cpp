@@ -2617,7 +2617,7 @@ int main(int argc, char *argv[])
                 !firstIssueRef.isEmpty() &&
                 writeTestFile(
                     writableIssueRepo.path() +
-                        QStringLiteral("/.forkmesh/issues/2/issue-2.json"),
+                        QStringLiteral("/.forkmesh/issues/open/2/issue-2.json"),
                     QByteArrayLiteral("{\"number\":2,\"events\":[]}")) &&
                 commitTestTree(writableIssueRepo.path(),
                                QStringLiteral("corrupt current issue metadata"),
@@ -3969,9 +3969,10 @@ int main(int argc, char *argv[])
                                        {"bug"}, "v1", 7, {}, {}, &err);
         check(n == 1, "createIssue returns the first issue number");
         const QString issueJsonPath =
-            QDir(tmp.path()).filePath(QStringLiteral(".forkmesh/issues/1/issue-1.json"));
+            QDir(tmp.path()).filePath(
+                QStringLiteral(".forkmesh/issues/open/1/issue-1.json"));
         check(QFileInfo::exists(issueJsonPath),
-              "createIssue writes .forkmesh/issues/1/issue-1.json");
+              "createIssue writes .forkmesh/issues/open/1/issue-1.json");
         check(!QFileInfo::exists(
                   QDir(tmp.path()).filePath(QStringLiteral("issues/1/issue.md"))),
               "createIssue does not write legacy issue.md");
@@ -3997,6 +3998,36 @@ int main(int argc, char *argv[])
                                             QString(), 0, {}, {}, &err);
         check(second == 2, "legacy issue folders do not affect new issue numbers");
 
+        // A pre-split .forkmesh/issues/<n>/ folder is migrated into the
+        // status-named subfolder (and committed) the next time issues load on
+        // the owning node.
+        const QString preSplitDir =
+            QDir(tmp.path()).filePath(QStringLiteral(".forkmesh/issues/77"));
+        QDir().mkpath(preSplitDir);
+        QFile preSplitJson(
+            QDir(preSplitDir).filePath(QStringLiteral("issue-77.json")));
+        if (preSplitJson.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            preSplitJson.write(
+                "{\"schema\":\"forkmesh-issue-v1\",\"number\":77,"
+                "\"title\":\"Legacy layout\",\"status\":\"open\","
+                "\"events\":[{\"type\":\"open\",\"id\":\"open-77\","
+                "\"author\":\"a\",\"ts\":1,\"title\":\"Legacy layout\","
+                "\"body\":\"\",\"attachments\":[],\"sig\":\"s\"},"
+                "{\"type\":\"status\",\"id\":\"s1\",\"author\":\"a\","
+                "\"ts\":2,\"status\":\"closed\",\"sig\":\"s\"}]}");
+        preSplitJson.close();
+        loaded = repo.loadAll();
+        check(QFileInfo::exists(QDir(tmp.path()).filePath(QStringLiteral(
+                  ".forkmesh/issues/closed/77/issue-77.json"))) &&
+                  !QDir(preSplitDir).exists(),
+              "loadAll migrates a pre-split issue folder into closed/");
+        check(std::any_of(loaded.begin(), loaded.end(),
+                          [](const Issue &i) {
+                              return i.number == 77 &&
+                                     i.status == QStringLiteral("closed");
+                          }),
+              "migrated legacy issue still loads with its folded status");
+
         check(repo.addComment(n, "a comment", {}, &err), "addComment succeeds");
         QFile issueJson(issueJsonPath);
         const bool commentJsonOk =
@@ -4011,11 +4042,18 @@ int main(int argc, char *argv[])
                     .toString() == "a comment";
         issueJson.close();
         check(commentJsonOk, "comment body is stored inside the issue JSON");
-        check(QDir(QDir(tmp.path()).filePath(QStringLiteral(".forkmesh/issues/1")))
+        check(QDir(QDir(tmp.path())
+                       .filePath(QStringLiteral(".forkmesh/issues/open/1")))
                   .entryList(QStringList{QStringLiteral("*.md")}, QDir::Files)
                   .isEmpty(),
               "issue folder contains no markdown event files");
         check(repo.setStatus(n, "closed", &err), "setStatus succeeds");
+        check(QFileInfo::exists(QDir(tmp.path()).filePath(QStringLiteral(
+                  ".forkmesh/issues/closed/1/issue-1.json"))) &&
+                  !QDir(QDir(tmp.path())
+                            .filePath(QStringLiteral(".forkmesh/issues/open/1")))
+                       .exists(),
+              "closing an issue moves its folder from open/ to closed/");
         check(repo.setPriority(n, 3, &err), "setPriority succeeds");
         check(repo.assignAgent(n, "codex", 42, true, "queued", &err),
               "assignAgent succeeds");
@@ -4072,7 +4110,7 @@ int main(int argc, char *argv[])
                                [&](const Issue &i) { return i.number == tomb; }),
               "tombstoned issue no longer loads but others remain");
         check(!gitOutput({"log", "--all", "--",
-                          QStringLiteral(".forkmesh/issues/%1").arg(tomb)})
+                          QStringLiteral(".forkmesh/issues/open/%1").arg(tomb)})
                    .trimmed()
                    .isEmpty(),
               "tombstoned issue is preserved in git history");
@@ -4082,8 +4120,12 @@ int main(int argc, char *argv[])
         check(std::none_of(afterDelete.begin(), afterDelete.end(),
                            [&](const Issue &i) { return i.number == n; }),
               "deleted issue no longer loads");
+        // The issue lived at open/<n> and then closed/<n>; the purge must strip
+        // every location (including the pre-split legacy path) from history.
         check(gitOutput({"log", "--all", "--",
-                         QStringLiteral(".forkmesh/issues/%1").arg(n)})
+                         QStringLiteral(".forkmesh/issues/%1").arg(n),
+                         QStringLiteral(".forkmesh/issues/open/%1").arg(n),
+                         QStringLiteral(".forkmesh/issues/closed/%1").arg(n)})
                   .trimmed()
                   .isEmpty(),
               "deleted issue is purged from git history");
