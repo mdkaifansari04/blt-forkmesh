@@ -6537,10 +6537,13 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
     poll->start();
     dialog.exec();
     poll->stop();
-    // Closed before the deposit confirmed: keep watching in the background so the
-    // issue is still marked paid once the funds land (the worker cron is the
-    // final backstop regardless).
-    if (!paid)
+    // Closed before the deposit confirmed. Issue bounties still need the local
+    // IssueStore record updated once the funds land, so keep watching for those
+    // in the background. PR bounties have no local state to update — the worker
+    // cron is the payout backstop regardless — so stop checking once the dialog
+    // is closed instead of continuing to poll for a popup the user already
+    // dismissed.
+    if (!paid && !isPr)
         pollBountyPayout(repo, number, amountUsd, kind);
 }
 
