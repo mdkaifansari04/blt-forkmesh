@@ -32,6 +32,18 @@
             "target": "open-369",
             "ts": 1784326583515,
             "type": "edit"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 50,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "4cf233e3-fffe-4f4f-95cf-48c8a236853e",
+            "sig": "ADCAI_KoJirTFDFIQYffmLzoqLraBlPvgU406tDT1UbZHCTjqW1GndqaCSUkS3TTC3UcxgfnKwcMWRrNhOI7DQ",
+            "ts": 1784328884515,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -46,6 +58,6 @@
     "startDate": 0,
     "status": "open",
     "title": "[code + business: needs legal review] Non-custodial on-chain bounty escrow",
-    "updatedAt": 1784326583515,
+    "updatedAt": 1784328884515,
     "votes": 0
 }
