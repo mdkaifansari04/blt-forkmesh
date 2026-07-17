@@ -67,6 +67,15 @@
             "sig": "4qGnhZcXKcwyA1vaCr9OrqjsFHEBUpFblgDatS2jn9rQVSS1HVDXeK9Q7x4U-ZwAVmOYevR-K4yIZATQT4RJCA",
             "ts": 1784325355828,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "30d308c1-c871-4f17-888e-6c8dd23b35a2",
+            "sig": "7fh-pRcpQn2Q87-gGsghhVgNJBHJriaiDz1Nj2zWmMnGg0q8vSPXMz33Y7Uvmllh0-gK2eZgXU3QOwQNjxlhCQ",
+            "status": "closed",
+            "ts": 1784325355890,
+            "type": "status"
         }
     ],
     "labels": [
@@ -77,8 +86,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "when the bounty is received it can close the window",
-    "updatedAt": 1784325355828,
+    "updatedAt": 1784325355890,
     "votes": 0
 }
