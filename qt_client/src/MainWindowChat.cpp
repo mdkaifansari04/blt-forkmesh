@@ -7120,13 +7120,28 @@ void MainWindow::refreshNodesTable()
     // Which node the detail panel is currently showing, so a rebuild can keep it.
     const QString shown = m_nodesTable->property("shownNode").toString();
 
+    // Drop entries whose roster identity is a plain user account (a chat-only
+    // human/bot, accountKind "user") rather than a real serving node — e.g.
+    // ForkBot's relayed replies or a desktop profile signed in as a user, not a
+    // linked node. Missing accountKind (older peers, or a name only known via
+    // a locally hosted repo's owner field) still counts as a node.
+    QList<NodeMenuEntry> visible;
+    QList<MemberInfo> visibleRoster;
+    for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
+        const MemberInfo mi = rosterInfo(e.name);
+        if (mi.accountKind == QLatin1String("user"))
+            continue;
+        visible.append(e);
+        visibleRoster.append(mi);
+    }
+
     // Populate with sorting off so inserted rows don't reshuffle mid-fill.
     m_nodesTable->setSortingEnabled(false);
-    m_nodesTable->setRowCount(m_nodeMenuEntries.size());
+    m_nodesTable->setRowCount(visible.size());
     int online = 0;
-    for (int i = 0; i < m_nodeMenuEntries.size(); ++i) {
-        const NodeMenuEntry &e = m_nodeMenuEntries.at(i);
-        const MemberInfo mi = rosterInfo(e.name);
+    for (int i = 0; i < visible.size(); ++i) {
+        const NodeMenuEntry &e = visible.at(i);
+        const MemberInfo &mi = visibleRoster.at(i);
         // The relay's /api/network/stats "onlineNodes" is the network-canonical
         // live set (a live host tunnel or a fresh signed heartbeat) — the same
         // signal the Mirror nodes list and the Network page trust. Once we have
@@ -7199,17 +7214,17 @@ void MainWindow::refreshNodesTable()
     m_nodesTable->setSortingEnabled(true);
 
     if (m_nodesStatus) {
-        m_nodesStatus->setText(m_nodeMenuEntries.isEmpty()
+        m_nodesStatus->setText(visible.isEmpty()
             ? QStringLiteral("No nodes known yet.")
             : QString::fromUtf8("%1 node%2 \xC2\xB7 %3 online")
-                  .arg(m_nodeMenuEntries.size())
-                  .arg(m_nodeMenuEntries.size() == 1 ? "" : "s")
+                  .arg(visible.size())
+                  .arg(visible.size() == 1 ? "" : "s")
                   .arg(online));
     }
     if (m_nodesNavButton)
-        m_nodesNavButton->setText(m_nodeMenuEntries.isEmpty()
+        m_nodesNavButton->setText(visible.isEmpty()
             ? QStringLiteral("Nodes")
-            : QStringLiteral("Nodes (%1)").arg(m_nodeMenuEntries.size()));
+            : QStringLiteral("Nodes (%1)").arg(visible.size()));
 
     // Re-open the previously shown node's detail (find it by name post-sort), or
     // default to the first row.
