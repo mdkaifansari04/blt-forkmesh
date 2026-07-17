@@ -94,6 +94,78 @@ def test_dashboard_js_loads_issues_from_git_tree_and_counts_open():
     assert "renderRepoIssues();" in load
 
 
+def test_dashboard_js_open_load_pages_only_open_and_defers_closed():
+    # Issue #427: the initial Issues load must fetch only the OPEN (and
+    # unknown-status legacy) titles so they render fast, deferring the closed
+    # history to a lazy loader. The open page is built from the open + legacy
+    # folder maps, never the closed one.
+    load = DASHBOARD_JS[
+        DASHBOARD_JS.index("async function loadRepoIssues")
+        : DASHBOARD_JS.index("async function fetchIssuePage")
+    ]
+    # Three folder maps, split by status subdir; closed folders are recorded for
+    # the lazy loader, not paged in now.
+    for marker in ("const openPaths = new Map();",
+                   "const closedPaths = new Map();",
+                   "const legacyPaths = new Map();"):
+        assert marker in load
+    # The open page is the legacy + open folders only.
+    assert "const pathByNumber = new Map([...legacyPaths, ...openPaths]);" in load
+    # The closed set is stashed on the view and marked not-yet-loaded (unless the
+    # closed/ subdir is empty, in which case there's nothing to lazy-load).
+    assert "state.issuesView.closedPaths = closedPaths;" in load
+    assert "state.issuesView.closedLoaded = closedPaths.size === 0;" in load
+
+
+def test_dashboard_js_issue_counts_come_from_folder_listing_not_the_page():
+    # Issue #427: the open/closed counts were computed from the (50-capped,
+    # open+closed mixed) page of loaded blobs, so a repo with more issues than
+    # fit on the page - or with many closed issues - showed wrong counts. They
+    # now come from the full folder listing (openPaths/closedPaths sizes), which
+    # matches the folder-based tally the Mirror nodes tab reports.
+    load = DASHBOARD_JS[
+        DASHBOARD_JS.index("async function loadRepoIssues")
+        : DASHBOARD_JS.index("async function fetchIssuePage")
+    ]
+    assert "const openIssues = openPaths.size + legacyOpen;" in load
+    assert "const closedIssues = closedPaths.size + legacyClosed;" in load
+    assert 'setRepoCollectionCounts("issues", openIssues, closedIssues);' in load
+
+
+def test_dashboard_js_lazy_loads_closed_issues_on_filter_switch():
+    # The Closed/All filter pages in the closed history on its first open, via a
+    # dedicated loader that reuses the shared page fetcher and appends to the
+    # already-loaded open items.
+    setter = DASHBOARD_JS[
+        DASHBOARD_JS.index("function setIssueFilter")
+        : DASHBOARD_JS.index("async function loadRepoIssues")
+    ]
+    assert '(filter === "closed" || filter === "all")' in setter
+    assert "!state.issuesView.closedLoaded && !state.issuesView.closedLoading" in setter
+    assert "loadClosedIssues();" in setter
+    closed = DASHBOARD_JS[
+        DASHBOARD_JS.index("async function loadClosedIssues")
+        : DASHBOARD_JS.index("async function loadRepoCollection")
+    ]
+    assert "if (view.closedLoaded || view.closedLoading) return;" in closed
+    assert "fetchIssuePage(" in closed
+    assert "view.closedLoaded = true;" in closed
+
+
+def test_dashboard_js_shared_issue_page_fetcher_batches_and_retries():
+    # Both the open and closed loaders go through fetchIssuePage: ONE batched
+    # /blobs read, a single retry of the misses, and a placeholder row for
+    # anything still unreadable so the list never silently drops a folder.
+    page = DASHBOARD_JS[
+        DASHBOARD_JS.index("async function fetchIssuePage")
+        : DASHBOARD_JS.index("async function loadClosedIssues")
+    ]
+    assert "fetchRepoBlobs(" in page
+    assert "missing = stillMissing;" in page
+    assert "missing.forEach((number) => items.push(placeholderIssue(number)));" in page
+    assert 'repoLiveUrl(repo, "blob"' not in page
+
+
 def test_dashboard_js_shows_per_tab_counts():
     # Every repo tab carries a count badge, filled from the bundled root-tree
     # tallies plus the open-issue and mirror counts.

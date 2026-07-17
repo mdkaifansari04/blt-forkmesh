@@ -3184,7 +3184,7 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_footerDiagnostics, &QPushButton::clicked, this,
             &MainWindow::showDiagnosticsDialog);
 
-    // Three little button-sized squares beside the diagnostics glyph, each plotting
+    // Three little button-sized squares on the window-chrome line, each plotting
     // one resource — this app's CPU, the host's memory and its disk — as a moving
     // sparkline fed one sample a second by updateFooterDiagnostics. Clicking one
     // opens the same diagnostics dialog as the glyph.
@@ -3219,6 +3219,12 @@ QWidget *MainWindow::buildBreadcrumb()
     searchClusterRow->addWidget(createGlobalSearchBox());
     chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
     chromeRow->addStretch();
+    // Live CPU/MEM/DISK sparklines, moved up onto the window-chrome line next
+    // to the minimize/maximize/close buttons (adhoc #33).
+    chromeRow->addWidget(cpuChart);
+    chromeRow->addWidget(memChart);
+    chromeRow->addWidget(diskChart);
+    chromeRow->addSpacing(8);
 
     auto makeWindowButton = [this](QStyle::StandardPixmap icon, const QString &tip) {
         auto *button = new QPushButton;
@@ -3276,11 +3282,6 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addStretch();
     mainRow->addWidget(m_topMessageContainer);
     mainRow->addStretch();
-    // Live CPU/MEM/DISK sparklines, moved up next to the donate button (adhoc #121).
-    mainRow->addWidget(cpuChart);
-    mainRow->addWidget(memChart);
-    mainRow->addWidget(diskChart);
-    mainRow->addSpacing(8);
     // Donate button + the Reddit/X icons, sat just left of the account cluster
     // (adhoc #117).
     mainRow->addWidget(donateButton);
@@ -7131,11 +7132,23 @@ void MainWindow::refreshNodesTable()
     // ForkBot's relayed replies or a desktop profile signed in as a user, not a
     // linked node. Missing accountKind (older peers, or a name only known via
     // a locally hosted repo's owner field) still counts as a node.
+    //
+    // Our own row is the same story: when this desktop is signed in as a user
+    // account (it owns a node fleet), the account name is a *user*, not a node —
+    // its nodes show as their own rows. The backend stamps this same predicate as
+    // accountKind "user" on the self roster entry, but that self row also carries
+    // live telemetry and can be painted before the "user" kind propagates, which
+    // left the user showing as a node (adhoc #37: "jett" listed as a node). Gate
+    // the self row on the local predicate directly so it never leaks through.
+    const bool selfIsUserAccount =
+        m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
     QList<NodeMenuEntry> visible;
     QList<MemberInfo> visibleRoster;
     for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
         const MemberInfo mi = rosterInfo(e.name);
         if (mi.accountKind == QLatin1String("user"))
+            continue;
+        if (e.self && selfIsUserAccount)
             continue;
         visible.append(e);
         visibleRoster.append(mi);

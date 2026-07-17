@@ -6452,6 +6452,23 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
     status->setAlignment(Qt::AlignCenter);
     layout->addWidget(status);
 
+    // Issue #429: while the deposit is landing (received but not yet confirmed)
+    // the status animates a braille spinner; on confirmation it flips to a green
+    // check and the dialog closes itself shortly after.
+    static const char *kBountySpin[] = {
+        "\xE2\xA0\x8B", "\xE2\xA0\x99", "\xE2\xA0\xB9", "\xE2\xA0\xB8",
+        "\xE2\xA0\xBC", "\xE2\xA0\xB4", "\xE2\xA0\xA6", "\xE2\xA0\xA7",
+        "\xE2\xA0\x87", "\xE2\xA0\x8F"};
+    int spinIdx = 0;
+    QString confirmMsg;
+    auto *spin = new QTimer(&dialog);
+    spin->setInterval(120);
+    connect(spin, &QTimer::timeout, &dialog, [&]() {
+        status->setText(QString::fromUtf8(kBountySpin[spinIdx]) +
+                        QStringLiteral(" ") + confirmMsg);
+        spinIdx = (spinIdx + 1) % 10;
+    });
+
     auto *copyBtn = new QPushButton(QStringLiteral("Copy address"));
     connect(copyBtn, &QPushButton::clicked, this, [address] {
         QGuiApplication::clipboard()->setText(address);
@@ -6491,6 +6508,7 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
         if (obj.value("status").toString() == QLatin1String("paid")) {
             paid = true;
             poll->stop();
+            spin->stop();
             if (!isPr) {
                 IssueStore writeStore = issueStoreForCurrentRepo();
                 QString err;
@@ -6500,18 +6518,28 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
                 if (m_repoDetailIndex == issuesRepoIndex())
                     reloadIssues();
             }
+            // Green check on confirmation, then auto-dismiss the window (issue
+            // #429) — the deposit is received and paid out, so there's nothing
+            // left to wait for.
             status->setText(
-                QStringLiteral("Paid out to the author + treasury (tx %1).")
+                QString::fromUtf8("\xE2\x9C\x94 Paid out to the author + "
+                                  "treasury (tx %1).")
                     .arg(obj.value("payoutSig").toString().left(12)));
             status->setStyleSheet("color:#3fb950; background:transparent;");
             closeBtn->setText(QStringLiteral("Close"));
+            QTimer::singleShot(1800, &dialog, &QDialog::accept);
             return;
         }
         const qint64 got =
             obj.value("receivedLamports").toVariant().toLongLong();
-        if (got > 0)
-            status->setText(QStringLiteral("Received %1 SOL — confirming…")
-                                .arg(got / 1000000000.0, 0, 'f', 9));
+        if (got > 0) {
+            confirmMsg = QStringLiteral("Received %1 SOL — confirming…")
+                             .arg(got / 1000000000.0, 0, 'f', 9);
+            if (!spin->isActive()) {
+                spinIdx = 0;
+                spin->start();
+            }
+        }
     });
     poll->start();
     dialog.exec();
