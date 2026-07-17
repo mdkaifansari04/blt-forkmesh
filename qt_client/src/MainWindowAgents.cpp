@@ -6656,6 +6656,13 @@ void MainWindow::updateAgentStatusCell(int sessionId)
     // prompt) in step with every status flip, not just a full reloadAgents() —
     // otherwise it only catches up once the user opens the Agents tab.
     refreshAgentStatusRow();
+    // A status flip back to Running (a follow-up prompt steering a still-live
+    // process, an answered question, a resumed CLI's system/init) doesn't always
+    // route through reloadAgents() — the only other caller of
+    // updateAgentsTabIndicator(). Without this, m_agentsSpinTimer stays stopped
+    // (it shuts itself off once nothing is running) and the row's icon, though
+    // set to the running glyph above, never actually spins.
+    updateAgentsTabIndicator();
     if (sessionId == m_selectedAgentSessionId) {
         updateAgentActionState();
         // The list row is only half the picture: when this session's detail
