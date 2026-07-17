@@ -2635,6 +2635,24 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         QSettings().setValue(kAuthedAccountSetting, m_accountName);
         applyAccountEmailVerified(m_accountName,
                                   payload.value("emailVerified").toBool());
+        // Keep the account's avatar in sync with this desktop so both the app
+        // and the web dashboard show the same picture. Adopt a picture already
+        // set on the account; otherwise upload the one chosen locally.
+        m_accountSessionToken = payload.value("sessionToken").toString();
+        const QString serverAvatar = payload.value("avatarPng").toString();
+        if (!serverAvatar.isEmpty()) {
+            const QByteArray png =
+                QByteArray::fromBase64(serverAvatar.toLatin1());
+            if (!png.isEmpty() && png != m_userAvatar) {
+                m_userAvatar = png;
+                QSettings().setValue(kAvatarSetting, png);
+                updateAvatarButton();
+                updateUserAvatarButton();
+                updateChatIdentity();
+            }
+        } else {
+            pushAccountAvatar();
+        }
     };
 
     if (status == 200 && resp.value("ok").toBool()) {
