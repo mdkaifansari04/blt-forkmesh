@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
     "authorName": "jett",
@@ -43,6 +44,17 @@
             "sig": "ATo3YC6m_HmiTjAkteyzJ15zkLvCfp6tBf00JLYcQkJ02HqYXiDd82kUKKV5KizbDhO1iyhsxgBe3OFG4yAqCQ",
             "ts": 1784325903708,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "cbbb21f2-f8f2-4f74-aaa5-4e5e1ccc8cd0",
+            "sig": "G68ifZq0kuoH1Mz975sM2Tge_IO4PTP-pHTKr29FSvjIsFCJsRDvahWswR-IS437o5MnDOFl8IF1rdFGZQDSDg",
+            "ts": 1784325903765,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -55,6 +67,6 @@
     "startDate": 0,
     "status": "open",
     "title": "let users ask other nodes to mirror for them",
-    "updatedAt": 1784325903708,
+    "updatedAt": 1784325903765,
     "votes": 0
 }
