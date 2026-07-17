@@ -76,6 +76,18 @@
             "status": "closed",
             "ts": 1784325355890,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e38e87b2-8659-469d-9424-361c63529882",
+            "sig": "cEkQzvGfaeF47jLKVIlod5d7vsQ_igCTmEg7cxVJqTCqzkymC8hVOM3ig7Xim2NL1uU9bMNInMe4sHTWeujlAw",
+            "ts": 1784329641558,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -88,6 +100,6 @@
     "startDate": 0,
     "status": "closed",
     "title": "when the bounty is received it can close the window",
-    "updatedAt": 1784325355890,
+    "updatedAt": 1784329641558,
     "votes": 0
 }
