@@ -1073,6 +1073,25 @@ void ServerNode::notifyCoveOpened(const QString &creatorKey, const QString &cove
     sendEncrypted(message, false);
 }
 
+void ServerNode::notifyCoveInvited(const QString &inviteeAccount, const QString &coveId,
+                                   const QString &coveName, const QString &inviterName,
+                                   qint64 ts)
+{
+    if (inviteeAccount.trimmed().isEmpty() || !m_wsReady)
+        return;
+    QJsonObject message = makeMessage("cove-invite");
+    message.insert("invitee", inviteeAccount.left(120));
+    message.insert("coveId", coveId.left(80));
+    message.insert("coveName", coveName.left(160));
+    message.insert("inviterName", inviterName.left(80));
+    message.insert("coveTs", double(ts));
+    // Ephemeral frame (not in kDurableTypes): if the invitee is offline they'll
+    // still see the cove next time they list the repo's coves, so this is a
+    // best-effort live nudge, not the source of truth for the invite.
+    markSeen(message.value("id").toString());
+    sendEncrypted(message, false);
+}
+
 void ServerNode::sendChat(const QString &channel, const QString &text)
 {
     if (text.trimmed().isEmpty())
@@ -1589,6 +1608,13 @@ void ServerNode::handlePlain(const QJsonObject &message)
                             message.value("openerName").toString().left(80),
                             qint64(message.value("coveTs").toDouble()),
                             message.value("sig").toString().left(200));
+    } else if (type == "cove-invite") {
+        const QString invitee = message.value("invitee").toString().left(120);
+        if (!invitee.isEmpty())
+            emit coveInvited(invitee, message.value("coveId").toString().left(80),
+                             message.value("coveName").toString().left(160),
+                             message.value("inviterName").toString().left(80),
+                             qint64(message.value("coveTs").toDouble()));
     } else if (type == "reaction") {
         const QString target = message.value("target").toString();
         const QString emoji = message.value("emoji").toString();
