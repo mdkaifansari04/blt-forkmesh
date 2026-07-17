@@ -1,32 +1,72 @@
 {
-  "schema": "forkmesh-issue-v1",
-  "number": 388,
-  "title": "create orgs and teams",
-  "status": "open",
-  "labels": [],
-  "milestone": "",
-  "priority": 0,
-  "progress": 0,
-  "assignees": [],
-  "createdAt": 1783250638960,
-  "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
-  "authorName": "forkmesh",
-  "bountyUsd": 0.0,
-  "bountyAddress": "",
-  "bountyStatus": "",
-  "events": [
-    {
-      "type": "open",
-      "id": "open-388",
-      "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
-      "authorName": "forkmesh",
-      "ts": 1783250638960,
-      "title": "create orgs and teams",
-      "body": "",
-      "attachments": [],
-      "sig": "MbpLvxBGIFPC6ddy7-V01tBjhGBVuMyS2DVc6sQubWvCLxzApX4te8pdQowyMXI6UZUpj_BrzRkxPb-M7EpvCA"
-    }
-  ],
-  "votes": 0,
-  "updatedAt": 1783250638960
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783250638960,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "",
+            "id": "open-388",
+            "sig": "MbpLvxBGIFPC6ddy7-V01tBjhGBVuMyS2DVc6sQubWvCLxzApX4te8pdQowyMXI6UZUpj_BrzRkxPb-M7EpvCA",
+            "title": "create orgs and teams",
+            "ts": 1783250638960,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "have the ability for orgs / organizations  to show as the name in the url instead of the node name for example forkmesh.com/organization/repository - so that part of the url will be either a username or organization name and not the node name - mirror nodes will all operate under the organization name or username instead - users can create orgnizations and invite users to organizations and organizations can have teams that give a subset of users certain permiossions to the repositories like write / read / maintain / admin  ",
+            "id": "603a46f9-c2e6-4e02-9eb2-09527c684366",
+            "sig": "GSanPxNk86Q2XniLbhr_D6m6hmT9X7-0Ic5Vl25_cWdTJCjelyLkuV2QounAIKTDLEiq1jdHxPp4edO2fhQICQ",
+            "ts": 1784325718348,
+            "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 40,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "a5167f29-a5cc-462e-8069-061112d8c82d",
+            "sig": "-QLraQvnQmT9UcCOm_oK2TDTqZad2EoiqFtjtk33tUe8ESf96NJZ2-9wBwv3Xg9YNlubHXmkU_yxFqtA1VxpAA",
+            "ts": 1784325727084,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "4abe1072-8711-4470-9e38-703742c10827",
+            "sig": "Kphd8eOqUKzLf7Lg0oB62eZE6NgfN70lCuRKeYhcAsq6Ag8S6fEozi62pYOf-W5oj6rCJZ_DHo14hkxnj8YeBw",
+            "ts": 1784325727147,
+            "type": "assignees"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 388,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "create orgs and teams",
+    "updatedAt": 1784325727147,
+    "votes": 0
 }
