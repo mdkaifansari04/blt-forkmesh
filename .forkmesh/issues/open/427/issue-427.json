@@ -20,6 +20,18 @@
             "title": "issues are loading too slow on the web please make it faster it only needs to load the titles of the open issues and show them fast also the open / closed counts are wrong fix those too",
             "ts": 1783916615,
             "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 36,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "e24bf1c3-9241-4eb4-b438-6f8523df0380",
+            "sig": "Gd2NF7VeucPlym2JAjm_UlrbCsHB94o4_bb3ZuJ7nl67820dciyWDVrnsZIRzJcOqte3Ryg6sUp7O031Nc3VBw",
+            "ts": 1784325072197,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -32,6 +44,6 @@
     "startDate": 0,
     "status": "open",
     "title": "issues are loading too slow on the web please make it faster it only needs to load the titles of the open issues and show them fast also the open / closed counts are wrong fix those too",
-    "updatedAt": 1783916615,
+    "updatedAt": 1784325072197,
     "votes": 0
 }
