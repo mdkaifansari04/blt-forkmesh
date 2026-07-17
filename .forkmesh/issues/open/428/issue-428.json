@@ -20,6 +20,18 @@
             "title": "ram seems too high on the mirror nodes make sure we're not taking up too much memory",
             "ts": 1783916694,
             "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 35,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "59e32af7-ce6b-42bb-b733-b0f1c482246a",
+            "sig": "gNfsykt_31qbvP5dPY-c8U88kU-u_ET99Idt-bVZ0s2s77gqMdfGslIegWSwX4lKAiqzL-DajtSFqwinMgqaBQ",
+            "ts": 1784325058381,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -32,6 +44,6 @@
     "startDate": 0,
     "status": "open",
     "title": "ram seems too high on the mirror nodes make sure we're not taking up too much memory",
-    "updatedAt": 1783916694,
+    "updatedAt": 1784325058381,
     "votes": 0
 }
