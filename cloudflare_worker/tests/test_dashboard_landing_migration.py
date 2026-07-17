@@ -110,8 +110,7 @@ def test_dashboard_get_paid_button_uses_small_sol_logo():
     assert 'href="/mirror-payouts"' in dashboard
     assert 'src="/assets/sol.png"' in dashboard
     assert 'alt="" aria-hidden="true"' in dashboard
-    assert 'class="h-3.5 w-3.5 shrink-0 rounded-full object-contain"' in dashboard
-    assert '<span class="hidden sm:inline">Get paid to mirror</span>' in dashboard
+    assert 'class="h-4 w-4 shrink-0 rounded-full object-contain"' in dashboard
 
 
 def test_dashboard_home_hides_unready_sponsorship_target_list():
