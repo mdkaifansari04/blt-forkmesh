@@ -7132,11 +7132,23 @@ void MainWindow::refreshNodesTable()
     // ForkBot's relayed replies or a desktop profile signed in as a user, not a
     // linked node. Missing accountKind (older peers, or a name only known via
     // a locally hosted repo's owner field) still counts as a node.
+    //
+    // Our own row is the same story: when this desktop is signed in as a user
+    // account (it owns a node fleet), the account name is a *user*, not a node —
+    // its nodes show as their own rows. The backend stamps this same predicate as
+    // accountKind "user" on the self roster entry, but that self row also carries
+    // live telemetry and can be painted before the "user" kind propagates, which
+    // left the user showing as a node (adhoc #37: "jett" listed as a node). Gate
+    // the self row on the local predicate directly so it never leaks through.
+    const bool selfIsUserAccount =
+        m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
     QList<NodeMenuEntry> visible;
     QList<MemberInfo> visibleRoster;
     for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
         const MemberInfo mi = rosterInfo(e.name);
         if (mi.accountKind == QLatin1String("user"))
+            continue;
+        if (e.self && selfIsUserAccount)
             continue;
         visible.append(e);
         visibleRoster.append(mi);
