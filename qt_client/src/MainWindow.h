@@ -2151,9 +2151,22 @@ private:
     // Infinite scroll: when the list is scrolled to the bottom and more history
     // exists, deepen the window (m_commitsLimit) and rebuild, preserving scroll.
     void loadMoreCommits();
-    // Compose a release-notes message and a (<=280 char) X/Twitter post from the
-    // commits the user has multi-selected, shown in a copyable dialog.
-    void generatePostFromSelectedCommits();
+    // VS-Code-style in-place expansion: clicking a commit row inserts one child
+    // row per file it touched (clicking again collapses them). File rows open
+    // the commit's diff scrolled to that file.
+    void toggleCommitFilesRows(int row);
+    void collapseAllCommitFileRows();
+    // Rebuild the Summary item's hover box (author / date / hash / files /
+    // adds / dels / checks) from the row's hidden metadata cells.
+    void updateCommitRowHover(int row);
+    // "N commits pending sync" header above the list: expands into the files
+    // those commits touch, one expandable entry per pending commit.
+    void updateCommitsUnsyncedFilesPanel();
+    // Fetch: refresh this repo's refs from the network (mirror + any upstream
+    // remote) without touching the working tree. Pull: fast-forward the working
+    // tree from its upstream (or the served mirror when no upstream is set).
+    void fetchCurrentRepo();
+    void pullCurrentRepo();
     // --- Source Control panel (working-tree changes) at the top of the Commits
     // tab: stage/unstage/discard/commit, view per-file diffs, and draft the
     // commit message (or an X post) with Claude/OpenAI.
@@ -2293,10 +2306,6 @@ private:
     QIcon iconForDir(bool opened) const;
     void startRefreshSpin();
     void stopRefreshSpin();
-    // Busy feedback for the commits-page Refresh button: rotates its icon while a
-    // reload runs (kept visible briefly after, since the reload is near-instant).
-    void startCommitsRefreshSpin();
-    void stopCommitsRefreshSpin();
     // Small inline spinner shown next to the commit's "files changed" heading
     // while showCommit reads and renders the diff (a big commit can take a second
     // or two), so the click shows progress instead of looking frozen.
@@ -3771,6 +3780,15 @@ private:
     int m_searchPending = 0;         // how many of those are still running
     QString m_searchPageQuery;
     QLabel *m_commitsUnsyncedBanner = nullptr; // "N commits not yet synced" banner
+    // Expandable file view under the banner: one entry per pending commit, its
+    // children the files that commit touches. Toggled by the banner's
+    // "Show files" link; the expanded state survives reloads.
+    QTreeWidget *m_commitsUnsyncedFiles = nullptr;
+    bool m_commitsUnsyncedExpanded = false;
+    QStringList m_commitsUnsyncedHashes; // pending commits, newest first
+    // File-row click: open the commit's diff scrolled to this file once the
+    // async detail load lands (renderCommitDetail consumes it).
+    QString m_pendingCommitFileScroll;
     // The unsynced banner sits in the list page's layout above the table; it
     // fades out (collapsing its row) when every commit has synced.
     QWidget *m_commitsListPage = nullptr;
@@ -4697,10 +4715,10 @@ private:
     int m_refreshAngle = 0;
     // Commits-page branch indicator + checkout switcher.
     QPushButton *m_commitsBranchButton = nullptr;
-    // Commits-page Refresh button + its spin animation state.
-    QPushButton *m_commitsRefreshButton = nullptr;
-    QPushButton *m_commitsGenerateButton = nullptr; // "Generate post" (multi-select)
-    QTimer *m_commitsRefreshSpinTimer = nullptr;
+    // Commits-page Fetch (refresh refs from the network) and Pull (fast-forward
+    // the working tree) buttons, VS-Code style.
+    QPushButton *m_commitsFetchButton = nullptr;
+    QPushButton *m_commitsPullButton = nullptr;
     // Infinite-scroll paging for the commit list: how many commits are currently
     // loaded, whether older history remains, and a re-entrancy guard.
     int m_commitsLimit = 300;
@@ -4710,7 +4728,6 @@ private:
     // whole history so the filter spans every commit (incl. by hash); cleared back
     // to the paged window when the search box empties.
     bool m_commitsShowingAll = false;
-    int m_commitsRefreshAngle = 0;
     // Node-switch busy indicator (spinner on the top-nav node button).
     QTimer *m_nodeSwitchSpinTimer = nullptr;
     int m_nodeSwitchAngle = 0;
