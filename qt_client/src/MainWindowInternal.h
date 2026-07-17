@@ -1025,10 +1025,11 @@ private:
 
 // A tiny moving line chart for one system resource (CPU, memory or disk). New
 // per-second samples push in from the right and scroll the history left, so the
-// recent load is visible at a glance; the current figure prints beside the
-// label. Replaces the static "CPU x% MEM y MB" footer text (adhoc #17). Kept
-// header-only (no Q_OBJECT) like the other Internal.h mini-charts; the click
-// hook is a std::function so a left-click can still open the stall dialog.
+// recent load is visible at a glance; the current figure prints on its own
+// line under the label. Replaces the static "CPU x% MEM y MB" footer text
+// (adhoc #17). Kept header-only (no Q_OBJECT) like the other Internal.h mini-
+// charts; the click hook is a std::function so a left-click can still open
+// the stall dialog.
 class ResourceSparkline : public QWidget
 {
 public:
@@ -1077,36 +1078,36 @@ protected:
         p.setBrush(card);
         p.drawRoundedRect(box, 4, 4);
 
-        // A header font that shrinks until the label and value both fit on one
-        // line, so neither is clipped however the app's base font is sized.
+        // A header font that shrinks until the wider of the label/value lines
+        // fits, so neither is clipped however the app's base font is sized.
         QFont f = font();
         double pt = f.pointSizeF() > 0 ? qMin(8.0, f.pointSizeF()) : 7.0;
         const double avail = width() - 6;
         for (; pt > 5.5; pt -= 0.5) {
             f.setPointSizeF(pt);
             const QFontMetrics fm(f);
-            if (fm.horizontalAdvance(m_label) + fm.horizontalAdvance(m_value) +
-                    4 <=
-                avail)
+            if (fm.horizontalAdvance(m_label) <= avail &&
+                fm.horizontalAdvance(m_value) <= avail)
                 break;
         }
         f.setPointSizeF(pt);
         p.setFont(f);
         const QFontMetrics fm(f);
-        const int headH = fm.height();
+        const int lineH = fm.height();
+        const int headH = lineH * 2;
 
-        // Header: the resource label (left, dim) and its current value (right,
-        // in the load colour) share the top line; the chart gets the rest.
+        // Header: the resource label and its current value stack on their own
+        // centered lines (e.g. "CPU" then "9%"); the chart gets the rest.
         QColor lab = palette().color(QPalette::WindowText);
         lab.setAlpha(150);
         p.setPen(lab);
-        p.drawText(QRectF(3, 1, width() - 6, headH),
-                   Qt::AlignVCenter | Qt::AlignLeft, m_label);
+        p.drawText(QRectF(3, 1, width() - 6, lineH),
+                   Qt::AlignVCenter | Qt::AlignHCenter, m_label);
         const double lastPct =
             m_history.isEmpty() ? 0.0 : m_history.last() / m_max * 100.0;
         p.setPen(gaugeColor(lastPct));
-        p.drawText(QRectF(3, 1, width() - 6, headH),
-                   Qt::AlignVCenter | Qt::AlignRight, m_value);
+        p.drawText(QRectF(3, 1 + lineH, width() - 6, lineH),
+                   Qt::AlignVCenter | Qt::AlignHCenter, m_value);
 
         // The sparkline track fills the area below the header, with the most
         // recent sample at its right edge so the curve scrolls left over time.
