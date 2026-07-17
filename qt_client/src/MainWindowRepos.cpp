@@ -1511,12 +1511,26 @@ void MainWindow::deleteCurrentMirror()
     message += QStringLiteral(
         "\n\nThis frees up the name so you can create a new repository "
         "called \"%1\" again.").arg(repo.name);
-    if (QMessageBox::warning(this, "Delete repository", message,
-                             QMessageBox::Yes | QMessageBox::Cancel,
-                             QMessageBox::Cancel) != QMessageBox::Yes)
-        return;
 
-    if (!path.isEmpty() && path == worktree) {
+    QMessageBox box(QMessageBox::Warning, "Delete repository", message,
+                     QMessageBox::Yes | QMessageBox::Cancel, this);
+    box.setDefaultButton(QMessageBox::Cancel);
+    QCheckBox *keepFilesCheck = nullptr;
+    if (!path.isEmpty()) {
+        // Opt-in, off by default: the plain delete matches the historical
+        // behavior of also removing the bare mirror from disk. Ticking this
+        // just untracks the repository from ForkMesh and leaves every file
+        // (mirror included) in place.
+        keepFilesCheck = new QCheckBox(
+            QStringLiteral("Keep the repository files on disk (only remove from ForkMesh)"));
+        keepFilesCheck->setChecked(false);
+        box.setCheckBox(keepFilesCheck); // QMessageBox takes ownership
+    }
+    if (box.exec() != QMessageBox::Yes)
+        return;
+    const bool keepFiles = keepFilesCheck && keepFilesCheck->isChecked();
+
+    if (!keepFiles && !path.isEmpty() && path == worktree) {
         QMessageBox::warning(
             this, "Delete repository",
             "The mirror path matches the working directory, so nothing was deleted.");
@@ -1524,7 +1538,8 @@ void MainWindow::deleteCurrentMirror()
     }
 
     stopRepoHosts();
-    if (!path.isEmpty() && QDir(path).exists() && !QDir(path).removeRecursively()) {
+    if (!keepFiles && !path.isEmpty() && QDir(path).exists() &&
+        !QDir(path).removeRecursively()) {
         startRepoHosts();
         QMessageBox::warning(this, "Delete repository",
                              "Could not delete the mirror at:\n" + path);
@@ -1534,9 +1549,10 @@ void MainWindow::deleteCurrentMirror()
         deleteCatalogRepository(catalogOwner(repo), repo.name);
     // Deleting a repository must remove it completely from this node so its
     // name is free to reuse. The working directory on disk is left alone
-    // (only the bare mirror above is removed), but the app no longer keeps a
-    // record of it — leaving a stale local-only record behind used to block
-    // creating a new repository with the same owner/name indefinitely.
+    // (only the bare mirror above is removed, unless "keep files" was
+    // checked), but the app no longer keeps a record of it — leaving a stale
+    // local-only record behind used to block creating a new repository with
+    // the same owner/name indefinitely.
     m_repositories.removeAt(index);
     saveRepositories();
     startRepoHosts();
@@ -1547,7 +1563,8 @@ void MainWindow::deleteCurrentMirror()
     else if (m_repoDetailStack)
         m_repoDetailStack->setCurrentIndex(0); // Code (empty)
     logSystem("Deleted repository " + repo.owner + "/" + repo.name + ".");
-    setRepoDetailNotice("Deleted repository.");
+    setRepoDetailNotice(keepFiles ? "Removed repository from ForkMesh. Files kept on disk."
+                                   : "Deleted repository.");
 }
 
 // Per-repo Settings tab: flip visibility (public/private) and delete the repo.
@@ -1852,7 +1869,9 @@ QWidget *MainWindow::buildRepoSettingsTab()
         "Delete this repository from this node completely. Your working "
         "directory, if any, is kept on disk but no longer tracked by "
         "ForkMesh. Published repos are also removed from the public "
-        "ForkMesh catalog, freeing up the name for reuse.");
+        "ForkMesh catalog, freeing up the name for reuse. You can also "
+        "choose to keep the mirror files on disk and just untrack the "
+        "repository from ForkMesh.");
     deleteHint->setObjectName("statusLine");
     deleteHint->setWordWrap(true);
     outer->addWidget(deleteHint);
