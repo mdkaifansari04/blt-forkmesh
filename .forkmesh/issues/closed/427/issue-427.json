@@ -64,6 +64,17 @@
             "status": "closed",
             "ts": 1784325794968,
             "type": "status"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Linked pull request #16.",
+            "id": "d85a67e5-c63e-4430-883e-f94fb10de023",
+            "sig": "wTtsw6szVYcKLiGFiGvQE1LWUCeRkjmYppec3Ms63xnjC7gcnbsOV_LaTS1Na-qx_f5tcFROlpKYj1WvDO1lBw",
+            "ts": 1784329688131,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -76,6 +87,6 @@
     "startDate": 0,
     "status": "closed",
     "title": "issues are loading too slow on the web please make it faster it only needs to load the titles of the open issues and show them fast also the open / closed counts are wrong fix those too",
-    "updatedAt": 1784325794968,
+    "updatedAt": 1784329688131,
     "votes": 0
 }

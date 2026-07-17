@@ -661,7 +661,7 @@
     discussions: {
       label: "Discussions",
       itemLabel: "discussion",
-      dir: "discussions", file: "discussion.md",
+      dir: ".forkmesh/discussions", file: "discussion.md",
       icon: "message-square",
       tone: "text-muted-foreground",
       empty: "No discussions have been committed to this mirror yet.",
