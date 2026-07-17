@@ -7489,6 +7489,27 @@ QWidget *MainWindow::buildChatSection()
     connect(firewallDismiss, &QPushButton::clicked, m_firewallBanner,
             &QWidget::hide);
 
+    // Unread banner: a thin clickable strip above the transcript that appears
+    // whenever other conversations hold unread messages. Its arrow marks every
+    // conversation read at once and jumps to the newest messages, so the badge
+    // can be cleared without visiting each channel and DM by hand.
+    m_chatUnreadBanner = new QWidget;
+    m_chatUnreadBanner->setObjectName("chatUnreadBanner");
+    m_chatUnreadBannerLabel = new QLabel;
+    auto *unreadReadButton = new QPushButton(QStringLiteral("Mark all read"));
+    unreadReadButton->setObjectName("chatUnreadBannerButton");
+    unreadReadButton->setCursor(Qt::PointingHandCursor);
+    unreadReadButton->setToolTip(
+        QStringLiteral("Mark every conversation read and jump to the newest messages"));
+    setOcticon(unreadReadButton, "chevron-up", 16);
+    auto *unreadLayout = new QHBoxLayout(m_chatUnreadBanner);
+    unreadLayout->setContentsMargins(18, 6, 12, 6);
+    unreadLayout->setSpacing(10);
+    unreadLayout->addWidget(m_chatUnreadBannerLabel, 1);
+    unreadLayout->addWidget(unreadReadButton);
+    m_chatUnreadBanner->hide();
+    connect(unreadReadButton, &QPushButton::clicked, this, &MainWindow::markAllChatRead);
+
     // Scrollable column of message-row widgets (supports avatars, inline
     // images, animated GIFs, file chips, and reaction bars).
     m_messageScroll = new QScrollArea;
@@ -7612,6 +7633,7 @@ QWidget *MainWindow::buildChatSection()
     mainColumn->setSpacing(0);
     mainColumn->addWidget(header);
     mainColumn->addWidget(m_firewallBanner);
+    mainColumn->addWidget(m_chatUnreadBanner);
     mainColumn->addWidget(m_messageScroll, 1);
     mainColumn->addWidget(m_typingLabel);
     mainColumn->addWidget(composer);

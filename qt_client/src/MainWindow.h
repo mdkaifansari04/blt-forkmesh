@@ -835,6 +835,11 @@ private:
     // actually visible (chat section shown, or window regains focus while
     // already on it) — called from showSection() and changeEvent().
     void clearActiveConversationUnread();
+    // Show/hide the in-transcript unread banner and update its count text.
+    void updateChatUnreadBanner();
+    // Mark every conversation read at once (from the unread banner's arrow) and
+    // jump the current transcript to the newest messages.
+    void markAllChatRead();
     void updateConnectionStatus(); // top-right "● Connected · N nodes online"
     // Take this node online / offline from the top-bar toggle. Offline stops the
     // reward heartbeat and live repo serving (so the node stops collecting
@@ -3287,6 +3292,10 @@ private:
     QLabel *m_firewallBannerLabel;
     QPushButton *m_firewallAllowButton;
     QString m_firewallPrivilegedCommand;
+    // In-transcript "N unread messages" strip with a jump-to-newest arrow that
+    // marks every conversation read in one click. Hidden when nothing is unread.
+    QWidget *m_chatUnreadBanner = nullptr;
+    QLabel *m_chatUnreadBannerLabel = nullptr;
     QScrollArea *m_messageScroll;
     QWidget *m_messageContainer;
     QVBoxLayout *m_messageLayout; // message rows + a trailing stretch
