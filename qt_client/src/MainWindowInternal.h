@@ -667,8 +667,10 @@ public:
         const QFontMetrics fm(option.font);
         // Messages align at a fixed left edge (flush with the grid) rather than
         // tracking the commit's coloured lane, so every row's text lines up no
-        // matter how deep its branch sits in the graph.
-        QRect r = option.rect.adjusted(6, 0, -8, 0);
+        // matter how deep its branch sits in the graph. The left inset is kept
+        // tight so the text sits right up against the graph gutter's lanes with
+        // no dead gap (issue #52).
+        QRect r = option.rect.adjusted(1, 0, -8, 0);
         const QColor dim("#8b949e");
 
         painter->save();
@@ -743,7 +745,10 @@ public:
         }
         // Draw the subject flush-left, then append the author dimmed at its tail
         // so the row reads "<subject> · <author>" instead of a separate
-        // right-aligned author column.
+        // right-aligned author column. The full commit message gets the width
+        // first; the username only takes whatever room is left after it, so a
+        // long subject is never truncated just to reserve space for the author
+        // (issue #52).
         const QVariant fgVar = index.data(Qt::ForegroundRole);
         const QColor fg = fgVar.isValid()
                               ? qvariant_cast<QBrush>(fgVar).color()
@@ -754,9 +759,8 @@ public:
         const QString suffix =
             author.isEmpty() ? QString()
                              : QString::fromUtf8("  \xC2\xB7  ") + author;
-        const int suffixW = fm.horizontalAdvance(suffix);
         const QString elidedSubject =
-            fm.elidedText(subject, Qt::ElideRight, std::max(0, textW - suffixW));
+            fm.elidedText(subject, Qt::ElideRight, textW);
         const int subjectW = fm.horizontalAdvance(elidedSubject);
         painter->setPen(fg);
         painter->drawText(QRect(x, r.top(), subjectW, r.height()),
