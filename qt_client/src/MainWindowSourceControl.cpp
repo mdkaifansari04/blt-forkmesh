@@ -174,42 +174,38 @@ QWidget *MainWindow::buildSourceControlPanel()
     }
 
     // The message field gets the full panel width on its own row (VS-Code
-    // style). The dense power-user toolbar sits beneath it, split across two
-    // rows — generation controls above, stage/commit actions below — so the
-    // whole compose area fits a narrow pane without a horizontal scrollbar.
+    // style). The dense power-user toolbar sits beneath it on a single
+    // horizontally-scrolling row so it never imposes its full width on the
+    // splitter.
     root->addWidget(m_scmMessage);
 
     m_scmControlsPanel = new QWidget;
-    auto *controlsCol = new QVBoxLayout(m_scmControlsPanel);
-    controlsCol->setContentsMargins(0, 0, 0, 0);
-    controlsCol->setSpacing(6);
-
-    auto *generateRow = new QHBoxLayout;
-    generateRow->setContentsMargins(0, 0, 0, 0);
-    generateRow->setSpacing(6);
-    generateRow->addWidget(m_scmGenerateButton);
-    generateRow->addWidget(m_scmGenModel);
-    generateRow->addWidget(m_scmGenKind);
-    generateRow->addWidget(m_scmGenDuration);
-    generateRow->addWidget(m_scmCopyButton);
-    generateRow->addWidget(m_scmGenStatus);
-    generateRow->addStretch();
-    controlsCol->addLayout(generateRow);
-
-    auto *actionsRow = new QHBoxLayout;
-    actionsRow->setContentsMargins(0, 0, 0, 0);
-    actionsRow->setSpacing(6);
-    actionsRow->addWidget(m_scmStageAllButton);
-    actionsRow->addWidget(m_scmUnstageAllButton);
-    actionsRow->addWidget(m_scmDiscardAllButton);
-    actionsRow->addWidget(m_scmCommitButton);
-    actionsRow->addWidget(m_scmCommitPushButton);
-    actionsRow->addWidget(m_scmStageCommitPushButton);
-    actionsRow->addStretch();
-    controlsCol->addLayout(actionsRow);
+    auto *controlsRow = new QHBoxLayout(m_scmControlsPanel);
+    controlsRow->setContentsMargins(0, 0, 0, 0);
+    controlsRow->setSpacing(6);
+    controlsRow->addWidget(m_scmGenerateButton);
+    controlsRow->addWidget(m_scmGenModel);
+    controlsRow->addWidget(m_scmGenKind);
+    controlsRow->addWidget(m_scmGenDuration);
+    controlsRow->addWidget(m_scmCopyButton);
+    controlsRow->addWidget(m_scmGenStatus);
+    controlsRow->addWidget(m_scmStageAllButton);
+    controlsRow->addWidget(m_scmUnstageAllButton);
+    controlsRow->addWidget(m_scmDiscardAllButton);
+    controlsRow->addWidget(m_scmCommitButton);
+    controlsRow->addWidget(m_scmCommitPushButton);
+    controlsRow->addWidget(m_scmStageCommitPushButton);
+    controlsRow->addStretch();
 
     m_scmControlsPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    root->addWidget(m_scmControlsPanel);
+
+    auto *controlsScroll = new QScrollArea;
+    controlsScroll->setWidget(m_scmControlsPanel);
+    controlsScroll->setWidgetResizable(true);
+    controlsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    controlsScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    controlsScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    root->addWidget(controlsScroll);
 
     auto *header = new QHBoxLayout;
     auto *title = new QLabel("CHANGES");
