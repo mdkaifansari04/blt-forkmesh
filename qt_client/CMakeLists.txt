@@ -88,6 +88,7 @@ set(FORKMESH_APP_SOURCES
     src/MirrorCrypto.cpp
     src/CoveStore.h
     src/CoveStore.cpp
+    src/ChatHistoryLimits.h
     src/ServerNode.h
     src/ServerNode.cpp
     src/NetworkBackoff.h
@@ -391,6 +392,7 @@ if(FORKMESH_BUILD_TESTS)
         src/RepoSecurity.h
         src/RepoSecurity.cpp
         src/ReferenceLinks.h
+        src/ChatHistoryLimits.h
     )
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
     if(APPLE)
