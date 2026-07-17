@@ -56,13 +56,12 @@ def test_working_tree_diff_controls_stay_above_changes_list():
     )
 
     assert "m_scmControlsPanel = new QWidget;" in build
-    assert "new QHBoxLayout(m_scmControlsPanel)" in build
-    # The dense toolbar is wrapped in a horizontally-scrolling area so it never
-    # imposes its full width on the splitter, but it must still sit above the
-    # changes list in the root layout.
-    assert "controlsScroll->setWidget(m_scmControlsPanel);" in build
-    assert "root->addWidget(controlsScroll);" in build
-    assert build.index("root->addWidget(controlsScroll);") < build.index(
+    # The dense toolbar wraps its buttons onto extra rows via a FlowLayout so
+    # every action stays visible instead of scrolling horizontally off the
+    # edge, but it must still sit above the changes list in the root layout.
+    assert "new FlowLayout(m_scmControlsPanel" in build
+    assert "root->addWidget(m_scmControlsPanel);" in build
+    assert build.index("root->addWidget(m_scmControlsPanel);") < build.index(
         "root->addWidget(m_scmTree, 1);")
     assert "root->addLayout(composeRow)" not in build
     assert "m_scmDiff = new QTextBrowser" not in build
