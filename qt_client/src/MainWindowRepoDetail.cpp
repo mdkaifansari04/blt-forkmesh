@@ -8085,6 +8085,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     repoDetailStackScroll->setWidgetResizable(true);
     repoDetailStackScroll->setFrameShape(QFrame::NoFrame);
     repoDetailStackScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Hide the outer vertical scrollbar (the right-most one in the window). Each
+    // repo-detail tab manages its own scrolling, so this outer bar was a
+    // redundant second scrollbar. Wheel/keyboard scrolling still works.
+    repoDetailStackScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     repoDetailStackScroll->setMinimumHeight(0);
     repoDetailStackScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     repoDetailStackScroll->setWidget(m_repoDetailStack);
