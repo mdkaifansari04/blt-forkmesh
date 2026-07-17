@@ -6271,49 +6271,6 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
                 .arg(files.size())
                 .arg(files.size() == 1 ? "" : "s"));
 
-    // --- Left file list (click scrolls the diff to that file).
-    if (m_commitFileList) {
-        QSignalBlocker block(m_commitFileList);
-        m_commitFileList->clear();
-        for (const DiffFileEntry &f : files) {
-            // Show the basename prominently with the +/- counts; full path on
-            // hover. A status-coloured octicon leads each row.
-            const QString name = f.path.section(QLatin1Char('/'), -1);
-            auto *item = new QListWidgetItem(
-                QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
-                    .arg(name, QString::number(f.adds), QString::number(f.dels)));
-            QString icon = "file-diff";
-            QColor tint("#d29922"); // modified
-            if (f.status == QLatin1String("added")) {
-                icon = "diff";
-                tint = QColor("#3fb950");
-            } else if (f.status == QLatin1String("deleted")) {
-                icon = "trash";
-                tint = QColor("#f85149");
-            } else if (f.status == QLatin1String("renamed")) {
-                icon = "file-diff";
-                tint = QColor("#58a6ff");
-            }
-            item->setIcon(themedOcticon(icon, tint, 14));
-            item->setData(Qt::UserRole, f.anchor);
-            item->setToolTip(QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
-            m_commitFileList->addItem(item);
-        }
-        fitFileListToWidestEntry(m_commitFileList);
-    }
-    // A click on an expanded file row (or a pending-sync file) asked for this
-    // specific file: select it now the list exists — outside the blocker, so the
-    // selection scrolls the diff to that file's anchor.
-    if (m_commitFileList && !m_pendingCommitFileScroll.isEmpty()) {
-        for (int i = 0; i < files.size(); ++i) {
-            if (files.at(i).path == m_pendingCommitFileScroll) {
-                m_commitFileList->setCurrentRow(i);
-                break;
-            }
-        }
-        m_pendingCommitFileScroll.clear();
-    }
-
     // --- Theme-aware diff styling, then the rendered HTML.
     if (m_commitDiffView) {
         setDiffHtml(m_commitDiffView,
@@ -6321,6 +6278,19 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
                         ? QStringLiteral("<p style='color:#8b949e'>"
                                          "No changes in this commit.</p>")
                         : diffHtml);
+    }
+    // A click on an expanded file row in the graph (or a pending-sync file) asked
+    // for one specific file: scroll the diff straight to that file's anchor now
+    // the HTML exists. The file list that used to drive this lives inline in the
+    // graph now, so we scroll the diff directly (adhoc #59).
+    if (m_commitDiffView && !m_pendingCommitFileScroll.isEmpty()) {
+        for (const DiffFileEntry &f : files) {
+            if (f.path == m_pendingCommitFileScroll) {
+                m_commitDiffView->scrollToAnchor(f.anchor);
+                break;
+            }
+        }
+        m_pendingCommitFileScroll.clear();
     }
 
     renderCommitThread(m_currentCommitHash);
@@ -8121,6 +8091,10 @@ QWidget *MainWindow::buildRepoCommitsTab()
     enableHoverRowHighlight(m_commitsTable); // green outline selection (issue #252)
     m_commitsTable->horizontalHeader()->setVisible(false);
     m_commitsTable->verticalHeader()->setVisible(false);
+    // Tight, fixed row height so the graph reads compact like the VS Code / GitLens
+    // commit graph rather than the roomier default table rows (adhoc #59).
+    m_commitsTable->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_commitsTable->verticalHeader()->setDefaultSectionSize(24);
     m_commitsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_commitsTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_commitsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -8470,49 +8444,35 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // the file names on its own, so the standalone count label is redundant.
     m_commitFilesSummary = nullptr;
 
-    // Left: changed-files list (click to scroll the diff to that file). The
-    // selected file gets the same green outline the other file trees use, so the
-    // active file is obvious at a glance (issue: border the selected file).
-    auto *filesPane = new QWidget;
-    filesPane->setMinimumWidth(200);
-    filesPane->setMaximumWidth(300);
-    m_commitFileList = new QListWidget;
-    m_commitFileList->setObjectName("commitFileList");
-    enableHoverRowHighlight(m_commitFileList); // green outline on the selected file
-    connect(m_commitFileList, &QListWidget::currentItemChanged, this,
-            [this](QListWidgetItem *item, QListWidgetItem *) {
-                if (item && m_commitDiffView)
-                    m_commitDiffView->scrollToAnchor(
-                        item->data(Qt::UserRole).toString());
-            });
-    // Small spinner that shows load progress while showCommit reads + renders
-    // the diff, so a slow commit shows progress here instead of freezing.
-    m_commitDiffSpinner = new BusySpinner(filesPane);
-    m_commitDiffSpinner->setToolTip(QString::fromUtf8("Loading diff\xE2\x80\xA6"));
-    m_commitDiffSpinner->hide();
-    auto *filesSummaryRow = new QHBoxLayout;
-    filesSummaryRow->setContentsMargins(0, 0, 0, 0);
-    filesSummaryRow->setSpacing(6);
-    filesSummaryRow->addWidget(m_commitDiffSpinner);
-    filesSummaryRow->addStretch();
+    // The commit's touched files are shown inline in the graph list (click a
+    // commit to expand its files, then click a file to open it) and the selected
+    // file is bordered there, so the detail view no longer carries its own
+    // changed-files pane — it's just the diff (adhoc #59).
+    m_commitFileList = nullptr;
 
-    auto *filesLayout = new QVBoxLayout(filesPane);
-    filesLayout->setContentsMargins(0, 0, 8, 0);
-    filesLayout->setSpacing(6);
-    filesLayout->addLayout(filesSummaryRow);
-    filesLayout->addWidget(m_commitFileList, 1);
-
-    // Right: the unified diff for the whole commit.
+    // The unified diff for the whole commit, full width.
     m_commitDiffView = new QTextBrowser;
     m_commitDiffView->setObjectName("commitDiffView");
     m_commitDiffView->setOpenExternalLinks(false);
     registerDiffView(m_commitDiffView);
 
-    auto *split = new QSplitter(Qt::Horizontal);
-    split->addWidget(filesPane);
-    split->addWidget(m_commitDiffView);
-    split->setStretchFactor(0, 0);
-    split->setStretchFactor(1, 1);
+    // Small spinner that shows load progress while showCommit reads + renders the
+    // diff, tucked into a thin strip above it so a slow commit shows progress
+    // instead of freezing.
+    m_commitDiffSpinner = new BusySpinner;
+    m_commitDiffSpinner->setToolTip(QString::fromUtf8("Loading diff\xE2\x80\xA6"));
+    m_commitDiffSpinner->hide();
+    auto *diffSpinRow = new QHBoxLayout;
+    diffSpinRow->setContentsMargins(0, 0, 0, 0);
+    diffSpinRow->addStretch();
+    diffSpinRow->addWidget(m_commitDiffSpinner);
+
+    auto *split = new QWidget;
+    auto *splitLayout = new QVBoxLayout(split);
+    splitLayout->setContentsMargins(0, 0, 0, 0);
+    splitLayout->setSpacing(4);
+    splitLayout->addLayout(diffSpinRow);
+    splitLayout->addWidget(m_commitDiffView, 1);
 
     // --- Per-commit conversation: comment thread + composer.
     m_commitThreadContainer = new QWidget;
