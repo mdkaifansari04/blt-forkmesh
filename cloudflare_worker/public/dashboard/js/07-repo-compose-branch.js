@@ -919,7 +919,13 @@
       loadRepoCommits(repo);
     } else if (active === "issues") {
       state.loadedRepoTabs.issues = true;
-      loadRepoIssues(repo);
+      // A refreshed/shared issue deep link (/owner/repo/issues/<N>) opens that
+      // issue's detail straight away; Back re-fetches the list lazily.
+      if (recordRoute && recordRoute.kind === "issues" && recordRoute.number) {
+        loadRepoRecordDetail(repo, "issues", recordRoute.number);
+      } else {
+        loadRepoIssues(repo);
+      }
     } else if (active === "pulls" || active === "discussions") {
       state.loadedRepoTabs[active] = true;
       // A record deep link (/owner/repo/pulls/<N> — e.g. the desktop client's
