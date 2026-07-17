@@ -21,6 +21,17 @@
             "title": "when the bounty is received it can close the window",
             "ts": 1783992940914,
             "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "lets make sure to close the bounty window when it's received also show a spinner when it's confimring and green checkbox when it's confirmed - also if we can make it so that the amount is transfered with the qr code that would be convienent ",
+            "id": "ef182758-2689-4522-9424-c652cc56793f",
+            "sig": "rZFfHV2O_y8JcvbjLRfa7fiO9yYuaYPsGFG4jY160cz-t75UEQAh3JlmCOfhJKlpikS0BiDQxV4UNQWLko3YBA",
+            "ts": 1784325006678,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -33,6 +44,6 @@
     "startDate": 0,
     "status": "open",
     "title": "when the bounty is received it can close the window",
-    "updatedAt": 1783992940914,
+    "updatedAt": 1784325006678,
     "votes": 0
 }
