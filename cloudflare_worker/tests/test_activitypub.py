@@ -376,6 +376,42 @@ def test_note_essentials():
     assert ap.note_essentials(None) is None
 
 
+def test_note_essentials_mentions_and_images():
+    obj = {
+        "id": "https://m.s/notes/2", "type": "Note",
+        "content": "<p>@forkmesh.forkmesh broken button</p>",
+        "attributedTo": "https://m.s/users/bob",
+        "tag": [
+            {"type": "Mention",
+             "href": "https://f.c/ap/repos/forkmesh/forkmesh",
+             "name": "@forkmesh.forkmesh@f.c"},
+            {"type": "Hashtag", "href": "https://m.s/tags/bug"},
+            "not-a-dict",
+        ],
+        "attachment": [
+            {"type": "Document", "mediaType": "image/png",
+             "url": "https://files.m.s/1.png", "name": "screenshot"},
+            {"type": "Document", "mediaType": "video/mp4",
+             "url": "https://files.m.s/clip.mp4"},
+            {"type": "Image", "mediaType": "image/jpeg; charset=binary",
+             "url": {"id": "https://files.m.s/2.jpg"}},
+            {"type": "Link", "href": "https://elsewhere"},
+        ],
+    }
+    ess = ap.note_essentials(obj)
+    assert ess["mentions"] == ["https://f.c/ap/repos/forkmesh/forkmesh"]
+    assert ess["images"] == [
+        {"url": "https://files.m.s/1.png", "mediaType": "image/png",
+         "name": "screenshot"},
+        {"url": "https://files.m.s/2.jpg", "mediaType": "image/jpeg",
+         "name": ""},
+    ]
+    # Absent/malformed tag+attachment stay empty lists, never crash.
+    bare = ap.note_essentials({"id": "x", "type": "Note", "tag": "nope",
+                               "attachment": 7})
+    assert bare["mentions"] == [] and bare["images"] == []
+
+
 def test_activity_object_id():
     assert ap.activity_object_id("x") == "x"
     assert ap.activity_object_id({"id": "y"}) == "y"

@@ -311,8 +311,26 @@ QWidget *MainWindow::buildChatPage()
     contentScroll->setMinimumHeight(0);
     contentScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     contentScroll->setWidget(content);
-    layout->addWidget(contentScroll, 1);
-    layout->addWidget(buildNetworkLogDock());
+
+    // The main content and the always-on prompt/log footer sit in a vertical
+    // splitter (adhoc #19). Before this, the footer was a stretch-0 strip whose
+    // height tracked its own contents, so anything that changed its size — the
+    // "Agents:" status strip appearing, an attachment thumbnail, a growing
+    // prompt — reflowed the strip and dragged the whole toolbar up or down as
+    // the interface "shifted". The splitter gives the footer a definite,
+    // user-draggable height instead: once sized it stays put (stretch goes to
+    // the content pane above), so the interface pieces are locked and only the
+    // prompt's own text area scrolls internally, while the drag handle keeps the
+    // whole band resizable.
+    auto *bodySplitter = new QSplitter(Qt::Vertical);
+    bodySplitter->setObjectName("chatBodySplitter");
+    bodySplitter->setChildrenCollapsible(false);
+    bodySplitter->addWidget(contentScroll);
+    bodySplitter->addWidget(buildNetworkLogDock());
+    bodySplitter->setStretchFactor(0, 1); // content absorbs window growth
+    bodySplitter->setStretchFactor(1, 0); // footer keeps its dragged height
+    bodySplitter->setSizes({600, 240});
+    layout->addWidget(bodySplitter, 1);
     return page;
 }
 
@@ -786,7 +804,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBarScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     bottomBarScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     bottomBarScroll->setMinimumWidth(0);
-    bottomBarScroll->setFixedHeight(56);
+    // Fit the strip to its tallest control — the two stacked send icons make the
+    // row 62px, not 56px — so the viewport is never shorter than the host. A
+    // too-short viewport made widgetResizable keep the host at its taller minimum
+    // and scroll it vertically, pushing the toolbar controls up out of view
+    // (adhoc #19: "ui objects go below the line"). Deriving the height from the
+    // content keeps it correct if the controls ever change, and with the viewport
+    // now tall enough the toolbar is fixed — only the text area above scrolls.
+    bottomBarScroll->setFixedHeight(bottomBarHost->sizeHint().height());
 
     // Prompt wrapper: the border lives on this frame; the text edit sits on
     // top with the bottom bar nested below it inside the same box, so the
@@ -798,7 +823,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     promptLayout->setContentsMargins(0, 0, 0, 0);
     promptLayout->setSpacing(0);
     // The editor takes all the stretch so it grows/shrinks with the frame; the
-    // bottom bar carries none and keeps its fixed 56px height welded to the foot.
+    // bottom bar carries none and keeps its fixed height welded to the foot.
     promptLayout->addWidget(m_issueQuickAdd, 1);
     promptLayout->addWidget(bottomBarScroll, 0);
 

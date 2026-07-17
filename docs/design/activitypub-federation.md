@@ -37,12 +37,33 @@ them out of the body before it becomes note text, and each is re-served at
 be listed as a proper `Image` `attachment` on the Note.
 
 Inbound: `Follow` (auto-accepted), `Undo(Follow)`, `Create(Note)` replies to
-our objects, `Delete`. Remote replies become **federated comments** — stored
-in `ap_comments`, surfaced via `GET
-/api/repo/{owner}/{repo}/fedi-comments?kind=issue&number=N`, and shown as
-clearly-marked fediverse comments. They are deliberately kept OUTSIDE the
+our objects, `Create(Note)` posts that Mention a repo actor, `Delete`. Remote
+replies become **federated comments** — stored in `ap_comments`, surfaced via
+`GET /api/repo/{owner}/{repo}/fedi-comments?kind=issue&number=N`, and shown
+as clearly-marked fediverse comments. They are deliberately kept OUTSIDE the
 Ed25519-signed event log: a remote reply can never carry a forkmesh author
 signature, so it must never enter the signed spine that nodes replicate.
+
+**Repo mentions → issues.** A post whose Mention tag points at a repo actor
+("@owner.repo@forkmesh.com the save button crashes") runs through Workers AI
+(the ForkBot binding/model): when the model classifies it as a bug/task
+request it becomes an issue-inbox submission through the same relay-authored
+channel as a ForkBot chat request (proposed number from `issue_seq`, source
+`fediverse`, label `fediverse`, provenance footer linking the post), and the
+repo actor replies to the author — a public Note with `inReplyTo` + Mention
+tag, queued through `ap_outbox` — telling them the issue number and where it
+will appear. The post's image attachments (bounded: 4 × 1 MB) are fetched
+and ride along as `attachmentData`, the same shape a no-write-access node's
+screenshots use, so the owner's desktop materializes them into the issue
+folder on merge. The stored reply object carries the new issue's thread
+context, so fediverse replies to it land as federated comments on that
+issue. Gates mirror the reply path: published public repo, `federate` +
+`acceptComments` on, `ap_mentions` (blind-indexed note id) dedupes
+redeliveries, and an AI-unreachable degradation files only obviously
+issue-shaped posts (the same contract as ForkBot). Mention-tag parsing is
+pure string work, so the inbox lets these through to signature verification
+without any extra D1 reads; a confident model "none" is remembered so
+redeliveries never re-run the model.
 
 ## Wire protocol
 

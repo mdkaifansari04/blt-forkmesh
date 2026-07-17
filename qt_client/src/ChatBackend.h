@@ -230,6 +230,22 @@ public:
         Q_UNUSED(ts);
         Q_UNUSED(signature);
     }
+    // Announce that `inviteeAccount` was just granted access to an account-scoped
+    // cove. Every online node checks inviteeAccount against its own account and
+    // raises a notification if it matches; everyone else ignores it. Advisory
+    // only (it grants nothing by itself — the actual access grant already lives
+    // in the cove's encrypted invitedAccounts list), so unlike notifyCoveOpened
+    // it isn't signed.
+    virtual void notifyCoveInvited(const QString &inviteeAccount, const QString &coveId,
+                                   const QString &coveName, const QString &inviterName,
+                                   qint64 ts)
+    {
+        Q_UNUSED(inviteeAccount);
+        Q_UNUSED(coveId);
+        Q_UNUSED(coveName);
+        Q_UNUSED(inviterName);
+        Q_UNUSED(ts);
+    }
     // Live WebSocket / Durable Object diagnostics for the Network tab. Backends
     // without a socket return an empty list.
     virtual QList<QJsonObject> networkDiagnostics() const { return {}; }
@@ -285,6 +301,10 @@ signals:
     void coveOpened(const QString &creatorKey, const QString &coveId,
                     const QString &coveName, const QString &openerKey,
                     const QString &openerName, qint64 ts, const QString &signature);
+    // A peer granted `inviteeAccount` access to an account-scoped cove. The UI
+    // raises a notification if inviteeAccount is our own account.
+    void coveInvited(const QString &inviteeAccount, const QString &coveId,
+                     const QString &coveName, const QString &inviterName, qint64 ts);
     void networkDiagnosticsChanged();
     // Round-trip time of the room socket's keepalive ping/pong, sampled every
     // ~25s while connected. Feeds the relay radar for free — the footer's
