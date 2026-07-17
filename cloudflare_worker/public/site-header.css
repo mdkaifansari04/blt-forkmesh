@@ -1,8 +1,11 @@
 /* Universal site header (see site-header.js), styled to match the dashboard
    chrome: a 56px bar with a bottom border, bordered square controls, and a
    hamburger menu holding every site link grouped and fully expanded.
-   Self-contained: private tokens keep the navigation chrome on the site's
-   dark palette without inheriting colors from the host page. */
+   Self-contained: private tokens (not the host page's own --background /
+   --foreground vars) drive the navigation chrome, but site-header.js still
+   stamps html.light / html.dark on every page, and the light-mode block
+   below repoints those private tokens so the header follows the visitor's
+   chosen theme instead of staying dark forever. */
 
 .forkmesh-simple-header {
   --fm-header-bg: #090909;
@@ -22,6 +25,21 @@
   border-bottom: 1px solid var(--fm-header-border);
   background: var(--fm-header-bg);
   color: var(--fm-header-fg);
+}
+
+html.light .forkmesh-simple-header {
+  --fm-header-bg: #ffffff;
+  --fm-header-surface: #f6f6f7;
+  --fm-header-fg: #111113;
+  --fm-header-muted: #5c5c66;
+  --fm-header-border: #d9d9de;
+  --fm-header-accent: #1a7f37;
+}
+
+html.light .fm-header-signup,
+html.light .fm-header-mobile-account .fm-header-signup {
+  background: #111113;
+  color: #ffffff;
 }
 
 .forkmesh-simple-brand {
