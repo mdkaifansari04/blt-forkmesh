@@ -2718,6 +2718,10 @@ private:
     // generated identicon when the user hasn't set one.
     QByteArray effectiveAvatar();
     QByteArray effectiveUserAvatar();
+    // Persist the local avatar to the account record (POST /api/accounts/profile)
+    // so the web dashboard shows the same picture. No-op without an authenticated
+    // session token or a local avatar to upload.
+    void pushAccountAvatar();
     void updateAvatarButton();
     void updateUserAvatarButton();
     void refreshIssueComposerAvatar();
@@ -5141,6 +5145,10 @@ private:
     // Registered account/node identity for this session.
     bool m_accountAuthenticated = false;
     QString m_accountName;
+    // Session token minted by /api/accounts/login, used to authenticate
+    // profile writes (e.g. persisting the chosen avatar to the account record
+    // so the web dashboard shows the same picture the desktop app does).
+    QString m_accountSessionToken;
     bool m_accountSolanaVerified = false;
     bool m_accountDesktopCapable = false;
     // "free" = view-only (must mirror >=1 repo) until the user joins by
