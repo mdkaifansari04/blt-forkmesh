@@ -1560,6 +1560,24 @@
     if (Number.isFinite(Number(counts.discussions))) setRepoTabCount("discussions", Number(counts.discussions));
   }
 
+  // The tab badges are seeded from the catalog's last-published tallies, which
+  // lag the live mirror (e.g. issues opened since the owner node last
+  // republished). The authoritative served counts ride only on the ROOT tree
+  // reply (RepoHost::rootCountsFor, gated on path.isEmpty()), so a deep link
+  // straight into a subfolder — e.g. browsing .forkmesh/issues/open — fetches a
+  // subpath tree that carries no counts, leaving the Issues badge stuck on the
+  // stale seed (showing 7 while the open/ folder holds 11). Refresh from the
+  // mirror's root counts in that one case; best-effort, so an offline mirror
+  // just keeps the catalog seed.
+  async function refreshServedCounts(repo) {
+    try {
+      const data = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: "" }));
+      if (data && data.counts) applyServedCounts(data.counts);
+    } catch (_) {
+      /* offline mirror — badges keep their catalog seed */
+    }
+  }
+
   // Free-text issue search: substring match (case-insensitive) over the
   // number, title, body snippet, author, and the status/labels/milestone
   // meta string — everything renderRepoRecordList already shows per row, so
