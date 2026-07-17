@@ -21,6 +21,17 @@
             "title": "on this solana bounty popup show more info like who is the auhtor and all addresses involved with links to their explorer",
             "ts": 1784332654205,
             "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "also fix the qr code to always show fully ",
+            "id": "096e7b4b-3ade-4bc5-bc3c-835010d0800e",
+            "sig": "tB4ZAp-mgdAfYpLxp4B89rv52y1CkOg-l4CMo36mvgBkk0dNqZqrhJ7YXVD8zeyf1sr0XE6XDp0YnnvWz5nkCQ",
+            "ts": 1784332674755,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -33,6 +44,6 @@
     "startDate": 0,
     "status": "open",
     "title": "on this solana bounty popup show more info like who is the auhtor and all addresses involved with links to their explorer",
-    "updatedAt": 1784332654205,
+    "updatedAt": 1784332674755,
     "votes": 0
 }
