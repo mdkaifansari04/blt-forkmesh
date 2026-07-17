@@ -273,6 +273,13 @@ from urls import (  # noqa: E402
     ACCOUNTS_RE,
     ACCOUNT_CONTRIBUTIONS_RE,
     ACCOUNT_FOLLOW_RE,
+    ORGS_RE,
+    ORG_RE,
+    ORG_MEMBERS_RE,
+    ORG_TEAMS_RE,
+    ORG_TEAM_MEMBERS_RE,
+    ORG_REPOS_RE,
+    REPO_API_PREFIX_RE,
     AP_USER_RE,
     AP_USER_SUB_RE,
     AP_REPO_RE,
@@ -281,6 +288,7 @@ from urls import (  # noqa: E402
     AP_OBJECT_MEDIA_RE,
     REPO_FEDI_COMMENTS_RE,
     REPO_AP_PUBLISH_RE,
+    REPO_AP_POSTS_RE,
     REPO_CARD_RE,
     REPO_MEDIA_RE,
     REPO_STAR_RE,
@@ -5116,7 +5124,10 @@ async def _basic_auth_push_ok(env, owner, repo, request):
     if not ts or not sig:
         return False
     if username and username != owner:
-        return False
+        # A non-owner username selects the org-team path (issue #388): the
+        # pusher signs with their OWN key and must hold write+ permission on
+        # the repo through an organization it is linked under.
+        return await verify_org_push_token(env, username, owner, repo, ts, sig)
     return await verify_push_token(env, owner, repo, ts, sig)
 
 
@@ -6130,6 +6141,10 @@ async def _account_signup(env, request):
         return json_response({"error": "valid_email_required"}, status=400)
     if len(password) < 8:
         return json_response({"error": "password_too_short"}, status=400)
+    # Same org-namespace guard as _account_reserve (issue #388).
+    _, org_holder = await _org_row(env, name)
+    if org_holder:
+        return json_response({"error": "node_name_taken"}, status=409)
 
     name_bi, existing = await _account_row(env, name)
     if existing and (existing.get("status") == "active" or
@@ -6263,6 +6278,12 @@ async def _account_reserve(env, request):
     signature = clean_string(data.get("sig", ""), 200)
     if not valid_node_name(name):
         return json_response({"error": "invalid_node_name"}, status=400)
+    # Org names share the /<name>/<repo> URL namespace (issue #388): a name an
+    # organization holds can never become a node name, or the org-alias URL
+    # rewrite would be ambiguous.
+    _, org_holder = await _org_row(env, name)
+    if org_holder:
+        return json_response({"error": "node_name_taken"}, status=409)
 
     name_bi, existing = await _account_row(env, name)
     if existing:
@@ -8907,6 +8928,621 @@ async def shares_handler(env, request, owner, repo):
         return json_response({"ok": True, "grantee": grantee, "shared": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
+
+
+# --- Organizations + teams (issue #388) --------------------------------------
+# Users create organizations, add accounts to them, and group members into
+# teams that hold one repository permission over every repo linked under the
+# org. Org owners/admins administer the org itself and implicitly hold 'admin'
+# repo permission; plain members hold 'read'; team membership raises that to
+# the team's permission. The org name fronts the linked repos' URLs — the
+# /<org>/<repo> git endpoints and /api/repo/<org>/<repo>/... are rewritten to
+# the hosting node's namespace before routing (see org_alias_rewrite), so
+# mirror nodes and clients keep operating on the canonical node namespace
+# while the public URL shows the organization's name.
+
+ORG_ROLES = ("owner", "admin", "member")
+# Repository permission ladder, weakest to strongest (issue #388: read /
+# write / maintain / admin). Tuple order IS the ranking.
+TEAM_PERMISSIONS = ("read", "write", "maintain", "admin")
+MAX_ORGS_PER_ACCOUNT = 10
+MAX_ORG_MEMBERS = 200
+MAX_ORG_TEAMS = 50
+MAX_ORG_REPOS = 200
+
+# Org repo-alias resolution memo: "org/repo" -> (node owner or "", ts),
+# per-isolate so the hot repo/git routes don't pay a D1 read per request
+# (including the common negative case: the owner segment is a plain node
+# name). Short TTL so a new link/unlink takes effect quickly; mutating
+# handlers clear it inline for same-isolate read-your-writes.
+_ORG_ALIAS_MEMO = {}
+ORG_ALIAS_MEMO_TTL_MS = 30 * 1000
+ORG_ALIAS_MEMO_MAX = 512
+
+
+def team_permission_rank(permission):
+    # Index into TEAM_PERMISSIONS, -1 for unknown — so comparisons read as
+    # rank(x) >= rank("write") and an unknown permission never qualifies.
+    try:
+        return TEAM_PERMISSIONS.index((permission or "").strip().lower())
+    except ValueError:
+        return -1
+
+
+async def _org_row(env, org):
+    # (org_bi, orgs row or None) for an org name. org_bi is keyed under an
+    # "org:" prefix so it can never collide with an account blind index.
+    org = (org or "").strip().lower()
+    org_bi = await blind_index(env, "org:" + org)
+    row = await d1_first(
+        env, "SELECT name, data, created_at FROM orgs WHERE org_bi=?", org_bi)
+    return org_bi, row
+
+
+async def _org_role(env, org_bi, account):
+    # The account's role in the org ('owner'/'admin'/'member') or "".
+    if not account:
+        return ""
+    member_bi = await blind_index(env, account)
+    row = await d1_first(
+        env, "SELECT role FROM org_members WHERE org_bi=? AND member_bi=?",
+        org_bi, member_bi)
+    return str((row or {}).get("role") or "")
+
+
+async def _org_permission(env, org_bi, account):
+    # The strongest repository permission `account` holds in the org: role
+    # owner/admin => 'admin', plain membership => 'read', team membership
+    # raises 'read' to the best team's permission. "" for non-members.
+    role = await _org_role(env, org_bi, account)
+    if role in ("owner", "admin"):
+        return "admin"
+    if not role:
+        return ""
+    member_bi = await blind_index(env, account)
+    rows = await d1_all(
+        env,
+        "SELECT t.permission AS permission FROM org_team_members m "
+        "JOIN org_teams t ON t.org_bi = m.org_bi AND t.team = m.team "
+        "WHERE m.org_bi=? AND m.member_bi=?",
+        org_bi, member_bi)
+    best = "read"
+    for row in rows or []:
+        perm = str(row.get("permission") or "")
+        if team_permission_rank(perm) > team_permission_rank(best):
+            best = perm
+    return best
+
+
+async def _org_write_allowed(env, owner, repo, pusher):
+    # True when some org links owner/repo and the pusher holds write-or-better
+    # permission there. Fail closed: any error must never grant push access.
+    if not owner or not repo or not pusher:
+        return False
+    try:
+        await ensure_schema(env)
+        rows = await d1_all(
+            env, "SELECT org_bi FROM org_repos WHERE node_owner=? AND repo=?",
+            owner.lower(), repo.lower())
+        for row in rows or []:
+            perm = await _org_permission(
+                env, str(row.get("org_bi") or ""), pusher)
+            if team_permission_rank(perm) >= team_permission_rank("write"):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+async def verify_org_push_token(env, pusher, owner, repo, ts, sig):
+    # Org-team write gate for git push (issue #388): a member of an org team
+    # with write+ permission on a linked repo may run receive-pack against it,
+    # signing with their OWN key (the node owner never hands out its key).
+    # Distinct canonical prefix so an owner push token or a share-view token
+    # can never be replayed here, and vice versa. owner/repo are the CANONICAL
+    # node namespace — the org alias is rewritten away before the push gate.
+    if not pusher or not owner or not repo or not sig or not _ts_ok(ts):
+        return False
+    if pusher == owner:
+        return False  # the owner authenticates via verify_push_token, not here
+    pubkey = await _owner_pubkey(env, pusher)
+    if not pubkey:
+        return False
+    canonical = ("forkmesh-org-push-v1\n" + pusher + "\n" + owner + "\n" +
+                 repo + "\n" + str(ts)).encode()
+    if not await ed25519_verify(pubkey, sig, canonical):
+        return False
+    return await _org_write_allowed(env, owner, repo, pusher)
+
+
+async def _org_repo_node(env, org, repo):
+    # Node owner serving /<org>/<repo>, or "" when the pair is not a
+    # registered alias. Fail closed on any error: "" simply means "not an org
+    # URL" and the request proceeds unrewritten.
+    org = (org or "").strip().lower()
+    repo = (repo or "").strip().lower()
+    if not org or not repo:
+        return ""
+    now = int(Date.now())
+    key = org + "/" + repo
+    hit = _ORG_ALIAS_MEMO.get(key)
+    if hit and now - hit[1] < ORG_ALIAS_MEMO_TTL_MS:
+        return hit[0]
+    node = ""
+    try:
+        await ensure_schema(env)
+        org_bi = await blind_index(env, "org:" + org)
+        row = await d1_first(
+            env, "SELECT node_owner FROM org_repos WHERE org_bi=? AND repo=?",
+            org_bi, repo)
+        node = str((row or {}).get("node_owner") or "").strip().lower()
+        if not valid_node_name(node) or node == org:
+            node = ""
+    except Exception:
+        return ""
+    if len(_ORG_ALIAS_MEMO) >= ORG_ALIAS_MEMO_MAX:
+        _ORG_ALIAS_MEMO.clear()
+    _ORG_ALIAS_MEMO[key] = (node, now)
+    return node
+
+
+async def org_alias_rewrite(env, request, url):
+    # Organization repo aliases (issue #388): the /<org>/<repo> git endpoints
+    # and every /api/repo/<org>/<repo>/... path serve the linked node's repo
+    # under the organization's name. The rewrite is worker-internal — no
+    # redirect, the org name stays in the address bar and clone URL — and runs
+    # before any route matching, so everything downstream (auth canonicals,
+    # host DO naming, the DO's own path parsing, mirror forwarding, blind
+    # indexes) sees the canonical /<node>/<repo> path exactly as if the node
+    # URL had been requested. Org names can never collide with account names
+    # (both creation paths reject the other namespace), so an existing node's
+    # URL is never rewritten. Returns the rewritten (request, url) or None.
+    match = (REPO_API_PREFIX_RE.match(url.path) or GIT_INFO_RE.match(url.path)
+             or GIT_PACK_RE.match(url.path) or GIT_RECEIVE_RE.match(url.path))
+    if not match:
+        return None
+    owner = safe_segment(match.group(1))
+    repo = safe_segment(match.group(2))
+    if not owner or not repo:
+        return None
+    node = await _org_repo_node(env, owner, repo)
+    if not node:
+        return None
+    new_path = (url.path[:match.start(1)] + quote(node) +
+                url.path[match.end(1):])
+    new_url = url._replace(path=new_path).geturl()
+    return JsRequest.new(str(new_url), request), urlparse(new_url)
+
+
+async def orgs_handler(env, request):
+    # POST /api/orgs creates an organization for the logged-in account (who
+    # becomes its first 'owner' member); GET lists the orgs the session
+    # account belongs to. Org names share the /<name>/<repo> URL namespace
+    # with accounts, so creation rejects any name an account holds — and the
+    # account reserve/signup paths reject org names — keeping the org-alias
+    # URL rewrite collision-free.
+    await ensure_schema(env)
+    method = method_name(request)
+    if method == "GET":
+        account_bi, account_rec = await _account_session_record(env, request)
+        if not account_rec:
+            return json_response({"error": "invalid_session"}, status=401)
+        rows = await d1_all(
+            env,
+            "SELECT o.name AS name, m.role AS role FROM org_members m "
+            "JOIN orgs o ON o.org_bi = m.org_bi WHERE m.member_bi=? "
+            "ORDER BY o.name",
+            account_bi)
+        return json_response({"ok": True, "orgs": [
+            {"name": str(r.get("name") or ""), "role": str(r.get("role") or "")}
+            for r in rows or []]})
+    if method != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    account_bi, account_rec = await _account_session_record(env, request, data)
+    if not account_rec:
+        return json_response({"error": "invalid_session"}, status=401)
+    account = (account_rec.get("name", "") or "").strip().lower()
+    name = clean_string(data.get("name", ""), MAX_NODE_NAME).lower()
+    if not valid_node_name(name):
+        return json_response({"error": "invalid_org_name"}, status=400)
+    # The name must be free in BOTH namespaces: any account row (active or
+    # mid-signup) blocks it, and so does an existing org.
+    _, existing_account = await _account_row(env, name)
+    if existing_account:
+        return json_response({"error": "org_name_taken"}, status=409)
+    org_bi, existing_org = await _org_row(env, name)
+    if existing_org:
+        return json_response({"error": "org_name_taken"}, status=409)
+    owned = await d1_first(
+        env,
+        "SELECT COUNT(*) AS n FROM org_members WHERE member_bi=? AND role='owner'",
+        account_bi)
+    if owned and int(owned.get("n") or 0) >= MAX_ORGS_PER_ACCOUNT:
+        return json_response({"error": "too_many_orgs"}, status=429)
+    now = int(Date.now())
+    enc = await encrypt_row(env, {
+        "name": name,
+        "displayName": clean_string(data.get("displayName", ""), 80),
+        "description": clean_string(data.get("description", ""), 500),
+        "creator": account,
+        "createdAt": now,
+    })
+    await d1_run(
+        env, "INSERT INTO orgs (org_bi, name, data, created_at) VALUES (?,?,?,?)",
+        org_bi, name, enc, now)
+    await d1_run(
+        env,
+        "INSERT OR REPLACE INTO org_members "
+        "(org_bi, member_bi, role, name, created_at) VALUES (?,?,?,?,?)",
+        org_bi, account_bi, "owner", account, now)
+    return json_response({"ok": True, "org": name, "role": "owner"}, status=201)
+
+
+async def org_handler(env, request, org):
+    # GET: public org profile (identity, counts, linked repos — the same
+    # visibility as the public account lookup). DELETE: dissolve the org and
+    # all its rows — org owners only.
+    await ensure_schema(env)
+    method = method_name(request)
+    org_bi, row = await _org_row(env, org)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    if method == "GET":
+        rec = await decrypt_row(env, row.get("data")) or {}
+        members = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM org_members WHERE org_bi=?", org_bi)
+        teams = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM org_teams WHERE org_bi=?", org_bi)
+        repos = await d1_all(
+            env,
+            "SELECT repo, node_owner FROM org_repos WHERE org_bi=? ORDER BY repo",
+            org_bi)
+        _, viewer_rec = await _account_session_record(env, request)
+        viewer = (viewer_rec.get("name", "") if viewer_rec else "").strip().lower()
+        viewer_role = await _org_role(env, org_bi, viewer) if viewer else ""
+        return json_response({
+            "ok": True,
+            "org": str(row.get("name") or ""),
+            "displayName": rec.get("displayName", ""),
+            "description": rec.get("description", ""),
+            "createdAt": int(row.get("created_at") or 0),
+            "members": int((members or {}).get("n") or 0),
+            "teams": int((teams or {}).get("n") or 0),
+            "repos": [{"repo": str(r.get("repo") or ""),
+                       "node": str(r.get("node_owner") or "")}
+                      for r in repos or []],
+            "viewerRole": viewer_role,
+        })
+    if method == "DELETE":
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        _, account_rec = await _account_session_record(env, request, data)
+        account = (account_rec.get("name", "") if account_rec else "").strip().lower()
+        if not account:
+            return json_response({"error": "invalid_session"}, status=401)
+        if await _org_role(env, org_bi, account) != "owner":
+            return json_response({"error": "forbidden"}, status=403)
+        await d1_run(env, "DELETE FROM org_repos WHERE org_bi=?", org_bi)
+        await d1_run(env, "DELETE FROM org_team_members WHERE org_bi=?", org_bi)
+        await d1_run(env, "DELETE FROM org_teams WHERE org_bi=?", org_bi)
+        await d1_run(env, "DELETE FROM org_members WHERE org_bi=?", org_bi)
+        await d1_run(env, "DELETE FROM orgs WHERE org_bi=?", org_bi)
+        _ORG_ALIAS_MEMO.clear()
+        return json_response({"ok": True, "org": str(row.get("name") or ""),
+                              "deleted": True})
+    return json_response({"error": "method_not_allowed"}, status=405)
+
+
+async def org_members_handler(env, request, org):
+    # GET: public roster (plaintext names/roles, the same trust level as
+    # profile_follows). POST: add an account or change its role — this is the
+    # "invite": the new member is notified, like a repo share. DELETE: remove
+    # a member. Writes require an owner/admin session; only owners may grant,
+    # demote, or remove owners/admins, and the last owner can never leave.
+    await ensure_schema(env)
+    method = method_name(request)
+    org_bi, row = await _org_row(env, org)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    org_name = str(row.get("name") or "")
+    if method == "GET":
+        rows = await d1_all(
+            env,
+            "SELECT name, role, created_at FROM org_members WHERE org_bi=? "
+            "ORDER BY created_at ASC",
+            org_bi)
+        return json_response({"ok": True, "members": [
+            {"name": str(r.get("name") or ""),
+             "role": str(r.get("role") or ""),
+             "since": int(r.get("created_at") or 0)}
+            for r in rows or []]})
+    if method not in ("POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    _, account_rec = await _account_session_record(env, request, data)
+    account = (account_rec.get("name", "") if account_rec else "").strip().lower()
+    if not account:
+        return json_response({"error": "invalid_session"}, status=401)
+    caller_role = await _org_role(env, org_bi, account)
+    if caller_role not in ("owner", "admin"):
+        return json_response({"error": "forbidden"}, status=403)
+    member = clean_string(data.get("member", ""), MAX_NODE_NAME).lower()
+    if not member:
+        return json_response({"error": "member_required"}, status=400)
+    member_bi = await blind_index(env, member)
+    existing = await d1_first(
+        env, "SELECT role FROM org_members WHERE org_bi=? AND member_bi=?",
+        org_bi, member_bi)
+    existing_role = str((existing or {}).get("role") or "")
+
+    if method == "DELETE":
+        if not existing:
+            return json_response({"error": "not_found"}, status=404)
+        if existing_role in ("owner", "admin") and caller_role != "owner":
+            return json_response({"error": "forbidden"}, status=403)
+        if existing_role == "owner" and await _org_owner_count(env, org_bi) <= 1:
+            return json_response({"error": "last_owner"}, status=400)
+        await d1_run(
+            env, "DELETE FROM org_team_members WHERE org_bi=? AND member_bi=?",
+            org_bi, member_bi)
+        await d1_run(
+            env, "DELETE FROM org_members WHERE org_bi=? AND member_bi=?",
+            org_bi, member_bi)
+        return json_response({"ok": True, "member": member, "removed": True})
+
+    role = clean_string(data.get("role", "member"), 12).lower() or "member"
+    if role not in ORG_ROLES:
+        return json_response({"error": "bad_role"}, status=400)
+    # Only owners hand out (or take away) the administrative roles.
+    if caller_role != "owner" and (role in ("owner", "admin") or
+                                   existing_role in ("owner", "admin")):
+        return json_response({"error": "forbidden"}, status=403)
+    if (existing_role == "owner" and role != "owner" and
+            await _org_owner_count(env, org_bi) <= 1):
+        return json_response({"error": "last_owner"}, status=400)
+    _, member_rec = await _account_row(env, member)
+    if not member_rec:
+        return json_response({"error": "unknown_account"}, status=404)
+    if not existing:
+        count_row = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM org_members WHERE org_bi=?", org_bi)
+        if count_row and int(count_row.get("n") or 0) >= MAX_ORG_MEMBERS:
+            return json_response({"error": "too_many_members"}, status=429)
+    await d1_run(
+        env,
+        "INSERT INTO org_members (org_bi, member_bi, role, name, created_at) "
+        "VALUES (?,?,?,?,?) ON CONFLICT(org_bi, member_bi) DO UPDATE SET "
+        "role=excluded.role",
+        org_bi, member_bi, role, member, int(Date.now()))
+    if not existing:
+        await enqueue_notification(
+            env, member, "org_invite",
+            account + " added you to the " + org_name + " organization",
+            body="Your role: " + role + ".",
+            actor=account, source="org",
+            dedupe="org-member:" + org_name + ":" + member)
+    return json_response({"ok": True, "member": member, "role": role})
+
+
+async def _org_owner_count(env, org_bi):
+    row = await d1_first(
+        env,
+        "SELECT COUNT(*) AS n FROM org_members WHERE org_bi=? AND role='owner'",
+        org_bi)
+    return int((row or {}).get("n") or 0)
+
+
+async def org_teams_handler(env, request, org):
+    # Teams: named member subsets holding one repository permission over the
+    # org's linked repos. GET lists them (org members only — the permission
+    # layout is org-internal); POST creates a team or updates its permission;
+    # DELETE removes a team. Writes require an owner/admin session.
+    await ensure_schema(env)
+    method = method_name(request)
+    org_bi, row = await _org_row(env, org)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    if method == "GET":
+        _, viewer_rec = await _account_session_record(env, request)
+        viewer = (viewer_rec.get("name", "") if viewer_rec else "").strip().lower()
+        if not viewer or not await _org_role(env, org_bi, viewer):
+            return json_response({"error": "forbidden"}, status=403)
+        rows = await d1_all(
+            env,
+            "SELECT t.team AS team, t.permission AS permission, "
+            "COUNT(m.member_bi) AS members FROM org_teams t "
+            "LEFT JOIN org_team_members m "
+            "ON m.org_bi = t.org_bi AND m.team = t.team "
+            "WHERE t.org_bi=? GROUP BY t.team, t.permission ORDER BY t.team",
+            org_bi)
+        return json_response({"ok": True, "teams": [
+            {"team": str(r.get("team") or ""),
+             "permission": str(r.get("permission") or ""),
+             "members": int(r.get("members") or 0)}
+            for r in rows or []]})
+    if method not in ("POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    _, account_rec = await _account_session_record(env, request, data)
+    account = (account_rec.get("name", "") if account_rec else "").strip().lower()
+    if not account:
+        return json_response({"error": "invalid_session"}, status=401)
+    if await _org_role(env, org_bi, account) not in ("owner", "admin"):
+        return json_response({"error": "forbidden"}, status=403)
+    team = clean_string(data.get("team", ""), MAX_NODE_NAME).lower()
+    if not valid_node_name(team):
+        return json_response({"error": "invalid_team_name"}, status=400)
+    if method == "DELETE":
+        await d1_run(
+            env, "DELETE FROM org_team_members WHERE org_bi=? AND team=?",
+            org_bi, team)
+        await d1_run(
+            env, "DELETE FROM org_teams WHERE org_bi=? AND team=?", org_bi, team)
+        return json_response({"ok": True, "team": team, "deleted": True})
+    permission = clean_string(data.get("permission", "read"), 12).lower() or "read"
+    if permission not in TEAM_PERMISSIONS:
+        return json_response({"error": "bad_permission"}, status=400)
+    existing = await d1_first(
+        env, "SELECT 1 AS one FROM org_teams WHERE org_bi=? AND team=?",
+        org_bi, team)
+    if not existing:
+        count_row = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM org_teams WHERE org_bi=?", org_bi)
+        if count_row and int(count_row.get("n") or 0) >= MAX_ORG_TEAMS:
+            return json_response({"error": "too_many_teams"}, status=429)
+    await d1_run(
+        env,
+        "INSERT INTO org_teams (org_bi, team, permission, created_at) "
+        "VALUES (?,?,?,?) ON CONFLICT(org_bi, team) DO UPDATE SET "
+        "permission=excluded.permission",
+        org_bi, team, permission, int(Date.now()))
+    return json_response({"ok": True, "team": team, "permission": permission})
+
+
+async def org_team_members_handler(env, request, org, team):
+    # Who is on one team. GET is org-member visible; POST adds an EXISTING org
+    # member to the team (team membership can only ever raise a member's
+    # permission, never smuggle in an outsider); DELETE removes. Writes
+    # require an owner/admin session.
+    await ensure_schema(env)
+    method = method_name(request)
+    org_bi, row = await _org_row(env, org)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    team = (team or "").strip().lower()
+    team_row = await d1_first(
+        env, "SELECT permission FROM org_teams WHERE org_bi=? AND team=?",
+        org_bi, team)
+    if not team_row:
+        return json_response({"error": "not_found"}, status=404)
+    if method == "GET":
+        _, viewer_rec = await _account_session_record(env, request)
+        viewer = (viewer_rec.get("name", "") if viewer_rec else "").strip().lower()
+        if not viewer or not await _org_role(env, org_bi, viewer):
+            return json_response({"error": "forbidden"}, status=403)
+        rows = await d1_all(
+            env,
+            "SELECT name, created_at FROM org_team_members "
+            "WHERE org_bi=? AND team=? ORDER BY created_at ASC",
+            org_bi, team)
+        return json_response({
+            "ok": True, "team": team,
+            "permission": str(team_row.get("permission") or ""),
+            "members": [{"name": str(r.get("name") or ""),
+                         "since": int(r.get("created_at") or 0)}
+                        for r in rows or []]})
+    if method not in ("POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    _, account_rec = await _account_session_record(env, request, data)
+    account = (account_rec.get("name", "") if account_rec else "").strip().lower()
+    if not account:
+        return json_response({"error": "invalid_session"}, status=401)
+    if await _org_role(env, org_bi, account) not in ("owner", "admin"):
+        return json_response({"error": "forbidden"}, status=403)
+    member = clean_string(data.get("member", ""), MAX_NODE_NAME).lower()
+    if not member:
+        return json_response({"error": "member_required"}, status=400)
+    member_bi = await blind_index(env, member)
+    if method == "DELETE":
+        await d1_run(
+            env,
+            "DELETE FROM org_team_members WHERE org_bi=? AND team=? AND member_bi=?",
+            org_bi, team, member_bi)
+        return json_response({"ok": True, "team": team, "member": member,
+                              "removed": True})
+    if not await _org_role(env, org_bi, member):
+        return json_response({"error": "not_a_member"}, status=400)
+    await d1_run(
+        env,
+        "INSERT OR IGNORE INTO org_team_members "
+        "(org_bi, team, member_bi, name, created_at) VALUES (?,?,?,?,?)",
+        org_bi, team, member_bi, member, int(Date.now()))
+    return json_response({"ok": True, "team": team, "member": member,
+                          "added": True})
+
+
+async def org_repos_handler(env, request, org):
+    # The alias map behind /<org>/<repo> URLs. GET is public routing data.
+    # POST links a repo: the caller must be an org owner/admin AND the linked
+    # node namespace must be the caller's own account — you can only bring
+    # your own node's published repos under an org, so an org can never
+    # hijack another node's URL. DELETE unlinks (owner/admin).
+    await ensure_schema(env)
+    method = method_name(request)
+    org_bi, row = await _org_row(env, org)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    if method == "GET":
+        rows = await d1_all(
+            env,
+            "SELECT repo, node_owner FROM org_repos WHERE org_bi=? ORDER BY repo",
+            org_bi)
+        return json_response({"ok": True, "repos": [
+            {"repo": str(r.get("repo") or ""),
+             "node": str(r.get("node_owner") or "")}
+            for r in rows or []]})
+    if method not in ("POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    _, account_rec = await _account_session_record(env, request, data)
+    account = (account_rec.get("name", "") if account_rec else "").strip().lower()
+    if not account:
+        return json_response({"error": "invalid_session"}, status=401)
+    if await _org_role(env, org_bi, account) not in ("owner", "admin"):
+        return json_response({"error": "forbidden"}, status=403)
+    repo = safe_segment(clean_string(data.get("repo", ""), MAX_REPO_SEGMENT))
+    repo = (repo or "").lower()
+    if not repo:
+        return json_response({"error": "repo_required"}, status=400)
+    if method == "DELETE":
+        await d1_run(
+            env, "DELETE FROM org_repos WHERE org_bi=? AND repo=?", org_bi, repo)
+        _ORG_ALIAS_MEMO.clear()
+        return json_response({"ok": True, "repo": repo, "linked": False})
+    node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower() or account
+    if node != account:
+        return json_response({"error": "not_your_node"}, status=403)
+    key_bi = await blind_index(env, node + "/" + repo)
+    published = await d1_first(
+        env, "SELECT 1 AS one FROM repositories WHERE key_bi=?", key_bi)
+    if not published:
+        return json_response({"error": "unknown_repo"}, status=404)
+    existing = await d1_first(
+        env, "SELECT 1 AS one FROM org_repos WHERE org_bi=? AND repo=?",
+        org_bi, repo)
+    if not existing:
+        count_row = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM org_repos WHERE org_bi=?", org_bi)
+        if count_row and int(count_row.get("n") or 0) >= MAX_ORG_REPOS:
+            return json_response({"error": "too_many_repos"}, status=429)
+    await d1_run(
+        env,
+        "INSERT INTO org_repos (org_bi, repo, node_owner, created_at) "
+        "VALUES (?,?,?,?) ON CONFLICT(org_bi, repo) DO UPDATE SET "
+        "node_owner=excluded.node_owner",
+        org_bi, repo, node, int(Date.now()))
+    _ORG_ALIAS_MEMO.clear()
+    return json_response({"ok": True, "repo": repo, "node": node,
+                          "linked": True})
 
 
 # --- Admins + manual email verification -------------------------------------
@@ -12246,6 +12882,115 @@ async def ap_publish_handler(env, request, owner, repo):
         clean_string(data.get("body", ""), 4000),
         clean_string(data.get("author", "") or owner, MAX_NODE_NAME))
     return json_response({"ok": True}, status=202)
+
+
+async def _authorize_repo_owner_web(env, request, owner, repo, data):
+    """True when the caller may manage this repo's fediverse presence from the
+    web: the repo owner proven by their session token (or an admin acting on
+    the owner's behalf), or the owner's desktop node proving its Ed25519 key —
+    the same trust gate as the About editor / ap-publish, with a distinct
+    canonical so a signed token can't be replayed onto another endpoint."""
+    actor = await _authed_account_name(env, request, data)
+    if actor and (await _account_owns_node(env, actor, owner)
+                  or await _is_admin(env, actor)):
+        return True
+    if data.get("ownerSig") and data.get("ts"):
+        ts = str(data.get("ts", "") or "")
+        owner_pub = await _owner_pubkey(env, owner)
+        canonical = ("forkmesh-ap-posts-v1\n" + owner + "\n" + repo +
+                     "\n" + ts).encode()
+        if owner_pub and _ts_ok(ts) and await ed25519_verify(
+                owner_pub, str(data.get("ownerSig", "") or ""), canonical):
+            return True
+    return False
+
+
+async def ap_posts_handler(env, request, owner, repo):
+    # Repo-owner fediverse-post management (dashboard "manage posts" dropdown,
+    # issue #426): list the repo actor's federated posts, or delete one. A
+    # delete broadcasts a Delete(Tombstone) to every follower inbox so the post
+    # disappears from Mastodon timelines, then drops the local object. POST-only
+    # so the session token rides in the body, never a query string / access log.
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    if not await _authorize_repo_owner_web(env, request, owner, repo, data):
+        return json_response({"error": "not_authorized"}, status=403)
+    action = clean_string(data.get("action", "list"), 12).lower()
+    handle = ap.repo_handle(owner.lower(), repo.lower())
+    actor_bi = await _ap_actor_bi(env, AP_ACTOR_REPO, handle)
+    if action == "list":
+        rows = await d1_all(
+            env,
+            "SELECT object_uuid, data, published FROM ap_objects"
+            " WHERE actor_bi=? ORDER BY published DESC LIMIT 50", actor_bi)
+        posts = []
+        for row in rows or []:
+            rec = await decrypt_row(env, row.get("data"))
+            note = (rec or {}).get("note") or {}
+            posts.append({
+                "id": row.get("object_uuid"),
+                "content": note.get("content") or "",  # our own safe HTML
+                "url": note.get("url") or "",
+                "published": int(row.get("published") or 0),
+            })
+        return json_response({"ok": True, "posts": posts})
+    if action != "delete":
+        return json_response({"error": "bad_action"}, status=400)
+    object_uuid = clean_string(data.get("id", ""), 64).strip()
+    if not object_uuid:
+        return json_response({"error": "missing_id"}, status=400)
+    # Only delete a post the repo actor actually authored: the actor_bi filter
+    # stops one owner's token from reaching another actor's objects.
+    row = await d1_first(
+        env,
+        "SELECT object_uuid FROM ap_objects WHERE object_uuid=? AND actor_bi=?",
+        object_uuid, actor_bi)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    # Drop the local object first: even with federation disabled or zero
+    # followers the owner's intent (remove the post) is honored — /ap/o/<uuid>
+    # starts 404ing and it vanishes from the repo's fediverse profile feed.
+    await d1_run(env, "DELETE FROM ap_objects WHERE object_uuid=?", object_uuid)
+    origin = _ap_origin(env, request)
+    object_url = origin + "/ap/o/" + object_uuid
+    # Drop the edge-parked Note (max-age 300) so the object 404s immediately
+    # rather than lingering a cache TTL after the owner deleted it.
+    await edge_cache_delete(object_url)
+    actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, handle)
+    now = int(Date.now())
+    queued = False
+    if await _ap_enabled(env):
+        followers = await d1_all(
+            env,
+            "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
+            actor_bi)
+        body_str = json.dumps(ap.delete_activity(
+            actor_url, object_url, actor_url + "/followers", now))
+        out_data = await encrypt_row(env, {
+            "body": body_str, "actorKind": AP_ACTOR_REPO,
+            "actorHandle": handle, "actorUrl": actor_url})
+        seen = set()
+        for follower in followers or []:
+            inbox = ((follower.get("shared_inbox") or "").strip()
+                     or (follower.get("inbox") or "").strip())
+            if not inbox or inbox in seen:
+                continue
+            seen.add(inbox)
+            await d1_run(
+                env,
+                "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
+                " created_at) VALUES (?,?,0,?,?)",
+                inbox, out_data, now, now)
+            queued = True
+        if queued:
+            await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
+    return json_response({"ok": True, "deleted": object_uuid,
+                          "federated": queued})
 
 
 # --- Admin: fediverse configuration ------------------------------------------
@@ -17712,6 +18457,13 @@ class Default(WorkerEntrypoint):
         )
 
     async def _route(self, request, url):
+        # Organization repo aliases (issue #388): rewrite /<org>/<repo> git and
+        # /api/repo/<org>/<repo>/... requests to the linked node's namespace
+        # before any route matching — see org_alias_rewrite.
+        aliased = await org_alias_rewrite(self.env, request, url)
+        if aliased is not None:
+            request, url = aliased
+
         # Git smart-HTTP clone, proxied to the hosting client over the tunnel.
         git_info = GIT_INFO_RE.match(url.path)
         if git_info:
@@ -17878,6 +18630,42 @@ class Default(WorkerEntrypoint):
         if url.path.startswith("/api/accounts/"):
             return await accounts_handler(self.env, request)
 
+        # --- Organizations + teams (issue #388) --------------------------
+        if ORGS_RE.match(url.path):
+            return await orgs_handler(self.env, request)
+        org_members_match = ORG_MEMBERS_RE.match(url.path)
+        if org_members_match:
+            org = safe_segment(org_members_match.group(1))
+            if not org:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_members_handler(self.env, request, org)
+        org_team_members_match = ORG_TEAM_MEMBERS_RE.match(url.path)
+        if org_team_members_match:
+            org = safe_segment(org_team_members_match.group(1))
+            team = safe_segment(org_team_members_match.group(2))
+            if not org or not team:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_team_members_handler(
+                self.env, request, org, team)
+        org_teams_match = ORG_TEAMS_RE.match(url.path)
+        if org_teams_match:
+            org = safe_segment(org_teams_match.group(1))
+            if not org:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_teams_handler(self.env, request, org)
+        org_repos_match = ORG_REPOS_RE.match(url.path)
+        if org_repos_match:
+            org = safe_segment(org_repos_match.group(1))
+            if not org:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_repos_handler(self.env, request, org)
+        org_match = ORG_RE.match(url.path)
+        if org_match:
+            org = safe_segment(org_match.group(1))
+            if not org:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_handler(self.env, request, org)
+
         # Founders-outreach email console (/outreach): admins plus the
         # admin-managed outreach_team roster send from the founders address.
         if url.path == "/api/outreach" or url.path.startswith("/api/outreach/"):
@@ -18035,6 +18823,14 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await ap_publish_handler(self.env, request, owner, repo)
+
+        ap_posts_match = REPO_AP_POSTS_RE.match(url.path)
+        if ap_posts_match:
+            owner = safe_segment(ap_posts_match.group(1))
+            repo = safe_segment(ap_posts_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await ap_posts_handler(self.env, request, owner, repo)
 
         repo_media_match = REPO_MEDIA_RE.match(url.path)
         if repo_media_match:

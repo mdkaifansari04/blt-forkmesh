@@ -279,6 +279,12 @@
               <a href="${escapeHtml(readmeHref)}" data-repo-readme-link data-repo-readme-path="${escapeHtml(readmePath)}" class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="book-open" class="h-3.5 w-3.5"></i><span>Readme</span></a>
               <a href="${escapeHtml(`${repoPathUrl(repo)}/insights`)}" data-repo-activity-link class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="activity" class="h-3.5 w-3.5"></i><span>Activity</span></a>
             </div>
+            ${canEditAbout && !repo.isPrivate ? `
+            <details data-repo-fedi-posts class="mt-5 border-t border-border pt-4">
+              <summary class="flex cursor-pointer list-none items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><span class="inline-flex items-center gap-1.5"><i data-lucide="megaphone" class="h-3.5 w-3.5"></i>Fediverse posts</span><i data-lucide="chevron-down" class="h-3.5 w-3.5 shrink-0 transition-transform"></i></summary>
+              <p class="mt-2 text-[11px] leading-4 text-muted-foreground">Posts this repository published to its Mastodon followers. Deleting one sends a removal to every follower's server so it disappears from their timelines.</p>
+              <div data-repo-fedi-posts-list class="mt-2 grid gap-2"></div>
+            </details>` : ""}
             <div data-repo-about-release class="mt-5 hidden border-t border-border pt-4">
               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Latest release</h4>
               <div data-repo-about-release-body class="mt-2 text-xs text-muted-foreground"></div>
@@ -1513,6 +1519,26 @@
       if (event.target.closest("[data-repo-about-cancel]")) {
         setRepoAboutStatus("");
         setRepoAboutEditing(false);
+        return;
+      }
+
+      // Owner "Fediverse posts" dropdown: load the post list the moment it's
+      // expanded (setTimeout so the <details> default toggle has applied), and
+      // delete a post from its trash button.
+      const fediPostsSummary = event.target.closest("[data-repo-fedi-posts] > summary");
+      if (fediPostsSummary && state.selectedRepo) {
+        const repo = state.selectedRepo;
+        const details = fediPostsSummary.parentElement;
+        setTimeout(() => { if (details.open) loadRepoFediPosts(repo); }, 0);
+        return;
+      }
+
+      const fediPostDelete = event.target.closest("[data-repo-fedi-post-delete]");
+      if (fediPostDelete && state.selectedRepo) {
+        removeRepoFediPost(
+          state.selectedRepo,
+          fediPostDelete.getAttribute("data-repo-fedi-post-delete"),
+          fediPostDelete);
         return;
       }
 
