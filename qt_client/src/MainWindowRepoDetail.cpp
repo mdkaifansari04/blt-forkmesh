@@ -3970,9 +3970,13 @@ void MainWindow::loadCommits()
     // Date-descending sort so rows stay in git-log order (the order the lanes were
     // computed in) after sorting is re-enabled.
     {
-        const int laneSpan = 2 * kGraphMargin + maxGraphLane * kGraphLaneWidth;
+        // Hug the lanes tightly: one leading margin, the lanes, then only enough
+        // trailing room for the node ring — no wide dead gap between the last
+        // coloured line and the commit message beside it (issue #52).
+        const int laneSpan = kGraphMargin + maxGraphLane * kGraphLaneWidth
+                             + static_cast<int>(kGraphNodeOuter) + 3;
         m_commitsTable->horizontalHeader()->resizeSection(
-            kCommitGraphCol, std::clamp(laneSpan, 22, 140));
+            kCommitGraphCol, std::clamp(laneSpan, 18, 140));
     }
     // Repaints stay suspended (TableRepaintGuard) through the banner update and
     // filter re-apply below, so the whole reload lands in a single repaint when
@@ -8085,6 +8089,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     repoDetailStackScroll->setWidgetResizable(true);
     repoDetailStackScroll->setFrameShape(QFrame::NoFrame);
     repoDetailStackScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Hide the outer vertical scrollbar (the right-most one in the window). Each
+    // repo-detail tab manages its own scrolling, so this outer bar was a
+    // redundant second scrollbar. Wheel/keyboard scrolling still works.
+    repoDetailStackScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     repoDetailStackScroll->setMinimumHeight(0);
     repoDetailStackScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     repoDetailStackScroll->setWidget(m_repoDetailStack);
