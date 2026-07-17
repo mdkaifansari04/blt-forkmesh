@@ -75,6 +75,18 @@
             "status": "closed",
             "ts": 1784326385982,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "d5579a9f-c466-4919-a02b-70642e71621e",
+            "sig": "Yd84J546gAlQJLGCIqYTqqTFwvXuSiZtRpcufr5moM23bEoVVbD-pE0YSXm0oo1TYQLWYc_zubIcfuDrWV5RAQ",
+            "ts": 1784332342249,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -87,6 +99,6 @@
     "startDate": 0,
     "status": "closed",
     "title": "have teh ability for the repo owner to delete posts from mastodon",
-    "updatedAt": 1784326385982,
+    "updatedAt": 1784332342249,
     "votes": 0
 }
