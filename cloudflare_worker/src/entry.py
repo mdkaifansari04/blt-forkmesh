@@ -6811,6 +6811,13 @@ async def _account_profile(env, request):
         "profileLocation", "profileTimezone", "profilePrivate",
         "followersPublic", "mastodon",
         "profileLinks", "nodeName", "email", "identifier", "sessionToken",
+        # The dashboard always sends a (usually empty) `password` field even on
+        # pages with no password input. Whitelist it so a session-authed
+        # public-profile save doesn't get shunted into the credentials branch
+        # and rejected with invalid_credentials. Privileged writes still carry
+        # a non-whitelisted key (solana, deleteAccount, …) and stay on the
+        # password-verified path.
+        "password",
     }
     session_bi, session_rec = await _account_session_record(env, request, data)
     if session_rec and not (set(data.keys()) - public_profile_fields):
