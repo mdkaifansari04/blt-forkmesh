@@ -1520,6 +1520,28 @@ void MainWindow::loadRepoFileTree()
 {
     if (!m_repoFileTree)
         return;
+
+    // Preserve the user's place across the rebuild: which folders are expanded
+    // and the scroll position, keyed by repo-relative path. Without this a change
+    // (e.g. deleting a folder) would collapse the whole tree and jump to the top.
+    QSet<QString> expanded;
+    std::function<void(QTreeWidgetItem *)> collectExpanded =
+        [&](QTreeWidgetItem *parent) {
+            for (int i = 0; i < parent->childCount(); ++i) {
+                QTreeWidgetItem *child = parent->child(i);
+                if (child->isExpanded()) {
+                    const QString p = child->data(0, Qt::UserRole).toString();
+                    if (!p.isEmpty())
+                        expanded.insert(p);
+                }
+                collectExpanded(child);
+            }
+        };
+    collectExpanded(m_repoFileTree->invisibleRootItem());
+    const int scrollValue = m_repoFileTree->verticalScrollBar()
+                                ? m_repoFileTree->verticalScrollBar()->value()
+                                : 0;
+
     m_repoFileTree->clear();
 
     const QString dir = repoGitDir();
@@ -1627,6 +1649,24 @@ void MainWindow::loadRepoFileTree()
 
     if (paths.isEmpty())
         new QTreeWidgetItem(m_repoFileTree, {"(empty repository)"});
+
+    // Re-expand the folders that were open before and restore the scroll offset,
+    // so refreshing in place keeps the view exactly where the user left it.
+    if (!expanded.isEmpty()) {
+        std::function<void(QTreeWidgetItem *)> restoreExpanded =
+            [&](QTreeWidgetItem *parent) {
+                for (int i = 0; i < parent->childCount(); ++i) {
+                    QTreeWidgetItem *child = parent->child(i);
+                    if (child->data(0, Qt::UserRole + 1).toBool() &&
+                        expanded.contains(child->data(0, Qt::UserRole).toString()))
+                        child->setExpanded(true);
+                    restoreExpanded(child);
+                }
+            };
+        restoreExpanded(m_repoFileTree->invisibleRootItem());
+    }
+    if (m_repoFileTree->verticalScrollBar())
+        m_repoFileTree->verticalScrollBar()->setValue(scrollValue);
 }
 
 // Reject a repo-relative path that would escape the repository or touch .git.
@@ -2446,6 +2486,9 @@ void MainWindow::inviteUserToCurrentCove()
                              QStringLiteral("Could not save invitation: ") + err);
         return;
     }
+    if (m_backend)
+        m_backend->notifyCoveInvited(grantee, cove.id, cove.name, account,
+                                     QDateTime::currentMSecsSinceEpoch());
     m_coveExplorerCurrentId = cove.id;
     loadCoveExplorer();
     setRepoDetailNotice(QStringLiteral("Invited %1 to the cove.").arg(grantee));
