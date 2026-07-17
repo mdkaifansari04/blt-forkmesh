@@ -748,6 +748,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addWidget(agentBox, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
     bottomBar->addWidget(m_quickAddCharCount, 0, Qt::AlignBottom);
+    // The tiny Codex + Claude usage gauges sit immediately left of the send
+    // icons (adhoc #47), moved down from the top bar so the current 5h/weekly
+    // utilisation is visible right where prompts are launched.
+    bottomBar->addWidget(m_navCodexUsage, 0, Qt::AlignBottom);
+    bottomBar->addWidget(m_navTokenUsage, 0, Qt::AlignBottom);
     bottomBar->addLayout(sendColumn);
 
     auto *bottomBarHost = new QWidget;
@@ -3297,11 +3302,8 @@ QWidget *MainWindow::buildBreadcrumb()
     balanceColumn->addWidget(m_navNodeName);
     balanceColumn->addWidget(m_navSolanaBalance);
     mainRow->addLayout(balanceColumn);
-    // The tiny provider usage charts tuck between the earnings and the avatar.
-    mainRow->addSpacing(6);
-    mainRow->addWidget(m_navCodexUsage);
-    mainRow->addSpacing(2);
-    mainRow->addWidget(m_navTokenUsage);
+    // The provider usage gauges used to tuck in here; they now live in the
+    // prompt toolbar next to the send buttons (adhoc #47, see buildNetworkLogDock).
     mainRow->addSpacing(4);
     mainRow->addWidget(m_userAvatarNavButton);
     mainRow->addSpacing(2);
