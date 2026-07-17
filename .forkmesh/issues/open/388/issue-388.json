@@ -31,6 +31,18 @@
             "sig": "GSanPxNk86Q2XniLbhr_D6m6hmT9X7-0Ic5Vl25_cWdTJCjelyLkuV2QounAIKTDLEiq1jdHxPp4edO2fhQICQ",
             "ts": 1784325718348,
             "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 40,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "a5167f29-a5cc-462e-8069-061112d8c82d",
+            "sig": "-QLraQvnQmT9UcCOm_oK2TDTqZad2EoiqFtjtk33tUe8ESf96NJZ2-9wBwv3Xg9YNlubHXmkU_yxFqtA1VxpAA",
+            "ts": 1784325727084,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -43,6 +55,6 @@
     "startDate": 0,
     "status": "open",
     "title": "create orgs and teams",
-    "updatedAt": 1784325718348,
+    "updatedAt": 1784325727084,
     "votes": 0
 }
