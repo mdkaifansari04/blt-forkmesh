@@ -358,8 +358,11 @@ QJsonObject searchReplyFor(const QString &mirrorPath, const QString &rawQuery)
     QSet<int> seenIssue;
     QSet<int> seenPull;
     static const QRegularExpression rowRe(QStringLiteral("^(.+?):(\\d+):(.*)$"));
+    // Issues live under .forkmesh/issues/open/<N>/ or closed/<N>/ (pre-split
+    // mirrors keep the numbered folder directly under the root); capture the
+    // folder prefix too so the title file is read from wherever the hit was.
     static const QRegularExpression issueRe(
-        QStringLiteral("^\\.forkmesh/issues/(\\d+)/"));
+        QStringLiteral("^(\\.forkmesh/issues/(?:open/|closed/)?)(\\d+)/"));
     static const QRegularExpression pullRe(QStringLiteral("^pulls/(\\d+)/"));
     const QString prefix = ref + QLatin1Char(':');
 
@@ -382,7 +385,7 @@ QJsonObject searchReplyFor(const QString &mirrorPath, const QString &rawQuery)
         if (issueMatch.hasMatch() || pullMatch.hasMatch()) {
             const bool isIssue = issueMatch.hasMatch();
             const int number =
-                issueMatch.hasMatch() ? issueMatch.captured(1).toInt()
+                issueMatch.hasMatch() ? issueMatch.captured(2).toInt()
                                       : pullMatch.captured(1).toInt();
             QSet<int> &seen = isIssue ? seenIssue : seenPull;
             if (seen.contains(number))
@@ -393,7 +396,9 @@ QJsonObject searchReplyFor(const QString &mirrorPath, const QString &rawQuery)
             seen.insert(number);
             const QString titleFile =
                 isIssue
-                    ? QStringLiteral(".forkmesh/issues/%1/issue-%1.json").arg(number)
+                    ? QStringLiteral("%1%2/issue-%2.json")
+                          .arg(issueMatch.captured(1))
+                          .arg(number)
                     : QStringLiteral("pulls/%1/pull.md").arg(number);
             bucket.append(QJsonObject{
                 {"number", number},
@@ -444,25 +449,51 @@ int countOpenIssues(const QString &mirrorPath, const QString &ref, int *closed)
 {
     if (closed)
         *closed = 0;
-    QByteArray output;
-    if (!runGit(mirrorPath, {"ls-tree", "-z", ref + ":.forkmesh/issues"}, output))
-        return 0; // folder absent -> nothing filed yet
     static const QRegularExpression numericName(QStringLiteral("^[0-9]+$"));
+    // Numeric child folders of one tree; empty when the folder is absent.
+    auto numberedDirs = [&](const QString &path) {
+        QStringList names;
+        QByteArray output;
+        if (!runGit(mirrorPath, {"ls-tree", "-z", ref + ":" + path}, output))
+            return names;
+        for (const QByteArray &record : output.split('\0')) {
+            if (record.isEmpty())
+                continue;
+            const int tab = record.indexOf('\t');
+            if (tab < 0)
+                continue;
+            const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+            if (meta.size() < 2 || meta.at(1) != "tree")
+                continue;
+            const QString name = QString::fromUtf8(record.mid(tab + 1));
+            if (numericName.match(name).hasMatch())
+                names.append(name);
+        }
+        return names;
+    };
+    // Post-split layout: the folder IS the status, so open/<n> and closed/<n>
+    // count directly with no blob reads.
+    QSet<QString> counted;
     int open = 0;
-    int total = 0;
-    for (const QByteArray &record : output.split('\0')) {
-        if (record.isEmpty())
+    int closedCount = 0;
+    for (const QString &name : numberedDirs(QStringLiteral(".forkmesh/issues/open")))
+        if (!counted.contains(name)) {
+            counted.insert(name);
+            ++open;
+        }
+    for (const QString &name :
+         numberedDirs(QStringLiteral(".forkmesh/issues/closed")))
+        if (!counted.contains(name)) {
+            counted.insert(name);
+            ++closedCount;
+        }
+    // Pre-split legacy folders (numbered dirs directly under the root — the
+    // numeric filter skips open/ and closed/) still carry the status only
+    // inside the record; read it as before.
+    for (const QString &name : numberedDirs(QStringLiteral(".forkmesh/issues"))) {
+        if (counted.contains(name))
             continue;
-        const int tab = record.indexOf('\t');
-        if (tab < 0)
-            continue;
-        const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
-        if (meta.size() < 2 || meta.at(1) != "tree")
-            continue;
-        const QString name = QString::fromUtf8(record.mid(tab + 1));
-        if (!numericName.match(name).hasMatch())
-            continue;
-        ++total;
+        counted.insert(name);
         QByteArray blob;
         QString status;
         const QString rel =
@@ -474,9 +505,11 @@ int countOpenIssues(const QString &mirrorPath, const QString &ref, int *closed)
                          .toString();
         if (status != QLatin1String("closed"))
             ++open; // open, reopened, or unreadable -> counts as open
+        else
+            ++closedCount;
     }
     if (closed)
-        *closed = qMax(0, total - open);
+        *closed = closedCount;
     return open;
 }
 
