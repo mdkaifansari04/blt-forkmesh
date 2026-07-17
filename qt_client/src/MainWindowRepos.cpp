@@ -38,7 +38,8 @@ QString catalogPublishOwnerFromKey(const QString &key)
     return slash > 0 ? key.left(slash) : key;
 }
 
-qint64 catalogPublishRetryDelayMs(const QNetworkReply *reply, int status)
+qint64 catalogPublishRetryDelayMs(const QNetworkReply *reply, int status,
+                                  int consecutiveFailures)
 {
     // 429 (rate limit) AND 5xx (Worker overload — Cloudflare 1101/1102) both
     // warrant a cooldown before re-queuing. Previously only 429 delayed the
@@ -47,7 +48,13 @@ qint64 catalogPublishRetryDelayMs(const QNetworkReply *reply, int status)
     // minutes straight, amplifying the very overload it was hitting.
     if (status != 429 && !(status >= 500 && status <= 599))
         return 0;
-    qint64 delay = kCatalogPublishRateLimitRetryMs;
+    // A fixed 60s retry still re-POSTs a persistently-overloaded relay once a
+    // minute forever (a 1102 worker never recovers while it's being hammered).
+    // Escalate exponentially per consecutive failure — 60s, 2m, 4m, … — so the
+    // desktop backs off and gives the Worker room to recover, then caps out.
+    const int shift = qBound(0, consecutiveFailures, 8);
+    qint64 delay = qMin(kCatalogPublishRateLimitRetryMs << shift,
+                        kCatalogPublishMaxRetryAfterMs);
     const QByteArray retryAfter = reply ? reply->rawHeader("Retry-After") : QByteArray();
     bool ok = false;
     const qint64 seconds =
@@ -3216,8 +3223,10 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 const int status =
                     reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                 const QNetworkReply::NetworkError error = reply->error();
+                const int priorFailures =
+                    m_catalogPublishConsecutiveFailures.value(publishKey, 0);
                 const qint64 retryDelayMs =
-                    catalogPublishRetryDelayMs(reply, status);
+                    catalogPublishRetryDelayMs(reply, status, priorFailures);
                 reply->deleteLater();
                 m_catalogPublishInFlight.remove(publishKey);
                 const bool publishQueued =
@@ -3321,6 +3330,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                         return;
                     }
                     m_contributionPublicationCache.clearStaleRetry(publishKey);
+                    m_catalogPublishConsecutiveFailures.remove(publishKey);
                     m_catalogPublishedFingerprint.insert(publishKey, fingerprint);
                     m_catalogPublishedFingerprintAtMs.insert(
                         publishKey, QDateTime::currentMSecsSinceEpoch());
@@ -3361,6 +3371,14 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 logSystem(message);
                 if (showDialogOnError)
                     flashMessage(message, /*error=*/true);
+                // Track consecutive retryable failures so the next retry backs
+                // off further; a terminal (non-retryable) error clears the run
+                // so a later transient failure starts from the base delay again.
+                if (retryDelayMs > 0)
+                    m_catalogPublishConsecutiveFailures.insert(
+                        publishKey, priorFailures + 1);
+                else
+                    m_catalogPublishConsecutiveFailures.remove(publishKey);
                 // A retryable failure (429/5xx -> retryDelayMs > 0) must
                 // self-retry even when no follow-up edit queued another
                 // publish: otherwise a lone failed publish silently waits

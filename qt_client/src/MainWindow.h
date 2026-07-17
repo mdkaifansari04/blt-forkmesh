@@ -4994,6 +4994,10 @@ private:
     QSet<QString> m_catalogPublishInFlight;      // owner/name
     QSet<QString> m_catalogPublishQueued;        // owner/name dirtied mid-flight
     QSet<QString> m_catalogPublishDialogQueued;  // owner/name wants UI feedback
+    // Consecutive retryable (429/5xx) publish failures per repo, so the retry
+    // delay can escalate exponentially instead of hammering an overloaded relay
+    // every 60s forever. Reset to 0 on a successful publish.
+    QHash<QString, int> m_catalogPublishConsecutiveFailures; // owner/name -> n
     // Fingerprint (sha256 of the record minus volatile fields) of the last
     // successfully published catalog record per repo, and when it was sent.
     // publishRepositoryNow() skips the network write when nothing the catalog

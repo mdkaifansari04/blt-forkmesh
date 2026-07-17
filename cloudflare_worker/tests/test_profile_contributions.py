@@ -1038,10 +1038,26 @@ def test_ingest_is_idempotent_ignores_older_rejects_equal_conflict_and_activates
         "SELECT active_generation_bi FROM profile_contribution_projects"
     ).fetchone()[0]
     statement_count = len(ingest_harness.statements)
+    select_count = len(ingest_harness.select_statements)
 
     same = ingest_harness.run_ingest(_ingest_data(first), _catalog_record(first))
     assert same == {"accepted": True, "warning": ""}
-    assert len(ingest_harness.statements) > statement_count
+    # Re-attesting an unchanged snapshot (the drifted-pin republish hot path)
+    # takes the fast path: it recognizes the already-active generation from a
+    # single lookup and skips the signature verify, the staging batch, and the
+    # prune entirely — the Worker-CPU (Cloudflare 1102) optimization. So the
+    # duplicate ingest writes none of the expensive generation-staging rows
+    # (json_each fan-outs, receipts, prune deletes); only the unrelated
+    # catalog-state upserts run, and it stays accepted without duplicating the
+    # receipt.
+    duplicate_writes = ingest_harness.statements[statement_count:]
+    assert not any(
+        "json_each" in sql
+        or "profile_contribution_receipts" in sql
+        or "DELETE FROM profile_contribution" in sql
+        for sql, _args in duplicate_writes
+    )
+    assert len(ingest_harness.select_statements) > select_count
     assert ingest_harness.db.execute(
         "SELECT COUNT(*) FROM profile_contribution_receipts"
     ).fetchone()[0] == 1
