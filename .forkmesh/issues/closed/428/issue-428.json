@@ -64,6 +64,18 @@
             "status": "closed",
             "ts": 1784325779472,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "7eb05c9a-c31b-4ad2-86fe-5d0d6c68c8bd",
+            "sig": "m8UMn1FU_Bsquz7qxNzIos4q0N0lH1_LmHuxPiU1ENXpERKG2BR20F0I9bD8DkcAVv0IFk17HpWsh83dWyOfDg",
+            "ts": 1784329644738,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -76,6 +88,6 @@
     "startDate": 0,
     "status": "closed",
     "title": "ram seems too high on the mirror nodes make sure we're not taking up too much memory",
-    "updatedAt": 1784325779472,
+    "updatedAt": 1784329644738,
     "votes": 0
 }
