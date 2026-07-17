@@ -116,6 +116,10 @@ private:
 
     void openConnection();      // (re)create the socket and start connecting
     void scheduleReconnect();   // progressive backoff after a drop/failure
+    // Shared teardown when the link drops — from the socket's disconnected()
+    // signal or from the ping timer's stale-rx watchdog, which catches
+    // half-open sockets that never emit disconnected() at all.
+    void handleLinkLost();
     void advanceEndpoint();     // rotate m_url to the next configured mainnode
     void connectSocketSignals();
     void sendHandshake();
@@ -214,6 +218,9 @@ private:
     // it returns or the user explicitly leaves (adhoc #192, adhoc #66).
     QTimer *m_reconnectTimer = nullptr;
     int m_reconnectAttempts = 0; // consecutive failures since the last upgrade
+    // Aborts a connect/TLS/upgrade attempt that stalls silently — before the
+    // 101 no other timer is running, so a wedged attempt would hang forever.
+    QTimer *m_connectTimeoutTimer = nullptr;
     bool m_userStopped = false;
     QTimer *m_rosterEmitTimer = nullptr; // coalesces roster/status emissions
     QHash<QString, qint64> m_lastHelloReplyMs; // peer id -> last directed hello reply
