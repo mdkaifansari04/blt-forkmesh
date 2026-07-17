@@ -663,21 +663,12 @@ public:
         paintRowSelectionBorder(painter, option, index);
 
         const bool fileRow = index.data(kCommitRowKindRole).toInt() == 1;
-        // Indent to the commit's lane so the text tracks the coloured graph
-        // lines. Commit rows read the lane off their graph-gutter sibling; file
-        // rows carry their parent commit's lane on the item itself.
-        int lane = 0;
-        const QVariant ownLane = index.data(kGraphNodeLaneRole);
-        if (ownLane.isValid())
-            lane = ownLane.toInt();
-        else
-            lane = index.sibling(index.row(), kCommitGraphCol)
-                       .data(kGraphNodeLaneRole)
-                       .toInt();
-        lane = std::max(0, lane);
 
         const QFontMetrics fm(option.font);
-        QRect r = option.rect.adjusted(6 + lane * kGraphLaneWidth, 0, -8, 0);
+        // Messages align at a fixed left edge (flush with the grid) rather than
+        // tracking the commit's coloured lane, so every row's text lines up no
+        // matter how deep its branch sits in the graph.
+        QRect r = option.rect.adjusted(6, 0, -8, 0);
         const QColor dim("#8b949e");
 
         painter->save();
@@ -742,18 +733,6 @@ public:
             }
             painter->setBrush(Qt::NoBrush);
         }
-        const QString author = index.data(kCommitAuthorRole).toString();
-        if (!author.isEmpty()) {
-            const QString a =
-                fm.elidedText(author, Qt::ElideRight,
-                              std::max(40, r.width() / 4));
-            const int aw = fm.horizontalAdvance(a);
-            painter->setPen(dim);
-            painter->drawText(
-                QRect(rightEdge - aw, r.top(), aw, r.height()),
-                Qt::AlignVCenter | Qt::AlignRight, a);
-            rightEdge -= aw + 10;
-        }
         if (index.data(kCommitUnsyncedRole).toBool()) {
             const QString mark = QString::fromUtf8("\xE2\x96\xB2");
             const int mw = fm.horizontalAdvance(mark);
@@ -762,15 +741,34 @@ public:
                               Qt::AlignVCenter | Qt::AlignRight, mark);
             rightEdge -= mw + 8;
         }
+        // Draw the subject flush-left, then append the author dimmed at its tail
+        // so the row reads "<subject> · <author>" instead of a separate
+        // right-aligned author column.
         const QVariant fgVar = index.data(Qt::ForegroundRole);
-        painter->setPen(fgVar.isValid()
-                            ? qvariant_cast<QBrush>(fgVar).color()
-                            : option.palette.color(QPalette::Text));
+        const QColor fg = fgVar.isValid()
+                              ? qvariant_cast<QBrush>(fgVar).color()
+                              : option.palette.color(QPalette::Text);
         const int textW = std::max(0, rightEdge - x);
-        painter->drawText(QRect(x, r.top(), textW, r.height()),
-                          Qt::AlignVCenter | Qt::AlignLeft,
-                          fm.elidedText(index.data(Qt::DisplayRole).toString(),
-                                        Qt::ElideRight, textW));
+        const QString subject = index.data(Qt::DisplayRole).toString();
+        const QString author = index.data(kCommitAuthorRole).toString();
+        const QString suffix =
+            author.isEmpty() ? QString()
+                             : QString::fromUtf8("  \xC2\xB7  ") + author;
+        const int suffixW = fm.horizontalAdvance(suffix);
+        const QString elidedSubject =
+            fm.elidedText(subject, Qt::ElideRight, std::max(0, textW - suffixW));
+        const int subjectW = fm.horizontalAdvance(elidedSubject);
+        painter->setPen(fg);
+        painter->drawText(QRect(x, r.top(), subjectW, r.height()),
+                          Qt::AlignVCenter | Qt::AlignLeft, elidedSubject);
+        if (!suffix.isEmpty()) {
+            const int rem = std::max(0, textW - subjectW);
+            painter->setPen(dim);
+            painter->drawText(
+                QRect(x + subjectW, r.top(), rem, r.height()),
+                Qt::AlignVCenter | Qt::AlignLeft,
+                fm.elidedText(suffix, Qt::ElideRight, rem));
+        }
         painter->restore();
     }
 };
