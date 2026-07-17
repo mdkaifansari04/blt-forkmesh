@@ -66,6 +66,15 @@
             "sig": "yjHhGCg72wqn_qUxXcScZ-8r1hfW8jdBaonpgNaX2oYRgRxELctjLqv-qioPVhL0E4rsGfowbnht3cg-uoj-Dw",
             "ts": 1784326868388,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "4c83e767-0bf5-4e81-ba7e-caa6c6abc1af",
+            "sig": "L9xddh7I-93vd1XVASGcS9uU-DIxqQ_8VtVeYWYATG73U0aP_54cJZwXjdxF5vpIkkmY_Iq-z1va3MYqNzV5BA",
+            "status": "closed",
+            "ts": 1784326868442,
+            "type": "status"
         }
     ],
     "labels": [
@@ -76,8 +85,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "create orgs and teams",
-    "updatedAt": 1784326868388,
+    "updatedAt": 1784326868442,
     "votes": 0
 }
