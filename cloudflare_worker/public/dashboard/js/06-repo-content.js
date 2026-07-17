@@ -393,6 +393,8 @@
     const labels = labelsList.join(", ");
     return {
       number,
+      events,
+      creator,
       title: issue.title || open.title || `issue #${number}`,
       status,
       deleted,
@@ -450,7 +452,118 @@
         createdAt: issue.createdAtMs,
       },
       body: issue.body,
+      // Every signed event on the issue (comment, status, labels, milestone,
+      // assignees, agent, title, dates, progress, bounty, edit, delete, vote)
+      // so the detail view can render the full activity timeline, not just the
+      // opening comment.
+      issueEvents: issue.events,
     };
+  }
+
+  // Icon + human-readable description for a non-comment issue event, mirroring
+  // the desktop timeline (MainWindowIssues.cpp addActivity). The default branch
+  // still surfaces unknown/future event types so the detail view shows every
+  // action the JSON carries rather than silently dropping it.
+  function issueEventIcon(type) {
+    return ({
+      status: "circle-dot",
+      labels: "tag",
+      milestone: "milestone",
+      priority: "flag",
+      assignees: "user-plus",
+      agent: "bot",
+      title: "pencil",
+      progress: "gauge",
+      dates: "calendar",
+      bounty: "coins",
+      edit: "pencil",
+      delete: "trash-2",
+      vote: "thumbs-up",
+    })[type] || "activity";
+  }
+
+  function issueEventDescription(ev) {
+    switch (ev.type) {
+      case "status":
+        return ev.status === "closed" ? "closed this issue" : "reopened this issue";
+      case "labels":
+        return Array.isArray(ev.labels) && ev.labels.length
+          ? `set labels: ${ev.labels.join(", ")}` : "cleared the labels";
+      case "milestone":
+        return ev.milestone ? `set milestone: ${ev.milestone}` : "cleared the milestone";
+      case "priority":
+        return Number(ev.priority) > 0 ? `set priority: ${Number(ev.priority)}` : "cleared the priority";
+      case "assignees":
+        return Array.isArray(ev.assignees) && ev.assignees.length
+          ? `set assignees: ${ev.assignees.join(", ")}` : "cleared the assignees";
+      case "title":
+        return ev.title ? `changed the title to "${ev.title}"` : "cleared the title";
+      case "progress":
+        return `set progress to ${Number(ev.progress) || 0}%`;
+      case "dates":
+        return "updated the schedule dates";
+      case "bounty":
+        return Number(ev.bountyUsd) > 0
+          ? `set a $${Number(ev.bountyUsd)} bounty${ev.bountyStatus ? ` (${ev.bountyStatus})` : ""}`
+          : "cleared the bounty";
+      case "agent": {
+        const sid = Number(ev.agentSessionId) || 0;
+        if (sid <= 0 || ev.agentStatus === "cleared") return "cleared the agent assignment";
+        let text = `assigned ${ev.agentProvider || "an"} agent session #${sid}`;
+        if (ev.agentCreatePr) text += " with PR creation requested";
+        if (ev.agentStatus) text += ` (${ev.agentStatus})`;
+        return text;
+      }
+      case "edit":
+        return ev.target ? "edited a comment" : "edited the description";
+      case "delete":
+        return ev.target === "self" ? "deleted this issue" : "deleted a comment";
+      case "vote":
+        return "voted on this issue";
+      default:
+        return ev.type ? `recorded a ${ev.type} action` : "recorded an action";
+    }
+  }
+
+  // Full issue activity timeline: comment events render as bodied cards and
+  // every other event as an activity line, in chronological order, so the
+  // detail view shows every action stored in the issue JSON (adhoc #45). The
+  // opening event is omitted here since it's already shown as the issue body.
+  function renderIssueTimeline(events) {
+    const rows = (Array.isArray(events) ? events : [])
+      .filter(Boolean)
+      .slice()
+      .sort((a, b) => (Number(a.ts) || 0) - (Number(b.ts) || 0));
+    const deletedComments = new Set(
+      rows.filter((ev) => ev.type === "delete" && ev.target && ev.target !== "self")
+        .map((ev) => ev.target));
+    const items = [];
+    for (const ev of rows) {
+      if (ev.type === "open") continue;
+      const who = ev.authorName || ev.author || "unknown";
+      const when = formatRecordDate(ev.ts);
+      if (ev.type === "comment") {
+        if (deletedComments.has(ev.id)) continue;
+        const body = String(ev.body || "").trim();
+        items.push(`
+          <div class="border-t border-border px-4 py-3 text-sm first:border-t-0">
+            <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span class="font-medium text-foreground">${escapeHtml(who)}</span>
+              <span>commented</span><span>&middot;</span><span>${escapeHtml(when)}</span>
+            </div>
+            ${body ? `<div class="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">${escapeHtml(body)}</div>` : ""}
+          </div>`);
+        continue;
+      }
+      items.push(`
+        <div class="flex flex-wrap items-center gap-1.5 border-t border-border px-4 py-2.5 text-xs text-muted-foreground first:border-t-0">
+          <i data-lucide="${issueEventIcon(ev.type)}" class="h-3.5 w-3.5 text-primary"></i>
+          <span class="font-medium text-foreground">${escapeHtml(who)}</span>
+          <span>${escapeHtml(issueEventDescription(ev))}</span>
+          <span>&middot;</span><span>${escapeHtml(when)}</span>
+        </div>`);
+    }
+    return items.join("");
   }
 
   function projectJsonPath(number) {
@@ -1271,6 +1384,10 @@
     const metadata = recordDetailMeta(kind, values);
     const pendingNotice = options.pending ? `
         <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
+    const issueTimeline = (!isPulls && !isDiscussions) ? renderIssueTimeline(parsed.issueEvents) : "";
+    const issueTimelineSection = issueTimeline
+      ? `<div data-repo-issue-timeline class="border-t border-border">${issueTimeline}</div>`
+      : "";
     const pullPatch = parsed.pullPatch || { patch: "", files: [], unavailable: false };
     const pullConversation = parsed.pullConversation || [];
     const pullConversationSection = isPulls ? `
@@ -1341,6 +1458,7 @@
                   <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Contributor</span>
                 </div>
                 <div data-repo-record-body class="whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-foreground">${escapeHtml(body)}</div>
+                ${issueTimelineSection}
                 ${pullConversationSection}
               </section>`}
             ${pullFilesSection}
