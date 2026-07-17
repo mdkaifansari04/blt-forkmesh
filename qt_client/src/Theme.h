@@ -1016,6 +1016,15 @@ QLineEdit#issueSearch, QComboBox#issueControlSm {
     max-height: 28px;
 }
 QLineEdit#issueSearch:focus, QComboBox#issueControlSm:focus { border-color: #58a6ff; }
+/* The commit-message compose field wears a clearly visible border so it reads
+   as an input box rather than blending into the source-control panel. */
+QLineEdit#messageInput {
+    background-color: #0d1117;
+    border: 1px solid #484f58;
+    border-radius: 8px;
+    padding: 6px 10px;
+}
+QLineEdit#messageInput:focus { border-color: #58a6ff; }
 QPlainTextEdit#issueComposerSm {
     background-color: #161b22;
     color: #e6edf3;
@@ -2162,6 +2171,14 @@ QLineEdit#issueSearch, QComboBox#issueControlSm {
     max-height: 28px;
 }
 QLineEdit#issueSearch:focus, QComboBox#issueControlSm:focus { border-color: #0969da; }
+/* Clearly-bordered commit-message compose field (see the dark-theme note). */
+QLineEdit#messageInput {
+    background-color: #ffffff;
+    border: 1px solid #afb8c1;
+    border-radius: 8px;
+    padding: 6px 10px;
+}
+QLineEdit#messageInput:focus { border-color: #0969da; }
 QPlainTextEdit#issueComposerSm {
     background-color: #ffffff;
     color: #1f2328;

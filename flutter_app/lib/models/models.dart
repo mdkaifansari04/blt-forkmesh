@@ -1760,3 +1760,179 @@ class FundsReceivedEntry {
         sol: _modelDouble(json['sol']),
       );
 }
+
+/// The org roles the Worker recognises, most privileged first. Mirrors
+/// ``ORG_ROLES`` in the Worker (owner > admin > member).
+const orgRoles = ['owner', 'admin', 'member'];
+
+/// The repository permissions a team can hold, least privileged first. Mirrors
+/// ``TEAM_PERMISSIONS`` in the Worker.
+const orgTeamPermissions = ['read', 'write', 'maintain', 'admin'];
+
+/// One entry from ``GET /api/orgs``: an org the signed-in account belongs to and
+/// the role it holds there.
+class OrgSummary {
+  const OrgSummary({required this.name, this.role = 'member'});
+
+  final String name;
+  final String role;
+
+  bool get canManage => role == 'owner' || role == 'admin';
+
+  factory OrgSummary.fromJson(Map<String, dynamic> json) => OrgSummary(
+    name: _firstModelString(json, const ['name', 'org']),
+    role: _modelString(json['role']).trim().toLowerCase(),
+  );
+}
+
+/// The public org profile from ``GET /api/orgs/<name>`` plus the viewer's role,
+/// which the detail UI uses to decide whether to show management controls.
+class OrgProfile {
+  const OrgProfile({
+    required this.name,
+    this.displayName = '',
+    this.description = '',
+    this.createdMs = 0,
+    this.members = 0,
+    this.teams = 0,
+    this.repos = const [],
+    this.viewerRole = '',
+  });
+
+  final String name;
+  final String displayName;
+  final String description;
+  final int createdMs;
+  final int members;
+  final int teams;
+  final List<OrgRepo> repos;
+  final String viewerRole;
+
+  String get title => displayName.isNotEmpty ? displayName : name;
+  bool get canManage => viewerRole == 'owner' || viewerRole == 'admin';
+  bool get isOwner => viewerRole == 'owner';
+
+  factory OrgProfile.fromJson(Map<String, dynamic> json) => OrgProfile(
+    name: _firstModelString(json, const ['org', 'name']),
+    displayName: _modelString(json['displayName']),
+    description: _modelString(json['description']),
+    createdMs: _modelInt(json['createdAt']),
+    members: _modelInt(json['members']),
+    teams: _modelInt(json['teams']),
+    repos: (json['repos'] is List ? json['repos'] as List : const [])
+        .whereType<Map>()
+        .map((r) => OrgRepo.fromJson(Map<String, dynamic>.from(r)))
+        .where((r) => r.repo.isNotEmpty)
+        .toList(),
+    viewerRole: _modelString(json['viewerRole']).trim().toLowerCase(),
+  );
+}
+
+/// A member row from ``GET /api/orgs/<name>/members``.
+class OrgMember {
+  const OrgMember({required this.name, this.role = 'member', this.sinceMs = 0});
+
+  final String name;
+  final String role;
+  final int sinceMs;
+
+  factory OrgMember.fromJson(Map<String, dynamic> json) => OrgMember(
+    name: _modelString(json['name']).trim().toLowerCase(),
+    role: _modelString(json['role']).trim().toLowerCase(),
+    sinceMs: _modelInt(json['since']),
+  );
+}
+
+/// A team row from ``GET /api/orgs/<name>/teams``.
+class OrgTeam {
+  const OrgTeam({
+    required this.team,
+    this.permission = 'read',
+    this.members = 0,
+  });
+
+  final String team;
+  final String permission;
+  final int members;
+
+  factory OrgTeam.fromJson(Map<String, dynamic> json) => OrgTeam(
+    team: _modelString(json['team']).trim().toLowerCase(),
+    permission: _modelString(json['permission']).trim().toLowerCase(),
+    members: _modelInt(json['members']),
+  );
+}
+
+/// A linked repo behind an ``/<org>/<repo>`` alias, from the org profile or
+/// ``GET /api/orgs/<name>/repos``.
+class OrgRepo {
+  const OrgRepo({required this.repo, this.node = ''});
+
+  final String repo;
+  final String node;
+
+  factory OrgRepo.fromJson(Map<String, dynamic> json) => OrgRepo(
+    repo: _modelString(json['repo']).trim().toLowerCase(),
+    node: _firstModelString(json, const ['node', 'node_owner']),
+  );
+}
+
+/// Raised by [ApiService] org calls when the Worker rejects a write, carrying a
+/// message already mapped to human-readable text from the server's error code.
+class OrgApiException implements Exception {
+  const OrgApiException(this.code, this.message);
+
+  final String code;
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// Maps a Worker org-endpoint error code to human-readable text. Unknown codes
+/// fall through to a generic message so the UI never shows a raw slug.
+String orgErrorMessage(String code) {
+  switch (code) {
+    case 'invalid_org_name':
+      return 'Invalid name. Use lowercase letters, numbers and dashes.';
+    case 'invalid_team_name':
+      return 'Invalid team name. Use lowercase letters, numbers and dashes.';
+    case 'org_name_taken':
+      return 'That name is already taken.';
+    case 'too_many_orgs':
+      return 'You have reached the organization limit for this account.';
+    case 'too_many_members':
+      return 'This organization has reached its member limit.';
+    case 'too_many_teams':
+      return 'This organization has reached its team limit.';
+    case 'too_many_repos':
+      return 'This organization has reached its linked-repo limit.';
+    case 'invalid_session':
+      return 'Sign in to manage organizations.';
+    case 'forbidden':
+      return 'You do not have permission to do that.';
+    case 'not_found':
+      return 'Not found.';
+    case 'last_owner':
+      return 'An organization must keep at least one owner.';
+    case 'unknown_account':
+      return 'No account exists with that name.';
+    case 'not_a_member':
+      return 'That account is not a member of this organization.';
+    case 'bad_role':
+      return 'Invalid role.';
+    case 'bad_permission':
+      return 'Invalid permission.';
+    case 'member_required':
+      return 'Enter a member account name.';
+    case 'repo_required':
+      return 'Enter a repository name.';
+    case 'not_your_node':
+      return 'You can only link repositories from your own node.';
+    case 'unknown_repo':
+      return 'That repository is not published on your node.';
+    case '':
+      return 'Request failed.';
+    default:
+      return 'Request failed ($code).';
+  }
+}
