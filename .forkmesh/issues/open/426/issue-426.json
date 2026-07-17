@@ -55,6 +55,17 @@
             "sig": "HqlI7Rx9GLTexb5xzLdSs20T111iKsDu9wC-NjtP91fMt3jOaqul0wvRdR7SKYGju8zN4uW_KTqkspcYiZz0AA",
             "ts": 1784325493483,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-426-have-teh-ability-for-the-repo-owner-to-delete-po\".",
+            "id": "cd4967e9-4a23-4361-b6e7-2532d242f7c2",
+            "sig": "2ojxE8HLYEi4gn0BnBc19TPicg2KLCcA7Jhlj_dUUy5ikbWoQEh3LP1gxNWk4ZVCcJCquDk4Oc5drd5yuyWzCA",
+            "ts": 1784326385895,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -67,6 +78,6 @@
     "startDate": 0,
     "status": "open",
     "title": "have teh ability for the repo owner to delete posts from mastodon",
-    "updatedAt": 1784325493483,
+    "updatedAt": 1784326385895,
     "votes": 0
 }
