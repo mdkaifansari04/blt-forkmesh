@@ -173,6 +173,11 @@ SCHEMA_STATEMENTS = [
     "CREATE TABLE IF NOT EXISTS login_attempts (id_bi TEXT PRIMARY KEY, "
     "fails INTEGER NOT NULL DEFAULT 0, first_fail_ts INTEGER NOT NULL DEFAULT 0, "
     "locked_until INTEGER NOT NULL DEFAULT 0)",
+    # Per-source-IP account-creation throttle: a rolling window count keyed by the
+    # blind index of the signup IP, so a single IP can't mass-create accounts /
+    # squat node names. ip_bi is the same one-way index stored on the account.
+    "CREATE TABLE IF NOT EXISTS signup_rate (ip_bi TEXT PRIMARY KEY, "
+    "count INTEGER NOT NULL DEFAULT 0, window_start_ts INTEGER NOT NULL DEFAULT 0)",
     # Installer link-code rendezvous (adhoc #53): install.sh mints a short code
     # the fresh headless node registers with, and the installing user's desktop
     # app offers the same code signed by its key. Whichever side arrives first
@@ -285,10 +290,12 @@ SCHEMA_STATEMENTS = [
     # the Releases tab can show a per-artifact download count and the admin
     # dashboard has a plain event log of them (same treatment as install_diag).
     # repo_bi is the blind index of "<owner>/<repo>"; sha256 is the content
-    # address of the asset. No account/IP is recorded.
+    # address of the asset. ua is the raw User-Agent header, shown as-is in the
+    # admin list so operators can spot scripted/bot download traffic. No
+    # account/IP is recorded.
     """CREATE TABLE IF NOT EXISTS release_downloads (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
-        sha256 TEXT NOT NULL, ts INTEGER NOT NULL)""",
+        sha256 TEXT NOT NULL, ts INTEGER NOT NULL, ua TEXT)""",
     "CREATE INDEX IF NOT EXISTS idx_release_downloads_repo_sha "
     "ON release_downloads(repo_bi, sha256)",
     # Private vulnerability reports submitted via /api/security/report. The body
@@ -383,6 +390,211 @@ SCHEMA_STATEMENTS = [
     # desktop's real count over time.
     """CREATE TABLE IF NOT EXISTS issue_seq (
         repo_bi TEXT PRIMARY KEY, next_number INTEGER NOT NULL)""",
+    # --- ActivityPub federation (migration 0028) -----------------------------
+    # Local fediverse actors: one row per user/repo/instance actor that has
+    # actually been looked up from the fediverse (rows are minted lazily on the
+    # first WebFinger/actor fetch, so repos nobody follows cost nothing).
+    # actor_bi = blind_index("ap-actor:<kind>:<handle>"); handle is "alice" for
+    # users, "owner.repo" for repos, "instance" for the service actor. The
+    # encrypted data blob holds the RSA-2048 private key (PKCS8); pubkey_pem is
+    # plaintext because the actor document publishes it anyway.
+    """CREATE TABLE IF NOT EXISTS ap_actors (
+        actor_bi TEXT PRIMARY KEY, kind TEXT NOT NULL,
+        pubkey_pem TEXT NOT NULL, data TEXT NOT NULL,
+        created_at INTEGER NOT NULL)""",
+    # Remote accounts following a local actor. follower_id/inbox URLs stay
+    # plaintext: they are public fediverse identifiers needed for cron
+    # delivery fan-out without decrypting every row.
+    """CREATE TABLE IF NOT EXISTS ap_followers (
+        actor_bi TEXT NOT NULL, follower_id TEXT NOT NULL,
+        inbox TEXT NOT NULL, shared_inbox TEXT, follower_handle TEXT,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (actor_bi, follower_id))""",
+    "CREATE INDEX IF NOT EXISTS idx_ap_followers_actor ON ap_followers(actor_bi)",
+    # Cache of remote actor documents (public data, plaintext like `relays`).
+    """CREATE TABLE IF NOT EXISTS ap_remote_actors (
+        actor_id TEXT PRIMARY KEY, inbox TEXT, shared_inbox TEXT,
+        pubkey_pem TEXT, handle TEXT, display_name TEXT, url TEXT,
+        updated_at INTEGER NOT NULL)""",
+    # Local ActivityPub objects (the Notes we publish), served at /ap/o/<uuid>.
+    # context_bi = blind_index("ap-context:<owner>/<repo>#<kind>#<ref>") maps a
+    # remote reply's inReplyTo back to its forkmesh thread.
+    """CREATE TABLE IF NOT EXISTS ap_objects (
+        object_uuid TEXT PRIMARY KEY, actor_bi TEXT NOT NULL,
+        context_bi TEXT, data TEXT NOT NULL, published INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_ap_objects_actor ON ap_objects(actor_bi)",
+    "CREATE INDEX IF NOT EXISTS idx_ap_objects_context ON ap_objects(context_bi)",
+    # Inbound remote replies, kept OUTSIDE the Ed25519-signed event log (they
+    # cannot carry forkmesh author signatures) and surfaced to clients as
+    # clearly-marked fediverse comments. remote_id_bi dedupes redeliveries.
+    """CREATE TABLE IF NOT EXISTS ap_comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, context_bi TEXT NOT NULL,
+        remote_id_bi TEXT UNIQUE, data TEXT NOT NULL, ts INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_ap_comments_context ON ap_comments(context_bi, ts)",
+    # Inbound repo-actor mentions already processed into an issue-inbox
+    # submission (or confidently classified as not-an-issue), keyed by
+    # blind_index("ap-mention:<note id>") — dedupes fediverse redeliveries so
+    # one Mastodon post can never file the same issue twice (migration 0037).
+    """CREATE TABLE IF NOT EXISTS ap_mentions (
+        remote_id_bi TEXT PRIMARY KEY, ts INTEGER NOT NULL)""",
+    # Outbound delivery queue (no Cloudflare Queues on the free plan): one row
+    # per (activity, destination inbox). A publish inserts rows and best-effort
+    # drains a few inline; the cron drains the rest with capped backoff.
+    """CREATE TABLE IF NOT EXISTS ap_outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, inbox TEXT NOT NULL,
+        data TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+        next_ts INTEGER NOT NULL, created_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_ap_outbox_next ON ap_outbox(next_ts)",
+    # Fediverse operator configuration (admin-managed, migration 0029): k/v
+    # settings (currently just enabled=1/0, default on when absent) and the
+    # remote-domain blocklist (defederation). Plaintext operational config.
+    """CREATE TABLE IF NOT EXISTS ap_settings (
+        k TEXT PRIMARY KEY, v TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS ap_blocked_domains (
+        domain TEXT PRIMARY KEY, added_by TEXT, added_at INTEGER NOT NULL)""",
+    # Per-repo branding (migration 0030): owner-uploaded logo/banner PNGs shown
+    # on the repo's fediverse actor (and anywhere else that wants them).
+    # repo_bi = blind_index("owner/repo") (== repositories.key_bi); kind is
+    # 'logo' or 'banner'; data = encrypted {png: <base64>}. One row per image
+    # so a large banner never pushes the combined row past D1's 2 MB cap, and
+    # existence checks (SELECT kind, updated_at) never decrypt the blob.
+    """CREATE TABLE IF NOT EXISTS repo_media (
+        repo_bi TEXT NOT NULL, kind TEXT NOT NULL,
+        data TEXT NOT NULL, updated_at INTEGER NOT NULL,
+        PRIMARY KEY (repo_bi, kind))""",
+    # Web edits of the repo About card queued for the owner's desktop node
+    # (migration 0031): the node drains this via GET /api/sync (same
+    # drain-on-read semantics as agent_prompts) and writes the change into the
+    # repo's committed .forkmesh/info.json — the single source of truth the
+    # desktop app shows. One row per repo; the latest web edit wins.
+    """CREATE TABLE IF NOT EXISTS about_inbox (
+        repo_bi TEXT PRIMARY KEY, data TEXT NOT NULL,
+        queued_at INTEGER NOT NULL)""",
+    # Repo stars (migration 0032): which accounts starred which repo. Keyed by
+    # blind indexes only (no signing needed - a star is a plain per-account
+    # preference, same trust level as profile_follows), so the count and the
+    # caller's own starred state are cheap membership checks.
+    """CREATE TABLE IF NOT EXISTS repo_stars (
+        repo_bi TEXT NOT NULL, account_bi TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (repo_bi, account_bi))""",
+    "CREATE INDEX IF NOT EXISTS idx_repo_stars_repo ON repo_stars(repo_bi, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_repo_stars_account ON repo_stars(account_bi, created_at)",
+    # "How are we doing?" founder feedback email, sent once per user account
+    # ~24h after signup (migration 0033). One row per send is both the
+    # once-only guard and the admin's send log (the admin table browser lists
+    # every D1 table): `name` is the public node name, nothing else — the
+    # recipient email stays only in the encrypted account record.
+    """CREATE TABLE IF NOT EXISTS feedback_email_sends (
+        account_bi TEXT PRIMARY KEY, name TEXT, sent_at INTEGER NOT NULL)""",
+    # Per-repo fediverse switches (migration 0035), owner-managed from the web
+    # and Qt repo settings: federate (actor exists at all), broadcastEvents
+    # (issues/PRs/releases posted to followers), acceptComments (remote
+    # replies ingested as federated comments). repo_bi =
+    # blind_index("ap-repo-settings:<owner>/<repo>") with both halves
+    # lowercased; data is plaintext JSON of booleans (same operational-config
+    # trust level as ap_settings) so the hot unauthenticated AP gates never
+    # decrypt. A missing row means "all on" — existing repos keep federating
+    # exactly as before.
+    """CREATE TABLE IF NOT EXISTS ap_repo_settings (
+        repo_bi TEXT PRIMARY KEY, data TEXT NOT NULL,
+        updated_at INTEGER NOT NULL)""",
+    # Bounded contribution projections for native profile activity. Every
+    # identity and repository join key is a blind index; human-readable labels
+    # remain in encrypted data, and raw Git author names/emails are never stored.
+    """CREATE TABLE IF NOT EXISTS profile_contribution_receipts (
+        generation_bi TEXT PRIMARY KEY,
+        snapshot_hash TEXT NOT NULL,
+        source_account_bi TEXT NOT NULL,
+        source_repo_bi TEXT NOT NULL,
+        captured_at INTEGER NOT NULL,
+        head TEXT NOT NULL,
+        day_rows INTEGER NOT NULL,
+        language_rows INTEGER NOT NULL,
+        created_at INTEGER NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS profile_contribution_projects (
+        source_repo_bi TEXT PRIMARY KEY,
+        source_account_bi TEXT NOT NULL,
+        owner_user_bi TEXT NOT NULL,
+        project_bi TEXT NOT NULL,
+        first_public_day TEXT NOT NULL,
+        is_public INTEGER NOT NULL DEFAULT 1,
+        active_generation_bi TEXT,
+        captured_at INTEGER NOT NULL DEFAULT 0,
+        verified_from TEXT,
+        data TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS profile_contribution_days (
+        generation_bi TEXT NOT NULL,
+        subject_user_bi TEXT NOT NULL,
+        source_account_bi TEXT NOT NULL,
+        source_repo_bi TEXT NOT NULL,
+        project_bi TEXT NOT NULL,
+        day TEXT NOT NULL,
+        commits INTEGER NOT NULL DEFAULT 0,
+        issues INTEGER NOT NULL DEFAULT 0,
+        pulls INTEGER NOT NULL DEFAULT 0,
+        reviews INTEGER NOT NULL DEFAULT 0,
+        captured_at INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        PRIMARY KEY (generation_bi, subject_user_bi, source_repo_bi, day))""",
+    """CREATE TABLE IF NOT EXISTS profile_contribution_languages (
+        generation_bi TEXT NOT NULL,
+        owner_user_bi TEXT NOT NULL,
+        source_repo_bi TEXT NOT NULL,
+        project_bi TEXT NOT NULL,
+        language TEXT NOT NULL,
+        bytes INTEGER NOT NULL,
+        files INTEGER NOT NULL,
+        captured_at INTEGER NOT NULL,
+        PRIMARY KEY (generation_bi, owner_user_bi, source_repo_bi, language))""",
+    """CREATE INDEX IF NOT EXISTS idx_profile_contribution_projects_owner_public
+        ON profile_contribution_projects(owner_user_bi, is_public)""",
+    """CREATE INDEX IF NOT EXISTS idx_profile_contribution_projects_project_public
+        ON profile_contribution_projects(project_bi, is_public)""",
+    """CREATE INDEX IF NOT EXISTS idx_profile_contribution_days_subject_day
+        ON profile_contribution_days(subject_user_bi, day)""",
+    """CREATE INDEX IF NOT EXISTS idx_profile_contribution_days_repo_generation
+        ON profile_contribution_days(source_repo_bi, generation_bi)""",
+    """CREATE INDEX IF NOT EXISTS idx_profile_contribution_languages_owner_generation
+        ON profile_contribution_languages(owner_user_bi, generation_bi)""",
+    # --- Organizations + teams (issue #388, migration 0038) ------------------
+    # User-created org namespaces that serve linked repos at /<org>/<repo>
+    # instead of the hosting node's name. Org identity and membership rosters
+    # are public data (same trust level as accounts.name / profile_follows /
+    # outreach_team), so names and roles stay plaintext for cheap listing;
+    # per-org extras (display name, description, creator) live in the encrypted
+    # data blob. org_bi = blind_index("org:<name>").
+    """CREATE TABLE IF NOT EXISTS orgs (
+        org_bi TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL)""",
+    # Who belongs to an org and at what role ('owner' | 'admin' | 'member').
+    """CREATE TABLE IF NOT EXISTS org_members (
+        org_bi TEXT NOT NULL, member_bi TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'member',
+        name TEXT NOT NULL, created_at INTEGER NOT NULL,
+        PRIMARY KEY (org_bi, member_bi))""",
+    "CREATE INDEX IF NOT EXISTS idx_org_members_member ON org_members(member_bi)",
+    # Teams: a named subset of org members holding one repository permission
+    # ('read' | 'write' | 'maintain' | 'admin') over the org's linked repos.
+    """CREATE TABLE IF NOT EXISTS org_teams (
+        org_bi TEXT NOT NULL, team TEXT NOT NULL,
+        permission TEXT NOT NULL DEFAULT 'read',
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (org_bi, team))""",
+    """CREATE TABLE IF NOT EXISTS org_team_members (
+        org_bi TEXT NOT NULL, team TEXT NOT NULL, member_bi TEXT NOT NULL,
+        name TEXT NOT NULL, created_at INTEGER NOT NULL,
+        PRIMARY KEY (org_bi, team, member_bi))""",
+    # Alias map: which node-hosted repo each /<org>/<repo> URL serves. The
+    # reverse index lets the push gate find the orgs a node repo is linked
+    # under without scanning.
+    """CREATE TABLE IF NOT EXISTS org_repos (
+        org_bi TEXT NOT NULL, repo TEXT NOT NULL, node_owner TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (org_bi, repo))""",
+    "CREATE INDEX IF NOT EXISTS idx_org_repos_node ON org_repos(node_owner, repo)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

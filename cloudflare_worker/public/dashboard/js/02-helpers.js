@@ -139,23 +139,162 @@
     })[char]);
   }
 
+  // Loading placeholder: spinner (see .fm-spinner in the shell <style>)
+  // followed by the label. `label` is inserted as HTML so call sites can keep
+  // their pre-escaped fragments.
+  function loadingHtml(label) {
+    return `<span class="fm-spinner" aria-hidden="true"></span>${label}`;
+  }
+
   function formatCount(value) {
     const number = Number(value) || 0;
     return new Intl.NumberFormat().format(number);
   }
 
-  function formatDate(value) {
-    if (value === undefined || value === null || value === "") return "unknown";
+  // Compose-identity chip: avatar + username shown next to any box where the
+  // session user is about to send content (issues, replies, reviews). Built as
+  // an HTML string so it can be dropped straight into the template-literal forms
+  // in 06/07; mirrors the initial/avatarPng logic in applyAvatar().
+  function composeIdentityHtml(session, verb) {
+    const name = String(session?.nodeName || session?.email || "you");
+    const initial = escapeHtml((name[0] || "F").toUpperCase());
+    const avatarPng = String(session?.avatarPng || "");
+    const inner = avatarPng
+      ? `<img class="h-full w-full object-cover" src="data:image/png;base64,${avatarPng}" alt="${escapeHtml(name)} avatar" />`
+      : `<span class="text-[10px] font-semibold text-muted-foreground">${initial}</span>`;
+    const label = verb
+      ? `<span class="text-muted-foreground">${escapeHtml(verb)} as</span> <span class="font-semibold text-foreground">${escapeHtml(name)}</span>`
+      : `<span class="font-semibold text-foreground">${escapeHtml(name)}</span>`;
+    return `<span class="inline-flex min-w-0 items-center gap-2 text-xs">
+        <span class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-secondary">${inner}</span>
+        <span class="min-w-0 truncate">${label}</span>
+      </span>`;
+  }
+
+  function parseFlexibleDate(value) {
+    if (value === undefined || value === null || value === "") return null;
     const numeric = Number(value);
     const date = Number.isFinite(numeric) && numeric > 0
       ? new Date(numeric < 1000000000000 ? numeric * 1000 : numeric)
       : new Date(value);
-    if (Number.isNaN(date.getTime())) return "unknown";
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function formatDate(value) {
+    const date = parseFlexibleDate(value);
+    if (!date) return "unknown";
     return date.toLocaleDateString(undefined, {
       month: "short",
       day: "numeric",
       year: "numeric",
     });
+  }
+
+  // GitHub-style relative timestamp ("3 days ago") for the repo detail page's
+  // commit/file dates - absolute dates there made every mirrored commit look
+  // identically stale ("Jul 10, 2026") instead of showing recency at a glance.
+  function formatTimeAgo(value) {
+    const date = parseFlexibleDate(value);
+    if (!date) return "unknown";
+    const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+    if (seconds < 45) return "just now";
+    const units = [
+      ["year", 31536000],
+      ["month", 2592000],
+      ["week", 604800],
+      ["day", 86400],
+      ["hour", 3600],
+      ["minute", 60],
+    ];
+    for (const [name, secs] of units) {
+      const count = Math.floor(seconds / secs);
+      if (count >= 1) return `${count} ${name}${count === 1 ? "" : "s"} ago`;
+    }
+    return "just now";
+  }
+
+  // Map a file name to a vscode-icons SVG base name, mirroring the Qt client's
+  // fileTypeIconName (MainWindowInternal.h) so the web file browser shows the
+  // exact same per-filetype icons as the desktop app. The referenced subset is
+  // copied into public/assets/file-icons/; unknown types fall back to
+  // default_file.
+  const FILE_ICON_BY_NAME = {
+    "cmakelists.txt": "file_type_cmake",
+    "dockerfile": "file_type_docker",
+    "makefile": "file_type_makefile",
+    "package.json": "file_type_npm",
+    "package-lock.json": "file_type_npm",
+    ".gitignore": "file_type_git",
+    ".gitattributes": "file_type_git",
+    ".gitmodules": "file_type_git",
+    "license": "file_type_license",
+    "license.md": "file_type_license",
+    "license.txt": "file_type_license",
+    "copying": "file_type_license",
+    "readme.md": "file_type_markdown",
+    "todo": "file_type_todo",
+    ".env": "file_type_config",
+  };
+  const FILE_ICON_BY_EXT = {
+    js: "file_type_js", mjs: "file_type_js", cjs: "file_type_js",
+    jsx: "file_type_reactjs", ts: "file_type_typescript",
+    tsx: "file_type_reactts", py: "file_type_python", pyw: "file_type_python",
+    rb: "file_type_ruby", rs: "file_type_rust", go: "file_type_go",
+    java: "file_type_java", kt: "file_type_kotlin", kts: "file_type_kotlin",
+    swift: "file_type_swift", c: "file_type_c", h: "file_type_cheader",
+    hpp: "file_type_cpp", hh: "file_type_cpp", hxx: "file_type_cpp",
+    cpp: "file_type_cpp", cc: "file_type_cpp", cxx: "file_type_cpp",
+    cs: "file_type_csharp", php: "file_type_php", pl: "file_type_perl",
+    pm: "file_type_perl", lua: "file_type_lua", r: "file_type_r",
+    scala: "file_type_scala", hs: "file_type_haskell", ex: "file_type_elixir",
+    exs: "file_type_elixir", erl: "file_type_erlang", dart: "file_type_dart",
+    html: "file_type_html", htm: "file_type_html", css: "file_type_css",
+    scss: "file_type_scss", sass: "file_type_sass", less: "file_type_less",
+    json: "file_type_json", yaml: "file_type_yaml", yml: "file_type_yaml",
+    toml: "file_type_toml", xml: "file_type_xml", ini: "file_type_ini",
+    cfg: "file_type_config", conf: "file_type_config", md: "file_type_markdown",
+    markdown: "file_type_markdown", txt: "file_type_text", text: "file_type_text",
+    log: "file_type_log", sql: "file_type_sql", sh: "file_type_shell",
+    bash: "file_type_shell", zsh: "file_type_shell", ps1: "file_type_powershell",
+    gradle: "file_type_gradle", svg: "file_type_svg", png: "file_type_image",
+    jpg: "file_type_image", jpeg: "file_type_image", gif: "file_type_image",
+    webp: "file_type_image", bmp: "file_type_image", ico: "file_type_image",
+    mp3: "file_type_audio", wav: "file_type_audio", flac: "file_type_audio",
+    ogg: "file_type_audio", mp4: "file_type_video", mov: "file_type_video",
+    mkv: "file_type_video", webm: "file_type_video", pdf: "file_type_pdf",
+    zip: "file_type_zip", tar: "file_type_zip", gz: "file_type_zip",
+    "7z": "file_type_zip", rar: "file_type_zip", ttf: "file_type_font",
+    otf: "file_type_font", woff: "file_type_font", woff2: "file_type_font",
+    exe: "file_type_binary", bin: "file_type_binary", o: "file_type_binary",
+    a: "file_type_binary", so: "file_type_binary", dll: "file_type_binary",
+    key: "file_type_key", pem: "file_type_key", crt: "file_type_cert",
+    cert: "file_type_cert", cer: "file_type_cert", cmake: "file_type_cmake",
+  };
+
+  function fileTypeIconName(fileName) {
+    const lower = String(fileName || "").toLowerCase();
+    if (FILE_ICON_BY_NAME[lower]) return FILE_ICON_BY_NAME[lower];
+    const dot = lower.lastIndexOf(".");
+    if (dot >= 0) {
+      const ext = lower.slice(dot + 1);
+      if (FILE_ICON_BY_EXT[ext]) return FILE_ICON_BY_EXT[ext];
+    }
+    return "default_file";
+  }
+
+  // <img> to a copied vscode-icons SVG, so the web file rows use the same icons
+  // as the Qt desktop browser. Directories use the folder icon; the onerror
+  // fallback covers the few Qt names we don't ship an SVG for (mirrors Qt's
+  // "verify the file exists, else default_file"). The icon name comes from a
+  // fixed allow-list, so it is safe to interpolate unescaped.
+  function fileIconHtml(entry, cls = "h-4 w-4 shrink-0") {
+    const isTree = entry?.type === "tree";
+    const name = isTree ? "default_folder" : fileTypeIconName(entry?.name || "");
+    const fallback = isTree ? "default_folder" : "default_file";
+    const onErr = name === fallback
+      ? ""
+      : ` onerror="this.onerror=null;this.src='/assets/file-icons/${fallback}.svg'"`;
+    return `<img src="/assets/file-icons/${name}.svg" alt="" aria-hidden="true" class="${cls}"${onErr} />`;
   }
 
   function formatSize(bytes) {
@@ -371,7 +510,7 @@
 
   // Feature-tab route segments (mirrors 404.html's `featureTabs` list) - tells
   // a tab route (e.g. /owner/repo/issues) apart from a tree/blob code deep link.
-  const REPO_TAB_ROUTES = ["commits", "insights", "releases", "issues", "pulls", "discussions", "mirrors"];
+  const REPO_TAB_ROUTES = ["commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors"];
 
   // The owner-only "Agents" tab (adhoc #182) is only ever a recognized route
   // for the account that can actually see it - sessionCanAssignAgent gates it
@@ -437,6 +576,7 @@
 
   async function fetchJson(path, options = {}) {
     const fresh = options.fresh === true;
+    const cacheBust = options.cacheBust !== false;
     const baseTtl = fetchJsonCacheTtl(path);
     const ttl = fresh ? 0 : baseTtl;
     if (!state.fetchJsonInflight) state.fetchJsonInflight = {};
@@ -445,14 +585,17 @@
     const now = Date.now();
     const cached = ttl ? state.fetchJsonCache[path] : null;
     if (cached && cached.expiresAt > now) return cloneJson(cached.data);
-    const requestPath = fresh ? cacheBustedPath(path) : path;
-    const inflightKey = fresh ? requestPath : path;
+    const requestPath = fresh && cacheBust ? cacheBustedPath(path) : path;
+    const inflightKey = fresh ? `${requestPath}#fresh` : path;
     if (state.fetchJsonInflight[inflightKey]) {
       return cloneJson(await state.fetchJsonInflight[inflightKey]);
     }
 
     const pending = (async () => {
-      const noStore = fresh || !ttl;
+      // Only explicit fresh loads bypass HTTP caching; plain fetches send no
+      // cache-buster and no cache-control override so the browser can reuse
+      // responses within the server's max-age (request budget).
+      const noStore = fresh;
       // Attach the account session as a bearer token when logged in. Endpoints
       // that expose per-account data (e.g. /api/notifications) require it;
       // public endpoints simply ignore it. Same-origin only.
@@ -467,7 +610,9 @@
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok === false) {
-        throw new Error(data.error || `HTTP ${response.status}`);
+        const error = new Error(data.error || `HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
       }
       if (ttl || (fresh && baseTtl)) {
         state.fetchJsonCache[path] = {
@@ -502,6 +647,13 @@
   // Raw files can be much bigger than the final embedded size - anything under
   // this is accepted into the crop/compress modal rather than rejected outright.
   const ISSUE_IMAGE_RAW_MAX_BYTES = 20 * 1024 * 1024;
+  // Screenshots pasted/attached onto a "start agent" prompt (adhoc #78). More
+  // generous than issue images so a screenshot stays legible for the agent, but
+  // still bounded to keep the queued-prompt row (and /api/sync payload) modest;
+  // mirrors the worker's MAX_AGENT_PROMPT_IMAGE(S)* caps.
+  const AGENT_IMAGE_MAX_COUNT = 3;
+  const AGENT_IMAGE_MAX_BYTES = 1000 * 1024;
+  const AGENT_IMAGE_MAX_TOTAL_BYTES = 1700 * 1024;
 
   function readAsDataUrl(fileOrBlob) {
     return new Promise((resolve, reject) => {

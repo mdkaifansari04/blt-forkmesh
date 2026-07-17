@@ -20,10 +20,12 @@ REPO_TAB_ROUTES = frozenset({
     "commits",
     "releases",
     "issues",
+    "projects",
     "pulls",
     "discussions",
     "mirrors",
     "agents",
+    "insights",
 })
 
 RESERVED_ROUTE_PREFIXES = frozenset({

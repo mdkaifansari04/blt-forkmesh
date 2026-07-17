@@ -102,6 +102,34 @@ html.dark {
   --mono: "ForkMesh Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
+/* Light palette. site-header.js stamps html.light / html.dark from the
+   visitor's saved choice (forkmesh.theme localStorage keys, shared with the
+   dashboard and docs) or their OS preference; without JavaScript the site
+   simply stays dark. Values mirror the dashboard's light theme. */
+html.light {
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #111113;
+  --card: #f6f6f7;
+  --card-soft: #ececef;
+  --muted: #5c5c66;
+  --muted-2: #74747e;
+  --border: #d9d9de;
+  --border-subtle: #e7e7ea;
+  --primary: #1a7f37;
+  --primary-hover: #166f2f;
+  --primary-foreground: #ffffff;
+  --accent: #1a7f37;
+  --accent-bright: #1a7f37;
+  --accent-hover: #2ea043;
+  --danger: #cf222e;
+  --warning: #9a6700;
+  --purple: #8250df;
+  --button: #111113;
+  --button-hover: #000000;
+  --button-foreground: #ffffff;
+}
+
 /* ===== Reset ===== */
 *,
 *::before,
@@ -1870,11 +1898,15 @@ button.issue-row {
 .network-console,
 .network-ops-card,
 .network-architecture-panel {
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0)),
-    #111212;
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--foreground) 3.5%, transparent),
+      transparent
+    ),
+    var(--card);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.22);
 }
 
@@ -1892,10 +1924,28 @@ button.issue-row {
   pointer-events: none;
   opacity: 0.45;
   background:
-    radial-gradient(circle at 82% 18%, rgba(74, 222, 128, 0.16), transparent 26%),
-    radial-gradient(circle at 8% 90%, rgba(163, 113, 247, 0.12), transparent 28%),
-    linear-gradient(90deg, transparent 0 31px, rgba(255, 255, 255, 0.035) 32px, transparent 33px),
-    linear-gradient(180deg, transparent 0 31px, rgba(255, 255, 255, 0.03) 32px, transparent 33px);
+    radial-gradient(
+      circle at 82% 18%,
+      color-mix(in srgb, var(--primary) 16%, transparent),
+      transparent 26%
+    ),
+    radial-gradient(
+      circle at 8% 90%,
+      color-mix(in srgb, var(--purple) 12%, transparent),
+      transparent 28%
+    ),
+    linear-gradient(
+      90deg,
+      transparent 0 31px,
+      color-mix(in srgb, var(--foreground) 3.5%, transparent) 32px,
+      transparent 33px
+    ),
+    linear-gradient(
+      180deg,
+      transparent 0 31px,
+      color-mix(in srgb, var(--foreground) 3%, transparent) 32px,
+      transparent 33px
+    );
   background-size: auto, auto, 64px 64px, 64px 64px;
 }
 
@@ -1929,7 +1979,7 @@ button.issue-row {
   height: 8px;
   border-radius: 999px;
   background: var(--primary);
-  box-shadow: 0 0 18px rgba(74, 222, 128, 0.62);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--primary) 62%, transparent);
 }
 
 .network-console-metrics {
@@ -1941,9 +1991,9 @@ button.issue-row {
 .network-console-metrics article {
   min-width: 0;
   padding: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
   border-radius: 8px;
-  background: rgba(9, 9, 9, 0.66);
+  background: color-mix(in srgb, var(--background) 66%, var(--card));
 }
 
 .network-console-metrics span,
@@ -1983,9 +2033,9 @@ button.issue-row {
   gap: 4px 12px;
   align-items: center;
   padding: 14px 16px;
-  border: 1px solid rgba(255, 255, 255, 0.065);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.025);
+  background: color-mix(in srgb, var(--card-soft) 24%, var(--card));
 }
 
 .network-route-step::after {
@@ -1995,7 +2045,7 @@ button.issue-row {
   bottom: -10px;
   width: 1px;
   height: 10px;
-  background: rgba(255, 255, 255, 0.12);
+  background: color-mix(in srgb, var(--border) 72%, transparent);
 }
 
 .network-route-step:last-child::after {
@@ -2003,8 +2053,8 @@ button.issue-row {
 }
 
 .network-route-step.is-relay {
-  border-color: color-mix(in srgb, var(--primary) 42%, rgba(255, 255, 255, 0.08));
-  background: color-mix(in srgb, var(--primary) 10%, rgba(255, 255, 255, 0.025));
+  border-color: color-mix(in srgb, var(--primary) 42%, var(--border));
+  background: color-mix(in srgb, var(--primary) 10%, var(--card));
 }
 
 .network-route-step>span {
@@ -2014,7 +2064,7 @@ button.issue-row {
   display: grid;
   place-items: center;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--card));
   color: var(--foreground);
   font-family: var(--mono);
   font-size: 12px;
@@ -2043,9 +2093,9 @@ button.issue-row {
   gap: 16px;
   margin-top: 14px;
   padding: 15px 16px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
   border-radius: 8px;
-  background: rgba(9, 9, 9, 0.72);
+  background: color-mix(in srgb, var(--background) 72%, var(--card));
 }
 
 .network-console-boundary strong {
@@ -2107,7 +2157,7 @@ button.issue-row {
   justify-content: space-between;
   gap: 16px;
   padding: 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.065);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 }
 
 .network-card-heading h3 {
@@ -2128,9 +2178,9 @@ button.issue-row {
   align-items: center;
   min-height: 28px;
   padding: 0 10px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.035);
+  background: color-mix(in srgb, var(--card-soft) 32%, var(--card));
   color: var(--muted);
   font-size: 11px;
   font-weight: 700;
@@ -2192,9 +2242,9 @@ button.issue-row {
   grid-template-columns: 38px minmax(0, 1fr);
   gap: 12px;
   padding: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.065);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.025);
+  background: color-mix(in srgb, var(--card-soft) 24%, var(--card));
 }
 
 .network-architecture-step>span {
@@ -2203,7 +2253,7 @@ button.issue-row {
   display: grid;
   place-items: center;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--primary) 14%, rgba(255, 255, 255, 0.04));
+  background: color-mix(in srgb, var(--primary) 14%, var(--card));
   color: var(--primary);
   font-family: var(--mono);
   font-size: 12px;
@@ -2237,11 +2287,15 @@ button.issue-row {
   justify-content: space-between;
   gap: 20px;
   padding: 24px;
-  border: 1px solid color-mix(in srgb, var(--purple) 24%, rgba(255, 255, 255, 0.07));
+  border: 1px solid color-mix(in srgb, var(--purple) 24%, var(--border));
   border-radius: 8px;
   background:
-    radial-gradient(circle at 18% 14%, rgba(163, 113, 247, 0.2), transparent 34%),
-    rgba(9, 9, 9, 0.56);
+    radial-gradient(
+      circle at 18% 14%,
+      color-mix(in srgb, var(--purple) 20%, transparent),
+      transparent 34%
+    ),
+    color-mix(in srgb, var(--background) 56%, var(--card));
 }
 
 .network-architecture-boundary h3 {
@@ -2261,7 +2315,7 @@ button.issue-row {
 .network-boundary-list div {
   min-width: 0;
   padding: 13px 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
 }
 
 .network-boundary-list strong {
@@ -2421,6 +2475,60 @@ button.issue-row {
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 10px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.status-row-head:hover .status-row-chevron,
+.status-row-head:focus-visible .status-row-chevron {
+  color: var(--foreground);
+}
+
+.status-row-head:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 2px;
+}
+
+.status-row-chevron {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.status-row-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.status-row-detail-panel {
+  margin: -4px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--card) 60%, transparent);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+
+.status-row-detail-panel p {
+  margin: 0 0 8px;
+}
+
+.status-row-detail-panel p:last-child {
+  margin-bottom: 0;
+}
+
+.status-row-detail-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.status-row-detail-note {
+  color: var(--muted);
 }
 
 .status-row-name {
@@ -2442,6 +2550,7 @@ button.issue-row {
 .status-dot.is-operational { background: var(--accent-bright); }
 .status-dot.is-degraded { background: var(--warning); }
 .status-dot.is-down { background: var(--danger); }
+.status-dot.is-unknown { background: var(--border); }
 
 .status-row-meta,
 .status-row-metrics {
@@ -2495,6 +2604,13 @@ button.issue-row {
 .status-row-reason.is-down {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+/* "Unknown" is a monitoring gap, not an incident — neutral, not alarming. */
+.status-row-reason.is-unknown {
+  background: color-mix(in srgb, var(--border) 30%, transparent);
+  border-color: var(--border);
+  color: var(--muted);
 }
 
 .status-days {
@@ -3446,4 +3562,22 @@ html.dark .diff-hunk {
 }
 @media (max-width: 640px) {
   .footer-inner { flex-direction: column; gap: 24px; }
+}
+
+/* Shared loading indicator: inherits currentColor so it matches whatever
+   muted/empty text it sits next to. */
+.fm-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 9999px;
+  opacity: 0.75;
+  vertical-align: -2px;
+  margin-right: 8px;
+  animation: fm-spin 0.7s linear infinite;
+}
+@keyframes fm-spin {
+  to { transform: rotate(360deg); }
 }

@@ -41,6 +41,7 @@ FUNCS = {
     "agents_handler", "agents_list_handler", "agents_prompt_handler",
     "agents_transcript_handler",
     "_clean_agent_session", "_authorize_owner",
+    "_verify_owner_signature", "_owner_signing_pubkeys",
     "_authorize_owner_account", "_owner_pubkey", "_login_locked_until",
     "_login_record_fail", "_login_clear", "method_name", "clean_string",
     # Session-based owner authorization (agents tab): the caller proves identity
@@ -48,6 +49,7 @@ FUNCS = {
     "_account_session_record", "_account_session_token",
     "_account_session_token_name", "_account_session_signature",
     "_account_session_secret", "_account_kind", "valid_node_name",
+    "_account_owns_node", "_owned_nodes",
 }
 
 
@@ -138,6 +140,11 @@ def _harness(accounts):
         # A stand-in signature scheme: only the literal "good-sig" verifies.
         return sig == "good-sig"
 
+    async def _account_devices_list(_env, _account_bi):
+        # No extra desktop devices in these fixtures; drain auth falls back to
+        # the account's primary pubkey exactly as before.
+        return []
+
     async def encrypt_row(_env, obj):
         return dict(obj)
 
@@ -181,6 +188,11 @@ def _harness(accounts):
                     "UNIQUE constraint failed: repo_agents.repo_bi, repo_agents.agent_id")
             repo_agents[(repo_bi, agent_id)] = {"data": data, "updated_at": updated_at}
             return
+        if sql.startswith("DELETE FROM agent_prompts WHERE id IN"):
+            drained = set(args)
+            agent_prompts[:] = [r for r in agent_prompts
+                                if r["id"] not in drained]
+            return
         if sql.startswith("DELETE FROM agent_prompts"):
             repo_bi = args[0]
             agent_prompts[:] = [r for r in agent_prompts if r["repo_bi"] != repo_bi]
@@ -213,11 +225,15 @@ def _harness(accounts):
 
     ns = _load_functions({
         "Date": _DateStub,
+        "json": __import__("json"),
+        "hashlib": __import__("hashlib"),
+        "_AGENT_PUSH_DIGESTS": {},
         "json_response": json_response,
         "ensure_schema": ensure_schema,
         "blind_index": blind_index,
         "notify_repo_host": noop_notify_repo_host,
         "_account_row": _account_row,
+        "_account_devices_list": _account_devices_list,
         "verify_password": verify_password,
         "_is_admin": _is_admin,
         "ed25519_verify": ed25519_verify,
@@ -237,6 +253,9 @@ def _harness(accounts):
         "MAX_AGENT_TITLE": 240,
         "MAX_AGENT_PROMPT_TEXT": 8000,
         "MAX_PENDING_AGENT_PROMPTS": 50,
+        "MAX_AGENT_PROMPT_IMAGES": 3,
+        "MAX_AGENT_PROMPT_IMAGE_BYTES": 1_400_000,
+        "MAX_AGENT_PROMPT_IMAGES_TOTAL_BYTES": 2_400_000,
         "MAX_AGENT_TRANSCRIPT": 16000,
         # Session-token proof (agents-tab owner authorization).
         "hmac": hmac,
@@ -401,6 +420,51 @@ def test_prompt_enqueued_then_drained_by_desktop_get():
         env, _Request("GET", _push_url()), "alice", "proj",
     ))
     assert drained_again["data"]["prompts"] == []
+
+
+def test_new_agent_prompt_carries_pasted_screenshots():
+    # adhoc #78: a "start agent" prompt from the website can attach pasted
+    # screenshots. They ride to the node as data: URLs on the drained prompt.
+    accounts = {"alice": _owner_account()}
+    ns = _harness(accounts)
+    env = object()
+    good = "data:image/png;base64,aGVsbG8="
+    sent = asyncio.run(ns["agents_prompt_handler"](
+        env, _Request("POST", body={
+            "ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice"),
+            "text": "look at this",
+            "images": [good, "not-a-data-url", 123],
+        }),
+        "alice", "proj", "new",
+    ))
+    assert sent == {"status": 200, "data": {"ok": True}}
+
+    drained = asyncio.run(ns["agents_handler"](
+        env, _Request("GET", _push_url()), "alice", "proj",
+    ))
+    prompts = drained["data"]["prompts"]
+    assert len(prompts) == 1
+    # Only the valid data: URL survives; junk entries are dropped.
+    assert prompts[0]["images"] == [good]
+
+
+def test_new_agent_prompt_rejects_oversized_screenshot():
+    accounts = {"alice": _owner_account()}
+    ns = _harness(accounts)
+    env = object()
+    huge = "data:image/png;base64," + ("A" * ns["MAX_AGENT_PROMPT_IMAGE_BYTES"])
+    sent = asyncio.run(ns["agents_prompt_handler"](
+        env, _Request("POST", body={
+            "ownerAccount": "alice",
+            "sessionToken": ns["_account_session_token"](env, "alice"),
+            "text": "look at this",
+            "images": [huge],
+        }),
+        "alice", "proj", "new",
+    ))
+    assert sent["status"] == 400
+    assert sent["data"]["error"] == "image_too_large"
 
 
 def test_self_asserted_owner_without_session_is_rejected():

@@ -106,6 +106,112 @@ void main() {
       );
     });
   });
+
+  testWidgets('unread counts accumulate and clear when read', (tester) async {
+    await tester.runAsync(() async {
+      final harness = await _RelayHarness.start();
+      addTearDown(harness.close);
+
+      // Two messages land in a channel the user is not currently viewing.
+      await harness.sendPlain({
+        'type': 'chat',
+        'id': 'unread-1',
+        'senderId': 'remote-node',
+        'sender': 'Remote',
+        'ts': 1000,
+        'channel': '#random',
+        'text': 'first unread',
+      });
+      await harness.sendPlain({
+        'type': 'chat',
+        'id': 'unread-2',
+        'senderId': 'remote-node',
+        'sender': 'Remote',
+        'ts': 2000,
+        'channel': '#random',
+        'text': 'second unread',
+      });
+      await _waitUntil(() => harness.relay.totalUnread == 2);
+
+      expect(harness.relay.hasUnread('#random'), isTrue);
+      expect(harness.relay.unreadCountFor('#random'), 2);
+
+      // Opening the conversation clears just that conversation.
+      harness.relay.switchConversation('#random');
+      expect(harness.relay.totalUnread, 0);
+      expect(harness.relay.hasUnread('#random'), isFalse);
+    });
+  });
+
+  testWidgets('mark all read clears every conversation at once', (tester) async {
+    await tester.runAsync(() async {
+      final harness = await _RelayHarness.start();
+      addTearDown(harness.close);
+
+      await harness.sendPlain({
+        'type': 'chat',
+        'id': 'bulk-1',
+        'senderId': 'remote-node',
+        'sender': 'Remote',
+        'ts': 1000,
+        'channel': '#random',
+        'text': 'channel unread',
+      });
+      await harness.sendPlain({
+        'type': 'chat',
+        'id': 'bulk-2',
+        'senderId': 'remote-node',
+        'sender': 'Remote',
+        'ts': 2000,
+        'channel': '#dev',
+        'text': 'another channel unread',
+      });
+      await _waitUntil(() => harness.relay.totalUnread == 2);
+      expect(harness.relay.unreadConversations.length, 2);
+
+      harness.relay.markAllRead();
+      expect(harness.relay.totalUnread, 0);
+    });
+  });
+
+  testWidgets('nodes owned by one user collapse into a single roster entry', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final harness = await _RelayHarness.start();
+      addTearDown(harness.close);
+
+      // Same person (ownerUser "ada") connected from two distinct nodes.
+      await harness.sendPlain({
+        'type': 'presence',
+        'id': 'p-node-a',
+        'senderId': 'node-a',
+        'sender': 'Ada',
+        'ownerUser': 'ada',
+        'platform': 'linux',
+        'ts': 1000,
+      });
+      await harness.sendPlain({
+        'type': 'presence',
+        'id': 'p-node-b',
+        'senderId': 'node-b',
+        'sender': 'Ada',
+        'ownerUser': 'ada',
+        'platform': 'android',
+        'ts': 1000,
+      });
+      await _waitUntil(
+        () => harness.relay.roster().where((m) => !m.self).length == 2,
+      );
+
+      final groups = harness.relay.rosterGroups();
+      final ada = groups.where((g) => g.name == 'ada').toList();
+      // Two nodes, one user row — no duplicate.
+      expect(ada.length, 1);
+      expect(ada.first.members.length, 2);
+      expect(ada.first.disambiguator, isEmpty);
+    });
+  });
 }
 
 Future<void> _waitUntil(bool Function() condition) async {

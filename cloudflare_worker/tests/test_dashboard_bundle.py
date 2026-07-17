@@ -77,4 +77,4 @@ def test_dashboard_js_is_served_as_a_static_asset():
 
 def test_shell_still_references_dashboard_js():
     shell = (PUBLIC / "dashboard" / "shell.html").read_text(encoding="utf-8")
-    assert 'src="/dashboard.js?v=separate-pages"' in shell
+    assert 'src="/dashboard.js?v=public-profiles"' in shell

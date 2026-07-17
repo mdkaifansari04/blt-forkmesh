@@ -18,6 +18,7 @@ _SRC = _ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+import dashboard_bundle  # noqa: E402
 import dashboard_shell  # noqa: E402
 
 PUBLIC = _ROOT / "public"
@@ -27,9 +28,18 @@ def _read(rel: str) -> str:
     return (PUBLIC / rel).read_text(encoding="utf-8")
 
 
+def _asset_versions() -> dict:
+    # Reproduce the build tool's content-hash cache-busting off the same source
+    # so composed pages match the built documents byte-for-byte.
+    return dashboard_shell.asset_versions(
+        dashboard_bundle.compose_from_reader(_read), _read("dashboard-chat.js"))
+
+
 def assembled_dashboard_page(page_id: str) -> str:
     """One fully composed page document (shell + chrome partials + its view)."""
-    return dashboard_shell.compose_page_from_reader(_read, page_id)
+    return dashboard_shell.stamp_asset_versions(
+        dashboard_shell.compose_page_from_reader(_read, page_id),
+        _asset_versions())
 
 
 def assembled_dashboard() -> str:

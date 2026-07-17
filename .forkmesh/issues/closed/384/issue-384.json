@@ -1,0 +1,127 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+    "authorName": "newnewnode",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783206983436,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+            "authorName": "newnewnode",
+            "body": "",
+            "id": "open-384",
+            "sig": "LNQMrb2KxgSygKstjXiwNvZEvLcqxVWmVxIt4YubT91vhCUNh744SMmjutB0gXrVnHHeieFKNW1z5DOsfMIUBg",
+            "title": "add projects and allow linking issues to projects",
+            "ts": 1783206983436,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "projects and issues can also have start / end dates so that we can show a gantt chart view they can also link to milestones to be able to show overall progress from there as well this will be a new tab next to issues called projects ",
+            "id": "5827c900-36b9-4db2-817e-d8131ae23f44",
+            "sig": "w_-PI5hrOSkc-2tXg8xVOqKXpSRXtUXrjfutxPUj0KGq17RaWDNxMcG9vQcMbu5wZ-44L8MWXdE6-xdyK-fdDw",
+            "ts": 1783881043651,
+            "type": "comment"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "make sure the gantt view looks visually appealing on both the qt client and the website ",
+            "id": "3fa9482f-914a-4abf-a04e-66a26f562cb1",
+            "sig": "gghpuN31MputXcoZALI6XUA8_aM5H725gRonKUR_EK1T-_-LtR18ZDmGgwkGLqaau2iwJMyDcdUMQJu4JcWGAA",
+            "ts": 1783881067957,
+            "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 17,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "3c1ac616-8e0a-4e71-806d-526ae2eaab1e",
+            "sig": "9vVl1KkV3X97vx_k2rFeUTgSW3SSJNRw8pJwQxfefCtEWco3upliQahzdYIpciXZZ8CD-yPbkkdmio6VkSZBBQ",
+            "ts": 1783881079479,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "7d90e4fc-ddc7-45e1-ab24-0bdf885d8cc5",
+            "sig": "n2dtnYAtNo4D3Tu6NiOdbYAIjQ2-CeR0BXgoX2o583Vdkv132Bx82Ub5IAScirqLJNxVHmZIK8bWGMbFHzb2Cw",
+            "ts": 1783881079540,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Linked pull request #10.",
+            "id": "839036c2-4db1-459a-948d-4cf498e5c61b",
+            "sig": "NHSmbV56lF3wpRvkJKT08URJJp_Y8GOSmyNFUzgjxzYH2jMWCnW1psXAHWPO9Ha4JQIyMXYhdZaW0GyUm9woCg",
+            "ts": 1783884384513,
+            "type": "comment"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-384-add-projects-and-allow-linking-issues-to-project\".",
+            "id": "36d1d0c0-61f3-499e-910e-0e12b9762776",
+            "sig": "Av7XsP-U0JnwBq2PNLJXwNqAxTNGzk70QSsO3DY3KdhizmJ6RYG_kCEXmAAFopg3V1ORth1eZT4K4bEwXOJrAw",
+            "ts": 1783889544602,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "aadbe884-3fce-4e83-988d-dd1f82347eb0",
+            "sig": "1EZufRCfAubEL6zIDXJB1pFWeolTW6ECb8zAxf54j7BRXrZj1Dc2CPK1ymvj9b-g6x1aV1tJWUirPLqPdL54DQ",
+            "status": "closed",
+            "ts": 1783889544667,
+            "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3ec85491-c149-4075-a418-531d3b2281aa",
+            "sig": "Vp1UcTVKp9kztcJtvselzNSkYyIhxe3u972WdSchv4iD3AANZea6sjU_qhzUcpjiZhiMhn4sECbpGnL53McyAA",
+            "ts": 1783891618318,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+        "feature"
+    ],
+    "milestone": "",
+    "number": 384,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "add projects and allow linking issues to projects",
+    "updatedAt": 1783891618318,
+    "votes": 0
+}

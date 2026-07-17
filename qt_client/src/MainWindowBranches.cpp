@@ -12,6 +12,8 @@
 #include <QComboBox>
 #include <QTimer>
 
+#include <algorithm>
+
 using namespace forkmesh::ui;
 
 // ---- Branches panel --------------------------------------------------------
@@ -336,6 +338,8 @@ void MainWindow::focusRepoDetailTable(int id)
         table = m_mirrorNodesTable;
     else if (id == m_artifactsTabIndex)
         table = m_artifactsTable;
+    else if (id == m_projectsTabIndex)
+        table = m_projectTable;
     // Only grab focus for a table that's actually on screen (e.g. the Issues tab
     // hides m_issueTable while its Milestones/Labels sub-tab is showing).
     if (table && table->isVisible() && table->isEnabled())
@@ -393,6 +397,14 @@ void MainWindow::loadWorktreesPanel()
         }
         if (have) wts.append(cur);
     }
+
+    // PullStore keeps PR metadata in a private linked worktree on this reserved
+    // branch. It is implementation storage, not a user or agent workspace, so
+    // keep it out of the Worktrees tab and keyboard-navigation order.
+    wts.erase(std::remove_if(wts.begin(), wts.end(), [](const WT &wt) {
+                  return wt.branch == QLatin1String("forkmesh/pulls");
+              }),
+              wts.end());
 
     const QString mainPath = QDir(repoPath).absolutePath();
     // Base branch each worktree's ahead/behind count is measured against (#272
@@ -1847,14 +1859,14 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchFixModelCombo->hide();
     fillAgentFixModelCombo(m_branchFixModelCombo,
                            m_branchFixAgentCombo->currentData().toString());
-    refreshClaudeModelCombo();
+    applyLiveClaudeModelsToCombos();
     connect(m_branchFixAgentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) {
                 if (m_branchFixAgentCombo && m_branchFixModelCombo) {
                     fillAgentFixModelCombo(
                         m_branchFixModelCombo,
                         m_branchFixAgentCombo->currentData().toString());
-                    refreshClaudeModelCombo();
+                    applyLiveClaudeModelsToCombos();
                 }
             });
 

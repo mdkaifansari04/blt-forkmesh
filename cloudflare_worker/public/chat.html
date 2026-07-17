@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
     <meta name="color-scheme" content="light dark" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
@@ -71,8 +71,10 @@
       .chat-shell {
         display: flex;
         flex-direction: column;
-        height: 100dvh;
-        height: 100vh; /* fallback */
+        height: 100vh; /* fallback for browsers without dvh */
+        height: 100dvh; /* mobile: track the dynamic viewport so the input bar
+                           and full message log stay on-screen as the browser's
+                           URL/tool bar shows and hides */
         max-width: 1400px;
         margin: 0 auto;
       }
@@ -739,7 +741,7 @@
           </div>
 
           <div class="chat-e2e-note">
-            Messages are end-to-end encrypted before leaving your browser. The relay never sees plaintext. <a href="/docs">Learn more</a>
+            Messages are AES-256-GCM encrypted in your browser, so the relay only stores and forwards ciphertext. The shared room key is held by the relay and given only to signed-in accounts — use a room passphrase for a key the relay can't derive. <a href="/docs">Learn more</a>
           </div>
         </main>
 

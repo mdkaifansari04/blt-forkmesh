@@ -68,6 +68,7 @@
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
 #include <QGridLayout>
+#include <QGroupBox>
 #include <QGuiApplication>
 #include <QStandardPaths>
 #include <QHBoxLayout>
@@ -265,6 +266,11 @@ QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                        const QSet<QString> &viewedFiles = {});
 bool diffSplitPref();
 void setDiffSplitPref(bool split);
+// Compact rich-text label (status octicon + muted dir / bold name + coloured
+// +adds/-dels) for a changed file, used by the PR review page's sticky header
+// overlay (adhoc #56). Unlike diffFileHeaderHtml this carries no Viewed toggle
+// or table layout — it renders inline in a QLabel.
+QString diffStickyLabelHtml(const DiffFileEntry &f);
 bool longDiffsPref();
 void setLongDiffsPref(bool on);
 bool autoMarkViewedOnScrollPref();
@@ -413,8 +419,10 @@ constexpr int kProgressBarRole = Qt::UserRole + 11;
 // MirrorSyncDelegate to draw a pac-man countdown to its next heartbeat/re-sync.
 constexpr int kPacmanAnchorRole = Qt::UserRole + 12;
 // Cadence on which a node re-fetches its mirrors from source (mirrors
-// m_mirrorSyncTimer); a behind node is expected to catch up at the next tick.
-constexpr qint64 kMirrorSyncIntervalMs = 5LL * 60 * 1000;
+// m_mirrorSyncTimer, which adds ±15% jitter — the pie is an approximation);
+// a behind node is expected to catch up at the next tick. Only a safety net
+// now: push events notify mirror peers the moment the source moves.
+constexpr qint64 kMirrorSyncIntervalMs = 15LL * 60 * 1000;
 // Defined further down; used early by MirrorSyncDelegate to pick chart colors.
 bool currentThemeIsDark();
 
@@ -436,6 +444,16 @@ constexpr int kGraphLanesRole = Qt::UserRole + 20;    // QVariantList<int> lanes
 constexpr int kGraphNodeLaneRole = Qt::UserRole + 21; // int lane of this commit's dot
 constexpr int kGraphBottomLanesRole =
     Qt::UserRole + 22; // QVariantList<int> lanes at the row's bottom edge
+// VS-Code-style commit rows: a commit row expands in place to show the files it
+// touched. These roles live on the Summary item and drive CommitSummaryDelegate.
+constexpr int kCommitRowKindRole = Qt::UserRole + 23; // 0 = commit, 1 = file child row
+constexpr int kCommitExpandedRole = Qt::UserRole + 24; // bool: commit row is expanded
+constexpr int kCommitAuthorRole = Qt::UserRole + 25;   // author drawn right of the summary
+constexpr int kCommitUnsyncedRole = Qt::UserRole + 26; // bool: not yet on the mirror
+constexpr int kCommitFileAddsRole = Qt::UserRole + 27; // file row: added lines
+constexpr int kCommitFileDelsRole = Qt::UserRole + 28; // file row: deleted lines
+constexpr int kCommitFilePathRole = Qt::UserRole + 29; // file row: repo-relative path
+constexpr int kCommitRefsRole = Qt::UserRole + 30;     // branch/tag badges (QStringList)
 
 // URL scheme for the clickable worktree-location link in the agent session
 // header; the percent-encoded branch name follows. Clicking it opens that
@@ -617,6 +635,144 @@ public:
     }
 };
 
+// Paints the commits list's Summary column the way VS Code's source-control
+// graph does: the text starts right beside the commit's own lane (so it shifts
+// with the graph), a chevron flags that the row expands into its files, the
+// author sits dimmed at the right edge, and expanded file rows show their
+// per-file +/− counts. All the metadata that used to live in table columns
+// (author / date / hash / files / adds / dels) now rides the item's tooltip.
+class CommitSummaryDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        // Background only (no default text/icon): strip the selection band the
+        // same way HoverRowDelegate does, then draw the green outline on top.
+        QStyleOptionViewItem opt(option);
+        initStyleOption(&opt, index);
+        opt.text.clear();
+        opt.icon = QIcon();
+        opt.features &= ~QStyleOptionViewItem::HasDecoration;
+        opt.state &= ~(QStyle::State_MouseOver | QStyle::State_Selected);
+        const QWidget *w = option.widget;
+        QStyle *style = w ? w->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, w);
+        paintRowSelectionBorder(painter, option, index);
+
+        const bool fileRow = index.data(kCommitRowKindRole).toInt() == 1;
+
+        const QFontMetrics fm(option.font);
+        // Messages align at a fixed left edge (flush with the grid) rather than
+        // tracking the commit's coloured lane, so every row's text lines up no
+        // matter how deep its branch sits in the graph.
+        QRect r = option.rect.adjusted(6, 0, -8, 0);
+        const QColor dim("#8b949e");
+
+        painter->save();
+        if (fileRow) {
+            r.adjust(18, 0, 0, 0); // nest files under their commit
+            const int adds = index.data(kCommitFileAddsRole).toInt();
+            const int dels = index.data(kCommitFileDelsRole).toInt();
+            const QString addsTxt = QStringLiteral("+%1").arg(adds);
+            const QString delsTxt =
+                QString::fromUtf8("\xE2\x88\x92%1").arg(dels);
+            const int delsW = fm.horizontalAdvance(delsTxt);
+            const int addsW = fm.horizontalAdvance(addsTxt);
+            painter->setPen(QColor("#f85149"));
+            painter->drawText(QRect(r.right() - delsW, r.top(), delsW, r.height()),
+                              Qt::AlignVCenter | Qt::AlignRight, delsTxt);
+            painter->setPen(QColor("#2ea043"));
+            painter->drawText(
+                QRect(r.right() - delsW - 6 - addsW, r.top(), addsW, r.height()),
+                Qt::AlignVCenter | Qt::AlignRight, addsTxt);
+            const int textW = r.width() - delsW - addsW - 20;
+            painter->setPen(dim);
+            painter->drawText(
+                QRect(r.left(), r.top(), std::max(0, textW), r.height()),
+                Qt::AlignVCenter | Qt::AlignLeft,
+                fm.elidedText(index.data(Qt::DisplayRole).toString(),
+                              Qt::ElideMiddle, std::max(0, textW)));
+            painter->restore();
+            return;
+        }
+
+        // Commit row: chevron (expand affordance) + checks icon + summary,
+        // author (and the amber unsynced marker) right-aligned.
+        const bool expanded = index.data(kCommitExpandedRole).toBool();
+        painter->setPen(dim);
+        painter->drawText(QRect(r.left(), r.top(), 12, r.height()),
+                          Qt::AlignVCenter | Qt::AlignLeft,
+                          expanded ? QString::fromUtf8("\xE2\x96\xBE")
+                                   : QString::fromUtf8("\xE2\x96\xB8"));
+        int x = r.left() + 16;
+        const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+        if (!icon.isNull()) {
+            const QRect ir(x, r.center().y() - 7, 14, 14);
+            icon.paint(painter, ir);
+            x += 18;
+        }
+        int rightEdge = r.right();
+        // Branch / tag badges (the VS Code graph's ref pills) lead the summary.
+        const QStringList refs = index.data(kCommitRefsRole).toStringList();
+        if (!refs.isEmpty()) {
+            painter->setRenderHint(QPainter::Antialiasing, true);
+            for (const QString &ref : refs) {
+                const int rw = fm.horizontalAdvance(ref) + 12;
+                if (x + rw > rightEdge - 80)
+                    break; // keep room for the summary itself
+                const QRect br(x, r.center().y() - fm.height() / 2 - 1, rw,
+                               fm.height() + 2);
+                painter->setPen(QPen(QColor("#58a6ff"), 1));
+                painter->setBrush(QColor(88, 166, 255, 26));
+                painter->drawRoundedRect(br, 6, 6);
+                painter->drawText(br, Qt::AlignCenter, ref);
+                x += rw + 5;
+            }
+            painter->setBrush(Qt::NoBrush);
+        }
+        if (index.data(kCommitUnsyncedRole).toBool()) {
+            const QString mark = QString::fromUtf8("\xE2\x96\xB2");
+            const int mw = fm.horizontalAdvance(mark);
+            painter->setPen(QColor("#d29922"));
+            painter->drawText(QRect(rightEdge - mw, r.top(), mw, r.height()),
+                              Qt::AlignVCenter | Qt::AlignRight, mark);
+            rightEdge -= mw + 8;
+        }
+        // Draw the subject flush-left, then append the author dimmed at its tail
+        // so the row reads "<subject> · <author>" instead of a separate
+        // right-aligned author column.
+        const QVariant fgVar = index.data(Qt::ForegroundRole);
+        const QColor fg = fgVar.isValid()
+                              ? qvariant_cast<QBrush>(fgVar).color()
+                              : option.palette.color(QPalette::Text);
+        const int textW = std::max(0, rightEdge - x);
+        const QString subject = index.data(Qt::DisplayRole).toString();
+        const QString author = index.data(kCommitAuthorRole).toString();
+        const QString suffix =
+            author.isEmpty() ? QString()
+                             : QString::fromUtf8("  \xC2\xB7  ") + author;
+        const int suffixW = fm.horizontalAdvance(suffix);
+        const QString elidedSubject =
+            fm.elidedText(subject, Qt::ElideRight, std::max(0, textW - suffixW));
+        const int subjectW = fm.horizontalAdvance(elidedSubject);
+        painter->setPen(fg);
+        painter->drawText(QRect(x, r.top(), subjectW, r.height()),
+                          Qt::AlignVCenter | Qt::AlignLeft, elidedSubject);
+        if (!suffix.isEmpty()) {
+            const int rem = std::max(0, textW - subjectW);
+            painter->setPen(dim);
+            painter->drawText(
+                QRect(x + subjectW, r.top(), rem, r.height()),
+                Qt::AlignVCenter | Qt::AlignLeft,
+                fm.elidedText(suffix, Qt::ElideRight, rem));
+        }
+        painter->restore();
+    }
+};
+
 class SortTableWidgetItem : public QTableWidgetItem
 {
 public:
@@ -711,7 +867,10 @@ public:
         : QWidget(parent), m_title(title), m_remainingMode(remainingMode)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedSize(60, 30);
+        // Two thin vertical bars (5h + weekly) that ride in the prompt toolbar
+        // (adhoc #47). No inline text — the label/figures live in the hover
+        // tooltip only, so the strip stays tiny next to the send buttons.
+        setFixedSize(15, 22);
         refreshTooltip();
     }
 
@@ -783,32 +942,29 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
-        QFont f = font();
-        f.setPointSizeF(qMax(6.0, f.pointSizeF() - 2.0));
-        p.setFont(f);
-        const QFontMetrics fm(f);
 
-        const char *labels[2] = {"5h", "wk"};
+        // Two vertical gauges side by side: 5-hour on the left, weekly on the
+        // right. Each is an empty track filling from the bottom to its
+        // utilisation and tinted by barColor(); -1 (unknown) leaves it empty.
         const int vals[2] = {m_fiveHour, m_weekly};
-        const int labelW = fm.horizontalAdvance(QStringLiteral("wk")) + 4;
-        const int barH = 5;
-        const int rowH = height() / 2;
+        const qreal barW = 4.0;
+        const qreal gap = 3.0;
+        const qreal totalW = 2 * barW + gap;
+        qreal x = (width() - totalW) / 2.0;
+        const qreal top = 1.0;
+        const qreal trackH = height() - 2.0;
         for (int i = 0; i < 2; ++i) {
-            const QRect rowRect(0, i * rowH, width(), rowH);
-            p.setPen(textColor(170));
-            p.drawText(QRect(rowRect.left(), rowRect.top(), labelW, rowRect.height()),
-                       Qt::AlignVCenter | Qt::AlignLeft, QString::fromLatin1(labels[i]));
-            const qreal top = rowRect.center().y() - barH / 2.0;
-            const QRectF track(labelW, top, width() - labelW, barH);
+            const QRectF track(x, top, barW, trackH);
             p.setPen(Qt::NoPen);
             p.setBrush(textColor(38));
-            p.drawRoundedRect(track, barH / 2.0, barH / 2.0);
+            p.drawRoundedRect(track, barW / 2.0, barW / 2.0);
             if (vals[i] > 0) {
-                QRectF fill(track);
-                fill.setWidth(track.width() * vals[i] / 100.0);
+                const qreal fillH = trackH * qBound(0, vals[i], 100) / 100.0;
+                const QRectF fill(x, top + trackH - fillH, barW, fillH);
                 p.setBrush(barColor(vals[i]));
-                p.drawRoundedRect(fill, barH / 2.0, barH / 2.0);
+                p.drawRoundedRect(fill, barW / 2.0, barW / 2.0);
             }
+            x += barW + gap;
         }
     }
 
@@ -869,10 +1025,11 @@ private:
 
 // A tiny moving line chart for one system resource (CPU, memory or disk). New
 // per-second samples push in from the right and scroll the history left, so the
-// recent load is visible at a glance; the current figure prints beside the
-// label. Replaces the static "CPU x% MEM y MB" footer text (adhoc #17). Kept
-// header-only (no Q_OBJECT) like the other Internal.h mini-charts; the click
-// hook is a std::function so a left-click can still open the stall dialog.
+// recent load is visible at a glance; the current figure prints on its own
+// line under the label. Replaces the static "CPU x% MEM y MB" footer text
+// (adhoc #17). Kept header-only (no Q_OBJECT) like the other Internal.h mini-
+// charts; the click hook is a std::function so a left-click can still open
+// the stall dialog.
 class ResourceSparkline : public QWidget
 {
 public:
@@ -913,79 +1070,82 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
 
-        // Rounded card so each chart reads as its own little square.
+        // Rounded card that doubles as the sparkline's full-height track, so the
+        // curve reads as a background layer and the label/value sit over it.
         const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        QPainterPath cardPath;
+        cardPath.addRoundedRect(box, 4, 4);
         QColor card = palette().color(QPalette::WindowText);
-        card.setAlpha(20);
+        card.setAlpha(28);
         p.setPen(Qt::NoPen);
         p.setBrush(card);
-        p.drawRoundedRect(box, 4, 4);
+        p.drawPath(cardPath);
 
-        // A header font that shrinks until the label and value both fit on one
-        // line, so neither is clipped however the app's base font is sized.
+        // The sparkline fills the whole card (adhoc #46), with the most recent
+        // sample at its right edge so the curve scrolls left over time. Clipped
+        // to the rounded card so the fill/line never spill past the corners.
+        const QRectF area = box.adjusted(1.5, 1.5, -1.5, -1.5);
+        if (area.height() >= 2 && m_history.size() >= 2) {
+            p.save();
+            p.setClipPath(cardPath);
+            const QColor line = gaugeColor(m_history.last() / m_max * 100.0);
+            const double step = area.width() / double(kMaxPoints - 1);
+            const int n = m_history.size();
+            QPolygonF curve;
+            for (int i = 0; i < n; ++i) {
+                const double x = area.right() - (n - 1 - i) * step;
+                const double norm = qBound(0.0, m_history.at(i) / m_max, 1.0);
+                curve << QPointF(x, area.bottom() - norm * area.height());
+            }
+            QPolygonF fill = curve;
+            fill << QPointF(curve.last().x(), area.bottom())
+                 << QPointF(curve.first().x(), area.bottom());
+            QColor under = line;
+            under.setAlpha(70);
+            p.setBrush(under);
+            p.setPen(Qt::NoPen);
+            p.drawPolygon(fill);
+            QPen pen(line);
+            pen.setWidthF(1.2);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawPolyline(curve);
+            p.restore();
+        }
+
+        // A header font that shrinks until the wider of the label/value lines
+        // fits, so neither is clipped however the app's base font is sized.
         QFont f = font();
         double pt = f.pointSizeF() > 0 ? qMin(8.0, f.pointSizeF()) : 7.0;
         const double avail = width() - 6;
         for (; pt > 5.5; pt -= 0.5) {
             f.setPointSizeF(pt);
             const QFontMetrics fm(f);
-            if (fm.horizontalAdvance(m_label) + fm.horizontalAdvance(m_value) +
-                    4 <=
-                avail)
+            if (fm.horizontalAdvance(m_label) <= avail &&
+                fm.horizontalAdvance(m_value) <= avail)
                 break;
         }
         f.setPointSizeF(pt);
         p.setFont(f);
         const QFontMetrics fm(f);
-        const int headH = fm.height();
+        const int lineH = fm.height();
 
-        // Header: the resource label (left, dim) and its current value (right,
-        // in the load colour) share the top line; the chart gets the rest.
+        // Label + value overlaid on the chart: the resource label and its value
+        // stack on centered lines (e.g. "CPU" then "9%"), vertically centered
+        // and given a mild opacity so the curve stays visible behind them.
+        const double topY = (height() - lineH * 2) / 2.0;
         QColor lab = palette().color(QPalette::WindowText);
-        lab.setAlpha(150);
+        lab.setAlpha(170);
         p.setPen(lab);
-        p.drawText(QRectF(3, 1, width() - 6, headH),
-                   Qt::AlignVCenter | Qt::AlignLeft, m_label);
+        p.drawText(QRectF(3, topY, width() - 6, lineH),
+                   Qt::AlignVCenter | Qt::AlignHCenter, m_label);
         const double lastPct =
             m_history.isEmpty() ? 0.0 : m_history.last() / m_max * 100.0;
-        p.setPen(gaugeColor(lastPct));
-        p.drawText(QRectF(3, 1, width() - 6, headH),
-                   Qt::AlignVCenter | Qt::AlignRight, m_value);
-
-        // The sparkline track fills the area below the header, with the most
-        // recent sample at its right edge so the curve scrolls left over time.
-        const QRectF area(3, headH + 2, width() - 6, height() - headH - 5);
-        if (area.height() < 2)
-            return;
-        QColor track = palette().color(QPalette::WindowText);
-        track.setAlpha(28);
-        p.setPen(Qt::NoPen);
-        p.setBrush(track);
-        p.drawRoundedRect(area, 2, 2);
-        if (m_history.size() < 2)
-            return;
-        const QColor line = gaugeColor(m_history.last() / m_max * 100.0);
-        const double step = area.width() / double(kMaxPoints - 1);
-        const int n = m_history.size();
-        QPolygonF curve;
-        for (int i = 0; i < n; ++i) {
-            const double x = area.right() - (n - 1 - i) * step;
-            const double norm = qBound(0.0, m_history.at(i) / m_max, 1.0);
-            curve << QPointF(x, area.bottom() - norm * area.height());
-        }
-        QPolygonF fill = curve;
-        fill << QPointF(curve.last().x(), area.bottom())
-             << QPointF(curve.first().x(), area.bottom());
-        QColor under = line;
-        under.setAlpha(55);
-        p.setBrush(under);
-        p.setPen(Qt::NoPen);
-        p.drawPolygon(fill);
-        QPen pen(line);
-        pen.setWidthF(1.2);
-        p.setPen(pen);
-        p.setBrush(Qt::NoBrush);
-        p.drawPolyline(curve);
+        QColor val = gaugeColor(lastPct);
+        val.setAlpha(210);
+        p.setPen(val);
+        p.drawText(QRectF(3, topY + lineH, width() - 6, lineH),
+                   Qt::AlignVCenter | Qt::AlignHCenter, m_value);
     }
 
 private:
@@ -1197,6 +1357,10 @@ public:
         QString name;
         bool online = false;
         bool self = false;
+        // Online node serving a commit behind the source of truth: its steady
+        // dot draws amber instead of green until it catches up at its next
+        // heartbeat, so an out-of-sync mirror is visible at a glance.
+        bool behind = false;
         // Relay's integrity gate is rejecting this node's clones (adhoc #196).
         // Normally only online nodes get a dot at all, so an offline node
         // failing the check would otherwise vanish from the strip entirely;
@@ -1286,7 +1450,9 @@ protected:
                     QStringLiteral("%1%2 \xC2\xB7 %3%4")
                         .arg(d->name,
                              d->self ? QStringLiteral(" (you)") : QString(),
-                             d->online ? QStringLiteral("online")
+                             d->online ? (d->behind
+                                              ? QStringLiteral("online \xC2\xB7 out of sync")
+                                              : QStringLiteral("online"))
                                        : QStringLiteral("offline"),
                              d->integrityFailing
                                  ? QStringLiteral(" \xC2\xB7 failing integrity pin")
@@ -1311,7 +1477,8 @@ protected:
         for (int i = 0; i < shown; ++i) {
             const Dot &d = m_dots.at(i);
             const QColor base =
-                d.online ? QColor("#3fb950") : QColor("#484f58");
+                d.online ? QColor(d.behind ? "#d29922" : "#3fb950")
+                         : QColor("#484f58");
             QColor col = base;
             const Pulse ph = m_pulse.value(d.id, Pulse{});
             if (ph.level > 0.0) {
@@ -1327,10 +1494,12 @@ protected:
             }
             p.setPen(Qt::NoPen);
             if (d.integrityFailing) {
-                // Offline-but-failing nodes would otherwise be an invisible
-                // gap in the strip; draw a green warning triangle in their
-                // place so the problem stays visible even while offline.
-                p.setBrush(QColor("#3fb950"));
+                // Swap the dot for an amber caution triangle instead of a red
+                // top-bar error toast (adhoc #65): it stays inline with every
+                // other node's status and doesn't vanish when the node goes
+                // offline (an offline-but-failing node would otherwise be an
+                // invisible gap in the strip).
+                p.setBrush(QColor("#d29922"));
                 const QPolygonF triangle({QPointF(x, cy - kRadius - 1.0),
                                           QPointF(x + kRadius + 1.0, cy + kRadius - 1.0),
                                           QPointF(x - kRadius - 1.0, cy + kRadius - 1.0)});
@@ -2128,6 +2297,10 @@ const QString kRoomNameSetting = QStringLiteral("server/room");
 // Last account this node key authenticated as; lets the app start offline once a
 // registered account has been confirmed at least once on this machine.
 const QString kAuthedAccountSetting = QStringLiteral("account/authedName");
+const QString kDesktopCapableAccountSetting =
+    QStringLiteral("account/desktopCapableName");
+const QString kDesktopCapablePublicKeySetting =
+    QStringLiteral("account/desktopCapablePublicKey");
 const QString kEmailVerifiedSettingPrefix =
     QStringLiteral("account/emailVerified/");
 const QString kServersArray = QStringLiteral("servers/items");
@@ -2215,15 +2388,14 @@ const QString kEmailNotifyCreditsRefilledSetting = QStringLiteral("notifications
 const QString kEmailNotifyGeneralChatSetting = QStringLiteral("notifications/email/generalChat");
 const QString kEmailNotifyHostOnlineSetting = QStringLiteral("notifications/email/hostOnline");
 const QString kEmailNotifyHostOfflineSetting = QStringLiteral("notifications/email/hostOffline");
-// Split welcome rooms by identity type:
-// - #welcome-users for user-account nodes
-// - #welcome-nodes for regular nodes
-// Each identity posts its one-time "just joined" greeting to one of these
-// channels (issue #192), based on local account-linking state.
-const QString kWelcomeUsersChannel = QStringLiteral("#welcome-users");
-const QString kWelcomeNodesChannel = QStringLiteral("#welcome-nodes");
+// A single #welcome channel. The old split #welcome-nodes / #welcome-users
+// rooms filled with node churn and unverified-account noise, so the one-time
+// "just joined" greeting now goes to one room and ONLY for new user accounts
+// whose email is verified — plain nodes and unverified users stay silent, so
+// #welcome reads as a genuine roll-call of real people.
+const QString kWelcomeChannel = QStringLiteral("#welcome");
 // Legacy QSettings migration prefix retained for installs that already posted to
-// the old shared room before #welcome-* split.
+// an older welcome room.
 const QString kLegacyWelcomeAnnouncedSettingPrefix =
     QStringLiteral("chat/welcomeAnnounced/");
 
@@ -2401,6 +2573,10 @@ const QString kClaudeCreditTsSetting = QStringLiteral("agents/claudeCreditTs");
 // so the agent sessions screen can count down the time left in each window.
 const QString kCodexLimit5hStartSetting = QStringLiteral("agents/codexLimit5hStart");
 const QString kCodexLimitWeekStartSetting = QStringLiteral("agents/codexLimitWeekStart");
+const QString kCodexUsage5hPctSetting = QStringLiteral("agents/codexUsage5hPct");
+const QString kCodexUsageWeekPctSetting = QStringLiteral("agents/codexUsageWeekPct");
+const QString kCodexUsage5hResetSetting = QStringLiteral("agents/codexUsage5hReset");
+const QString kCodexUsageWeekResetSetting = QStringLiteral("agents/codexUsageWeekReset");
 const QString kClaudeLimit5hStartSetting = QStringLiteral("agents/claudeLimit5hStart");
 const QString kClaudeLimitWeekStartSetting = QStringLiteral("agents/claudeLimitWeekStart");
 // Last-seen utilisation (0..100) of each Claude Code rolling window, cached so
@@ -2467,9 +2643,30 @@ const QString kClaudeCodeModelSetting = QStringLiteral("agents/claudeCodeModel")
 // startup so a model combo built before this session's first live fetch
 // completes still lists the real models instead of just "Auto".
 const QString kClaudeModelsCacheSetting = QStringLiteral("agents/claudeModelsCache");
+// App-server model/list cache. The Codex catalog includes display names,
+// supported reasoning efforts, modalities, and the current default; keep the
+// raw model objects so pickers can update without shipping a stale hard-coded
+// list or starting a CLI process merely to open a menu.
+const QString kCodexModelsCacheSetting = QStringLiteral("agents/codexModelsCache");
 // Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
 // permission prompts). Read when a transcript session launches.
 const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
+// Exact composer mode shared by CLI-backed agents. The older bool above remains
+// for settings migration and code paths that only distinguish unattended runs.
+const QString kAgentModeSetting = QStringLiteral("agents/cliPermissionMode");
+// The composer mode-selector label that runs the agent unattended. Only this
+// one skips the CLI's permission prompts today; the other labels ("Ask before
+// edits" / "Edit automatically" / "Plan mode") all mean "don't skip" until the
+// app can drive per-tool approval headlessly (see MainWindowChat's selector).
+const QString kClaudeAutoModeLabel = QStringLiteral("Auto mode");
+
+// Does a session's stored permission-mode label (AgentSession::mode) run the
+// agent unattended? An empty label means the session predates per-session mode
+// capture, so callers fall back to the global kClaudeAutoModeSetting.
+inline bool agentModeSkipsPermissions(const QString &modeLabel)
+{
+    return modeLabel.trimmed() == kClaudeAutoModeLabel;
+}
 // Slash-actions menu (adhoc #116), mirroring the Claude Code extension's "/"
 // actions popup. Effort level for Claude Code runs ("low"/"medium"/"high"/
 // "xhigh"/"max"), passed to the CLI as `--effort`.
@@ -2492,6 +2689,17 @@ const QString kAutoSwitchToAgentSetting = QStringLiteral("agents/autoSwitchToAge
 // a manual click. Default on; can be disabled in Settings.
 const QString kAutoFixAgentConflictsSetting =
     QStringLiteral("agents/autoFixConflicts");
+// When a repo's tests or build fail (the same kind of failure this very task
+// was dispatched to fix), automatically start an agent to fix them instead of
+// waiting for a manual dispatch. Default on; can be disabled in Settings.
+const QString kAutoFixFailuresSetting =
+    QStringLiteral("agents/autoFixFailures");
+// Whether to hide external `claude` CLI sessions (ones ForkMesh didn't start
+// itself, detected by scanning the repo's Claude Code project files) from the
+// Agents tab. Default on: external sessions are excluded unless the user
+// opts in, since they surface another process's transcripts unprompted.
+const QString kExcludeExternalClaudeSetting =
+    QStringLiteral("agents/excludeExternalClaude");
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
 // soon as a voice dictation finishes transcribing, without pressing Enter/Send.
 const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");
@@ -2512,7 +2720,14 @@ const QString kDefaultClaudeCodeTerminalCommand =
 // full-accept default above so existing sessions stop stalling on prompts.
 const QString kLegacyClaudeCodeTerminalCommand =
     QStringLiteral("claude \"$(cat {promptFile})\"");
-constexpr int kNetworkLogLimit = 2000;
+// Raised from 2000: the view now renders in segments (see kNetworkLogSegmentSize)
+// instead of the whole buffer at once, so a much larger in-memory/on-disk history
+// no longer costs render time up front — it only matters once the user actually
+// scrolls back far enough to load it.
+constexpr int kNetworkLogLimit = 20000;
+// How many matching lines to render per "page" of the network log: the initial
+// view, and each older batch loaded when the user scrolls to the top.
+constexpr int kNetworkLogSegmentSize = 300;
 
 const QString kCodexProvider = QStringLiteral("codex");
 
@@ -2567,6 +2782,11 @@ inline QString quickAddAgentProvider()
 {
     const QString value =
         QSettings().value(kQuickAddAgentProviderSetting).toString().trimmed();
+    // "Manual (create issue)" is a quick-add-only pseudo-provider (adhoc #29): it
+    // files an issue instead of running an agent, so it's not in the known-agent
+    // set but must still be restorable across launches.
+    if (value == QLatin1String("manual"))
+        return value;
     return agentProviderIsKnown(value) ? value : defaultAgentProvider();
 }
 
@@ -2771,15 +2991,18 @@ inline void populateClaudeModelCombo(QComboBox *combo)
 inline QString codexChatGptModelId(const QString &model)
 {
     const QString trimmed = model.trimmed();
-    if (trimmed.isEmpty() || trimmed == QLatin1String("gpt-5.5") ||
-        trimmed == QLatin1String("gpt-5.5-codex"))
+    if (trimmed.isEmpty())
+        return QStringLiteral("gpt-5.5");
+    if (trimmed == QLatin1String("gpt-5.5-codex"))
         return QStringLiteral("gpt-5.5");
     if (trimmed == QLatin1String("gpt-5.4"))
         return QStringLiteral("gpt-5.4");
     if (trimmed == QLatin1String("gpt-5.4-mini") ||
         trimmed == QLatin1String("gpt-5.4-Mini"))
         return QStringLiteral("gpt-5.4-mini");
-    return QStringLiteral("gpt-5.5");
+    // model/list is authoritative and evolves independently of ForkMesh.
+    // Preserve catalog model ids introduced after this binary was released.
+    return trimmed;
 }
 
 inline void populateCodexModelCombo(QComboBox *combo)
@@ -2790,10 +3013,51 @@ inline void populateCodexModelCombo(QComboBox *combo)
     combo->setEditable(false);
     combo->setInsertPolicy(QComboBox::NoInsert);
     combo->setProperty("allowAutoModel", false);
-    combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
-    combo->addItem(QStringLiteral("GPT-5.4"), QStringLiteral("gpt-5.4"));
-    combo->addItem(QStringLiteral("GPT-5.4-Mini"),
-                   QStringLiteral("gpt-5.4-mini"));
+    const QJsonArray live = QJsonDocument::fromJson(
+                                QSettings().value(kCodexModelsCacheSetting).toByteArray())
+                                .array();
+    for (const QJsonValue &value : live) {
+        const QJsonObject model = value.toObject();
+        if (model.value(QStringLiteral("hidden")).toBool())
+            continue;
+        QString id = model.value(QStringLiteral("model")).toString().trimmed();
+        if (id.isEmpty())
+            id = model.value(QStringLiteral("id")).toString().trimmed();
+        if (!id.isEmpty())
+            combo->addItem(model.value(QStringLiteral("displayName")).toString(id), id);
+    }
+    if (combo->count() == 0) {
+        combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
+        combo->addItem(QStringLiteral("GPT-5.4"), QStringLiteral("gpt-5.4"));
+        combo->addItem(QStringLiteral("GPT-5.4-Mini"),
+                       QStringLiteral("gpt-5.4-mini"));
+    }
+}
+
+inline void mergeLiveCodexModels(QComboBox *combo, const QJsonArray &models)
+{
+    if (!combo || models.isEmpty())
+        return;
+    QSignalBlocker blocker(combo);
+    const QVariant selected = combo->currentData();
+    combo->clear();
+    QString defaultId;
+    for (const QJsonValue &value : models) {
+        const QJsonObject model = value.toObject();
+        if (model.value(QStringLiteral("hidden")).toBool())
+            continue;
+        QString id = model.value(QStringLiteral("model")).toString().trimmed();
+        if (id.isEmpty())
+            id = model.value(QStringLiteral("id")).toString().trimmed();
+        if (!id.isEmpty()) {
+            combo->addItem(model.value(QStringLiteral("displayName")).toString(id), id);
+            if (model.value(QStringLiteral("isDefault")).toBool())
+                defaultId = id;
+        }
+    }
+    const int restored = combo->findData(selected);
+    const int fallback = combo->findData(defaultId);
+    combo->setCurrentIndex(restored >= 0 ? restored : qMax(0, fallback));
 }
 
 inline QString selectedModelComboValue(QComboBox *combo)
@@ -2874,10 +3138,7 @@ inline void fillAgentFixModelCombo(QComboBox *combo, const QString &provider)
         combo->addItem(QStringLiteral("Haiku 4.5"), QStringLiteral("claude-haiku-4-5"));
         combo->addItem(QStringLiteral("Fable 5"), QStringLiteral("claude-fable-5"));
     } else if (agentIsCodexProvider(provider)) {
-        combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
-        combo->addItem(QStringLiteral("GPT-5.4"), QStringLiteral("gpt-5.4"));
-        combo->addItem(QStringLiteral("GPT-5.4-Mini"),
-                       QStringLiteral("gpt-5.4-mini"));
+        populateCodexModelCombo(combo);
     } else if (agentUsesOpenAiKey(provider)) {
         combo->addItem(QStringLiteral("GPT-5.5"), QStringLiteral("gpt-5.5"));
         combo->addItem(QStringLiteral("GPT-5.5 Codex"),
@@ -6261,6 +6522,30 @@ inline bool runGitCapture(const QString &dir, const QStringList &args, QByteArra
     return true;
 }
 
+// Run a git command in `dir` feeding `input` on stdin (e.g. cat-file --batch),
+// capturing stdout. Returns false (with stderr in `err`) on failure. QProcess
+// buffers writes issued before the child has spawned, so no waitForStarted is
+// needed.
+inline bool runGitCaptureInput(const QString &dir, const QStringList &args,
+                               const QByteArray &input, QByteArray *out,
+                               QString *err)
+{
+    QProcess process;
+    process.start("git", QStringList{"-C", dir} + args);
+    process.write(input);
+    process.closeWriteChannel();
+    if (!waitForGit(process, err))
+        return false;
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        if (err)
+            *err = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        return false;
+    }
+    if (out)
+        *out = process.readAllStandardOutput();
+    return true;
+}
+
 inline QString worktreeHeadBranch(const QString &workTree)
 {
     if (workTree.trimmed().isEmpty() || !QDir(workTree).exists(QStringLiteral(".git")))
@@ -6642,24 +6927,228 @@ inline int mirrorNumberedDirMax(const QString &mirrorPath, const QString &branch
     return maxNumber;
 }
 
-// Issues / pull requests / discussions a node's mirror holds: each is the count
-// of numbered subdirs under its metadata folder on the served branch.
+// Stable identity used to group a roster member into one row of the Nodes list
+// (and to look its telemetry back up). A headless mirror node often shares — or
+// omits — the chat display name of the account that owns it, which collapsed
+// several distinct mirror nodes into a single row: mirror2/mirror3 vanished from
+// the Nodes list even though the per-repo Mirror nodes view (which keys on the
+// advert / nodeName via displayNodeName) listed them correctly. Prefer the
+// registered nodeName so each physical node keeps its own row; our own node
+// keeps its chat name so the "(you)" row still reads naturally.
+inline QString nodeListIdentityKey(const MemberInfo &m)
+{
+    const QString nodeName = m.nodeName.trimmed();
+    if (!m.self && !nodeName.isEmpty())
+        return nodeName;
+    return m.name.trimmed();
+}
+
+// Open issue count for the advertised catalog issueCount. Closed issues keep
+// their .forkmesh/issues/<n>/ directory on disk, so a bare directory count
+// (mirrorNumberedDirCount) overstates the open total the website badges the
+// Issues tab with — the badge listed all issues, open and closed (adhoc #29,
+// following issue #397 which only fixed the live-served tree counts). Reads
+// each record's top-level status and counts anything not "closed" (open,
+// reopened, or unreadable) as open, matching RepoHost::countOpenIssues and the
+// web's parseIssueJson default. Returns -1 when the mirror/branch can't be read
+// (advertised as "unknown"), 0 when no issues have been filed.
+inline int mirrorOpenIssueCount(const QString &mirrorPath, const QString &branch)
+{
+    if (mirrorPath.trimmed().isEmpty() || branch.isEmpty() ||
+        !QDir(mirrorPath).exists())
+        return -1;
+    // The count only changes when the served branch tip moves, but the publish
+    // and mirror-advert timers recompute it over and over. Reading one status
+    // blob per issue also used to spawn one `git cat-file -p` per issue — a
+    // repo with ~200 issues ran 200+ sequential subprocesses on the GUI thread
+    // and the stall watchdog clocked individual publishes at 1.8s+ (adhoc #33).
+    // Cache per mirror+branch keyed on the tip commit, and on a miss read every
+    // status through a single `git cat-file --batch` process. UI-thread only,
+    // so a plain static map needs no locking (same as tintedOcticonPixmap).
+    QByteArray tip;
+    runGitCapture(mirrorPath, {"rev-parse", "--verify", branch}, &tip, nullptr);
+    tip = tip.trimmed();
+    struct OpenIssueCacheEntry {
+        QByteArray tip;
+        int count = 0;
+    };
+    static QHash<QString, OpenIssueCacheEntry> cache;
+    const QString cacheKey = mirrorPath + QLatin1Char('\n') + branch;
+    if (!tip.isEmpty()) {
+        const auto cached = cache.constFind(cacheKey);
+        if (cached != cache.constEnd() && cached->tip == tip)
+            return cached->count;
+    }
+    static const QRegularExpression numericName(QStringLiteral("^[0-9]+$"));
+    // Numeric child folders of one tree on the served branch; empty when the
+    // folder is absent.
+    auto numberedNames = [&](const QString &path) {
+        QStringList found;
+        QByteArray out;
+        if (!runGitCapture(mirrorPath, {"ls-tree", "-z", branch + ":" + path},
+                           &out, nullptr))
+            return found;
+        for (const QByteArray &record : out.split('\0')) {
+            if (record.isEmpty())
+                continue;
+            const int tab = record.indexOf('\t');
+            if (tab < 0)
+                continue;
+            const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+            if (meta.size() < 2 || meta.at(1) != "tree")
+                continue;
+            const QString name = QString::fromUtf8(record.mid(tab + 1));
+            if (numericName.match(name).hasMatch())
+                found.append(name);
+        }
+        return found;
+    };
+    // Post-split layout (adhoc #14): the folder IS the status — open/<n>
+    // counts as open, closed/<n> as closed. An issue its own creator deleted is
+    // not open — the Issues tab and lists drop it (Issue::isDeleted), so the
+    // advertised count must too, or it drifts above the tab (adhoc #16). A
+    // delete/self event from anyone else is an unauthorized attempt that still
+    // counts. Deciding needs the record, so read the open/ blobs (open issues
+    // are few); closed/ folders are never open regardless.
+    auto recordTombstoned = [&](const QString &name) {
+        QByteArray blob;
+        if (!runGitCapture(
+                mirrorPath,
+                {"cat-file", "-p",
+                 branch + QStringLiteral(":.forkmesh/issues/open/%1/issue-%1.json")
+                              .arg(name)},
+                &blob, nullptr))
+            return false; // unreadable -> treat as live (matches loadAll)
+        const QJsonArray events = QJsonDocument::fromJson(blob)
+                                      .object()
+                                      .value(QStringLiteral("events"))
+                                      .toArray();
+        QString creator;
+        for (const QJsonValue &value : events) {
+            const QJsonObject event = value.toObject();
+            if (event.value(QStringLiteral("type")).toString() ==
+                QLatin1String("open")) {
+                creator = event.value(QStringLiteral("author")).toString();
+                break;
+            }
+        }
+        for (const QJsonValue &value : events) {
+            const QJsonObject event = value.toObject();
+            if (event.value(QStringLiteral("type")).toString() ==
+                    QLatin1String("delete") &&
+                event.value(QStringLiteral("target")).toString() ==
+                    QLatin1String("self") &&
+                !creator.isEmpty() &&
+                event.value(QStringLiteral("author")).toString() == creator)
+                return true;
+        }
+        return false;
+    };
+    QSet<QString> counted;
+    int open = 0;
+    for (const QString &name :
+         numberedNames(QStringLiteral(".forkmesh/issues/open")))
+        if (!counted.contains(name)) {
+            counted.insert(name);
+            if (!recordTombstoned(name))
+                ++open;
+        }
+    for (const QString &name :
+         numberedNames(QStringLiteral(".forkmesh/issues/closed")))
+        counted.insert(name);
+    // Pre-split legacy folders (numbered dirs directly under the root) still
+    // carry the status only inside the record; batch-read those as before.
+    QStringList names;
+    for (const QString &name : numberedNames(QStringLiteral(".forkmesh/issues")))
+        if (!counted.contains(name))
+            names.append(name);
+    if (!names.isEmpty()) {
+        QByteArray batchIn;
+        for (const QString &name : std::as_const(names))
+            batchIn += (branch + QStringLiteral(":.forkmesh/issues/%1/issue-%1.json")
+                                     .arg(name))
+                           .toUtf8() +
+                       '\n';
+        QByteArray batchOut;
+        // Anything not readable as status "closed" (open, reopened, missing or
+        // malformed record) counts as open — matching RepoHost::countOpenIssues
+        // and the web's parseIssueJson default.
+        int remaining = names.size();
+        if (runGitCaptureInput(mirrorPath, {"cat-file", "--batch"}, batchIn,
+                               &batchOut, nullptr)) {
+            int pos = 0;
+            while (remaining > 0 && pos < batchOut.size()) {
+                const int eol = batchOut.indexOf('\n', pos);
+                if (eol < 0)
+                    break;
+                const QByteArray header = batchOut.mid(pos, eol - pos);
+                pos = eol + 1;
+                --remaining;
+                const QList<QByteArray> parts = header.split(' ');
+                bool sizeOk = false;
+                const qlonglong size =
+                    parts.size() >= 3 ? parts.at(2).toLongLong(&sizeOk) : 0;
+                if (!sizeOk || size < 0) {
+                    ++open; // "<path> missing" or unparsable header
+                    continue;
+                }
+                const QString status =
+                    QJsonDocument::fromJson(batchOut.mid(pos, size))
+                        .object()
+                        .value(QStringLiteral("status"))
+                        .toString();
+                pos += size + 1; // skip the record's trailing LF
+                if (status != QLatin1String("closed"))
+                    ++open;
+            }
+        }
+        open += remaining; // records the batch never answered default to open
+    }
+    if (!tip.isEmpty())
+        cache.insert(cacheKey, {tip, open});
+    return open;
+}
+
+// Issues / pull requests / discussions a node's mirror holds. Issues report the
+// OPEN count (the catalog's documented contract; see catalog.py); pulls and
+// discussions are the count of numbered subdirs under their metadata folder on
+// the served branch.
 inline int mirrorIssueCount(const QString &mirrorPath, const QString &branch)
 {
-    return mirrorNumberedDirCount(mirrorPath, branch, QStringLiteral(".forkmesh/issues"));
+    return mirrorOpenIssueCount(mirrorPath, branch);
 }
 inline int mirrorIssueMaxNumber(const QString &mirrorPath, const QString &branch)
 {
-    return mirrorNumberedDirMax(mirrorPath, branch, QStringLiteral(".forkmesh/issues"));
+    // Issues are split into open/ and closed/ status folders (adhoc #14);
+    // pre-split mirrors keep numbered dirs directly under the root. The max
+    // spans all three.
+    return qMax(mirrorNumberedDirMax(mirrorPath, branch,
+                                     QStringLiteral(".forkmesh/issues")),
+                qMax(mirrorNumberedDirMax(
+                         mirrorPath, branch,
+                         QStringLiteral(".forkmesh/issues/open")),
+                     mirrorNumberedDirMax(
+                         mirrorPath, branch,
+                         QStringLiteral(".forkmesh/issues/closed"))));
 }
 inline int mirrorPullCount(const QString &mirrorPath, const QString &branch)
 {
+    // Pulls live on the dedicated forkmesh/pulls metadata branch (issue #399),
+    // not the served head branch; count there when it exists, falling back to
+    // the head branch for pre-#399 mirrors that never migrated.
+    if (!mirrorPath.trimmed().isEmpty() && QDir(mirrorPath).exists() &&
+        runGitCapture(mirrorPath,
+                      {"rev-parse", "--verify", "-q",
+                       QStringLiteral("refs/heads/forkmesh/pulls^{commit}")},
+                      nullptr, nullptr))
+        return mirrorNumberedDirCount(
+            mirrorPath, QStringLiteral("forkmesh/pulls"), QStringLiteral("pulls"));
     return mirrorNumberedDirCount(mirrorPath, branch, QStringLiteral("pulls"));
 }
 inline int mirrorDiscussionCount(const QString &mirrorPath, const QString &branch)
 {
     return mirrorNumberedDirCount(mirrorPath, branch,
-                                  QStringLiteral("discussions"));
+                                  QStringLiteral(".forkmesh/discussions"));
 }
 
 // How many commits are reachable on the node's served branch (`git rev-list
@@ -6937,7 +7426,39 @@ inline bool isAutostartEnabled()
 #endif
 }
 
-inline void setAutostartEnabled(bool enabled)
+// Short name of the OS mechanism used to launch ForkMesh at login. Shown in
+// Settings so the user can see how autostart is wired, not just that it is on.
+inline QString autostartMechanismName()
+{
+#if defined(Q_OS_WIN)
+    return QStringLiteral("Windows registry Run key");
+#elif defined(Q_OS_MACOS)
+    return QStringLiteral("macOS LaunchAgent");
+#else
+    return QStringLiteral("XDG autostart entry");
+#endif
+}
+
+// The exact on-disk file (or registry key) that makes ForkMesh start at login.
+// This is what the "Remove auto startup" button deletes. Shown in Settings so
+// a stale entry left by an installer or an older build is visible and findable.
+inline QString autostartLocation()
+{
+#if defined(Q_OS_WIN)
+    return kWinRunKey + QStringLiteral("\\ForkMesh");
+#elif defined(Q_OS_MACOS)
+    return QDir::toNativeSeparators(launchAgentPath());
+#else
+    return QDir::toNativeSeparators(autostartDesktopPath());
+#endif
+}
+
+// Enable/disable launching ForkMesh at login. Returns true on success. The old
+// version silently ignored a failed remove(): if the autostart entry couldn't
+// be deleted (e.g. a root-owned file left by the curl installer) the checkbox
+// looked off but ForkMesh kept starting at login (issue #393). The bool lets
+// the UI re-read the real state and warn instead of lying.
+inline bool setAutostartEnabled(bool enabled)
 {
     const QString exe = QCoreApplication::applicationFilePath();
 #if defined(Q_OS_WIN)
@@ -6946,44 +7467,47 @@ inline void setAutostartEnabled(bool enabled)
         run.setValue("ForkMesh", QDir::toNativeSeparators(exe));
     else
         run.remove("ForkMesh");
+    run.sync();
+    return run.status() == QSettings::NoError &&
+           run.contains("ForkMesh") == enabled;
 #elif defined(Q_OS_MACOS)
     const QString path = launchAgentPath();
     if (!enabled) {
-        QFile::remove(path);
-        return;
+        // Treat "already gone" as success; only a real deletion failure counts.
+        return !QFileInfo::exists(path) || QFile::remove(path);
     }
     QDir().mkpath(QFileInfo(path).absolutePath());
     QFile file(path);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        const QString plist = QStringLiteral(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
-            "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
-            "<plist version=\"1.0\"><dict>\n"
-            "  <key>Label</key><string>com.forkmesh.app</string>\n"
-            "  <key>ProgramArguments</key><array><string>%1</string></array>\n"
-            "  <key>RunAtLoad</key><true/>\n"
-            "</dict></plist>\n").arg(exe);
-        file.write(plist.toUtf8());
-    }
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    const QString plist = QStringLiteral(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+        "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+        "<plist version=\"1.0\"><dict>\n"
+        "  <key>Label</key><string>com.forkmesh.app</string>\n"
+        "  <key>ProgramArguments</key><array><string>%1</string></array>\n"
+        "  <key>RunAtLoad</key><true/>\n"
+        "</dict></plist>\n").arg(exe);
+    return file.write(plist.toUtf8()) >= 0;
 #else
     const QString path = autostartDesktopPath();
     if (!enabled) {
-        QFile::remove(path);
-        return;
+        // Treat "already gone" as success; only a real deletion failure counts.
+        return !QFileInfo::exists(path) || QFile::remove(path);
     }
     QDir().mkpath(QFileInfo(path).absolutePath());
     QFile file(path);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        const QString desktop = QStringLiteral(
-            "[Desktop Entry]\n"
-            "Type=Application\n"
-            "Name=ForkMesh\n"
-            "Exec=%1\n"
-            "Terminal=false\n"
-            "X-GNOME-Autostart-enabled=true\n").arg(exe);
-        file.write(desktop.toUtf8());
-    }
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    const QString desktop = QStringLiteral(
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=ForkMesh\n"
+        "Exec=%1\n"
+        "Terminal=false\n"
+        "X-GNOME-Autostart-enabled=true\n").arg(exe);
+    return file.write(desktop.toUtf8()) >= 0;
 #endif
 }
 

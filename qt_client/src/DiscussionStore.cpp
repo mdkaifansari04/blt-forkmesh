@@ -195,7 +195,7 @@ bool DiscussionStore::canWrite() const
 
 QString DiscussionStore::discussionsDir() const
 {
-    return m_workTree + "/discussions";
+    return m_workTree + "/.forkmesh/discussions";
 }
 
 QString DiscussionStore::discussionDir(int number) const
@@ -393,12 +393,12 @@ int DiscussionStore::nextNumber() const
 bool DiscussionStore::commit(const QString &message, QString *error) const
 {
     QString err;
-    if (!runGit(m_workTree, {"add", "discussions"}, nullptr, &err)) {
+    if (!runGit(m_workTree, {"add", ".forkmesh/discussions"}, nullptr, &err)) {
         if (error)
             *error = "git add failed: " + err;
         return false;
     }
-    if (!runGit(m_workTree, {"commit", "-m", message, "--", "discussions"},
+    if (!runGit(m_workTree, {"commit", "-m", message, "--", ".forkmesh/discussions"},
                 nullptr, &err)) {
         if (err.contains("nothing to commit") || err.isEmpty())
             return true;
@@ -471,6 +471,59 @@ bool DiscussionStore::addComment(int number, const QString &body, QString *error
     if (!writeDiscussionFile(discussion, error))
         return false;
     return commit(QStringLiteral("discussion #%1: comment").arg(number), error);
+}
+
+bool DiscussionStore::deleteComment(int number, const QString &eventId,
+                                    QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return false;
+    }
+    if (eventId.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Missing comment id.");
+        return false;
+    }
+
+    Discussion discussion;
+    if (!readDiscussionFile(number, discussion)) {
+        if (error)
+            *error = QStringLiteral("Discussion #%1 not found.").arg(number);
+        return false;
+    }
+
+    // Drop the matching comment event. Index 0 is the opening post, which is not
+    // deletable through this path.
+    int removed = -1;
+    for (int i = 1; i < discussion.events.size(); ++i) {
+        const DiscussionEvent &ev = discussion.events.at(i);
+        if (ev.type == "comment" && ev.id == eventId) {
+            removed = i;
+            break;
+        }
+    }
+    if (removed < 0) {
+        if (error)
+            *error = QStringLiteral("Comment not found.");
+        return false;
+    }
+    discussion.events.removeAt(removed);
+
+    // writeDiscussionFile re-numbers the surviving comments from scratch, so the
+    // stale NNNN-comment.md left over by the now-smaller count must be cleared
+    // first, or the deleted comment would resurface on the next load.
+    QDir dir(discussionDir(number));
+    for (const QString &name : dir.entryList(QDir::Files, QDir::Name)) {
+        if (commentFileRe().match(name).hasMatch())
+            dir.remove(name);
+    }
+
+    if (!writeDiscussionFile(discussion, error))
+        return false;
+    return commit(QStringLiteral("discussion #%1: delete comment").arg(number),
+                  error);
 }
 
 bool DiscussionStore::applyRemoteEvent(int number, const DiscussionEvent &ev,
@@ -601,7 +654,7 @@ QList<Discussion> DiscussionStore::loadFromMirror(QString *error) const
         return discussions;
 
     QByteArray listing;
-    if (!runGit(m_mirror, {"ls-tree", ref, "discussions/"}, &listing))
+    if (!runGit(m_mirror, {"ls-tree", ref, ".forkmesh/discussions/"}, &listing))
         return discussions;
     for (const QString &line :
          QString::fromUtf8(listing).split('\n', Qt::SkipEmptyParts)) {
@@ -616,7 +669,7 @@ QList<Discussion> DiscussionStore::loadFromMirror(QString *error) const
 
         bool ok = false;
         const QByteArray md =
-            showFromMirror("discussions/" + base + "/discussion.md", &ok);
+            showFromMirror(".forkmesh/discussions/" + base + "/discussion.md", &ok);
         if (!ok)
             continue;
         const FrontMatter fm = parseFrontMatter(md);
@@ -634,7 +687,7 @@ QList<Discussion> DiscussionStore::loadFromMirror(QString *error) const
         discussion.events.append(open);
 
         QByteArray dirListing;
-        if (runGit(m_mirror, {"ls-tree", ref, "discussions/" + base + "/"},
+        if (runGit(m_mirror, {"ls-tree", ref, ".forkmesh/discussions/" + base + "/"},
                    &dirListing)) {
             QStringList names;
             for (const QString &l :
@@ -650,7 +703,7 @@ QList<Discussion> DiscussionStore::loadFromMirror(QString *error) const
             for (const QString &name : names) {
                 bool eok = false;
                 const QByteArray evBytes =
-                    showFromMirror("discussions/" + base + "/" + name, &eok);
+                    showFromMirror(".forkmesh/discussions/" + base + "/" + name, &eok);
                 if (eok)
                     discussion.events.append(
                         eventFromFrontMatter(parseFrontMatter(evBytes)));

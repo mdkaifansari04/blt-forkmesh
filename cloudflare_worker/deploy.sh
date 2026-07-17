@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy the ForkMesh website and relay Worker to Cloudflare.
+# Deploy the ForkMesh website and relay Worker to Cloudflare
 #
 # The Worker serves the static site from public/ (Cloudflare Static Assets)
 # and hosts the API/relay/catalog routes, so a single deploy ships both.
@@ -480,7 +480,7 @@ publish_release_binary() {
     [ "$os" = "windows" ] && asset="${asset}.exe"
 
     # Check if this asset is already published.
-    if [ -f ../releases/latest/SHASUMS256.txt ] && grep -q "  $asset" ../releases/latest/SHASUMS256.txt 2>/dev/null; then
+    if [ -f ../.forkmesh/releases/latest/SHASUMS256.txt ] && grep -q "  $asset" ../.forkmesh/releases/latest/SHASUMS256.txt 2>/dev/null; then
         echo "Release binary for $asset is already published."
         return 0
     fi
@@ -529,12 +529,12 @@ publish_release_binary() {
     rm -f "$asset"
 
     # Stage the release metadata for commit.
-    git add ../releases/latest/SHASUMS256.txt ../releases/latest/release.json || return 1
+    git add ../.forkmesh/releases/latest/SHASUMS256.txt ../.forkmesh/releases/latest/release.json || return 1
 }
 
 # Commit release metadata changes if any were staged.
 commit_release_metadata() {
-    if git diff --quiet --cached ../releases/latest/ 2>/dev/null; then
+    if git diff --quiet --cached ../.forkmesh/releases/latest/ 2>/dev/null; then
         return 0
     fi
     echo "Committing release metadata…"

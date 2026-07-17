@@ -7,35 +7,25 @@ compatibility_date = "2026-06-14"
 [build]
 command = "python3 tools/build_dashboard_assets.py && ./migrate.sh"
 
-# Per-minute cron: the Worker's scheduled() handler samples how many nodes are
-# online and records it for the /network/ 24-hour activity graph.
+
 [triggers]
 crons = ["* * * * *"]
 
 [assets]
 directory = "./public"
-# Exposes the assets binding as env.ASSETS so the Worker can fetch
-# dashboard/index.html directly for /dashboard/* deep links (see the
-# run_worker_first entry below) instead of it being undefined at runtime.
 binding = "ASSETS"
 html_handling = "none"
-# Unknown public asset paths should return public/404.html instead of the
-# homepage SPA shell. Real assets and explicit _redirects rewrites still win.
 not_found_handling = "404-page"
-# /admin-* always hits the worker so the secret admin path (ADMIN_PATH) is
-# handled in code rather than served as a static asset.
+
 run_worker_first = [
   "/api/*",
-  # / is worker-owned so logged-in visitors get an instant server-side 302 to
-  # /dashboard (keyed off the forkmesh_session presence cookie) instead of the
-  # old paint-the-homepage-then-redirect client script.
+  "/.well-known/*",
+  "/ap/*",
+  "/nodeinfo/*",
   "/",
   "/health",
   "/simulate-sentry-error",
   "/admin-*",
-  # /dashboard (exact) is worker-owned so legacy /dashboard?section=X URLs can
-  # 308 to the per-page paths — _redirects cannot match query strings. The
-  # per-page documents below are excluded so they stay asset-served.
   "/dashboard",
   "/dashboard/*",
   "!/dashboard/repos",
@@ -66,10 +56,6 @@ run_worker_first = [
   "/privacy.html",
   "/terms.html",
   "/status.html",
-  # Public profile URLs are single-segment (/@name). Without these two entries
-  # Static Assets grabs the request first, percent-encodes @ -> %40, finds no
-  # matching asset, and serves 404.html before the worker's profile handler can
-  # run. Pasted links arrive both literally (/@name) and pre-encoded (/%40name).
   "/@*",
   "/%40*",
   "/*/*",
@@ -90,7 +76,9 @@ NODE_SOLANA_ADDRESS = ""
 # parseable; the code default (FORKBOT_AI_DEFAULT_MODEL) stays llama-3.1-8b as
 # a conservative fallback when this var is unset.
 FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
-# Relay federation. Leave MAIN_RELAY_URL UNSET on the main relay (forkmesh.com) —
+# Payout relay mesh (canonical routes /api/relay-mesh/*, legacy alias
+# /api/federation/* — unrelated to the ActivityPub fediverse layer at /ap/*).
+# Leave MAIN_RELAY_URL UNSET on the main relay (forkmesh.com) —
 # that is what makes a deployment "the main relay": it custodies federated signup
 # deposits and disburses to every node on every approved relay.
 #
@@ -208,15 +196,15 @@ deleted_classes = [
 
 [observability]
 enabled = true
-head_sampling_rate = 1
+head_sampling_rate = 0.01
 
 [observability.logs]
 enabled = true
-head_sampling_rate = 1
+head_sampling_rate = 0.01
 invocation_logs = true
 destinations = [ "sentry-logs" ]
 
 [observability.traces]
 enabled = true
-head_sampling_rate = 1
+head_sampling_rate = 0.01
 destinations = [ "sentry-traces" ]

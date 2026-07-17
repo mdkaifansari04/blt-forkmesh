@@ -34,6 +34,7 @@ FUNCS = {
     "_account_session_secret", "_account_kind", "valid_node_name", "clean_string",
     "_owner_pubkey", "_catalog_record_matches_identity",
     "_repo_identity_from_clone_url", "safe_segment", "method_name",
+    "_account_owns_node", "_owned_nodes",
 }
 
 
@@ -72,6 +73,27 @@ class _Request:
         if self._body is None:
             raise ValueError("no body")
         return self._body
+
+
+async def _swallow_side_effect(awaitable):
+    try:
+        await awaitable
+    except Exception:
+        pass
+
+
+async def _ap_broadcast_stub(_env, _request, _kind, _handle):
+    return None
+
+
+async def _notify_repo_host_stub(_env, _owner, _repo, _topic):
+    return None
+
+
+class _ApStub:
+    @staticmethod
+    def repo_handle(owner, repo):
+        return "%s.%s" % (owner, repo)
 
 
 def _harness(accounts, notifications=None, repositories=None):
@@ -129,6 +151,8 @@ def _harness(accounts, notifications=None, repositories=None):
             return [dict(r) for r in rows[:limit]]
         if "FROM repositories" in sql:
             return [dict(r) for r in repositories]
+        if "FROM repo_media" in sql:
+            return []
         raise AssertionError("unexpected d1_all: " + sql)
 
     async def d1_first(_env, sql, *args):
@@ -162,6 +186,8 @@ def _harness(accounts, notifications=None, repositories=None):
                     r["data"] = data
                     r["is_private"] = is_private
             return
+        if "repo_media" in sql or "about_inbox" in sql:
+            return
         raise AssertionError("unexpected d1_run: " + sql)
 
     ns = _load_functions({
@@ -189,6 +215,17 @@ def _harness(accounts, notifications=None, repositories=None):
         "MAX_NOTIFICATIONS_FETCH": 200,
         "ADMIN_SESSION_TTL_MS": 12 * 60 * 60 * 1000,
         "MAX_REPO_SEGMENT": 80,
+        # Repo branding (fediverse actor images) rides through repo_about;
+        # the auth tests never upload one, so the validator is a pass-through
+        # and the follower Update broadcast is a no-op.
+        "MAX_REPO_LOGO_BYTES": 256 * 1024,
+        "MAX_REPO_BANNER_BYTES": 1024 * 1024,
+        "clean_media_png": lambda value, max_bytes: ("", ""),
+        "AP_ACTOR_REPO": "repo",
+        "_best_effort_inbox_side_effect": _swallow_side_effect,
+        "_ap_broadcast_actor_update": _ap_broadcast_stub,
+        "notify_repo_host": _notify_repo_host_stub,
+        "ap": _ApStub,
     })
     ns["_notifications"] = notifications
     ns["_repositories"] = repositories
@@ -331,3 +368,38 @@ def test_repo_about_requires_owner_session_and_hides_record():
     assert "repository" not in ok["data"]
     assert "SECRET-HASH" not in str(ok["data"])
     assert repos[0]["data"]["description"] == "a real description"
+
+
+def test_repo_about_allows_user_who_owns_the_node():
+    # A repo's owner is a NODE account ("laptop"); the human logs in with a
+    # separate USER account ("alice") that owns that node (adhoc #53). The
+    # owning user must be able to edit About even though their name != owner.
+    accounts = {
+        # Link recorded on BOTH sides, as _link_node_to_user writes it.
+        "alice": _user(),
+        "laptop": {"pubkey": "PK", "status": "active", "owner": "alice"},
+        "stranger": _user(),
+    }
+    accounts["alice"]["nodes"] = ["laptop"]
+    repos = [_repo_row("laptop", "proj")]
+    ns = _harness(accounts, repositories=repos)
+    env = object()
+    url = "https://forkmesh.test/api/repo/laptop/proj/about"
+
+    # The owning user's session is authorized.
+    ok = asyncio.run(ns["repo_about_handler"](
+        env, _Request("POST", url, body={
+            "description": "owned via node link",
+            "sessionToken": ns["_account_session_token"](env, "alice")}),
+        "laptop", "proj"))
+    assert ok["status"] == 200
+    assert repos[0]["data"]["description"] == "owned via node link"
+
+    # An unrelated user still cannot.
+    nope = asyncio.run(ns["repo_about_handler"](
+        env, _Request("POST", url, body={
+            "description": "defaced",
+            "sessionToken": ns["_account_session_token"](env, "stranger")}),
+        "laptop", "proj"))
+    assert nope["status"] == 403
+    assert repos[0]["data"]["description"] == "owned via node link"

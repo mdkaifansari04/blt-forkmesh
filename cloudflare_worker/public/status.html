@@ -12,7 +12,7 @@
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
@@ -35,10 +35,13 @@
           <h1 id="status-title">Is ForkMesh working?</h1>
           <p class="hero-copy">
             Live status for the website, API, database, git hosting network, and
-            realtime sync — each with a 30-day uptime history, sampled once a
-            minute. Missing elapsed samples count as downtime. We are still
-            tuning monitoring and optimizing traffic usage for bots, so these
-            numbers may be incorrect until that adjustment is finished.
+            realtime sync — each with a 30-day history sampled once a minute.
+            Uptime is computed only from samples that were actually recorded;
+            minutes where the sampler itself didn't run are shown grey as
+            monitoring gaps and excluded, so the numbers reflect observed
+            health rather than fabricated downtime. Click a system to see
+            exactly what its check tests. We are still tuning monitoring and
+            optimizing traffic usage for bots.
           </p>
         </div>
       </section>
@@ -83,18 +86,18 @@
         <div class="panel-header">
           <div>
             <h2 id="status-systems-title">Systems</h2>
-            <p>Each top bar is one day, the middle strip shows the last 24 hourly checks, and the bottom strip shows the last 60 one-minute checks. Hover a square for its status and reason.</p>
+            <p>Each top bar is one day, the middle strip shows the last 24 hourly checks, and the bottom strip shows the last 60 one-minute checks. Hover a square for its status and reason; click a system's name to see exactly what its health check tests.</p>
           </div>
         </div>
         <div style="padding: 4px 16px 16px">
           <div id="status-list" class="status-list">
-            <div class="status-empty">Loading…</div>
+            <div class="status-empty"><span class="fm-spinner" aria-hidden="true"></span>Loading…</div>
           </div>
           <div class="status-legend">
             <span class="status-legend-item"><span class="status-dot is-operational"></span>Operational</span>
             <span class="status-legend-item"><span class="status-dot is-degraded"></span>Degraded</span>
             <span class="status-legend-item"><span class="status-dot is-down"></span>Down</span>
-            <span class="status-legend-item"><span class="status-dot is-unknown"></span>No data (counts as down)</span>
+            <span class="status-legend-item"><span class="status-dot is-unknown"></span>No data (monitoring gap — excluded from uptime)</span>
             <span class="status-legend-item"><span class="status-day-hour-swatch is-future"></span>Later today (not elapsed)</span>
           </div>
         </div>
@@ -148,14 +151,14 @@
           operational: "Operational",
           degraded: "Degraded",
           down: "Down",
-          unknown: "No data",
+          unknown: "No data (monitoring gap)",
           future: "Not yet elapsed",
         };
 
         const MINUTE_STATUS_LABEL = {
           operational: "Operational",
           down: "Down",
-          unknown: "No data",
+          unknown: "No data (monitoring gap)",
           future: "Not yet sampled",
         };
 
@@ -207,18 +210,18 @@
           const when = fmtDay(hourDay) + ", " + fmtHourRange(hour.hourTs);
           const label = HOUR_STATUS_LABEL[hour.status] || "No data";
           let text = when + ": " + label;
-          if (hour.expectedChecks) {
-            const failed = typeof hour.effectiveFailures === "number"
-              ? hour.effectiveFailures
-              : hour.failures || 0;
-            const passed = Math.max(0, hour.expectedChecks - failed);
-            text += " (" + passed + "/" + hour.expectedChecks + " expected samples passed";
-            if (hour.missingChecks) {
-              text += "; " + hour.missingChecks + " missing counted as down";
+          if (hour.status !== "future") {
+            if (hour.checks) {
+              text += " (" + (hour.checks - (hour.failures || 0)) + "/" + hour.checks +
+                " recorded samples passed";
+              if (hour.missingChecks) {
+                text += "; " + hour.missingChecks +
+                  " expected samples missing — monitoring gap, not counted";
+              }
+              text += ")";
+            } else if (hour.expectedChecks) {
+              text += " (0 of " + hour.expectedChecks + " expected samples recorded)";
             }
-            text += ")";
-          } else if (hour.status !== "future" && hour.checks) {
-            text += " (" + (hour.checks - hour.failures) + "/" + hour.checks + " checks passed)";
           }
           if (hour.reason) text += " — " + hour.reason;
           return text;
@@ -296,22 +299,22 @@
             banner.classList.add("is-down");
             bannerText.textContent = "Partial outage";
           } else {
-            bannerText.textContent = "Status data still warming up";
+            bannerText.textContent = "Current state unknown — no recent health samples (monitoring gap)";
           }
           bannerSub.textContent = data.now
             ? "Last checked " + new Date(data.now).toLocaleTimeString()
             : "";
           // A stale health sample means the sampling cron is behind, not that
-          // the site is down — say so explicitly, since the missing samples
-          // paint the strips red either way.
+          // the site is down — say so explicitly, since the gap shows up as
+          // grey no-data squares in the strips.
           const lastSample = data.current && data.current.lastCronSampleTs;
           if (data.now && typeof lastSample === "number") {
             const behindMins = Math.floor((data.now - lastSample) / 60000);
             if (behindMins >= 3) {
               bannerSub.textContent +=
                 " · last health sample " + behindMins + "m ago — the " +
-                "sampling cron is behind; red squares since then reflect " +
-                "missing samples, not a confirmed outage";
+                "sampling cron is behind; grey squares since then are " +
+                "monitoring gaps, not a confirmed outage";
             }
           }
 
@@ -440,6 +443,9 @@
             const row = document.createElement("div");
             row.className = "status-row";
 
+            const fmtPct = (value) =>
+              typeof value === "number" ? value.toFixed(2) + "%" : "—";
+
             const head = document.createElement("div");
             head.className = "status-row-head";
             const name = document.createElement("div");
@@ -448,6 +454,11 @@
             dot.className = "status-dot is-" + (system.status || "unknown");
             name.appendChild(dot);
             name.appendChild(document.createTextNode(system.label || system.id));
+            const chevron = document.createElement("span");
+            chevron.className = "status-row-chevron";
+            chevron.setAttribute("aria-hidden", "true");
+            chevron.textContent = "▸";
+            name.appendChild(chevron);
             head.appendChild(name);
 
             const metrics = document.createElement("div");
@@ -456,9 +467,7 @@
               const metric = document.createElement("div");
               metric.className = "status-row-metric";
               const number = document.createElement("strong");
-              number.textContent = typeof value === "number"
-                ? value.toFixed(2) + "%"
-                : "—";
+              number.textContent = fmtPct(value);
               const caption = document.createElement("span");
               caption.textContent = label;
               metric.appendChild(number);
@@ -467,8 +476,67 @@
             };
             addMetric("24h uptime", system.uptime24hPct);
             addMetric("30d uptime", system.uptimePct);
+            addMetric("24h coverage", system.coverage24hPct);
             head.appendChild(metrics);
             row.appendChild(head);
+
+            // Click-to-expand panel spelling out exactly what this system's
+            // health check tests (checkDescription from the API) and the raw
+            // recorded-sample numbers behind the percentages — so the page
+            // never asks anyone to trust an unexplained green dot.
+            const infoPanel = document.createElement("div");
+            infoPanel.className = "status-row-detail-panel";
+            infoPanel.hidden = true;
+            const infoTitle = document.createElement("p");
+            infoTitle.className = "status-row-detail-title";
+            infoTitle.textContent = "What this check tests";
+            infoPanel.appendChild(infoTitle);
+            const infoDesc = document.createElement("p");
+            infoDesc.textContent = system.checkDescription ||
+              "No description available for this check.";
+            infoPanel.appendChild(infoDesc);
+            const infoStats = document.createElement("p");
+            const recorded24h = typeof system.checks24h === "number" ? system.checks24h : 0;
+            const failed24h = typeof system.failures24h === "number" ? system.failures24h : 0;
+            const missing24h = typeof system.missing24h === "number" ? system.missing24h : 0;
+            infoStats.textContent =
+              "Last 24h: " + recorded24h.toLocaleString() + " samples recorded (" +
+              (recorded24h - failed24h).toLocaleString() + " passed, " +
+              failed24h.toLocaleString() + " failed), " +
+              missing24h.toLocaleString() + " expected samples missing. " +
+              "Sample coverage: " + fmtPct(system.coverage24hPct) + " over 24h, " +
+              fmtPct(system.coveragePct) + " over 30 days.";
+            infoPanel.appendChild(infoStats);
+            const infoNote = document.createElement("p");
+            infoNote.className = "status-row-detail-note";
+            infoNote.textContent =
+              "Sampled once a minute by a scheduled job inside the ForkMesh " +
+              "worker. Grey squares are minutes where the sampler itself " +
+              "didn't run (a monitoring gap): they are excluded from uptime " +
+              "and never counted as downtime, so uptime reflects only what " +
+              "was actually observed.";
+            infoPanel.appendChild(infoNote);
+            head.tabIndex = 0;
+            head.setAttribute("role", "button");
+            head.setAttribute("aria-expanded", "false");
+            head.setAttribute(
+              "aria-label",
+              (system.label || system.id) + " — show what this check tests",
+            );
+            const toggleInfo = () => {
+              const open = infoPanel.hidden;
+              infoPanel.hidden = !open;
+              head.setAttribute("aria-expanded", String(open));
+              chevron.classList.toggle("is-open", open);
+            };
+            head.addEventListener("click", toggleInfo);
+            head.addEventListener("keydown", (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                toggleInfo();
+              }
+            });
+            row.appendChild(infoPanel);
 
             if (system.status !== "operational" && system.reason) {
               const why = document.createElement("p");
@@ -482,7 +550,7 @@
             days.className = "status-days";
             const detail = document.createElement("div");
             detail.className = "status-hour-detail";
-            const defaultDetail = "Hover a square for details. Missing elapsed samples count as downtime.";
+            const defaultDetail = "Hover a square for details. Grey squares are monitoring gaps (no sample recorded) — excluded from uptime, not counted as downtime.";
             detail.textContent = defaultDetail;
             const setDetail = (text, marker) => {
               if (marker) marker.classList.add("is-hovered");
@@ -513,23 +581,25 @@
               // "no data": render the elapsed hours plus dimmed placeholders
               // for the hours that simply haven't happened yet.
               const isPartialToday = isLastDay && hours.length > 0 && hours.length < 24;
-              const expectedChecks = day.expectedChecks || day.checks || 0;
-              const effectiveFailures = typeof day.effectiveFailures === "number"
-                ? day.effectiveFailures
-                : day.failures || 0;
-              const state = !expectedChecks
+              const dayChecks = day.checks || 0;
+              const dayFailures = day.failures || 0;
+              const state = !dayChecks
                 ? "unknown"
-                : effectiveFailures === 0
+                : dayFailures === 0
                 ? "operational"
-                : effectiveFailures >= expectedChecks
+                : dayFailures >= dayChecks
                 ? "down"
                 : "degraded";
               cell.className = "status-day is-" + state + " has-hours" +
                 (isPartialToday ? " is-partial" : "");
-              const label = expectedChecks
-                ? fmtDay(day.dayTs) + ": " + day.uptimePct.toFixed(2) + "% uptime" +
-                  (isPartialToday ? " so far (" + hours.length + "/24h elapsed)" : "")
-                : fmtDay(day.dayTs) + ": no data";
+              const label = dayChecks
+                ? fmtDay(day.dayTs) + ": " + day.uptimePct.toFixed(2) + "% uptime from " +
+                  dayChecks + " recorded samples" +
+                  (day.missingChecks
+                    ? " (" + day.missingChecks + " expected samples missing — monitoring gap, not counted)"
+                    : "") +
+                  (isPartialToday ? " — " + hours.length + "/24h elapsed" : "")
+                : fmtDay(day.dayTs) + ": no samples recorded (monitoring gap)";
               cell.setAttribute("aria-label", label);
               cell.title = label;
               const addHourMarker = (status, tooltip) => {
@@ -554,8 +624,8 @@
                   const hourTs = day.dayTs + h * 3600000;
                   if (hourTs > now) break;
                   const tooltip = fmtDay(day.dayTs) + ", " + fmtHourRange(hourTs) +
-                    ": Down — no status sample recorded; treated as downtime.";
-                  addHourMarker("down", tooltip);
+                    ": No data — no health sample recorded (monitoring gap), not evidence of an outage.";
+                  addHourMarker("unknown", tooltip);
                 }
               }
               stack.appendChild(cell);
@@ -578,14 +648,13 @@
               const expectedChecks = Math.min(60, elapsedMinutes);
               const hour = hoursByTs.get(hourTs) || {
                 hourTs,
-                status: expectedChecks ? "down" : "unknown",
+                status: "unknown",
                 checks: 0,
                 failures: 0,
                 expectedChecks,
                 missingChecks: expectedChecks,
-                effectiveFailures: expectedChecks,
                 reason: expectedChecks
-                  ? "No status sample recorded for this elapsed hour; treated as downtime."
+                  ? "No health sample recorded for this elapsed hour — monitoring gap, not evidence of an outage."
                   : null,
               };
               const slice = document.createElement("div");

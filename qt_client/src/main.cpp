@@ -6,6 +6,13 @@
 #include "SingleInstance.h"
 #include "Theme.h"
 
+#if __has_include("ForkMeshVersion.h")
+#include "ForkMeshVersion.h"
+#endif
+#ifndef FORKMESH_VERSION
+#define FORKMESH_VERSION "dev"
+#endif
+
 #include <QApplication>
 #include <QDebug>
 #include <QDir>
@@ -115,13 +122,12 @@ private:
 int main(int argc, char *argv[])
 {
     // First thing, before anything can fault: install the crash handlers so an
-    // unexpected exit/crash leaves a backtrace in ~/.forkmesh/diagnostics/
-    // crashes.log ("sometimes the app exits / crashes" with nothing to explain
-    // why). A compact signal breadcrumb also goes to the main network log.
-    // The durable crash file is what the opt-in telemetry upload sends on the
-    // next startup (issue #354). Cheap; opens a couple fds plus fixed buffers.
+    // unexpected exit/crash leaves a record in the network log. A compact signal
+    // breadcrumb and the full backtrace go to network_log.txt directly so the
+    // crash is visible in the log view on next startup without needing a
+    // separate file. Cheap; opens a couple fds plus fixed buffers.
     forkmesh::installCrashHandler(
-        QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/crashes.log"),
+        QString(),
         earlyMainLogPath());
 
     // Collect args before QApplication so headless/root flags are visible while we
@@ -130,6 +136,15 @@ int main(int argc, char *argv[])
     rawArgs.reserve(argc);
     for (int i = 0; i < argc; ++i)
         rawArgs << QString::fromLocal8Bit(argv[i]);
+
+    // `forkmesh --version` prints and exits before the Qt platform, root-gate
+    // and single-instance setup. The auto-updater runs a candidate binary with
+    // this flag as a smoke test, so it must succeed on a bare VPS with no
+    // display, as root, and while the old instance still holds the lock.
+    if (rawArgs.contains(QStringLiteral("--version"))) {
+        printf("ForkMesh %s\n", FORKMESH_VERSION);
+        return 0;
+    }
 
     const bool headless = detectHeadless(rawArgs);
     const bool allowRoot = rawArgs.contains(QStringLiteral("--allow-root")) ||

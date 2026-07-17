@@ -10,6 +10,9 @@
 #include "KebabHeaderView.h"
 
 #include <QCryptographicHash>
+#include <QFutureWatcher>
+
+#include <QtConcurrent/QtConcurrentRun>
 
 using namespace forkmesh::ui;
 
@@ -21,6 +24,7 @@ constexpr qint64 kCatalogPublishMinIntervalMs = 30LL * 1000;
 constexpr qint64 kCatalogPublishRefreshMs = 6LL * 60 * 60 * 1000;
 constexpr qint64 kCatalogPublishRateLimitRetryMs = 60LL * 1000;
 constexpr qint64 kCatalogPublishMaxRetryAfterMs = 10LL * 60 * 1000;
+constexpr qint64 kContributionScanCapacityRetryMs = 1000;
 
 struct RepoRemoteRow {
     QString name;
@@ -34,11 +38,23 @@ QString catalogPublishOwnerFromKey(const QString &key)
     return slash > 0 ? key.left(slash) : key;
 }
 
-qint64 catalogPublishRetryDelayMs(const QNetworkReply *reply, int status)
+qint64 catalogPublishRetryDelayMs(const QNetworkReply *reply, int status,
+                                  int consecutiveFailures)
 {
-    if (status != 429)
+    // 429 (rate limit) AND 5xx (Worker overload — Cloudflare 1101/1102) both
+    // warrant a cooldown before re-queuing. Previously only 429 delayed the
+    // retry, so during the 2026-07-11 outage every 500/503 rescheduled with
+    // zero delay and the desktop re-POSTed the catalog every ~30s for 100
+    // minutes straight, amplifying the very overload it was hitting.
+    if (status != 429 && !(status >= 500 && status <= 599))
         return 0;
-    qint64 delay = kCatalogPublishRateLimitRetryMs;
+    // A fixed 60s retry still re-POSTs a persistently-overloaded relay once a
+    // minute forever (a 1102 worker never recovers while it's being hammered).
+    // Escalate exponentially per consecutive failure — 60s, 2m, 4m, … — so the
+    // desktop backs off and gives the Worker room to recover, then caps out.
+    const int shift = qBound(0, consecutiveFailures, 8);
+    qint64 delay = qMin(kCatalogPublishRateLimitRetryMs << shift,
+                        kCatalogPublishMaxRetryAfterMs);
     const QByteArray retryAfter = reply ? reply->rawHeader("Retry-After") : QByteArray();
     bool ok = false;
     const qint64 seconds =
@@ -222,6 +238,8 @@ QStringList MainWindow::viewAuthGitArgs(const RepositoryRecord &repo,
     if (!m_profileIdentity.isValid())
         return {};
     const QString viewer = accountOwner();
+    if (viewer.isEmpty() || !hasOwnerSigningCapability(viewer))
+        return {};
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     // Two read paths (issue #9): when this node owns the repo it signs the owner
     // view token (Basic username = owner); when it's a collaborator the repo was
@@ -401,9 +419,14 @@ void MainWindow::refreshRepositoryList()
                   return a.name.localeAwareCompare(b.name) < 0;
               });
     for (const MemberInfo &m : std::as_const(ranked)) {
-        if (m.name.isEmpty())
+        // Key by the node's stable identity, not just its chat display name, so a
+        // headless mirror that shares/omits the owner's chat name still gets its
+        // own row instead of collapsing into the owner (adhoc: mirror2/mirror3
+        // missing from the Nodes list).
+        const QString nodeKey = nodeListIdentityKey(m);
+        if (nodeKey.isEmpty())
             continue;
-        if (!nodes.contains(m.name)) {
+        if (!nodes.contains(nodeKey)) {
             NodeInfo ni;
             ni.inRoster = true;
             ni.online = m.online;
@@ -414,10 +437,10 @@ void MainWindow::refreshRepositoryList()
             ni.balance = m.solanaBalance.trimmed();
             ni.platform = m.platform;
             ni.mirrors = m.mirrors;
-            nodes.insert(m.name, ni);
-            nodeOrder.append(m.name);
+            nodes.insert(nodeKey, ni);
+            nodeOrder.append(nodeKey);
         } else {
-            NodeInfo &ni = nodes[m.name];
+            NodeInfo &ni = nodes[nodeKey];
             if (m.online)
                 ni.online = true;
             if (ni.platform.isEmpty())
@@ -489,9 +512,27 @@ void MainWindow::refreshRepositoryList()
                                     : "  \xC2\xB7 public";
         if (m_syncingRepos.contains(i))
             label += repo.previewOnly ? "  \xC2\xB7 caching" : "  \xC2\xB7 syncing";
+        // Two entries can share the same owner+name when a catalog preview of a
+        // repo coexists with a locally hosted copy of it (issue: dropdown showed
+        // duplicate-looking names with no explanation). Spell out the difference
+        // in a tooltip since the label alone has no room for it.
+        QString detail;
+        if (repo.previewOnly) {
+            detail = QStringLiteral("Cached preview \xE2\x80\x94 browsed from the "
+                                    "network, not added to this device");
+            if (!repo.cloneUrl.isEmpty())
+                detail += QStringLiteral("\nSource: %1").arg(repo.cloneUrl);
+        } else {
+            detail = QStringLiteral("Hosted on this device");
+            if (!repo.localPath.isEmpty())
+                detail += QStringLiteral("\nLocal path: %1").arg(repo.localPath);
+            if (!repo.cloneUrl.isEmpty())
+                detail += QStringLiteral("\nImported from: %1").arg(repo.cloneUrl);
+        }
         RepoMenuEntry entry;
         entry.label = label;
         entry.index = i;
+        entry.detail = detail;
         // A repo glyph: green when published+online on the web, grey otherwise.
         entry.icon = themedOcticon(
             repo.previewOnly ? QStringLiteral("cloud") : QStringLiteral("repo"),
@@ -938,69 +979,222 @@ void MainWindow::promptAddRepository()
 
 void MainWindow::createNewRepository()
 {
-    // Ask for a name, then a parent folder, and `git init` a fresh empty repo
-    // there. From there it's mirrored + published exactly like promptAddRepository.
-    bool ok = false;
-    const QString rawName =
-        QInputDialog::getText(this, "New repository", "Repository name:",
-                              QLineEdit::Normal, QString(), &ok)
-            .trimmed();
-    if (!ok || rawName.isEmpty())
-        return;
+    // A single "new repository" screen: name + description + an optional first
+    // prompt + a README choice + where on disk to create it. Everything past the
+    // dialog (git init, seeding, mirror + publish) lives in
+    // provisionNewRepository so it can be exercised without the UI.
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("New repository"));
 
-    // Keep the on-disk folder name in step with the published name: both go
-    // through repoSegment so a slash or odd character can't escape the path.
-    const QString name = repoSegment(rawName, QStringLiteral("repository"));
-    if (repoIndexFor(accountOwner(), name) >= 0) {
-        QMessageBox::warning(
-            this, "New repository",
-            QStringLiteral("You already have a repository named \"%1\".").arg(name));
-        return;
-    }
+    auto *nameEdit = new QLineEdit(&dialog);
+    nameEdit->setPlaceholderText(QStringLiteral("my-project"));
 
-    const QString parent = QFileDialog::getExistingDirectory(
-        this, QStringLiteral("Choose where to create \"%1\"").arg(name),
-        QDir::homePath());
-    if (parent.isEmpty())
-        return; // cancelled
+    auto *descriptionEdit = new QPlainTextEdit(&dialog);
+    descriptionEdit->setPlaceholderText(
+        QStringLiteral("What is this repository about?"));
+    descriptionEdit->setMaximumHeight(72);
 
-    const QString dest = QDir(parent).filePath(name);
-    if (QDir(dest).exists() && !QDir(dest).isEmpty()) {
-        QMessageBox::warning(
-            this, "New repository",
-            QStringLiteral("%1 already exists and is not empty. Choose another "
-                           "name or location.")
-                .arg(dest));
-        return;
-    }
-    if (!QDir().mkpath(dest)) {
-        QMessageBox::warning(this, "New repository",
-                             QStringLiteral("Could not create %1.").arg(dest));
-        return;
-    }
+    auto *promptEdit = new QPlainTextEdit(&dialog);
+    promptEdit->setPlaceholderText(QStringLiteral(
+        "Optional: the first thing you want done here. Filed as issue #1 so an "
+        "agent can pick it up."));
+    promptEdit->setMaximumHeight(96);
+
+    auto *readmeBox =
+        new QCheckBox(QStringLiteral("Add a README on the main branch"), &dialog);
+    readmeBox->setChecked(true);
+
+    // Where the working copy is created. Defaults to the home folder; the folder
+    // the repo lands in is <location>/<name>.
+    auto *locationEdit = new QLineEdit(QDir::homePath(), &dialog);
+    auto *browseButton = new QPushButton(QStringLiteral("Browse\xE2\x80\xA6"), &dialog);
+    browseButton->setCursor(Qt::PointingHandCursor);
+    connect(browseButton, &QPushButton::clicked, &dialog, [&dialog, locationEdit] {
+        const QString picked = QFileDialog::getExistingDirectory(
+            &dialog, QStringLiteral("Choose where to create the repository"),
+            locationEdit->text().isEmpty() ? QDir::homePath()
+                                           : locationEdit->text());
+        if (!picked.isEmpty())
+            locationEdit->setText(picked);
+    });
+    auto *locationRow = new QHBoxLayout;
+    locationRow->setContentsMargins(0, 0, 0, 0);
+    locationRow->addWidget(locationEdit, 1);
+    locationRow->addWidget(browseButton);
+    auto *locationWidget = new QWidget(&dialog);
+    locationWidget->setLayout(locationRow);
+
+    auto *form = new QFormLayout;
+    form->addRow(QStringLiteral("Name"), nameEdit);
+    form->addRow(QStringLiteral("Description"), descriptionEdit);
+    form->addRow(QStringLiteral("First prompt"), promptEdit);
+    form->addRow(QString(), readmeBox);
+    form->addRow(QStringLiteral("Location"), locationWidget);
+
+    auto *buttons =
+        new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                             Qt::Horizontal, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Create"));
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->addLayout(form);
+    layout->addWidget(buttons);
+
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+        const QString rawName = nameEdit->text().trimmed();
+        if (rawName.isEmpty()) {
+            QMessageBox::warning(&dialog, "New repository",
+                                 QStringLiteral("Enter a repository name."));
+            return;
+        }
+        // Keep the on-disk folder name in step with the published name: both go
+        // through repoSegment so a slash or odd character can't escape the path.
+        const QString name = repoSegment(rawName, QStringLiteral("repository"));
+        if (repoIndexFor(accountOwner(), name) >= 0) {
+            QMessageBox::warning(&dialog, "New repository",
+                                 QStringLiteral(
+                                     "You already have a repository named \"%1\".")
+                                     .arg(name));
+            return;
+        }
+        const QString parent = locationEdit->text().trimmed();
+        if (parent.isEmpty()) {
+            QMessageBox::warning(&dialog, "New repository",
+                                 QStringLiteral("Choose where to create it."));
+            return;
+        }
+        const QString dest = QDir(parent).filePath(name);
+        if (QDir(dest).exists() && !QDir(dest).isEmpty()) {
+            QMessageBox::warning(
+                &dialog, "New repository",
+                QStringLiteral("%1 already exists and is not empty. Choose "
+                               "another name or location.")
+                    .arg(dest));
+            return;
+        }
+        QString error;
+        const int index = provisionNewRepository(
+            dest, name, descriptionEdit->toPlainText(), promptEdit->toPlainText(),
+            readmeBox->isChecked(), &error);
+        if (index < 0) {
+            QMessageBox::warning(&dialog, "New repository",
+                                 error.isEmpty()
+                                     ? QStringLiteral("Could not create the "
+                                                      "repository.")
+                                     : error);
+            return;
+        }
+        dialog.accept();
+    });
+
+    nameEdit->setFocus();
+    dialog.exec();
+}
+
+int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
+                                       const QString &description,
+                                       const QString &firstPrompt, bool addReadme,
+                                       QString *error)
+{
+    const auto fail = [&](const QString &message) -> int {
+        if (error)
+            *error = message;
+        return -1;
+    };
+
+    if (!QDir(dest).exists() && !QDir().mkpath(dest))
+        return fail(QStringLiteral("Could not create %1.").arg(dest));
+
+    // A small git runner scoped to the new working copy. All the seeding here is
+    // local; the mirror + catalog record come later via publish.
+    const auto runGit = [&dest](const QStringList &args, QString *errOut) -> bool {
+        QProcess git;
+        git.setWorkingDirectory(dest);
+        git.start(QStringLiteral("git"), args);
+        git.waitForFinished(30000);
+        if (git.exitStatus() != QProcess::NormalExit || git.exitCode() != 0) {
+            if (errOut)
+                *errOut =
+                    QString::fromUtf8(git.readAllStandardError()).trimmed().right(200);
+            return false;
+        }
+        return true;
+    };
 
     // `git init -b main` gives the new repo a conventional default branch so the
     // first push lands on refs/heads/main like everywhere else.
-    QProcess git;
-    git.setWorkingDirectory(dest);
-    git.start(QStringLiteral("git"),
-              {QStringLiteral("init"), QStringLiteral("-b"), QStringLiteral("main")});
-    git.waitForFinished(30000);
-    if (git.exitStatus() != QProcess::NormalExit || git.exitCode() != 0) {
-        const QString err =
-            QString::fromUtf8(git.readAllStandardError()).trimmed();
-        QMessageBox::warning(
-            this, "New repository",
-            QStringLiteral("git init failed: %1").arg(err.right(200)));
-        logSystem("New repository: git init failed in " + dest + ": " +
-                  err.right(300));
-        return;
+    QString gitErr;
+    if (!runGit({QStringLiteral("init"), QStringLiteral("-b"),
+                 QStringLiteral("main")},
+                &gitErr)) {
+        logSystem("New repository: git init failed in " + dest + ": " + gitErr);
+        return fail(QStringLiteral("git init failed: %1").arg(gitErr));
+    }
+
+    const QString about = description.trimmed();
+    const QDir repoDir(dest);
+    bool seeded = false;
+
+    // README on main: a title + the description so the repo is never a blank
+    // page on the network.
+    if (addReadme) {
+        QString body = QStringLiteral("# %1\n").arg(name);
+        if (!about.isEmpty())
+            body += QStringLiteral("\n%1\n").arg(about);
+        QSaveFile readme(repoDir.filePath(QStringLiteral("README.md")));
+        if (readme.open(QIODevice::WriteOnly)) {
+            const QByteArray data = body.toUtf8();
+            if (readme.write(data) == data.size() && readme.commit())
+                seeded = true;
+        }
+        if (!seeded)
+            logSystem("New repository: could not write README.md in " + dest);
+    }
+
+    // Description lives in .forkmesh/info.json, the same canonical spot the
+    // About editor writes, so the browse UI and catalog pick it up unchanged.
+    if (!about.isEmpty() && repoDir.mkpath(QStringLiteral(".forkmesh"))) {
+        QJsonObject info;
+        info.insert(QStringLiteral("about"), about);
+        const QByteArray data =
+            QJsonDocument(info).toJson(QJsonDocument::Indented);
+        QSaveFile file(repoDir.filePath(kRepoInfoPath));
+        if (file.open(QIODevice::WriteOnly) && file.write(data) == data.size() &&
+            file.commit())
+            seeded = true;
+        else
+            logSystem("New repository: could not write " + QString(kRepoInfoPath) +
+                      " in " + dest);
+    }
+
+    // Initial commit on main. Prefer the user's configured git identity; fall
+    // back to an account-scoped identity so a fresh box with no global config
+    // still gets a valid first commit.
+    if (seeded) {
+        if (!runGit({QStringLiteral("add"), QStringLiteral("-A")}, &gitErr))
+            logSystem("New repository: git add failed in " + dest + ": " + gitErr);
+        const QStringList commitArgs{QStringLiteral("commit"), QStringLiteral("-m"),
+                                     QStringLiteral("Initial commit")};
+        if (!runGit(commitArgs, &gitErr)) {
+            const QString who = accountOwner().isEmpty() ? QStringLiteral("forkmesh")
+                                                         : accountOwner();
+            const QStringList fallback{
+                QStringLiteral("-c"),
+                QStringLiteral("user.name=%1").arg(who),
+                QStringLiteral("-c"),
+                QStringLiteral("user.email=%1@forkmesh.local").arg(who)};
+            if (!runGit(fallback + commitArgs, &gitErr))
+                logSystem("New repository: initial commit failed in " + dest +
+                          ": " + gitErr);
+        }
     }
 
     RepositoryRecord repo;
     repo.localPath = dest;
     repo.name = name;
     repo.owner = accountOwner();
+    repo.description = about;
     repo.solanaAddress = savedSolanaAddress();
     repo.publishToNetwork = true;
     repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
@@ -1009,15 +1203,31 @@ void MainWindow::createNewRepository()
                       repoSegment(repo.name, QStringLiteral("repository")) + ".git";
 
     m_repositories.append(repo);
+    const int index = m_repositories.size() - 1;
     saveRepositories();
     refreshRepositoryList();
     if (m_backend)
         m_backend->addChannel(repositoryChannel(repo));
-    const int index = m_repositories.size() - 1;
+
+    // The first prompt becomes issue #1 so the repo lands with a task an agent
+    // can immediately act on. Its own commit rides along in the same mirror.
+    const QString prompt = firstPrompt.trimmed();
+    if (!prompt.isEmpty()) {
+        const QString title = prompt.section('\n', 0, 0).trimmed().left(120);
+        const QString body = prompt == title ? QString() : prompt;
+        QString issueErr;
+        IssueStore store(repo.localPath, repo.mirrorPath, &m_profileIdentity,
+                         chatDisplayName());
+        if (store.createIssue(title, body, {}, QString(), 0, {}, {}, &issueErr) < 0)
+            logSystem("New repository: could not file first-prompt issue for " +
+                      repo.owner + "/" + repo.name + ": " + issueErr);
+    }
+
     publishRepositoryAfterMirrorRefresh(index, false);
     logSystem("New repository: created " + repo.owner + "/" + repo.name + " in " +
               dest + ".");
     flashMessage(QStringLiteral("Created %1/%2.").arg(repo.owner, repo.name));
+    return index;
 }
 
 QStringList MainWindow::importAuthGitArgs(const QString &url) const
@@ -1288,68 +1498,73 @@ void MainWindow::deleteCurrentMirror()
                                  : QDir::cleanPath(rawWorktree);
 
     QString message = QStringLiteral(
-        "Delete the local mirror for %1/%2?\n\nMirror: %3")
+        "Delete repository %1/%2 from this node?\n\nMirror: %3")
                           .arg(repo.owner, repo.name,
                                path.isEmpty() ? QStringLiteral("not created") : path);
     if (!repo.localPath.isEmpty())
-        message += QStringLiteral("\n\nYour working directory will be kept:\n%1")
+        message += QStringLiteral("\n\nYour working directory will be kept on disk "
+                                  "but no longer tracked by ForkMesh:\n%1")
                        .arg(repo.localPath);
     if (!repo.previewOnly && repo.publishToNetwork)
         message += QStringLiteral("\n\nThe repository will also be removed from "
                                   "the public ForkMesh catalog.");
-    if (QMessageBox::warning(this, "Delete mirror", message,
-                             QMessageBox::Yes | QMessageBox::Cancel,
-                             QMessageBox::Cancel) != QMessageBox::Yes)
-        return;
+    message += QStringLiteral(
+        "\n\nThis frees up the name so you can create a new repository "
+        "called \"%1\" again.").arg(repo.name);
 
-    if (!path.isEmpty() && path == worktree) {
+    QMessageBox box(QMessageBox::Warning, "Delete repository", message,
+                     QMessageBox::Yes | QMessageBox::Cancel, this);
+    box.setDefaultButton(QMessageBox::Cancel);
+    QCheckBox *keepFilesCheck = nullptr;
+    if (!path.isEmpty()) {
+        // Opt-in, off by default: the plain delete matches the historical
+        // behavior of also removing the bare mirror from disk. Ticking this
+        // just untracks the repository from ForkMesh and leaves every file
+        // (mirror included) in place.
+        keepFilesCheck = new QCheckBox(
+            QStringLiteral("Keep the repository files on disk (only remove from ForkMesh)"));
+        keepFilesCheck->setChecked(false);
+        box.setCheckBox(keepFilesCheck); // QMessageBox takes ownership
+    }
+    if (box.exec() != QMessageBox::Yes)
+        return;
+    const bool keepFiles = keepFilesCheck && keepFilesCheck->isChecked();
+
+    if (!keepFiles && !path.isEmpty() && path == worktree) {
         QMessageBox::warning(
-            this, "Delete mirror",
+            this, "Delete repository",
             "The mirror path matches the working directory, so nothing was deleted.");
         return;
     }
 
     stopRepoHosts();
-    if (!path.isEmpty() && QDir(path).exists() && !QDir(path).removeRecursively()) {
+    if (!keepFiles && !path.isEmpty() && QDir(path).exists() &&
+        !QDir(path).removeRecursively()) {
         startRepoHosts();
-        QMessageBox::warning(this, "Delete mirror",
+        QMessageBox::warning(this, "Delete repository",
                              "Could not delete the mirror at:\n" + path);
         return;
     }
     if (!repo.previewOnly && repo.publishToNetwork)
         deleteCatalogRepository(catalogOwner(repo), repo.name);
-    const bool canKeepLocalRecord = !repo.localPath.trimmed().isEmpty() ||
-                                    !repo.cloneUrl.trimmed().isEmpty();
-    if (!repo.previewOnly && canKeepLocalRecord) {
-        // Delete the mirror, not the source checkout. Keep the repository in
-        // the app as local-only so Mirror > Create mirror can publish it again.
-        RepositoryRecord &local = m_repositories[index];
-        local.publishToNetwork = false;
-        local.publishedAtMs = 0;
-        local.lastSyncMs = 0;
-    } else {
-        // A preview or independent bare-only fork has no separate source left
-        // after its mirror is deleted, so its transient record goes too.
-        m_repositories.removeAt(index);
-    }
+    // Deleting a repository must remove it completely from this node so its
+    // name is free to reuse. The working directory on disk is left alone
+    // (only the bare mirror above is removed, unless "keep files" was
+    // checked), but the app no longer keeps a record of it — leaving a stale
+    // local-only record behind used to block creating a new repository with
+    // the same owner/name indefinitely.
+    m_repositories.removeAt(index);
     saveRepositories();
     startRepoHosts();
     refreshRepositoryList();
-    if (!repo.previewOnly && canKeepLocalRecord) {
-        m_repoDetailIndex = index;
-        updateRepoDetailStatus();
-        updateRepoActionMenus();
-    } else {
-        m_repoDetailIndex = -1;
-        if (!m_repositories.isEmpty())
-            openRepoDetail(qMin(index, m_repositories.size() - 1));
-        else if (m_repoDetailStack)
-            m_repoDetailStack->setCurrentIndex(0); // Code (empty)
-    }
-    logSystem("Deleted local mirror for " + repo.owner + "/" + repo.name + ".");
-    setRepoDetailNotice(canKeepLocalRecord
-                            ? "Deleted mirror. The working directory was kept."
-                            : "Deleted mirror.");
+    m_repoDetailIndex = -1;
+    if (!m_repositories.isEmpty())
+        openRepoDetail(qMin(index, m_repositories.size() - 1));
+    else if (m_repoDetailStack)
+        m_repoDetailStack->setCurrentIndex(0); // Code (empty)
+    logSystem("Deleted repository " + repo.owner + "/" + repo.name + ".");
+    setRepoDetailNotice(keepFiles ? "Removed repository from ForkMesh. Files kept on disk."
+                                   : "Deleted repository.");
 }
 
 // Per-repo Settings tab: flip visibility (public/private) and delete the repo.
@@ -1363,6 +1578,30 @@ QWidget *MainWindow::buildRepoSettingsTab()
     auto *heading = new QLabel("Repository settings");
     heading->setObjectName("channelTitle");
     outer->addWidget(heading);
+
+    // --- About --------------------------------------------------------------
+    auto *aboutHeading = new QLabel("About");
+    aboutHeading->setObjectName("sectionLabel");
+    outer->addWidget(aboutHeading);
+
+    auto *aboutHint = new QLabel(
+        "The description, website link and topics shown on this repository's "
+        "overview (and on its public ForkMesh page).");
+    aboutHint->setObjectName("statusLine");
+    aboutHint->setWordWrap(true);
+    outer->addWidget(aboutHint);
+
+    auto *aboutEditBtn = new QPushButton("Edit description & website\xE2\x80\xA6");
+    aboutEditBtn->setProperty("buttonSize", "sm");
+    aboutEditBtn->setCursor(Qt::PointingHandCursor);
+    connect(aboutEditBtn, &QPushButton::clicked, this, &MainWindow::editRepoAbout);
+    auto *aboutRow = new QHBoxLayout;
+    aboutRow->setContentsMargins(0, 0, 0, 0);
+    aboutRow->addWidget(aboutEditBtn);
+    aboutRow->addStretch();
+    outer->addLayout(aboutRow);
+
+    outer->addSpacing(10);
 
     // --- Visibility -------------------------------------------------------
     auto *visHeading = new QLabel("Visibility");
@@ -1627,10 +1866,12 @@ QWidget *MainWindow::buildRepoSettingsTab()
     outer->addWidget(dangerHeading);
 
     auto *deleteHint = new QLabel(
-        "Delete this node's mirror of the repository. If you have a local "
-        "working directory it is kept and the repo stays as local-only; "
-        "otherwise the repository is removed from this node. Published repos "
-        "are also removed from the public ForkMesh catalog.");
+        "Delete this repository from this node completely. Your working "
+        "directory, if any, is kept on disk but no longer tracked by "
+        "ForkMesh. Published repos are also removed from the public "
+        "ForkMesh catalog, freeing up the name for reuse. You can also "
+        "choose to keep the mirror files on disk and just untrack the "
+        "repository from ForkMesh.");
     deleteHint->setObjectName("statusLine");
     deleteHint->setWordWrap(true);
     outer->addWidget(deleteHint);
@@ -2223,6 +2464,8 @@ void MainWindow::deleteCatalogRepository(const QString &owner, const QString &na
     const QString safeName = repoSegment(name, QStringLiteral("repository"));
     if (safeOwner.isEmpty() || safeName.isEmpty())
         return;
+    if (!hasOwnerSigningCapability(safeOwner))
+        return;
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
         logSystem("Catalog: could not load identity to remove old website entry.");
         return;
@@ -2327,7 +2570,7 @@ void MainWindow::startRepoHosts()
     // Rebuild only when the desired set changes; many sync/publish/status paths
     // call this defensively, and restarting identical host tunnels creates noisy
     // duplicate WebSocket traffic.
-    if (!hasActiveAccountSession()) {
+    if (!hasOwnerSigningCapability()) {
         if (!m_repoHosts.isEmpty())
             stopRepoHosts();
         else
@@ -2365,6 +2608,8 @@ void MainWindow::startRepoHosts()
         const QString tokenOwner = catalogOwner(repo);
         const QString tokenRepo = repo.name;
         host->setTokenProvider([this, tokenOwner, tokenRepo]() -> QString {
+            if (!hasOwnerSigningCapability(tokenOwner))
+                return QString();
             const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
             const QByteArray canonical =
                 ("forkmesh-host-v1\n" + tokenOwner + "\n" + tokenRepo + "\n" + ts)
@@ -2599,7 +2844,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     const QString publishKey = catalogPublishKey(repo);
     if (publishKey.isEmpty())
         return;
-    if (!hasActiveAccountSession()) {
+    if (!hasOwnerSigningCapability(catalogOwner(repo))) {
         // Publishing/hosting is the opt-in, paid side of the app. Point the user
         // at the "Get paid to mirror" button on their node profile rather than
         // failing silently; the core flow (clone, mirror, issues, PRs) is
@@ -2636,7 +2881,8 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     // the same owner the host registers under.
     const QString owner = catalogOwner(repo);
     const QString name = repoSegment(repo.name, QStringLiteral("repository"));
-    const QString updatedAt = QString::number(now);
+    QString updatedAt = QString::number(now);
+    QJsonObject contributionFields;
     // A stable identity for the logical repo: its first (root) commit, shared by
     // every node mirroring it. The network page groups mirrors by this so the same
     // repo under different owners shows as one card. Not part of the signature.
@@ -2729,6 +2975,153 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
         headBranch = servedHeadBranch;
         headCommit = servedHeadCommit;
     }
+    RepoContributionSnapshotInput snapshotInput;
+    snapshotInput.workTreePath = repo.localPath;
+    snapshotInput.mirrorPath = repo.mirrorPath;
+    snapshotInput.branch = headBranch;
+    snapshotInput.head = headCommit;
+    snapshotInput.publishingKey = m_profileIdentity.publicKey();
+    snapshotInput.capturedAtMs = now;
+    const QString contributionScanKey =
+        RepoContributionPublicationCache::key(
+            owner, name, headCommit, headBranch,
+            m_profileIdentity.publicKey(),
+            QStringLiteral("dependency-scan"));
+    QString contributionSnapshotKey;
+    if (repo.isPrivate) {
+        const QString previousScanKey =
+            m_catalogContributionScanKey.take(publishKey);
+        const QString previousSnapshotKey =
+            m_catalogContributionSnapshotKey.take(publishKey);
+        m_contributionPublicationCache.invalidate(previousScanKey);
+        m_contributionPublicationCache.invalidate(previousSnapshotKey);
+        m_catalogContributionDependencyFingerprint.remove(publishKey);
+        m_catalogContributionPreparedScanKey.remove(publishKey);
+        m_catalogContributionPreparedSnapshotKey.remove(publishKey);
+        m_contributionPublicationCache.clearStaleRetry(publishKey);
+    } else {
+        const QString previousScanKey =
+            m_catalogContributionScanKey.value(publishKey);
+        if (!previousScanKey.isEmpty() &&
+            previousScanKey != contributionScanKey) {
+            m_contributionPublicationCache.invalidate(previousScanKey);
+        }
+        m_catalogContributionScanKey.insert(publishKey,
+                                            contributionScanKey);
+
+        const QString preparedScanKey =
+            m_catalogContributionPreparedScanKey.take(publishKey);
+        const QString preparedSnapshotKey =
+            m_catalogContributionPreparedSnapshotKey.take(publishKey);
+        if (preparedScanKey == contributionScanKey)
+            contributionSnapshotKey = preparedSnapshotKey;
+
+        const QString previousSnapshotKey =
+            m_catalogContributionSnapshotKey.value(publishKey);
+        std::optional<RepoContributionSnapshot> cachedSnapshot;
+        if (!contributionSnapshotKey.isEmpty()) {
+            cachedSnapshot = m_contributionPublicationCache.lookup(
+                contributionSnapshotKey, now);
+        }
+        if (!cachedSnapshot.has_value()) {
+            const auto beginResult = m_contributionPublicationCache.begin(
+                contributionScanKey, showDialogOnError);
+            if (beginResult ==
+                RepoContributionPublicationCache::BeginResult::Started) {
+                const QString expectedDependencyFingerprint =
+                    m_catalogContributionDependencyFingerprint.value(
+                        publishKey);
+                const bool cachedSnapshotAvailable =
+                    !previousSnapshotKey.isEmpty() &&
+                    m_contributionPublicationCache.lookup(
+                        previousSnapshotKey, now).has_value();
+                auto *watcher =
+                    new QFutureWatcher<RepoContributionPreparation>(this);
+                connect(
+                    watcher,
+                    &QFutureWatcher<RepoContributionPreparation>::finished,
+                    this,
+                    [this, watcher, contributionScanKey, publishKey,
+                     previousSnapshotKey, owner, name, headCommit,
+                     headBranch,
+                     accountPublicKey = m_profileIdentity.publicKey()] {
+                        const RepoContributionPreparation preparation =
+                            watcher->result();
+                        watcher->deleteLater();
+                        const auto completion =
+                            m_contributionPublicationCache.complete(
+                                contributionScanKey);
+                        if (completion.discarded ||
+                            m_catalogContributionScanKey.value(publishKey) !=
+                                contributionScanKey) {
+                            scheduleCatalogPublish(
+                                publishKey, completion.requestDialog);
+                            return;
+                        }
+
+                        const QString snapshotKey =
+                            RepoContributionPublicationCache::key(
+                                owner, name, headCommit, headBranch,
+                                accountPublicKey,
+                                preparation.dependencyFingerprint);
+                        const qint64 completedAt =
+                            QDateTime::currentMSecsSinceEpoch();
+                        if (preparation.rebuiltSnapshot.has_value()) {
+                            m_contributionPublicationCache.store(
+                                snapshotKey,
+                                *preparation.rebuiltSnapshot,
+                                completedAt);
+                        }
+                        if (!previousSnapshotKey.isEmpty() &&
+                            previousSnapshotKey != snapshotKey) {
+                            m_contributionPublicationCache.invalidate(
+                                previousSnapshotKey);
+                        }
+                        m_catalogContributionDependencyFingerprint.insert(
+                            publishKey,
+                            preparation.dependencyFingerprint);
+                        m_catalogContributionSnapshotKey.insert(
+                            publishKey, snapshotKey);
+                        if (m_contributionPublicationCache.lookup(
+                                snapshotKey, completedAt).has_value()) {
+                            m_catalogContributionPreparedScanKey.insert(
+                                publishKey, contributionScanKey);
+                            m_catalogContributionPreparedSnapshotKey.insert(
+                                publishKey, snapshotKey);
+                        }
+                        scheduleCatalogPublish(
+                            publishKey, completion.requestDialog);
+                    });
+                watcher->setFuture(QtConcurrent::run(
+                    [snapshotInput, expectedDependencyFingerprint,
+                     cachedSnapshotAvailable] {
+                        return prepareRepoContributionSnapshot(
+                            snapshotInput, expectedDependencyFingerprint,
+                            cachedSnapshotAvailable);
+                    }));
+            } else if (
+                beginResult == RepoContributionPublicationCache::BeginResult::
+                                   CapacityExceeded) {
+                scheduleCatalogPublish(publishKey, showDialogOnError,
+                                       kContributionScanCapacityRetryMs);
+            }
+            return;
+        }
+
+        if (cachedSnapshot->complete && cachedSnapshot->error.isEmpty()) {
+            const qint64 capturedAt = qint64(
+                cachedSnapshot->payload.value(QStringLiteral("capturedAt"))
+                    .toDouble(-1));
+            const QString snapshotUpdatedAt = QString::number(capturedAt);
+            const QJsonObject signedFields = signedContributionFields(
+                *cachedSnapshot, owner, name, snapshotUpdatedAt,
+                m_profileIdentity);
+            if (!signedFields.isEmpty()) {
+                updatedAt = snapshotUpdatedAt;
+                contributionFields = signedFields;
+            }
+        }
+    }
     const int issueCount = mirrorIssueCount(repo.mirrorPath, headBranch);
     // Highest issue number ever assigned (not just the open count), so the
     // relay can propose the same next number the desktop would for a ForkBot-
@@ -2799,6 +3192,13 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                                         ? QStringLiteral("remote-clone")
                                         : QStringLiteral("local-node")},
                          {"maintainer", m_profileIdentity.publicKey()}};
+    for (auto it = contributionFields.constBegin();
+         it != contributionFields.constEnd(); ++it) {
+        metadata.insert(it.key(), it.value());
+    }
+    const bool contributionSubmitted =
+        metadata.contains(QStringLiteral("contributionPayload")) &&
+        metadata.contains(QStringLiteral("contributionSig"));
     metadata.insert("signature", m_profileIdentity.signJson(metadata));
     // The server verifies this against the account's registered pubkey: only the
     // account key holder can write its namespace (prevents impersonation/dups).
@@ -2854,13 +3254,16 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
               request.url().toString() + ".");
 
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, index, publishKey, showDialogOnError, fingerprint] {
+            [this, reply, index, publishKey, showDialogOnError, fingerprint,
+             contributionSnapshotKey, contributionSubmitted] {
                 const QByteArray body = reply->readAll();
                 const int status =
                     reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                 const QNetworkReply::NetworkError error = reply->error();
+                const int priorFailures =
+                    m_catalogPublishConsecutiveFailures.value(publishKey, 0);
                 const qint64 retryDelayMs =
-                    catalogPublishRetryDelayMs(reply, status);
+                    catalogPublishRetryDelayMs(reply, status, priorFailures);
                 reply->deleteLater();
                 m_catalogPublishInFlight.remove(publishKey);
                 const bool publishQueued =
@@ -2868,8 +3271,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 m_catalogPublishQueued.remove(publishKey);
                 const bool queuedDialog =
                     m_catalogPublishDialogQueued.contains(publishKey);
-                if (publishQueued)
-                    m_catalogPublishDialogQueued.remove(publishKey);
+                m_catalogPublishDialogQueued.remove(publishKey);
 
                 auto publishQueuedUpdate = [this, publishKey, publishQueued,
                                             queuedDialog](qint64 minDelayMs = 0) {
@@ -2883,7 +3285,89 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 }
 
                 RepositoryRecord &repo = m_repositories[index];
+                const QJsonObject responseObject =
+                    QJsonDocument::fromJson(body).object();
+                const QString responseCode =
+                    responseObject.value(QStringLiteral("error")).toString();
+                if (status == 409 &&
+                    responseCode == QLatin1String("stale_update") &&
+                    !contributionSnapshotKey.isEmpty()) {
+                    m_contributionPublicationCache.invalidate(
+                        contributionSnapshotKey);
+                    if (m_catalogContributionSnapshotKey.value(publishKey) ==
+                        contributionSnapshotKey) {
+                        m_catalogContributionSnapshotKey.remove(publishKey);
+                    }
+                    const bool retry =
+                        m_contributionPublicationCache.claimStaleRetry(
+                            publishKey, contributionSnapshotKey);
+                    const bool wantsDialog =
+                        showDialogOnError || queuedDialog;
+                    if (retry) {
+                        logSystem(
+                            "Catalog: stale contribution timestamp for " +
+                            repo.owner + "/" + repo.name +
+                            "; rebuilding one fresh snapshot.");
+                        scheduleCatalogPublish(publishKey, wantsDialog);
+                    } else {
+                        const QString message =
+                            "Catalog publish stopped for " + repo.owner + "/" +
+                            repo.name +
+                            ": the relay still reports stale_update after one "
+                            "fresh snapshot retry.";
+                        logSystem(message);
+                        if (wantsDialog)
+                            flashMessage(message, /*error=*/true);
+                        publishQueuedUpdate();
+                    }
+                    return;
+                }
                 if (error == QNetworkReply::NoError && status >= 200 && status < 300) {
+                    if (repoContributionResponseNeedsRefresh(
+                            responseObject, contributionSubmitted)) {
+                        m_contributionPublicationCache.invalidate(
+                            contributionSnapshotKey);
+                        if (m_catalogContributionSnapshotKey.value(publishKey) ==
+                            contributionSnapshotKey) {
+                            m_catalogContributionSnapshotKey.remove(publishKey);
+                        }
+                        const bool retry =
+                            m_contributionPublicationCache.claimStaleRetry(
+                                publishKey, contributionSnapshotKey);
+                        const QString warning =
+                            responseObject
+                                .value(QStringLiteral("contributionWarning"))
+                                .toString()
+                                .simplified()
+                                .left(240);
+                        const bool wantsDialog =
+                            showDialogOnError || queuedDialog;
+                        if (retry) {
+                            logSystem(
+                                "Catalog: contribution was rejected for " +
+                                repo.owner + "/" + repo.name +
+                                "; rebuilding one fresh snapshot" +
+                                (warning.isEmpty()
+                                     ? QStringLiteral(".")
+                                     : QStringLiteral(": ") + warning));
+                            scheduleCatalogPublish(publishKey, wantsDialog);
+                        } else {
+                            const QString message =
+                                "Catalog contribution stopped for " +
+                                repo.owner + "/" + repo.name +
+                                " after one fresh snapshot retry" +
+                                (warning.isEmpty()
+                                     ? QStringLiteral(".")
+                                     : QStringLiteral(": ") + warning);
+                            logSystem(message);
+                            if (wantsDialog)
+                                flashMessage(message, /*error=*/true);
+                            publishQueuedUpdate();
+                        }
+                        return;
+                    }
+                    m_contributionPublicationCache.clearStaleRetry(publishKey);
+                    m_catalogPublishConsecutiveFailures.remove(publishKey);
                     m_catalogPublishedFingerprint.insert(publishKey, fingerprint);
                     m_catalogPublishedFingerprintAtMs.insert(
                         publishKey, QDateTime::currentMSecsSinceEpoch());
@@ -2914,6 +3398,8 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 } else {
                     detail = detail.left(500);
                 }
+                if (detail.isEmpty() && error != QNetworkReply::NoError)
+                    detail = reply->errorString();
                 const QString message =
                     "Catalog publish failed for " + repo.owner + "/" + repo.name +
                     (status > 0 ? " (HTTP " + QString::number(status) + ")" :
@@ -2922,6 +3408,24 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 logSystem(message);
                 if (showDialogOnError)
                     flashMessage(message, /*error=*/true);
+                // Track consecutive retryable failures so the next retry backs
+                // off further; a terminal (non-retryable) error clears the run
+                // so a later transient failure starts from the base delay again.
+                if (retryDelayMs > 0)
+                    m_catalogPublishConsecutiveFailures.insert(
+                        publishKey, priorFailures + 1);
+                else
+                    m_catalogPublishConsecutiveFailures.remove(publishKey);
+                // A retryable failure (429/5xx -> retryDelayMs > 0) must
+                // self-retry even when no follow-up edit queued another
+                // publish: otherwise a lone failed publish silently waits
+                // for the next unrelated change (or the 6h refresh).
+                if (retryDelayMs > 0 && !publishQueued) {
+                    scheduleCatalogPublish(publishKey,
+                                           /*showDialogOnError=*/false,
+                                           retryDelayMs);
+                    return;
+                }
                 publishQueuedUpdate(retryDelayMs);
             });
 }
@@ -3016,6 +3520,26 @@ bool isTransientSyncError(const QString &errors)
 
 } // namespace
 
+void MainWindow::autoSyncMirrorsIfRelayHealthy()
+{
+    // Periodic safety-net path only — the explicit "sync now" action
+    // (headlessSyncNow) calls autoSyncMirrors() directly and stays ungated.
+    // The git fetch/clone subprocesses below never pass through
+    // BackoffNetworkAccessManager, so honour its host-wide 429/5xx cooldown
+    // here: when the relay's daily Cloudflare quota is already exhausted,
+    // a fleet-wide fetch round would only burn more of the missing budget.
+    const auto *network =
+        qobject_cast<BackoffNetworkAccessManager *>(m_networkAccess);
+    const QString relayHost = catalogApiUrl().host();
+    if (network && !relayHost.isEmpty() && network->hostInCooldown(relayHost)) {
+        logSystem(QStringLiteral("Mirror: skipping periodic auto-sync — relay "
+                                 "%1 is in rate-limit cooldown.")
+                      .arg(relayHost));
+        return;
+    }
+    autoSyncMirrors();
+}
+
 void MainWindow::autoSyncMirrors()
 {
     // Retry the flagship-repo bootstrap here too, not just the one-shot timer
@@ -3047,7 +3571,7 @@ void MainWindow::syncMirrorsBehindRoster()
 {
     // A peer just (re-)advertised its mirror set via hello. For every repo we
     // mirror, if any online peer advertises a commit our bare mirror does not
-    // contain, pull it now rather than waiting for the 5-minute auto-sync. This
+    // contain, pull it now rather than waiting for the 15-minute auto-sync. This
     // backstops notifyMirrorUpdated (which is ephemeral and missed if we were
     // offline/just connected): the moment the roster shows the source moved, we
     // converge. syncRepository fetches refs/heads/* + refs/tags/*, so issue/PR
@@ -3126,7 +3650,7 @@ void MainWindow::propagateRepoUpdate(int index)
     // just-committed issue/PR lands in the mirror. On a detected change it
     // refreshes the open detail (updating the Issues/PR counts) and broadcasts
     // notifyMirrorUpdated, which mirroring peers act on via onPeerMirrorUpdated —
-    // converging everyone in seconds rather than at the next 5-minute tick.
+    // converging everyone in seconds rather than at the next 15-minute tick.
     syncRepository(index, /*quiet=*/true);
     // The mirror fetch above is asynchronous; until it finishes our working copy
     // is ahead of the bare mirror we serve. Refresh the Mirror nodes panel now so
@@ -3142,7 +3666,8 @@ void MainWindow::propagateRepoUpdate(int index)
 }
 
 void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
-                                     const QString &peerName)
+                                     const QString &peerName,
+                                     const QString &commit)
 {
     // Only surface it if we keep a real mirror of this repo (browse-only
     // previews don't count) — otherwise the peer's update isn't relevant here.
@@ -3176,16 +3701,122 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
     logSystem(msg);
     flashMessage(msg);
 
+    // The announcement named the peer's new HEAD; reflect it in the live roster
+    // so the Mirror nodes panel shows the peer at that commit right away instead
+    // of waiting for its next hello (the source of the >30s lag).
+    applyPeerMirrorCommit(ownerName, peerName, commit);
+
+    // The signal named the exact new commit. If our mirror already holds it we
+    // are already converged — close the round trip instantly by reporting back
+    // that we are up to date, with no redundant fetch.
+    const QString target = commit.trimmed();
+    const RepositoryRecord &matched = m_repositories.at(matchIndex);
+    if (!target.isEmpty() && !matched.mirrorPath.trimmed().isEmpty() &&
+        runGitCapture(matched.mirrorPath,
+                      {QStringLiteral("cat-file"), QStringLiteral("-e"),
+                       target + QStringLiteral("^{commit}")},
+                      nullptr, nullptr)) {
+        if (m_backend)
+            m_backend->notifyMirrorSynced(ownerName, target);
+        return;
+    }
+
     // Converge promptly: pull the peer's advance into our own mirror now instead
-    // of waiting for the next 5-minute auto-sync. This fetches refs/heads/* and
+    // of waiting for the next 15-minute auto-sync. This fetches refs/heads/* and
     // refs/tags/*, so issues and pull requests (which live on refs/heads) come
-    // along with the code. Quiet so it doesn't spam unless something changed.
+    // along with the code. Quiet so it doesn't spam unless something changed. The
+    // sync's completion broadcasts notifyMirrorSynced, reporting back the moment
+    // the fetch lands the new commit.
     if (!m_syncingRepos.contains(matchIndex))
         syncRepository(matchIndex, /*quiet=*/true);
     if (notifyEnabled(kMirrorUpdateAlertSetting) && m_trayIcon &&
         QSystemTrayIcon::supportsMessages())
         m_trayIcon->showMessage("ForkMesh — mirror updated", msg,
                                 QSystemTrayIcon::Information, 6000);
+}
+
+void MainWindow::onPeerMirrorSynced(const QString &ownerName,
+                                    const QString &peerName,
+                                    const QString &commit)
+{
+    // A peer reported it finished pulling a repo's mirror up to `commit` — the
+    // closing half of the signal -> update -> done round trip. Only surface it
+    // for a repo we actually hold (same match as onPeerMirrorUpdated), and keep
+    // it to a quiet log line (no toast/tray) so a busy mesh's acknowledgements
+    // don't spam the user.
+    bool relevant = false;
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (repo.previewOnly)
+            continue;
+        const QString canonical =
+            catalogOwner(repo) + "/" +
+            repoSegment(repo.name, QStringLiteral("repository"));
+        const QString source =
+            repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
+            repoSegment(repo.name, QStringLiteral("repository"));
+        if (canonical == ownerName || source == ownerName ||
+            (repo.owner + "/" + repo.name) == ownerName) {
+            relevant = true;
+            break;
+        }
+    }
+    if (!relevant)
+        return;
+
+    const QString who =
+        peerName.trimmed().isEmpty() ? QStringLiteral("A peer") : peerName.trimmed();
+    QString msg = who + " is up to date on the mirror of " + ownerName;
+    if (!commit.trimmed().isEmpty())
+        msg += " at " + commit.trimmed().left(10);
+    msg += ".";
+    logSystem(msg);
+
+    // The ack named the exact commit the peer now holds. Reflect it in the live
+    // roster right away so this node's Mirror nodes panel shows the peer as
+    // converged the instant it reports back, rather than lagging until the
+    // peer's next hello re-advertises the new HEAD.
+    applyPeerMirrorCommit(ownerName, peerName, commit);
+}
+
+bool MainWindow::applyPeerMirrorCommit(const QString &ownerName,
+                                       const QString &peerName,
+                                       const QString &commit)
+{
+    const QString group = ownerName.trimmed();
+    const QString target = commit.trimmed().left(64);
+    const QString who = peerName.trimmed();
+    if (group.isEmpty() || target.isEmpty() || who.isEmpty())
+        return false;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    bool changed = false;
+    for (MemberInfo &node : m_homeRoster) {
+        if (node.self)
+            continue; // our own row reads the live local HEAD, never a peer ack
+        // Identify the reporting peer by its advertised name (chat or node
+        // account). A name we don't recognise leaves the roster untouched, so a
+        // stray/misrouted ack can never mark the wrong node as converged.
+        if (node.name.compare(who, Qt::CaseInsensitive) != 0 &&
+            node.nodeName.compare(who, Qt::CaseInsensitive) != 0)
+            continue;
+        for (MirrorAdvert &m : node.mirrorDetails) {
+            if (m.source.compare(group, Qt::CaseInsensitive) != 0 &&
+                m.ownerName.compare(group, Qt::CaseInsensitive) != 0)
+                continue;
+            if (m.commit != target) {
+                m.commit = target;
+                if (m.updatedMs < now)
+                    m.updatedMs = now;
+                changed = true;
+            }
+        }
+    }
+    // Repaint the open Mirror nodes panel so the peer's row updates now. The
+    // panel is rebuilt from m_homeRoster, so the patched advert flows straight
+    // through; only reload while it is actually on screen (it shells several
+    // synchronous git reads — see loadMirrorNodesPanel).
+    if (changed && m_mirrorNodesTable && m_mirrorNodesTable->isVisible())
+        loadMirrorNodesPanel();
+    return changed;
 }
 
 void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
@@ -3578,11 +4209,22 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         // Tell connected peers that also mirror this repo that it
                         // advanced from its source of truth. Only for real mirrors
                         // that already existed (an actual update, not a first clone).
+                        // Carry the new HEAD so peers see exactly which commit is
+                        // different and can confirm once they reach it.
+                        const QString mirrorId =
+                            catalogOwner(repo) + "/" +
+                            repoSegment(repo.name, QStringLiteral("repository"));
                         if (changed && hasMirror && !stillPreview && m_backend)
-                            m_backend->notifyMirrorUpdated(
-                                catalogOwner(repo) + "/" +
-                                repoSegment(repo.name,
-                                            QStringLiteral("repository")));
+                            m_backend->notifyMirrorUpdated(mirrorId, *headCommit);
+                        // Round-trip acknowledgement: when we are a mirror pulling
+                        // from an upstream source (not the working-copy owner that
+                        // pushes it forward), report back that our mirror now holds
+                        // the new commit, closing the signal -> update -> done loop
+                        // in seconds instead of at the next advert tick.
+                        if (changed && hasMirror && !stillPreview && m_backend &&
+                            !headCommit->isEmpty() &&
+                            !repositorySource(repo).isEmpty())
+                            m_backend->notifyMirrorSynced(mirrorId, *headCommit);
                         // Quiet auto-syncs only speak up when something changed.
                         if (!quiet || changed) {
                             logSystem((stillPreview ? QStringLiteral("Preview cache: cached ")
@@ -3680,6 +4322,14 @@ void MainWindow::onProfileNameChanged(const QString &name)
     const QString oldOwner =
         accountNameFromInput(m_accountName.isEmpty() ? m_userName : m_accountName,
                              QStringLiteral("owner"));
+    setDesktopCapability(m_accountName, false);
+    m_accountAuthenticated = false;
+    m_accountTier = QStringLiteral("free");
+    m_accountSolanaVerified = false;
+    m_isAdmin = false;
+    if (m_adminPollTimer)
+        m_adminPollTimer->stop();
+    QSettings().remove(kAuthedAccountSetting);
     m_userName = trimmed;
     m_accountName = trimmed;
     saveProfileName(trimmed);
@@ -3708,12 +4358,14 @@ void MainWindow::logout()
         m_heartbeatTimer->stop();
     if (m_adminPollTimer)
         m_adminPollTimer->stop();
+    setDesktopCapability(m_accountName, false);
     m_accountAuthenticated = false;
     m_accountTier = QStringLiteral("free");
     m_accountSolanaVerified = false;
     m_isAdmin = false;
     m_seenPendingUsers.clear();
     m_accountName.clear();
+    QSettings().remove(kAuthedAccountSetting);
     QSettings().remove(kAccountNameSetting);
     refreshSettingsEmailVerifiedBadge();
     leaveSession();

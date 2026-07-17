@@ -114,7 +114,7 @@ def test_public_chat_has_rooms_conversation_and_people_panes():
     # field, exactly like the desktop; sends carry the active room.
     assert "channel: activeChannel" in PUBLIC_CHAT
     assert "function setActiveChannel(" in PUBLIC_CHAT
-    assert 'DEFAULT_CHANNELS = ["#general", "#welcome-users", "#welcome-nodes"]' in PUBLIC_CHAT
+    assert 'DEFAULT_CHANNELS = ["#general", "#welcome", "#random"]' in PUBLIC_CHAT
 
 
 def test_public_chat_sends_presence_keepalive_at_desktop_cadence():

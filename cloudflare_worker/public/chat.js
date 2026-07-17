@@ -10,12 +10,14 @@
 // presence/chat frames, online = seen within the desktop's 3-minute window).
 
 const ROOM_NAME = "general";
-// Baked-in app key for the passphrase-free shared rooms. MUST stay byte-for-byte
-// identical to the desktop client's kAppRoomKey (qt_client RoomCrypto.cpp) and the
-// Flutter app's _appRoomKey (room_crypto.dart); the PBKDF2 password is what binds
-// every client to the same AES key, so a mismatch silently drops all messages.
-const ROOM_PASSPHRASE = "forkmesh-shared-room-key-v1";
-const DEFAULT_CHANNELS = ["#general", "#welcome-users", "#welcome-nodes"];
+// The room key is no longer a public constant. Every client fetches a shared
+// passphrase (derived server-side from the relay's DATA_KEY) from
+// /api/chat/room-key and feeds it into the same PBKDF2 room-key derivation, so
+// all clients still converge on the same AES key — but only signed-in accounts
+// can obtain it. Fetched once and cached here.
+const ROOM_KEY_ENDPOINT = "/api/chat/room-key";
+let roomPassphrase = null;
+const DEFAULT_CHANNELS = ["#general", "#welcome", "#random"];
 const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
 const FORKBOT_ENDPOINT = "/api/forkbot/chat";
 const FORKBOT_SENDER_ID = "forkbot";
@@ -52,9 +54,24 @@ const channelTitleEl = document.querySelector("#chat-channel-title");
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-const selfId =
-  (crypto.randomUUID && crypto.randomUUID()) ||
-  String(Math.random()).slice(2) + Date.now();
+// A stable per-browser chat id. The relay holds no roster — every participant
+// is reconstructed client-side from the senderId on decrypted frames — so a
+// fresh random id per page load made each reload/tab of the same person show up
+// as a brand-new "ghost" participant (the "lots of jett users" symptom).
+// Persisting it collapses reloads/tabs of the same browser into one entry;
+// signed-in users still display under their account name via displayName().
+const selfId = (() => {
+  const STORAGE_KEY = "forkmesh.chat.selfId";
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) return saved;
+  } catch (_) {}
+  const fresh =
+    (crypto.randomUUID && crypto.randomUUID()) ||
+    String(Math.random()).slice(2) + Date.now();
+  try { localStorage.setItem(STORAGE_KEY, fresh); } catch (_) {}
+  return fresh;
+})();
 
 let roomKey = null;
 let socket = null;
@@ -153,14 +170,36 @@ async function ed25519Verify(pubB64url, sigB64url, dataStr) {
 
 // ---- room crypto (matches RoomCrypto.cpp) -----------------------------------
 
+// Fetch the shared room passphrase (server-derived from DATA_KEY) once and cache
+// it. Requires a signed-in account session; anonymous callers get 401, which is
+// the point — the key is no longer a constant anyone can read from the source.
+async function fetchRoomPassphrase() {
+  if (roomPassphrase) return roomPassphrase;
+  const session = userSession();
+  const token = session && session.sessionToken;
+  const headers = { accept: "application/json" };
+  if (token) headers.authorization = "Bearer " + token;
+  const res = await fetch(ROOM_KEY_ENDPOINT, { headers, cache: "no-store" });
+  if (!res.ok) {
+    const err = new Error("Sign in to join chat — could not fetch the room key.");
+    err.code = res.status === 401 || res.status === 403 ? "auth" : "server";
+    throw err;
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!data || !data.passphrase) throw new Error("Room key unavailable.");
+  roomPassphrase = String(data.passphrase);
+  return roomPassphrase;
+}
+
 async function deriveRoomKey() {
+  const passphrase = await fetchRoomPassphrase();
   const saltDigest = new Uint8Array(
     await crypto.subtle.digest("SHA-256", enc.encode("ForkMesh room:" + ROOM_NAME))
   );
   const salt = saltDigest.slice(0, 16);
   const baseKey = await crypto.subtle.importKey(
     "raw",
-    enc.encode(ROOM_PASSPHRASE),
+    enc.encode(passphrase),
     "PBKDF2",
     false,
     ["deriveKey"]
@@ -777,16 +816,33 @@ function personIsOnline(person) {
 function renderPeople() {
   if (!peopleEl) return;
   peopleEl.textContent = "";
-  const people = [...roster.values()];
+  // Collapse multiple entries for the same person into one row: a person can
+  // surface under several ids (history-replayed old senderIds, or the same
+  // account from other tabs/devices) that all carry the same display name.
+  // Dedupe WITHIN a section (users, nodes) by lowercased name — never across
+  // kinds — keeping the freshest sighting so online state wins; fall back to
+  // the id when a name is somehow missing.
+  const dedupePeople = (list) => {
+    const byIdentity = new Map();
+    for (const person of list) {
+      const key = (String(person.name || "").trim().toLowerCase() || person.id);
+      const prev = byIdentity.get(key);
+      if (!prev || person.lastSeenMs > prev.lastSeenMs) byIdentity.set(key, person);
+    }
+    return [...byIdentity.values()];
+  };
   const bySection = { user: [], node: [] };
-  for (const person of people) {
+  for (const person of roster.values()) {
     (person.kind === "node" ? bySection.node : bySection.user).push(person);
   }
+  bySection.user = dedupePeople(bySection.user);
+  bySection.node = dedupePeople(bySection.node);
   const sortPeople = (list) =>
     list.sort((a, b) =>
       (personIsOnline(b) - personIsOnline(a)) ||
       a.name.localeCompare(b.name));
-  const onlineCount = people.filter(personIsOnline).length;
+  const onlineCount =
+    [...bySection.user, ...bySection.node].filter(personIsOnline).length;
   if (peopleTitleEl) {
     peopleTitleEl.textContent = `People — ${onlineCount} online`;
   }
@@ -1315,13 +1371,24 @@ async function connect() {
     lockChatForNonUser();
     return;
   }
+  // WebCrypto (crypto.subtle) only exists in a secure context. Served over
+  // plain HTTP — a self-hosted node or LAN IP opened on mobile — it is
+  // undefined, so the room key can never derive. Say so plainly.
+  if (!window.isSecureContext || !(window.crypto && window.crypto.subtle)) {
+    setStatus("Chat needs a secure (HTTPS) connection");
+    return;
+  }
   connecting = true;
   setStatus("Connecting...");
   try {
     if (!roomKey) roomKey = await deriveRoomKey();
   } catch (error) {
     connecting = false;
-    setStatus("Encryption unavailable in this browser");
+    // An expired/absent session token 401s the room-key fetch; point the user
+    // at re-authenticating instead of blaming the browser's crypto.
+    setStatus(error && error.code === "auth"
+      ? "Sign in again to join chat"
+      : "Encryption unavailable in this browser");
     return;
   }
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";

@@ -572,8 +572,7 @@ bool CoveStore::createAccountCove(const QString &name, const QString &creatorAcc
     const QString creatorAccountNorm = normalizedAccount(creatorAccount);
     if (name.trimmed().isEmpty() || creatorAccountNorm.isEmpty()) {
         if (error)
-            *error = QStringLiteral("A cove needs a name and a verified creator "
-                                    "account.");
+            *error = QStringLiteral("A cove needs a name and a creator account.");
         return false;
     }
 

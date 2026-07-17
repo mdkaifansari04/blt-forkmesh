@@ -9,7 +9,7 @@
     <meta name="application-name" content="ForkMesh">
     <meta name="apple-mobile-web-app-title" content="ForkMesh">
     <meta name="theme-color" content="#090909">
-    <meta name="color-scheme" content="dark">
+    <meta name="color-scheme" content="light dark">
     <link rel="canonical" href="https://forkmesh.com/blog/assign-any-issue-to-an-agent/">
     <link rel="icon" href="/favicon/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png">
@@ -17,6 +17,8 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png">
     <link rel="manifest" href="/favicon/site.webmanifest">
     <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/site-header.css">
+    <script src="/site-header.js" defer></script>
     <meta property="og:type" content="article">
     <meta property="og:url" content="https://forkmesh.com/blog/assign-any-issue-to-an-agent/">
     <meta property="og:site_name" content="ForkMesh">
@@ -25,42 +27,11 @@
     <meta property="og:image" content="https://forkmesh.com/assets/blog/features/assign-any-issue-to-an-agent.webp">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/features/assign-any-issue-to-an-agent.webp">
-    <style>
-      :root { color-scheme: dark; --bg:#030303; --paper:#080808; --line:#252525; --soft:#141414; --text:#f6f6f2; --muted:#9a9a94; --green:#3fb950; --cyan:#76d8f6; --serif: Georgia, "Times New Roman", serif; --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-      * { box-sizing: border-box; }
-      body { margin:0; background:#000; color:var(--text); font-family:var(--sans); -webkit-font-smoothing:antialiased; }
-      a { color:inherit; text-decoration:none; }
-      .shell { width:min(100%, 1120px); margin:0 auto; min-height:100vh; border-left:1px solid var(--line); border-right:1px solid var(--line); background:var(--paper); }
-      .top { height:82px; display:flex; align-items:center; justify-content:space-between; padding:0 32px; border-bottom:1px solid var(--line); }
-      .brand { display:inline-flex; gap:12px; align-items:center; font-weight:900; font-size:24px; letter-spacing:0; }
-      .brand img { width:32px; height:36px; object-fit:contain; }
-      .top a.link { color:var(--muted); font-size:14px; }
-      .top a.link:hover { color:var(--text); }
-      main { padding:44px 32px 80px; }
-      .back { color:var(--muted); font-family:var(--mono); font-size:13px; text-transform:uppercase; letter-spacing:0; }
-      .back:hover { color:var(--cyan); }
-      .hero { margin-top:30px; display:grid; grid-template-columns:minmax(0,1fr); gap:30px; }
-      .eyebrow { color:var(--cyan); font-family:var(--mono); font-size:13px; text-transform:uppercase; letter-spacing:0; margin:0 0 18px; }
-      h1 { font-family:var(--serif); font-weight:500; font-size:64px; line-height:1.02; letter-spacing:0; margin:0; max-width:870px; }
-      .lede { color:var(--muted); font-size:20px; line-height:1.6; max-width:760px; margin:24px 0 0; }
-      .meta { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:24px; color:var(--muted); font-size:14px; }
-      .pill { border:1px solid var(--line); border-radius:999px; padding:6px 10px; color:var(--text); background:var(--soft); }
-      .hero-img { width:100%; aspect-ratio:16/9; object-fit:cover; border:1px solid var(--line); border-radius:14px; display:block; background:#050505; }
-      .body { max-width:790px; margin:44px auto 0; font-size:18px; line-height:1.78; }
-      .body h2 { margin:42px 0 8px; font-size:28px; line-height:1.2; letter-spacing:0; }
-      .body p { margin:14px 0; color:#e5e5df; }
-      .body .note { margin:34px 0; border:1px solid var(--line); background:#0f0f0f; border-radius:14px; padding:22px; color:var(--muted); }
-      .next { margin-top:56px; padding-top:26px; border-top:1px solid var(--line); display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; color:var(--muted); }
-      .next a:hover { color:var(--cyan); }
-      @media (max-width: 760px) { .top { padding:0 20px; } main { padding:30px 20px 64px; } .brand { font-size:20px; } h1 { font-size:42px; } }
-</style>
+    <link rel="stylesheet" href="/feature-post.css">
   </head>
   <body>
     <div class="shell">
-      <header class="top">
-        <a class="brand" href="/" aria-label="ForkMesh home"><img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true"><span>ForkMesh</span></a>
-        <a class="link" href="/signup">Sign Up / Log In</a>
-      </header>
+      <div data-forkmesh-header="simple"></div>
       <main>
         <a class="back" href="/blog">← All blog posts</a>
         <section class="hero">

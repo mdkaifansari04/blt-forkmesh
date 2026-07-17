@@ -10,6 +10,8 @@ from pathlib import Path
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+URLS = ENTRY.parent / "urls.py"
+URLS_TEXT = URLS.read_text(encoding="utf-8")
 SCHEMA = ENTRY.parent / "schema.py"
 SCHEMA_TEXT = SCHEMA.read_text(encoding="utf-8")
 PROFILE_FOLLOW_MIGRATION = (
@@ -20,6 +22,24 @@ QT_SRC = Path(__file__).resolve().parents[2] / "qt_client" / "src"
 QT_TEXT = "\n".join(
     p.read_text(encoding="utf-8") for p in sorted(QT_SRC.glob("MainWindow*.cpp"))
 )
+
+
+def test_worker_routes_public_profile_contributions_before_account_lookup():
+    assert "ACCOUNT_CONTRIBUTIONS_RE" in URLS_TEXT
+    assert "ACCOUNT_CONTRIBUTIONS_RE," in ENTRY_TEXT
+    routes = ENTRY_TEXT[ENTRY_TEXT.index("async def accounts_handler"):]
+    assert routes.index("ACCOUNT_CONTRIBUTIONS_RE.match(url.path)") < routes.index(
+        "ACCOUNTS_RE.match(url.path)"
+    )
+    assert "return await _contribution_profile_api(" in routes
+
+
+def test_public_profile_contribution_gate_requires_active_nonprivate_profile():
+    start = ENTRY_TEXT.index("async def _contribution_profile_api")
+    body = ENTRY_TEXT[start:ENTRY_TEXT.index("async def ", start + 10)]
+    assert 'rec.get("status") != "active"' in body
+    assert 'rec.get("profile_private")' in body
+    assert '{"error": "not_found"}' in body
 
 
 def test_worker_exposes_simple_signup_endpoint():
@@ -82,6 +102,24 @@ def test_worker_profile_contract_includes_avatar_updates():
     assert 'data.get("avatarPng", "")' in heartbeat_body
     assert 'rec["avatar_png"] = avatar_png' in heartbeat_body
     assert '"avatarPng": rec.get("avatar_png", "")' in public_lookup_body
+
+
+def test_public_lookup_reads_users_nodes_first_not_accounts_table():
+    # Users and nodes are now separate authoritative tables, so the public
+    # /api/accounts/<name> profile lookup resolves from them first and only
+    # falls back to the legacy accounts table for records that predate the
+    # split (e.g. a reserved name with no pubkey). This keeps the endpoint
+    # working for every client without treating accounts as the primary store.
+    public_lookup_start = ENTRY_TEXT.index("match = ACCOUNTS_RE.match(url.path)")
+    public_lookup_body = ENTRY_TEXT[
+        public_lookup_start:
+        ENTRY_TEXT.index('return json_response({"error": "not_found"}', public_lookup_start)
+    ]
+    primary = public_lookup_body.index("_account_identity_rec_by_bi(env, name_bi)")
+    fallback = public_lookup_body.index("_account_row(env, name)")
+    # users/nodes read comes first; accounts (_account_row) is the fallback.
+    assert primary < fallback
+    assert "if rec is None:" in public_lookup_body
 
 
 def test_worker_profile_contract_includes_bio_links_mastodon_and_privacy():
@@ -156,7 +194,11 @@ def test_worker_profile_contract_includes_about_location_timezone_and_counts():
     assert 'rec["profile_location"] = location' in profile_body
     assert 'rec["profile_timezone"] = timezone' in profile_body
     assert 'await _account_social_counts(env, name)' in public_payload_body
-    assert 'await _account_social_counts(env, rec.get("name", name))' in public_lookup_body
+    # The public lookup passes the optional ?viewer= through so the /@name
+    # page can show the caller's own Follow/Following state (display-only).
+    assert '_account_social_counts(' in public_lookup_body
+    assert 'env, rec.get("name", name), viewer)' in public_lookup_body
+    assert '"viewer"' in public_lookup_body
 
 
 def test_worker_profile_follow_schema_routes_and_cleanup_exist():
@@ -206,42 +248,59 @@ def test_worker_profile_public_edits_and_follows_accept_signed_session_token():
     assert 'data.get("password", "")' not in public_edit_block
 
 
-def test_worker_public_profile_exposes_follow_and_mirror_counts():
-    profile_html = ENTRY_TEXT[
-        ENTRY_TEXT.index("def _public_profile_html"):
-        ENTRY_TEXT.index("async def public_profile_handler")
-    ]
-    public_handler = ENTRY_TEXT[
-        ENTRY_TEXT.index("async def public_profile_handler"):
-        ENTRY_TEXT.index("def _donation_expiry_fields")
-    ]
+def test_worker_public_profile_page_wires_follow_and_public_mode():
+    # /@name now serves the FULL dashboard profile document; the follow
+    # control and foreign-profile rendering live in the dashboard bundle.
+    dashboard_js = (
+        Path(__file__).resolve().parents[1] / "public" / "dashboard.js"
+    ).read_text(encoding="utf-8")
+    assert "function publicProfileNameFromPath()" in dashboard_js
+    assert "function profileSubject()" in dashboard_js
+    assert "state.publicProfile" in dashboard_js
+    assert "data-profile-follow" in dashboard_js
+    assert '"/api/accounts/" + encodeURIComponent(name) + "/follow"' in dashboard_js
+    # Public mode never shows a mailbox for a foreign account.
+    assert 'profile.email = "@" + profile.nodeName' in dashboard_js
 
-    assert "social = profile.get(\"social\", {})" in profile_html
-    assert "mirror_count = int(social.get(\"mirrorCount\", 0) or 0)" in profile_html
-    assert "followers" in profile_html
-    assert "following" in profile_html
-    assert "mirrors" in profile_html
-    assert "Follow" in profile_html
-    assert "await _public_profile_payload(env, rec, request)" in public_handler
+
+def test_public_profile_page_injects_verified_link_tags():
+    # _serve_profile_page injects the per-user head tags into the shared
+    # prebuilt profile document: canonical + the reciprocal rel="me" (the
+    # verified half of the fediverse actor's profile link) + the ActivityPub
+    # alternate for discovery, and swaps the <title>.
+    body = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _serve_profile_page"):
+        ENTRY_TEXT.index("async def _serve_repo_page")
+    ]
+    assert '"/dashboard/profile/repositories" if repositories' in body
+    assert 'DASHBOARD_PAGE_ASSETS' in body
+    assert '<link rel=\\"canonical\\" href=\\"%s\\">' in body
+    assert '<link rel=\\"me\\" href=\\"%s\\">' in body
+    assert 'application/activity+json' in body
+    assert '/ap/users/%s' in body
+    assert '<title>@%s · ForkMesh</title>' in body
+    # Eligibility mirrors the fediverse actor: active + not private (node
+    # accounts included, matching _ap_user_federates).
+    assert 'rec.get("status") != "active"' in body
+    assert 'rec.get("profile_private")' in body
+    assert '_serve_not_found_page(url)' in body
 
 
 def test_worker_serves_public_at_profiles_and_private_profiles_404():
-    assert "async def public_profile_handler" in ENTRY_TEXT
+    assert "async def _serve_profile_page" in ENTRY_TEXT
     route_body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _route"):
         ENTRY_TEXT.index("issues_match = REPO_ISSUES_RE.match", ENTRY_TEXT.index("async def _route"))
     ]
 
-    assert 'r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)/?$"' in route_body
+    assert 'r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)(/repositories)?/?$"' in route_body
     # The route matches the percent-decoded, case-folded path: pasted links
     # often arrive as /%40name (an encoded @) or /@Name, and both used to fall
     # through to the 404 page instead of the profile.
     assert "unquote(url.path).lower()" in route_body
-    assert "public_profile_handler(" in route_body
-    assert '_account_kind(rec) != "user"' in ENTRY_TEXT
+    assert "_serve_profile_page(" in route_body
     assert 'bool(rec.get("profile_private"))' in ENTRY_TEXT
     assert 'return json_response({"error": "not_found"}, status=404)' in ENTRY_TEXT
-    assert 'rel="me noopener"' in ENTRY_TEXT
     assert "cache-control" in ENTRY_TEXT
 
 
@@ -470,12 +529,29 @@ def test_signup_verification_email_is_a_professional_welcome_email():
         "https://forkmesh.com/blogs",
         "What was confusing",
         "founders@forkmesh.com",
-        "background:#090909",
-        "background:#141416",
         "color:#4ade80",
         "/api/accounts/verify-email?node=",
+        # Renders through the shared branded card (dark-only), rather than a
+        # bespoke inline template.
+        "_forkmesh_email_card_html(",
     ):
         assert marker in body
+    card_body = ENTRY_TEXT[
+        ENTRY_TEXT.index("def _forkmesh_email_card_html"):
+        ENTRY_TEXT.index("def _format_email_ts")
+    ]
+    for marker in (
+        "background:#090909",
+        "background:#141416",
+        'content="dark"',
+    ):
+        assert marker in card_body
+    # The card must not reintroduce a light/white background that would render
+    # ForkMesh mail white in a dark-mode reader (no media-query override, no
+    # white fills). The word may still appear in an explanatory comment, so we
+    # assert on the actual override markup rather than the term.
+    assert "@media" not in card_body
+    assert "#ffffff" not in card_body
 
 
 def test_login_page_links_to_password_reset():

@@ -11,6 +11,7 @@
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
 
+#include <QDateEdit>
 #include <QLayoutItem>
 #include <QPair>
 #include <QPixmap>
@@ -436,8 +437,12 @@ QWidget *MainWindow::buildIssuesSection()
     commentAvatar->setScaledContents(true);
     m_issueComposerAvatar = commentAvatar;
     refreshIssueComposerAvatar();
-    auto *commentTitle = new QLabel("Add a comment");
+    auto *commentTitle = new QLabel(
+        QStringLiteral("Commenting as <b>%1</b>")
+            .arg(topBarUserName().toHtmlEscaped()));
     commentTitle->setObjectName("issueCommentTitle");
+    commentTitle->setTextFormat(Qt::RichText);
+    m_issueComposerTitle = commentTitle;
     m_issueComposer = new MarkdownEditor;
     m_issueComposer->setObjectName("issueCommentEditor");
     m_issueComposer->setMinimumHeight(190);
@@ -507,6 +512,7 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueAssigneesValue = new QLabel("No one - <a href='#'>Assign yourself</a>");
     m_issueLabelsValue = new QLabel("No labels");
     m_issueMilestoneValue = new QLabel("No milestone");
+    m_issueDatesValue = new QLabel("No dates");
     m_issuePriorityValue = new QLabel("No priority");
     m_issueEstimateValue = new QLabel("\xE2\x80\x94");
     m_issueBountyValue = new QLabel("No bounty");
@@ -528,7 +534,8 @@ QWidget *MainWindow::buildIssuesSection()
         reloadIssues();
     };
     for (QLabel *v : {m_issueAssigneesValue, m_issueLabelsValue,
-                      m_issueMilestoneValue, m_issuePriorityValue,
+                      m_issueMilestoneValue, m_issueDatesValue,
+                      m_issuePriorityValue,
                       m_issueEstimateValue,
                       m_issueBountyValue}) {
         v->setObjectName("statusLine");
@@ -553,12 +560,14 @@ QWidget *MainWindow::buildIssuesSection()
     });
     m_issueLabelsButton = new QPushButton;
     m_issueMilestoneButton = new QPushButton;
+    m_issueDatesButton = new QPushButton;
     m_issuePriorityButton = new QPushButton;
     m_issueProgressButton = new QPushButton;
     m_issueBountyButton = new QPushButton;
     m_issueAssigneesButton = new QPushButton;
     m_issueDeleteButton = new QPushButton("Delete issue");
     for (QPushButton *b : {m_issueLabelsButton, m_issueMilestoneButton,
+                           m_issueDatesButton,
                            m_issuePriorityButton, m_issueProgressButton,
                            m_issueBountyButton,
                            m_issueAssigneesButton}) {
@@ -709,6 +718,44 @@ QWidget *MainWindow::buildIssuesSection()
     connect(milestoneCancel, &QPushButton::clicked, this,
             &MainWindow::cancelIssueSidebarEditors);
 
+    // Planned start/end dates (issue #384): value label + an inline editor of
+    // two QDateEdits, each gated by a "set" checkbox so a date can stay unset.
+    m_issueDatesStack = new QStackedWidget(meta);
+    m_issueDatesStack->addWidget(m_issueDatesValue);
+    auto *datesEditBox = new QWidget(meta);
+    auto *datesEditLayout = new QVBoxLayout(datesEditBox);
+    datesEditLayout->setContentsMargins(0, 0, 0, 0);
+    datesEditLayout->setSpacing(6);
+    auto makeIssueDateRow = [&](const QString &label, QCheckBox *&enableOut,
+                                QDateEdit *&editOut) {
+        auto *rowWidget = new QWidget(datesEditBox);
+        auto *row = new QHBoxLayout(rowWidget);
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(6);
+        enableOut = new QCheckBox(label, rowWidget);
+        enableOut->setToolTip("Untick to leave this date unset");
+        editOut = new QDateEdit(QDate::currentDate(), rowWidget);
+        editOut->setCalendarPopup(true);
+        editOut->setDisplayFormat(QStringLiteral("yyyy-MM-dd"));
+        editOut->setEnabled(false);
+        connect(enableOut, &QCheckBox::toggled, editOut, &QWidget::setEnabled);
+        row->addWidget(enableOut);
+        row->addWidget(editOut, 1);
+        return rowWidget;
+    };
+    datesEditLayout->addWidget(
+        makeIssueDateRow("Start", m_issueStartDateEnable, m_issueStartDateEdit));
+    datesEditLayout->addWidget(
+        makeIssueDateRow("End", m_issueEndDateEnable, m_issueEndDateEdit));
+    auto *datesSave = makeEditorButton("Save", "primaryButton");
+    auto *datesCancel = makeEditorButton("Cancel", "ghostButton");
+    datesEditLayout->addWidget(makeInlineButtonRow(datesSave, datesCancel));
+    m_issueDatesStack->addWidget(datesEditBox);
+    connect(datesSave, &QPushButton::clicked, this,
+            &MainWindow::saveIssueDatesInline);
+    connect(datesCancel, &QPushButton::clicked, this,
+            &MainWindow::cancelIssueSidebarEditors);
+
     m_issuePriorityStack = new QStackedWidget(meta);
     m_issuePriorityStack->addWidget(m_issuePriorityValue);
     auto *priorityEditBox = new QWidget(meta);
@@ -765,10 +812,10 @@ QWidget *MainWindow::buildIssuesSection()
                     fillAgentFixModelCombo(
                         m_issueAgentModel,
                         m_issueAgentProvider->currentData().toString());
-                    refreshClaudeModelCombo();
+                    applyLiveClaudeModelsToCombos();
                 }
             });
-    refreshClaudeModelCombo();
+    applyLiveClaudeModelsToCombos();
     m_issueAssignAgentButton = makeEditorButton("Assign agent", "ghostButton");
     m_issueAgentCreatePrCheck = new QCheckBox("Create a PR", meta);
     m_issueAgentCreatePrCheck->setToolTip(
@@ -870,6 +917,7 @@ QWidget *MainWindow::buildIssuesSection()
     addMetaSection("Bounty", m_issueBountyValue, m_issueBountyButton);
     addMetaSection("Projects", makeValue("No projects"), makeGear());
     addMetaSection("Milestone", m_issueMilestoneStack, m_issueMilestoneButton);
+    addMetaSection("Dates", m_issueDatesStack, m_issueDatesButton);
     addMetaSection("Relationships", makeValue("None yet"), makeGear());
     m_issueDevelopmentValue = makeValue("No linked pull requests.");
     m_issueDevelopmentValue->setTextInteractionFlags(Qt::TextBrowserInteraction);
@@ -1129,6 +1177,8 @@ QWidget *MainWindow::buildIssuesSection()
             &MainWindow::editIssueLabels);
     connect(m_issueMilestoneButton, &QPushButton::clicked, this,
             &MainWindow::editIssueMilestone);
+    connect(m_issueDatesButton, &QPushButton::clicked, this,
+            &MainWindow::editIssueDates);
     connect(m_issuePriorityButton, &QPushButton::clicked, this,
             &MainWindow::editIssuePriority);
     connect(m_issueProgressButton, &QPushButton::clicked, this,
@@ -1200,9 +1250,9 @@ IssueStore MainWindow::issueStoreForCurrentRepo() const
 {
     const int idx = issuesRepoIndex();
     if (idx < 0)
-        return IssueStore(QString(), QString(), &m_profileIdentity, m_userName);
+        return IssueStore(QString(), QString(), &m_profileIdentity, chatDisplayName());
     const RepositoryRecord &repo = writableRecordFor(m_repositories.at(idx));
-    return IssueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
+    return IssueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity, chatDisplayName());
 }
 
 void MainWindow::refreshIssuesRepoCombo()
@@ -1323,6 +1373,26 @@ void MainWindow::reloadIssues()
     refreshIssueList();
     refreshIssueMilestones();
     refreshIssueLabels();
+    updateIssueActionState();
+    updateRepoIssueCount();
+}
+
+void MainWindow::appendCreatedIssue(const IssueStore &store, const Issue &issue)
+{
+    // We already have the exact Issue createIssue() just wrote to disk, so
+    // splice it into the live list rather than calling reloadIssues(), which
+    // would re-read and re-parse every issue file in the repo just to surface
+    // this one new issue.
+    m_currentIssues.append(issue);
+    std::sort(m_currentIssues.begin(), m_currentIssues.end(),
+              [](const Issue &a, const Issue &b) { return a.number < b.number; });
+    // Keep the cheap reload-skip signature in sync with what we just wrote so a
+    // later background reload (e.g. from a push notification) doesn't redo
+    // this work for nothing.
+    const QString sig = store.contentSignature();
+    if (!sig.isEmpty())
+        m_issuesLoadedSig = sig;
+    refreshIssueList();
     updateIssueActionState();
     updateRepoIssueCount();
 }
@@ -1779,6 +1849,13 @@ void MainWindow::refreshIssueList()
             continue;
         if (!msFilter.isEmpty() && issue.milestone != msFilter)
             continue;
+        // An issue its creator deleted is still shown (adhoc #16 — surface it,
+        // don't hide it) but only under the "All" view, badged as Deleted, so it
+        // doesn't pad the Open/Closed lists that the tab count tracks. An
+        // unauthorized deletion attempt does NOT delete the issue, so it stays in
+        // its normal Open/Closed list with a warning badge below.
+        if (issue.isDeleted() && statusFilter != "All")
+            continue;
         // Free-text search over number, title, priority, labels and milestone.
         if (!search.isEmpty()) {
             const QString hay = QStringLiteral("#%1 %2 %3 %4 %5")
@@ -1818,10 +1895,26 @@ void MainWindow::refreshIssueList()
         priority->setToolTip("1 is highest priority; 99 is lowest");
         m_issueTable->setItem(row, 2, priority);
 
-        auto *status = new QTableWidgetItem(issue.status == "closed" ? "Closed"
-                                                                     : "Open");
-        status->setForeground(QColor(issue.status == "closed" ? "#f85149"
-                                                              : "#3fb950"));
+        QString statusText = issue.status == "closed" ? "Closed" : "Open";
+        QColor statusColor(issue.status == "closed" ? "#f85149" : "#3fb950");
+        QString statusTip;
+        if (issue.isDeleted()) {
+            statusText = QStringLiteral("Deleted");
+            statusColor = QColor("#8b949e");
+            statusTip = QStringLiteral("Deleted by its author.");
+        } else if (issue.hasUnauthorizedDeleteAttempt()) {
+            // Kept visible on purpose (adhoc #16): flag the attempt rather than
+            // let a non-author silently hide the issue.
+            statusText += QStringLiteral(" ⚠");
+            statusColor = QColor("#d29922");
+            statusTip = QStringLiteral(
+                "Someone who did not open this issue tried to delete it; the "
+                "deletion was not applied.");
+        }
+        auto *status = new QTableWidgetItem(statusText);
+        status->setForeground(statusColor);
+        if (!statusTip.isEmpty())
+            status->setToolTip(statusTip);
         m_issueTable->setItem(row, 3, status);
         auto *votes = new QTableWidgetItem;
         votes->setData(Qt::DisplayRole, issue.votes); // numeric sort
@@ -2373,6 +2466,8 @@ void MainWindow::renderIssueThread(const Issue &issue)
             m_issueLabelsValue->setText("No labels");
         if (m_issueMilestoneValue)
             m_issueMilestoneValue->setText("No milestone");
+        if (m_issueDatesValue)
+            m_issueDatesValue->setText("No dates");
         if (m_issuePriorityValue)
             m_issuePriorityValue->setText("No priority");
         updateIssueAgentUi(Issue());
@@ -2425,6 +2520,18 @@ void MainWindow::renderIssueThread(const Issue &issue)
         issue.milestone.isEmpty()
             ? QStringLiteral("No milestone")
             : QStringLiteral("<b>%1</b>").arg(issue.milestone.toHtmlEscaped()));
+    if (m_issueDatesValue) {
+        auto dateText = [](qint64 ms) {
+            return ms > 0 ? QDateTime::fromMSecsSinceEpoch(ms)
+                                .toString(QStringLiteral("yyyy-MM-dd"))
+                          : QString::fromUtf8("\xE2\x80\x94");
+        };
+        m_issueDatesValue->setText(
+            issue.startDate <= 0 && issue.endDate <= 0
+                ? QStringLiteral("No dates")
+                : QString::fromUtf8("%1 \xE2\x86\x92 %2")
+                      .arg(dateText(issue.startDate), dateText(issue.endDate)));
+    }
     m_issuePriorityValue->setText(
         issue.priority > 0
             ? QStringLiteral("<b>%1</b> <span style='color:#8b949e'>(1 highest, 99 lowest)</span>")
@@ -2499,6 +2606,20 @@ void MainWindow::renderIssueThread(const Issue &issue)
         if (selected >= 0)
             m_issueMilestoneEdit->setCurrentIndex(selected);
     }
+    if (m_issueStartDateEdit && m_issueStartDateEnable) {
+        m_issueStartDateEnable->setChecked(issue.startDate > 0);
+        m_issueStartDateEdit->setDate(
+            issue.startDate > 0
+                ? QDateTime::fromMSecsSinceEpoch(issue.startDate).date()
+                : QDate::currentDate());
+    }
+    if (m_issueEndDateEdit && m_issueEndDateEnable) {
+        m_issueEndDateEnable->setChecked(issue.endDate > 0);
+        m_issueEndDateEdit->setDate(
+            issue.endDate > 0
+                ? QDateTime::fromMSecsSinceEpoch(issue.endDate).date()
+                : QDate::currentDate());
+    }
     if (m_issuePriorityEdit) {
         const int selected = m_issuePriorityEdit->findData(issue.priority);
         if (selected >= 0)
@@ -2506,11 +2627,16 @@ void MainWindow::renderIssueThread(const Issue &issue)
     }
     cancelIssueSidebarEditors();
 
-    // Pre-compute edits (target -> latest edit) and deletions.
+    // Pre-compute edits (target -> latest edit), deletions, and the opening
+    // event id (so an edit targeting it reads as "the description" rather than
+    // "a comment").
     QHash<QString, IssueEvent> edits;
     QSet<QString> deleted;
+    QString openId;
     for (const IssueEvent &ev : issue.events) {
-        if (ev.type == "edit" && !ev.target.isEmpty())
+        if (ev.type == "open")
+            openId = ev.id;
+        else if (ev.type == "edit" && !ev.target.isEmpty())
             edits.insert(ev.target, ev); // later edits overwrite
         else if (ev.type == "delete" && !ev.target.isEmpty() && ev.target != "self")
             deleted.insert(ev.target);
@@ -2518,8 +2644,9 @@ void MainWindow::renderIssueThread(const Issue &issue)
 
     const int idx = issuesRepoIndex();
     const QString imageBase =
-        idx >= 0 ? m_repositories.at(idx).localPath + "/.forkmesh/issues/" +
-                       QString::number(issue.number) + "/"
+        idx >= 0 ? IssueStore::issueDirPath(m_repositories.at(idx).localPath,
+                                           issue.number) +
+                       "/"
                  : QString();
     const bool haveLocalFiles = !imageBase.isEmpty() &&
                                 QFileInfo::exists(
@@ -2658,9 +2785,8 @@ void MainWindow::renderIssueThread(const Issue &issue)
                                               : "Type your comment here...");
             const int repoIdx = issuesRepoIndex();
             if (repoIdx >= 0)
-                editor->setPreviewBasePath(m_repositories.at(repoIdx).localPath +
-                                           "/.forkmesh/issues/" +
-                                           QString::number(num));
+                editor->setPreviewBasePath(IssueStore::issueDirPath(
+                    m_repositories.at(repoIdx).localPath, num));
             bodyLayout->addWidget(editor);
             auto *attach = new QPushButton("Paste, drop, or click to add files");
             attach->setObjectName("ghostButton");
@@ -2686,12 +2812,25 @@ void MainWindow::renderIssueThread(const Issue &issue)
             auto *save = new QPushButton("Save", bodyContainer);
             save->setObjectName("primaryButton");
             save->setCursor(Qt::PointingHandCursor);
-            save->style()->unpolish(save);
-            save->style()->polish(save);
             buttonRow->addStretch();
             buttonRow->addWidget(cancel);
             buttonRow->addWidget(save);
             bodyLayout->addLayout(buttonRow);
+            // Repolishing right after construction can race Qt's own first-show
+            // polish for a widget that was just parented and isn't under layout
+            // management yet, leaving the primaryButton fill/text unpainted
+            // (border-only). Defer it a tick so it runs after the button is
+            // actually part of the shown layout; QPointer guards against the
+            // editor being torn down (Cancel/Save swap the body back out) before
+            // the deferred call fires.
+            QPointer<QPushButton> saveGuard(save);
+            QTimer::singleShot(0, this, [saveGuard]() {
+                if (!saveGuard)
+                    return;
+                saveGuard->style()->unpolish(saveGuard);
+                saveGuard->style()->polish(saveGuard);
+                saveGuard->update();
+            });
             connect(cancel, &QPushButton::clicked, this, [this, num]() { showIssue(num); });
             connect(save, &QPushButton::clicked, this,
                     [this, num, eid, eventAttachments, editor]() {
@@ -2872,7 +3011,38 @@ void MainWindow::renderIssueThread(const Issue &issue)
                     text += QStringLiteral(" (%1)").arg(agentStatusText(ev.agentStatus));
             }
             addActivity(text, ev.ts, who);
-        }
+        } else if (ev.type == "title")
+            addActivity(ev.title.isEmpty()
+                            ? QStringLiteral("cleared the title")
+                            : QStringLiteral("changed the title to \"%1\"").arg(ev.title),
+                        ev.ts, who);
+        else if (ev.type == "progress")
+            addActivity(QStringLiteral("set progress to %1%").arg(ev.progress), ev.ts, who);
+        else if (ev.type == "dates")
+            addActivity(QStringLiteral("updated the schedule dates"), ev.ts, who);
+        else if (ev.type == "bounty")
+            addActivity(ev.bountyUsd > 0
+                            ? QStringLiteral("set a $%1 bounty%2")
+                                  .arg(QString::number(ev.bountyUsd),
+                                       ev.bountyStatus.isEmpty()
+                                           ? QString()
+                                           : QStringLiteral(" (%1)").arg(ev.bountyStatus))
+                            : QStringLiteral("cleared the bounty"),
+                        ev.ts, who);
+        else if (ev.type == "edit")
+            addActivity(ev.target == openId ? QStringLiteral("edited the description")
+                                            : QStringLiteral("edited a comment"),
+                        ev.ts, who);
+        else if (ev.type == "delete")
+            addActivity(ev.target == "self" ? QStringLiteral("deleted this issue")
+                                            : QStringLiteral("deleted a comment"),
+                        ev.ts, who);
+        else if (ev.type == "vote")
+            addActivity(QStringLiteral("voted on this issue"), ev.ts, who);
+        else if (!ev.type.isEmpty())
+            // Surface unknown/future action types rather than silently dropping
+            // them, so the timeline shows every action stored in the issue JSON.
+            addActivity(QStringLiteral("recorded a %1 action").arg(ev.type), ev.ts, who);
     }
     m_issueThreadLayout->addStretch();
 }
@@ -3244,6 +3414,7 @@ void MainWindow::promptNewIssue()
     auto *leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(8);
+    leftLayout->addWidget(makeComposerIdentity(nullptr, QStringLiteral("Filing")));
     leftLayout->addWidget(titleLabel);
     leftLayout->addWidget(titleEdit);
     auto *descriptionLabel = new QLabel("Add a description", page);
@@ -3417,7 +3588,8 @@ void MainWindow::promptNewIssue()
             setPageNotice("Sending your issue to the maintainer's inbox...");
             const bool started = submitNewIssueToInbox(
                 title, bodyEdit->markdown(), labels, milestone, priority,
-                assignees,
+                assignees, bodyEdit->pendingAttachments(),
+                bodyEdit->pendingAttachmentPlaceholders(),
                 [this, pageGuard, createButton, setPageNotice](bool ok,
                                                                 const QString &error) {
                     // The compose page may have been cancelled/closed while the
@@ -3451,11 +3623,12 @@ void MainWindow::promptNewIssue()
         }
 
         QString error;
+        Issue created;
         const int number = store.createIssue(title, bodyEdit->markdown(), labels,
                                              milestone, priority, assignees,
                                              bodyEdit->pendingAttachments(),
                                              bodyEdit->pendingAttachmentPlaceholders(),
-                                             &error);
+                                             &error, &created);
         if (number < 0) {
             setPageNotice(error.isEmpty() ? "Could not create the issue." : error,
                           true);
@@ -3464,7 +3637,7 @@ void MainWindow::promptNewIssue()
         m_currentIssueNumber = number;
         const bool more = createMore->isChecked();
         removeIssueComposePage();
-        reloadIssues();
+        appendCreatedIssue(store, created);
         propagateRepoUpdate(issuesRepoIndex());
         setIssueInlineNotice("Issue created.");
         if (more)
@@ -3497,13 +3670,15 @@ void MainWindow::quickAddIssue()
 
     // "No issue" mode (issue #299): don't create an issue at all — hand the typed
     // text straight to a coding agent as its prompt, like the Agents-tab composer.
-    // This is the default (adhoc #99): "Create issue" is off unless the user
-    // turns it on, so most quick-add prompts skip issue filing entirely.
-    if (!m_quickAddCreateIssue || !m_quickAddCreateIssue->isChecked()) {
-        const QString provider =
-            m_quickAddAgentProvider
-                ? m_quickAddAgentProvider->currentData().toString()
-                : QStringLiteral("claude-code");
+    // This is the default (adhoc #29): the provider dropdown files an issue only
+    // when its "Manual (create issue)" entry is picked; any real agent provider
+    // starts a coding agent straight from the prompt.
+    const QString quickAddProvider =
+        m_quickAddAgentProvider
+            ? m_quickAddAgentProvider->currentData().toString()
+            : QStringLiteral("claude-code");
+    if (quickAddProvider != QLatin1String("manual")) {
+        const QString provider = quickAddProvider;
         const QString model = (provider == QLatin1String("claude-code") ||
                                agentIsCodexProvider(provider))
                                   ? selectedModelComboValue(m_quickAddClaudeModel)
@@ -3521,10 +3696,23 @@ void MainWindow::quickAddIssue()
                                    model) > 0) {
             m_issueQuickAdd->clear();
             clearQuickAddImages();
+            // No issue exists in this mode (that's the point of it), so saying
+            // "no issue created" is just noise — show what actually happened
+            // instead: which agent, model, and permission mode picked up the
+            // prompt.
+            QStringList details;
+            const QString modelLabel = agentModelLabel(model);
+            if (!modelLabel.isEmpty())
+                details << modelLabel;
+            if (m_quickAddModeSelector)
+                details << m_quickAddModeSelector->currentText();
+            const QString suffix =
+                details.isEmpty()
+                    ? QString()
+                    : QStringLiteral(" (%1)").arg(details.join(QStringLiteral(", ")));
             setIssueInlineNotice(
-                QStringLiteral("Started a %1 agent on your prompt \xE2\x80\x94 no "
-                               "issue created.")
-                    .arg(agentProviderName(provider)));
+                QStringLiteral("Started a %1 agent on your prompt%2.")
+                    .arg(agentProviderName(provider), suffix));
         }
         return;
     }
@@ -3539,8 +3727,10 @@ void MainWindow::quickAddIssue()
         }
         QPointer<QPlainTextEdit> quickAddGuard(m_issueQuickAdd);
         quickAddGuard->setEnabled(false);
+        // Any queued images ride along as the new issue's attachments, same as
+        // the canWrite path below (issue #79).
         const bool started = submitNewIssueToInbox(
-            title, QString(), {}, QString(), 0, {},
+            title, QString(), {}, QString(), 0, {}, m_quickAddImages, {},
             [this, quickAddGuard, title](bool ok, const QString &) {
                 // submitNewIssueToInbox already flashes the failure toast; on
                 // success, clear the box now that the maintainer actually has
@@ -3551,6 +3741,7 @@ void MainWindow::quickAddIssue()
                 quickAddGuard->setEnabled(true);
                 if (ok) {
                     quickAddGuard->clear();
+                    clearQuickAddImages();
                     setIssueInlineNotice("Your signed issue was sent to the "
                                          "maintainer's inbox. It appears once "
                                          "they sync it.");
@@ -3563,9 +3754,10 @@ void MainWindow::quickAddIssue()
         return;
     }
     QString error;
+    Issue created;
     // Any queued images ride along as the new issue's attachments (issue #79).
     const int number = store.createIssue(title, QString(), {}, QString(), 0, {},
-                                         m_quickAddImages, &error);
+                                         m_quickAddImages, &error, &created);
     if (number < 0) {
         setIssueInlineNotice(error.isEmpty() ? "Could not create the issue." : error,
                              true);
@@ -3574,40 +3766,17 @@ void MainWindow::quickAddIssue()
     m_issueQuickAdd->clear();
     clearQuickAddImages();
     m_currentIssueNumber = number;
-    reloadIssues();
+    appendCreatedIssue(store, created);
     propagateRepoUpdate(issuesRepoIndex());
     // A more descriptive confirmation than the old bare "Issue created." — names
     // the number and title so the toast says exactly what landed (issue #299).
     setIssueInlineNotice(QStringLiteral("Issue #%1 created: %2").arg(number).arg(title));
-    // If requested, hand the freshly-created issue straight to a coding agent.
-    if (m_quickAddAssignAgent && m_quickAddAssignAgent->isChecked()) {
-        const QString provider =
-            m_quickAddAgentProvider
-                ? m_quickAddAgentProvider->currentData().toString()
-                : QStringLiteral("codex");
-        const QString model = (provider == QLatin1String("claude-code") ||
-                               agentIsCodexProvider(provider))
-                                  ? selectedModelComboValue(m_quickAddClaudeModel)
-                                  : QString();
-        const bool oldCreatePr =
-            m_issueAgentCreatePrCheck && m_issueAgentCreatePrCheck->isChecked();
-        if (m_issueAgentCreatePrCheck) {
-            const QSignalBlocker block(m_issueAgentCreatePrCheck);
-            m_issueAgentCreatePrCheck->setChecked(m_quickAddCreatePr &&
-                                                  m_quickAddCreatePr->isChecked());
-            assignIssueToAgent(provider, model);
-            m_issueAgentCreatePrCheck->setChecked(oldCreatePr);
-        } else {
-            assignIssueToAgent(provider, model);
-        }
-    } else {
-        // Issue #203: with no agent to hand off to, land the user on the issue
-        // they just created -- open its detail pane, mirroring how the agent path
-        // jumps straight to the new session. reloadIssues() above re-selects the
-        // row in table mode, but call showIssue() explicitly so the detail opens
-        // regardless of the active list view (board, cards, a filtered table).
-        showIssue(number);
-    }
+    // "Manual (create issue)" files the issue only — no agent hand-off (adhoc
+    // #29). Land the user on the issue they just created by opening its detail
+    // pane. reloadIssues() above re-selects the row in table mode, but call
+    // showIssue() explicitly so the detail opens regardless of the active list
+    // view (board, cards, a filtered table). Issue #203.
+    showIssue(number);
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
@@ -3615,13 +3784,13 @@ int MainWindow::testQuickAddIssueNoAgent(const QString &title)
 {
     if (!m_issueQuickAdd)
         return -1;
-    // Type the title and make sure the agent hand-off is off but issue creation
-    // is on, so the plain create-and-open path (issue #203) runs rather than the
-    // agent / no-issue one.
-    if (m_quickAddAssignAgent)
-        m_quickAddAssignAgent->setChecked(false);
-    if (m_quickAddCreateIssue)
-        m_quickAddCreateIssue->setChecked(true);
+    // Select the "Manual (create issue)" provider so the plain create-and-open
+    // path (issue #203) runs rather than the run-an-agent one (adhoc #29).
+    if (m_quickAddAgentProvider) {
+        const int idx = m_quickAddAgentProvider->findData(QStringLiteral("manual"));
+        if (idx >= 0)
+            m_quickAddAgentProvider->setCurrentIndex(idx);
+    }
     m_issueQuickAdd->setPlainText(title);
     quickAddIssue();
     return m_currentIssueNumber;
@@ -4265,7 +4434,7 @@ void MainWindow::addIssueComment()
     IssueStore store = issueStoreForCurrentRepo();
     if (!store.canWrite()) {
         // Not the host: send a signed comment to the maintainer's relay inbox.
-        submitIssueCommentToInbox(body);
+        submitIssueCommentToInbox(body, attachments, placeholders);
         return;
     }
 
@@ -4406,13 +4575,15 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (handleFramelessResizeEvent(obj, event))
         return true;
 
-    // A Claude model combo's popup list view was shown: re-fetch the live model
-    // list so the dropdown always reflects the provider's current line-up.
+    // A Claude model combo's popup list view was shown: apply whatever's
+    // cached so the dropdown reflects the last live fetch. No network call
+    // here (see applyLiveClaudeModelsToCombos) — that only happens on the
+    // top-bar usage chart's hover.
     if (event->type() == QEvent::Show) {
         if (auto *w = qobject_cast<QWidget *>(obj)) {
             if (auto *combo = qobject_cast<QComboBox *>(w->parent())) {
                 if (combo->property("claudeModelCombo").toBool())
-                    refreshClaudeModelCombo();
+                    applyLiveClaudeModelsToCombos();
             }
         }
     }
@@ -4435,6 +4606,12 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             }
         }
     }
+    // Keep the PR review page's sticky file header spanning the top of the diff
+    // viewport as it resizes (adhoc #56). Don't consume — the view still needs
+    // the resize.
+    if (event->type() == QEvent::Resize && m_pullDiff &&
+        obj == m_pullDiff->viewport())
+        layoutPullStickyHeader();
     // Right-click on selected text anywhere in the app: offer "Send to
     // Prompt" alongside the widget's normal Copy/Select-All menu (adhoc #126).
     if (event->type() == QEvent::ContextMenu) {
@@ -4994,6 +5171,41 @@ void MainWindow::saveIssueMilestoneInline()
         return;
     }
     setIssueInlineNotice("Milestone updated.");
+    reloadIssues();
+}
+
+void MainWindow::editIssueDates()
+{
+    if (m_currentIssueNumber < 0)
+        return;
+    m_issueDeleteConfirmPending = false;
+    setIssueInlineNotice(QString());
+    if (m_issueDatesStack)
+        m_issueDatesStack->setCurrentIndex(1);
+    if (m_issueStartDateEdit)
+        m_issueStartDateEdit->setFocus();
+}
+
+void MainWindow::saveIssueDatesInline()
+{
+    if (m_currentIssueNumber < 0 || !m_issueStartDateEdit || !m_issueEndDateEdit)
+        return;
+    auto dateMs = [](QDateEdit *edit, QCheckBox *enable) -> qint64 {
+        if (!enable || !enable->isChecked())
+            return 0;
+        return edit->date().startOfDay().toMSecsSinceEpoch();
+    };
+    IssueStore store = issueStoreForCurrentRepo();
+    QString error;
+    if (!store.setDates(m_currentIssueNumber,
+                        dateMs(m_issueStartDateEdit, m_issueStartDateEnable),
+                        dateMs(m_issueEndDateEdit, m_issueEndDateEnable),
+                        &error)) {
+        setIssueInlineNotice(error.isEmpty() ? "Could not update dates." : error,
+                             true);
+        return;
+    }
+    setIssueInlineNotice("Dates updated.");
     reloadIssues();
 }
 
@@ -6084,6 +6296,8 @@ void MainWindow::cancelIssueSidebarEditors()
         m_issueLabelsStack->setCurrentIndex(0);
     if (m_issueMilestoneStack)
         m_issueMilestoneStack->setCurrentIndex(0);
+    if (m_issueDatesStack)
+        m_issueDatesStack->setCurrentIndex(0);
     if (m_issuePriorityStack)
         m_issuePriorityStack->setCurrentIndex(0);
 }
@@ -6123,7 +6337,8 @@ void MainWindow::shareRepoRequest(const RepositoryRecord &repo,
     // (issue #9). Owner-signed: only the repo owner may change the ACL. The
     // action is bound into the signature so an add token can't be replayed as a
     // remove and vice versa (matches the relay's forkmesh-share-v1 canonical).
-    if (!m_networkAccess || !m_profileIdentity.isValid())
+    if (!m_networkAccess || !m_profileIdentity.isValid() ||
+        !hasOwnerSigningCapability(repo.owner))
         return;
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray canonical =
@@ -6202,7 +6417,8 @@ void MainWindow::refreshRepoCollaborators()
         haveRepo ? m_repositories.at(m_repoDetailIndex) : blank;
     const bool show = haveRepo && !accountOwner().isEmpty() &&
                       repo.owner == accountOwner() && repo.isPrivate &&
-                      repo.publishToNetwork;
+                      repo.publishToNetwork &&
+                      hasOwnerSigningCapability(repo.owner);
     m_collabSection->setVisible(show);
     if (m_collabList)
         m_collabList->clear();
@@ -6285,6 +6501,23 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
     status->setAlignment(Qt::AlignCenter);
     layout->addWidget(status);
 
+    // Issue #429: while the deposit is landing (received but not yet confirmed)
+    // the status animates a braille spinner; on confirmation it flips to a green
+    // check and the dialog closes itself shortly after.
+    static const char *kBountySpin[] = {
+        "\xE2\xA0\x8B", "\xE2\xA0\x99", "\xE2\xA0\xB9", "\xE2\xA0\xB8",
+        "\xE2\xA0\xBC", "\xE2\xA0\xB4", "\xE2\xA0\xA6", "\xE2\xA0\xA7",
+        "\xE2\xA0\x87", "\xE2\xA0\x8F"};
+    int spinIdx = 0;
+    QString confirmMsg;
+    auto *spin = new QTimer(&dialog);
+    spin->setInterval(120);
+    connect(spin, &QTimer::timeout, &dialog, [&]() {
+        status->setText(QString::fromUtf8(kBountySpin[spinIdx]) +
+                        QStringLiteral(" ") + confirmMsg);
+        spinIdx = (spinIdx + 1) % 10;
+    });
+
     auto *copyBtn = new QPushButton(QStringLiteral("Copy address"));
     connect(copyBtn, &QPushButton::clicked, this, [address] {
         QGuiApplication::clipboard()->setText(address);
@@ -6324,6 +6557,7 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
         if (obj.value("status").toString() == QLatin1String("paid")) {
             paid = true;
             poll->stop();
+            spin->stop();
             if (!isPr) {
                 IssueStore writeStore = issueStoreForCurrentRepo();
                 QString err;
@@ -6333,26 +6567,39 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
                 if (m_repoDetailIndex == issuesRepoIndex())
                     reloadIssues();
             }
+            // Green check on confirmation, then auto-dismiss the window (issue
+            // #429) — the deposit is received and paid out, so there's nothing
+            // left to wait for.
             status->setText(
-                QStringLiteral("Paid out to the author + treasury (tx %1).")
+                QString::fromUtf8("\xE2\x9C\x94 Paid out to the author + "
+                                  "treasury (tx %1).")
                     .arg(obj.value("payoutSig").toString().left(12)));
             status->setStyleSheet("color:#3fb950; background:transparent;");
             closeBtn->setText(QStringLiteral("Close"));
+            QTimer::singleShot(1800, &dialog, &QDialog::accept);
             return;
         }
         const qint64 got =
             obj.value("receivedLamports").toVariant().toLongLong();
-        if (got > 0)
-            status->setText(QStringLiteral("Received %1 SOL — confirming…")
-                                .arg(got / 1000000000.0, 0, 'f', 9));
+        if (got > 0) {
+            confirmMsg = QStringLiteral("Received %1 SOL — confirming…")
+                             .arg(got / 1000000000.0, 0, 'f', 9);
+            if (!spin->isActive()) {
+                spinIdx = 0;
+                spin->start();
+            }
+        }
     });
     poll->start();
     dialog.exec();
     poll->stop();
-    // Closed before the deposit confirmed: keep watching in the background so the
-    // issue is still marked paid once the funds land (the worker cron is the
-    // final backstop regardless).
-    if (!paid)
+    // Closed before the deposit confirmed. Issue bounties still need the local
+    // IssueStore record updated once the funds land, so keep watching for those
+    // in the background. PR bounties have no local state to update — the worker
+    // cron is the payout backstop regardless — so stop checking once the dialog
+    // is closed instead of continuing to poll for a popup the user already
+    // dismissed.
+    if (!paid && !isPr)
         pollBountyPayout(repo, number, amountUsd, kind);
 }
 
@@ -6362,7 +6609,8 @@ void MainWindow::showBountyWalletDialog()
     // show its deposit address + QR + live balance so it can be pre-funded. Used
     // to pay per-PR bounties in "wallet" mode without a per-merge QR.
     const QString owner = accountOwner();
-    if (owner.isEmpty() || !m_profileIdentity.isValid()) {
+    if (owner.isEmpty() || !m_profileIdentity.isValid() ||
+        !hasOwnerSigningCapability(owner)) {
         QMessageBox::information(
             this, QStringLiteral("Bounty wallet"),
             QStringLiteral("Register and sign in to a ForkMesh account first — the "
@@ -6427,6 +6675,8 @@ void MainWindow::showBountyWalletDialog()
     auto walletAddress = std::make_shared<QString>();
     const auto fetch = [this, owner, ownedRepo, qrLabel, addr, balance, copyBtn,
                         walletAddress] {
+        if (!hasOwnerSigningCapability(owner))
+            return;
         const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
         const QByteArray canonical =
             ("forkmesh-bounty-wallet-v1\n" + owner + "\n" + ts).toUtf8();
@@ -6566,14 +6816,38 @@ void MainWindow::bountyAllOpenIssues(double amountUsd)
     reloadIssues();
 }
 
-void MainWindow::submitIssueCommentToInbox(const QString &body)
+namespace {
+// A remote submitter has no working tree to copy attached images into (see
+// IssueStore::readAttachmentsForRemoteSubmit), so the raw bytes ride along in
+// the inbox POST as base64; the owner's applyRemoteEvent() writes them into
+// the issue folder on merge.
+QJsonArray remoteAttachmentDataJson(const QList<RemoteAttachment> &attachments)
+{
+    QJsonArray array;
+    for (const RemoteAttachment &att : attachments)
+        array.append(QJsonObject{{"name", att.name},
+                                 {"data", QString::fromLatin1(att.data.toBase64())}});
+    return array;
+}
+} // namespace
+
+void MainWindow::submitIssueCommentToInbox(const QString &body,
+                                           const QStringList &attachmentSrcPaths,
+                                           const QStringList &attachmentPlaceholders)
 {
     const int idx = issuesRepoIndex();
     if (idx < 0)
         return;
     const RepositoryRecord &repo = m_repositories.at(idx);
 
-    QString text = body;
+    const QList<RemoteAttachment> attachmentData =
+        IssueStore::readAttachmentsForRemoteSubmit(attachmentSrcPaths);
+    QStringList attachmentNames;
+    for (const RemoteAttachment &att : attachmentData)
+        attachmentNames << att.name;
+
+    QString text = IssueStore::substituteAttachmentPlaceholders(
+        body, attachmentSrcPaths, attachmentPlaceholders, attachmentNames);
     while (text.endsWith('\n') || text.endsWith('\r'))
         text.chop(1);
 
@@ -6581,6 +6855,7 @@ void MainWindow::submitIssueCommentToInbox(const QString &body)
     IssueEvent ev;
     ev.type = "comment";
     ev.body = text;
+    ev.attachments = attachmentNames;
     ev = store.makeSignedEvent(m_currentIssueNumber, ev);
 
     QJsonObject eventJson = ev.toJson();
@@ -6588,7 +6863,8 @@ void MainWindow::submitIssueCommentToInbox(const QString &body)
     const QJsonObject payload{{"owner", repo.owner},
                               {"repo", repo.name},
                               {"number", m_currentIssueNumber},
-                              {"event", eventJson}};
+                              {"event", eventJson},
+                              {"attachmentData", remoteAttachmentDataJson(attachmentData)}};
 
     QNetworkRequest request(issuesApiUrl(repo));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -6639,6 +6915,7 @@ void MainWindow::submitIssueAssigneesToInbox(int number,
 bool MainWindow::submitNewIssueToInbox(
     const QString &title, const QString &body, const QStringList &labels,
     const QString &milestone, int priority, const QStringList &assignees,
+    const QStringList &attachmentSrcPaths, const QStringList &attachmentPlaceholders,
     std::function<void(bool ok, const QString &error)> onDone)
 {
     const int idx = issuesRepoIndex();
@@ -6654,12 +6931,20 @@ bool MainWindow::submitNewIssueToInbox(
         if (issue.number >= proposed)
             proposed = issue.number + 1;
 
+    const QList<RemoteAttachment> attachmentData =
+        IssueStore::readAttachmentsForRemoteSubmit(attachmentSrcPaths);
+    QStringList attachmentNames;
+    for (const RemoteAttachment &att : attachmentData)
+        attachmentNames << att.name;
+
     IssueStore store = issueStoreForCurrentRepo();
     IssueEvent ev;
     ev.type = "open";
     ev.id = QStringLiteral("open-%1").arg(proposed);
     ev.title = title;
-    ev.body = body;
+    ev.attachments = attachmentNames;
+    ev.body = IssueStore::substituteAttachmentPlaceholders(
+        body, attachmentSrcPaths, attachmentPlaceholders, attachmentNames);
     while (ev.body.endsWith('\n') || ev.body.endsWith('\r'))
         ev.body.chop(1);
     ev = store.makeSignedEvent(proposed, ev);
@@ -6677,7 +6962,8 @@ bool MainWindow::submitNewIssueToInbox(
                               {"number", proposed},
                               {"titleIfNew", title},
                               {"event", eventJson},
-                              {"meta", meta}};
+                              {"meta", meta},
+                              {"attachmentData", remoteAttachmentDataJson(attachmentData)}};
 
     QNetworkRequest request(issuesApiUrl(repo));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -6827,6 +7113,8 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         if (!probe.canWrite())
             return;
     }
+    if (!hasOwnerSigningCapability(repo.owner))
+        return;
 
     QUrl url = issuesApiUrl(repo);
     // Auto-polls back off exponentially while the relay is failing (offline /
@@ -6878,6 +7166,8 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
                                          const QJsonArray &pending,
                                          bool interactive)
 {
+    if (!hasOwnerSigningCapability(repo.owner))
+        return;
     if (pending.isEmpty()) {
         if (interactive)
             setIssueInlineNotice("No pending submissions.");
@@ -6936,7 +7226,18 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
         meta.wantsAgent = metaObj.value("wantsAgent").toBool();
         meta.wantsAgentModel = metaObj.value("model").toString();
         meta.wantsAgentProvider = metaObj.value("provider").toString();
-        if (store.applyRemoteEvent(number, ev, titleIfNew, nullptr, meta)) {
+        // Images a no-write-access submitter attached ride along as base64
+        // bytes (see submitNewIssueToInbox/submitIssueCommentToInbox); write
+        // them into the issue folder as this event is merged in.
+        QList<RemoteAttachment> attachmentData;
+        for (const QJsonValue &a : item.value("attachmentData").toArray()) {
+            const QJsonObject obj = a.toObject();
+            attachmentData.append(RemoteAttachment{
+                obj.value("name").toString(),
+                QByteArray::fromBase64(obj.value("data").toString().toLatin1())});
+        }
+        if (store.applyRemoteEvent(number, ev, titleIfNew, nullptr, meta,
+                                   attachmentData)) {
             ++merged;
             const QString who =
                 ev.authorName.isEmpty() ? ev.author.left(8) : ev.authorName;
@@ -7224,6 +7525,27 @@ QWidget *MainWindow::buildChatSection()
     connect(firewallDismiss, &QPushButton::clicked, m_firewallBanner,
             &QWidget::hide);
 
+    // Unread banner: a thin clickable strip above the transcript that appears
+    // whenever other conversations hold unread messages. Its arrow marks every
+    // conversation read at once and jumps to the newest messages, so the badge
+    // can be cleared without visiting each channel and DM by hand.
+    m_chatUnreadBanner = new QWidget;
+    m_chatUnreadBanner->setObjectName("chatUnreadBanner");
+    m_chatUnreadBannerLabel = new QLabel;
+    auto *unreadReadButton = new QPushButton(QStringLiteral("Mark all read"));
+    unreadReadButton->setObjectName("chatUnreadBannerButton");
+    unreadReadButton->setCursor(Qt::PointingHandCursor);
+    unreadReadButton->setToolTip(
+        QStringLiteral("Mark every conversation read and jump to the newest messages"));
+    setOcticon(unreadReadButton, "chevron-up", 16);
+    auto *unreadLayout = new QHBoxLayout(m_chatUnreadBanner);
+    unreadLayout->setContentsMargins(18, 6, 12, 6);
+    unreadLayout->setSpacing(10);
+    unreadLayout->addWidget(m_chatUnreadBannerLabel, 1);
+    unreadLayout->addWidget(unreadReadButton);
+    m_chatUnreadBanner->hide();
+    connect(unreadReadButton, &QPushButton::clicked, this, &MainWindow::markAllChatRead);
+
     // Scrollable column of message-row widgets (supports avatars, inline
     // images, animated GIFs, file chips, and reaction bars).
     m_messageScroll = new QScrollArea;
@@ -7258,6 +7580,12 @@ QWidget *MainWindow::buildChatSection()
     auto *composer = new QWidget;
     composer->setObjectName("composerBar");
     composer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // Rounded "pill" that groups the attach control, text field, and emoji
+    // button into one control, so the composer reads as a single input instead
+    // of three loose widgets.
+    auto *inputRow = new QWidget;
+    inputRow->setObjectName("composerInputRow");
+    inputRow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *attachButton = new QPushButton(QString());
     attachButton->setObjectName("iconButton");
     attachButton->setCursor(Qt::PointingHandCursor);
@@ -7288,13 +7616,43 @@ QWidget *MainWindow::buildChatSection()
             QOverload<const QString &>::of(&QCompleter::activated), this,
             &MainWindow::insertMention);
     refreshMentionCandidates();
+    // 🙂 opens a compact emoji grid that inserts into the composer at the caret.
+    auto *emojiButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x99\x82"));
+    emojiButton->setObjectName("iconButton");
+    emojiButton->setCursor(Qt::PointingHandCursor);
+    emojiButton->setToolTip("Insert emoji");
+    connect(emojiButton, &QPushButton::clicked, this,
+            [this, emojiButton] { showEmojiPicker(emojiButton); });
+    auto *inputRowLayout = new QHBoxLayout(inputRow);
+    inputRowLayout->setContentsMargins(6, 2, 6, 2);
+    inputRowLayout->setSpacing(2);
+    // Small self avatar at the head of the pill so it's clear who is sending.
+    auto *selfAvatar = new QLabel("FM");
+    selfAvatar->setObjectName("issueAvatar");
+    selfAvatar->setAlignment(Qt::AlignCenter);
+    selfAvatar->setFixedSize(24, 24);
+    selfAvatar->setScaledContents(true);
+    selfAvatar->setToolTip(topBarUserName());
+    {
+        const QPixmap selfPm = roundedAvatar(effectiveAvatar(), 24);
+        if (!selfPm.isNull()) {
+            selfAvatar->setText(QString());
+            selfAvatar->setPixmap(selfPm);
+        }
+    }
+    inputRowLayout->addWidget(selfAvatar, 0, Qt::AlignVCenter);
+    inputRowLayout->addWidget(attachButton);
+    inputRowLayout->addWidget(m_messageInput, 1);
+    inputRowLayout->addWidget(emojiButton);
     auto *sendButton = new QPushButton("Send");
     sendButton->setObjectName("primaryButton");
+    sendButton->setCursor(Qt::PointingHandCursor);
     auto *composerLayout = new QHBoxLayout(composer);
     composerLayout->setContentsMargins(14, 10, 14, 12);
     composerLayout->setSpacing(8);
-    composerLayout->addWidget(attachButton);
-    composerLayout->addWidget(m_messageInput);
+    // The pill takes all spare width; the Send button stays a fixed size so it
+    // never gets pushed off-screen when the window is narrow.
+    composerLayout->addWidget(inputRow, 1);
     composerLayout->addWidget(sendButton);
 
     m_typingLabel = new QLabel;
@@ -7311,6 +7669,7 @@ QWidget *MainWindow::buildChatSection()
     mainColumn->setSpacing(0);
     mainColumn->addWidget(header);
     mainColumn->addWidget(m_firewallBanner);
+    mainColumn->addWidget(m_chatUnreadBanner);
     mainColumn->addWidget(m_messageScroll, 1);
     mainColumn->addWidget(m_typingLabel);
     mainColumn->addWidget(composer);
@@ -7354,6 +7713,19 @@ QWidget *MainWindow::buildChatSection()
             [this](QListWidgetItem *item, QListWidgetItem *) {
                 if (item)
                     switchConversation(item->data(Qt::UserRole).toString());
+            });
+    // Right-click a room to delete it (removed from this device only).
+    m_channelList->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_channelList, &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &pos) {
+                QListWidgetItem *item = m_channelList->itemAt(pos);
+                if (!item)
+                    return;
+                const QString channel = item->data(Qt::UserRole).toString();
+                QMenu menu(m_channelList);
+                QAction *del = menu.addAction(QStringLiteral("Delete room"));
+                if (menu.exec(m_channelList->viewport()->mapToGlobal(pos)) == del)
+                    promptDeleteRoom(channel);
             });
     connect(m_dmList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {

@@ -4,7 +4,10 @@
 
 (() => {
   const ROOM_NAME = "general";
-  const ROOM_PASSPHRASE = "forkmesh-shared-room-key-v1";
+  // The room key is fetched from the relay (derived server-side from DATA_KEY)
+  // rather than baked in as a public constant; see chat.js for the rationale.
+  const ROOM_KEY_ENDPOINT = "/api/chat/room-key";
+  let roomPassphrase = null;
   const CHANNEL = "#general";
   const CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws";
   const FORKBOT_ENDPOINT = "/api/forkbot/chat";
@@ -31,9 +34,22 @@
 
   const enc = new TextEncoder();
   const dec = new TextDecoder();
-  const selfId =
-    (crypto.randomUUID && crypto.randomUUID()) ||
-    `${Math.random()}`.slice(2) + Date.now();
+  // Stable per-browser chat id, shared with the full chat page (same storage
+  // key): the relay keeps no roster, so a fresh random id per load made every
+  // reload/tab of the same person a new "ghost" participant. Persisting it
+  // collapses them into one identity.
+  const selfId = (() => {
+    const STORAGE_KEY = "forkmesh.chat.selfId";
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) return saved;
+    } catch (_) {}
+    const fresh =
+      (crypto.randomUUID && crypto.randomUUID()) ||
+      `${Math.random()}`.slice(2) + Date.now();
+    try { localStorage.setItem(STORAGE_KEY, fresh); } catch (_) {}
+    return fresh;
+  })();
 
   let roomKey = null;
   let socket = null;
@@ -99,14 +115,33 @@
     }
   }
 
+  async function fetchRoomPassphrase() {
+    if (roomPassphrase) return roomPassphrase;
+    const session = readSession();
+    const token = session && session.sessionToken;
+    const headers = { accept: "application/json" };
+    if (token) headers.authorization = "Bearer " + token;
+    const res = await fetch(ROOM_KEY_ENDPOINT, { headers, cache: "no-store" });
+    if (!res.ok) {
+      const err = new Error("Sign in to join chat — room key unavailable.");
+      err.code = res.status === 401 || res.status === 403 ? "auth" : "server";
+      throw err;
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!data || !data.passphrase) throw new Error("Room key unavailable.");
+    roomPassphrase = String(data.passphrase);
+    return roomPassphrase;
+  }
+
   async function deriveRoomKey() {
+    const passphrase = await fetchRoomPassphrase();
     const saltDigest = new Uint8Array(
       await crypto.subtle.digest("SHA-256", enc.encode("ForkMesh room:" + ROOM_NAME))
     );
     const salt = saltDigest.slice(0, 16);
     const baseKey = await crypto.subtle.importKey(
       "raw",
-      enc.encode(ROOM_PASSPHRASE),
+      enc.encode(passphrase),
       "PBKDF2",
       false,
       ["deriveKey"]
@@ -591,6 +626,27 @@
 
   function handlePlain(plain) {
     const type = plain.type;
+    // Mirror-mesh signals ride the same encrypted room as chat: a source node
+    // broadcasts "mirror-update" the instant its repo advances from the source
+    // of truth, and every mirror node replies "mirror-synced" once it has
+    // pulled that commit. Re-broadcast both as a window event so the dashboard's
+    // open repo can re-fetch host health live instead of waiting for a manual
+    // reload — this is what makes the Mirrors tab show nodes converge instantly.
+    // These frames are stamped accountKind "node", so handle them before the
+    // user-only guard below (which is meant for chat surfaces).
+    if (type === "mirror-update" || type === "mirror-synced") {
+      try {
+        window.dispatchEvent(new CustomEvent("forkmesh:mirror-signal", {
+          detail: {
+            kind: type,
+            repo: String(plain.repo || "").slice(0, 200),
+            commit: String(plain.commit || "").slice(0, 64),
+            sender: String(plain.sender || "").slice(0, MAX_NAME),
+          },
+        }));
+      } catch (_) {}
+      return;
+    }
     if (type !== "history" && plain.accountKind !== "user") return;
     const sender = String(plain.sender || "peer").slice(0, MAX_NAME);
     if (type === "chat") {
@@ -680,14 +736,24 @@
       showUserOnlyState();
       return;
     }
+    // WebCrypto (crypto.subtle) only exists in a secure context. On plain HTTP
+    // — a self-hosted node or LAN IP opened on mobile — it is undefined, so the
+    // room key can never derive. Say so plainly instead of the old blanket
+    // "Encryption unavailable", which read like a transient glitch.
+    if (!window.isSecureContext || !(window.crypto && window.crypto.subtle)) {
+      setStatus("Chat needs a secure (HTTPS) connection");
+      return;
+    }
     connecting = true;
     setInputsEnabled(true);
     setStatus("Connecting...");
     try {
       if (!roomKey) roomKey = await deriveRoomKey();
-    } catch (_) {
+    } catch (err) {
       connecting = false;
-      setStatus("Encryption unavailable");
+      // An expired/absent session token 401s the room-key fetch; tell the user
+      // to sign in again rather than blaming encryption.
+      setStatus(err && err.code === "auth" ? "Sign in again to join chat" : "Encryption unavailable");
       return;
     }
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";

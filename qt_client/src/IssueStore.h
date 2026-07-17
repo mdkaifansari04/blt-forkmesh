@@ -13,7 +13,7 @@ class ForkMeshIdentity;
 // different fields. Signatures are raw Ed25519 over an
 // explicit canonical string, matching the worker's ed25519_verify.
 struct IssueEvent {
-    QString type;          // open | comment | edit | status | labels | milestone | priority | progress | assignees | agent | bounty | delete
+    QString type;          // open | comment | edit | status | labels | milestone | dates | priority | progress | assignees | agent | bounty | delete
     QString id;
     QString author;        // signer pubkey (base64url)
     QString authorName;
@@ -25,6 +25,8 @@ struct IssueEvent {
     QString status;        // status: open|closed
     QStringList labels;    // labels
     QString milestone;     // milestone (empty = none)
+    qint64 startDate = 0;  // dates: planned start (epoch ms, 0 = unset)
+    qint64 endDate = 0;    // dates: planned end (epoch ms, 0 = unset)
     int priority = 0;      // priority: 1 (highest) through 99 (lowest), 0 = unset
     int progress = 0;      // progress: 0..100 percent complete
     QStringList assignees; // assignees
@@ -48,6 +50,8 @@ struct Issue {
     QString status = "open";
     QStringList labels;
     QString milestone;
+    qint64 startDate = 0; // planned start (epoch ms, 0 = unset)
+    qint64 endDate = 0;   // planned end (epoch ms, 0 = unset)
     int priority = 0; // 1 (highest) through 99 (lowest), 0 = unset
     int progress = 0; // 0..100 percent complete (latest signed progress event)
     QStringList assignees;
@@ -63,7 +67,12 @@ struct Issue {
 
     QJsonObject toJson() const;
     static Issue fromJson(const QJsonObject &obj);
-    bool isDeleted() const; // a delete event targeting "self" tombstones the issue
+    // "Deleted" means the issue's own creator tombstoned it (a self-deletion).
+    // A delete/self event from anyone else is an unauthorized attempt that does
+    // NOT delete the issue — it stays visible and counted, flagged instead of
+    // hidden (adhoc #16: show the info rather than silently dropping the issue).
+    bool isDeleted() const;
+    bool hasUnauthorizedDeleteAttempt() const;
 };
 
 // Issue-level metadata that rides alongside a remote "open" submission. These
@@ -88,6 +97,18 @@ struct RemoteIssueMeta {
     QString wantsAgentProvider;
 };
 
+// Raw bytes for one image a no-write-access node attached to a remote "open"
+// or "comment" submission. Such a node has no working tree to copy the file
+// into (see IssueStore::copyAttachments), so it hashes/names the file itself
+// via readAttachmentsForRemoteSubmit() and ships the bytes alongside the
+// signed event; applyRemoteEvent() writes them into the issue folder on
+// merge, keyed by `name` (which already matches an entry in the event's
+// signed IssueEvent::attachments list).
+struct RemoteAttachment {
+    QString name;
+    QByteArray data;
+};
+
 struct IssueLabel {
     QString name;
     QString color;
@@ -100,9 +121,14 @@ struct IssueMilestone {
     QString description;
 };
 
-// Repo-scoped issue tracker backed by .forkmesh/issues/<n>/issue-<n>.json. For
-// repos with a local working tree the store reads/writes/commits files directly;
-// for repos available only as a bare mirror it reads issues read-only via `git show`.
+// Repo-scoped issue tracker backed by
+// .forkmesh/issues/open/<n>/issue-<n>.json and
+// .forkmesh/issues/closed/<n>/issue-<n>.json (the folder tracks the issue's
+// current status; changing status moves the folder). Pre-split repos kept
+// every issue at .forkmesh/issues/<n>/ — readers still accept that legacy
+// layout, and a writable store migrates it on first use. For repos with a
+// local working tree the store reads/writes/commits files directly; for repos
+// available only as a bare mirror it reads issues read-only via `git show`.
 class IssueStore
 {
 public:
@@ -121,6 +147,9 @@ public:
     // the GUI between reads and avoid tripping the stall watchdog.
     QList<Issue> loadAll(QString *error = nullptr,
                          const std::function<void()> &tick = {}) const;
+    QList<Issue> loadAllStrict(QString *error = nullptr) const;
+    QList<Issue> loadAllStrictAtRef(const QString &ref,
+                                    QString *error = nullptr) const;
     QList<IssueLabel> loadLabels() const;
     QList<IssueMilestone> loadMilestones() const;
 
@@ -135,18 +164,23 @@ public:
 
     // Mutations (require canWrite()). Each writes the issue JSON (and the
     // label/milestone def files when relevant), then commits .forkmesh/issues/.
+    // createdOut, if given, receives the freshly written Issue so callers can
+    // splice it into an already-loaded list instead of paying for a full
+    // loadAll() (a per-issue-file re-read) just to redisplay the one they just
+    // created.
     int createIssue(const QString &title, const QString &body,
                     const QStringList &labels, const QString &milestone,
                     int priority,
                     const QStringList &assignees,
-                    const QStringList &attachmentSrcPaths, QString *error = nullptr);
+                    const QStringList &attachmentSrcPaths, QString *error = nullptr,
+                    Issue *createdOut = nullptr);
     int createIssue(const QString &title, const QString &body,
                     const QStringList &labels, const QString &milestone,
                     int priority,
                     const QStringList &assignees,
                     const QStringList &attachmentSrcPaths,
                     const QStringList &attachmentPlaceholders,
-                    QString *error = nullptr);
+                    QString *error = nullptr, Issue *createdOut = nullptr);
     bool addComment(int number, const QString &body,
                     const QStringList &attachmentSrcPaths, QString *error = nullptr);
     bool addComment(int number, const QString &body,
@@ -171,6 +205,9 @@ public:
     bool setStatus(int number, const QString &status, QString *error = nullptr);
     bool setLabels(int number, const QStringList &labels, QString *error = nullptr);
     bool setMilestone(int number, const QString &milestone, QString *error = nullptr);
+    // Set the planned start/end dates (epoch ms; 0 clears a date).
+    bool setDates(int number, qint64 startDate, qint64 endDate,
+                  QString *error = nullptr);
     bool setPriority(int number, int priority, QString *error = nullptr);
     bool setProgress(int number, int progress, QString *error = nullptr);
     // Pledge (or update) a bounty on an issue. address is the worker-issued
@@ -200,30 +237,69 @@ public:
 
     // Merge a signature-bearing event received from the relay inbox into the
     // local issue store (used by cross-user sync). The event must already be
-    // signed and verified by the caller.
+    // signed and verified by the caller. `attachments` carries the raw bytes
+    // for any names listed in ev.attachments (a remote submitter has no
+    // working tree to have copied them into already); each is written into
+    // the issue folder before the event is committed.
     bool applyRemoteEvent(int number, const IssueEvent &ev, const QString &titleIfNew,
                           QString *error = nullptr,
-                          const RemoteIssueMeta &meta = {});
+                          const RemoteIssueMeta &meta = {},
+                          const QList<RemoteAttachment> &attachments = {});
+
+    // For a node with no working tree (relay/inbox submission path): read and
+    // content-address each source file the same way copyAttachments() would
+    // (sha256-prefix + extension), without touching disk. The returned names
+    // (RemoteAttachment::name) are what to put in IssueEvent::attachments
+    // before signing; the bytes ride along in the submission so the owner's
+    // applyRemoteEvent() can materialize them on merge.
+    static QList<RemoteAttachment> readAttachmentsForRemoteSubmit(
+        const QStringList &srcPaths);
+
+    // Public wrapper around the same "forkmesh-pending-image:N" placeholder
+    // substitution createIssue()/addComment() use, for the relay-submission
+    // path which has no working tree to call them on.
+    static QString substituteAttachmentPlaceholders(
+        QString body, const QStringList &srcPaths, const QStringList &placeholders,
+        const QStringList &attachmentNames);
 
     // The exact bytes that an event's signature commits to. Public + static so
     // it can be unit-tested and kept byte-identical to the worker's verifier.
     static QByteArray canonicalString(int number, const IssueEvent &ev);
     static QString contentForSigning(const IssueEvent &ev);
 
+    // Absolute folder for issue <number> in `workTree`, wherever it currently
+    // lives: open/<n>, closed/<n>, or the pre-split legacy <n>. Falls back to
+    // open/<n> when the issue doesn't exist yet. Static so UI code that only
+    // has the repo path (attachment previews, agent prompts) resolves the same
+    // location the store writes to.
+    static QString issueDirPath(const QString &workTree, int number);
+
 private:
     QString issuesDir() const;                 // <workTree>/.forkmesh/issues
-    QString issueDir(int number) const;        // <workTree>/.forkmesh/issues/<n>
-    QString issueFilePath(int number) const;   // <workTree>/.forkmesh/issues/<n>/issue-<n>.json
+    QString issueDir(int number) const;        // <workTree>/.forkmesh/issues/{open,closed}/<n>
+    QString issueFilePath(int number) const;   // <issueDir>/issue-<n>.json
+    // Move any legacy .forkmesh/issues/<n>/ folders into open/ or closed/ per
+    // their JSON status, committing the moves. Mutates repo files only (no
+    // object state, hence const). No-op once migrated.
+    void migrateLegacyLayout() const;
     bool readIssueFile(int number, Issue &out) const;
     bool writeIssueFile(const Issue &issue, QString *error) const;
     void recomputeMetadata(Issue &issue) const; // fold events into top-level fields
     QStringList copyAttachments(int number, const QStringList &srcPaths) const;
+    // Write the raw bytes a remote submitter shipped alongside a signed event
+    // into the issue folder, one file per name in `names` that has a matching
+    // entry in `attachments` (materializing what copyAttachments() would have
+    // written had the submitter had a working tree to copy from).
+    void writeRemoteAttachmentFiles(int number, const QStringList &names,
+                                    const QList<RemoteAttachment> &attachments) const;
     int nextNumber() const;
     bool commit(const QString &message, QString *error) const;
 
     // Read-only access from a bare mirror via `git show`.
-    QList<Issue> loadFromMirror(QString *error) const;
-    QByteArray showFromMirror(const QString &repoRelPath, bool *ok) const;
+    QList<Issue> loadFromMirror(QString *error, bool strict = false,
+                                const QString &refOverride = QString()) const;
+    QByteArray showFromMirror(const QString &repoRelPath, bool *ok,
+                              const QString &refOverride = QString()) const;
     QString mirrorRef() const;
 
     QString m_workTree;

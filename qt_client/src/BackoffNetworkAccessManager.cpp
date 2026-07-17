@@ -4,6 +4,7 @@
 #include <QDateTime>
 #include <QIODevice>
 #include <QNetworkReply>
+#include <QSet>
 #include <QStringList>
 #include <QTimer>
 
@@ -280,6 +281,13 @@ BackoffNetworkAccessManager::endpointRequests(const QString &method,
                qMax(b.finishedMs, b.startedMs);
     });
     return rows;
+}
+
+bool BackoffNetworkAccessManager::hostInCooldown(const QString &host) const
+{
+    // Same channel key createRequest() uses: the lowercased URL host.
+    return !m_backoff.ready(normalizedHost(host),
+                            QDateTime::currentMSecsSinceEpoch());
 }
 
 QString BackoffNetworkAccessManager::normalizedHost(const QString &host)
@@ -654,11 +662,33 @@ QNetworkReply *BackoffNetworkAccessManager::createRequest(
         return new BackoffSuppressedReply(request, op, this);
     }
 
+    // Host-tunnel CONTENT paths can legitimately return 5xx when the specific
+    // desktop node serving them is offline (the worker maps a dead host DO to
+    // 502/503) — that is not the relay overloading, so those must NOT trip the
+    // host-wide cooldown. The core relay API (heartbeat, sync, repositories,
+    // agents, mirrors, …) 5xx only when the Worker itself is failing.
+    const QString lastSeg = url.path().section(QLatin1Char('/'), -1);
+    static const QSet<QString> kTunnelOps = {
+        QStringLiteral("tree"), QStringLiteral("blob"),
+        QStringLiteral("blobs"), QStringLiteral("raw"),
+        QStringLiteral("history"), QStringLiteral("commit"),
+        QStringLiteral("branches"), QStringLiteral("search")};
+    const bool tunnelContent =
+        kTunnelOps.contains(lastSeg)
+        || url.path().contains(QStringLiteral("/releases/blob/"));
+
     QNetworkReply *reply = createTrackedRequest();
-    connect(reply, &QNetworkReply::finished, this, [this, reply, channel] {
-        const QVariant code =
-            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
-        if (code.toInt() == 429)
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, channel, tunnelContent] {
+        const int code =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        // 429 (rate limit) OR a Worker 5xx (Cloudflare 1101/1102 resource
+        // exhaustion) trips the cooldown: during the 2026-07-11 outage every
+        // core endpoint 500'd for 100 minutes while the client kept firing at
+        // full cadence because only 429 was treated as backpressure.
+        const bool overloaded =
+            code == 429 || (code >= 500 && code <= 599 && !tunnelContent);
+        if (overloaded)
             m_backoff.noteFailure(channel, QDateTime::currentMSecsSinceEpoch(),
                                   kBaseMs, kCapMs);
         else if (reply->error() == QNetworkReply::NoError)

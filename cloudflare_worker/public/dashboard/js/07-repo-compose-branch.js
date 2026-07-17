@@ -1,7 +1,6 @@
   function openIssueCompose(repo) {
     const container = $("[data-repo-issues]");
     if (!container || !repo) return;
-    const who = escapeHtml(state.session?.nodeName || "you");
     const canAssignAgent = sessionCanAssignAgent(repo);
     container.innerHTML = `
       <form data-repo-issue-form class="grid gap-3 border-t border-border bg-background p-4">
@@ -45,7 +44,10 @@
           </div>
         </div>` : ""}
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
+          <div class="flex min-w-0 flex-col gap-1">
+            ${composeIdentityHtml(state.session, "Filing")}
+            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+          </div>
           <button type="submit" data-repo-issue-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Submit issue</button>
         </div>
       </form>`;
@@ -95,66 +97,84 @@
       renderAttachmentChips();
     });
 
+    // Shared by both the file picker and clipboard paste: validate, embed (or
+    // crop/compress if oversized), then insert a placeholder into the body at
+    // the caret so pasted screenshots land right where the cursor was.
+    const addIssueImageFile = async (file, rawName) => {
+      const name = rawName.replace(/[[\]]/g, "_");
+      if (!file.type.startsWith("image/")) {
+        setAttachHint(`${name}: not an image.`, "bad");
+        return;
+      }
+      if (images.length >= ISSUE_IMAGE_MAX_COUNT) {
+        setAttachHint(`You can attach up to ${ISSUE_IMAGE_MAX_COUNT} images.`, "bad");
+        return;
+      }
+      if (file.size > ISSUE_IMAGE_RAW_MAX_BYTES) {
+        setAttachHint(`${name} is too large to attach (max ${formatSize(ISSUE_IMAGE_RAW_MAX_BYTES)}).`, "bad");
+        return;
+      }
+      const total = images.reduce((sum, img) => sum + img.size, 0);
+      const budget = Math.min(ISSUE_IMAGE_MAX_BYTES, ISSUE_IMAGE_MAX_TOTAL_BYTES - total);
+      if (budget <= 0) {
+        setAttachHint("Attached images already use up the issue's size limit - remove one to add another.", "bad");
+        return;
+      }
+      let dataUrl;
+      let size;
+      if (file.size <= budget) {
+        try {
+          dataUrl = await readAsDataUrl(file);
+          size = file.size;
+        } catch (_) {
+          setAttachHint(`Could not read ${name}.`, "bad");
+          return;
+        }
+      } else {
+        setAttachHint(`${name} is ${formatSize(file.size)} - crop or compress it to fit under ${formatSize(budget)}.`);
+        const result = await openImageResizeModal(file, budget);
+        if (!result) {
+          setAttachHint("");
+          return;
+        }
+        dataUrl = result.dataUrl;
+        size = result.size;
+      }
+      const id = `forkmesh-pending-image:${Date.now().toString(36)}${images.length}`;
+      images.push({ id, name, dataUrl, size });
+      const start = bodyInput?.selectionStart ?? bodyInput?.value.length ?? 0;
+      const end = bodyInput?.selectionEnd ?? start;
+      if (bodyInput) {
+        const insertion = `\n![${name}](${id})\n`;
+        bodyInput.value = bodyInput.value.slice(0, start) + insertion + bodyInput.value.slice(end);
+        const cursor = start + insertion.length;
+        bodyInput.selectionStart = bodyInput.selectionEnd = cursor;
+      }
+      setAttachHint("");
+    };
+
     if (attachButton && fileInput) {
       attachButton.addEventListener("click", () => fileInput.click());
       fileInput.addEventListener("change", async () => {
         const files = Array.from(fileInput.files || []);
         fileInput.value = "";
-        for (const file of files) {
-          if (!file.type.startsWith("image/")) {
-            setAttachHint(`${file.name}: not an image.`, "bad");
-            continue;
-          }
-          if (images.length >= ISSUE_IMAGE_MAX_COUNT) {
-            setAttachHint(`You can attach up to ${ISSUE_IMAGE_MAX_COUNT} images.`, "bad");
-            break;
-          }
-          if (file.size > ISSUE_IMAGE_RAW_MAX_BYTES) {
-            setAttachHint(`${file.name} is too large to attach (max ${formatSize(ISSUE_IMAGE_RAW_MAX_BYTES)}).`, "bad");
-            continue;
-          }
-          const total = images.reduce((sum, img) => sum + img.size, 0);
-          const budget = Math.min(ISSUE_IMAGE_MAX_BYTES, ISSUE_IMAGE_MAX_TOTAL_BYTES - total);
-          if (budget <= 0) {
-            setAttachHint("Attached images already use up the issue's size limit - remove one to add another.", "bad");
-            continue;
-          }
-          let dataUrl;
-          let size;
-          if (file.size <= budget) {
-            try {
-              dataUrl = await readAsDataUrl(file);
-              size = file.size;
-            } catch (_) {
-              setAttachHint(`Could not read ${file.name}.`, "bad");
-              continue;
-            }
-          } else {
-            setAttachHint(`${file.name} is ${formatSize(file.size)} - crop or compress it to fit under ${formatSize(budget)}.`);
-            const result = await openImageResizeModal(file, budget);
-            if (!result) {
-              setAttachHint("");
-              continue;
-            }
-            dataUrl = result.dataUrl;
-            size = result.size;
-          }
-          const id = `forkmesh-pending-image:${Date.now().toString(36)}${images.length}`;
-          const name = file.name.replace(/[[\]]/g, "_");
-          images.push({ id, name, dataUrl, size });
-          const start = bodyInput?.selectionStart ?? bodyInput?.value.length ?? 0;
-          const end = bodyInput?.selectionEnd ?? start;
-          if (bodyInput) {
-            const insertion = `\n![${name}](${id})\n`;
-            bodyInput.value = bodyInput.value.slice(0, start) + insertion + bodyInput.value.slice(end);
-            const cursor = start + insertion.length;
-            bodyInput.selectionStart = bodyInput.selectionEnd = cursor;
-          }
-          setAttachHint("");
-        }
+        for (const file of files) await addIssueImageFile(file, file.name);
         renderAttachmentChips();
       });
     }
+    bodyInput?.addEventListener("paste", async (event) => {
+      const imageItems = Array.from(event.clipboardData?.items || [])
+        .filter((item) => item.kind === "file" && item.type.startsWith("image/"));
+      if (!imageItems.length) return;
+      // A pasted screenshot has no useful text form, so claim the paste instead
+      // of letting the browser also dump it in as an inline object/blank text.
+      event.preventDefault();
+      for (const item of imageItems) {
+        const file = item.getAsFile();
+        if (file) await addIssueImageFile(file, file.name || "screenshot.png");
+      }
+      renderAttachmentChips();
+    });
     container.querySelector("[data-repo-issue-title]")?.focus();
   }
 
@@ -193,7 +213,7 @@
       // Submissions land in the maintainer's inbox, not the public mirror, so it
       // won't be visible there until they drain it - but show it locally, on
       // top of this session's issue list, so the submitter sees it right away.
-      state.issuesView.items = [{
+      const pendingItem = {
         number: null,
         localId: `pending-${Date.now().toString(36)}`,
         title,
@@ -204,14 +224,25 @@
         body,
         wantsAgent: assignAgent,
         pending: true,
-      }, ...state.issuesView.items];
-      setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status === "open").length);
+      };
+      state.issuesView.items = [pendingItem, ...state.issuesView.items];
+      // Issue #379: when the owner files an issue while their source-of-truth
+      // node is offline but a mirror is serving the repo, persist it locally so
+      // it keeps showing up across reloads - fully, not just this session -
+      // until the node comes back online and drains it to the mirror.
+      const ownerOffline = isRepoOwner(repo) && repoServedByMirror(repo);
+      if (ownerOffline) savePendingIssue(repo, pendingItem);
+      setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status !== "closed").length);
       if (titleInput) titleInput.value = "";
       if (bodyInput) bodyInput.value = "";
       images.length = 0;
       form.querySelector("[data-repo-issue-attachments]")?.replaceChildren();
       if (submit) submit.disabled = false;
-      setHint("Issue sent to the maintainer's inbox for review. Submit another or go back.", "good");
+      setHint(
+        ownerOffline
+          ? "Your source-of-truth node is offline, so this issue is held on a mirror and will sync to your node when it comes back online."
+          : "Issue sent to the maintainer's inbox for review. Submit another or go back.",
+        "good");
     } catch (error) {
       if (submit) submit.disabled = false;
       const code = String(error?.message || "");
@@ -233,7 +264,6 @@
   function openPullCompose(repo) {
     const container = $("[data-repo-pulls]");
     if (!container || !repo) return;
-    const who = escapeHtml(state.session?.nodeName || "you");
     const branches = repoBranchList(repo);
     const defaultBranch = repoDefaultBranch(repo);
     const branchOptions = branches.map((branch) => `<option value="${escapeHtml(branch.name)}">${escapeHtml(branch.name)}</option>`).join("");
@@ -260,7 +290,10 @@
         </label>
         <div class="rounded-md border border-dashed border-border bg-secondary/20 px-3 py-2 text-[11px] text-muted-foreground">The diff isn't computed here - the maintainer's desktop client reconstructs it from the base and head branches when it drains this submission.</div>
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span data-repo-pull-hint class="text-[11px] text-muted-foreground">Filed as ${who}. Sent to the maintainer's inbox for review.</span>
+          <div class="flex min-w-0 flex-col gap-1">
+            ${composeIdentityHtml(state.session, "Filing")}
+            <span data-repo-pull-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+          </div>
           <button type="submit" data-repo-pull-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Create pull request</button>
         </div>
       </form>`;
@@ -325,9 +358,9 @@
   async function loadRepoCommits(repo) {
     const container = $("[data-repo-commits]");
     if (!container) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading commits from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading commits from the live mirror...")}</div>`;
     try {
-      const data = await fetchJson(repoLiveUrl(repo, "history"));
+      const data = await fetchRepoJson(repoLiveUrl(repo, "history"));
       const commits = Array.isArray(data.commits) ? data.commits : [];
       if (!commits.length) {
         container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No commits are available from this live mirror yet.</div>';
@@ -412,9 +445,9 @@
   async function loadRepoCommitDetail(repo, hash) {
     const container = $("[data-repo-commits]");
     if (!container || !repo || !hash) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading commit from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading commit from the live mirror...")}</div>`;
     try {
-      const data = await fetchJson(repoLiveUrl(repo, "commit", { path: hash }));
+      const data = await fetchRepoJson(repoLiveUrl(repo, "commit", { path: hash }));
       state.repoCommitDetail = { repo, data };
       container.innerHTML = renderRepoCommitDetail(repo, data);
     } catch (_) {
@@ -432,6 +465,135 @@
     const name = String(mirror.owner || mirror.node || mirror.name || "").trim().toLowerCase();
     const servedName = String(servedBy?.name || "").trim().toLowerCase();
     return Boolean(name && servedName && name === servedName);
+  }
+
+  // The source-of-truth node in a mirror group: the one whose name matches the
+  // repo owner (it holds the canonical copy), else the freshest online node with
+  // a commit, else the one with the most complete history. Every other node's
+  // commit/counts are compared against this one so the tab can flag a mirror
+  // serving stale or divergent data, exactly like the desktop Mirror nodes panel.
+  function pickReferenceMirror(mirrors) {
+    const list = (Array.isArray(mirrors) ? mirrors : []).filter(
+      (mirror) => String(mirror && mirror.commit || "").trim(),
+    );
+    if (!list.length) return null;
+    const owner = String(state.selectedRepo?.owner || "").trim().toLowerCase();
+    const named = owner
+      ? list.find(
+          (mirror) =>
+            String(mirror.node || mirror.owner || mirror.name || "").trim().toLowerCase() === owner,
+        )
+      : null;
+    if (named) return named;
+    return list.slice().sort(
+      (a, b) =>
+        Number(b.status === "online") - Number(a.status === "online") ||
+        (Number(b.lastSync) || 0) - (Number(a.lastSync) || 0) ||
+        (Number(b.commitCount) || 0) - (Number(a.commitCount) || 0),
+    )[0];
+  }
+
+  // A count differs from the reference node's only when both sides actually
+  // reported a value (>= 0) — an em dash on either side means "not tracked", not
+  // "out of sync", so it's never flagged.
+  function mirrorCountMismatch(value, ref) {
+    return Number(ref) >= 0 && Number(value) >= 0 && Number(value) !== Number(ref);
+  }
+
+  // One metadata chip. `mismatch` underlines it (amber) and notes the canonical
+  // value in the tooltip, matching the desktop panel's underline of a cell that
+  // doesn't match the source of truth.
+  function mirrorChip(label, value, mismatch, note) {
+    const shown = value === "" || value === undefined || value === null ? "-" : value;
+    return `
+        <span class="inline-flex items-center gap-1 rounded-md border ${mismatch ? "border-amber-500/50" : "border-border"} px-1.5 py-0.5 text-[10px] font-mono"${mismatch && note ? ` title="${escapeHtml(note)}"` : ""}>
+          <span class="text-muted-foreground">${escapeHtml(label)}</span>
+          <span class="${mismatch ? "text-amber-600 underline decoration-amber-500/60" : "text-foreground"}">${escapeHtml(shown)}</span>
+        </span>`;
+  }
+
+  // The metadata columns the desktop Mirror nodes panel shows, rendered as chips
+  // under each mirror row: commit + sync freshness, on-disk size, and the mirrored
+  // issue/commit/branch/pull/discussion/worktree/clone/website/artifact tallies.
+  // Content columns that don't match the source of truth are underlined.
+  function mirrorDetailChips(mirror, refMirror) {
+    const commit = String(mirror.commit || "").trim();
+    const refCommit = String(refMirror?.commit || "").trim();
+    const branch = String(mirror.branch || "").trim();
+    const commitLabel = commit
+      ? commit.slice(0, 7) + (branch ? ` (${branch})` : "")
+      : "";
+    const chips = [
+      mirrorChip(
+        "Commit",
+        commitLabel,
+        Boolean(commit && refCommit && commit !== refCommit),
+        refCommit ? `Source of truth is at ${refCommit.slice(0, 7)}` : "",
+      ),
+      mirrorChip("Synced", mirror.lastSync ? formatTimeAgo(mirror.lastSync) : "", false, ""),
+      mirrorChip("Size", mirror.sizeBytes ? formatSize(mirror.sizeBytes) : "", false, ""),
+      mirrorChip("Issues", mirrorCountText(mirror.issueCount), mirrorCountMismatch(mirror.issueCount, refMirror?.issueCount), `Source: ${mirrorCountText(refMirror?.issueCount)}`),
+      mirrorChip("Commits", mirrorCountText(mirror.commitCount), mirrorCountMismatch(mirror.commitCount, refMirror?.commitCount), `Source: ${mirrorCountText(refMirror?.commitCount)}`),
+      mirrorChip("Branches", mirrorCountText(mirror.branchCount), mirrorCountMismatch(mirror.branchCount, refMirror?.branchCount), `Source: ${mirrorCountText(refMirror?.branchCount)}`),
+      mirrorChip("Pulls", mirrorCountText(mirror.pullCount), mirrorCountMismatch(mirror.pullCount, refMirror?.pullCount), `Source: ${mirrorCountText(refMirror?.pullCount)}`),
+      mirrorChip("Discussions", mirrorCountText(mirror.discussionCount), mirrorCountMismatch(mirror.discussionCount, refMirror?.discussionCount), `Source: ${mirrorCountText(refMirror?.discussionCount)}`),
+      mirrorChip("Worktrees", mirrorCountText(mirror.worktreeCount), false, ""),
+      mirrorChip("Clones", mirrorCountText(mirror.clonesServed), false, ""),
+      mirrorChip("Website", mirrorCountText(mirror.websiteServed), false, ""),
+      mirrorChip("Artifacts", mirrorCountText(mirror.artifactCount), mirrorCountMismatch(mirror.artifactCount, refMirror?.artifactCount), `Source: ${mirrorCountText(refMirror?.artifactCount)}`),
+    ];
+    return chips.join("");
+  }
+
+  // Counts arrive as -1 when a node hasn't reported them; show a dash for those
+  // (a distinct state from a real 0) so a chip never reads a misleading "0".
+  function mirrorCountText(value) {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? formatCount(number) : "";
+  }
+
+  // The full Mirrors-tab row: a header line (dot, name, source-of-truth / out-of-
+  // sync / integrity badges, version, serve speed, status) over a wrapped strip of
+  // the same metadata columns the desktop Mirror nodes panel shows.
+  function renderMirrorTabRow(mirror, servedBy, refMirror) {
+    const online = mirror.status === "online";
+    const isServing = online && mirrorRowIsServing(mirror, servedBy);
+    const speed = isServing ? formatServeSpeed(servedBy.tookMs) : "";
+    const rawVersion = String(mirror.version || mirror.appVersion || mirror.clientVersion || "").trim();
+    const version = rawVersion
+      ? (rawVersion[0].toLowerCase() === "v" ? rawVersion : `v${rawVersion}`)
+      : "";
+    const commit = String(mirror.commit || "").trim();
+    const refCommit = String(refMirror?.commit || "").trim();
+    const isSource = Boolean(refMirror && mirror === refMirror);
+    const behind = online && commit && refCommit && commit !== refCommit;
+    const integrityRejected = mirror.integrity === "rejected";
+    const dotColor = !online
+      ? "text-muted-foreground"
+      : behind
+        ? "text-amber-500"
+        : "text-primary";
+    const rowClass = isServing
+      ? "border-t border-border px-4 py-3 text-sm ring-1 ring-inset ring-primary bg-primary/5"
+      : "border-t border-border px-4 py-3 text-sm hover:bg-secondary/40 transition-colors";
+    return `
+        <div class="${rowClass}">
+          <div class="flex items-center gap-3">
+            <i data-lucide="${online ? "radio" : "circle"}" class="h-4 w-4 shrink-0 ${dotColor}"></i>
+            <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <span class="min-w-0 truncate font-mono text-foreground">${escapeHtml(mirror.node || mirror.owner || mirror.name || "mirror")}</span>
+              ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
+              ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
+              ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
+              ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
+            </div>
+            <span class="flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
+              ${speed ? `<span class="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">${escapeHtml(speed)}</span>` : ""}
+              ${escapeHtml(mirror.status || "unknown")}
+            </span>
+          </div>
+          <div class="mt-2 flex flex-wrap gap-1.5 pl-7">${mirrorDetailChips(mirror, refMirror)}</div>
+        </div>`;
   }
 
   function renderMirrorRow(mirror, servedBy) {
@@ -474,7 +636,19 @@
   function renderRepoMirrorLists(mirrors, servedBy) {
     const tabContainer = $("[data-repo-mirrors]");
     if (tabContainer && mirrors.length) {
-      tabContainer.innerHTML = mirrors.map((mirror) => renderMirrorRow(mirror, servedBy)).join("");
+      // Source of truth first, then online before offline, then freshest sync —
+      // the same ordering as the desktop Mirror nodes panel.
+      const refMirror = pickReferenceMirror(mirrors);
+      const ordered = mirrors.slice().sort(
+        (a, b) =>
+          Number(b === refMirror) - Number(a === refMirror) ||
+          Number(b.status === "online") - Number(a.status === "online") ||
+          (Number(b.lastSync) || 0) - (Number(a.lastSync) || 0) ||
+          String(a.node || a.owner || a.name || "").localeCompare(String(b.node || b.owner || b.name || "")),
+      );
+      tabContainer.innerHTML = ordered
+        .map((mirror) => renderMirrorTabRow(mirror, servedBy, refMirror))
+        .join("");
     }
     renderRepoLiveMirrorList(mirrors, servedBy);
     window.lucide?.createIcons();
@@ -482,7 +656,9 @@
 
   async function loadRepoMirrors(repo) {
     const container = $("[data-repo-mirrors]");
-    if (container) container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading mirrors...</div>';
+    // Owner-only "ask a node to mirror your repo" control (issue #385).
+    renderMirrorRequestForm(repo);
+    if (container) container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading mirrors...")}</div>`;
     try {
       const data = await fetchJson(`${repoApiBase(repo)}/mirrors`);
       const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
@@ -506,6 +682,46 @@
       window.lucide?.createIcons();
     }
   }
+
+  // Live convergence for the open repo's Mirrors tab. The chat socket
+  // (dashboard-chat.js) re-broadcasts the mirror-mesh's "mirror-update" /
+  // "mirror-synced" frames as a window event the moment a source of truth
+  // advances and each node pulls it. When one names the repo we're viewing,
+  // re-fetch host health so the nodes visibly converge without a manual reload.
+  let liveMirrorRefreshTimer = null;
+  let liveMirrorConfirmTimer = null;
+  function refreshOpenRepoMirrors() {
+    const repo = state.selectedRepo;
+    // Only meaningful while the Mirrors panel is actually mounted.
+    if (repo && document.querySelector("[data-repo-mirrors]")) loadRepoMirrors(repo);
+  }
+  function onLiveMirrorSignal(event) {
+    const repo = state.selectedRepo;
+    if (!repo) return;
+    const target = String(event?.detail?.repo || "").trim().toLowerCase();
+    if (!target) return;
+    // The frame carries "<catalog-owner>/<repo>". Match the open repo by its
+    // full key, or fall back to the repo-name tail (older/renamed peers).
+    const key = repoKey(repo).toLowerCase();
+    const name = String(repo.name || "").trim().toLowerCase();
+    const tail = target.slice(target.lastIndexOf("/") + 1);
+    if (target !== key && !(name && tail === name)) return;
+    // Trailing-coalesce a burst of per-node acks into a single refetch, then
+    // confirm once more after the publishing nodes' catalog records propagate
+    // (the /mirrors payload is catalog-derived and lags the room frame a beat).
+    if (liveMirrorRefreshTimer) clearTimeout(liveMirrorRefreshTimer);
+    liveMirrorRefreshTimer = setTimeout(() => {
+      liveMirrorRefreshTimer = null;
+      refreshOpenRepoMirrors();
+      if (!liveMirrorConfirmTimer) {
+        liveMirrorConfirmTimer = setTimeout(() => {
+          liveMirrorConfirmTimer = null;
+          refreshOpenRepoMirrors();
+        }, 5000);
+      }
+    }, 1200);
+  }
+  window.addEventListener("forkmesh:mirror-signal", onLiveMirrorSignal);
 
   function renderRepoRelease(repo, release, downloads) {
     const tag = String(release.tag || "untagged");
@@ -561,10 +777,10 @@
   async function loadRepoReleases(repo) {
     const container = $("[data-repo-releases]");
     if (!container) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading releases from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading releases from the live mirror...")}</div>`;
     const empty = '<div class="px-4 py-3 text-sm text-muted-foreground">No releases have been published to this mirror yet.</div>';
     try {
-      // Release manifests live in the git tree at releases/<channel>/release.json
+      // Release manifests live in the git tree at .forkmesh/releases/<channel>/release.json
       // (issue #304). List the channels, then batch-read every manifest in one
       // tunnel round-trip so opening the tab doesn't fan out N blob requests.
       let tree;
@@ -584,7 +800,7 @@
         container.innerHTML = empty;
         return;
       }
-      const paths = channels.map((channel) => `releases/${channel}/release.json`);
+      const paths = channels.map((channel) => `.forkmesh/releases/${channel}/release.json`);
       const blobs = await fetchRepoBlobs(repo, paths);
       const releases = [];
       channels.forEach((channel, index) => {
@@ -614,7 +830,7 @@
       releases.sort((a, b) => (Number(b.created_at) || 0) - (Number(a.created_at) || 0));
       container.innerHTML = releases.map((release) => renderRepoRelease(repo, release, downloads)).join("");
     } catch (_) {
-      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a live desktop host serves the releases/ folder.</div>';
+      container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Releases are unavailable until a live desktop host serves the .forkmesh/releases/ folder.</div>';
     } finally {
       window.lucide?.createIcons();
     }
@@ -680,9 +896,9 @@
   async function loadRepoInsights(repo) {
     const container = $("[data-repo-insights]");
     if (!container || !repo) return;
-    container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Loading insights from the live mirror...</div>';
+    container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading insights from the live mirror...")}</div>`;
     try {
-      const data = await fetchJson(repoLiveUrl(repo, "history"));
+      const data = await fetchRepoJson(repoLiveUrl(repo, "history"));
       const commits = Array.isArray(data.commits) ? data.commits : [];
       container.innerHTML = renderRepoInsights(repo, commits);
     } catch (_) {
@@ -692,7 +908,7 @@
     }
   }
 
-  function loadRepoFeaturePanels(repo) {
+  function loadRepoFeaturePanels(repo, recordRoute = null) {
     loadRepoMirrors(repo);
     // Feature panels load on their FIRST tab view (and reload here after a
     // repo/branch switch if that tab is already active): fetching hidden live
@@ -705,10 +921,23 @@
       loadRepoCommits(repo);
     } else if (active === "issues") {
       state.loadedRepoTabs.issues = true;
-      loadRepoIssues(repo);
+      // A refreshed/shared issue deep link (/owner/repo/issues/<N>) opens that
+      // issue's detail straight away; Back re-fetches the list lazily.
+      if (recordRoute && recordRoute.kind === "issues" && recordRoute.number) {
+        loadRepoRecordDetail(repo, "issues", recordRoute.number);
+      } else {
+        loadRepoIssues(repo);
+      }
     } else if (active === "pulls" || active === "discussions") {
       state.loadedRepoTabs[active] = true;
-      loadRepoCollection(repo, active, `[data-repo-${active}]`);
+      // A record deep link (/owner/repo/pulls/<N> — e.g. the desktop client's
+      // "View on website" button) opens the record's detail page directly
+      // instead of the list; Back to the list loads it lazily from there.
+      if (recordRoute && recordRoute.kind === active && recordRoute.number) {
+        loadRepoRecordDetail(repo, active, recordRoute.number);
+      } else {
+        loadRepoCollection(repo, active, `[data-repo-${active}]`);
+      }
     } else if (active === "releases") {
       state.loadedRepoTabs.releases = true;
       loadRepoReleases(repo);
@@ -903,7 +1132,7 @@
     const key = repoKey(repo);
     if (state.repoBranches[key]?.loaded) return;
     try {
-      const data = await fetchJson(`${repoApiBase(repo)}/branches`);
+      const data = await fetchRepoJson(`${repoApiBase(repo)}/branches`);
       const branches = (Array.isArray(data.branches) ? data.branches : [])
         .map(normalizeRepoBranch)
         .filter(Boolean);
@@ -925,36 +1154,6 @@
       </label>`;
   }
 
-  function renderRepoCollectionSidebar(kind) {
-    const primaryItems = [
-      ["Issues", "circle-dot"],
-      ["Assigned to me", "users"],
-      ["Created by me", "smile-plus"],
-      ["Mentioned", "at-sign"],
-      ["Recent activity", "clock"],
-    ];
-    const secondaryItems = [
-      ["Views", "layers"],
-      ["Projects", "table-2"],
-      ["Milestones", "milestone"],
-      ["Labels", "tag"],
-    ];
-    const renderItem = ([label, icon], active = false) => `
-      <button type="button" class="flex h-8 w-full items-center gap-2 rounded-md px-3 text-left text-xs font-semibold ${active ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground"}">
-        <i data-lucide="${icon}" class="h-3.5 w-3.5 shrink-0"></i>
-        <span class="min-w-0 truncate">${label}</span>
-      </button>`;
-    return `
-      <aside data-repo-collection-sidebar="${kind}" class="hidden border-r border-border pr-3 lg:block">
-        <nav class="grid gap-1">
-          ${primaryItems.map((item, index) => renderItem(item, index === 0)).join("")}
-        </nav>
-        <nav class="mt-5 grid gap-1 border-t border-border pt-5">
-          ${secondaryItems.map((item) => renderItem(item)).join("")}
-        </nav>
-      </aside>`;
-  }
-
   function renderRepoCollectionPanel(kind, repo, openCount, closedCount) {
     const isPulls = kind === "pulls";
     const config = repoCollectionConfig[kind];
@@ -972,13 +1171,12 @@
 
     return `
       <section data-dashboard-repo-tab-panel="${kind}" class="hidden">
-        <div class="mt-4 grid gap-4 lg:grid-cols-[14rem_minmax(0,1fr)]">
-          ${renderRepoCollectionSidebar(kind)}
+        <div class="mt-4">
           <div class="min-w-0">
             ${isPulls ? `
               <div class="mb-4 rounded-lg border border-border bg-background px-4 py-5 text-center">
                 <p class="text-sm font-semibold text-foreground">First time contributing to ${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repository")}?</p>
-                <p class="mx-auto mt-2 max-w-xl text-xs leading-5 text-muted-foreground">Review this repository's contribution notes before opening a pull request.</p>
+                <p class="mx-auto mt-2 max-w-xl text-xs leading-5 text-muted-foreground">Review this repository's <a href="${escapeHtml(repoPathUrl(repo, "blob", "CONTRIBUTING.md"))}" class="font-medium text-accent hover:underline">contribution notes</a> before opening a pull request.</p>
               </div>` : ""}
             <div data-repo-collection-toolbar="${kind}" class="mb-3 grid gap-2 lg:grid-cols-[auto_minmax(0,1fr)_auto]">
               <label class="inline-flex h-9 min-w-0 items-center overflow-hidden rounded-md border border-border bg-background text-xs lg:col-span-2">

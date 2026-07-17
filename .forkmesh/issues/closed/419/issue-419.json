@@ -1,0 +1,46 @@
+{
+    "assignees": [
+    ],
+    "author": "8Yz86t8tyEF3o6My2FuW3PnBqfDbDnqy8WZqKrRPZgQ",
+    "authorName": "static-rack-9818",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783885729089,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "8Yz86t8tyEF3o6My2FuW3PnBqfDbDnqy8WZqKrRPZgQ",
+            "authorName": "static-rack-9818",
+            "body": "\n![Screenshot From 2026-07-12 15-47-09.png](forkmesh-pending-image:0)",
+            "id": "open-418",
+            "sig": "FKG09mlhLgCFYvgodoCOZCqoh8jrzRoajq_XyTw9o3PgdrC5ohtfH7O5-L9DYO6FtB5Q4G6Gic_C_yNKqo81BA",
+            "title": "there is an errror on a new isntall",
+            "ts": 1783885729089,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "1fbb7e65-9719-4f8e-b0fb-c62a1a5e945e",
+            "sig": "23yGZgKe84OjEVP74LXCMxtyeEX5w4KLW2V3zqHeRaKr621FItMfDRnKd4l7JwvZy6oy44013t-XDXkqs938Dw",
+            "status": "closed",
+            "ts": 1783914323815,
+            "type": "status"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 419,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "there is an errror on a new isntall",
+    "updatedAt": 1783914323815,
+    "votes": 0
+}

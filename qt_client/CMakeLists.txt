@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.6.0 LANGUAGES CXX)
+project(ForkMesh VERSION 0.6.18 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -24,19 +24,40 @@ else()
     set(FORKMESH_VERSION "${PROJECT_VERSION}")
 endif()
 
-# Baked into the binaries: shown in the UI, and the quick-update button uses
-# the source dir to git pull + rebuild when running from a checkout.
+# Baked into the binaries: the quick-update button uses the source dir to
+# git pull + rebuild when running from a checkout. Global is fine here — the
+# value never changes between builds of the same checkout, so it never
+# invalidates incremental builds. (It also must stay global: the inline
+# updateClientDir() in MainWindowInternal.h reads it, so every TU has to see
+# the same value or the ODR is violated.)
 add_compile_definitions(
-    FORKMESH_VERSION="${FORKMESH_VERSION}"
     FORKMESH_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
 )
+
+# FORKMESH_VERSION changes on every release bump, so it must NOT be on compile
+# command lines at all — as a global definition it turned every bump into a
+# full rebuild of every target, and even a per-source COMPILE_DEFINITIONS
+# property rewrites the target's build.make, which every object in the target
+# depends on under the Makefile generator (same full rebuild). Instead it goes
+# into a generated header that only the handful of TUs reading the version
+# include; configure_file rewrites it only when the version actually changes,
+# so a bump recompiles just those files.
+configure_file(src/ForkMeshVersion.h.in ForkMeshVersion.h @ONLY)
+include_directories(${CMAKE_CURRENT_BINARY_DIR})
+
+# Wrap compilation in ccache when available: object files survive build-dir
+# wipes (run.sh rebuild) and branch switches, so those come back warm.
+find_program(FORKMESH_CCACHE ccache)
+if(FORKMESH_CCACHE)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${FORKMESH_CCACHE}")
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Network Svg)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Network Svg Concurrent)
 find_package(OpenSSL REQUIRED)
 
 # On Linux the screen-region capture must go through the XDG Desktop Portal
@@ -55,6 +76,7 @@ set(FORKMESH_APP_SOURCES
     src/SingleInstance.h
     src/SingleInstance.cpp
     src/Theme.h
+    src/AccountCapability.h
     src/ForkMeshIdentity.h
     src/ForkMeshIdentity.cpp
     src/ChatBackend.h
@@ -66,6 +88,7 @@ set(FORKMESH_APP_SOURCES
     src/MirrorCrypto.cpp
     src/CoveStore.h
     src/CoveStore.cpp
+    src/ChatHistoryLimits.h
     src/ServerNode.h
     src/ServerNode.cpp
     src/NetworkBackoff.h
@@ -73,12 +96,20 @@ set(FORKMESH_APP_SOURCES
     src/BackoffNetworkAccessManager.cpp
     src/RepoHost.h
     src/RepoHost.cpp
+    src/RepoContributionSnapshot.h
+    src/RepoContributionSnapshotInternal.h
+    src/RepoContributionSnapshot.cpp
+    src/StrictGitReader.h
+    src/StrictGitReader.cpp
     src/RepoSecurity.h
     src/RepoSecurity.cpp
     src/IssueStore.h
     src/IssueStore.cpp
     src/IssueBurnup.h
     src/IssueBurnup.cpp
+    src/ProjectStore.h
+    src/ProjectStore.cpp
+    src/ProjectGantt.h
     src/DiscussionStore.h
     src/DiscussionStore.cpp
     src/PullStore.h
@@ -87,6 +118,9 @@ set(FORKMESH_APP_SOURCES
     src/PullReviewModel.cpp
     src/PullAiReview.h
     src/PullAiReview.cpp
+    src/PullBadgeWidget.h
+    src/PullBadgeWidget.cpp
+    src/PacmanProgress.h
     src/CommitCommentStore.h
     src/CommitCommentStore.cpp
     src/ReferenceLinks.h
@@ -113,10 +147,14 @@ set(FORKMESH_APP_SOURCES
     src/KebabHeaderView.cpp
     src/TerminalWidget.h
     src/TerminalWidget.cpp
+    src/ClaudeAccountTransfer.h
+    src/ClaudeAccountTransfer.cpp
     src/ClaudeIdeBridge.h
     src/ClaudeIdeBridge.cpp
     src/ClaudeStreamSession.h
     src/ClaudeStreamSession.cpp
+    src/CodexAppServerSession.h
+    src/CodexAppServerSession.cpp
     src/ClaudeTranscriptView.h
     src/ClaudeTranscriptView.cpp
     src/ClaudeSessionScan.h
@@ -147,6 +185,7 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowPulls.cpp
     src/MainWindowAgents.cpp
     src/MainWindowRepoDetail.cpp
+    src/MainWindowProjects.cpp
     src/MainWindowBranches.cpp
     src/MainWindowReleases.cpp
     src/MainWindowShortcuts.cpp
@@ -199,6 +238,13 @@ qt_wrap_cpp(FORKMESH_MOC_SOURCES
     src/TerminalWidget.h
     TARGET forkmesh
 )
+# CodexAppServerSession is compiled as a regular moc unit rather than included
+# by the checked-in forkmesh_autogen.cpp, keeping this transport self-contained.
+qt_wrap_cpp(FORKMESH_CODEX_MOC_SOURCES
+    src/CodexAppServerSession.h
+    TARGET forkmesh
+)
+target_sources(forkmesh PRIVATE ${FORKMESH_CODEX_MOC_SOURCES})
 # The generated units are #included by forkmesh_autogen.cpp, so keep them out of
 # the object list (HEADER_FILE_ONLY) and make the unity file depend on them so
 # they are regenerated whenever a header changes.
@@ -235,6 +281,7 @@ set_source_files_properties(
     src/ChatBackend.h
     src/ClaudeIdeBridge.h
     src/ClaudeStreamSession.h
+    src/CodexAppServerSession.h
     src/ClaudeTranscriptView.h
     src/HeadlessConsole.h
     src/KebabHeaderView.h
@@ -255,7 +302,7 @@ set_source_files_properties(
 target_include_directories(forkmesh PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src ${FORKMESH_MOC_DIRS})
 
-target_link_libraries(forkmesh PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
+target_link_libraries(forkmesh PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg Qt6::Concurrent OpenSSL::Crypto)
 # TerminalWidget runs commands under a PTY via forkpty(); on Linux that lives in
 # libutil (macOS provides it in libSystem, so no extra link there).
 if(UNIX AND NOT APPLE)
@@ -267,6 +314,22 @@ if(UNIX AND NOT APPLE)
     # names (not just addresses) when it samples a frozen UI thread.
     target_link_options(forkmesh PRIVATE -rdynamic)
 endif()
+
+# The file/folder tree icons under ../icons/ are loaded at runtime through
+# MainWindow::iconsDir() (MainWindowRepoDetail.cpp), which falls back to a
+# loose "icons" directory beside the executable when it isn't running from a
+# source checkout. None of the packagers (AppImage, NSIS, .dmg) or the bare
+# published binary ship that directory alongside the executable, so those
+# icons never appeared on anything but a from-source dev build (issue #417).
+# Bake the whole set into the binary as a Qt resource instead, so it's always
+# present regardless of how the app was installed.
+file(GLOB FORKMESH_TREE_ICON_FILES "${CMAKE_CURRENT_SOURCE_DIR}/../icons/*.svg")
+qt_add_resources(forkmesh "treeicons"
+    PREFIX "/icons/tree"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/../icons"
+    BIG_RESOURCES
+    FILES ${FORKMESH_TREE_ICON_FILES}
+)
 
 if(APPLE)
     set_target_properties(forkmesh PROPERTIES
@@ -286,10 +349,18 @@ if(FORKMESH_BUILD_TESTS)
         resources/icons.qrc
         src/BackoffNetworkAccessManager.h
         src/BackoffNetworkAccessManager.cpp
+        src/ClaudeAccountTransfer.h
+        src/ClaudeAccountTransfer.cpp
         src/ActionFile.h
         src/ActionFile.cpp
+        src/AccountCapability.h
         src/ForkMeshIdentity.h
         src/ForkMeshIdentity.cpp
+        src/RepoContributionSnapshot.h
+        src/RepoContributionSnapshotInternal.h
+        src/RepoContributionSnapshot.cpp
+        src/StrictGitReader.h
+        src/StrictGitReader.cpp
         src/RoomCrypto.h
         src/RoomCrypto.cpp
         src/CoveCrypto.h
@@ -302,6 +373,8 @@ if(FORKMESH_BUILD_TESTS)
         src/IssueStore.cpp
         src/IssueBurnup.h
         src/IssueBurnup.cpp
+        src/ProjectStore.h
+        src/ProjectStore.cpp
         src/DiscussionStore.h
         src/DiscussionStore.cpp
         src/PullStore.h
@@ -319,6 +392,7 @@ if(FORKMESH_BUILD_TESTS)
         src/RepoSecurity.h
         src/RepoSecurity.cpp
         src/ReferenceLinks.h
+        src/ChatHistoryLimits.h
     )
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
     if(APPLE)
@@ -335,6 +409,17 @@ if(FORKMESH_BUILD_TESTS)
     target_link_libraries(forkmesh-ide-tests PRIVATE Qt6::Core Qt6::Network)
     if(APPLE)
         set_target_properties(forkmesh-ide-tests PROPERTIES MACOSX_BUNDLE FALSE)
+    endif()
+
+    # Focused Codex app-server JSONL transport and normalization tests.
+    qt_add_executable(forkmesh-codex-tests
+        tests/test_codex_app_server.cpp
+        src/CodexAppServerSession.h
+        src/CodexAppServerSession.cpp
+    )
+    target_link_libraries(forkmesh-codex-tests PRIVATE Qt6::Core)
+    if(APPLE)
+        set_target_properties(forkmesh-codex-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
 
     # Nightly end-to-end mesh-loop test (issue #352): drives the real client
@@ -358,6 +443,8 @@ if(FORKMESH_BUILD_TESTS)
         src/ActionFile.cpp
         src/ForkMeshIdentity.h
         src/ForkMeshIdentity.cpp
+        src/StrictGitReader.h
+        src/StrictGitReader.cpp
         src/RoomCrypto.h
         src/RoomCrypto.cpp
         src/CoveCrypto.h
@@ -403,7 +490,7 @@ if(FORKMESH_BUILD_TESTS)
         tests/test_window_resize.cpp
         ${FORKMESH_APP_SOURCES}
     )
-    target_link_libraries(forkmesh-window-tests PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
+    target_link_libraries(forkmesh-window-tests PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg Qt6::Concurrent OpenSSL::Crypto)
     if(UNIX AND NOT APPLE)
         target_link_libraries(forkmesh-window-tests PRIVATE util Qt6::DBus)
         target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_HAVE_PORTAL)
@@ -423,7 +510,7 @@ if(FORKMESH_BUILD_TESTS)
         tests/test_perf_budgets.cpp
         ${FORKMESH_APP_SOURCES}
     )
-    target_link_libraries(forkmesh-perf-tests PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg OpenSSL::Crypto)
+    target_link_libraries(forkmesh-perf-tests PRIVATE Qt6::Widgets Qt6::Network Qt6::Svg Qt6::Concurrent OpenSSL::Crypto)
     if(UNIX AND NOT APPLE)
         target_link_libraries(forkmesh-perf-tests PRIVATE util Qt6::DBus)
         target_compile_definitions(forkmesh-perf-tests PRIVATE FORKMESH_HAVE_PORTAL)
@@ -433,6 +520,19 @@ if(FORKMESH_BUILD_TESTS)
         set_target_properties(forkmesh-perf-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
 
+    # Keep the test binaries out of the default `all` target: window-tests and
+    # perf-tests each recompile every app source, so building them implicitly
+    # tripled the cost of a plain `cmake --build build` (what run.sh and the
+    # in-app quick-update do). They still build on demand — `--target check`
+    # below depends on all of them, run.sh test and ci.yml name their targets
+    # explicitly, and the release/deploy builds configure with
+    # FORKMESH_BUILD_TESTS=OFF anyway.
+    set_target_properties(
+        forkmesh-tests forkmesh-ide-tests forkmesh-codex-tests
+        forkmesh-e2e-stub-agent forkmesh-e2e
+        forkmesh-window-tests forkmesh-perf-tests
+        PROPERTIES EXCLUDE_FROM_ALL TRUE)
+
     # Register all suites with CTest so they run independently of the app:
     #   ctest --test-dir build            (runs the already-built binaries)
     #   cmake --build build --target check (builds the tests, then runs them)
@@ -440,6 +540,7 @@ if(FORKMESH_BUILD_TESTS)
     enable_testing()
     add_test(NAME forkmesh-tests COMMAND forkmesh-tests)
     add_test(NAME forkmesh-ide-tests COMMAND forkmesh-ide-tests)
+    add_test(NAME forkmesh-codex-tests COMMAND forkmesh-codex-tests)
     add_test(NAME forkmesh-window-tests COMMAND forkmesh-window-tests)
     add_test(NAME forkmesh-perf-tests COMMAND forkmesh-perf-tests)
     add_test(NAME forkmesh-e2e COMMAND forkmesh-e2e)
@@ -452,6 +553,7 @@ if(FORKMESH_BUILD_TESTS)
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         USES_TERMINAL)
-    add_dependencies(check forkmesh-tests forkmesh-ide-tests forkmesh-window-tests
-        forkmesh-perf-tests forkmesh-e2e forkmesh-e2e-stub-agent)
+    add_dependencies(check forkmesh-tests forkmesh-ide-tests forkmesh-codex-tests
+        forkmesh-window-tests forkmesh-perf-tests forkmesh-e2e
+        forkmesh-e2e-stub-agent)
 endif()

@@ -89,6 +89,53 @@
             </div>
           </div>
 
+          <div class="relative">
+            <button
+              id="agentModalToggle"
+              type="button"
+              aria-label="Start an agent"
+              title="Start an agent"
+              class="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+            >
+              <i data-lucide="bot" class="w-4 h-4"></i>
+            </button>
+            <div
+              id="agentModal"
+              class="hidden absolute right-0 top-full mt-2 w-96 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-background/40 z-50"
+              role="dialog"
+              aria-labelledby="agentModalTitle"
+            >
+              <div class="flex items-center justify-between border-b border-border px-4 py-3">
+                <div class="min-w-0">
+                  <h2 id="agentModalTitle" class="flex items-center gap-2 text-sm font-semibold text-foreground"><i data-lucide="bot" class="h-4 w-4 text-primary"></i>Start an agent</h2>
+                  <p class="mt-0.5 text-xs text-muted-foreground">Send a prompt to a fresh agent on the repository owner's node.</p>
+                </div>
+                <button data-agent-modal-close type="button" aria-label="Close start agent" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+                  <i data-lucide="x" class="h-4 w-4"></i>
+                </button>
+              </div>
+              <form data-repo-agent-new-form class="grid gap-3 p-4">
+                <label class="grid gap-1.5 text-xs text-muted-foreground">
+                  Repository
+                  <select data-agent-modal-repo class="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary"></select>
+                </label>
+                <input data-repo-agent-new-input type="text" maxlength="8000" placeholder="Start a new agent - enter a prompt (paste a screenshot to attach)" class="h-9 min-w-0 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary" />
+                <div class="flex items-center gap-2">
+                  <button type="button" data-repo-agent-new-attach title="Attach a screenshot" class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="paperclip" class="h-3.5 w-3.5"></i>Attach</button>
+                  <span class="text-[11px] text-muted-foreground">or paste a screenshot</span>
+                </div>
+                <input type="file" data-repo-agent-new-file-input multiple accept="image/png,image/jpeg,image/gif,image/webp" class="hidden" />
+                <div data-repo-agent-new-attachments class="flex flex-wrap gap-2"></div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <select data-repo-agent-new-provider title="Agent provider" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"></select>
+                  <select data-repo-agent-new-model title="Agent model" class="h-8 shrink-0 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"></select>
+                  <button type="submit" data-repo-agent-new-submit class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="plus" class="h-3.5 w-3.5"></i>Start agent</button>
+                  <span data-repo-agent-new-hint class="text-[11px] text-muted-foreground"></span>
+                </div>
+              </form>
+            </div>
+          </div>
+
           <a
             data-guest-auth-link
             href="/signup"
@@ -103,6 +150,17 @@
           >
             <i data-lucide="shield-alert" class="h-3.5 w-3.5"></i>
             <span>Admin</span>
+          </a>
+
+          <a
+            data-node-reconnect
+            href="/dashboard/settings"
+            aria-label="Reconnect a node to this account"
+            title="No node is connected to drain this account — link one to sync issues, chats and more"
+            class="hidden ml-0.5 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-600 hover:bg-amber-500/20 transition-colors focus:outline-none focus:ring-1 focus:ring-amber-500/30 dark:text-amber-400"
+          >
+            <i data-lucide="plug-zap" class="h-3.5 w-3.5"></i>
+            <span>Reconnect node</span>
           </a>
 
           <a

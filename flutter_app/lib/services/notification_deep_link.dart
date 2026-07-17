@@ -11,6 +11,7 @@ enum RepoDetailTab {
   about,
   actions,
   agents,
+  worktrees,
 }
 
 class NotificationDeepLink {
@@ -75,6 +76,8 @@ class NotificationDeepLink {
           tab = RepoDetailTab.actions;
         case 'agents':
           tab = RepoDetailTab.agents;
+        case 'worktrees':
+          tab = RepoDetailTab.worktrees;
         case 'tree':
         case 'blob':
         case 'raw':

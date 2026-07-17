@@ -1,0 +1,102 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783440684,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783440684",
+            "sig": "pjLjibGBpqHpMR9D7M3WNjs1xyhmqlxzckcP7jKy45MfSxFS7nNi5vJmIp_G3P98Le1luXIVFJk50oq1ffqfAQ",
+            "title": "the issue header on the web should only show open issues",
+            "ts": 1783440684,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "all places on the web shoudl only show open issues as well - unless we're on the issues list we'll see an open / closed count and can click on closed to see closed issues - but everywhere we show issues in lists and detail the count shoud only be the open count ",
+            "id": "f45ec438-ea65-4951-b34a-c8787e674000",
+            "sig": "pshP78UfRLjv-m7KIG-ebfA6PJYu5pHZRxxFTKfhu28ZvQMRQVtLYtRMvId2FQfL-mbO1r1peec2BO9a8Rx9CQ",
+            "ts": 1783880611922,
+            "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 12,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "340920c3-008c-4c86-aa0c-aa9d52e38ba9",
+            "sig": "h0EQMTgBsS8TjqW2p1cdqeapDziT-M5Vu03qmNH7P8xr34iRZ3h5NUuI5YKxENzsIq9jTN_tOjytMYvs9VELDg",
+            "ts": 1783880618145,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "4c462d10-7455-45ee-b232-cdb9a30a1c3a",
+            "sig": "O0luYhqVKlYEDRMNb-oW8z3deBtf8c6L9JAJ2TbgkaMa3I_ZxcXHnbInalzX4aW6BJfx7PmSe0SNvW31FnUKDg",
+            "ts": 1783880618202,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-397-the-issue-header-on-the-web-should-only-show-ope\".",
+            "id": "be1284a8-22c0-434d-942d-18b35dfad72a",
+            "sig": "PRBkQmZHFd6vx3-OqWAcqLyxKwNaifWpmgo1lNuDzbABd3N4c_j4o5CpvCYW5DglLk7JBb8ebiStbjEchzj3Bw",
+            "ts": 1783885331177,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "4b3e34bc-bc08-4961-bf40-280858639fce",
+            "sig": "vz4uOA5XQCj3qvz1nHo1tS19sTq3qLMEc9m4N_NCgd8S-xyoadWWykwYtoA9skknewEjZzrnje-Y1NGKk910BA",
+            "status": "closed",
+            "ts": 1783885331226,
+            "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "1dd2dddd-0022-4908-8421-bd3620f7e655",
+            "sig": "ygvitNoDAKrAQr8BkY_7TFN0519wW8Z2haWA9xuTxo8WtiJL-zdNpbZSetS2wJQ4d2mEeXBQ4Bm0GGoT2kQ8Aw",
+            "ts": 1783888038493,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 397,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "the issue header on the web should only show open issues",
+    "updatedAt": 1783888038493,
+    "votes": 0
+}

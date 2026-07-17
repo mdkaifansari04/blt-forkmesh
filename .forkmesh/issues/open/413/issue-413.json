@@ -1,0 +1,44 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783736347981,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-413",
+            "sig": "w-zQZ-pGEc6YxaRz8zd1GhdjPz6jNDqHtIphJvPVPYSmBKn8AKFmve5wovVSs-s-YVFUTpR0p-pAy8Ju5gOaAQ",
+            "title": "new issue to test fediverse",
+            "ts": 1783736347981,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "6b52412b-eff4-4fa9-9a09-b3078275535e",
+            "sig": "ISyEaUepECq2fwpkUytWJTdbyYsz_IDezmop18uGmKLhyDErw4M52UHxdEiYx4fu6wUvLB2xQrk5XiV8SPVKCg",
+            "target": "self",
+            "ts": 1783880349796,
+            "type": "delete"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 413,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "open",
+    "title": "new issue to test fediverse",
+    "updatedAt": 1783880349796,
+    "votes": 0
+}

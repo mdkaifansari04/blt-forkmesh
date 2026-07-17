@@ -107,6 +107,14 @@ MAX_FILES = 5000
 # of un-merged submissions a repo's inbox will hold.
 MAX_ISSUE_BYTES = 64 * 1024
 MAX_PENDING_ISSUES = 500
+# Screenshots a node with no write access attaches to an issue/comment ride
+# along as base64 bytes in the inbox item (it has no working tree to copy them
+# into — see the desktop's IssueStore::readAttachmentsForRemoteSubmit); capped
+# per-file and per-submission so one inbox row can't balloon.
+MAX_ISSUE_ATTACHMENTS = 6
+MAX_ISSUE_ATTACHMENT_BYTES = 2 * 1024 * 1024
+ISSUE_ATTACHMENT_NAME_RE = re.compile(
+    r"^[0-9a-f]{8}\.(png|jpg|jpeg|gif|webp|bmp|svg|bin)$")
 # Per-author cap across the issue/pull/commit/discussion inboxes, so one signing
 # key can't fill a repo's whole inbox to the global cap and block everyone else.
 MAX_PENDING_PER_AUTHOR = 50
@@ -124,10 +132,20 @@ MAX_PENDING_DISCUSSIONS = 500
 # Agent-session sync (adhoc #182): desktop -> website push of Claude Code agent
 # sessions for a repo, and website -> desktop queued prompts for a running one.
 MAX_AGENT_SESSIONS = 300
+# Per-isolate digest of the last stored agent-session snapshot per repo, so a
+# byte-identical safety-net push skips the full DELETE + re-encrypt + reinsert.
+_AGENT_PUSH_DIGESTS = {}
 MAX_AGENT_STRING = 300
 MAX_AGENT_TITLE = 240
 MAX_AGENT_PROMPT_TEXT = 8000
 MAX_PENDING_AGENT_PROMPTS = 50
+# Pasted/attached screenshots that ride along with a "start agent" prompt from
+# the website (adhoc #78). Stored as data: URLs on the queued prompt so the
+# owner's node can drop them into the agent's working tree. Bounded so a queued
+# prompt row (and the /api/sync payload that carries it) stays modest.
+MAX_AGENT_PROMPT_IMAGES = 3
+MAX_AGENT_PROMPT_IMAGE_BYTES = 1_400_000
+MAX_AGENT_PROMPT_IMAGES_TOTAL_BYTES = 2_400_000
 # Bounded tail of an agent session's run log the desktop pushes for the website
 # detail page's live transcript (adhoc #259). Kept modest so the full-replace
 # sessions push stays small even with several sessions per repo.
@@ -176,6 +194,7 @@ NOTIFICATION_KINDS = frozenset({
     "host_offline",
     "credits_refilled",
     "pending_inbox",
+    "mirror_request",
 })
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
@@ -191,6 +210,7 @@ NOTIFICATION_EMAIL_KINDS = (
     "general_chat",
     "host_online",
     "host_offline",
+    "mirror_request",
 )
 NOTIFICATION_EMAIL_DEFAULTS = {
     "mention": True,
@@ -206,6 +226,7 @@ NOTIFICATION_EMAIL_DEFAULTS = {
     "general_chat": True,
     "host_online": False,
     "host_offline": False,
+    "mirror_request": True,
 }
 # Email digest bridge (issue #361): the cron rolls a recipient's unread
 # notifications into one email so a reply reaches people who don't have the app
@@ -250,7 +271,27 @@ from urls import (  # noqa: E402
     GIT_PACK_RE,
     GIT_RECEIVE_RE,
     ACCOUNTS_RE,
+    ACCOUNT_CONTRIBUTIONS_RE,
     ACCOUNT_FOLLOW_RE,
+    ORGS_RE,
+    ORG_RE,
+    ORG_MEMBERS_RE,
+    ORG_TEAMS_RE,
+    ORG_TEAM_MEMBERS_RE,
+    ORG_REPOS_RE,
+    REPO_API_PREFIX_RE,
+    AP_USER_RE,
+    AP_USER_SUB_RE,
+    AP_REPO_RE,
+    AP_REPO_SUB_RE,
+    AP_OBJECT_RE,
+    AP_OBJECT_MEDIA_RE,
+    REPO_FEDI_COMMENTS_RE,
+    REPO_AP_PUBLISH_RE,
+    REPO_AP_POSTS_RE,
+    REPO_CARD_RE,
+    REPO_MEDIA_RE,
+    REPO_STAR_RE,
 )
 
 # Static route ownership rules: repo shortcuts are Python-owned so hard refresh
@@ -293,6 +334,7 @@ from git_http import (  # noqa: E402
     REPO_BLOB_CONTENT_TYPES,
     advertised_refs_canonical,
     decode_git_request_body,
+    git_advert_cache_key,
     pkt_line,
     repo_blob_content_type,
     repo_blob_filename,
@@ -303,14 +345,20 @@ from git_http import (  # noqa: E402
 from mirrors import (  # noqa: E402
     STATE_PIN_HISTORY,
     _mirror_ms,
+    accepted_mirror_requests,
+    ack_mirror_requests,
+    add_mirror_request,
     browse_mirror_candidates,
     build_repo_mirrors_payload,
     clone_state_pins,
+    find_mirror_request,
+    mirror_request_id,
     mirroring_owner_set,
     release_blob_mirror_candidates,
     repo_clone_online,
     repo_mirror_group_key,
     repo_mirror_same_group,
+    set_mirror_request_status,
     select_clone_fallback,
     served_mirror_groups,
 )
@@ -322,8 +370,10 @@ from catalog import (  # noqa: E402
     MAX_REPO_SEGMENT,
     clean_string,
     safe_catalog_record,
+    safe_contribution_transport,
     safe_segment,
 )
+import contributions  # noqa: E402
 
 # The D1 table/index DDL list ensure_schema() runs lives in schema.py.
 from schema import SCHEMA_STATEMENTS  # noqa: E402
@@ -349,6 +399,21 @@ from events import (  # noqa: E402
     verify_pull_event,
     verify_release_manifest,
 )
+
+# ActivityPub federation protocol spine (WebFinger/NodeInfo/actor/Note builders,
+# draft-cavage HTTP-signature strings, the Digest header format, remote-document
+# extraction + HTML sanitization) lives in activitypub.py — a pure, js-free
+# sibling module the test suite imports directly. Only the WebCrypto RSA glue,
+# the D1-backed actor/follower/delivery state and the HTTP handlers live below.
+import activitypub as ap  # noqa: E402
+# Pull-request badge (adhoc #44/#83): a pure, js-free generator for the visual
+# "fingerprint" attached to federated PR-opened notes. The federated copy is a
+# square PNG — fediverse clients won't preview an SVG attachment.
+from pull_badge import patch_file_stats, pull_badge_png  # noqa: E402
+
+# Social-preview (OpenGraph) info-card renderer — pure-stdlib PNG drawing,
+# another js-free sibling module the test suite imports directly.
+import og_card  # noqa: E402
 
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
@@ -382,6 +447,14 @@ HOST_PRESENCE_REFRESH_MS = 60 * 1000
 REGISTERED_NODE_ACTIVE_MS = 60 * 60 * 1000
 STALE_NODE_PURGE_INTERVAL_MS = 60 * 1000
 STALE_NODE_PURGE_BATCH = 100
+# Reinstalling or rotating a desktop node's key mints a NEW account_devices row
+# (device_bi is keyed on the pubkey), so one account slowly accretes a row per
+# historical key — the DB side of the "one person, many identities" sprawl. A
+# device untouched for this long is pruned, but only when the account still has a
+# newer key to sign with, so a node's live/most-recent key (the one the drain
+# gate now reuses; see _owner_signing_pubkeys) is never removed.
+STALE_DEVICE_RETAIN_MS = 60 * 24 * 60 * 60 * 1000  # 60 days
+STALE_DEVICE_PURGE_BATCH = 200
 # How long a downed repo's clone traffic stays pinned to one chosen mirror (see
 # clone_sticky). Long enough that a clone's info/refs and upload-pack POST land
 # on the same node; short enough that the load still rotates across mirrors.
@@ -413,6 +486,11 @@ LOGIN_MAX_SKEW_MS = 5 * 60 * 1000
 LOGIN_MAX_FAILS = 10
 LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000
 LOGIN_LOCKOUT_MS = 15 * 60 * 1000
+# Per-source-IP account-creation throttle: at most SIGNUP_MAX_PER_IP new accounts
+# from one IP per rolling SIGNUP_RATE_WINDOW_MS, to blunt mass signup / name
+# squatting. Login has its own lockout; catalog writes have their own cooldown.
+SIGNUP_RATE_WINDOW_MS = 60 * 60 * 1000
+SIGNUP_MAX_PER_IP = 5
 ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000
 # How long a password-reset link stays valid after it is emailed.
 PASSWORD_RESET_TTL_MS = 60 * 60 * 1000
@@ -432,6 +510,11 @@ LINK_CODE_RE = re.compile(r"^[0-9]{6}$")
 MAX_AVATAR_BYTES = 256 * 1024
 MAX_AVATAR_B64 = 4 * ((MAX_AVATAR_BYTES + 2) // 3)
 PNG_HEADER = b"\x89PNG\r\n\x1a\n"
+# Repo branding (fediverse actor avatar/header). Each image lives in its own
+# encrypted repo_media row, so the caps only need to keep ONE image (b64 +
+# AES-GCM + b64 again ≈ 1.8x raw) under D1's 2 MB per-value limit.
+MAX_REPO_LOGO_BYTES = 256 * 1024
+MAX_REPO_BANNER_BYTES = 1024 * 1024
 
 
 def valid_node_name(value):
@@ -567,7 +650,11 @@ def json_response(data, status=200, cache_seconds=None, cache_control=None,
         headers["cache-control"] = "public, max-age=%d" % cache_seconds
     if extra_headers:
         headers.update(extra_headers)
-    return Response(json.dumps(data, indent=2), status=status, headers=headers)
+    # Compact separators: pretty-printing every API reply cost measurable
+    # Pyodide CPU and bytes on hot paths (/api/sync, catalog) — a real factor
+    # in the 2026-07-11 free-plan 1102 overload.
+    return Response(json.dumps(data, separators=(",", ":")),
+                    status=status, headers=headers)
 
 
 # --- Edge cache (Cache API) helpers -----------------------------------------
@@ -585,11 +672,38 @@ async def edge_cache_match(cache_key):
 
 async def edge_cache_put(cache_key, response):
     # cache.put consumes the body it is handed, so store a clone and return the
-    # original to the caller. Best-effort: a cache failure must not fail the read.
+    # original to the caller. Accepts both the workers.Response wrapper and a
+    # raw JS Response (the binary media endpoints build the latter).
+    # Best-effort: a cache failure must not fail the read.
     try:
-        await js_caches.default.put(cache_key, response.js_object.clone())
+        js_resp = getattr(response, "js_object", None) or response
+        await js_caches.default.put(cache_key, js_resp.clone())
     except Exception:
         pass
+
+
+async def edge_cache_match_media(cache_key, fallback_type):
+    # Binary edge-cache read for the media endpoints, which respond with raw
+    # JS Responses rather than the workers.Response wrapper the JSON helpers
+    # return. Rebuilt like git_advert_cache_get so the body streams cleanly.
+    try:
+        hit = await js_caches.default.match(cache_key)
+    except Exception:
+        hit = None
+    if hit is None:
+        return None
+    try:
+        ctype = hit.headers.get("content-type")
+        ccontrol = hit.headers.get("cache-control")
+    except Exception:
+        ctype, ccontrol = None, None
+    return JsResponse.new(hit.body, to_js({
+        "status": 200,
+        "headers": {
+            "content-type": ctype or fallback_type,
+            "cache-control": ccontrol or "public, max-age=86400",
+        },
+    }))
 
 
 async def edge_cache_delete(cache_key):
@@ -599,21 +713,90 @@ async def edge_cache_delete(cache_key):
         pass
 
 
+# Seconds a clone ref-advertisement (info/refs) is held in the colo edge cache.
+# The cache key already carries the repo's attested state hash, so an entry
+# self-invalidates the instant the refs change (its key stops being requested);
+# this TTL is only a backstop that lets a colo re-fetch if a state-hash update is
+# ever missed. See git_advert_cache_key and Default._clone_advert_cache_key.
+GIT_ADVERT_CACHE_TTL = 300
+
+
+async def git_advert_cache_get(cache_key):
+    # Return a cached clone advertisement as a fresh no-cache response. git must
+    # re-validate info/refs on every fetch, so the bytes handed to the client
+    # keep git's own no-store semantics even though the edge copy is reused.
+    try:
+        hit = await js_caches.default.match(cache_key)
+    except Exception:
+        hit = None
+    if hit is None:
+        return None
+    try:
+        ctype = hit.headers.get("content-type")
+    except Exception:
+        ctype = None
+    return JsResponse.new(hit.body, to_js({
+        "status": 200,
+        "headers": {
+            "content-type": ctype or "application/x-git-upload-pack-advertisement",
+            "cache-control": "no-cache, max-age=0, must-revalidate",
+        },
+    }))
+
+
+async def git_advert_cache_put(cache_key, response, ttl=GIT_ADVERT_CACHE_TTL):
+    # Store a cacheable clone of the advertisement. The live response carries
+    # git's "no-cache, max-age=0" headers, which the Cache API refuses to store,
+    # so the stored copy is rebuilt with a public max-age; the original response
+    # is returned to the client untouched. Best-effort — a cache failure must not
+    # fail the clone.
+    try:
+        js_resp = getattr(response, "js_object", None) or response
+        clone = js_resp.clone()
+        try:
+            ctype = clone.headers.get("content-type")
+        except Exception:
+            ctype = None
+        cacheable = JsResponse.new(clone.body, to_js({
+            "status": 200,
+            "headers": {
+                "content-type": ctype
+                or "application/x-git-upload-pack-advertisement",
+                "cache-control": "public, max-age=%d" % ttl,
+            },
+        }))
+        await js_caches.default.put(cache_key, cacheable)
+    except Exception:
+        pass
+
+
 async def purge_catalog_related_caches():
-    for key in (
-        CATALOG_CACHE_KEY,
-        NETWORK_STATS_CACHE_KEY,
-        NETWORK_LEADERBOARDS_CACHE_KEY,
-        NETWORK_OVERVIEW_CACHE_KEY,
-    ):
-        await edge_cache_delete(key)
+    # One concurrent sweep instead of four sequential awaits — this runs on
+    # every catalog write, inside the request's critical path.
+    await asyncio.gather(*(
+        edge_cache_delete(key)
+        for key in (
+            CATALOG_CACHE_KEY,
+            NETWORK_STATS_CACHE_KEY,
+            NETWORK_LEADERBOARDS_CACHE_KEY,
+            NETWORK_OVERVIEW_CACHE_KEY,
+        )), return_exceptions=True)
 
 
 CATALOG_CACHE_KEY = "https://forkmesh.internal/api/repositories"
+# Guest (viewer-less) GET /api/accounts/<name> payloads, keyed by name.
+ACCOUNT_LOOKUP_CACHE_PREFIX = "https://forkmesh.internal/api/accounts/"
+PROFILE_CONTRIBUTION_CACHE_PREFIX = (
+    "https://forkmesh.internal/api/profile-contributions/"
+)
+PROFILE_CONTRIBUTION_CACHE_TTL = 30
 NETWORK_STATS_CACHE_KEY = "https://forkmesh.internal/api/network/stats"
 NETWORK_LEADERBOARDS_CACHE_KEY = "https://forkmesh.internal/api/network/leaderboards"
 NETWORK_OVERVIEW_CACHE_KEY = "https://forkmesh.internal/api/network/overview"
-CATALOG_TTL = 10  # seconds the repositories list is cached at the edge
+# Seconds the repositories list is cached at the edge. Every write path calls
+# purge_catalog_related_caches, so a longer TTL only delays third-party edits;
+# 10s meant a full (purge + multi-table) rebuild every 10s per colo under load.
+CATALOG_TTL = 30
 
 
 async def touch_host_presence(env, repo_bi):
@@ -720,6 +903,12 @@ async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
         rec = row.get("data") or {}
         key = str(row.get("key_bi") or "")
         if not key or not repo_mirror_same_group(target, rec):
+            continue
+        # Fresh D1 presence (heartbeat within the last 30s) is trustworthy —
+        # skip the per-mirror Durable Object probe subrequest for those. Only
+        # stale/missing entries get the ground-truth DO check; this bounded
+        # the N-subrequest fan-out that ran on every /mirrors request.
+        if now - int(presence.get(key, 0) or 0) < 30 * 1000:
             continue
         hosts = await repo_live_host_count(
             env, rec.get("owner"), rec.get("name"))
@@ -1032,7 +1221,16 @@ async def record_online_sample(env):
         )
 
 
+ONLINE_HISTORY_CACHE_KEY = "https://forkmesh.internal/api/network/online-history"
+
+
 async def online_history(env):
+    # network.html polls this every minute per open tab (alongside the
+    # already-cached leaderboards); serve the burst from the colo edge like
+    # its siblings. The data is hourly buckets, so 30s staleness is free.
+    cached = await edge_cache_match(ONLINE_HISTORY_CACHE_KEY)
+    if cached is not None:
+        return cached
     await ensure_schema(env)
     now = int(Date.now())
     cur_hour = (now // 3600000) * 3600000
@@ -1085,10 +1283,12 @@ async def online_history(env):
             ],
         })
     nodes.sort(key=lambda n: (-int(n["totalMinutes"]), str(n["label"])))
-    return json_response(
+    resp = json_response(
         {"ok": True, "hours": series, "nodes": nodes[:ONLINE_HISTORY_MAX_NODES]},
         cache_seconds=30,
     )
+    await edge_cache_put(ONLINE_HISTORY_CACHE_KEY, resp)
+    return resp
 
 
 async def _response_json(response):
@@ -1130,13 +1330,53 @@ async def network_overview(env):
 #   - website / api / realtime: unhandled/5xx errors logged this minute
 #     (log_error, see Default.fetch) bucketed by the path they hit, so an
 #     incident in one area doesn't paint the whole site down.
+#   - durable_objects: room requests killed by Cloudflare's free-tier DO
+#     duration cap (log_durable_object_abort), tracked separately from the
+#     rest of "realtime" so plan-limit aborts have their own visible history
+#     instead of being buried in general realtime noise.
 STATUS_SYSTEMS = [
     ("website", "Website"),
     ("api", "API"),
     ("database", "Database"),
     ("git_hosting", "Git hosting network"),
     ("realtime", "Realtime sync (chat & tunnels)"),
+    ("durable_objects", "Durable Objects (free-tier duration limit)"),
 ]
+# What each per-minute health sample actually verifies, shown when a /status
+# visitor expands a system row. These must describe the real check
+# record_status_sample runs — the systems share one sampler cron but each has
+# its own signal, and the page must never imply a probe that doesn't exist.
+STATUS_SYSTEM_CHECKS = {
+    "website": (
+        "Scans the last minute of the worker error log for unhandled "
+        "exceptions or 5xx responses on page routes (anything outside "
+        "/api/*). Passes when no page-serving errors were logged. This is a "
+        "server-side error-log signal, not an external HTTP probe."),
+    "api": (
+        "Scans the last minute of the worker error log for unhandled "
+        "exceptions or 5xx responses on /api/* routes. 502/503/504 on "
+        "host-tunnel content paths (release blobs, repo browse, git clone) "
+        "are excluded — those mean one desktop node is offline, which the "
+        "Git hosting network check tracks instead."),
+    "database": (
+        "Runs a real SELECT round trip against the D1 database once a "
+        "minute. Passes when the query returns a row; fails on any query "
+        "error."),
+    "git_hosting": (
+        "Checks the host_presence table for at least one desktop host "
+        "tunnel heartbeat within the last 10 minutes. Passes while any "
+        "host is live; fails when no host has checked in."),
+    "realtime": (
+        "Scans the last minute of the worker error log for failures on "
+        "chat room / WebSocket paths and git smart-HTTP paths (info/refs, "
+        "upload-pack, receive-pack). Passes when none were logged."),
+    "durable_objects": (
+        "Counts requests killed by Cloudflare's free-tier Durable Object "
+        "duration cap (\"Exceeded allowed duration\") in the last minute. "
+        "Passes when none were killed. Tracked as its own system so "
+        "plan-limit aborts stay visible instead of hiding inside the "
+        "realtime row."),
+}
 STATUS_HISTORY_DAYS = 30
 STATUS_HISTORY_RETAIN_MS = STATUS_HISTORY_DAYS * 24 * 60 * 60 * 1000
 STATUS_SAMPLE_WINDOW_MS = 60 * 1000  # one cron tick
@@ -1165,36 +1405,48 @@ def _status_expected_checks_for_hour(hour_ts, now):
 
 
 def _status_effective_hour(hour_ts, now, row):
+    """Fold one hourly bucket into what the /status page shows.
+
+    Only recorded samples decide the color and the uptime math. A missing
+    sample means the sampling cron itself didn't run that minute (free-tier
+    limits regularly kill ticks) — a monitoring gap, not evidence the system
+    was down, so it's reported as missingChecks / "unknown" instead of being
+    folded into the failure count. Counting gaps as downtime is what used to
+    paint every system with the same fabricated ~50% uptime while the site
+    was actually up (the gaps are shared: one dead cron tick "fails" all six
+    systems at once).
+    """
     checks, failures, reason = row or (0, 0, None)
     checks = max(0, int(checks or 0))
-    failures = max(0, int(failures or 0))
+    failures = max(0, min(int(failures or 0), checks))
     expected = max(_status_expected_checks_for_hour(hour_ts, now), checks)
     if expected <= 0:
         return {
             "hourTs": hour_ts, "status": "future", "checks": checks,
             "failures": failures, "expectedChecks": 0, "missingChecks": 0,
-            "effectiveFailures": failures, "reason": None,
+            "reason": None,
         }
     missing = max(0, expected - checks)
-    effective_failures = min(expected, failures + missing)
-    if effective_failures <= 0:
+    if checks <= 0:
+        status = "unknown"
+    elif failures <= 0:
         status = "operational"
-    elif effective_failures >= expected:
+    elif failures >= checks:
         status = "down"
     else:
         status = "degraded"
-    hour_reason = reason if status != "operational" else None
-    if missing and status != "operational":
-        missing_reason = (
-            "No status sample recorded for %d expected minute%s; treated as downtime."
-            % (missing, "" if missing == 1 else "s")
-        )
-        hour_reason = (str(hour_reason) + " " + missing_reason) if hour_reason else missing_reason
+    if status == "unknown":
+        hour_reason = (
+            "No health samples were recorded this hour — the sampling cron "
+            "didn't run (monitoring gap), which is not evidence of an outage.")
+    elif status == "operational":
+        hour_reason = None
+    else:
+        hour_reason = reason
     return {
         "hourTs": hour_ts, "status": status,
         "checks": checks, "failures": failures,
         "expectedChecks": expected, "missingChecks": missing,
-        "effectiveFailures": effective_failures,
         "reason": hour_reason,
     }
 
@@ -1213,8 +1465,10 @@ def _status_minute(minute_ts, current_minute_ts, row):
         return {"minuteTs": minute_ts, "status": "future", "reason": None}
     if row is None:
         return {
-            "minuteTs": minute_ts, "status": "down",
-            "reason": "No status sample recorded for this minute; treated as downtime.",
+            "minuteTs": minute_ts, "status": "unknown",
+            "reason": "No health sample was recorded for this minute — the "
+                      "sampling cron didn't run (monitoring gap), which is "
+                      "not evidence of an outage.",
         }
     ok = bool(row.get("ok"))
     return {
@@ -1259,15 +1513,29 @@ async def record_status_sample(env):
             env, "SELECT path, status, message FROM error_log WHERE ts >= ?",
             now - STATUS_SAMPLE_WINDOW_MS,
         )
-        failed = {"website": False, "api": False, "realtime": False}
-        first_hit = {"website": None, "api": None, "realtime": None}
-        hit_count = {"website": 0, "api": 0, "realtime": 0}
+        failed = {"website": False, "api": False, "realtime": False, "durable_objects": False}
+        first_hit = {"website": None, "api": None, "realtime": None, "durable_objects": None}
+        hit_count = {"website": 0, "api": 0, "realtime": 0, "durable_objects": 0}
         for row in rows:
             path = str(row.get("path") or "")
+            message = str(row.get("message") or "")
             try:
                 row_status = int(row.get("status") or 0)
             except (TypeError, ValueError):
                 row_status = 0
+            # A DO duration-cap abort is a real room failure, so it still
+            # counts toward "realtime" below — but it also gets its own
+            # bucket so free-tier plan-limit aborts have a dedicated, visible
+            # history instead of being buried among other realtime incidents.
+            # Matches both the tagged 503s log_durable_object_abort records
+            # and the raw AbortError tracebacks capture_worker_exception logs
+            # for DO calls that aren't wrapped in a retry (same substring the
+            # doDurationAborts24h snapshot below keys on).
+            if "Exceeded allowed duration" in message:
+                failed["durable_objects"] = True
+                hit_count["durable_objects"] += 1
+                if first_hit["durable_objects"] is None:
+                    first_hit["durable_objects"] = (row.get("status"), path, message.strip())
             # 502/503/504 on a host-tunnel content path (release blob, repo
             # browse, git clone) means the one desktop node holding that
             # content is unreachable — node availability, which host_presence
@@ -1289,11 +1557,12 @@ async def record_status_sample(env):
             failed[bucket] = True
             hit_count[bucket] += 1
             if first_hit[bucket] is None:
-                first_hit[bucket] = (row.get("status"), path, str(row.get("message") or "").strip())
+                first_hit[bucket] = (row.get("status"), path, message.strip())
         ok["website"] = not failed["website"]
         ok["api"] = not failed["api"]
         ok["realtime"] = not failed["realtime"]
-        for bucket in ("website", "api", "realtime"):
+        ok["durable_objects"] = not failed["durable_objects"]
+        for bucket in ("website", "api", "realtime", "durable_objects"):
             if failed[bucket] and first_hit[bucket]:
                 status_code, path, message = first_hit[bucket]
                 text = (str(status_code) + " on " + path) if status_code else path
@@ -1305,7 +1574,7 @@ async def record_status_sample(env):
     except Exception:
         # A query hiccup here is not itself evidence of an outage — don't
         # fabricate a false incident from it.
-        ok["website"] = ok["api"] = ok["realtime"] = True
+        ok["website"] = ok["api"] = ok["realtime"] = ok["durable_objects"] = True
 
     # One multi-row upsert per table (3 statements total) instead of the old
     # 3-statements-per-system loop (15): the per-minute cron runs in a Pyodide
@@ -1377,19 +1646,10 @@ async def status_history(env):
     now = int(Date.now())
     cur_day = (now // 86400000) * 86400000
     start = cur_day - (STATUS_HISTORY_DAYS - 1) * 86400000
-    rows = await d1_all(
-        env,
-        "SELECT day_ts, system, checks, failures FROM system_status_daily "
-        "WHERE day_ts >= ?",
-        start,
-    )
-    by_system = {}
-    for row in rows:
-        system_id = str(row.get("system") or "")
-        by_system.setdefault(system_id, {})[int(row["day_ts"])] = (
-            int(row.get("checks") or 0), int(row.get("failures") or 0),
-        )
-
+    # Day cells, uptime and coverage all come from the hourly buckets (which
+    # sum to the same recorded counts the daily table holds, with per-hour
+    # granularity the 24h window needs); the daily table remains as the
+    # cron's cheap long-term aggregate.
     hour_rows = await d1_all(
         env,
         "SELECT hour_ts, system, checks, failures, reason FROM system_status_hourly "
@@ -1421,15 +1681,17 @@ async def status_history(env):
 
     systems = []
     for system_id, label in STATUS_SYSTEMS:
+        # Uptime is computed over RECORDED samples only; expected-but-missing
+        # samples (the sampling cron didn't run) are reported separately as
+        # coverage, never counted as downtime. See _status_effective_hour.
         days = []
-        total_expected = total_effective_failures = 0
-        total_24h_expected = total_24h_effective_failures = 0
+        total_checks = total_failures = total_expected = 0
+        checks_24h = failures_24h = expected_24h = 0
         current_hour = (now // STATUS_HOUR_MS) * STATUS_HOUR_MS
         uptime_24h_start = current_hour - 23 * STATUS_HOUR_MS
         for i in range(STATUS_HISTORY_DAYS):
             this_day = start + i * STATUS_DAY_MS
-            checks, failures = by_system.get(system_id, {}).get(this_day, (0, 0))
-            day_expected = day_effective_failures = 0
+            day_checks = day_failures = day_expected = 0
             hours = []
             for h in range(24):
                 hour_ts = this_day + h * STATUS_HOUR_MS
@@ -1438,63 +1700,80 @@ async def status_history(env):
                 hour = _status_effective_hour(
                     hour_ts, now, by_system_hour.get(system_id, {}).get(hour_ts),
                 )
-                if hour["expectedChecks"] > 0:
-                    day_expected += hour["expectedChecks"]
-                    day_effective_failures += hour["effectiveFailures"]
-                    total_expected += hour["expectedChecks"]
-                    total_effective_failures += hour["effectiveFailures"]
-                    if hour_ts >= uptime_24h_start:
-                        total_24h_expected += hour["expectedChecks"]
-                        total_24h_effective_failures += hour["effectiveFailures"]
+                day_expected += hour["expectedChecks"]
+                day_checks += hour["checks"]
+                day_failures += hour["failures"]
+                if hour_ts >= uptime_24h_start:
+                    expected_24h += hour["expectedChecks"]
+                    checks_24h += hour["checks"]
+                    failures_24h += hour["failures"]
                 hours.append(hour)
+            total_expected += day_expected
+            total_checks += day_checks
+            total_failures += day_failures
             uptime = (
-                round(((day_expected - day_effective_failures) / day_expected) * 100, 2)
+                round(((day_checks - day_failures) / day_checks) * 100, 2)
+                if day_checks else None
+            )
+            coverage = (
+                round((min(day_checks, day_expected) / day_expected) * 100, 2)
                 if day_expected else None
             )
             days.append({
-                "dayTs": this_day, "checks": checks, "failures": failures,
+                "dayTs": this_day, "checks": day_checks,
+                "failures": day_failures,
                 "expectedChecks": day_expected,
-                "effectiveFailures": day_effective_failures,
-                "uptimePct": uptime, "hours": hours,
-                "hoursElapsed": len(hours),
+                "missingChecks": max(0, day_expected - day_checks),
+                "uptimePct": uptime, "coveragePct": coverage,
+                "hours": hours, "hoursElapsed": len(hours),
             })
-        # Current status comes from the most recent HOUR with any data, not
-        # the whole current day's aggregate — otherwise an incident that was
-        # resolved an hour ago keeps the badge red/yellow for the rest of the
-        # day even once every recent check has gone back to green.
+        # Current status comes from the most recent HOUR with recorded
+        # samples, not the whole current day's aggregate — otherwise an
+        # incident that was resolved an hour ago keeps the badge red/yellow
+        # for the rest of the day even once every recent check is green.
+        # And if the newest recorded sample is over an hour stale, the honest
+        # badge is "unknown": we have no current evidence either way, and
+        # claiming operational (or down) from old data would be false info.
         latest_hour = None
         for d in reversed(days):
             for h in reversed(d["hours"]):
-                if h.get("expectedChecks") or h["checks"]:
+                if h["checks"]:
                     latest_hour = h
                     break
             if latest_hour:
                 break
-        if latest_hour is not None:
+        reason_text = reason_ts = None
+        if latest_hour is not None and (
+                latest_hour["hourTs"] >= current_hour - STATUS_HOUR_MS):
             status = latest_hour["status"]
+            if status != "operational":
+                reason_text = latest_hour.get("reason")
+                reason_ts = latest_hour.get("hourTs")
+        elif latest_hour is not None:
+            status = "unknown"
+            reason_text = (
+                "No health samples have been recorded since the sampling "
+                "cron's last run — monitoring gap; the current state is "
+                "unknown, not a confirmed outage.")
+            reason_ts = latest_hour.get("hourTs")
         else:
-            # No hourly rows at all (e.g. pre-migration data) — fall back to
-            # the most recent day's aggregate so the badge isn't stuck unknown.
-            latest_day = next((d for d in reversed(days) if d["checks"]), None)
-            if latest_day is None:
-                status = "unknown"
-            elif latest_day["failures"] == 0:
-                status = "operational"
-            elif latest_day["failures"] >= latest_day["checks"]:
-                status = "down"
-            else:
-                status = "degraded"
+            # No recorded samples anywhere in the 30-day window.
+            status = "unknown"
         overall_uptime = (
-            round(((total_expected - total_effective_failures) / total_expected) * 100, 2)
-            if total_expected else None
+            round(((total_checks - total_failures) / total_checks) * 100, 2)
+            if total_checks else None
         )
         uptime_24h = (
-            round(
-                ((total_24h_expected - total_24h_effective_failures) /
-                 total_24h_expected) * 100,
-                2,
-            )
-            if total_24h_expected else None
+            round(((checks_24h - failures_24h) / checks_24h) * 100, 2)
+            if checks_24h else None
+        )
+        coverage_30d = (
+            round((min(total_checks, total_expected) / total_expected) * 100, 2)
+            if total_expected else None
+        )
+        coverage_24h = (
+            round((min(checks_24h, expected_24h) / expected_24h) * 100, 2)
+            if expected_24h else None
         )
         minutes = [
             _status_minute(
@@ -1506,10 +1785,14 @@ async def status_history(env):
 
         systems.append({
             "id": system_id, "label": label, "status": status,
+            "checkDescription": STATUS_SYSTEM_CHECKS.get(system_id, ""),
             "uptimePct": overall_uptime, "uptime24hPct": uptime_24h,
+            "coveragePct": coverage_30d, "coverage24hPct": coverage_24h,
+            "checks24h": checks_24h, "failures24h": failures_24h,
+            "missing24h": max(0, expected_24h - checks_24h),
             "days": days, "minutes": minutes,
-            "reason": (latest_hour or {}).get("reason") if status != "operational" else None,
-            "reasonTs": (latest_hour or {}).get("hourTs") if status != "operational" else None,
+            "reason": reason_text,
+            "reasonTs": reason_ts,
         })
 
     # Current-state snapshot (issue #356): the headline health metrics rendered
@@ -1776,14 +2059,14 @@ async def network_leaderboards(env):
             "name": owner, "sizeBytes": 0,
             "issueCount": 0, "commitCount": 0, "branchCount": 0,
             "pullCount": 0, "discussionCount": 0, "artifactCount": 0,
-            "clonesServed": 0, "websiteServed": 0,
+            "worktreeCount": 0, "clonesServed": 0, "websiteServed": 0,
             "commit": "", "branch": "", "lastSync": "",
-            "platform": "", "version": "", "_updatedMs": -1,
+            "platform": "", "version": "", "nodeId": "", "_updatedMs": -1,
         })
         detail["sizeBytes"] += size_bytes
         for field in ("issueCount", "commitCount", "branchCount", "pullCount",
-                      "discussionCount", "artifactCount", "clonesServed",
-                      "websiteServed"):
+                      "discussionCount", "artifactCount", "worktreeCount",
+                      "clonesServed", "websiteServed"):
             try:
                 detail[field] += max(0, int(rec.get(field, 0) or 0))
             except (TypeError, ValueError):
@@ -1796,6 +2079,7 @@ async def network_leaderboards(env):
             detail["lastSync"] = clean_string(rec.get("lastSync", ""), 32)
             detail["platform"] = clean_string(rec.get("platform", ""), 16)
             detail["version"] = clean_string(rec.get("version", ""), 32)
+            detail["nodeId"] = clean_string(rec.get("nodeId", ""), 64)
         if name:
             mirror_owners.setdefault(name, set()).add(owner.lower())
             if size_bytes > 0:
@@ -1881,20 +2165,24 @@ async def _wallet_name_map(env):
     # Build wallet -> friendly node name from local accounts and federated
     # presence, so funds-received boards can label payout wallets. Best-effort.
     mapping = {}
-    try:
-        rows = await d1_all(env, "SELECT name, data FROM accounts")
-        for row in rows:
-            rec = await decrypt_row(env, row.get("data"))
-            if not rec:
-                continue
-            wallet = (rec.get("solana") or "").strip()
-            if not wallet:
-                continue
-            name = clean_string(row.get("name") or rec.get("name", ""), MAX_NODE_NAME)
-            if name:
-                mapping.setdefault(wallet, name)
-    except Exception:
-        pass
+    # The accounts table is legacy and drains into users/nodes, so read the
+    # payout-bearing records from both accounts and the nodes table.
+    for source in ("SELECT name, data FROM accounts",
+                   "SELECT name, data FROM nodes"):
+        try:
+            rows = await d1_all(env, source)
+            for row in rows:
+                rec = await decrypt_row(env, row.get("data"))
+                if not rec:
+                    continue
+                wallet = (rec.get("solana") or "").strip()
+                if not wallet:
+                    continue
+                name = clean_string(row.get("name") or rec.get("name", ""), MAX_NODE_NAME)
+                if name:
+                    mapping.setdefault(wallet, name)
+        except Exception:
+            pass
     try:
         fed = await d1_all(env, "SELECT wallet, name FROM federated_presence")
         for row in fed:
@@ -2104,6 +2392,29 @@ def room_key_from_path(pathname):
     }
 
 
+def clean_media_png(value, max_bytes):
+    """clean_avatar_png generalized for repo branding: accepts a bare-base64 or
+    data-URL PNG up to max_bytes raw, returns (normalized_b64, error)."""
+    if not isinstance(value, str):
+        return "", "bad_image"
+    image = value.strip()
+    if image.startswith("data:image/png;base64,"):
+        image = image.split(",", 1)[1].strip()
+    if not image:
+        return "", ""
+    if len(image) > 4 * ((max_bytes + 2) // 3):
+        return "", "image_too_large"
+    try:
+        raw = base64.b64decode(image, validate=True)
+    except Exception:
+        return "", "bad_image"
+    if len(raw) > max_bytes:
+        return "", "image_too_large"
+    if not raw.startswith(PNG_HEADER):
+        return "", "bad_image"
+    return base64.b64encode(raw).decode(), ""
+
+
 def clean_avatar_png(value):
     if not isinstance(value, str):
         return "", "bad_avatar"
@@ -2154,9 +2465,44 @@ async def purge_blocked_catalog(env):
         rows = await d1_all(
             env, "SELECT key_bi FROM repositories WHERE owner_bi=?", owner_bi)
         for r in (rows or []):
+            await _delete_repo_scoped_state(env, r["key_bi"])
             await d1_run(
                 env, "DELETE FROM host_presence WHERE repo_bi=?", r["key_bi"])
         await d1_run(env, "DELETE FROM repositories WHERE owner_bi=?", owner_bi)
+
+
+async def purge_stale_account_devices(env):
+    # Prune the reinstall/rotate device sprawl (see STALE_DEVICE_RETAIN_MS):
+    # account_devices rows untouched for the retention window, but ONLY when the
+    # same account still has a newer device row. That guarantees a node's current
+    # key is never deleted — deleting the key the node signs with would silently
+    # 401 its drains, the very bug _owner_signing_pubkeys fixes. A pruned key that
+    # a user later rotates back to is simply re-registered on the next login
+    # (_register_account_device upserts). Returns the number of rows removed.
+    now = int(Date.now())
+    cutoff = now - STALE_DEVICE_RETAIN_MS
+    rows = await d1_all(
+        env,
+        "SELECT device_bi, account_bi, COALESCE(last_seen,0) AS last_seen "
+        "FROM account_devices WHERE COALESCE(last_seen,0) < ? "
+        "ORDER BY last_seen ASC LIMIT ?",
+        cutoff, STALE_DEVICE_PURGE_BATCH)
+    removed = 0
+    for row in rows or []:
+        account_bi = row.get("account_bi")
+        seen = int(row.get("last_seen") or 0)
+        newer = await d1_first(
+            env,
+            "SELECT 1 AS x FROM account_devices "
+            "WHERE account_bi=? AND COALESCE(last_seen,0) > ? LIMIT 1",
+            account_bi, seen)
+        if not newer:
+            continue  # the account's most-recent key — keep it so it can sign
+        await d1_run(
+            env, "DELETE FROM account_devices WHERE device_bi=?",
+            row.get("device_bi"))
+        removed += 1
+    return removed
 
 
 async def active_registered_node_bis(env, now=None):
@@ -2185,6 +2531,38 @@ async def active_registered_node_bis(env, now=None):
         if key:
             active.add(key)
     return active
+
+
+async def _decrypted_public_catalog(env, now):
+    # Decrypted {key_bi, is_private, data} rows for every public repo owned by
+    # an active node, memoized per-isolate for PUBLIC_CATALOG_MEMO_TTL_MS — see
+    # the comment on _PUBLIC_CATALOG_MEMO for why this must not re-decrypt the
+    # whole catalog on every call.
+    cached = _PUBLIC_CATALOG_MEMO
+    if cached["rows"] is not None and now - cached["ts"] < PUBLIC_CATALOG_MEMO_TTL_MS:
+        return cached["rows"]
+    rows = await d1_all(
+        env,
+        "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
+    try:
+        active_nodes = await active_registered_node_bis(env, now)
+    except Exception:
+        active_nodes = None
+    catalog_rows = []
+    for row in rows:
+        if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
+            continue
+        rec = await decrypt_row(env, row.get("data"))
+        if not rec:
+            continue
+        catalog_rows.append({
+            "key_bi": row.get("key_bi"),
+            "is_private": int(row.get("is_private") or 0),
+            "data": rec,
+        })
+    cached["rows"] = catalog_rows
+    cached["ts"] = now
+    return catalog_rows
 
 
 async def purge_stale_registered_nodes(env, force=False):
@@ -2262,6 +2640,17 @@ SOL_USD_MAX = 100_000.0
 # Process-local price cache so we don't refetch on every signup poll.
 _SOL_USD_CACHE = {"usd": 0.0, "ts": 0}
 _SOL_USD_CACHE_TTL_MS = 5 * 60 * 1000
+# Per-isolate memo of the decrypted public repo catalog. _select_browse_mirror
+# runs on EVERY public info/refs request (git clone's round-robin mirror
+# pick) and previously re-ran a full D1 scan plus a sequential AES-GCM
+# decrypt_row() per public repo on each call — under a clone burst (CI, many
+# contributors pulling at once) that held the single Worker event loop long
+# enough for the runtime to cancel a request as hung ("Cannot enter into
+# task"), same failure mode already fixed elsewhere via per-isolate memoization
+# (see the 2026-07-11 free-plan overload notes). A short TTL is fine: this only
+# feeds best-effort mirror selection, not the integrity-checked ref content.
+_PUBLIC_CATALOG_MEMO = {"ts": 0, "rows": None}
+PUBLIC_CATALOG_MEMO_TTL_MS = 5000
 DONATION_ADDRESS_TTL_MS = 60 * 60 * 1000
 # After the address expires (hidden, no longer usable) keep it parked for one
 # more hour before deleting it outright, so a late payment can still be matched
@@ -2281,6 +2670,11 @@ SOLANA_SWEEP_FEE_RESERVE_LAMPORTS = 5000
 # window (reuses the host-presence staleness window).
 ACCOUNT_PRESENCE_STALE_MS = 10 * 60 * 1000
 HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS = 1500
+# Per-isolate throttle for the heartbeat's external Solana balance probe:
+# wallet -> last probe ms. 5 minutes keeps donation detection prompt without
+# an RPC subrequest on every single 60s heartbeat.
+HEARTBEAT_SOLANA_BALANCE_MIN_MS = 5 * 60 * 1000
+_HEARTBEAT_BALANCE_PROBES = {}
 # Central donation fund (issue #308): a single worker-custodied Solana wallet
 # that anyone can donate to. A cron sweeps its whole balance out to the
 # currently-online nodes once an hour, so one donation address fans out to every
@@ -2302,6 +2696,7 @@ _stale_node_purge = {"ts": 0}
 # keyed by the current secret so a secret rotation still takes effect.
 _data_key_cache = {"secret": None, "key": None}
 _hmac_key_cache = {"secret": None, "key": None}
+_room_key_cache = {"secret": None, "value": None}
 
 
 # Post-CREATE column additions for tables that predate them. Idempotent: a
@@ -2318,6 +2713,8 @@ SCHEMA_ALTER_STATEMENTS = [
     "ALTER TABLE discussion_inbox ADD COLUMN submitter_bi TEXT",
     # Blind index of the signup IP for duplicate-signup detection (migration 0015).
     "ALTER TABLE accounts ADD COLUMN ip_bi TEXT",
+    # Raw User-Agent of each release download, shown in the admin list (migration 0034).
+    "ALTER TABLE release_downloads ADD COLUMN ua TEXT",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -2328,11 +2725,24 @@ _SCHEMA_FINGERPRINT = hashlib.sha256(
 
 
 async def ensure_schema(env):
-    global _schema_ready
+    # A Worker isolate serves many requests concurrently on one event loop, so
+    # this must never block on a cross-request coordination primitive: an
+    # asyncio.Lock shared between concurrently-running requests here used to
+    # let one request's await resume inside another request's I/O context,
+    # which Cloudflare rejects ("Cannot perform I/O on behalf of a different
+    # request") on the very next await in the waiting request. Every request
+    # instead takes the cheap fingerprint SELECT fast path independently
+    # (schema.py's CREATE statements are all IF NOT EXISTS / idempotent), so
+    # concurrent cold-isolate requests never touch a shared awaitable.
     if _schema_ready:
         return
+    await _apply_schema(env)
+
+
+async def _apply_schema(env):
+    global _schema_ready
     # Fast path: the deploy's migrate.sh (and any prior isolate's full apply)
-    # records the applied DDL's fingerprint. One SELECT replaces the ~90
+    # records the applied DDL's fingerprint. One SELECT replaces the ~110
     # sequential statements below — which, replayed on every cold isolate, were
     # the dominant startup cost for both requests and the per-minute cron (the
     # cron routinely blew its resource limits and the /status page recorded the
@@ -2343,8 +2753,14 @@ async def ensure_schema(env):
         if row and row.get("v") == _SCHEMA_FINGERPRINT:
             _schema_ready = True
             return
-    except Exception:
-        pass  # schema_meta doesn't exist yet — first run against this DB
+    except Exception as exc:
+        # Only a genuinely absent schema_meta table means "first run against
+        # this DB". A transient D1 failure (overload / internal error) must
+        # propagate instead: falling through here made every request replay
+        # the full DDL right when the DB was already struggling, amplifying
+        # the overload into a death spiral.
+        if "no such table" not in str(exc).lower():
+            raise
     for sql in SCHEMA_STATEMENTS:
         await env.DB.prepare(sql).run()
     for sql in SCHEMA_ALTER_STATEMENTS:
@@ -2482,6 +2898,65 @@ async def _hmac_key(env):
     return key
 
 
+async def _room_chat_passphrase(env):
+    # The shared room-chat key, derived ONE-WAY from DATA_KEY with its own domain
+    # separation (same pattern as the blind-index HMAC key). Returned as a hex
+    # string that every client feeds into the existing PBKDF2(passphrase, room
+    # salt) room-key derivation, so it drops in for the old public app constant
+    # ("forkmesh-shared-room-key-v1") without changing the wire crypto.
+    #
+    # Why this is a real improvement: the key is no longer a constant anyone can
+    # read straight out of the open-source client — only an authenticated
+    # ForkMesh account can fetch it. It is NOT confidentiality from the relay:
+    # the relay operator holds DATA_KEY and can derive this too (as they always
+    # could derive the old constant). SHA-256 is preimage-resistant, so exposing
+    # this passphrase never exposes DATA_KEY or the custody seeds it also guards.
+    secret = _require_data_secret(env) + ":room-chat-passphrase-v1"
+    if _room_key_cache["secret"] == secret and _room_key_cache["value"]:
+        return _room_key_cache["value"]
+    digest = await js_crypto.subtle.digest("SHA-256", _to_js(secret.encode()))
+    value = bytes(Uint8Array.new(digest).to_py()).hex()
+    _room_key_cache["secret"] = secret
+    _room_key_cache["value"] = value
+    return value
+
+
+async def _room_key_authorized(env, request):
+    # Any registered ForkMesh account may fetch the shared room-chat key: prove it
+    # with a web/mobile account session token (bearer/body), or — for a desktop
+    # node that authenticates with its Ed25519 key rather than a session — a fresh
+    # ts + signature over "forkmesh-room-key-v1\n<node>\n<ts>" verified against the
+    # node's registered pubkey.
+    if await _authed_account_name(env, request):
+        return True
+    params = parse_qs(urlparse(request.url).query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return False
+    pubkey = await _owner_pubkey(env, node)
+    if not pubkey:
+        return False
+    canonical = ("forkmesh-room-key-v1\n" + node + "\n" + str(ts)).encode()
+    return await ed25519_verify(pubkey, sig, canonical)
+
+
+async def chat_room_key_handler(env, request):
+    # Serve the shared room-chat passphrase to authenticated clients only. This is
+    # what lets the room key live server-side (derived from DATA_KEY) instead of
+    # as a public constant baked into every client build.
+    await ensure_schema(env)
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if not await _room_key_authorized(env, request):
+        return json_response({"error": "unauthorized"}, status=401)
+    return json_response(
+        {"ok": True, "passphrase": await _room_chat_passphrase(env)},
+        cache_control="no-store, max-age=0, must-revalidate",
+    )
+
+
 async def blind_index(env, value):
     # Deterministic, searchable HMAC of a normalized identifier (never plaintext).
     key = await _hmac_key(env)
@@ -2565,6 +3040,990 @@ async def totp_verify(secret_b32, code):
 
 # --- Catalog (repositories table) -------------------------------------------
 
+async def _contribution_owner_user_bi(env, account_bi, account_rec):
+    """Resolve a publishing user, linked node owner, or unlinked node fallback."""
+    account_rec = account_rec or {}
+    kind = clean_string(account_rec.get("kind", ""), 16).lower()
+    if kind == "user" or (kind != "node" and account_rec.get("pass_hash")):
+        return account_bi
+    row = await d1_first(
+        env, "SELECT user_bi FROM nodes WHERE node_bi=?", account_bi)
+    return (row or {}).get("user_bi") or account_bi
+
+
+async def _contribution_retarget_linked_nodes(
+        env, old_user_bi, old_user_name, new_user_bi, new_user_name):
+    """Persist a renamed or removed user link in every owned node record."""
+    old_user_name = clean_string(old_user_name, MAX_NODE_NAME).lower()
+    new_user_name = clean_string(new_user_name, MAX_NODE_NAME).lower()
+    if not old_user_bi or not old_user_name:
+        return
+    rows = await d1_all(
+        env,
+        "SELECT node_bi, name, data FROM nodes WHERE user_bi=? AND node_bi!=?",
+        old_user_bi, old_user_bi,
+    )
+    for row in rows:
+        mirrored_rec = await decrypt_row(env, row.get("data", "")) or {}
+        node_name = clean_string(
+            row.get("name") or mirrored_rec.get("name", ""),
+            MAX_NODE_NAME,
+        ).lower()
+        if not node_name:
+            continue
+        node_bi = row.get("node_bi")
+        authoritative_bi, authoritative_rec = await _account_row(
+            env, node_name)
+        node_rec = dict(authoritative_rec or mirrored_rec)
+        kind = clean_string(node_rec.get("kind", ""), 16).lower()
+        if kind == "user" or (kind != "node" and node_rec.get("pass_hash")):
+            continue
+        if not node_bi:
+            node_bi = authoritative_bi
+        if not node_bi:
+            continue
+        if new_user_bi and new_user_name:
+            node_rec["owner"] = new_user_name
+        else:
+            node_rec.pop("owner", None)
+        await _save_account(env, node_bi, node_rec)
+
+
+async def _contribution_actor_user_bis(env, actor_keys):
+    """Resolve registered primary, node, and active device keys to users."""
+    keys = sorted({key for key in actor_keys if isinstance(key, str) and key})
+    if not keys:
+        return {}
+    rows = await d1_all(
+        env,
+        """WITH requested(pubkey) AS (
+               SELECT CAST(value AS TEXT) FROM json_each(?)
+             ), candidates(pubkey, user_bi) AS (
+               SELECT requested.pubkey,
+                      COALESCE(NULLIF(nodes.user_bi, ''), nodes.node_bi)
+                 FROM requested
+                 JOIN nodes ON nodes.pubkey=requested.pubkey
+               UNION ALL
+               SELECT requested.pubkey,
+                      COALESCE(NULLIF(owner_node.user_bi, ''),
+                               account_devices.account_bi)
+                 FROM requested
+                 JOIN account_devices
+                   ON account_devices.pubkey=requested.pubkey
+                 LEFT JOIN nodes AS owner_node
+                   ON owner_node.node_bi=account_devices.account_bi
+                WHERE account_devices.enabled=1
+                  AND account_devices.revoked_at=0
+                  AND instr(',' || account_devices.capabilities || ',',
+                            ',contribution_key_proof,') > 0
+             ), unambiguous AS (
+               SELECT pubkey, MIN(user_bi) AS user_bi
+                 FROM candidates
+                WHERE user_bi IS NOT NULL AND user_bi != ''
+                GROUP BY pubkey
+               HAVING COUNT(DISTINCT user_bi)=1
+             )
+             SELECT pubkey, user_bi FROM unambiguous""",
+        json.dumps(keys, separators=(",", ":")),
+    )
+    return {
+        row["pubkey"]: row["user_bi"]
+        for row in rows
+        if row.get("pubkey") and row.get("user_bi")
+    }
+
+
+async def _contribution_project_bi(env, record):
+    identity = record.get("rootCommit") or (
+        record.get("owner", "") + "/" + record.get("name", "")
+    )
+    return await blind_index(env, "profile-project:" + identity.lower())
+
+
+def _contribution_publication_day():
+    value = time.gmtime(int(Date.now()) // 1000)
+    return "%04d-%02d-%02d" % (value.tm_year, value.tm_mon, value.tm_mday)
+
+
+async def _contribution_run_batch(env, statements):
+    """Execute one ordered D1 batch, with a small test-runtime fallback."""
+    database = getattr(env, "DB", None)
+    batch = getattr(database, "batch", None) if database is not None else None
+    if batch is not None:
+        prepared = []
+        for sql, args in statements:
+            statement = database.prepare(sql)
+            if args:
+                statement = statement.bind(*args)
+            prepared.append(statement)
+        await batch(prepared)
+        return
+    for sql, args in statements:
+        await d1_run(env, sql, *args)
+
+
+async def _contribution_write_catalog_state(
+        env, record, account_bi, account_rec, source_repo_bi,
+        encrypted_catalog_record):
+    """Atomically write repository visibility and its contribution boundary."""
+    is_private = 1 if record.get("visibility") == "private" else 0
+    statements = [(
+        """INSERT INTO repositories (key_bi, owner_bi, data, is_private)
+             VALUES (?,?,?,?)
+             ON CONFLICT(key_bi) DO UPDATE SET
+               owner_bi=excluded.owner_bi, data=excluded.data,
+               is_private=excluded.is_private""",
+        (source_repo_bi, account_bi, encrypted_catalog_record, is_private),
+    )]
+    if is_private:
+        statements.append((
+            "UPDATE profile_contribution_projects SET is_public=0 "
+            "WHERE source_repo_bi=?",
+            (source_repo_bi,),
+        ))
+    else:
+        owner_user_bi = await _contribution_owner_user_bi(
+            env, account_bi, account_rec)
+        project_bi = await _contribution_project_bi(env, record)
+        encrypted_labels = await encrypt_row(env, {
+            "owner": record.get("owner", ""),
+            "name": record.get("name", ""),
+        })
+        statements.append((
+            """INSERT INTO profile_contribution_projects
+                 (source_repo_bi, source_account_bi, owner_user_bi, project_bi,
+                  first_public_day, is_public, active_generation_bi,
+                  captured_at, verified_from, data)
+                 VALUES (?,?,?,?,?,1,NULL,0,NULL,?)
+                 ON CONFLICT(source_repo_bi) DO UPDATE SET
+                   is_public=1,
+                   source_account_bi=CASE
+                     WHEN profile_contribution_projects.active_generation_bi IS NULL
+                     THEN excluded.source_account_bi
+                     ELSE profile_contribution_projects.source_account_bi END,
+                   owner_user_bi=CASE
+                     WHEN profile_contribution_projects.active_generation_bi IS NULL
+                     THEN excluded.owner_user_bi
+                     ELSE profile_contribution_projects.owner_user_bi END,
+                   project_bi=CASE
+                     WHEN profile_contribution_projects.active_generation_bi IS NULL
+                     THEN excluded.project_bi
+                     ELSE profile_contribution_projects.project_bi END,
+                   data=CASE
+                     WHEN profile_contribution_projects.active_generation_bi IS NULL
+                     THEN excluded.data
+                     ELSE profile_contribution_projects.data END""",
+            (
+                source_repo_bi,
+                account_bi,
+                owner_user_bi,
+                project_bi,
+                _contribution_publication_day(),
+                encrypted_labels,
+            ),
+        ))
+    await _contribution_run_batch(env, statements)
+
+
+async def _contribution_move_repo_namespace(
+        env, old_repo_bi, new_repo_bi, old_account_bi, new_account_bi,
+        new_owner, repo, record):
+    project = await d1_first(
+        env,
+        "SELECT owner_user_bi, data FROM profile_contribution_projects "
+        "WHERE source_repo_bi=?",
+        old_repo_bi,
+    )
+    next_record = dict(record)
+    next_record["owner"] = new_owner
+    next_record["name"] = repo
+    new_project_bi = await _contribution_project_bi(env, next_record)
+    project_data = await decrypt_row(env, (project or {}).get("data")) or {}
+    project_data["owner"] = new_owner
+    project_data["name"] = repo
+    encrypted_project = await encrypt_row(env, project_data)
+
+    await d1_run(
+        env,
+        "UPDATE profile_contribution_receipts SET source_account_bi=?, "
+        "source_repo_bi=? WHERE source_repo_bi=?",
+        new_account_bi, new_repo_bi, old_repo_bi,
+    )
+    await d1_run(
+        env,
+        "UPDATE profile_contribution_days SET source_account_bi=?, "
+        "source_repo_bi=?, project_bi=?, data=? WHERE source_repo_bi=?",
+        new_account_bi, new_repo_bi, new_project_bi, encrypted_project,
+        old_repo_bi,
+    )
+    await d1_run(
+        env,
+        "UPDATE profile_contribution_languages SET source_repo_bi=?, "
+        "project_bi=?, owner_user_bi=CASE WHEN owner_user_bi=? THEN ? "
+        "ELSE owner_user_bi END WHERE source_repo_bi=?",
+        new_repo_bi, new_project_bi, old_account_bi, new_account_bi,
+        old_repo_bi,
+    )
+    await d1_run(
+        env,
+        "UPDATE profile_contribution_projects SET source_repo_bi=?, "
+        "source_account_bi=?, project_bi=?, "
+        "owner_user_bi=CASE WHEN owner_user_bi=? THEN ? ELSE owner_user_bi END, "
+        "data=? WHERE source_repo_bi=?",
+        new_repo_bi, new_account_bi, new_project_bi,
+        old_account_bi, new_account_bi, encrypted_project, old_repo_bi,
+    )
+
+
+def _contribution_generation_statements(
+        generation_bi, snapshot_hash, snapshot, account_bi, owner_user_bi,
+        source_repo_bi, project_bi, encrypted_labels, encrypted_project,
+        day_rows, language_rows, created_at):
+    return [
+        (
+            """INSERT OR IGNORE INTO profile_contribution_days
+                 (generation_bi, subject_user_bi, source_account_bi,
+                  source_repo_bi, project_bi, day, commits, issues, pulls,
+                  reviews, captured_at, data)
+                 SELECT ?, CAST(json_extract(value, '$[0]') AS TEXT), ?, ?, ?,
+                        CAST(json_extract(value, '$[1]') AS TEXT),
+                        CAST(json_extract(value, '$[2]') AS INTEGER),
+                        CAST(json_extract(value, '$[3]') AS INTEGER),
+                        CAST(json_extract(value, '$[4]') AS INTEGER),
+                        CAST(json_extract(value, '$[5]') AS INTEGER), ?, ?
+                   FROM json_each(?)""",
+            (
+                generation_bi, account_bi, source_repo_bi, project_bi,
+                snapshot["capturedAt"], encrypted_labels,
+                json.dumps(day_rows, separators=(",", ":")),
+            ),
+        ),
+        (
+            """INSERT OR IGNORE INTO profile_contribution_languages
+                 (generation_bi, owner_user_bi, source_repo_bi, project_bi,
+                  language, bytes, files, captured_at)
+                 SELECT ?, ?, ?, ?,
+                        CAST(json_extract(value, '$[0]') AS TEXT),
+                        CAST(json_extract(value, '$[1]') AS INTEGER),
+                        CAST(json_extract(value, '$[2]') AS INTEGER), ?
+                   FROM json_each(?)""",
+            (
+                generation_bi, owner_user_bi, source_repo_bi, project_bi,
+                snapshot["capturedAt"],
+                json.dumps(language_rows, separators=(",", ":")),
+            ),
+        ),
+        (
+            """INSERT OR IGNORE INTO profile_contribution_receipts
+                 (generation_bi, snapshot_hash, source_account_bi,
+                  source_repo_bi, captured_at, head, day_rows, language_rows,
+                  created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                generation_bi, snapshot_hash, account_bi, source_repo_bi,
+                snapshot["capturedAt"], snapshot["head"], len(day_rows),
+                len(language_rows), created_at,
+            ),
+        ),
+        (
+            """UPDATE profile_contribution_projects
+                  SET source_account_bi=?, owner_user_bi=?, project_bi=?,
+                      active_generation_bi=?, captured_at=?, verified_from=?,
+                      data=?
+                WHERE source_repo_bi=? AND is_public=1
+                  AND (active_generation_bi IS NULL OR captured_at < ?)
+                  AND EXISTS (
+                    SELECT 1 FROM repositories
+                     WHERE key_bi=? AND is_private=0)""",
+            (
+                account_bi, owner_user_bi, project_bi, generation_bi,
+                snapshot["capturedAt"], snapshot["from"], encrypted_project,
+                source_repo_bi, snapshot["capturedAt"], source_repo_bi,
+            ),
+        ),
+    ]
+
+
+async def _contribution_prune_inactive_generations(env, source_repo_bi):
+    statements = []
+    for table in (
+            "profile_contribution_days", "profile_contribution_languages",
+            "profile_contribution_receipts"):
+        statements.append((
+            "DELETE FROM " + table + " WHERE source_repo_bi=? "
+            "AND generation_bi NOT IN ("
+            "SELECT active_generation_bi FROM profile_contribution_projects "
+            "WHERE source_repo_bi=? AND active_generation_bi IS NOT NULL)",
+            (source_repo_bi, source_repo_bi),
+        ))
+    await _contribution_run_batch(env, statements)
+
+
+async def _contribution_ingest_snapshot(
+        env, request_data, record, account_bi, account_rec, source_repo_bi):
+    """Verify, stage, and compare-and-swap one optional public snapshot."""
+    if record.get("visibility") != "public":
+        return {"accepted": False, "warning": ""}
+    transport = safe_contribution_transport(request_data)
+    if not transport["present"]:
+        return {"accepted": False, "warning": ""}
+    if transport["warning"]:
+        return {"accepted": False, "warning": transport["warning"]}
+    try:
+        snapshot, _raw, snapshot_hash = contributions.decode_snapshot_payload(
+            transport["payload"], now_ms=int(Date.now()))
+    except ValueError:
+        return {"accepted": False, "warning": "invalid_contribution_payload"}
+    if snapshot["head"] != record.get("commit"):
+        return {"accepted": False, "warning": "contribution_head_mismatch"}
+    if snapshot["branch"] != record.get("branch"):
+        return {"accepted": False, "warning": "contribution_branch_mismatch"}
+    if str(snapshot["capturedAt"]) != record.get("updatedAt"):
+        return {"accepted": False, "warning": "contribution_time_mismatch"}
+
+    # Fast path for a re-attestation republish: it re-sends the SAME snapshot, so
+    # its content hash -> generation_bi is unchanged. If that generation is
+    # already the active one for this repo, the ingest is a pure no-op (the
+    # staging batch below is all INSERT OR IGNORE plus a captured_at<? UPDATE that
+    # can't advance for an equal capturedAt). Skip the expensive signature verify,
+    # actor lookups, staging batch, and prune entirely — re-running the full
+    # ingest on every drifted-pin re-attest was a major driver of the Worker CPU
+    # (Cloudflare 1102) overload the desktop then hammered with retries.
+    generation_bi = await blind_index(
+        env, "profile-generation:" + source_repo_bi + ":" + snapshot_hash)
+    active_row = await d1_first(
+        env,
+        "SELECT active_generation_bi FROM profile_contribution_projects "
+        "WHERE source_repo_bi=?",
+        source_repo_bi,
+    )
+    if active_row and active_row.get("active_generation_bi") == generation_bi:
+        return {"accepted": True, "warning": ""}
+
+    try:
+        canonical = contributions.snapshot_signature_canonical(
+            record["owner"], record["name"], record["updatedAt"],
+            snapshot_hash)
+    except (KeyError, ValueError):
+        return {"accepted": False, "warning": "invalid_contribution_payload"}
+    owner_pubkey = clean_string((account_rec or {}).get("pubkey", ""), 120)
+    if not owner_pubkey or not await ed25519_verify(
+            owner_pubkey, transport["signature"], canonical):
+        return {"accepted": False, "warning": "invalid_contribution_signature"}
+
+    owner_user_bi = await _contribution_owner_user_bi(
+        env, account_bi, account_rec)
+    project_bi = await _contribution_project_bi(env, record)
+    actor_users = await _contribution_actor_user_bis(
+        env, [row[1] for row in snapshot["days"]])
+    grouped_days = {}
+    for day, actor_key, commits, issues, pulls, reviews in snapshot["days"]:
+        subject_user_bi = actor_users.get(actor_key)
+        if not subject_user_bi:
+            continue
+        counts = grouped_days.setdefault((subject_user_bi, day), [0, 0, 0, 0])
+        counts[0] += commits
+        counts[1] += issues
+        counts[2] += pulls
+        counts[3] += reviews
+    day_rows = [
+        [subject_user_bi, day, *counts]
+        for (subject_user_bi, day), counts in sorted(grouped_days.items())
+        if any(counts)
+    ]
+
+    grouped_languages = {}
+    for extension, byte_count, file_count in snapshot["extensions"]:
+        language, _color = contributions.language_for_extension(extension)
+        totals = grouped_languages.setdefault(language, [0, 0])
+        totals[0] += byte_count
+        totals[1] += file_count
+    language_rows = [
+        [language, totals[0], totals[1]]
+        for language, totals in sorted(grouped_languages.items())
+        if totals[0] or totals[1]
+    ]
+    labels = {"owner": record["owner"], "name": record["name"]}
+    encrypted_labels = await encrypt_row(env, labels)
+    project_data = {**labels, "coverage": snapshot["coverage"]}
+    encrypted_project = await encrypt_row(env, project_data)
+    statements = _contribution_generation_statements(
+        generation_bi, snapshot_hash, snapshot, account_bi, owner_user_bi,
+        source_repo_bi, project_bi, encrypted_labels, encrypted_project,
+        day_rows, language_rows, int(Date.now()))
+    await _contribution_run_batch(env, statements)
+
+    active = await d1_first(
+        env,
+        """SELECT projects.active_generation_bi, projects.captured_at,
+                  projects.is_public,
+                  receipts.snapshot_hash AS active_snapshot_hash,
+                  CASE WHEN repositories.key_bi IS NOT NULL
+                             AND repositories.is_private=0 THEN 1 ELSE 0 END
+                    AS repository_public
+             FROM profile_contribution_projects AS projects
+             LEFT JOIN profile_contribution_receipts AS receipts
+               ON receipts.generation_bi=projects.active_generation_bi
+             LEFT JOIN repositories
+               ON repositories.key_bi=projects.source_repo_bi
+            WHERE projects.source_repo_bi=?""",
+        source_repo_bi,
+    ) or {}
+    await _contribution_prune_inactive_generations(env, source_repo_bi)
+    active_generation_bi = active.get("active_generation_bi")
+    active_captured_at = int(active.get("captured_at") or 0)
+    if active_generation_bi == generation_bi:
+        return {"accepted": True, "warning": ""}
+    if not active.get("is_public") or not active.get("repository_public"):
+        return {
+            "accepted": False,
+            "warning": "contribution_repository_private",
+        }
+    if active_generation_bi and active_captured_at > snapshot["capturedAt"]:
+        return {"accepted": False, "warning": "contribution_snapshot_older"}
+    if active_generation_bi and active_captured_at == snapshot["capturedAt"]:
+        return {"accepted": False, "warning": "contribution_snapshot_conflict"}
+    return {"accepted": False, "warning": "contribution_activation_deferred"}
+
+
+def _contribution_cache_key(profile_bi, from_value, to_value, revision=""):
+    return (
+        PROFILE_CONTRIBUTION_CACHE_PREFIX + quote(str(profile_bi), safe="")
+        + "?from=" + from_value + "&to=" + to_value
+        + (("&revision=" + revision) if revision else "")
+    )
+
+
+async def _contribution_profile_revision(
+        env, subject_user_bi, from_value, to_value):
+    """Hash every public source that can affect this profile and range."""
+    rows = await d1_all(
+        env,
+        """WITH public_projects AS (
+               SELECT projects.*
+                 FROM profile_contribution_projects AS projects
+                 JOIN repositories
+                   ON repositories.key_bi=projects.source_repo_bi
+                WHERE projects.is_public=1 AND repositories.is_private=0
+             ), foreign_activity_projects AS (
+               SELECT DISTINCT sources.project_bi
+                 FROM public_projects AS sources
+                 JOIN profile_contribution_days AS days
+                   ON days.source_repo_bi=sources.source_repo_bi
+                  AND days.generation_bi=sources.active_generation_bi
+                WHERE sources.active_generation_bi IS NOT NULL
+                  AND days.subject_user_bi=?
+                  AND days.day>=? AND days.day<=?
+             ), foreign_activity_sources AS (
+               SELECT sources.*
+                 FROM public_projects AS sources
+                 JOIN foreign_activity_projects AS activity
+                   ON activity.project_bi=sources.project_bi
+                WHERE sources.owner_user_bi!=?
+             ), revision_sources AS (
+               SELECT 'owned' AS source_scope,
+                      sources.source_repo_bi, sources.source_account_bi,
+                      sources.owner_user_bi, sources.project_bi,
+                      sources.first_public_day,
+                      sources.active_generation_bi, sources.captured_at,
+                      sources.verified_from
+                 FROM public_projects AS sources
+                WHERE sources.owner_user_bi=?
+               UNION ALL
+               SELECT 'foreign' AS source_scope,
+                      sources.source_repo_bi, sources.source_account_bi,
+                      sources.owner_user_bi, sources.project_bi,
+                      sources.first_public_day,
+                      sources.active_generation_bi, sources.captured_at,
+                      sources.verified_from
+                 FROM foreign_activity_sources AS sources
+             )
+             SELECT source_scope, source_repo_bi, source_account_bi,
+                    owner_user_bi, project_bi, first_public_day,
+                    COALESCE(active_generation_bi, '') AS active_generation_bi,
+                    captured_at, COALESCE(verified_from, '') AS verified_from
+               FROM revision_sources
+              /* contribution_profile_revision */
+              ORDER BY source_scope ASC, project_bi ASC, source_repo_bi ASC""",
+        subject_user_bi, from_value, to_value,
+        subject_user_bi, subject_user_bi,
+    )
+    canonical = [
+        [
+            row.get("source_scope") or "",
+            row.get("source_repo_bi") or "",
+            row.get("source_account_bi") or "",
+            row.get("owner_user_bi") or "",
+            row.get("project_bi") or "",
+            row.get("first_public_day") or "",
+            row.get("active_generation_bi") or "",
+            int(row.get("captured_at") or 0),
+            row.get("verified_from") or "",
+        ]
+        for row in rows
+    ]
+    return hashlib.sha256(json.dumps(
+        canonical, separators=(",", ":")).encode()).hexdigest()
+
+
+async def _contribution_internal_cache_get(cache_key):
+    cached = await edge_cache_match(cache_key)
+    if cached is None:
+        return None
+    try:
+        payload = await cached.json()
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+async def _contribution_internal_cache_put(cache_key, payload):
+    cached_response = json_response(
+        payload, cache_seconds=PROFILE_CONTRIBUTION_CACHE_TTL)
+    await edge_cache_put(cache_key, cached_response)
+
+
+async def _contribution_activity_rows(
+        env, subject_user_bi, from_value, to_value):
+    return await d1_all(
+        env,
+        """WITH public_projects AS (
+               SELECT projects.*
+                 FROM profile_contribution_projects AS projects
+                 JOIN repositories
+                   ON repositories.key_bi=projects.source_repo_bi
+                WHERE projects.is_public=1 AND repositories.is_private=0
+             ), candidate_days AS (
+               SELECT DISTINCT sources.project_bi, days.day
+                 FROM public_projects AS sources
+                 JOIN profile_contribution_days AS days
+                   ON days.source_repo_bi=sources.source_repo_bi
+                  AND days.generation_bi=sources.active_generation_bi
+                WHERE sources.active_generation_bi IS NOT NULL
+                  AND days.subject_user_bi=?
+                  AND days.day>=? AND days.day<=?
+             ), ranked_day_sources AS (
+               SELECT candidates.project_bi, candidates.day,
+                      sources.source_repo_bi,
+                      sources.active_generation_bi,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY candidates.project_bi, candidates.day
+                        ORDER BY sources.captured_at DESC,
+                                 sources.source_repo_bi ASC) AS source_rank
+                 FROM candidate_days AS candidates
+                 JOIN public_projects AS sources
+                   ON sources.project_bi=candidates.project_bi
+                  AND sources.active_generation_bi IS NOT NULL
+                  AND sources.verified_from<=candidates.day
+             ), active_day_sources AS (
+               SELECT * FROM ranked_day_sources WHERE source_rank=1
+             ), selected_days AS (
+               SELECT sources.project_bi, days.day,
+                      days.commits, days.issues,
+                      days.pulls, days.reviews, days.source_repo_bi,
+                      days.captured_at, days.data
+                 FROM active_day_sources AS sources
+                 JOIN profile_contribution_days AS days
+                   ON days.source_repo_bi=sources.source_repo_bi
+                  AND days.generation_bi=sources.active_generation_bi
+                  AND days.day=sources.day
+                WHERE days.subject_user_bi=?
+             ), owned_ranked AS (
+               SELECT sources.*,
+                      MIN(sources.first_public_day) OVER (
+                        PARTITION BY sources.project_bi
+                      ) AS logical_first_public_day,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY sources.project_bi
+                        ORDER BY sources.captured_at DESC,
+                                 sources.source_repo_bi ASC) AS source_rank
+                 FROM public_projects AS sources
+                WHERE sources.owner_user_bi=?
+             ), owned_projects AS (
+               SELECT * FROM owned_ranked WHERE source_rank=1
+             ), activity_days AS (
+               SELECT day,
+                      SUM(commits) AS commits,
+                      SUM(issues) AS issues,
+                      SUM(pulls) AS pulls,
+                      SUM(reviews) AS reviews,
+                      0 AS repositories
+                 FROM selected_days GROUP BY day
+             ), repository_days AS (
+               SELECT logical_first_public_day AS day,
+                      0 AS commits, 0 AS issues, 0 AS pulls, 0 AS reviews,
+                      COUNT(*) AS repositories
+                 FROM owned_projects
+                WHERE logical_first_public_day>=?
+                  AND logical_first_public_day<=?
+                GROUP BY logical_first_public_day
+             ), combined_days AS (
+               SELECT day, SUM(commits) AS commits, SUM(issues) AS issues,
+                      SUM(pulls) AS pulls, SUM(reviews) AS reviews,
+                      SUM(repositories) AS repositories
+                 FROM (
+                   SELECT * FROM activity_days
+                   UNION ALL
+                   SELECT * FROM repository_days
+                 ) GROUP BY day
+             )
+             SELECT 0 AS row_order, 'summary' AS row_kind, '' AS day,
+                    COALESCE(SUM(commits), 0) AS commits,
+                    COALESCE(SUM(issues), 0) AS issues,
+                    COALESCE(SUM(pulls), 0) AS pulls,
+                    COALESCE(SUM(reviews), 0) AS reviews,
+                    COALESCE(SUM(repositories), 0) AS repositories,
+                    (SELECT COUNT(*) FROM owned_projects)
+                      AS repository_count
+               FROM combined_days
+             UNION ALL
+             SELECT 1 AS row_order, 'day' AS row_kind, day,
+                    commits, issues, pulls, reviews, repositories,
+                    0 AS repository_count
+               FROM combined_days
+             ORDER BY row_order ASC, day ASC""",
+        subject_user_bi, from_value, to_value, subject_user_bi,
+        subject_user_bi,
+        from_value, to_value,
+    )
+
+
+async def _contribution_recent_rows(
+        env, subject_user_bi, from_value, to_value):
+    return await d1_all(
+        env,
+        """WITH public_projects AS (
+               SELECT projects.*
+                 FROM profile_contribution_projects AS projects
+                 JOIN repositories
+                   ON repositories.key_bi=projects.source_repo_bi
+                WHERE projects.is_public=1 AND repositories.is_private=0
+             ), candidate_days AS (
+               SELECT DISTINCT sources.project_bi, days.day
+                 FROM public_projects AS sources
+                 JOIN profile_contribution_days AS days
+                   ON days.source_repo_bi=sources.source_repo_bi
+                  AND days.generation_bi=sources.active_generation_bi
+                WHERE sources.active_generation_bi IS NOT NULL
+                  AND days.subject_user_bi=?
+                  AND days.day>=? AND days.day<=?
+             ), ranked_day_sources AS (
+               SELECT candidates.project_bi, candidates.day,
+                      sources.source_repo_bi,
+                      sources.active_generation_bi,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY candidates.project_bi, candidates.day
+                        ORDER BY sources.captured_at DESC,
+                                 sources.source_repo_bi ASC) AS source_rank
+                 FROM candidate_days AS candidates
+                 JOIN public_projects AS sources
+                   ON sources.project_bi=candidates.project_bi
+                  AND sources.active_generation_bi IS NOT NULL
+                  AND sources.verified_from<=candidates.day
+             ), active_day_sources AS (
+               SELECT * FROM ranked_day_sources WHERE source_rank=1
+             ), selected_days AS (
+               SELECT days.*
+                 FROM active_day_sources AS sources
+                 JOIN profile_contribution_days AS days
+                   ON days.source_repo_bi=sources.source_repo_bi
+                  AND days.generation_bi=sources.active_generation_bi
+                  AND days.day=sources.day
+                WHERE days.subject_user_bi=?
+             ), owned_ranked AS (
+               SELECT sources.*,
+                      MIN(sources.first_public_day) OVER (
+                        PARTITION BY sources.project_bi
+                      ) AS logical_first_public_day,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY sources.project_bi
+                        ORDER BY sources.captured_at DESC,
+                                 sources.source_repo_bi ASC) AS source_rank
+                 FROM public_projects AS sources
+                WHERE sources.owner_user_bi=?
+             ), owned_projects AS (
+               SELECT * FROM owned_ranked WHERE source_rank=1
+             ), recent_candidates AS (
+               SELECT day AS activity_day, 'commits' AS kind,
+                      0 AS kind_order, commits AS activity_count,
+                      project_bi, source_repo_bi, data
+                 FROM selected_days WHERE commits>0
+               UNION ALL
+               SELECT day, 'issues', 1, issues,
+                      project_bi, source_repo_bi, data
+                 FROM selected_days WHERE issues>0
+               UNION ALL
+               SELECT day, 'pulls', 2, pulls,
+                      project_bi, source_repo_bi, data
+                 FROM selected_days WHERE pulls>0
+               UNION ALL
+               SELECT day, 'reviews', 3, reviews,
+                      project_bi, source_repo_bi, data
+                 FROM selected_days WHERE reviews>0
+               UNION ALL
+               SELECT logical_first_public_day, 'repositories', 4, 1,
+                      project_bi, source_repo_bi, data
+                 FROM owned_projects
+                WHERE logical_first_public_day>=?
+                  AND logical_first_public_day<=?
+             )
+             SELECT activity_day, kind, activity_count, project_bi,
+                    source_repo_bi, data
+               FROM recent_candidates
+              ORDER BY activity_day DESC, kind_order ASC,
+                       project_bi ASC, source_repo_bi ASC
+              LIMIT 20""",
+        subject_user_bi, from_value, to_value, subject_user_bi,
+        subject_user_bi,
+        from_value, to_value,
+    )
+
+
+async def _contribution_language_rows(env, owner_user_bi):
+    return await d1_all(
+        env,
+        """WITH ranked_sources AS (
+               SELECT projects.source_repo_bi, projects.project_bi,
+                      projects.active_generation_bi,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY projects.project_bi
+                        ORDER BY projects.captured_at DESC,
+                                 projects.source_repo_bi ASC) AS source_rank
+                 FROM profile_contribution_projects AS projects
+                 JOIN repositories
+                   ON repositories.key_bi=projects.source_repo_bi
+                WHERE projects.owner_user_bi=? AND projects.is_public=1
+                  AND repositories.is_private=0
+                  AND projects.active_generation_bi IS NOT NULL
+             ), selected_sources AS (
+               SELECT * FROM ranked_sources WHERE source_rank=1
+             )
+             SELECT languages.language, SUM(languages.bytes) AS bytes
+               FROM selected_sources AS sources
+               JOIN profile_contribution_languages AS languages
+                 ON languages.source_repo_bi=sources.source_repo_bi
+                AND languages.generation_bi=sources.active_generation_bi
+              WHERE languages.owner_user_bi=?
+              GROUP BY languages.language
+              ORDER BY languages.language ASC""",
+        owner_user_bi, owner_user_bi,
+    )
+
+
+async def _contribution_coverage_rows(
+        env, subject_user_bi, from_value, to_value):
+    return await d1_all(
+        env,
+        """WITH public_projects AS (
+               SELECT projects.*
+                 FROM profile_contribution_projects AS projects
+                 JOIN repositories
+                   ON repositories.key_bi=projects.source_repo_bi
+                WHERE projects.is_public=1 AND repositories.is_private=0
+             ), candidate_days AS (
+               SELECT DISTINCT sources.project_bi, days.day
+                 FROM public_projects AS sources
+                 JOIN profile_contribution_days AS days
+                   ON days.source_repo_bi=sources.source_repo_bi
+                  AND days.generation_bi=sources.active_generation_bi
+                WHERE sources.active_generation_bi IS NOT NULL
+                  AND days.subject_user_bi=?
+                  AND days.day>=? AND days.day<=?
+             ), ranked_day_sources AS (
+               SELECT candidates.project_bi, candidates.day,
+                      sources.source_repo_bi,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY candidates.project_bi, candidates.day
+                        ORDER BY sources.captured_at DESC,
+                                 sources.source_repo_bi ASC) AS source_rank
+                 FROM candidate_days AS candidates
+                 JOIN public_projects AS sources
+                   ON sources.project_bi=candidates.project_bi
+                  AND sources.active_generation_bi IS NOT NULL
+                  AND sources.verified_from<=candidates.day
+             ), selected_day_sources AS (
+               SELECT * FROM ranked_day_sources WHERE source_rank=1
+             ), activity_sources AS (
+               SELECT DISTINCT project_bi, source_repo_bi
+                 FROM selected_day_sources
+             ), owned_projects AS (
+               SELECT DISTINCT project_bi
+                 FROM public_projects
+                WHERE owner_user_bi=?
+             ), owned_ranked_sources AS (
+               SELECT sources.*,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY sources.project_bi
+                        ORDER BY CASE
+                           WHEN sources.active_generation_bi IS NOT NULL
+                            AND sources.verified_from IS NOT NULL
+                            AND sources.verified_from<=? THEN 0
+                           WHEN sources.active_generation_bi IS NOT NULL
+                             THEN 1
+                           ELSE 2
+                         END ASC,
+                                 sources.captured_at DESC,
+                                 sources.source_repo_bi ASC) AS source_rank
+                 FROM public_projects AS sources
+                 JOIN owned_projects
+                   ON owned_projects.project_bi=sources.project_bi
+             ), coverage_source_keys AS (
+               SELECT source_repo_bi, project_bi
+                 FROM owned_ranked_sources
+                WHERE source_rank=1
+               UNION
+               SELECT source_repo_bi, project_bi FROM activity_sources
+             )
+             SELECT sources.source_repo_bi, sources.project_bi,
+                    sources.owner_user_bi, sources.verified_from,
+                    sources.captured_at, sources.data,
+                    CASE WHEN owned.project_bi IS NOT NULL
+                         THEN 1 ELSE 0 END AS is_owned
+               FROM coverage_source_keys AS keys
+               JOIN public_projects AS sources
+                 ON sources.source_repo_bi=keys.source_repo_bi
+               LEFT JOIN owned_projects AS owned
+                 ON owned.project_bi=keys.project_bi
+              ORDER BY sources.project_bi ASC, sources.source_repo_bi ASC
+              LIMIT ?""",
+        subject_user_bi, from_value, to_value, subject_user_bi,
+        from_value, MAX_CATALOG_REPOS,
+    )
+
+
+async def _contribution_profile_payload(
+        env, profile_bi, profile_name, from_value, to_value):
+    activity_rows, recent_rows, language_rows, coverage_rows = (
+        await asyncio.gather(
+            _contribution_activity_rows(
+                env, profile_bi, from_value, to_value),
+            _contribution_recent_rows(
+                env, profile_bi, from_value, to_value),
+            _contribution_language_rows(env, profile_bi),
+            _contribution_coverage_rows(
+                env, profile_bi, from_value, to_value),
+        )
+    )
+    summary = next(
+        (row for row in activity_rows if row.get("row_kind") == "summary"),
+        {},
+    )
+    days = [
+        row for row in activity_rows if row.get("row_kind") == "day"
+    ]
+
+    decrypted = {}
+    recent_activity = []
+    for row in recent_rows[:20]:
+        encrypted = row.get("data", "")
+        if encrypted not in decrypted:
+            decrypted[encrypted] = await decrypt_row(env, encrypted) or {}
+        labels = decrypted[encrypted]
+        owner = clean_string(labels.get("owner", ""), MAX_NODE_NAME).lower()
+        repo = clean_string(labels.get("name", ""), MAX_REPO_SEGMENT)
+        if not owner or not repo:
+            continue
+        recent_activity.append({
+            "date": row.get("activity_day", ""),
+            "kind": row.get("kind", ""),
+            "count": int(row.get("activity_count") or 0),
+            "repository": {
+                "owner": owner,
+                "name": repo,
+                "url": "/" + quote(owner, safe="") + "/"
+                       + quote(repo, safe=""),
+            },
+        })
+
+    decoded_coverage = []
+    for row in coverage_rows:
+        encrypted = row.get("data", "")
+        if encrypted not in decrypted:
+            decrypted[encrypted] = await decrypt_row(env, encrypted) or {}
+        decoded_coverage.append({
+            **row,
+            "coverage": decrypted[encrypted].get("coverage"),
+        })
+    return contributions.build_profile_contribution_response(
+        profile_name, from_value, to_value, summary, days,
+        language_rows, recent_activity, decoded_coverage,
+    )
+
+
+async def _contribution_profile_api(env, request, raw_name):
+    parsed = urlparse(request.url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    if (set(params) - {"from", "to"}
+            or any(len(values) != 1 for values in params.values())):
+        return json_response(
+            {"error": "invalid_contribution_range"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+    scalar_query = {key: values[0] for key, values in params.items()}
+    try:
+        from_value, to_value = contributions.contribution_date_range(
+            scalar_query, now_ms=int(Date.now()))
+    except ValueError:
+        return json_response(
+            {"error": "invalid_contribution_range"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+
+    name = clean_string(raw_name, MAX_NODE_NAME).lower()
+    if not valid_node_name(name):
+        return json_response(
+            {"error": "not_found"}, status=404,
+            cache_control="no-store, max-age=0, must-revalidate")
+    profile_bi = await blind_index(env, name)
+    rec = await _account_identity_rec_by_bi(env, profile_bi)
+    if not rec:
+        _, rec = await _account_row(env, name)
+    if (not rec or rec.get("status") != "active"
+            or rec.get("profile_private")):
+        return json_response(
+            {"error": "not_found"}, status=404,
+            cache_control="no-store, max-age=0, must-revalidate")
+
+    profile_name = clean_string(
+        rec.get("name", name), MAX_NODE_NAME).lower() or name
+    cacheable = contributions.contribution_cacheable_range(
+        from_value, to_value, now_ms=int(Date.now()))
+    for attempt in range(2):
+        revision = await _contribution_profile_revision(
+            env, profile_bi, from_value, to_value)
+        cache_key = _contribution_cache_key(
+            profile_bi, from_value, to_value, revision)
+        if cacheable:
+            cached = await _contribution_internal_cache_get(cache_key)
+            if (cached and cached.get("ok") is True
+                    and cached.get("profile") == profile_name
+                    and cached.get("range") == {
+                        "from": from_value, "to": to_value}):
+                final_revision = await _contribution_profile_revision(
+                    env, profile_bi, from_value, to_value)
+                if final_revision == revision:
+                    return json_response(
+                        cached,
+                        cache_control="no-store, max-age=0, must-revalidate")
+                if attempt == 0:
+                    continue
+                break
+
+        payload = await _contribution_profile_payload(
+            env, profile_bi, profile_name, from_value, to_value)
+        final_revision = await _contribution_profile_revision(
+            env, profile_bi, from_value, to_value)
+        if final_revision != revision:
+            if attempt == 0:
+                continue
+            break
+        if cacheable:
+            await _contribution_internal_cache_put(cache_key, payload)
+        return json_response(
+            payload,
+            cache_control="no-store, max-age=0, must-revalidate")
+    return json_response(
+        {"error": "contribution_state_changed"}, status=503,
+        cache_control="no-store, max-age=0, must-revalidate")
+
+
 async def catalog_rate_check(env, owner_bi):
     # Throttle catalog writes per owner: at most one write per cooldown window.
     # Returns a 429 response when throttled, else None (and records this write).
@@ -2589,6 +4048,44 @@ async def catalog_rate_check(env, owner_bi):
         "INSERT INTO catalog_rate (owner_bi, ts) VALUES (?,?) "
         "ON CONFLICT(owner_bi) DO UPDATE SET ts=excluded.ts",
         owner_bi, now,
+    )
+    return None
+
+
+async def signup_rate_check(env, ip_bi):
+    # Throttle account creation per source IP: at most SIGNUP_MAX_PER_IP within a
+    # rolling SIGNUP_RATE_WINDOW_MS. Returns a 429 response when over the limit,
+    # else None (and records this creation). A missing IP (local/dev, or a proxy
+    # path with no CF header) is not throttled — we only rate-limit what we can
+    # attribute — so genuine tests and self-hosting stay unaffected.
+    if not ip_bi:
+        return None
+    now = int(Date.now())
+    row = await d1_first(
+        env, "SELECT count, window_start_ts FROM signup_rate WHERE ip_bi=?", ip_bi)
+    count = 0
+    window_start = now
+    if row:
+        try:
+            window_start = int(row.get("window_start_ts") or 0)
+            count = int(row.get("count") or 0)
+        except (TypeError, ValueError):
+            window_start, count = now, 0
+        if now - window_start >= SIGNUP_RATE_WINDOW_MS:
+            window_start, count = now, 0  # window elapsed; start a fresh count
+    if count >= SIGNUP_MAX_PER_IP:
+        retry_ms = max(1000, SIGNUP_RATE_WINDOW_MS - (now - window_start))
+        return json_response(
+            {"error": "rate_limited", "retryAfterMs": retry_ms},
+            status=429,
+            extra_headers={"Retry-After": str(max(1, (retry_ms + 999) // 1000))},
+        )
+    new_count = count + 1
+    await d1_run(
+        env,
+        "INSERT INTO signup_rate (ip_bi, count, window_start_ts) VALUES (?,?,?) "
+        "ON CONFLICT(ip_bi) DO UPDATE SET count=?, window_start_ts=?",
+        ip_bi, new_count, window_start, new_count, window_start,
     )
     return None
 
@@ -2620,16 +4117,22 @@ async def catalog_handler(env, request):
             cached = await edge_cache_match(CATALOG_CACHE_KEY)
             if cached is not None:
                 return cached
-        # Drop any blocked phantom entries from D1 before listing (idempotent,
-        # only runs on a cache miss).
-        try:
-            await purge_blocked_catalog(env)
-        except Exception:
-            pass
-        try:
-            await purge_stale_registered_nodes(env)
-        except Exception:
-            pass
+        # Best-effort D1 housekeeping (drop blocked phantoms, prune stale nodes)
+        # only on the cheap, edge-cached anonymous miss. The response is already
+        # correct without it — blocked entries are skipped by
+        # _is_blocked_catalog_identity and stale ones by the active-node filter
+        # below — and the staggered cron sweeps D1 on its own schedule. An
+        # authenticated (per-viewer, never-cached) request must NOT run these:
+        # replaying a burst of DELETEs plus host-offline notifications inline on
+        # every catalog load held the single Worker event loop long enough for
+        # the runtime to cancel the request as hung ("Cannot enter into task").
+        # Housekeeping moved off the request path entirely (2026-07-11): the
+        # staggered cron already runs purge_blocked_catalog (minute%15==9) and
+        # purge_stale_registered_nodes (minute%15==4), and the response is
+        # correct without them — blocked entries are skipped by
+        # _is_blocked_catalog_identity and stale ones by the active-node
+        # filter below. Running purges on every 10s cache miss helped melt
+        # the free plan during the 2026-07-11 overload.
         try:
             active_nodes = await active_registered_node_bis(env)
         except Exception:
@@ -2725,7 +4228,11 @@ async def catalog_handler(env, request):
         # key holder may write its namespace. This ties repo identity to the
         # account (fixes duplicate forks) and prevents impersonation. A registered
         # account is REQUIRED — there is no self-asserted-maintainer fallback.
-        owner_pub = await _owner_pubkey(env, owner)
+        # One account fetch serves both the pubkey check and the node touch
+        # below (the old code fetched + decrypted the same record twice).
+        _, publish_owner_rec = await _account_row(env, owner)
+        owner_pub = (publish_owner_rec.get("pubkey", "")
+                     if publish_owner_rec else "")
         if not owner_pub:
             return json_response({"error": "account_required"}, status=403)
         if record["maintainer"] != owner_pub:
@@ -2737,8 +4244,7 @@ async def catalog_handler(env, request):
             return json_response({"error": "bad_signature"}, status=401)
         owner_bi = await blind_index(env, owner)
         try:
-            _, owner_rec = await _account_row(env, owner)
-            await touch_registered_node(env, owner_bi, owner_rec)
+            await touch_registered_node(env, owner_bi, publish_owner_rec)
         except Exception:
             pass
 
@@ -2783,18 +4289,26 @@ async def catalog_handler(env, request):
             if cnt and cnt.get("c", 0) >= CATALOG_MAX_RECORDS_PER_OWNER:
                 return json_response({"error": "too_many_repos"}, status=429)
         enc = await encrypt_row(env, record)
-        # is_private is a plaintext mirror of the (signed-write-gated) visibility
-        # field so browse/clone gating can check it without decrypting the row.
-        is_private = 1 if record["visibility"] == "private" else 0
-        await d1_run(
-            env,
-            """INSERT INTO repositories (key_bi, owner_bi, data, is_private)
-               VALUES (?,?,?,?)
-               ON CONFLICT(key_bi) DO UPDATE SET
-                 owner_bi=excluded.owner_bi, data=excluded.data,
-                 is_private=excluded.is_private""",
-            key_bi, owner_bi, enc, is_private,
-        )
+        await _contribution_write_catalog_state(
+            env, record, owner_bi, publish_owner_rec, key_bi, enc)
+        contribution_result = {"accepted": False, "warning": ""}
+        if record["visibility"] == "public":
+            try:
+                contribution_result = await _contribution_ingest_snapshot(
+                    env,
+                    data,
+                    record,
+                    owner_bi,
+                    publish_owner_rec,
+                    key_bi,
+                )
+            except Exception:
+                # Optional snapshot failures do not roll back an authorized
+                # repository publication.
+                contribution_result = {
+                    "accepted": False,
+                    "warning": "contribution_ingestion_failed",
+                }
         # A working-copy holder's verified attestation also lands in the pin
         # history, which is what lets an honest mirror lag the source by a few
         # publishes without failing the clone integrity gate (clone_state_pins).
@@ -2819,18 +4333,30 @@ async def catalog_handler(env, request):
                 )
             except Exception:
                 pass
-        # Cap: keep only the most-recent MAX_CATALOG_REPOS.
-        rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
-        if len(rows) > MAX_CATALOG_REPOS:
+        # Cap: keep only the most-recent MAX_CATALOG_REPOS. COUNT first — the
+        # old unconditional fetch-and-decrypt of EVERY catalog blob on every
+        # publish was pure per-request overhead (the cap is almost never hit).
+        total_row = await d1_first(
+            env, "SELECT COUNT(*) AS c FROM repositories")
+        if total_row and (total_row.get("c", 0) or 0) > MAX_CATALOG_REPOS:
+            rows = await d1_all(env, "SELECT key_bi, data FROM repositories")
             decoded = []
             for r in rows:
                 rec2 = await decrypt_row(env, r["data"])
                 decoded.append((r["key_bi"], rec2.get("updatedAt", "") if rec2 else ""))
             decoded.sort(key=lambda x: x[1], reverse=True)
             for stale_key, _ in decoded[MAX_CATALOG_REPOS:]:
+                await _delete_repo_scoped_state(env, stale_key)
                 await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", stale_key)
         await purge_catalog_related_caches()
-        return json_response({"ok": True, "repository": record}, status=201)
+        payload = {
+            "ok": True,
+            "repository": record,
+            "contributionsAccepted": bool(contribution_result["accepted"]),
+        }
+        if contribution_result["warning"]:
+            payload["contributionWarning"] = contribution_result["warning"][:80]
+        return json_response(payload, status=201)
 
     if method == "DELETE":
         params = parse_qs(urlparse(request.url).query)
@@ -2861,7 +4387,20 @@ async def catalog_handler(env, request):
                      "\n" + ts).encode()
         if not await ed25519_verify(owner_pub, sig, canonical):
             return json_response({"error": "bad_signature"}, status=401)
+        # Deleting a single repo must purge it as completely as the
+        # whole-account teardown does, or leftover scoped state (inboxes,
+        # host presence, agent state, bounties, chat history) keeps the repo
+        # alive in practice even though its catalog row is gone.
+        await _delete_repo_scoped_state(env, key_bi)
         await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", key_bi)
+        await _delete_bounties_namespace(env, owner, name)
+        await d1_run(
+            env, "DELETE FROM chat_history WHERE room_key LIKE ?",
+            "repo:" + owner + "/" + name + ":room:%")
+        await d1_run(
+            env,
+            "DELETE FROM funds_received WHERE scope='project' AND key=?",
+            owner + "/" + name)
         await purge_catalog_related_caches()
         return json_response({"ok": True, "deleted": True})
 
@@ -2903,8 +4442,91 @@ def _catalog_record_matches_identity(record, owner, repo):
     return clone_owner.lower() == owner_l and clone_repo.lower() == repo_l
 
 
+async def _repo_about_public(env, request, owner, repo):
+    # Public About/branding card + fediverse stats: the repo page's social
+    # badge header and Watch button read this. No auth — same visibility as
+    # the catalog entry itself.
+    if await _repo_is_private(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
+    key_bi = await blind_index(env, owner + "/" + repo)
+    repo_row = await d1_first(
+        env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
+    if not repo_row:
+        return json_response({"error": "not_found"}, status=404)
+    rec = await decrypt_row(env, repo_row.get("data"))
+    origin = _ap_origin(env, request)
+    handle = ap.repo_handle(str(owner).lower(), str(repo).lower())
+    logo_url = ""
+    banner_url = ""
+    media_rows = await d1_all(
+        env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?", key_bi)
+    for media in media_rows or []:
+        media_url = "/api/repo/%s/%s/media/%s.png?v=%d" % (
+            quote(owner), quote(repo), media.get("kind", ""),
+            int(media.get("updated_at") or 0))
+        if media.get("kind") == "logo":
+            logo_url = media_url
+        elif media.get("kind") == "banner":
+            banner_url = media_url
+    followers = 0
+    followers_list = []
+    fedi_enabled = await _ap_enabled(env)
+    ap_settings = await _ap_repo_settings_get(env, owner, repo)
+    if fedi_enabled:
+        actor_bi = await _ap_actor_bi(env, AP_ACTOR_REPO, handle)
+        row = await d1_first(
+            env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
+            actor_bi)
+        followers = (row or {}).get("c", 0) or 0
+        # The newest followers, so the repo page can show WHO is watching —
+        # follower_id/handle are public fediverse identifiers (the remote
+        # server publishes the same follow), capped so a popular repo never
+        # ships thousands of rows in an About card.
+        rows = await d1_all(
+            env,
+            "SELECT follower_id, follower_handle FROM ap_followers"
+            " WHERE actor_bi=? ORDER BY created_at DESC LIMIT 50",
+            actor_bi)
+        for follower in rows or []:
+            follower_url = str(follower.get("follower_id") or "")
+            follower_handle = str(follower.get("follower_handle") or "")
+            if not follower_handle and follower_url:
+                # Older rows may lack the resolved handle; a readable
+                # fallback beats a bare URL in the UI.
+                parsed = urlparse(follower_url)
+                name = parsed.path.rstrip("/").rpartition("/")[2]
+                if name and parsed.hostname:
+                    follower_handle = "@%s@%s" % (
+                        name.lstrip("@"), parsed.hostname)
+            if follower_handle or follower_url:
+                followers_list.append(
+                    {"handle": follower_handle, "url": follower_url})
+    return json_response({
+        "ok": True,
+        "description": clean_string(
+            (rec or {}).get("description", "") or "", 240),
+        "website": clean_string((rec or {}).get("website", "") or "", 240),
+        "logoUrl": logo_url,
+        "bannerUrl": banner_url,
+        "defaultLogoUrl": AP_AVATAR_PATH,
+        "defaultBannerUrl": AP_BANNER_PATH,
+        "fediverse": {
+            # enabled = "this repo currently federates": the instance switch
+            # AND the owner's per-repo switch.
+            "enabled": fedi_enabled and ap_settings["federate"],
+            "handle": "@%s@%s" % (handle, _ap_domain_of(origin)),
+            "actorUrl": _ap_actor_url(origin, AP_ACTOR_REPO, handle),
+            "followers": followers,
+            "followersList": followers_list,
+            "settings": ap_settings,
+        },
+    }, cache_control="public, max-age=30")
+
+
 async def repo_about_handler(env, request, owner, repo):
     await ensure_schema(env)
+    if method_name(request) == "GET":
+        return await _repo_about_public(env, request, owner, repo)
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
@@ -2912,24 +4534,79 @@ async def repo_about_handler(env, request, owner, repo):
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
     # Only the repo owner (proven by their session token, not a self-asserted
-    # ownerAccount string) or a network admin may edit repo metadata.
+    # ownerAccount string) or a network admin may edit repo metadata. The Qt
+    # desktop has no browser session; it proves the owner account's registered
+    # Ed25519 key instead (same trust gate as ap-publish / the inbox drains,
+    # with a distinct canonical so its tokens can't be replayed elsewhere).
     actor = await _authed_account_name(env, request, data)
-    if not actor or (actor != str(owner or "").lower()
+    owner_key_authed = False
+    if not actor and data.get("ownerSig") and data.get("ts"):
+        ts = str(data.get("ts", "") or "")
+        owner_pub = await _owner_pubkey(env, owner)
+        canonical = ("forkmesh-repo-about-v1\n" + owner + "\n" + repo +
+                     "\n" + ts).encode()
+        if owner_pub and _ts_ok(ts) and await ed25519_verify(
+                owner_pub, str(data.get("ownerSig", "") or ""), canonical):
+            actor = str(owner).lower()
+            owner_key_authed = True
+    if not actor or (not owner_key_authed
+                     and not await _account_owns_node(env, actor, owner)
                      and not await _is_admin(env, actor)):
         return json_response({"error": "not_authorized"}, status=403)
     if not await _owner_pubkey(env, owner):
         return json_response({"error": "account_required"}, status=403)
 
+    # Absent = unchanged, so a settings-only save (Qt fediverse switches)
+    # never blanks the description.
+    description_provided = "description" in data
     description = clean_string(data.get("description", ""), 240)
+    # Optional project website shown under the description (and written into
+    # the repo's .forkmesh/info.json by the owner's node). Absent = unchanged;
+    # empty string = remove. Only http(s) URLs are accepted.
+    website_provided = "website" in data
+    website = clean_string(data.get("website", ""), 240).strip()
+    if website_provided and website and not re.match(
+            r"^https?://[^\s]+$", website):
+        return json_response({"error": "invalid_website"}, status=400)
+    # Optional repo branding for the fediverse actor (and anything else that
+    # wants it): PNG logo (avatar) + banner (profile header). Absent field =
+    # leave unchanged; empty string = remove. Validated before any write so a
+    # bad image never half-applies the About edit.
+    media_updates = {}
+    for field, kind, cap in (("logoPng", "logo", MAX_REPO_LOGO_BYTES),
+                             ("bannerPng", "banner", MAX_REPO_BANNER_BYTES)):
+        if field not in data:
+            continue
+        png_b64, media_error = clean_media_png(data.get(field), cap)
+        if media_error:
+            return json_response({"error": media_error, "field": field},
+                                 status=400)
+        media_updates[kind] = png_b64
     rows = await d1_all(
         env, "SELECT key_bi, data, is_private FROM repositories")
     updated = 0
+    text_changed = False
     first = None
     for row in rows:
         record = await decrypt_row(env, row.get("data"))
         if not _catalog_record_matches_identity(record, owner, repo):
             continue
-        record["description"] = description
+        updated += 1
+        if first is None:
+            first = record
+        # Re-saving the About dialog with unchanged values must be a no-op:
+        # every write here cascades into a catalog cache purge, an about_inbox
+        # round-trip through the owner's desktop, and an Update(Group)
+        # broadcast to every fediverse follower.
+        if ((not description_provided or
+             str(record.get("description") or "") == description) and
+                (not website_provided or
+                 str(record.get("website") or "") == website)):
+            continue
+        if description_provided:
+            record["description"] = description
+        if website_provided:
+            record["website"] = website
         enc = await encrypt_row(env, record)
         await d1_run(
             env,
@@ -2938,26 +4615,130 @@ async def repo_about_handler(env, request, owner, repo):
             1 if record.get("visibility") == "private" else 0,
             row.get("key_bi"),
         )
-        updated += 1
-        if first is None:
-            first = record
+        text_changed = True
     if not updated:
         return json_response({"error": "not_found"}, status=404)
-    await purge_catalog_related_caches()
+    media_bi = await blind_index(env, str(owner).lower() + "/" + repo)
+    media_changed = False
+    for kind, png_b64 in media_updates.items():
+        existing = await d1_first(
+            env, "SELECT data FROM repo_media WHERE repo_bi=? AND kind=?",
+            media_bi, kind)
+        if not png_b64:
+            if existing:
+                await d1_run(
+                    env, "DELETE FROM repo_media WHERE repo_bi=? AND kind=?",
+                    media_bi, kind)
+                media_changed = True
+            continue
+        # Identical bytes keep the stored updated_at: bumping it would rotate
+        # the ?v= cache-buster in the actor doc and make every follower server
+        # re-download an image that did not change.
+        stored = await decrypt_row(env, existing.get("data")) if existing \
+            else None
+        if stored and stored.get("png") == png_b64:
+            continue
+        await d1_run(
+            env,
+            "INSERT INTO repo_media (repo_bi, kind, data, updated_at)"
+            " VALUES (?,?,?,?)"
+            " ON CONFLICT(repo_bi, kind) DO UPDATE SET data=excluded.data,"
+            " updated_at=excluded.updated_at",
+            media_bi, kind, await encrypt_row(env, {"png": png_b64}),
+            int(Date.now()))
+        media_changed = True
+    # Per-repo fediverse switches ride the same About save (web gear form and
+    # the Qt dialog both send a `fediverse` object). Absent = unchanged; an
+    # unchanged value writes nothing, so a plain description re-save never
+    # touches the AP tables or the edge cache.
+    ap_settings = None
+    fedi_data = data.get("fediverse")
+    if isinstance(fedi_data, dict):
+        current_settings = await _ap_repo_settings_get(env, owner, repo)
+        ap_settings = dict(current_settings)
+        for key in AP_REPO_SETTING_DEFAULTS:
+            if key in fedi_data:
+                ap_settings[key] = bool(fedi_data.get(key))
+        if ap_settings != current_settings:
+            await d1_run(
+                env,
+                "INSERT INTO ap_repo_settings (repo_bi, data, updated_at)"
+                " VALUES (?,?,?) ON CONFLICT(repo_bi) DO UPDATE SET"
+                " data=excluded.data, updated_at=excluded.updated_at",
+                await _ap_repo_settings_bi(env, owner, repo),
+                json.dumps(ap_settings), int(Date.now()))
+            # The actor doc, its collections and the webfinger lookup are
+            # edge-cached (and misses park a 404): drop them so a federation
+            # switch takes effect now, not after the TTL.
+            origin = _ap_origin(env, request)
+            ap_handle = ap.repo_handle(
+                str(owner).lower(), str(repo).lower())
+            actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, ap_handle)
+            for cache_key in (
+                    actor_url, actor_url + "/followers",
+                    actor_url + "/following", actor_url + "/outbox",
+                    "%s/.well-known/webfinger?resource=acct:%s@%s"
+                    % (origin, ap_handle, _ap_domain_of(origin))):
+                await edge_cache_delete(cache_key)
+    if text_changed:
+        # Queue the edit for the owner's desktop node, which writes it into the
+        # repo's committed .forkmesh/info.json (the same file the desktop app's
+        # own About editor maintains) on its next sync. Latest edit wins.
+        about_update = {
+            "about": description if description_provided
+            else clean_string((first or {}).get("description", "") or "", 240),
+            "website": website if website_provided
+            else clean_string((first or {}).get("website", "") or "", 240),
+            "ts": int(Date.now()),
+            "editor": actor,
+            "source": "web",
+        }
+        await d1_run(
+            env,
+            "INSERT INTO about_inbox (repo_bi, data, queued_at) VALUES (?,?,?)"
+            " ON CONFLICT(repo_bi) DO UPDATE SET data=excluded.data,"
+            " queued_at=excluded.queued_at",
+            media_bi, await encrypt_row(env, about_update), about_update["ts"])
+        await _best_effort_inbox_side_effect(
+            notify_repo_host(env, owner, repo, "about"))
+        await purge_catalog_related_caches()
+    if text_changed or media_changed:
+        # Tell existing fediverse followers the profile changed (Update
+        # activity), so the new logo/banner/description shows up on remote
+        # servers now, not whenever their actor cache happens to expire.
+        await _best_effort_inbox_side_effect(_ap_broadcast_actor_update(
+            env, request, AP_ACTOR_REPO,
+            ap.repo_handle(str(owner).lower(), str(repo).lower())))
     # Return only the fields the caller just set — never the full decrypted
     # catalog record (which carries private-repo cloneUrl/visibility/stateHash).
-    return json_response({
+    media_rows = await d1_all(
+        env, "SELECT kind FROM repo_media WHERE repo_bi=?", media_bi)
+    media_kinds = {r.get("kind") for r in (media_rows or [])}
+    result = {
         "ok": True,
-        "description": description,
+        "description": description if description_provided
+        else clean_string((first or {}).get("description", "") or "", 240),
         "updated": updated,
+        "hasLogo": "logo" in media_kinds,
+        "hasBanner": "banner" in media_kinds,
         "isPrivate": bool(first and first.get("visibility") == "private"),
-    })
+    }
+    if ap_settings is not None:
+        result["fediverse"] = {"settings": ap_settings}
+    return json_response(result)
 
 
 async def repo_mirrors_handler(env, request, owner, repo):
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
     await ensure_schema(env)
+    # Public, poll-heavy payload (repo page + desktop mirror panel): serve
+    # from the edge for a few seconds so a burst of viewers costs one build.
+    cache_key = ("https://forkmesh.internal/api/repo/%s/%s/mirrors"
+                 % (quote(str(owner or "")), quote(str(repo or ""))))
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
     rows = await d1_all(
         env,
         "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0"
@@ -2998,12 +4779,20 @@ async def repo_mirrors_handler(env, request, owner, repo):
     }
     # Recent owner-attested state pins, so the payload can mark which mirrors
     # the clone integrity gate is rejecting (same gathering as _state_pins).
+    # Scoped to this request's catalog group — the old full-table scan read
+    # every repo's pin history on every /mirrors poll.
     history = {}
-    hist_rows = await d1_all(
-        env, "SELECT key_bi, state_hash FROM repo_state_history")
-    for r in hist_rows:
-        history.setdefault(str(r.get("key_bi") or ""), []).append(
-            r.get("state_hash"))
+    group_keys = [str(r.get("key_bi") or "") for r in catalog_rows
+                  if r.get("key_bi")]
+    if group_keys:
+        hist_rows = await d1_all(
+            env,
+            "SELECT key_bi, state_hash FROM repo_state_history"
+            " WHERE key_bi IN (%s)" % ",".join("?" for _ in group_keys),
+            *group_keys)
+        for r in hist_rows:
+            history.setdefault(str(r.get("key_bi") or ""), []).append(
+                r.get("state_hash"))
     payload = build_repo_mirrors_payload(
         owner,
         repo,
@@ -3017,12 +4806,14 @@ async def repo_mirrors_handler(env, request, owner, repo):
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
-    return json_response(payload)
+    response = json_response(payload, cache_seconds=10)
+    await edge_cache_put(cache_key, response)
+    return response
 
 
 # --- Release download counts -------------------------------------------------
 
-async def record_release_download(env, repo_bi, sha256):
+async def record_release_download(env, repo_bi, sha256, ua=""):
     """Log one completed release-asset download. Best-effort; never raises —
     called fire-and-forget from the streaming DO response, so a D1 hiccup must
     never fail or delay the download itself."""
@@ -3030,8 +4821,8 @@ async def record_release_download(env, repo_bi, sha256):
         await ensure_schema(env)
         await d1_run(
             env,
-            "INSERT INTO release_downloads (repo_bi, sha256, ts) VALUES (?, ?, ?)",
-            repo_bi, sha256, int(Date.now()),
+            "INSERT INTO release_downloads (repo_bi, sha256, ts, ua) VALUES (?, ?, ?, ?)",
+            repo_bi, sha256, int(Date.now()), ua,
         )
     except Exception:
         pass
@@ -3155,13 +4946,49 @@ async def touch_registered_node(env, name_bi, rec=None):
     # merely browsing stale profiles would keep abandoned nodes alive forever.
     if not name_bi:
         return
-    if rec and clean_string(rec.get("pubkey", ""), 120):
+    if (rec and clean_string(rec.get("pubkey", ""), 120)
+            and name_bi not in _MIRRORED_ACCOUNT_BIS):
+        # First touch this isolate: full mirror repair (also stamps last_seen).
         await _mirror_account_identity_tables(
             env, name_bi, rec, touch_seen=True)
+        if len(_MIRRORED_ACCOUNT_BIS) < 10000:
+            _MIRRORED_ACCOUNT_BIS.add(name_bi)
         return
+    # Mirror already repaired this isolate (or no rec): the 1-statement
+    # last_seen stamp is all a heartbeat/connect needs — the full mirror
+    # rewrite (2 encrypts + 2 upserts) on every beat helped melt the free
+    # plan on 2026-07-11.
     await d1_run(
         env, "UPDATE nodes SET last_seen=? WHERE node_bi=?",
         int(Date.now()), name_bi)
+
+
+async def _account_identity_rec_by_bi(env, name_bi):
+    # Authoritative-store fallback for a name_bi lookup once the legacy accounts
+    # row has been drained into the users/nodes tables (admin "make user/node"
+    # and the verified-email migration delete the accounts row after mirroring
+    # the full encrypted record into users/nodes). user_bi and node_bi are both
+    # blind_index(name) — the same value as an account's name_bi — so one key
+    # resolves either table. Returns the decrypted record, or None.
+    if not name_bi:
+        return None
+    row = await d1_first(env, "SELECT data FROM users WHERE user_bi=?", name_bi)
+    if not row:
+        row = await d1_first(env, "SELECT data FROM nodes WHERE node_bi=?", name_bi)
+    if not row:
+        return None
+    return await decrypt_row(env, row.get("data"))
+
+
+# name_bis whose users/nodes mirror this isolate already repaired. The mirror
+# rewrite costs 1-2 encrypt_row + 2 upserts, and hot handlers reach
+# _account_row 2-3x per request (_owner_pubkey, _authorize_owner,
+# touch_registered_node) — repeating it on every READ was a top contributor
+# to the 2026-07-11 free-plan CPU overload. Write paths call
+# _mirror_account_identity_tables directly (via _save_account), so a stale
+# entry here can never mask a real update; a recycled isolate simply repairs
+# once more.
+_MIRRORED_ACCOUNT_BIS = set()
 
 
 async def _account_row(env, name):
@@ -3171,13 +4998,17 @@ async def _account_row(env, name):
         "SELECT data, email_bi, ip_bi, is_admin FROM accounts WHERE name_bi=?",
         name_bi)
     if not row:
-        return name_bi, None
+        # The accounts table is legacy: once a record has been migrated into the
+        # users/nodes tables its accounts row is deleted, so fall back to those.
+        return name_bi, await _account_identity_rec_by_bi(env, name_bi)
     rec = await decrypt_row(env, row["data"])
-    if rec:
+    if rec and name_bi not in _MIRRORED_ACCOUNT_BIS:
         try:
             await _mirror_account_identity_tables(
                 env, name_bi, rec, email_bi=row.get("email_bi"),
                 ip_bi=row.get("ip_bi"), is_admin=row.get("is_admin", 0))
+            if len(_MIRRORED_ACCOUNT_BIS) < 10000:
+                _MIRRORED_ACCOUNT_BIS.add(name_bi)
         except Exception:
             # Public account reads must not fail just because the derived
             # users/nodes mirror table needs repair; the encrypted accounts row
@@ -3293,7 +5124,10 @@ async def _basic_auth_push_ok(env, owner, repo, request):
     if not ts or not sig:
         return False
     if username and username != owner:
-        return False
+        # A non-owner username selects the org-team path (issue #388): the
+        # pusher signs with their OWN key and must hold write+ permission on
+        # the repo through an organization it is linked under.
+        return await verify_org_push_token(env, username, owner, repo, ts, sig)
     return await verify_push_token(env, owner, repo, ts, sig)
 
 
@@ -3571,6 +5405,16 @@ async def _move_repo_namespace(env, old_owner_bi, old_owner, new_owner_bi,
                  owner_bi=excluded.owner_bi, data=excluded.data,
                  is_private=excluded.is_private""",
             new_repo_bi, new_owner_bi, enc, int(row.get("is_private") or 0))
+        await _contribution_move_repo_namespace(
+            env,
+            old_repo_bi,
+            new_repo_bi,
+            old_owner_bi,
+            new_owner_bi,
+            new_owner,
+            repo,
+            rec,
+        )
         await _move_repo_shares(env, old_repo_bi, new_repo_bi, new_owner, repo)
         # Carry the attested pin history to the new namespace so mirrors of a
         # renamed source keep clearing the integrity gate without waiting for
@@ -3633,6 +5477,11 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
         env, "SELECT data, email_bi, ip_bi, is_admin FROM accounts WHERE name_bi=?",
         name_bi)
     if not account_row:
+        # Legacy accounts row already drained into the users table.
+        account_row = await d1_first(
+            env, "SELECT data, email_bi, ip_bi, is_admin FROM users WHERE user_bi=?",
+            name_bi)
+    if not account_row:
         return name_bi, rec, "invalid_credentials"
 
     move_error = await _move_repo_namespace(
@@ -3652,6 +5501,8 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
         env, name_bi, old_name, new_name_bi, new_name)
     if move_error:
         return name_bi, rec, move_error
+    await _contribution_retarget_linked_nodes(
+        env, name_bi, old_name, new_name_bi, new_name)
     await d1_run(
         env, "UPDATE account_presence SET name_bi=? WHERE name_bi=?",
         new_name_bi, name_bi)
@@ -3669,6 +5520,24 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
         new_name_bi, new_name, name_bi)
     await d1_run(
         env, "UPDATE catalog_rate SET owner_bi=? WHERE owner_bi=?",
+        new_name_bi, name_bi)
+    await d1_run(
+        env,
+        "UPDATE profile_contribution_days SET subject_user_bi=? "
+        "WHERE subject_user_bi=?",
+        new_name_bi, name_bi)
+    await d1_run(
+        env,
+        "UPDATE profile_contribution_languages SET owner_user_bi=? "
+        "WHERE owner_user_bi=?",
+        new_name_bi, name_bi)
+    await d1_run(
+        env,
+        "UPDATE profile_contribution_projects SET owner_user_bi=? "
+        "WHERE owner_user_bi=?",
+        new_name_bi, name_bi)
+    await d1_run(
+        env, "UPDATE account_devices SET account_bi=? WHERE account_bi=?",
         new_name_bi, name_bi)
     await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
@@ -3688,6 +5557,18 @@ async def _delete_bounties_namespace(env, owner, repo):
 
 
 async def _delete_repo_scoped_state(env, repo_bi):
+    await d1_run(
+        env, "DELETE FROM profile_contribution_days WHERE source_repo_bi=?",
+        repo_bi)
+    await d1_run(
+        env, "DELETE FROM profile_contribution_languages WHERE source_repo_bi=?",
+        repo_bi)
+    await d1_run(
+        env, "DELETE FROM profile_contribution_receipts WHERE source_repo_bi=?",
+        repo_bi)
+    await d1_run(
+        env, "DELETE FROM profile_contribution_projects WHERE source_repo_bi=?",
+        repo_bi)
     await d1_run(env, "DELETE FROM repo_shares WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM issue_inbox WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM pull_inbox WHERE repo_bi=?", repo_bi)
@@ -3697,6 +5578,11 @@ async def _delete_repo_scoped_state(env, repo_bi):
     await d1_run(env, "DELETE FROM clone_rr WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM repo_first_hosted WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM repo_agents WHERE repo_bi=?", repo_bi)
+    # Invalidate the per-isolate agent-snapshot digest: a re-published repo
+    # gets the same deterministic repo_bi back, and a memoized digest would
+    # otherwise make the desktop's identical re-push a silent no-op forever
+    # (empty repo_agents while the desktop believes its sessions published).
+    _AGENT_PUSH_DIGESTS.pop(repo_bi, None)
     await d1_run(env, "DELETE FROM agent_prompts WHERE repo_bi=?", repo_bi)
 
 
@@ -3728,6 +5614,8 @@ async def _delete_repo_namespace(env, owner_bi, owner):
 async def _delete_account_namespace(env, name_bi, rec):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     email = clean_string(rec.get("email", ""), 254).strip().lower()
+    await _contribution_retarget_linked_nodes(
+        env, name_bi, name, None, "")
     await _delete_repo_namespace(env, name_bi, name)
     await d1_run(env, "DELETE FROM repo_shares WHERE grantee_bi=?", name_bi)
     await d1_run(env, "DELETE FROM account_presence WHERE name_bi=?", name_bi)
@@ -3735,6 +5623,30 @@ async def _delete_account_namespace(env, name_bi, rec):
     await d1_run(env, "DELETE FROM notifications WHERE recipient_bi=?", name_bi)
     await d1_run(env, "DELETE FROM profile_follows WHERE follower_bi=? OR target_bi=?", name_bi, name_bi)
     await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", name_bi)
+    await d1_run(
+        env,
+        "DELETE FROM profile_contribution_days WHERE subject_user_bi=? OR "
+        "source_repo_bi IN (SELECT source_repo_bi FROM "
+        "profile_contribution_projects WHERE owner_user_bi=?)",
+        name_bi, name_bi)
+    await d1_run(
+        env,
+        "DELETE FROM profile_contribution_languages WHERE owner_user_bi=? OR "
+        "source_repo_bi IN (SELECT source_repo_bi FROM "
+        "profile_contribution_projects WHERE owner_user_bi=?)",
+        name_bi, name_bi)
+    await d1_run(
+        env,
+        "DELETE FROM profile_contribution_receipts WHERE source_repo_bi IN "
+        "(SELECT source_repo_bi FROM profile_contribution_projects "
+        "WHERE owner_user_bi=?)",
+        name_bi)
+    await d1_run(
+        env,
+        "DELETE FROM profile_contribution_projects WHERE owner_user_bi=?",
+        name_bi)
+    await d1_run(
+        env, "DELETE FROM account_devices WHERE account_bi=?", name_bi)
     if email:
         email_bi = await blind_index(env, email)
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
@@ -3748,6 +5660,31 @@ def _owned_nodes(rec):
     if not isinstance(nodes, list):
         return []
     return [n for n in nodes if isinstance(n, str) and n]
+
+
+async def _account_owns_node(env, actor, node_name):
+    """True when the logged-in account `actor` may act AS the repo owner
+    `node_name`. A repo's owner is a NODE account, but the human logs in with
+    the linked USER account (adhoc #53 claim/link), whose name differs — so an
+    owner-gated web action must resolve that link, not string-compare names.
+
+    Ownership is recorded on both sides by _link_node_to_user: the node record
+    carries `owner` = <user name>, and the user record's `nodes` list carries
+    the node name. Either side is accepted (tolerate one being stale)."""
+    actor = str(actor or "").strip().lower()
+    node_name = str(node_name or "").strip().lower()
+    if not actor or not node_name:
+        return False
+    if actor == node_name:
+        return True
+    _, node_rec = await _account_row(env, node_name)
+    if node_rec and str(node_rec.get("owner", "")).strip().lower() == actor:
+        return True
+    _, actor_rec = await _account_row(env, actor)
+    if actor_rec and node_name in {
+            n.strip().lower() for n in _owned_nodes(actor_rec)}:
+        return True
+    return False
 
 
 def _clean_profile_timezone(raw):
@@ -3908,6 +5845,7 @@ def _account_profile_fields(rec):
         "profileLocation": location,
         "profileTimezone": timezone,
         "profilePrivate": bool(rec.get("profile_private")),
+        "followersPublic": bool(rec.get("profile_followers_public")),
         "mastodon": mastodon,
         "mastodonUrl": _mastodon_url(mastodon),
         "profileLinks": _profile_links_public(rec),
@@ -4071,188 +6009,6 @@ async def _account_users_directory(env, request):
     return json_response({"ok": True, "users": out})
 
 
-def _public_profile_html(profile, host):
-    name = clean_string(profile.get("name", ""), MAX_NODE_NAME).lower()
-    bio = profile.get("profileBio", "")
-    about = profile.get("profileAbout", "")
-    location = profile.get("profileLocation", "")
-    timezone = profile.get("profileTimezone", "")
-    links = profile.get("profileLinks", [])
-    mastodon = profile.get("mastodon", "")
-    mastodon_url = profile.get("mastodonUrl", "")
-    avatar = profile.get("avatarPng", "")
-    social = profile.get("social", {})
-    followers = int(social.get("followers", 0) or 0)
-    following = int(social.get("following", 0) or 0)
-    mirror_count = int(social.get("mirrorCount", 0) or 0)
-    initial = (name[:1] or "F").upper()
-    link_rows = []
-    for link in links:
-        badge = (
-            '<span class="verified">Verified</span>'
-            if link.get("verified") else
-            '<span class="unverified">Unverified</span>'
-        )
-        label = link.get("label") or link.get("domain") or link.get("url")
-        link_rows.append(
-            '<a class="profile-link" href="' + _html_escape(link.get("url", "")) +
-            '" rel="me noopener" target="_blank"><span><strong>' +
-            _html_escape(label) + '</strong><small>' +
-            _html_escape(link.get("domain", "")) + '</small></span>' + badge + '</a>'
-        )
-    mastodon_html = ""
-    if mastodon and mastodon_url:
-        mastodon_html = (
-            '<a class="mastodon" href="' + _html_escape(mastodon_url) +
-            '" rel="me noopener" target="_blank">' + _html_escape(mastodon) + '</a>'
-        )
-    avatar_html = (
-        '<img class="avatar" src="data:image/png;base64,' + _html_escape(avatar) +
-        '" alt="' + _html_escape(name) + ' avatar">'
-        if avatar else '<div class="avatar avatar-fallback">' + _html_escape(initial) + '</div>'
-    )
-    canonical = "https://" + host + "/@" + quote(name)
-    meta_rows = []
-    if location:
-        meta_rows.append('<span>' + _html_escape(location) + '</span>')
-    if timezone:
-        meta_rows.append('<span data-timezone="' + _html_escape(timezone) + '">' + _html_escape(timezone) + '</span>')
-    about_html = (
-        '<section class="about"><h2>About yourself</h2><p>' +
-        _html_escape(about).replace("\n", "<br>") + '</p></section>'
-        if about else ""
-    )
-    return """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>@%s - ForkMesh</title>
-  <link rel="canonical" href="%s">
-  <style>
-    :root { color-scheme: dark light; --bg:#09090b; --card:#111113; --fg:#f4f4f5; --muted:#a1a1aa; --border:#27272a; --accent:#4ade80; }
-    @media (prefers-color-scheme: light) { :root { --bg:#f6f8fb; --card:#fff; --fg:#0f172a; --muted:#64748b; --border:#e2e8f0; --accent:#16a34a; } }
-    body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    main { width:min(46rem, calc(100vw - 32px)); border:1px solid var(--border); background:var(--card); border-radius:12px; padding:28px; box-shadow:0 20px 60px rgba(0,0,0,.22); }
-    header { display:flex; gap:16px; align-items:center; }
-    .avatar { width:72px; height:72px; border-radius:18px; object-fit:cover; border:1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); }
-    .avatar-fallback { display:grid; place-items:center; background:color-mix(in srgb, var(--accent) 14%, transparent); color:var(--accent); font-weight:700; font-size:28px; }
-    h1 { margin:0; font-size:28px; line-height:1.1; letter-spacing:0; }
-    .handle, .bio, small { color:var(--muted); }
-    .bio { margin:22px 0 0; white-space:pre-wrap; font-size:15px; }
-    .stats, .meta { display:flex; flex-wrap:wrap; gap:12px; margin-top:16px; color:var(--muted); }
-    .stats strong { color:var(--fg); }
-    .about { margin-top:24px; border:1px solid var(--border); border-radius:8px; padding:16px; }
-    .about h2 { margin:0 0 10px; font-size:14px; }
-    .about p { margin:0; white-space:pre-wrap; color:var(--fg); }
-    .mastodon { display:inline-flex; margin-top:8px; color:var(--accent); text-decoration:none; }
-    .links { display:grid; gap:10px; margin-top:24px; }
-    .profile-link { display:flex; align-items:center; justify-content:space-between; gap:14px; border:1px solid var(--border); border-radius:8px; padding:12px; color:var(--fg); text-decoration:none; }
-    .profile-link:hover { border-color:color-mix(in srgb, var(--accent) 48%, var(--border)); }
-    .profile-link span { display:grid; min-width:0; }
-    .profile-link strong, .profile-link small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .verified, .unverified { flex-shrink:0; border:1px solid var(--border); border-radius:999px; padding:2px 8px; font-size:11px; color:var(--muted); }
-    .verified { border-color:color-mix(in srgb, var(--accent) 45%, var(--border)); color:var(--accent); }
-    .follow { display:grid; gap:8px; margin-top:20px; border:1px solid var(--border); border-radius:8px; padding:12px; }
-    .follow-row { display:flex; flex-wrap:wrap; gap:8px; }
-    input { min-width:0; flex:1 1 11rem; border:1px solid var(--border); border-radius:8px; background:transparent; color:var(--fg); padding:8px 10px; }
-    button { border:1px solid color-mix(in srgb, var(--accent) 48%, var(--border)); border-radius:8px; background:color-mix(in srgb, var(--accent) 16%, transparent); color:var(--fg); padding:8px 12px; font-weight:700; cursor:pointer; }
-    footer { margin-top:24px; color:var(--muted); font-size:12px; }
-    footer a { color:var(--muted); }
-  </style>
-</head>
-<body>
-  <main>
-    <header>%s<div><h1>@%s</h1><div class="handle">%s</div>%s</div></header>
-    <div class="stats"><span><strong>%s</strong> followers</span><span><strong>%s</strong> following</span><span><strong>%s</strong> mirrors</span></div>
-    <div class="meta">%s</div>
-    %s
-    %s
-    <section class="links">%s</section>
-    <form class="follow" data-follow-form>
-      <strong>Follow @%s</strong>
-      <div class="follow-row">
-        <button type="submit">Follow</button>
-      </div>
-      <small data-follow-status>Log in to ForkMesh to follow this profile.</small>
-    </form>
-    <footer><a href="/">ForkMesh</a></footer>
-  </main>
-  <script>
-    (() => {
-      const form = document.querySelector("[data-follow-form]");
-      const status = document.querySelector("[data-follow-status]");
-      let session = null;
-      try {
-        session = JSON.parse(localStorage.getItem("forkmesh.session") || "null");
-        if (session && session.nodeName === "%s") form.hidden = true;
-      } catch (_) {}
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        if (!session || !session.sessionToken) {
-          status.textContent = "Log in before following this profile.";
-          return;
-        }
-        status.textContent = "Saving follow...";
-        const response = await fetch("/api/accounts/%s/follow", {
-          method: "POST",
-          headers: { "content-type": "application/json", accept: "application/json" },
-          body: JSON.stringify({ sessionToken: session.sessionToken }),
-        });
-        const body = await response.json().catch(() => ({}));
-        status.textContent = response.ok ? "Following @" + "%s" + "." : (body.error || "Could not follow this profile.");
-      });
-    })();
-  </script>
-</body>
-</html>""" % (
-        _html_escape(name), _html_escape(canonical), avatar_html,
-        _html_escape(name), _html_escape(canonical), mastodon_html,
-        _html_escape(followers), _html_escape(following), _html_escape(mirror_count),
-        "".join(meta_rows),
-        ('<p class="bio">' + _html_escape(bio) + '</p>') if bio else "",
-        about_html,
-        "".join(link_rows),
-        _html_escape(name), _html_escape(name), _html_escape(quote(name)),
-        _html_escape(name),
-    )
-
-
-async def _public_profile_payload(env, rec, request):
-    url = urlparse(request.url)
-    viewer = clean_string(parse_qs(url.query).get("viewer", [""])[0], MAX_NODE_NAME).lower()
-    name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
-    fields = _account_profile_fields(rec)
-    social = await _account_social_counts(env, name, viewer)
-    return {
-        "name": name,
-        "avatarPng": rec.get("avatar_png", ""),
-        "social": social,
-        **social,
-        **fields,
-    }
-
-
-async def public_profile_handler(env, request, username):
-    name = clean_string(username, MAX_NODE_NAME).lower()
-    if not valid_node_name(name):
-        return json_response({"error": "not_found"}, status=404)
-    _, rec = await _account_row(env, name)
-    if (not rec or rec.get("status") != "active" or
-            _account_kind(rec) != "user" or bool(rec.get("profile_private"))):
-        return json_response({"error": "not_found"}, status=404)
-    host = clean_string(urlparse(request.url).netloc, 253)
-    profile = await _public_profile_payload(env, rec, request)
-    return Response(
-        _public_profile_html(profile, host),
-        status=200,
-        headers={
-            "content-type": "text/html; charset=utf-8",
-            "cache-control": "no-store",
-        },
-    )
-
-
 def _donation_expiry_fields(rec, now):
     try:
         created = int(rec.get("donation_created_at") or rec.get("created_at") or now)
@@ -4385,6 +6141,10 @@ async def _account_signup(env, request):
         return json_response({"error": "valid_email_required"}, status=400)
     if len(password) < 8:
         return json_response({"error": "password_too_short"}, status=400)
+    # Same org-namespace guard as _account_reserve (issue #388).
+    _, org_holder = await _org_row(env, name)
+    if org_holder:
+        return json_response({"error": "node_name_taken"}, status=409)
 
     name_bi, existing = await _account_row(env, name)
     if existing and (existing.get("status") == "active" or
@@ -4394,8 +6154,19 @@ async def _account_signup(env, request):
 
     email_bi = await blind_index(env, email)
     dup = await d1_first(env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
+    if not dup:
+        dup = await d1_first(
+            env, "SELECT user_bi AS name_bi FROM users WHERE email_bi=?", email_bi)
     if dup and dup.get("name_bi") != name_bi:
         return json_response({"error": "email_taken"}, status=409)
+
+    # Per-IP account-creation throttle (checked only once the name/email are
+    # otherwise creatable, so a rejected duplicate doesn't burn the quota).
+    signup_ip = (_signup_metadata(request).get("ip") or "").strip()
+    throttled = await signup_rate_check(
+        env, await blind_index(env, signup_ip) if signup_ip else None)
+    if throttled is not None:
+        return throttled
 
     salt, phash = await hash_password(password)
     rec = existing or {}
@@ -4432,6 +6203,10 @@ async def _account_password_record(env, data):
     if "@" in identifier:
         email_bi = await blind_index(env, identifier)
         row = await d1_first(env, "SELECT name_bi, data FROM accounts WHERE email_bi=?", email_bi)
+        if not row:
+            row = await d1_first(
+                env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
+                email_bi)
         if row:
             name_bi = row.get("name_bi", "")
             rec = await decrypt_row(env, row.get("data"))
@@ -4460,9 +6235,11 @@ async def _account_follow(env, request, target_name, method):
     target = clean_string(target_name, MAX_NODE_NAME).lower()
     if not valid_node_name(target):
         return json_response({"error": "not_found"}, status=404)
+    # Any active, non-private account is followable — node accounts included,
+    # matching the fediverse layer (_ap_user_federates) and the public
+    # user-or-org page, which both treat the node name as a public identity.
     target_bi, target_rec = await _account_row(env, target)
     if (not target_rec or target_rec.get("status") != "active" or
-            _account_kind(target_rec) != "user" or
             bool(target_rec.get("profile_private"))):
         return json_response({"error": "not_found"}, status=404)
 
@@ -4501,6 +6278,12 @@ async def _account_reserve(env, request):
     signature = clean_string(data.get("sig", ""), 200)
     if not valid_node_name(name):
         return json_response({"error": "invalid_node_name"}, status=400)
+    # Org names share the /<name>/<repo> URL namespace (issue #388): a name an
+    # organization holds can never become a node name, or the org-alias URL
+    # rewrite would be ambiguous.
+    _, org_holder = await _org_row(env, name)
+    if org_holder:
+        return json_response({"error": "node_name_taken"}, status=409)
 
     name_bi, existing = await _account_row(env, name)
     if existing:
@@ -4964,6 +6747,10 @@ async def _account_finalize(env, request):
         email_bi = await blind_index(env, email)
         dup = await d1_first(
             env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
+        if not dup:
+            dup = await d1_first(
+                env, "SELECT user_bi AS name_bi FROM users WHERE email_bi=?",
+                email_bi)
         if dup and dup.get("name_bi") != name_bi:
             return json_response({"error": "email_taken"}, status=409)
         salt, phash = await hash_password(password)
@@ -5021,7 +6808,8 @@ async def _account_profile(env, request):
         return json_response({"error": "invalid_json"}, status=400)
     public_profile_fields = {
         "avatarPng", "profileBio", "profileAbout", "profileReadme",
-        "profileLocation", "profileTimezone", "profilePrivate", "mastodon",
+        "profileLocation", "profileTimezone", "profilePrivate",
+        "followersPublic", "mastodon",
         "profileLinks", "nodeName", "email", "identifier", "sessionToken",
     }
     session_bi, session_rec = await _account_session_record(env, request, data)
@@ -5041,6 +6829,10 @@ async def _account_profile(env, request):
         if "@" in identifier:
             email_bi = await blind_index(env, identifier)
             row = await d1_first(env, "SELECT name_bi, data FROM accounts WHERE email_bi=?", email_bi)
+            if not row:
+                row = await d1_first(
+                    env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
+                    email_bi)
             if row:
                 name_bi = row.get("name_bi", "")
                 rec = await decrypt_row(env, row.get("data"))
@@ -5058,6 +6850,13 @@ async def _account_profile(env, request):
         return json_response({"ok": True, "accountDeleted": True})
 
     changed = False
+    # The Person actor doc only ever surfaces the bio and the profile-private
+    # federation gate (_ap_build_actor_doc), so remember just those: the
+    # Update(Person) broadcast below must not fire for payout/avatar/
+    # notification tweaks — every no-op broadcast fans out one delivery per
+    # follower server and pulls a rel=me refetch storm back at us.
+    fed_before = (rec.get("profile_bio", ""), bool(rec.get("profile_private")),
+                  bool(rec.get("profile_followers_public")))
     if "solana" in data:
         solana = clean_string(data.get("solana", ""), 64).strip()
         if solana and not SOLANA_RE.match(solana):
@@ -5150,6 +6949,15 @@ async def _account_profile(env, request):
                 rec.pop("profile_private", None)
             changed = True
 
+    if "followersPublic" in data:
+        followers_public = bool(data.get("followersPublic"))
+        if bool(rec.get("profile_followers_public")) != followers_public:
+            if followers_public:
+                rec["profile_followers_public"] = True
+            else:
+                rec.pop("profile_followers_public", None)
+            changed = True
+
     if "mastodon" in data:
         raw_mastodon = clean_string(data.get("mastodon", ""), 120).strip()
         mastodon = _clean_mastodon_handle(raw_mastodon)
@@ -5216,6 +7024,16 @@ async def _account_profile(env, request):
 
     if changed:
         await _save_account(env, name_bi, rec)
+        # Fediverse followers of this profile get an Update(Person) so bio
+        # changes propagate to remote servers immediately — but only when a
+        # federated field actually changed (see fed_before above).
+        fed_after = (rec.get("profile_bio", ""),
+                     bool(rec.get("profile_private")),
+                     bool(rec.get("profile_followers_public")))
+        if fed_after != fed_before:
+            await _best_effort_inbox_side_effect(_ap_broadcast_actor_update(
+                env, request, AP_ACTOR_USER,
+                clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()))
     payload = await _account_public_payload(env, rec)
     payload["verificationSent"] = bool(verification_sent)
     payload["verificationQueued"] = bool(verification_queued)
@@ -5289,6 +7107,10 @@ async def _resolve_user_by_password(env, data):
         email_bi = await blind_index(env, identifier)
         row = await d1_first(
             env, "SELECT name_bi, data FROM accounts WHERE email_bi=?", email_bi)
+        if not row:
+            row = await d1_first(
+                env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
+                email_bi)
         if row:
             name_bi = row.get("name_bi", "")
             rec = await decrypt_row(env, row.get("data"))
@@ -5710,25 +7532,110 @@ async def _login_clear(env, id_bi):
 
 DESKTOP_NODE_CAPABILITIES = "browse,comment,submit_issue,submit_pr,host_repo,mirror_repo,publish_repo,owner_sign"
 CLIENT_CAPABILITIES = "browse,comment,submit_issue,submit_pr"
+CONTRIBUTION_KEY_PROOF_CAPABILITY = "contribution_key_proof"
 
 
-async def _register_account_device(env, account_bi, pubkey, kind="desktop_node", label=""):
+def _device_bind_canonical(account, pubkey, timestamp):
+    account = account.strip().lower() if isinstance(account, str) else ""
+    if not valid_node_name(account) or not valid_node_pubkey(pubkey):
+        raise ValueError("invalid device bind identity")
+    if (not isinstance(timestamp, str) or not timestamp.isdigit()
+            or len(timestamp) > 16 or str(int(timestamp)) != timestamp):
+        raise ValueError("invalid device bind timestamp")
+    return (
+        "forkmesh-device-bind-v1\n" + account + "\n" + pubkey + "\n"
+        + timestamp
+    ).encode()
+
+
+async def _device_proven_user_bis(env, pubkey):
+    rows = await d1_all(
+        env,
+        """WITH proven_device_users(user_bi) AS (
+               SELECT COALESCE(NULLIF(user_bi, ''), node_bi)
+                 FROM nodes WHERE pubkey=?
+               UNION ALL
+               SELECT COALESCE(NULLIF(owner_node.user_bi, ''),
+                               account_devices.account_bi)
+                 FROM account_devices
+                LEFT JOIN nodes AS owner_node
+                   ON owner_node.node_bi=account_devices.account_bi
+                WHERE account_devices.pubkey=?
+                  AND instr(',' || account_devices.capabilities || ',',
+                            ',contribution_key_proof,') > 0
+             )
+             SELECT DISTINCT user_bi FROM proven_device_users
+              WHERE user_bi IS NOT NULL AND user_bi != ''""",
+        pubkey, pubkey,
+    )
+    return {row.get("user_bi") for row in rows if row.get("user_bi")}
+
+
+async def _device_retire_unproven_claims(env, account_bi, pubkey):
+    await d1_run(
+        env,
+        "DELETE FROM account_devices WHERE pubkey=? AND account_bi!=? "
+        "AND instr(',' || capabilities || ',', "
+        "',contribution_key_proof,')=0",
+        pubkey, account_bi,
+    )
+
+
+async def _register_account_device(
+        env, account_bi, pubkey, kind="desktop_node", label="",
+        proof_verified=False, target_user_bi=None):
     if not account_bi or not pubkey:
         return None
     device_bi = await blind_index(env, account_bi + ":" + pubkey)
     now = int(Date.now())
     capabilities = DESKTOP_NODE_CAPABILITIES if kind == "desktop_node" else CLIENT_CAPABILITIES
-    await d1_run(
-        env,
-        """INSERT INTO account_devices
-             (device_bi, account_bi, pubkey, kind, label, capabilities, enabled,
-              created_at, last_seen, revoked_at)
-             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 0)
-             ON CONFLICT(device_bi) DO UPDATE SET
-               last_seen=excluded.last_seen,
-               enabled=CASE WHEN account_devices.revoked_at=0 THEN 1 ELSE account_devices.enabled END""",
-        device_bi, account_bi, pubkey, kind, label, capabilities, now, now,
-    )
+    if proof_verified:
+        capabilities += "," + CONTRIBUTION_KEY_PROOF_CAPABILITY
+    base_args = (
+        device_bi, account_bi, pubkey, kind, label, capabilities, now, now)
+    if proof_verified:
+        target_user_bi = target_user_bi or account_bi
+        await d1_run(
+            env,
+            """INSERT INTO account_devices
+                 (device_bi, account_bi, pubkey, kind, label, capabilities,
+                  enabled, created_at, last_seen, revoked_at)
+                 SELECT ?, ?, ?, ?, ?, ?, 1, ?, ?, 0
+                  WHERE NOT EXISTS (
+                    SELECT 1 FROM nodes
+                     WHERE pubkey=?
+                       AND COALESCE(NULLIF(user_bi, ''), node_bi) != ?)
+                    AND NOT EXISTS (
+                    SELECT 1 FROM account_devices AS proven_claim
+                    LEFT JOIN nodes AS claim_owner
+                      ON claim_owner.node_bi=proven_claim.account_bi
+                     WHERE proven_claim.pubkey=?
+                       AND instr(',' || proven_claim.capabilities || ',',
+                                 ',contribution_key_proof,') > 0
+                       AND COALESCE(NULLIF(claim_owner.user_bi, ''),
+                                    proven_claim.account_bi) != ?)
+                 /* atomic_device_proof_claim */
+                 ON CONFLICT(device_bi) DO UPDATE SET
+                   last_seen=excluded.last_seen,
+                   capabilities=excluded.capabilities,
+                   enabled=CASE WHEN account_devices.revoked_at=0
+                                THEN 1 ELSE account_devices.enabled END""",
+            *base_args, pubkey, target_user_bi, pubkey, target_user_bi,
+        )
+    else:
+        await d1_run(
+            env,
+            """INSERT INTO account_devices
+                 (device_bi, account_bi, pubkey, kind, label, capabilities,
+                  enabled, created_at, last_seen, revoked_at)
+                 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 0)
+                 ON CONFLICT(device_bi) DO UPDATE SET
+                   last_seen=excluded.last_seen,
+                   capabilities=excluded.capabilities,
+                   enabled=CASE WHEN account_devices.revoked_at=0
+                                THEN 1 ELSE account_devices.enabled END""",
+            *base_args,
+        )
     return {"id": device_bi[:16], "kind": kind, "pubkey": pubkey,
             "capabilities": capabilities.split(",")}
 
@@ -5794,6 +7701,8 @@ async def _account_login(env, request):
     password = (data.get("password", "") or "")[:256]
     totp = clean_string(data.get("totp", ""), 10)
     pubkey = clean_string(data.get("pubkey", ""), 120)
+    device_ts = clean_string(data.get("deviceTs", ""), 20)
+    device_sig = clean_string(data.get("deviceSig", ""), 200)
 
     # Brute-force throttle, keyed by a blind index of the identifier (no plaintext
     # stored). Checked before any account lookup so it also protects nonexistent
@@ -5811,6 +7720,9 @@ async def _account_login(env, request):
         email_bi = await blind_index(env, identifier)
         row = await d1_first(
             env, "SELECT data FROM accounts WHERE email_bi=?", email_bi)
+        if not row:
+            row = await d1_first(
+                env, "SELECT data FROM users WHERE email_bi=?", email_bi)
         if row:
             rec = await decrypt_row(env, row["data"])
     elif valid_node_name(identifier):
@@ -5848,11 +7760,38 @@ async def _account_login(env, request):
     desktop_capable = False
     device_kind = ""
     if pubkey:
+        account_name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+        try:
+            device_canonical = _device_bind_canonical(
+                account_name, pubkey, device_ts)
+        except ValueError:
+            device_canonical = b""
+        if (not device_canonical or not device_sig or not _ts_ok(device_ts)
+                or not await ed25519_verify(
+                    pubkey, device_sig, device_canonical)):
+            return json_response(
+                {"error": "device_proof_required"}, status=401)
+        owner_row = await d1_first(
+            env, "SELECT user_bi FROM nodes WHERE node_bi=?", name_bi)
+        target_user_bi = (owner_row or {}).get("user_bi") or name_bi
+        proven_users = await _device_proven_user_bis(env, pubkey)
+        if any(user_bi != target_user_bi for user_bi in proven_users):
+            return json_response({"error": "device_key_conflict"}, status=409)
+        await _device_retire_unproven_claims(env, name_bi, pubkey)
+        await _register_account_device(
+            env, name_bi, pubkey, "desktop_node",
+            clean_string(data.get("deviceLabel", ""), 120),
+            proof_verified=True, target_user_bi=target_user_bi)
         device = await _account_device_for_pubkey(env, name_bi, pubkey)
-        if not device:
-            device = await _register_account_device(
-                env, name_bi, pubkey, "desktop_node",
-                clean_string(data.get("deviceLabel", ""), 120))
+        final_proven_users = await _device_proven_user_bis(env, pubkey)
+        device_caps = clean_string(
+            (device or {}).get("capabilities", ""), 512).split(",")
+        if (not device
+                or CONTRIBUTION_KEY_PROOF_CAPABILITY not in device_caps
+                or target_user_bi not in final_proven_users
+                or any(user_bi != target_user_bi
+                       for user_bi in final_proven_users)):
+            return json_response({"error": "device_key_conflict"}, status=409)
         if not rec.get("pubkey"):
             rec["pubkey"] = pubkey
             await _save_account(env, name_bi, rec)
@@ -5864,7 +7803,9 @@ async def _account_login(env, request):
         if isinstance(caps, str):
             caps = [c for c in caps.split(",") if c]
         enabled = bool(device.get("enabled", True)) and not bool(device.get("revoked_at", 0)) if device else True
-        desktop_capable = enabled and "owner_sign" in caps
+        primary_key_matched = pubkey == clean_string(rec.get("pubkey", ""), 120)
+        desktop_capable = primary_key_matched and enabled and "owner_sign" in caps
+        session_caps = caps if desktop_capable else CLIENT_CAPABILITIES.split(",")
         device_kind = device.get("kind", "desktop_node") if device else "desktop_node"
         payload = {
             **await _account_public_payload(env, rec),
@@ -5872,7 +7813,8 @@ async def _account_login(env, request):
         }
         payload = _with_session_capabilities(
             payload, session_kind="desktop_node", device_kind=device_kind,
-            key_matched=True, desktop_capable=desktop_capable, capabilities=caps)
+            key_matched=True, desktop_capable=desktop_capable,
+            capabilities=session_caps)
         return json_response(
             payload,
             extra_headers={"Set-Cookie": _admin_session_cookie(env, payload["nodeName"])
@@ -6101,7 +8043,19 @@ async def _account_heartbeat(env, request):
     wallet = rec.get("solana", "")
     balance_lamports = None
     donation_received = False
-    if wallet and SOLANA_RE.match(wallet):
+    # Throttle the external Solana RPC to once per wallet per 5 minutes per
+    # isolate: one subrequest on EVERY 60s heartbeat from every node was pure
+    # overhead (donations are surfaced within minutes either way).
+    now_ms = int(Date.now())
+    # Keyed by account+wallet: accounts sharing a payout wallet must each
+    # keep their own donation-detection baseline.
+    probe_key = str(name_bi) + ":" + wallet
+    last_probe = _HEARTBEAT_BALANCE_PROBES.get(probe_key, 0)
+    if (wallet and SOLANA_RE.match(wallet)
+            and now_ms - last_probe >= HEARTBEAT_SOLANA_BALANCE_MIN_MS):
+        _HEARTBEAT_BALANCE_PROBES[probe_key] = now_ms
+        if len(_HEARTBEAT_BALANCE_PROBES) > 5000:
+            _HEARTBEAT_BALANCE_PROBES.clear()
         try:
             balance_lamports = await asyncio.wait_for(
                 _solana_balance_lamports(env, wallet),
@@ -6151,6 +8105,20 @@ async def _account_heartbeat(env, request):
     elif rec.get("ownership_transfer_pending"):
         rec.pop("ownership_transfer_pending", None)
         await _save_account(env, name_bi, rec)
+    # Accepted peer mirror requests (issue #385) ride back on this node's own
+    # signed heartbeat, the same rail as claim/ownership above: the desktop node
+    # clones each repo it agreed to mirror. It reports the ids it has acted on in
+    # `mirrorRequestsAck` (not part of the signed canonical, like creditsRefilled)
+    # so an accepted request stops being redelivered once the node has it.
+    ack_ids = data.get("mirrorRequestsAck")
+    if isinstance(ack_ids, list) and rec.get("mirror_requests"):
+        remaining = ack_mirror_requests(rec.get("mirror_requests"), ack_ids)
+        if remaining != rec.get("mirror_requests"):
+            rec["mirror_requests"] = remaining
+            await _save_account(env, name_bi, rec)
+    pending_mirrors = accepted_mirror_requests(rec.get("mirror_requests"))
+    if pending_mirrors:
+        response["mirrorRequests"] = pending_mirrors
     return json_response(response)
 
 
@@ -6195,6 +8163,9 @@ async def _online_payout_addresses(env):
     for r in rows:
         row = await d1_first(
             env, "SELECT name, data FROM accounts WHERE name_bi=?", r["name_bi"])
+        if not row:
+            row = await d1_first(
+                env, "SELECT name, data FROM nodes WHERE node_bi=?", r["name_bi"])
         if not row:
             continue
         rec = await decrypt_row(env, row["data"])
@@ -6959,6 +8930,621 @@ async def shares_handler(env, request, owner, repo):
     return json_response({"error": "method_not_allowed"}, status=405)
 
 
+# --- Organizations + teams (issue #388) --------------------------------------
+# Users create organizations, add accounts to them, and group members into
+# teams that hold one repository permission over every repo linked under the
+# org. Org owners/admins administer the org itself and implicitly hold 'admin'
+# repo permission; plain members hold 'read'; team membership raises that to
+# the team's permission. The org name fronts the linked repos' URLs — the
+# /<org>/<repo> git endpoints and /api/repo/<org>/<repo>/... are rewritten to
+# the hosting node's namespace before routing (see org_alias_rewrite), so
+# mirror nodes and clients keep operating on the canonical node namespace
+# while the public URL shows the organization's name.
+
+ORG_ROLES = ("owner", "admin", "member")
+# Repository permission ladder, weakest to strongest (issue #388: read /
+# write / maintain / admin). Tuple order IS the ranking.
+TEAM_PERMISSIONS = ("read", "write", "maintain", "admin")
+MAX_ORGS_PER_ACCOUNT = 10
+MAX_ORG_MEMBERS = 200
+MAX_ORG_TEAMS = 50
+MAX_ORG_REPOS = 200
+
+# Org repo-alias resolution memo: "org/repo" -> (node owner or "", ts),
+# per-isolate so the hot repo/git routes don't pay a D1 read per request
+# (including the common negative case: the owner segment is a plain node
+# name). Short TTL so a new link/unlink takes effect quickly; mutating
+# handlers clear it inline for same-isolate read-your-writes.
+_ORG_ALIAS_MEMO = {}
+ORG_ALIAS_MEMO_TTL_MS = 30 * 1000
+ORG_ALIAS_MEMO_MAX = 512
+
+
+def team_permission_rank(permission):
+    # Index into TEAM_PERMISSIONS, -1 for unknown — so comparisons read as
+    # rank(x) >= rank("write") and an unknown permission never qualifies.
+    try:
+        return TEAM_PERMISSIONS.index((permission or "").strip().lower())
+    except ValueError:
+        return -1
+
+
+async def _org_row(env, org):
+    # (org_bi, orgs row or None) for an org name. org_bi is keyed under an
+    # "org:" prefix so it can never collide with an account blind index.
+    org = (org or "").strip().lower()
+    org_bi = await blind_index(env, "org:" + org)
+    row = await d1_first(
+        env, "SELECT name, data, created_at FROM orgs WHERE org_bi=?", org_bi)
+    return org_bi, row
+
+
+async def _org_role(env, org_bi, account):
+    # The account's role in the org ('owner'/'admin'/'member') or "".
+    if not account:
+        return ""
+    member_bi = await blind_index(env, account)
+    row = await d1_first(
+        env, "SELECT role FROM org_members WHERE org_bi=? AND member_bi=?",
+        org_bi, member_bi)
+    return str((row or {}).get("role") or "")
+
+
+async def _org_permission(env, org_bi, account):
+    # The strongest repository permission `account` holds in the org: role
+    # owner/admin => 'admin', plain membership => 'read', team membership
+    # raises 'read' to the best team's permission. "" for non-members.
+    role = await _org_role(env, org_bi, account)
+    if role in ("owner", "admin"):
+        return "admin"
+    if not role:
+        return ""
+    member_bi = await blind_index(env, account)
+    rows = await d1_all(
+        env,
+        "SELECT t.permission AS permission FROM org_team_members m "
+        "JOIN org_teams t ON t.org_bi = m.org_bi AND t.team = m.team "
+        "WHERE m.org_bi=? AND m.member_bi=?",
+        org_bi, member_bi)
+    best = "read"
+    for row in rows or []:
+        perm = str(row.get("permission") or "")
+        if team_permission_rank(perm) > team_permission_rank(best):
+            best = perm
+    return best
+
+
+async def _org_write_allowed(env, owner, repo, pusher):
+    # True when some org links owner/repo and the pusher holds write-or-better
+    # permission there. Fail closed: any error must never grant push access.
+    if not owner or not repo or not pusher:
+        return False
+    try:
+        await ensure_schema(env)
+        rows = await d1_all(
+            env, "SELECT org_bi FROM org_repos WHERE node_owner=? AND repo=?",
+            owner.lower(), repo.lower())
+        for row in rows or []:
+            perm = await _org_permission(
+                env, str(row.get("org_bi") or ""), pusher)
+            if team_permission_rank(perm) >= team_permission_rank("write"):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+async def verify_org_push_token(env, pusher, owner, repo, ts, sig):
+    # Org-team write gate for git push (issue #388): a member of an org team
+    # with write+ permission on a linked repo may run receive-pack against it,
+    # signing with their OWN key (the node owner never hands out its key).
+    # Distinct canonical prefix so an owner push token or a share-view token
+    # can never be replayed here, and vice versa. owner/repo are the CANONICAL
+    # node namespace — the org alias is rewritten away before the push gate.
+    if not pusher or not owner or not repo or not sig or not _ts_ok(ts):
+        return False
+    if pusher == owner:
+        return False  # the owner authenticates via verify_push_token, not here
+    pubkey = await _owner_pubkey(env, pusher)
+    if not pubkey:
+        return False
+    canonical = ("forkmesh-org-push-v1\n" + pusher + "\n" + owner + "\n" +
+                 repo + "\n" + str(ts)).encode()
+    if not await ed25519_verify(pubkey, sig, canonical):
+        return False
+    return await _org_write_allowed(env, owner, repo, pusher)
+
+
+async def _org_repo_node(env, org, repo):
+    # Node owner serving /<org>/<repo>, or "" when the pair is not a
+    # registered alias. Fail closed on any error: "" simply means "not an org
+    # URL" and the request proceeds unrewritten.
+    org = (org or "").strip().lower()
+    repo = (repo or "").strip().lower()
+    if not org or not repo:
+        return ""
+    now = int(Date.now())
+    key = org + "/" + repo
+    hit = _ORG_ALIAS_MEMO.get(key)
+    if hit and now - hit[1] < ORG_ALIAS_MEMO_TTL_MS:
+        return hit[0]
+    node = ""
+    try:
+        await ensure_schema(env)
+        org_bi = await blind_index(env, "org:" + org)
+        row = await d1_first(
+            env, "SELECT node_owner FROM org_repos WHERE org_bi=? AND repo=?",
+            org_bi, repo)
+        node = str((row or {}).get("node_owner") or "").strip().lower()
+        if not valid_node_name(node) or node == org:
+            node = ""
+    except Exception:
+        return ""
+    if len(_ORG_ALIAS_MEMO) >= ORG_ALIAS_MEMO_MAX:
+        _ORG_ALIAS_MEMO.clear()
+    _ORG_ALIAS_MEMO[key] = (node, now)
+    return node
+
+
+async def org_alias_rewrite(env, request, url):
+    # Organization repo aliases (issue #388): the /<org>/<repo> git endpoints
+    # and every /api/repo/<org>/<repo>/... path serve the linked node's repo
+    # under the organization's name. The rewrite is worker-internal — no
+    # redirect, the org name stays in the address bar and clone URL — and runs
+    # before any route matching, so everything downstream (auth canonicals,
+    # host DO naming, the DO's own path parsing, mirror forwarding, blind
+    # indexes) sees the canonical /<node>/<repo> path exactly as if the node
+    # URL had been requested. Org names can never collide with account names
+    # (both creation paths reject the other namespace), so an existing node's
+    # URL is never rewritten. Returns the rewritten (request, url) or None.
+    match = (REPO_API_PREFIX_RE.match(url.path) or GIT_INFO_RE.match(url.path)
+             or GIT_PACK_RE.match(url.path) or GIT_RECEIVE_RE.match(url.path))
+    if not match:
+        return None
+    owner = safe_segment(match.group(1))
+    repo = safe_segment(match.group(2))
+    if not owner or not repo:
+        return None
+    node = await _org_repo_node(env, owner, repo)
+    if not node:
+        return None
+    new_path = (url.path[:match.start(1)] + quote(node) +
+                url.path[match.end(1):])
+    new_url = url._replace(path=new_path).geturl()
+    return JsRequest.new(str(new_url), request), urlparse(new_url)
+
+
+async def orgs_handler(env, request):
+    # POST /api/orgs creates an organization for the logged-in account (who
+    # becomes its first 'owner' member); GET lists the orgs the session
+    # account belongs to. Org names share the /<name>/<repo> URL namespace
+    # with accounts, so creation rejects any name an account holds — and the
+    # account reserve/signup paths reject org names — keeping the org-alias
+    # URL rewrite collision-free.
+    await ensure_schema(env)
+    method = method_name(request)
+    if method == "GET":
+        account_bi, account_rec = await _account_session_record(env, request)
+        if not account_rec:
+            return json_response({"error": "invalid_session"}, status=401)
+        rows = await d1_all(
+            env,
+            "SELECT o.name AS name, m.role AS role FROM org_members m "
+            "JOIN orgs o ON o.org_bi = m.org_bi WHERE m.member_bi=? "
+            "ORDER BY o.name",
+            account_bi)
+        return json_response({"ok": True, "orgs": [
+            {"name": str(r.get("name") or ""), "role": str(r.get("role") or "")}
+            for r in rows or []]})
+    if method != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    account_bi, account_rec = await _account_session_record(env, request, data)
+    if not account_rec:
+        return json_response({"error": "invalid_session"}, status=401)
+    account = (account_rec.get("name", "") or "").strip().lower()
+    name = clean_string(data.get("name", ""), MAX_NODE_NAME).lower()
+    if not valid_node_name(name):
+        return json_response({"error": "invalid_org_name"}, status=400)
+    # The name must be free in BOTH namespaces: any account row (active or
+    # mid-signup) blocks it, and so does an existing org.
+    _, existing_account = await _account_row(env, name)
+    if existing_account:
+        return json_response({"error": "org_name_taken"}, status=409)
+    org_bi, existing_org = await _org_row(env, name)
+    if existing_org:
+        return json_response({"error": "org_name_taken"}, status=409)
+    owned = await d1_first(
+        env,
+        "SELECT COUNT(*) AS n FROM org_members WHERE member_bi=? AND role='owner'",
+        account_bi)
+    if owned and int(owned.get("n") or 0) >= MAX_ORGS_PER_ACCOUNT:
+        return json_response({"error": "too_many_orgs"}, status=429)
+    now = int(Date.now())
+    enc = await encrypt_row(env, {
+        "name": name,
+        "displayName": clean_string(data.get("displayName", ""), 80),
+        "description": clean_string(data.get("description", ""), 500),
+        "creator": account,
+        "createdAt": now,
+    })
+    await d1_run(
+        env, "INSERT INTO orgs (org_bi, name, data, created_at) VALUES (?,?,?,?)",
+        org_bi, name, enc, now)
+    await d1_run(
+        env,
+        "INSERT OR REPLACE INTO org_members "
+        "(org_bi, member_bi, role, name, created_at) VALUES (?,?,?,?,?)",
+        org_bi, account_bi, "owner", account, now)
+    return json_response({"ok": True, "org": name, "role": "owner"}, status=201)
+
+
+async def org_handler(env, request, org):
+    # GET: public org profile (identity, counts, linked repos — the same
+    # visibility as the public account lookup). DELETE: dissolve the org and
+    # all its rows — org owners only.
+    await ensure_schema(env)
+    method = method_name(request)
+    org_bi, row = await _org_row(env, org)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    if method == "GET":
+        rec = await decrypt_row(env, row.get("data")) or {}
+        members = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM org_members WHERE org_bi=?", org_bi)
+        teams = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM org_teams WHERE org_bi=?", org_bi)
+        repos = await d1_all(
+            env,
+            "SELECT repo, node_owner FROM org_repos WHERE org_bi=? ORDER BY repo",
+            org_bi)
+        _, viewer_rec = await _account_session_record(env, request)
+        viewer = (viewer_rec.get("name", "") if viewer_rec else "").strip().lower()
+        viewer_role = await _org_role(env, org_bi, viewer) if viewer else ""
+        return json_response({
+            "ok": True,
+            "org": str(row.get("name") or ""),
+            "displayName": rec.get("displayName", ""),
+            "description": rec.get("description", ""),
+            "createdAt": int(row.get("created_at") or 0),
+            "members": int((members or {}).get("n") or 0),
+            "teams": int((teams or {}).get("n") or 0),
+            "repos": [{"repo": str(r.get("repo") or ""),
+                       "node": str(r.get("node_owner") or "")}
+                      for r in repos or []],
+            "viewerRole": viewer_role,
+        })
+    if method == "DELETE":
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        _, account_rec = await _account_session_record(env, request, data)
+        account = (account_rec.get("name", "") if account_rec else "").strip().lower()
+        if not account:
+            return json_response({"error": "invalid_session"}, status=401)
+        if await _org_role(env, org_bi, account) != "owner":
+            return json_response({"error": "forbidden"}, status=403)
+        await d1_run(env, "DELETE FROM org_repos WHERE org_bi=?", org_bi)
+        await d1_run(env, "DELETE FROM org_team_members WHERE org_bi=?", org_bi)
+        await d1_run(env, "DELETE FROM org_teams WHERE org_bi=?", org_bi)
+        await d1_run(env, "DELETE FROM org_members WHERE org_bi=?", org_bi)
+        await d1_run(env, "DELETE FROM orgs WHERE org_bi=?", org_bi)
+        _ORG_ALIAS_MEMO.clear()
+        return json_response({"ok": True, "org": str(row.get("name") or ""),
+                              "deleted": True})
+    return json_response({"error": "method_not_allowed"}, status=405)
+
+
+async def org_members_handler(env, request, org):
+    # GET: public roster (plaintext names/roles, the same trust level as
+    # profile_follows). POST: add an account or change its role — this is the
+    # "invite": the new member is notified, like a repo share. DELETE: remove
+    # a member. Writes require an owner/admin session; only owners may grant,
+    # demote, or remove owners/admins, and the last owner can never leave.
+    await ensure_schema(env)
+    method = method_name(request)
+    org_bi, row = await _org_row(env, org)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    org_name = str(row.get("name") or "")
+    if method == "GET":
+        rows = await d1_all(
+            env,
+            "SELECT name, role, created_at FROM org_members WHERE org_bi=? "
+            "ORDER BY created_at ASC",
+            org_bi)
+        return json_response({"ok": True, "members": [
+            {"name": str(r.get("name") or ""),
+             "role": str(r.get("role") or ""),
+             "since": int(r.get("created_at") or 0)}
+            for r in rows or []]})
+    if method not in ("POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    _, account_rec = await _account_session_record(env, request, data)
+    account = (account_rec.get("name", "") if account_rec else "").strip().lower()
+    if not account:
+        return json_response({"error": "invalid_session"}, status=401)
+    caller_role = await _org_role(env, org_bi, account)
+    if caller_role not in ("owner", "admin"):
+        return json_response({"error": "forbidden"}, status=403)
+    member = clean_string(data.get("member", ""), MAX_NODE_NAME).lower()
+    if not member:
+        return json_response({"error": "member_required"}, status=400)
+    member_bi = await blind_index(env, member)
+    existing = await d1_first(
+        env, "SELECT role FROM org_members WHERE org_bi=? AND member_bi=?",
+        org_bi, member_bi)
+    existing_role = str((existing or {}).get("role") or "")
+
+    if method == "DELETE":
+        if not existing:
+            return json_response({"error": "not_found"}, status=404)
+        if existing_role in ("owner", "admin") and caller_role != "owner":
+            return json_response({"error": "forbidden"}, status=403)
+        if existing_role == "owner" and await _org_owner_count(env, org_bi) <= 1:
+            return json_response({"error": "last_owner"}, status=400)
+        await d1_run(
+            env, "DELETE FROM org_team_members WHERE org_bi=? AND member_bi=?",
+            org_bi, member_bi)
+        await d1_run(
+            env, "DELETE FROM org_members WHERE org_bi=? AND member_bi=?",
+            org_bi, member_bi)
+        return json_response({"ok": True, "member": member, "removed": True})
+
+    role = clean_string(data.get("role", "member"), 12).lower() or "member"
+    if role not in ORG_ROLES:
+        return json_response({"error": "bad_role"}, status=400)
+    # Only owners hand out (or take away) the administrative roles.
+    if caller_role != "owner" and (role in ("owner", "admin") or
+                                   existing_role in ("owner", "admin")):
+        return json_response({"error": "forbidden"}, status=403)
+    if (existing_role == "owner" and role != "owner" and
+            await _org_owner_count(env, org_bi) <= 1):
+        return json_response({"error": "last_owner"}, status=400)
+    _, member_rec = await _account_row(env, member)
+    if not member_rec:
+        return json_response({"error": "unknown_account"}, status=404)
+    if not existing:
+        count_row = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM org_members WHERE org_bi=?", org_bi)
+        if count_row and int(count_row.get("n") or 0) >= MAX_ORG_MEMBERS:
+            return json_response({"error": "too_many_members"}, status=429)
+    await d1_run(
+        env,
+        "INSERT INTO org_members (org_bi, member_bi, role, name, created_at) "
+        "VALUES (?,?,?,?,?) ON CONFLICT(org_bi, member_bi) DO UPDATE SET "
+        "role=excluded.role",
+        org_bi, member_bi, role, member, int(Date.now()))
+    if not existing:
+        await enqueue_notification(
+            env, member, "org_invite",
+            account + " added you to the " + org_name + " organization",
+            body="Your role: " + role + ".",
+            actor=account, source="org",
+            dedupe="org-member:" + org_name + ":" + member)
+    return json_response({"ok": True, "member": member, "role": role})
+
+
+async def _org_owner_count(env, org_bi):
+    row = await d1_first(
+        env,
+        "SELECT COUNT(*) AS n FROM org_members WHERE org_bi=? AND role='owner'",
+        org_bi)
+    return int((row or {}).get("n") or 0)
+
+
+async def org_teams_handler(env, request, org):
+    # Teams: named member subsets holding one repository permission over the
+    # org's linked repos. GET lists them (org members only — the permission
+    # layout is org-internal); POST creates a team or updates its permission;
+    # DELETE removes a team. Writes require an owner/admin session.
+    await ensure_schema(env)
+    method = method_name(request)
+    org_bi, row = await _org_row(env, org)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    if method == "GET":
+        _, viewer_rec = await _account_session_record(env, request)
+        viewer = (viewer_rec.get("name", "") if viewer_rec else "").strip().lower()
+        if not viewer or not await _org_role(env, org_bi, viewer):
+            return json_response({"error": "forbidden"}, status=403)
+        rows = await d1_all(
+            env,
+            "SELECT t.team AS team, t.permission AS permission, "
+            "COUNT(m.member_bi) AS members FROM org_teams t "
+            "LEFT JOIN org_team_members m "
+            "ON m.org_bi = t.org_bi AND m.team = t.team "
+            "WHERE t.org_bi=? GROUP BY t.team, t.permission ORDER BY t.team",
+            org_bi)
+        return json_response({"ok": True, "teams": [
+            {"team": str(r.get("team") or ""),
+             "permission": str(r.get("permission") or ""),
+             "members": int(r.get("members") or 0)}
+            for r in rows or []]})
+    if method not in ("POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    _, account_rec = await _account_session_record(env, request, data)
+    account = (account_rec.get("name", "") if account_rec else "").strip().lower()
+    if not account:
+        return json_response({"error": "invalid_session"}, status=401)
+    if await _org_role(env, org_bi, account) not in ("owner", "admin"):
+        return json_response({"error": "forbidden"}, status=403)
+    team = clean_string(data.get("team", ""), MAX_NODE_NAME).lower()
+    if not valid_node_name(team):
+        return json_response({"error": "invalid_team_name"}, status=400)
+    if method == "DELETE":
+        await d1_run(
+            env, "DELETE FROM org_team_members WHERE org_bi=? AND team=?",
+            org_bi, team)
+        await d1_run(
+            env, "DELETE FROM org_teams WHERE org_bi=? AND team=?", org_bi, team)
+        return json_response({"ok": True, "team": team, "deleted": True})
+    permission = clean_string(data.get("permission", "read"), 12).lower() or "read"
+    if permission not in TEAM_PERMISSIONS:
+        return json_response({"error": "bad_permission"}, status=400)
+    existing = await d1_first(
+        env, "SELECT 1 AS one FROM org_teams WHERE org_bi=? AND team=?",
+        org_bi, team)
+    if not existing:
+        count_row = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM org_teams WHERE org_bi=?", org_bi)
+        if count_row and int(count_row.get("n") or 0) >= MAX_ORG_TEAMS:
+            return json_response({"error": "too_many_teams"}, status=429)
+    await d1_run(
+        env,
+        "INSERT INTO org_teams (org_bi, team, permission, created_at) "
+        "VALUES (?,?,?,?) ON CONFLICT(org_bi, team) DO UPDATE SET "
+        "permission=excluded.permission",
+        org_bi, team, permission, int(Date.now()))
+    return json_response({"ok": True, "team": team, "permission": permission})
+
+
+async def org_team_members_handler(env, request, org, team):
+    # Who is on one team. GET is org-member visible; POST adds an EXISTING org
+    # member to the team (team membership can only ever raise a member's
+    # permission, never smuggle in an outsider); DELETE removes. Writes
+    # require an owner/admin session.
+    await ensure_schema(env)
+    method = method_name(request)
+    org_bi, row = await _org_row(env, org)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    team = (team or "").strip().lower()
+    team_row = await d1_first(
+        env, "SELECT permission FROM org_teams WHERE org_bi=? AND team=?",
+        org_bi, team)
+    if not team_row:
+        return json_response({"error": "not_found"}, status=404)
+    if method == "GET":
+        _, viewer_rec = await _account_session_record(env, request)
+        viewer = (viewer_rec.get("name", "") if viewer_rec else "").strip().lower()
+        if not viewer or not await _org_role(env, org_bi, viewer):
+            return json_response({"error": "forbidden"}, status=403)
+        rows = await d1_all(
+            env,
+            "SELECT name, created_at FROM org_team_members "
+            "WHERE org_bi=? AND team=? ORDER BY created_at ASC",
+            org_bi, team)
+        return json_response({
+            "ok": True, "team": team,
+            "permission": str(team_row.get("permission") or ""),
+            "members": [{"name": str(r.get("name") or ""),
+                         "since": int(r.get("created_at") or 0)}
+                        for r in rows or []]})
+    if method not in ("POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    _, account_rec = await _account_session_record(env, request, data)
+    account = (account_rec.get("name", "") if account_rec else "").strip().lower()
+    if not account:
+        return json_response({"error": "invalid_session"}, status=401)
+    if await _org_role(env, org_bi, account) not in ("owner", "admin"):
+        return json_response({"error": "forbidden"}, status=403)
+    member = clean_string(data.get("member", ""), MAX_NODE_NAME).lower()
+    if not member:
+        return json_response({"error": "member_required"}, status=400)
+    member_bi = await blind_index(env, member)
+    if method == "DELETE":
+        await d1_run(
+            env,
+            "DELETE FROM org_team_members WHERE org_bi=? AND team=? AND member_bi=?",
+            org_bi, team, member_bi)
+        return json_response({"ok": True, "team": team, "member": member,
+                              "removed": True})
+    if not await _org_role(env, org_bi, member):
+        return json_response({"error": "not_a_member"}, status=400)
+    await d1_run(
+        env,
+        "INSERT OR IGNORE INTO org_team_members "
+        "(org_bi, team, member_bi, name, created_at) VALUES (?,?,?,?,?)",
+        org_bi, team, member_bi, member, int(Date.now()))
+    return json_response({"ok": True, "team": team, "member": member,
+                          "added": True})
+
+
+async def org_repos_handler(env, request, org):
+    # The alias map behind /<org>/<repo> URLs. GET is public routing data.
+    # POST links a repo: the caller must be an org owner/admin AND the linked
+    # node namespace must be the caller's own account — you can only bring
+    # your own node's published repos under an org, so an org can never
+    # hijack another node's URL. DELETE unlinks (owner/admin).
+    await ensure_schema(env)
+    method = method_name(request)
+    org_bi, row = await _org_row(env, org)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    if method == "GET":
+        rows = await d1_all(
+            env,
+            "SELECT repo, node_owner FROM org_repos WHERE org_bi=? ORDER BY repo",
+            org_bi)
+        return json_response({"ok": True, "repos": [
+            {"repo": str(r.get("repo") or ""),
+             "node": str(r.get("node_owner") or "")}
+            for r in rows or []]})
+    if method not in ("POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    _, account_rec = await _account_session_record(env, request, data)
+    account = (account_rec.get("name", "") if account_rec else "").strip().lower()
+    if not account:
+        return json_response({"error": "invalid_session"}, status=401)
+    if await _org_role(env, org_bi, account) not in ("owner", "admin"):
+        return json_response({"error": "forbidden"}, status=403)
+    repo = safe_segment(clean_string(data.get("repo", ""), MAX_REPO_SEGMENT))
+    repo = (repo or "").lower()
+    if not repo:
+        return json_response({"error": "repo_required"}, status=400)
+    if method == "DELETE":
+        await d1_run(
+            env, "DELETE FROM org_repos WHERE org_bi=? AND repo=?", org_bi, repo)
+        _ORG_ALIAS_MEMO.clear()
+        return json_response({"ok": True, "repo": repo, "linked": False})
+    node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower() or account
+    if node != account:
+        return json_response({"error": "not_your_node"}, status=403)
+    key_bi = await blind_index(env, node + "/" + repo)
+    published = await d1_first(
+        env, "SELECT 1 AS one FROM repositories WHERE key_bi=?", key_bi)
+    if not published:
+        return json_response({"error": "unknown_repo"}, status=404)
+    existing = await d1_first(
+        env, "SELECT 1 AS one FROM org_repos WHERE org_bi=? AND repo=?",
+        org_bi, repo)
+    if not existing:
+        count_row = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM org_repos WHERE org_bi=?", org_bi)
+        if count_row and int(count_row.get("n") or 0) >= MAX_ORG_REPOS:
+            return json_response({"error": "too_many_repos"}, status=429)
+    await d1_run(
+        env,
+        "INSERT INTO org_repos (org_bi, repo, node_owner, created_at) "
+        "VALUES (?,?,?,?) ON CONFLICT(org_bi, repo) DO UPDATE SET "
+        "node_owner=excluded.node_owner",
+        org_bi, repo, node, int(Date.now()))
+    _ORG_ALIAS_MEMO.clear()
+    return json_response({"ok": True, "repo": repo, "node": node,
+                          "linked": True})
+
+
 # --- Admins + manual email verification -------------------------------------
 # A user is "set as administrator" via the accounts.is_admin column in the DB
 # (UPDATE accounts SET is_admin=1 WHERE name='<node>'). Admins' clients are
@@ -6966,8 +9552,11 @@ async def shares_handler(env, request, owner, repo):
 # until an email service (e.g. SES) is wired up.
 
 async def _is_admin(env, name):
-    # Admin status lives entirely in the accounts table's is_admin column. Grant
-    # it directly in the DB: UPDATE accounts SET is_admin=1 WHERE name='<node>'.
+    # Admin status lives in the is_admin column, on the legacy accounts row while
+    # it exists and mirrored onto the authoritative users row. Grant it directly
+    # in the DB: UPDATE accounts SET is_admin=1 WHERE name='<node>' (or the same
+    # on users once the account has migrated). Falls back to users so a migrated
+    # admin keeps their grant.
     name = (name or "").strip().lower()
     if not name:
         return False
@@ -6975,6 +9564,9 @@ async def _is_admin(env, name):
     try:
         row = await d1_first(
             env, "SELECT is_admin FROM accounts WHERE name_bi=?", name_bi)
+        if not row:
+            row = await d1_first(
+                env, "SELECT is_admin FROM users WHERE user_bi=?", name_bi)
     except Exception:
         return False  # column may predate migration 0006
     return bool(row and int(row.get("is_admin", 0) or 0))
@@ -7126,43 +9718,150 @@ async def _send_verification_email(env, request, name, email):
             "What was confusing, missing, or most useful as you got started? "
             "Send feedback to " + feedback_email + ".\n\n"
             "If you did not create this account, you can ignore this email.")
-    html = (
-        "<div style=\"margin:0;padding:28px 16px;background:#090909;"
-        "font-family:'ForkMesh Lato',-apple-system,BlinkMacSystemFont,"
-        "Segoe UI,Helvetica,Arial,sans-serif;color:#f5f5f5;line-height:1.55\">"
-        "<div style=\"max-width:560px;margin:0 auto;border:1px solid #313134;"
-        "border-radius:8px;background:#141416;padding:24px\">"
-        "<p style=\"margin:0 0 22px;color:#a3a3a3;font-size:13px;"
-        "letter-spacing:0;font-weight:700\">ForkMesh</p>"
-        "<h1 style=\"margin:0 0 14px;color:#f5f5f5;font-size:24px;"
-        "line-height:1.25;font-weight:800\">Welcome to ForkMesh</h1>"
-        "<p style=\"margin:0 0 18px;color:#d4d4d8;font-size:15px\">Hi "
-        "<strong style=\"color:#f5f5f5\">" + safe_name + "</strong>, confirm "
-        "your email to finish setting up your account.</p>"
+    intro = ("Hi <strong class=\"fm-strong\" style=\"color:#f5f5f5\">" + safe_name +
+              "</strong>, confirm your email to finish setting up your account.")
+    body_html = (
         "<p style=\"margin:0 0 22px\"><a href=\"" + safe_link + "\" "
         "style=\"display:inline-block;background:#4ade80;color:#052e16;"
         "text-decoration:none;border-radius:8px;padding:10px 14px;"
         "font-size:14px;font-weight:800\">Confirm your email</a></p>"
-        "<div style=\"border-top:1px solid #313134;padding-top:18px;"
+        "<div class=\"fm-border\" style=\"border-top:1px solid #313134;padding-top:18px;"
         "margin-top:4px\">"
-        "<p style=\"margin:0 0 10px;color:#f5f5f5;font-size:15px;"
+        "<p class=\"fm-strong\" style=\"margin:0 0 10px;color:#f5f5f5;font-size:15px;"
         "font-weight:700\">Next steps</p>"
-        "<p style=\"margin:0 0 8px;color:#d4d4d8;font-size:14px\">Read the "
-        "<a href=\"" + docs_url + "\" style=\"color:#4ade80;"
+        "<p class=\"fm-text\" style=\"margin:0 0 8px;color:#d4d4d8;font-size:14px\">Read the "
+        "<a href=\"" + docs_url + "\" class=\"fm-link\" style=\"color:#4ade80;"
         "text-decoration:none\">ForkMesh docs</a>.</p>"
-        "<p style=\"margin:0 0 18px;color:#d4d4d8;font-size:14px\">Browse "
-        "<a href=\"" + blogs_url + "\" style=\"color:#4ade80;"
+        "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#d4d4d8;font-size:14px\">Browse "
+        "<a href=\"" + blogs_url + "\" class=\"fm-link\" style=\"color:#4ade80;"
         "text-decoration:none\">product notes and guides</a>.</p>"
-        "<p style=\"margin:0;color:#a3a3a3;font-size:14px\">What was confusing, "
+        "<p class=\"fm-muted\" style=\"margin:0;color:#a3a3a3;font-size:14px\">What was confusing, "
         "missing, or most useful as you got started? Send feedback to "
-        "<a href=\"mailto:" + feedback_email + "\" style=\"color:#4ade80;"
+        "<a href=\"mailto:" + feedback_email + "\" class=\"fm-link\" style=\"color:#4ade80;"
         "text-decoration:none\">" + feedback_email + "</a>.</p>"
-        "</div>"
-        "<p style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">If you did "
-        "not create this account, you can ignore this email.</p>"
-        "</div>"
         "</div>")
+    footer_html = (
+        "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">If you did "
+        "not create this account, you can ignore this email.</p>")
+    html = _forkmesh_email_card_html("Welcome to ForkMesh", intro, body_html, footer_html)
     return await _send_email(env, email, subject, text, html)
+
+
+# --- "How are we doing?" founder feedback email -------------------------------
+#
+# Sent ONCE per user account, ~24h after signup, from founders@forkmesh.com so
+# a plain reply lands with the founders. The feedback_email_sends row is both
+# the once-only guard and the admin-visible send log; it is claimed BEFORE the
+# send (and released on a definite failure) so a crash can never double-send.
+# Existing accounts older than 24h are naturally back-filled by the same
+# eligibility rule on the first runs after deploy.
+
+FEEDBACK_EMAIL_DELAY_MS = 24 * 60 * 60 * 1000
+FEEDBACK_EMAIL_BATCH = 8            # per hourly cron tick, bounds subrequests
+FEEDBACK_EMAIL_SCAN = 200           # accounts examined per tick
+FEEDBACK_EMAIL_FROM = "founders@forkmesh.com"
+FEEDBACK_EMAIL_FROM_NAME = "ForkMesh Founders"
+
+
+def _feedback_email_content(name):
+    subject = "How's ForkMesh treating you, %s?" % name
+    text = (
+        "Hey %s,\n\n"
+        "You joined ForkMesh yesterday — thank you for giving it a shot. "
+        "We're a small team building this in the open, and honest answers "
+        "from real users steer what we build next.\n\n"
+        "Three quick questions (one-line answers are perfect):\n\n"
+        "1. What brought you to ForkMesh — and did it do the thing you came for?\n"
+        "2. What's been confusing, broken, or slower than it should be?\n"
+        "3. If we could build or fix ONE thing for you next, what would it be?\n\n"
+        "Anything else on your mind — rough edges, wild ideas, dealbreakers — "
+        "we want that too.\n\n"
+        "Just hit reply; this address goes straight to the founders and we "
+        "read and answer every message.\n\n"
+        "— the ForkMesh founders\n" % name)
+    intro = (
+        "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#d4d4d8;font-size:14px\">"
+        "Hey <strong class=\"fm-strong\" style=\"color:#f5f5f5\">@" + _html_escape(name) +
+        "</strong> — you joined ForkMesh yesterday. Thank you for giving it a "
+        "shot. We're a small team building this in the open, and honest answers "
+        "from real users steer what we build next.</p>")
+    body_html = (
+        "<div class=\"fm-item\" style=\"background:#141416;border:1px solid #313134;"
+        "border-radius:10px;padding:16px 18px\">"
+        "<p class=\"fm-item-title\" style=\"margin:0 0 12px;color:#f5f5f5;font-size:14px;"
+        "font-weight:700\">Three quick questions (one-line answers are perfect)</p>"
+        "<p class=\"fm-item-body\" style=\"margin:0 0 10px;color:#d4d4d8;font-size:14px\">"
+        "1. What brought you to ForkMesh — and did it do the thing you came for?</p>"
+        "<p class=\"fm-item-body\" style=\"margin:0 0 10px;color:#d4d4d8;font-size:14px\">"
+        "2. What's been confusing, broken, or slower than it should be?</p>"
+        "<p class=\"fm-item-body\" style=\"margin:0;color:#d4d4d8;font-size:14px\">"
+        "3. If we could build or fix ONE thing for you next, what would it be?</p>"
+        "</div>"
+        "<p class=\"fm-text\" style=\"margin:18px 0 0;color:#d4d4d8;font-size:14px\">"
+        "Anything else on your mind — rough edges, wild ideas, dealbreakers — "
+        "we want that too.</p>"
+        "<p class=\"fm-text\" style=\"margin:12px 0 0;color:#d4d4d8;font-size:14px\">"
+        "<strong class=\"fm-strong\" style=\"color:#f5f5f5\">Just hit reply</strong> — "
+        "this address goes straight to the founders and we read and answer "
+        "every message.</p>")
+    footer_html = (
+        "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">"
+        "— the ForkMesh founders</p>")
+    html = _forkmesh_email_card_html("How are we doing?", intro, body_html,
+                                     footer_html)
+    return subject, text, html
+
+
+async def _send_feedback_emails(env):
+    now = int(Date.now())
+    # Accounts with no send row yet; the LEFT JOIN keeps re-scans cheap as the
+    # sent set grows. Eligibility (user kind, active, verified email, 24h old)
+    # lives in the encrypted record, so decrypt a bounded batch per tick.
+    rows = await d1_all(
+        env,
+        "SELECT a.name_bi, a.data FROM accounts a"
+        " LEFT JOIN feedback_email_sends f ON f.account_bi = a.name_bi"
+        " WHERE f.account_bi IS NULL LIMIT ?",
+        FEEDBACK_EMAIL_SCAN)
+    sent = 0
+    for row in rows or []:
+        if sent >= FEEDBACK_EMAIL_BATCH:
+            break
+        rec = await decrypt_row(env, row.get("data"))
+        if not rec or rec.get("status") != "active":
+            continue
+        if _account_kind(rec) != "user":
+            continue
+        email = clean_string(rec.get("email", "") or "", 254).strip()
+        if not email or not rec.get("email_verified"):
+            continue
+        try:
+            created = int(rec.get("created_at") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not created or now - created < FEEDBACK_EMAIL_DELAY_MS:
+            continue
+        name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+        if not name:
+            continue
+        # Claim first so a crash mid-send can never double-send; release the
+        # claim on a definite send failure so the next tick retries.
+        await d1_run(
+            env,
+            "INSERT OR IGNORE INTO feedback_email_sends"
+            " (account_bi, name, sent_at) VALUES (?,?,?)",
+            row.get("name_bi"), name, now)
+        subject, text, html = _feedback_email_content(name)
+        ok = await _send_email(env, email, subject, text, html,
+                               from_email=FEEDBACK_EMAIL_FROM,
+                               from_name=FEEDBACK_EMAIL_FROM_NAME)
+        if ok:
+            sent += 1
+        else:
+            await d1_run(
+                env, "DELETE FROM feedback_email_sends WHERE account_bi=?",
+                row.get("name_bi"))
+    return sent
 
 
 async def _password_reset_token(env, name, email, pass_hash, expires):
@@ -7191,13 +9890,20 @@ async def _send_password_reset_email(env, request, name, email, pass_hash):
             "\".\n\nOpen this link to choose a new password:\n" + link +
             "\n\nThis link expires in 1 hour. If you didn't request a reset, "
             "you can ignore this email — your password won't change.")
-    html = (
-        "<p>A password reset was requested for your ForkMesh node "
-        "<strong>" + name + "</strong>.</p>"
-        "<p><a href=\"" + link + "\">Choose a new password</a></p>"
-        "<p style=\"color:#888;font-size:13px\">This link expires in 1 hour. "
-        "If you didn't request a reset, you can ignore this email — your "
+    safe_name = _html_escape(name or "")
+    safe_link = _html_escape(link)
+    intro = ("A password reset was requested for your ForkMesh node "
+              "<strong class=\"fm-strong\" style=\"color:#f5f5f5\">" + safe_name + "</strong>.")
+    body_html = (
+        "<p style=\"margin:0 0 22px\"><a href=\"" + safe_link + "\" "
+        "style=\"display:inline-block;background:#4ade80;color:#052e16;"
+        "text-decoration:none;border-radius:8px;padding:10px 14px;"
+        "font-size:14px;font-weight:800\">Choose a new password</a></p>")
+    footer_html = (
+        "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">This link "
+        "expires in 1 hour. If you didn't request a reset, you can ignore this email — your "
         "password won't change.</p>")
+    html = _forkmesh_email_card_html("Reset your password", intro, body_html, footer_html)
     return await _send_email(env, email, subject, text, html)
 
 
@@ -7455,6 +10161,9 @@ async def _account_forgot_password(env, request):
             email_bi = await blind_index(env, identifier)
             row = await d1_first(
                 env, "SELECT data FROM accounts WHERE email_bi=?", email_bi)
+            if not row:
+                row = await d1_first(
+                    env, "SELECT data FROM users WHERE email_bi=?", email_bi)
             if row:
                 rec = await decrypt_row(env, row.get("data"))
         elif valid_node_name(identifier):
@@ -7511,7 +10220,13 @@ async def _account_reset_password(env, request):
 
 
 def _verify_email_page(message, status):
-    body = ("<!doctype html><meta charset=utf-8><title>ForkMesh email</title>"
+    # color-scheme: light dark lets the browser render its default light or
+    # dark canvas to match the visitor's OS preference (no site CSS needed on
+    # this one-line confirmation page).
+    body = ("<!doctype html><meta charset=utf-8>"
+            "<meta name=\"color-scheme\" content=\"light dark\">"
+            "<script src=\"/posthog.js\"></script>"
+            "<title>ForkMesh email</title>"
             "<body style=\"font-family:system-ui,sans-serif;max-width:32rem;"
             "margin:4rem auto;padding:0 1rem;line-height:1.5\">" + message +
             "</body>")
@@ -7637,17 +10352,27 @@ async def _call_main_relay(env, path, body_dict):
     headers = await _relay_sign_headers(env, body_str)
     if not headers:
         return None
-    try:
-        resp = await js_fetch(base + path, to_js(
-            {"method": "POST", "headers": headers, "body": body_str}))
-        text = await resp.text()
-        data = json.loads(text) if text else {}
-        if not isinstance(data, dict):
+
+    async def _post(target_path):
+        try:
+            resp = await js_fetch(base + target_path, to_js(
+                {"method": "POST", "headers": headers, "body": body_str}))
+            text = await resp.text()
+            data = json.loads(text) if text else {}
+            if not isinstance(data, dict):
+                return None
+            data["_status"] = int(getattr(resp, "status", 0))
+            return data
+        except Exception:
             return None
-        data["_status"] = int(getattr(resp, "status", 0))
-        return data
-    except Exception:
-        return None
+
+    # Callers still pass the legacy /api/federation/* names; prefer the
+    # canonical /api/relay-mesh/* route and fall back once for a main relay
+    # that hasn't been redeployed with the alias yet.
+    reply = await _post(path.replace("/api/federation/", "/api/relay-mesh/", 1))
+    if reply is None or reply.get("_status") == 404:
+        reply = await _post(path)
+    return reply
 
 
 async def _verify_relay_sig(env, request, body_str):
@@ -7833,10 +10558,16 @@ async def _federation_nodes(env, request):
 
 
 async def federation_handler(env, request):
+    # Solana payout relay mesh. Canonical routes live under /api/relay-mesh/*;
+    # /api/federation/* is the legacy alias kept so not-yet-updated federated
+    # relays keep working (normalized to the legacy names matched below).
     await ensure_schema(env)
     url = urlparse(request.url)
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
+    if url.path.startswith("/api/relay-mesh/"):
+        url = url._replace(path=url.path.replace(
+            "/api/relay-mesh/", "/api/federation/", 1))
     if url.path == "/api/federation/register":
         return await _federation_register(env, request)
     if url.path == "/api/federation/donation-address":
@@ -7959,6 +10690,9 @@ async def _federation_report_nodes(env):
     for r in (rows or []):
         row = await d1_first(
             env, "SELECT data FROM accounts WHERE name_bi=?", r["name_bi"])
+        if not row:
+            row = await d1_first(
+                env, "SELECT data FROM nodes WHERE node_bi=?", r["name_bi"])
         if not row:
             continue
         rec = await decrypt_row(env, row["data"])
@@ -8221,6 +10955,10 @@ async def accounts_handler(env, request):
         return await _admin_relays(env, request)
     if url.path == "/api/accounts/admin-relay-approve" and method == "POST":
         return await _admin_relay_approve(env, request)
+    if url.path == "/api/accounts/admin-ap" and method == "GET":
+        return await _admin_ap_settings(env, request)
+    if url.path == "/api/accounts/admin-ap-update" and method == "POST":
+        return await _admin_ap_update(env, request)
     if url.path == "/api/accounts/admin-request-ownership" and method == "POST":
         return await _admin_request_ownership(env, request)
     if url.path == "/api/accounts/ownership-transfer-confirm" and method == "POST":
@@ -8251,14 +10989,41 @@ async def accounts_handler(env, request):
         return await _account_link_grant(env, request)
     if url.path == "/api/accounts/users" and method == "GET":
         return await _account_users_directory(env, request)
+    contributions_match = ACCOUNT_CONTRIBUTIONS_RE.match(url.path)
+    if contributions_match and method == "GET":
+        return await _contribution_profile_api(
+            env, request, contributions_match.group(1))
     follow_match = ACCOUNT_FOLLOW_RE.match(url.path)
     if follow_match and method in ("POST", "DELETE"):
         return await _account_follow(env, request, follow_match.group(1), method)
     match = ACCOUNTS_RE.match(url.path)
     if match and method == "GET":
         name = clean_string(match.group(1), MAX_NODE_NAME).lower()
-        _, rec = await _account_row(env, name)
+        # The viewer-less lookup is what every /@name view, fediverse
+        # click-through and dashboard page boot fires, and it cost 6-8 D1
+        # ops (record decrypt + admin check + three follow COUNTs + mirror
+        # count + presence) per hit: park the guest variant at the edge.
+        # viewer=<name> responses stay per-caller (isFollowing) and skip the
+        # cache; _ap_broadcast_actor_update purges the key on profile edits.
+        viewer_less = "viewer" not in parse_qs(urlparse(request.url).query)
+        lookup_cache_key = ACCOUNT_LOOKUP_CACHE_PREFIX + quote(name)
+        if viewer_less:
+            cached = await edge_cache_match(lookup_cache_key)
+            if cached is not None:
+                return cached
+        # Now that users and nodes are separate tables, this public profile
+        # lookup reads from those authoritative per-kind stores instead of the
+        # legacy accounts table. accounts is only consulted as a fallback for
+        # records not yet mirrored into users/nodes — e.g. a reserved name with
+        # no pubkey, which the mirror intentionally keeps out of users/nodes so
+        # the signup availability check below can still see the name as taken.
+        name_bi = await blind_index(env, name)
+        rec = await _account_identity_rec_by_bi(env, name_bi)
+        if rec is None:
+            _, rec = await _account_row(env, name)
         if not rec:
+            # Availability misses are deliberately uncached: the signup
+            # form's name check must see a just-taken name immediately.
             return json_response(
                 {"ok": True, "exists": False, "available": True, "name": name})
         # Public lookup never returns email/secret material. A name is only
@@ -8275,6 +11040,16 @@ async def accounts_handler(env, request):
         # periodic self-profile poll (refreshPublicProfile, which reuses this
         # same lookup) can pick up a verification that happened in another
         # tab instead of showing "verify your email" forever (issue #320).
+        kind = _account_kind(rec)
+        online = False
+        if kind == "node":
+            # account_presence is the same heartbeat table the network page
+            # uses for online/offline; the /@name node page shows it as
+            # node-specific info the way a user page shows followers.
+            presence = await d1_first(
+                env, "SELECT ts FROM account_presence WHERE name_bi=?", name_bi)
+            online = bool(presence and int(presence.get("ts") or 0) >=
+                          int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS)
         payload = {"ok": True, "exists": True, "available": not taken,
                    "name": rec.get("name", name), "status": rec.get("status", ""),
                    "pubkey": rec.get("pubkey", ""),
@@ -8283,17 +11058,2065 @@ async def accounts_handler(env, request):
                    "avatarPng": rec.get("avatar_png", ""),
                    "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
                    "createdAt": rec.get("created_at", 0),
-                   "kind": _account_kind(rec),
+                   "kind": kind,
+                   "online": online,
                    "owner": rec.get("owner", ""),
                    "nodes": _owned_nodes(rec)}
-        social = await _account_social_counts(env, rec.get("name", name))
+        # viewer=<name> lets the public-profile page show the caller's own
+        # Follow/Following state. Display-only: a spoofed viewer can only see
+        # a wrong button label; actual follow writes are session-token gated.
+        viewer = clean_string(
+            parse_qs(urlparse(request.url).query).get("viewer", [""])[0],
+            MAX_NODE_NAME).lower()
+        social = await _account_social_counts(
+            env, rec.get("name", name), viewer)
         payload = {**payload, "social": social, **social}
         payload = {**payload, **_account_profile_fields(rec)}
+        if viewer_less:
+            resp = json_response(payload, cache_seconds=60)
+            await edge_cache_put(lookup_cache_key, resp)
+            return resp
         return json_response(payload)
     return json_response({"error": "not_found"}, status=404)
 
 
 # --- Repository submission inboxes (encrypted) ------------------------------
+
+# =============================================================================
+# --- ActivityPub federation (fediverse interop) -------------------------------
+#
+# Makes local users (@alice@<domain>) and repositories (@owner.repo@<domain>)
+# followable from Mastodon-compatible servers, publishes signed-inbox events
+# (issues, PR/discussion/commit activity) plus owner-pushed announcements
+# (releases, merges) as Notes to followers, and ingests remote replies as
+# clearly-marked "federated comments" — kept OUTSIDE the Ed25519-signed event
+# log, since a fediverse reply can never carry a forkmesh author signature.
+#
+# Wire compatibility follows Mastodon/Wildebeest: RSA-2048 actor keys published
+# as publicKeyPem, draft-cavage HTTP signatures over
+# "(request-target) host date digest content-type", Digest: SHA-256=<b64>.
+# Delivery is queue-free (free plan): a publish inserts one ap_outbox row per
+# unique destination inbox, best-effort drains a few inline via the request,
+# and the per-minute cron drains the backlog with capped exponential backoff.
+# Operator configuration lives in ap_settings/ap_blocked_domains, managed via
+# the signed admin API (/api/accounts/admin-ap, /api/accounts/admin-ap-update):
+# a global enable switch plus a remote-domain blocklist (defederation).
+# The Solana payout relay mesh is a separate system at /api/relay-mesh/*
+# (legacy alias /api/federation/*); the fediverse layer lives under /ap/*.
+# =============================================================================
+
+AP_ACTOR_USER = "user"
+AP_ACTOR_REPO = "repo"
+AP_ACTOR_INSTANCE = "instance"
+AP_INSTANCE_HANDLE = "instance"
+AP_MAX_INBOX_BYTES = 128 * 1024
+AP_MAX_COMMENTS_PER_THREAD = 500
+AP_MAX_FOLLOWERS_PER_ACTOR = 5000
+# The `first` page embedded directly in a followers/following collection
+# (collection_doc) — a fixed cap keeps the response small even for popular
+# actors instead of paginating with next/prev links.
+AP_COLLECTION_PAGE_SIZE = 200
+AP_REMOTE_ACTOR_TTL_MS = 24 * 60 * 60 * 1000
+AP_DATE_SKEW_MS = 12 * 60 * 60 * 1000
+# Inline sends per publish; the rest waits for the cron drain. Kept small so a
+# signed-inbox POST never burns its subrequest budget on fediverse fan-out.
+AP_IMMEDIATE_DELIVERIES = 5
+AP_CRON_DELIVERIES = 20
+AP_FEDI_KINDS = ("issue", "pull", "discussion", "commit", "release")
+# Fediverse repo mentions ("@owner.repo@host please fix X") that Workers AI
+# classifies as issue requests become issue-inbox submissions. Images from the
+# post ride along the same channel as a no-write-access node's screenshots
+# (attachmentData), so the per-file cap must stay within
+# MAX_ISSUE_ATTACHMENT_BYTES; the count cap bounds the media subrequests one
+# inbound activity can trigger.
+AP_MENTION_MAX_IMAGES = 4
+AP_MENTION_MAX_IMAGE_BYTES = 1 * 1024 * 1024
+# Media types worth attaching, mapped to the extensions
+# ISSUE_ATTACHMENT_NAME_RE accepts (the desktop materializes these files).
+AP_MENTION_IMAGE_EXTS = {
+    "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
+    "image/webp": "webp", "image/bmp": "bmp", "image/svg+xml": "svg",
+}
+# Brand images served from Static Assets, shown as every actor's avatar and
+# profile header on Mastodon-compatible servers.
+AP_AVATAR_PATH = "/assets/fediverse-avatar.png"
+AP_BANNER_PATH = "/assets/fediverse-banner.png"
+
+_AP_RSA_ALG = {"name": "RSASSA-PKCS1-v1_5", "hash": "SHA-256"}
+
+
+def _ap_origin(env, request=None):
+    # Absolute https origin for actor/object ids. PUBLIC_BASE_URL wins (set on
+    # self-hosted relays); otherwise the request's own host; cron falls back to
+    # the canonical production domain.
+    base = (getattr(env, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+    if base.startswith("https://") or base.startswith("http://"):
+        return base
+    if request is not None:
+        try:
+            host = urlparse(request.url).netloc
+            if host:
+                return "https://" + host
+        except Exception:
+            pass
+    return "https://forkmesh.com"
+
+
+def _ap_domain_of(origin):
+    return origin.split("://", 1)[-1]
+
+
+# Operator configuration (admin-managed via /api/accounts/admin-ap*): a global
+# on/off switch plus the remote-domain blocklist. Cached per isolate briefly so
+# every /ap request and publish hook doesn't re-read two tables.
+_AP_SETTINGS_CACHE = {"ts": 0, "enabled": True, "blocked": set()}
+AP_SETTINGS_TTL_MS = 60 * 1000
+
+
+async def _ap_settings(env, fresh=False):
+    now = int(Date.now())
+    if not fresh and now - _AP_SETTINGS_CACHE["ts"] < AP_SETTINGS_TTL_MS:
+        return _AP_SETTINGS_CACHE
+    row = await d1_first(env, "SELECT v FROM ap_settings WHERE k='enabled'")
+    enabled = (row or {}).get("v", "1") != "0"
+    rows = await d1_all(env, "SELECT domain FROM ap_blocked_domains")
+    blocked = {r.get("domain", "") for r in (rows or []) if r.get("domain")}
+    _AP_SETTINGS_CACHE.update({"ts": now, "enabled": enabled,
+                               "blocked": blocked})
+    return _AP_SETTINGS_CACHE
+
+
+async def _ap_enabled(env):
+    return (await _ap_settings(env))["enabled"]
+
+
+async def _ap_domain_blocked(env, host):
+    return ap.domain_blocked_by(host, (await _ap_settings(env))["blocked"])
+
+
+def _ap_disabled_response():
+    return json_response({"error": "not_found"}, status=404)
+
+
+def _ap_actor_url(origin, kind, handle):
+    if kind == AP_ACTOR_INSTANCE:
+        return origin + ap.INSTANCE_ACTOR_PATH
+    if kind == AP_ACTOR_USER:
+        return origin + ap.user_actor_path(handle)
+    owner, _, repo = handle.partition(".")
+    return origin + ap.repo_actor_path(owner, repo)
+
+
+def _ap_uuid():
+    raw = js_crypto.getRandomValues(Uint8Array.new(16))
+    return bytes(raw.to_py()).hex()
+
+
+async def _ap_generate_keypair():
+    params = to_js({"name": "RSASSA-PKCS1-v1_5", "modulusLength": 2048,
+                    "hash": "SHA-256"})
+    params.publicExponent = _to_js(bytes([1, 0, 1]))  # 65537
+    pair = await js_crypto.subtle.generateKey(
+        params, True, _to_js(["sign", "verify"]))
+    spki = await js_crypto.subtle.exportKey("spki", pair.publicKey)
+    pkcs8 = await js_crypto.subtle.exportKey("pkcs8", pair.privateKey)
+    pub_pem = ap.pem_wrap(
+        "PUBLIC KEY",
+        base64.b64encode(bytes(Uint8Array.new(spki).to_py())).decode())
+    priv_b64 = base64.b64encode(bytes(Uint8Array.new(pkcs8).to_py())).decode()
+    return pub_pem, priv_b64
+
+
+async def _ap_rsa_sign_b64(priv_b64, text):
+    key = await js_crypto.subtle.importKey(
+        "pkcs8", _to_js(base64.b64decode(priv_b64)), to_js(_AP_RSA_ALG),
+        False, _to_js(["sign"]))
+    sig = await js_crypto.subtle.sign(
+        to_js({"name": "RSASSA-PKCS1-v1_5"}), key, _to_js(text.encode()))
+    return base64.b64encode(bytes(Uint8Array.new(sig).to_py())).decode()
+
+
+async def _ap_rsa_verify(pub_pem, sig_b64, text):
+    try:
+        der = base64.b64decode(ap.pem_body(pub_pem))
+        signature = base64.b64decode(sig_b64)
+    except Exception:
+        return False
+    try:
+        key = await js_crypto.subtle.importKey(
+            "spki", _to_js(der), to_js(_AP_RSA_ALG), False, _to_js(["verify"]))
+        ok = await js_crypto.subtle.verify(
+            to_js({"name": "RSASSA-PKCS1-v1_5"}), key, _to_js(signature),
+            _to_js(text.encode()))
+        return bool(ok)
+    except Exception:
+        return False
+
+
+async def _ap_actor_bi(env, kind, handle):
+    return await blind_index(env, "ap-actor:%s:%s" % (kind, handle))
+
+
+async def _ap_local_actor(env, kind, handle, create=False):
+    # A local actor's keypair, minted lazily on the first fediverse lookup so
+    # users/repos nobody follows never get a row.
+    actor_bi = await _ap_actor_bi(env, kind, handle)
+    row = await d1_first(
+        env, "SELECT data FROM ap_actors WHERE actor_bi=?", actor_bi)
+    if row:
+        rec = await decrypt_row(env, row.get("data"))
+        if rec and rec.get("privkey") and rec.get("pubkeyPem"):
+            rec["actorBi"] = actor_bi
+            return rec
+    if not create:
+        return None
+    pub_pem, priv_b64 = await _ap_generate_keypair()
+    rec = {"kind": kind, "handle": handle, "pubkeyPem": pub_pem,
+           "privkey": priv_b64, "createdAt": int(Date.now())}
+    await d1_run(
+        env,
+        "INSERT INTO ap_actors (actor_bi, kind, pubkey_pem, data, created_at)"
+        " VALUES (?,?,?,?,?) ON CONFLICT(actor_bi) DO NOTHING",
+        actor_bi, kind, pub_pem, await encrypt_row(env, rec),
+        rec["createdAt"])
+    # Re-read: a concurrent first-lookup may have won the insert race with a
+    # different keypair, and the stored row is the canonical one (the pubkey
+    # is already being served to the remote server that triggered it).
+    row = await d1_first(
+        env, "SELECT data FROM ap_actors WHERE actor_bi=?", actor_bi)
+    stored = await decrypt_row(env, row.get("data")) if row else None
+    rec = stored or rec
+    rec["actorBi"] = actor_bi
+    return rec
+
+
+async def _ap_user_federates(env, name):
+    # Any active, non-private account federates as a Person — node-owner
+    # accounts included, not just login ("user"-kind) accounts: the node name
+    # is the public authoring identity on issues/PRs, so it is what fediverse
+    # followers expect to find at @name@<domain>. The web follow API
+    # (_account_follow) accepts the same targets.
+    name = (name or "").strip().lower()
+    if not valid_node_name(name):
+        return False
+    _, rec = await _account_row(env, name)
+    return bool(rec and rec.get("status") == "active"
+                and not rec.get("profile_private"))
+
+
+async def _ap_repo_federates(env, owner, repo):
+    # Only published, public repos federate. A missing catalog row means the
+    # repo was never published — unlike the git-clone path (which stays open
+    # for ad-hoc hosts), an unpublished repo has no fediverse presence. The
+    # owner can also switch federation off per repo (web/Qt repo settings).
+    key_bi = await blind_index(env, owner + "/" + repo)
+    row = await d1_first(
+        env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
+    if not row or int(row.get("is_private") or 0):
+        return False
+    return (await _ap_repo_settings_get(env, owner, repo))["federate"]
+
+
+# Per-repo fediverse switches the owner manages from the web and Qt repo
+# settings. Defaults are "all on" so a repo without a row (every repo before
+# migration 0035) federates exactly as before.
+AP_REPO_SETTING_DEFAULTS = {
+    "federate": True,        # actor/webfinger exist at all
+    "broadcastEvents": True,  # issues/PRs/releases posted to followers
+    "acceptComments": True,  # remote replies ingested as federated comments
+}
+
+
+async def _ap_repo_settings_bi(env, owner, repo):
+    # Distinct namespace + full lowercasing on both halves: callers reach this
+    # with URL-cased (About handler) and handle-cased (AP gates) names, and
+    # they must all land on the same row.
+    return await blind_index(
+        env, "ap-repo-settings:%s/%s" % (str(owner or "").strip().lower(),
+                                         str(repo or "").strip().lower()))
+
+
+async def _ap_repo_settings_get(env, owner, repo):
+    row = await d1_first(
+        env, "SELECT data FROM ap_repo_settings WHERE repo_bi=?",
+        await _ap_repo_settings_bi(env, owner, repo))
+    settings = dict(AP_REPO_SETTING_DEFAULTS)
+    if row:
+        try:
+            stored = json.loads(row.get("data") or "{}")
+        except Exception:
+            stored = {}
+        if isinstance(stored, dict):
+            for key in AP_REPO_SETTING_DEFAULTS:
+                if key in stored:
+                    settings[key] = bool(stored[key])
+    return settings
+
+
+# The unauthenticated ActivityPub read endpoints (webfinger, nodeinfo, actor
+# docs, collections, objects) are what fediverse servers and crawlers hammer
+# in bursts — every server that sees a federated post resolves the actor and
+# its collections, and each of those hits used to reach D1. Under a burst
+# that pressure is what pushed the free-plan worker/D1 into "Too many
+# requests" (issue #416, round two of adhoc #9). They already sent public
+# max-age headers, but dynamic Worker responses are never edge-cached
+# implicitly, so store them in the colo cache explicitly: a burst collapses
+# to one origin computation per colo per TTL. Keyed by the canonical public
+# URL; only successful (200) documents are stored.
+
+async def _ap_negative_response(cache_key, error="not_found"):
+    # Park a 404 at the edge briefly. Probes for handles that don't federate
+    # (deleted accounts, crawlers, Mastodon re-resolving after a failed
+    # follow) otherwise re-run the full D1 federation gate on every hit, and
+    # they arrive in the same bursts the 200s do.
+    resp = json_response({"error": error}, status=404, cache_seconds=120)
+    await edge_cache_put(cache_key, resp)
+    return resp
+
+
+async def ap_hostmeta_handler(env, request):
+    # Mastodon's resolver falls back to GET /.well-known/host-meta whenever a
+    # webfinger lookup fails, so during any failure window each missed
+    # resolution used to cost a SECOND request that walked the entire route
+    # chain into the terminal JSON 404 — a self-amplifying loop. The document
+    # is a constant pointer at our webfinger template: no schema, no D1, and
+    # a day at the edge.
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    origin = _ap_origin(env, request)
+    cache_key = origin + "/.well-known/host-meta"
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
+    xrd = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+           '<XRD xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0">'
+           '<Link rel="lrdd" '
+           'template="%s/.well-known/webfinger?resource={uri}"/>'
+           '</XRD>' % origin)
+    resp = Response(xrd, status=200, headers={
+        "content-type": "application/xrd+xml; charset=utf-8",
+        "cache-control": "public, max-age=86400",
+    })
+    await edge_cache_put(cache_key, resp)
+    return resp
+
+
+async def ap_webfinger_handler(env, request):
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    params = parse_qs(urlparse(request.url).query)
+    handle, domain = ap.parse_acct_resource(params.get("resource", [""])[0])
+    if not handle:
+        return json_response({"error": "invalid_resource"}, status=400)
+    origin = _ap_origin(env, request)
+    our_domain = _ap_domain_of(origin)
+    if domain != our_domain:
+        return json_response({"error": "not_found"}, status=404)
+    # Key on the parsed acct (already lowercase-normalized), so the many
+    # spellings of the same resource share one cache entry.
+    cache_key = ("%s/.well-known/webfinger?resource=acct:%s@%s"
+                 % (origin, handle, domain))
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    if not await _ap_enabled(env):
+        return _ap_disabled_response()
+    if handle == our_domain:
+        kind, actor_handle, acct_name = (
+            AP_ACTOR_INSTANCE, AP_INSTANCE_HANDLE, our_domain)
+    else:
+        parsed = ap.split_handle(handle)
+        if not parsed:
+            return await _ap_negative_response(cache_key)
+        if parsed[0] == "user":
+            if not await _ap_user_federates(env, parsed[1]):
+                return await _ap_negative_response(cache_key)
+            kind, actor_handle, acct_name = AP_ACTOR_USER, parsed[1], parsed[1]
+        else:
+            if not await _ap_repo_federates(env, parsed[1], parsed[2]):
+                return await _ap_negative_response(cache_key)
+            kind = AP_ACTOR_REPO
+            actor_handle = ap.repo_handle(parsed[1], parsed[2])
+            acct_name = actor_handle
+    actor_url = _ap_actor_url(origin, kind, actor_handle)
+    doc = ap.webfinger_doc(acct_name + "@" + our_domain, actor_url)
+    resp = json_response(doc, cache_seconds=3600, extra_headers={
+        "content-type": ap.JRD_CONTENT_TYPE,
+        "access-control-allow-origin": "*",
+    })
+    await edge_cache_put(cache_key, resp)
+    return resp
+
+
+# NodeInfo usage counts, cached per isolate. Every fediverse server that hears
+# about this instance polls /nodeinfo/2.1, and each hit ran two COUNT(*) table
+# scans — pure statistics that don't need to be fresher than the cache TTL,
+# and one of the first things to fall over when D1 is under pressure.
+_NODEINFO_CACHE = {"ts": 0, "users": 0, "posts": 0}
+NODEINFO_CACHE_TTL_MS = 10 * 60 * 1000
+
+
+async def ap_nodeinfo_handler(env, request, index):
+    origin = _ap_origin(env, request)
+    cache_key = origin + ("/.well-known/nodeinfo" if index else "/nodeinfo/2.1")
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    if not await _ap_enabled(env):
+        return _ap_disabled_response()
+    if index:
+        resp = json_response(ap.nodeinfo_index(origin), cache_seconds=3600)
+        await edge_cache_put(cache_key, resp)
+        return resp
+    now = int(Date.now())
+    if now - _NODEINFO_CACHE["ts"] >= NODEINFO_CACHE_TTL_MS:
+        users = await d1_first(env, "SELECT COUNT(*) AS c FROM accounts")
+        posts = await d1_first(env, "SELECT COUNT(*) AS c FROM ap_objects")
+        _NODEINFO_CACHE.update({
+            "ts": now,
+            "users": (users or {}).get("c", 0) or 0,
+            "posts": (posts or {}).get("c", 0) or 0,
+        })
+    doc = ap.nodeinfo_doc(
+        _build_rev(env)[:12], _NODEINFO_CACHE["users"],
+        _NODEINFO_CACHE["posts"])
+    resp = json_response(doc, cache_seconds=3600)
+    await edge_cache_put(cache_key, resp)
+    return resp
+
+
+async def _ap_build_actor_doc(env, origin, kind, handle, rec):
+    """The actor document, shared by the GET endpoint and the Update
+    broadcast (profile/branding changes). Returns None when the actor does
+    not federate (missing/private/blocked account or repo)."""
+    # Brand defaults; repos with uploaded branding override below.
+    icon_url = origin + AP_AVATAR_PATH
+    image_url = origin + AP_BANNER_PATH
+    if kind == AP_ACTOR_INSTANCE:
+        return ap.instance_actor_doc(
+            origin, _ap_domain_of(origin), rec["pubkeyPem"],
+            icon_url=icon_url, image_url=image_url)
+    if kind == AP_ACTOR_USER:
+        if not await _ap_user_federates(env, handle):
+            return None
+        actor_type, display = "Person", handle
+        profile_url = origin + "/@" + handle
+        # Surface the account's own bio as the fediverse summary so the
+        # Mastodon profile card mirrors the /@name page.
+        _, account_rec = await _account_row(env, handle)
+        bio = clean_string(
+            (account_rec or {}).get("profile_bio", "") or "", 500).strip()
+        summary = (ap.note_html_from_text(bio) if bio
+                   else "ForkMesh profile of @%s." % handle)
+    else:
+        owner, _, repo = handle.partition(".")
+        key_bi = await blind_index(env, owner + "/" + repo)
+        repo_row = await d1_first(
+            env, "SELECT is_private, data FROM repositories WHERE key_bi=?",
+            key_bi)
+        if not repo_row or int(repo_row.get("is_private") or 0):
+            return None
+        actor_type, display = "Group", owner + "/" + repo
+        repo_web_url = origin + repo_web_href(owner, repo)
+        # The actor's canonical `url` is the repo's fediverse profile page (a
+        # feed of its federated posts), not the raw git-forge page: Mastodon
+        # sends a user who clicks the repo handle — in a mention, or via the
+        # profile's external-link — to this `url`, and dropping them onto a
+        # code page straight from a social timeline is jarring (adhoc #50).
+        # The git page stays one row away ("Repository", below) and is linked
+        # prominently on the profile page itself.
+        profile_url = origin + "/@" + handle
+        # Owner-set About description becomes the fediverse bio.
+        catalog_rec = await decrypt_row(env, repo_row.get("data"))
+        description = clean_string(
+            (catalog_rec or {}).get("description", "") or "", 240).strip()
+        summary = (ap.note_html_from_text(description) if description
+                   else ("ForkMesh repository %s/%s. Follow for new issues, "
+                         "pull requests, discussions and releases.")
+                   % (owner, repo))
+        # Owner-uploaded branding (repo About tab): logo = avatar, banner =
+        # header. updated_at rides along as a cache-buster so Mastodon
+        # refetches when the image changes.
+        media_rows = await d1_all(
+            env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?",
+            key_bi)
+        for media in media_rows or []:
+            media_url = "%s/api/repo/%s/%s/media/%s.png?v=%d" % (
+                origin, quote(owner), quote(repo), media.get("kind", ""),
+                int(media.get("updated_at") or 0))
+            if media.get("kind") == "logo":
+                icon_url = media_url
+            elif media.get("kind") == "banner":
+                image_url = media_url
+    # Profile metadata rows: the canonical page link (VERIFIABLE — the served
+    # page carries a reciprocal rel="me" back to this same URL, which is also
+    # the actor's `url`, so Mastodon's link verification turns it green) and
+    # the relay this actor lives on (origin-derived, so self-hosted relays
+    # advertise their own domain).
+    # The verified profile row links the human page ("Repository" = a repo's
+    # git page, "Profile" = a user's /@name page). For repos that page is no
+    # longer the actor's `url`, so the reciprocal rel="me" that earns the green
+    # check lives on the git page (see _serve_repo_page), pointing at this actor.
+    web_link = repo_web_url if kind == AP_ACTOR_REPO else profile_url
+    attachments = [
+        ap.property_value(
+            "Repository" if kind == AP_ACTOR_REPO else "Profile", web_link),
+        # Plain text, deliberately: an anchor here made every follower
+        # server's link verifier fetch the worker-served homepage on each
+        # verification round, for a row that can never earn the green check.
+        ap.property_text("Relay", _ap_domain_of(origin)),
+    ]
+    return ap.actor_doc(
+        _ap_actor_url(origin, kind, handle), actor_type, handle, display,
+        summary, profile_url, rec["pubkeyPem"],
+        shared_inbox=origin + "/ap/inbox",
+        published_ms=rec.get("createdAt"),
+        icon_url=icon_url, image_url=image_url,
+        attachments=attachments)
+
+
+async def _ap_actor_doc_response(env, request, kind, handle):
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    origin = _ap_origin(env, request)
+    # Keyed on the canonical actor URL so every route shape that serves this
+    # document (/ap/users/x, /@x with an ActivityPub Accept header, /ap/actor)
+    # shares one edge entry.
+    cache_key = _ap_actor_url(origin, kind, handle)
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    if not await _ap_enabled(env):
+        return _ap_disabled_response()
+    if kind != AP_ACTOR_INSTANCE:
+        # Cheap federation gate before minting keys for a 404.
+        parsed = await _ap_resolve_local_target(
+            env, origin, _ap_actor_url(origin, kind, handle))
+        if not parsed:
+            return await _ap_negative_response(cache_key)
+    rec = await _ap_local_actor(env, kind, handle, create=True)
+    if not rec:
+        return json_response({"error": "unavailable"}, status=503)
+    doc = await _ap_build_actor_doc(env, origin, kind, handle, rec)
+    if not doc:
+        return await _ap_negative_response(cache_key)
+    resp = json_response(doc, cache_seconds=300, extra_headers={
+        "content-type": ap.ACTIVITY_CONTENT_TYPE})
+    await edge_cache_put(cache_key, resp)
+    return resp
+
+
+async def _ap_broadcast_actor_update(env, request, kind, handle):
+    """Push an Update(actor) to every follower so remote servers refetch the
+    profile (avatar/banner/bio) immediately instead of waiting out their
+    cache — this is how a repo's uploaded logo actually appears on Mastodon
+    next to existing followers' timelines."""
+    if not await _ap_enabled(env):
+        return
+    actor_bi = await _ap_actor_bi(env, kind, handle)
+    rec = await _ap_local_actor(env, kind, handle)
+    if not rec:
+        return  # never followed / fetched — nothing to update
+    origin = _ap_origin(env, request)
+    actor_url = _ap_actor_url(origin, kind, handle)
+    # Drop the edge-cached actor doc so refetches see the new profile — even
+    # with no followers to notify, a remote server may hold the URL and poll
+    # it (best-effort: other colos age out within the TTL). The rel=me page
+    # the actor points at is edge-cached too (_serve_profile_page /
+    # _serve_repo_page), so drop the canonical page keys alongside it.
+    await edge_cache_delete(actor_url)
+    if kind == AP_ACTOR_USER:
+        await edge_cache_delete(origin + "/@" + quote(handle))
+        await edge_cache_delete(origin + "/@" + quote(handle) + "/repositories")
+        await edge_cache_delete(ACCOUNT_LOOKUP_CACHE_PREFIX + quote(handle))
+        # Toggling "make my followers/following public" (Settings) changes
+        # what ap_collection_handler returns for the same cached URL, so drop
+        # it too — otherwise the old bare-collection response (or stale
+        # items) lingers for the rest of its 300s TTL.
+        await edge_cache_delete(actor_url + "/followers")
+        await edge_cache_delete(actor_url + "/following")
+    elif kind == AP_ACTOR_REPO:
+        page_owner, _, page_repo = handle.partition(".")
+        # The git page carries the rel="me" the green check verifies; the
+        # /@owner.repo profile page is the actor's `url` and its post feed.
+        await edge_cache_delete(origin + repo_web_href(page_owner, page_repo))
+        await edge_cache_delete(origin + "/@" + handle)
+    followers = await d1_all(
+        env, "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
+        actor_bi)
+    if not followers:
+        return
+    doc = await _ap_build_actor_doc(env, origin, kind, handle, rec)
+    if not doc:
+        return
+    now = int(Date.now())
+    body_str = json.dumps(ap.update_activity(actor_url, doc, now))
+    out_data = await encrypt_row(env, {
+        "body": body_str, "actorKind": kind, "actorHandle": handle,
+        "actorUrl": actor_url})
+    seen = set()
+    for follower in followers:
+        inbox = ((follower.get("shared_inbox") or "").strip()
+                 or (follower.get("inbox") or "").strip())
+        if not inbox or inbox in seen:
+            continue
+        seen.add(inbox)
+        await d1_run(
+            env,
+            "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
+            " created_at) VALUES (?,?,0,?,?)",
+            inbox, out_data, now, now)
+    await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
+
+
+async def ap_collection_handler(env, request, kind, handle, which):
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    origin = _ap_origin(env, request)
+    collection_url = _ap_actor_url(origin, kind, handle) + "/" + which
+    cached = await edge_cache_match(collection_url)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    if not await _ap_enabled(env):
+        return _ap_disabled_response()
+    if kind == AP_ACTOR_USER and not await _ap_user_federates(env, handle):
+        return await _ap_negative_response(collection_url)
+    if kind == AP_ACTOR_REPO:
+        owner, _, repo = handle.partition(".")
+        if not await _ap_repo_federates(env, owner, repo):
+            return await _ap_negative_response(collection_url)
+    actor_bi = await _ap_actor_bi(env, kind, handle)
+    total = 0
+    items = None
+    if which == "followers":
+        row = await d1_first(
+            env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
+            actor_bi)
+        total = (row or {}).get("c", 0) or 0
+        # Repo watchers are already public (the About/Watch popover lists
+        # them), so repo actors always enumerate. User actors only enumerate
+        # when the account owner opted in via Settings — otherwise remote
+        # servers correctly read the bare collection as "not made visible".
+        show_items = True
+        if kind == AP_ACTOR_USER:
+            _, account_rec = await _account_row(env, handle)
+            show_items = bool((account_rec or {}).get(
+                "profile_followers_public"))
+        if show_items and total:
+            rows = await d1_all(
+                env,
+                "SELECT follower_id FROM ap_followers WHERE actor_bi=?"
+                " ORDER BY created_at DESC LIMIT ?",
+                actor_bi, AP_COLLECTION_PAGE_SIZE)
+            items = [r.get("follower_id", "") for r in (rows or [])
+                     if r.get("follower_id")]
+        elif show_items:
+            items = []
+    elif which == "outbox":
+        row = await d1_first(
+            env, "SELECT COUNT(*) AS c FROM ap_objects WHERE actor_bi=?",
+            actor_bi)
+        total = (row or {}).get("c", 0) or 0
+    resp = json_response(
+        ap.collection_doc(collection_url, total, items=items),
+        cache_seconds=300,
+        extra_headers={"content-type": ap.ACTIVITY_CONTENT_TYPE})
+    await edge_cache_put(collection_url, resp)
+    return resp
+
+
+async def ap_object_handler(env, request, object_uuid):
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    cache_key = _ap_origin(env, request) + "/ap/o/" + object_uuid
+    cached = await edge_cache_match(cache_key)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    if not await _ap_enabled(env):
+        return _ap_disabled_response()
+    row = await d1_first(
+        env, "SELECT data FROM ap_objects WHERE object_uuid=?", object_uuid)
+    rec = await decrypt_row(env, row.get("data")) if row else None
+    if not rec or not isinstance(rec.get("note"), dict):
+        return json_response({"error": "not_found"}, status=404)
+    doc = dict(rec["note"])
+    doc["@context"] = ap.AS_CONTEXT
+    resp = json_response(doc, cache_seconds=300, extra_headers={
+        "content-type": ap.ACTIVITY_CONTENT_TYPE})
+    await edge_cache_put(cache_key, resp)
+    return resp
+
+
+async def ap_object_media_handler(env, request, object_uuid, index):
+    # Re-serves one image that was embedded as a "data:" URL in the source
+    # issue/comment body, at a real URL — remote servers fetch a Note's
+    # attachment URLs directly and can't resolve a data: URI.
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    # Every remote server that receives the Note fetches its attachment URLs,
+    # and the bytes are immutable — serve the burst from the colo cache.
+    idx = int(index)
+    cache_key = "%s/ap/o/%s/media/%d" % (
+        _ap_origin(env, request), object_uuid, idx)
+    cached = await edge_cache_match_media(cache_key, "image/png")
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    if not await _ap_enabled(env):
+        return _ap_disabled_response()
+    row = await d1_first(
+        env, "SELECT data FROM ap_objects WHERE object_uuid=?", object_uuid)
+    rec = await decrypt_row(env, row.get("data")) if row else None
+    media = (rec or {}).get("media") or []
+    if idx < 0 or idx >= len(media):
+        return json_response({"error": "not_found"}, status=404)
+    item = media[idx]
+    try:
+        raw = base64.b64decode(item.get("data", ""), validate=True)
+    except Exception:
+        return json_response({"error": "not_found"}, status=404)
+    resp = JsResponse.new(_to_js(bytes(raw)), to_js({
+        "status": 200,
+        "headers": {
+            "content-type": item.get("mediaType", "image/png"),
+            "cache-control": "public, max-age=31536000, immutable",
+        },
+    }))
+    await edge_cache_put(cache_key, resp)
+    return resp
+
+
+# --- Outbound HTTP: signed fetch, remote actors, delivery ---------------------
+
+async def _ap_signed_request(key_id, priv_b64, method, url, body_str=None,
+                             accept="application/activity+json"):
+    # One signed outbound HTTP request (draft-cavage). GETs sign
+    # (request-target) host date accept; POSTs add digest + content-type.
+    from js import fetch as js_fetch
+    parts = urlparse(url)
+    if parts.scheme != "https" or not parts.netloc:
+        return None
+    path = (parts.path or "/") + (("?" + parts.query) if parts.query else "")
+    headers = {"host": parts.netloc, "date": ap.http_date(int(Date.now())),
+               "accept": accept}
+    names = list(ap.SIGNED_HEADERS_GET)
+    if body_str is not None:
+        headers["digest"] = ap.digest_header_value(body_str.encode())
+        headers["content-type"] = "application/activity+json"
+        names = list(ap.SIGNED_HEADERS_POST)
+    base = ap.signing_string(method, path, headers, names)
+    if base is None:
+        return None
+    signature = await _ap_rsa_sign_b64(priv_b64, base)
+    send_headers = {
+        "date": headers["date"],
+        "accept": accept,
+        "user-agent": "forkmesh-relay/1.0 (+https://forkmesh.com)",
+        "signature": ap.build_signature_header(key_id, names, signature),
+    }
+    init = {"method": method, "headers": send_headers}
+    if body_str is not None:
+        send_headers["digest"] = headers["digest"]
+        send_headers["content-type"] = headers["content-type"]
+        init["body"] = body_str
+    try:
+        return await js_fetch(url, to_js(init))
+    except Exception:
+        return None
+
+
+async def _ap_instance_key(env):
+    origin = _ap_origin(env)
+    rec = await _ap_local_actor(
+        env, AP_ACTOR_INSTANCE, AP_INSTANCE_HANDLE, create=True)
+    if not rec:
+        return None, None
+    key_id = _ap_actor_url(origin, AP_ACTOR_INSTANCE,
+                           AP_INSTANCE_HANDLE) + "#main-key"
+    return key_id, rec.get("privkey")
+
+
+async def _ap_remote_actor(env, actor_id, force_refresh=False):
+    # Cached remote actor document (inbox + public key). Fetches are signed
+    # with the instance actor so "secure mode" servers answer.
+    actor_id = (actor_id or "").split("#")[0].rstrip("/")
+    if not actor_id.startswith("https://"):
+        return None
+    if await _ap_domain_blocked(env, urlparse(actor_id).netloc):
+        return None
+    row = await d1_first(
+        env, "SELECT * FROM ap_remote_actors WHERE actor_id=?", actor_id)
+    now = int(Date.now())
+    if (row and not force_refresh and row.get("pubkey_pem")
+            and now - int(row.get("updated_at") or 0) < AP_REMOTE_ACTOR_TTL_MS):
+        return row
+    key_id, priv = await _ap_instance_key(env)
+    if not priv:
+        return row or None
+    resp = await _ap_signed_request(key_id, priv, "GET", actor_id)
+    if resp is None or int(getattr(resp, "status", 0)) >= 400:
+        return row or None
+    try:
+        doc = json.loads(await resp.text())
+    except Exception:
+        return row or None
+    ess = ap.actor_essentials(doc)
+    # The document must describe the URL we fetched (same host at minimum) so
+    # a malicious document can't impersonate another server's actor.
+    if not ess or urlparse(ess["id"]).netloc != urlparse(actor_id).netloc:
+        return row or None
+    handle = ess["preferredUsername"]
+    if handle:
+        handle = handle + "@" + urlparse(ess["id"]).netloc
+    await d1_run(
+        env,
+        "INSERT INTO ap_remote_actors (actor_id, inbox, shared_inbox,"
+        " pubkey_pem, handle, display_name, url, updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?)"
+        " ON CONFLICT(actor_id) DO UPDATE SET inbox=excluded.inbox,"
+        " shared_inbox=excluded.shared_inbox, pubkey_pem=excluded.pubkey_pem,"
+        " handle=excluded.handle, display_name=excluded.display_name,"
+        " url=excluded.url, updated_at=excluded.updated_at",
+        actor_id, ess["inbox"], ess["sharedInbox"], ess["pubkeyPem"],
+        handle, clean_string(ess["name"], 200), ess["url"], now)
+    return {
+        "actor_id": actor_id, "inbox": ess["inbox"],
+        "shared_inbox": ess["sharedInbox"], "pubkey_pem": ess["pubkeyPem"],
+        "handle": handle, "display_name": clean_string(ess["name"], 200),
+        "url": ess["url"], "updated_at": now,
+    }
+
+
+async def _ap_deliver_body(env, actor_url, priv_b64, inbox_url, body_str):
+    """Returns (status, retry_after_ms). retry_after_ms is 0 unless the
+    remote answered 429/503 with a parseable Retry-After — the drain uses it
+    as a floor under the normal backoff so a throttling server isn't re-hit
+    sooner than it asked."""
+    resp = await _ap_signed_request(
+        actor_url + "#main-key", priv_b64, "POST", inbox_url,
+        body_str=body_str)
+    if resp is None:
+        return 0, 0
+    status = int(getattr(resp, "status", 0))
+    retry_after_ms = 0
+    if status in (429, 503):
+        try:
+            raw = (resp.headers.get("retry-after") or "").strip()
+        except Exception:
+            raw = ""
+        if raw.isdigit():
+            retry_after_ms = int(raw) * 1000
+        elif raw:
+            when = ap.parse_http_date_ms(raw)
+            if when:
+                retry_after_ms = when - int(Date.now())
+        retry_after_ms = max(0, min(retry_after_ms, 24 * 60 * 60 * 1000))
+    return status, retry_after_ms
+
+
+async def _ap_drain_outbox(env, limit):
+    # Deliver due ap_outbox rows. Success (or a permanently-gone inbox, or the
+    # attempt cap) deletes the row; anything else reschedules with backoff.
+    if not await _ap_enabled(env):
+        return
+    now = int(Date.now())
+    rows = await d1_all(
+        env,
+        "SELECT id, inbox, data, attempts FROM ap_outbox WHERE next_ts<=?"
+        " ORDER BY next_ts ASC LIMIT ?",
+        now, int(limit))
+    for row in rows or []:
+        if await _ap_domain_blocked(
+                env, urlparse(row.get("inbox", "")).netloc):
+            await d1_run(env, "DELETE FROM ap_outbox WHERE id=?", row.get("id"))
+            continue
+        rec = await decrypt_row(env, row.get("data"))
+        attempts = int(row.get("attempts") or 0) + 1
+        status, retry_after_ms = 0, 0
+        if rec and rec.get("body") and rec.get("actorKind"):
+            local = await _ap_local_actor(
+                env, rec["actorKind"], rec["actorHandle"])
+            if local:
+                status, retry_after_ms = await _ap_deliver_body(
+                    env, rec.get("actorUrl", ""), local["privkey"],
+                    row.get("inbox", ""), rec["body"])
+        done = (200 <= status < 400) or status in (404, 410)
+        if done or not rec or attempts >= ap.MAX_DELIVERY_ATTEMPTS:
+            await d1_run(env, "DELETE FROM ap_outbox WHERE id=?", row.get("id"))
+        else:
+            await d1_run(
+                env, "UPDATE ap_outbox SET attempts=?, next_ts=? WHERE id=?",
+                attempts,
+                now + max(ap.retry_backoff_ms(attempts), retry_after_ms),
+                row.get("id"))
+
+
+# --- Outbound publishing -------------------------------------------------------
+
+async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
+                                 ref, title, body, author_name,
+                                 extra_images=None):
+    """Federate one repo event: a Note from the repo actor to its followers,
+    plus (when the author maps to a local account with its own actor) the same
+    Note from the user actor to theirs.
+
+    Near-zero cost while unused: actor rows only exist after someone on the
+    fediverse looked the actor up, so for an unfollowed repo this is two
+    indexed SELECTs that miss."""
+    owner = (owner or "").strip().lower()
+    repo = (repo or "").strip()
+    if not owner or not repo or kind not in AP_FEDI_KINDS:
+        return
+    if not await _ap_enabled(env):
+        return
+    if await _repo_is_private(env, owner, repo):
+        return
+    origin = _ap_origin(env, request)
+    web_url = origin + repo_web_href(owner, repo)
+    author = clean_string(author_name or "", MAX_NODE_NAME).lower()
+    # Handles (and thus actor ids) are lowercase-normalized so the same repo
+    # always federates as one stable actor URL regardless of link casing.
+    # The repo actor only posts when the owner left both per-repo switches on;
+    # the author's own user actor keeps posting to ITS followers either way —
+    # those switches govern the repo's presence, not the author's.
+    settings = await _ap_repo_settings_get(env, owner, repo)
+    candidates = []
+    if settings["federate"] and settings["broadcastEvents"]:
+        candidates.append((AP_ACTOR_REPO, ap.repo_handle(owner, repo.lower())))
+    if author and valid_node_name(author):
+        candidates.append((AP_ACTOR_USER, author))
+    # Attached issue/comment images travel as inline "![name](data:...)"
+    # markdown (there's no separate upload channel); pull them out so they
+    # federate as real Image attachments instead of unrenderable base64 text.
+    clean_body, images = ap.extract_body_images(body or "")
+    # Caller-supplied media (the generated pull-request badge PNG, adhoc #44)
+    # leads the attachment list so it becomes the visible preview.
+    images = [img for img in (extra_images or []) if img] + images
+    text = ap.event_note_text(
+        kind, event_type, owner, repo, ref, clean_string(title, 240),
+        clean_body, author, web_url)
+    content_html = ap.note_html_from_text(text)
+    ckey = ap.context_key(owner, repo, kind, ref)
+    context_bi = await blind_index(env, "ap-context:" + ckey)
+    now = int(Date.now())
+    queued = False
+    for actor_kind, handle in candidates:
+        actor_bi = await _ap_actor_bi(env, actor_kind, handle)
+        exists = await d1_first(
+            env, "SELECT kind FROM ap_actors WHERE actor_bi=?", actor_bi)
+        if not exists:
+            continue
+        followers = await d1_all(
+            env,
+            "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
+            actor_bi)
+        if not followers:
+            continue
+        actor_url = _ap_actor_url(origin, actor_kind, handle)
+        object_uuid = _ap_uuid()
+        attachments = [
+            ap.image_object(
+                "%s/ap/o/%s/media/%d" % (origin, object_uuid, i),
+                media_type=img["mediaType"])
+            for i, img in enumerate(images)]
+        note = ap.note_doc(
+            origin + "/ap/o/" + object_uuid, actor_url,
+            actor_url + "/followers", content_html, now, web_url=web_url,
+            attachments=attachments)
+        rec = {"note": note,
+               "context": {"owner": owner, "repo": repo, "kind": kind,
+                           "ref": str(ref), "key": ckey},
+               "media": images}
+        await d1_run(
+            env,
+            "INSERT INTO ap_objects (object_uuid, actor_bi, context_bi, data,"
+            " published) VALUES (?,?,?,?,?)",
+            object_uuid, actor_bi, context_bi,
+            await encrypt_row(env, rec), now)
+        body_str = json.dumps(ap.create_activity(note))
+        out_data = await encrypt_row(env, {
+            "body": body_str, "actorKind": actor_kind, "actorHandle": handle,
+            "actorUrl": actor_url})
+        seen = set()
+        for follower in followers:
+            inbox = ((follower.get("shared_inbox") or "").strip()
+                     or (follower.get("inbox") or "").strip())
+            if not inbox or inbox in seen:
+                continue
+            seen.add(inbox)
+            await d1_run(
+                env,
+                "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
+                " created_at) VALUES (?,?,0,?,?)",
+                inbox, out_data, now, now)
+            queued = True
+    if queued:
+        await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
+
+
+# --- Inbound: the shared/actor inbox --------------------------------------------
+
+async def _ap_forget_remote(env, actor_id):
+    await d1_run(env, "DELETE FROM ap_followers WHERE follower_id=?", actor_id)
+    await d1_run(env, "DELETE FROM ap_remote_actors WHERE actor_id=?", actor_id)
+
+
+async def _ap_resolve_local_target(env, origin, url):
+    """Map an activity's object URL to a local actor: returns (kind, handle,
+    notify_recipient, display) or None."""
+    target = ap.parse_local_actor_url(origin, url)
+    if not target or target[0] == "instance":
+        return None
+    if target[0] == "user":
+        if not await _ap_user_federates(env, target[1]):
+            return None
+        return (AP_ACTOR_USER, target[1], target[1], "@" + target[1])
+    owner, repo = target[1], target[2]
+    if not await _ap_repo_federates(env, owner, repo):
+        return None
+    return (AP_ACTOR_REPO, ap.repo_handle(owner, repo), owner,
+            owner + "/" + repo)
+
+
+async def _ap_handle_follow(env, request, activity, remote):
+    origin = _ap_origin(env, request)
+    resolved = await _ap_resolve_local_target(
+        env, origin, ap.activity_object_id(activity.get("object")))
+    if not resolved:
+        return json_response({"error": "not_found"}, status=404)
+    kind, handle, recipient, display = resolved
+    local = await _ap_local_actor(env, kind, handle, create=True)
+    if not local:
+        return json_response({"error": "unavailable"}, status=503)
+    count = await d1_first(
+        env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
+        local["actorBi"])
+    if ((count or {}).get("c", 0) or 0) >= AP_MAX_FOLLOWERS_PER_ACTOR:
+        return json_response({"error": "followers_limit"}, status=429)
+    now = int(Date.now())
+    await d1_run(
+        env,
+        "INSERT INTO ap_followers (actor_bi, follower_id, inbox, shared_inbox,"
+        " follower_handle, created_at) VALUES (?,?,?,?,?,?)"
+        " ON CONFLICT(actor_bi, follower_id) DO UPDATE SET"
+        " inbox=excluded.inbox, shared_inbox=excluded.shared_inbox,"
+        " follower_handle=excluded.follower_handle",
+        local["actorBi"], remote["actor_id"], remote.get("inbox", ""),
+        remote.get("shared_inbox", "") or "", remote.get("handle", "") or "",
+        now)
+    # Auto-accept (no manual follow approval), delivered synchronously — one
+    # subrequest, and Mastodon marks the follow pending until it arrives.
+    actor_url = _ap_actor_url(origin, kind, handle)
+    follow_ref = {
+        "id": str(activity.get("id", "") or ""),
+        "type": "Follow",
+        "actor": remote["actor_id"],
+        "object": actor_url,
+    }
+    accept_body = json.dumps(ap.accept_activity(actor_url, follow_ref))
+    inbox_url = (remote.get("inbox") or "").strip()
+    status, _ = await _ap_deliver_body(
+        env, actor_url, local["privkey"], inbox_url, accept_body)
+    if inbox_url and not (200 <= status < 400) and status not in (404, 410):
+        # The remote server keeps the follow "pending" (spinner) until the
+        # Accept lands, and it does NOT retry a Follow we already 202'd — so
+        # a lost Accept used to leave the follow stuck forever. Queue it for
+        # the cron drain, which retries with the normal backoff.
+        out_data = await encrypt_row(env, {
+            "body": accept_body, "actorKind": kind, "actorHandle": handle,
+            "actorUrl": actor_url})
+        await d1_run(
+            env,
+            "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
+            " created_at) VALUES (?,?,1,?,?)",
+            inbox_url, out_data, now, now)
+    follower_label = remote.get("handle") or remote.get("actor_id", "")
+    await _best_effort_inbox_side_effect(enqueue_notification(
+        env, recipient, "subscribed", "New fediverse follower",
+        body="%s is now following %s on the fediverse." % (follower_label,
+                                                           display),
+        source="fediverse",
+        dedupe="ap-follow:%s:%s" % (remote["actor_id"], handle)))
+    return json_response({"ok": True}, status=202)
+
+
+async def _ap_handle_undo(env, request, activity):
+    inner = activity.get("object")
+    if isinstance(inner, dict) and str(inner.get("type", "")) == "Follow":
+        origin = _ap_origin(env, request)
+        target = ap.parse_local_actor_url(
+            origin, ap.activity_object_id(inner.get("object")))
+        if target and target[0] != "instance":
+            if target[0] == "user":
+                kind, handle = AP_ACTOR_USER, target[1]
+            else:
+                kind, handle = AP_ACTOR_REPO, ap.repo_handle(
+                    target[1], target[2])
+            actor_bi = await _ap_actor_bi(env, kind, handle)
+            await d1_run(
+                env,
+                "DELETE FROM ap_followers WHERE actor_bi=? AND follower_id=?",
+                actor_bi, ap.activity_object_id(activity.get("actor")))
+    return json_response({"ok": True}, status=202)
+
+
+async def _ap_handle_create(env, request, activity, remote):
+    # A remote reply to one of our published Notes becomes a federated comment
+    # on the underlying thread; a post that @-mentions one of our repo actors
+    # may become an issue-inbox submission. Anything else is acknowledged and
+    # dropped (we host repos, not timelines).
+    note = ap.note_essentials(activity.get("object"))
+    if not note:
+        return json_response({"ok": True}, status=202)
+    # The note's author must be the signing actor (same host is not enough:
+    # one compromised account must not be able to speak for a whole server).
+    if note["attributedTo"].split("#")[0].rstrip("/") != remote["actor_id"]:
+        return json_response({"error": "author_mismatch"}, status=401)
+    origin = _ap_origin(env, request)
+    parent_uuid = ap.parse_local_object_url(origin, note["inReplyTo"])
+    if not parent_uuid:
+        mention = _ap_note_repo_mention(origin, note)
+        if mention:
+            return await _ap_handle_repo_mention(
+                env, request, note, remote, mention[0], mention[1])
+        return json_response({"ok": True}, status=202)
+    row = await d1_first(
+        env, "SELECT data, context_bi FROM ap_objects WHERE object_uuid=?",
+        parent_uuid)
+    parent = await decrypt_row(env, row.get("data")) if row else None
+    if not parent or not isinstance(parent.get("context"), dict):
+        return json_response({"ok": True}, status=202)
+    context = parent["context"]
+    # Owner switched federated comments (or the whole actor) off: acknowledge
+    # and drop, same as any non-reply — redelivery storms must not 4xx.
+    reply_settings = await _ap_repo_settings_get(
+        env, context.get("owner", ""), context.get("repo", ""))
+    if not reply_settings["federate"] or not reply_settings["acceptComments"]:
+        return json_response({"ok": True}, status=202)
+    context_bi = row.get("context_bi")
+    count = await d1_first(
+        env, "SELECT COUNT(*) AS c FROM ap_comments WHERE context_bi=?",
+        context_bi)
+    if ((count or {}).get("c", 0) or 0) >= AP_MAX_COMMENTS_PER_THREAD:
+        return json_response({"error": "thread_full"}, status=429)
+    text = ap.sanitize_remote_html(note["content"])
+    if not text:
+        return json_response({"ok": True}, status=202)
+    now = int(Date.now())
+    rec = {
+        "author": remote.get("handle") or remote.get("actor_id", ""),
+        "authorName": remote.get("display_name", ""),
+        "authorUrl": remote.get("url", "") or remote.get("actor_id", ""),
+        "content": text,
+        "remoteId": note["id"],
+        "remoteUrl": note["url"],
+        "published": note["published"],
+        "context": context,
+        "ts": now,
+    }
+    remote_id_bi = await blind_index(env, "ap-comment:" + note["id"])
+    await d1_run(
+        env,
+        "INSERT OR IGNORE INTO ap_comments (context_bi, remote_id_bi, data,"
+        " ts) VALUES (?,?,?,?)",
+        context_bi, remote_id_bi, await encrypt_row(env, rec), now)
+    title = "Fediverse reply on %s/%s %s %s" % (
+        context.get("owner", ""), context.get("repo", ""),
+        context.get("kind", ""), context.get("ref", ""))
+    await _best_effort_inbox_side_effect(enqueue_notification(
+        env, context.get("owner", ""), "subscribed", title,
+        body="%s: %s" % (rec["author"], text[:280]),
+        repo="%s/%s" % (context.get("owner", ""), context.get("repo", "")),
+        href=repo_web_href(context.get("owner", ""), context.get("repo", "")),
+        source="fediverse", dedupe="ap-comment:" + note["id"]))
+    return json_response({"ok": True}, status=202)
+
+
+def _ap_note_repo_mention(origin, note):
+    """First Mention tag pointing at one of our repo actors -> (owner, repo)
+    (lowercased), else None. Pure string parsing so the inbox can gate on it
+    before the signature dance."""
+    for href in note.get("mentions", []):
+        target = ap.parse_local_actor_url(origin, href)
+        if target and target[0] == "repo":
+            return target[1], target[2]
+    return None
+
+
+# Workers AI JSON-mode schema for classifying a repo-actor mention. Two-way
+# (create_issue / none) on purpose: unlike ForkBot in chat, a stranger's
+# Mastodon post must never trigger list/search/agent actions.
+AP_MENTION_INTENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intent": {"type": "string", "enum": ["create_issue", "none"]},
+        "title": {"type": "string"},
+        "body": {"type": "string"},
+    },
+    "required": ["intent"],
+}
+
+
+async def _ap_mention_ai_intent(env, text):
+    """Workers AI decides whether a fediverse post that mentioned a repo actor
+    is asking for work to be recorded. Returns {"intent":"create_issue",
+    "title","body"} or {"intent":"none"}, or None when the model is
+    unreachable/unparseable — callers treat None as "AI could not decide" and
+    fall back to a heuristic, the same contract as _forkbot_ai_interpret."""
+    system_prompt = (
+        "A fediverse (Mastodon) user mentioned a ForkMesh repository in a "
+        "public post. Decide whether the post reports a bug or asks for a "
+        "task/feature to be recorded as an issue on that repository. Respond "
+        "with ONLY one JSON object, no other text. A bug report, problem "
+        "description, or work request -> "
+        '{"intent":"create_issue","title":"short summary","body":"the '
+        'problem or request, restated from the post"}; praise, questions, '
+        'small talk, spam, or anything else -> {"intent":"none"}.'
+    )
+    result = await _forkbot_run_ai(
+        env, system_prompt, clean_string(text, FORKBOT_MAX_COMMAND),
+        schema=AP_MENTION_INTENT_SCHEMA)
+    if result is None:
+        return None
+    parsed = result if isinstance(result, dict) else \
+        _forkbot_json_object_from_text(result)
+    if not isinstance(parsed, dict):
+        return None
+    intent = clean_string(parsed.get("intent", ""), 40).strip().lower()
+    if intent != "create_issue":
+        return {"intent": "none"} if intent == "none" else None
+    fields = _forkbot_clean_ai_issue_fields(parsed)
+    if not fields:
+        # The model wanted an issue but produced no usable draft — let the
+        # caller's heuristic take over instead of refusing.
+        return None
+    return {"intent": "create_issue", "title": fields["title"],
+            "body": fields["body"]}
+
+
+async def _ap_fetch_note_images(env, images):
+    """Download the post's image attachments (bounded) and shape them like a
+    remote issue submission's attachmentData: content-addressed names
+    (sha256[:8] + ext — the same scheme as the desktop's attachmentNameFor)
+    that the owner's node materializes into the issue folder on merge.
+    Best-effort: an unfetchable or oversized image is skipped, never fatal."""
+    from js import fetch as js_fetch
+    out = []
+    for att in images:
+        if len(out) >= AP_MENTION_MAX_IMAGES:
+            break
+        url = str(att.get("url", "") or "")
+        ext = AP_MENTION_IMAGE_EXTS.get(att.get("mediaType", ""))
+        if not ext or not url.startswith("https://"):
+            continue
+        if await _ap_domain_blocked(env, urlparse(url).netloc):
+            continue
+        try:
+            resp = await js_fetch(url, to_js({"method": "GET"}))
+            if int(getattr(resp, "status", 0)) != 200:
+                continue
+            data = (await resp.arrayBuffer()).to_bytes()
+        except Exception:
+            continue
+        if not data or len(data) > AP_MENTION_MAX_IMAGE_BYTES:
+            continue
+        name = hashlib.sha256(data).hexdigest()[:8] + "." + ext
+        if any(entry["name"] == name for entry in out):
+            continue
+        # Alt text becomes the markdown label; brackets would break the link.
+        alt = re.sub(r"[\[\]()]+", " ", clean_string(att.get("name", ""), 120))
+        out.append({
+            "name": name,
+            "data": base64.b64encode(data).decode(),
+            "alt": re.sub(r"\s+", " ", alt).strip(),
+        })
+    return out
+
+
+async def _ap_send_mention_reply(env, request, owner, repo, remote, note,
+                                 text, issue_number):
+    """Reply to the mentioning post as the repo actor: a public Note in the
+    author's thread with a Mention tag so their server notifies them. Queued
+    through ap_outbox so a lost delivery retries on the cron drain. The stored
+    object carries the new issue's context, so fediverse replies to OUR reply
+    land as federated comments on that issue."""
+    origin = _ap_origin(env, request)
+    handle = ap.repo_handle(owner, repo)
+    local = await _ap_local_actor(env, AP_ACTOR_REPO, handle, create=True)
+    if not local:
+        return
+    actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, handle)
+    now = int(Date.now())
+    object_uuid = _ap_uuid()
+    reply = ap.note_doc(
+        origin + "/ap/o/" + object_uuid, actor_url, actor_url + "/followers",
+        ap.note_html_from_text(text), now,
+        web_url=origin + repo_web_href(owner, repo) + "/issues",
+        in_reply_to=note["id"])
+    # Address the author directly (still public, so the exchange is visible
+    # in the thread); the Mention tag is what triggers their notification.
+    reply["to"] = [remote["actor_id"]]
+    reply["cc"] = [ap.AS_PUBLIC, actor_url + "/followers"]
+    tag = {"type": "Mention", "href": remote["actor_id"]}
+    if remote.get("handle"):
+        tag["name"] = "@" + remote["handle"]
+    reply["tag"] = [tag]
+    ckey = ap.context_key(owner, repo, "issue", issue_number)
+    rec = {"note": reply,
+           "context": {"owner": owner, "repo": repo, "kind": "issue",
+                       "ref": str(issue_number), "key": ckey},
+           "media": []}
+    await d1_run(
+        env,
+        "INSERT INTO ap_objects (object_uuid, actor_bi, context_bi, data,"
+        " published) VALUES (?,?,?,?,?)",
+        object_uuid, await _ap_actor_bi(env, AP_ACTOR_REPO, handle),
+        await blind_index(env, "ap-context:" + ckey),
+        await encrypt_row(env, rec), now)
+    inbox = ((remote.get("inbox") or "").strip()
+             or (remote.get("shared_inbox") or "").strip())
+    if not inbox:
+        return
+    out_data = await encrypt_row(env, {
+        "body": json.dumps(ap.create_activity(reply)),
+        "actorKind": AP_ACTOR_REPO, "actorHandle": handle,
+        "actorUrl": actor_url})
+    await d1_run(
+        env,
+        "INSERT INTO ap_outbox (inbox, data, attempts, next_ts, created_at)"
+        " VALUES (?,?,0,?,?)",
+        inbox, out_data, now, now)
+    await _ap_drain_outbox(env, 1)
+
+
+async def _ap_handle_repo_mention(env, request, note, remote, owner, repo):
+    """A verified fediverse post that @-mentions one of our repo actors
+    ("@owner.repo@host this button is broken ..."). Workers AI reads the post;
+    when it asks for a bug/task/feature to be recorded, the request becomes an
+    issue-inbox submission (the owner's desktop node assigns the real number
+    and merges it, exactly like a ForkBot chat request), the post's image
+    attachments ride along, and the repo actor replies to the author with the
+    outcome. Anything else is acknowledged and dropped — and every path
+    answers 202, because fediverse redelivery storms must never see a 4xx."""
+    dropped = json_response({"ok": True}, status=202)
+    # Same visibility gate as the actor itself, plus the owner's remote-content
+    # switch: a mention-created issue is remote content entering the repo, the
+    # same trust decision acceptComments already governs (an unpublished repo
+    # has no fediverse presence, so a missing catalog row also drops).
+    key_bi = await blind_index(env, owner + "/" + repo)
+    row = await d1_first(
+        env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
+    if not row or int(row.get("is_private") or 0):
+        return dropped
+    settings = await _ap_repo_settings_get(env, owner, repo)
+    if not settings["federate"] or not settings["acceptComments"]:
+        return dropped
+    mention_bi = await blind_index(env, "ap-mention:" + note["id"])
+    seen = await d1_first(
+        env, "SELECT ts FROM ap_mentions WHERE remote_id_bi=?", mention_bi)
+    if seen:
+        return dropped
+    # The handle itself ("@owner.repo@host") is addressing, not content — the
+    # model should judge what remains.
+    text = ap.sanitize_remote_html(note["content"])
+    text = re.sub(
+        r"(?i)@" + re.escape(ap.repo_handle(owner, repo))
+        + r"(?:@[A-Za-z0-9.-]+)?", " ", text)
+    text = "\n".join(
+        re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n"))
+    text = text.strip()
+    if not text:
+        return dropped
+    now = int(Date.now())
+    intent = await _ap_mention_ai_intent(env, text)
+    if intent is None:
+        # AI unreachable (distinct from a confident "none"): same degradation
+        # contract as ForkBot — an obviously issue-shaped post still files,
+        # anything ambiguous stays unmarked so a redelivery can retry once
+        # the model is back.
+        if not _forkbot_command_hints_issue(text):
+            return dropped
+        fields = _forkbot_fallback_issue_fields(text)
+    elif intent.get("intent") != "create_issue":
+        # Confident "not an issue": remember the note so redeliveries don't
+        # re-run the model.
+        await d1_run(
+            env,
+            "INSERT OR IGNORE INTO ap_mentions (remote_id_bi, ts)"
+            " VALUES (?,?)", mention_bi, now)
+        return dropped
+    else:
+        fields = {"title": intent["title"], "body": intent["body"]}
+    author_label = ("@" + remote["handle"]) if remote.get("handle") \
+        else remote.get("actor_id", "")
+    images = await _ap_fetch_note_images(env, note.get("images") or [])
+    body = fields["body"]
+    for img in images:
+        body += "\n\n![%s](%s)" % (img["alt"] or "attachment", img["name"])
+    body += "\n\nFiled from a fediverse mention by %s: %s" % (
+        author_label, note["url"])
+    ok, result = await _forkbot_enqueue_issue(
+        env, owner, repo, fields["title"], body, author_label,
+        source="fediverse", labels=["fediverse"], attachments=images)
+    await d1_run(
+        env,
+        "INSERT OR IGNORE INTO ap_mentions (remote_id_bi, ts) VALUES (?,?)",
+        mention_bi, now)
+    if not ok:
+        return dropped
+    number = int(result.get("issueNumber", 0) or 0)
+    issue_url = _ap_origin(env, request) + repo_web_href(owner, repo) \
+        + "/issues"
+    title = result.get("titleIfNew") or fields["title"]
+    if number > 0:
+        message = (
+            '%s I\'ve opened issue #%d in %s/%s: "%s". It will appear at %s '
+            "once the maintainer's node syncs its inbox."
+        ) % (author_label, number, owner, repo, title, issue_url)
+    else:
+        message = (
+            '%s I\'ve opened an issue in %s/%s: "%s". It will appear at %s '
+            "once the maintainer's node syncs its inbox."
+        ) % (author_label, owner, repo, title, issue_url)
+    await _best_effort_inbox_side_effect(_ap_send_mention_reply(
+        env, request, owner, repo, remote, note, message, number))
+    return dropped
+
+
+async def _ap_handle_delete(env, activity):
+    object_id = ap.activity_object_id(activity.get("object"))
+    if object_id:
+        remote_id_bi = await blind_index(env, "ap-comment:" + object_id)
+        await d1_run(
+            env, "DELETE FROM ap_comments WHERE remote_id_bi=?", remote_id_bi)
+    return json_response({"ok": True}, status=202)
+
+
+async def ap_inbox_handler(env, request):
+    # Shared + per-actor ActivityPub inbox: verify the draft-cavage HTTP
+    # signature (keyId fetched from the remote server) and the body digest,
+    # then dispatch on activity type. Processing is synchronous — no queues on
+    # the free plan — and every path is a handful of D1 statements.
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    if not await _ap_enabled(env):
+        return _ap_disabled_response()
+    body = await request.text()
+    body_bytes = body.encode()
+    if len(body_bytes) > AP_MAX_INBOX_BYTES:
+        return json_response({"error": "too_large"}, status=413)
+    try:
+        activity = json.loads(body)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    if not isinstance(activity, dict):
+        return json_response({"error": "invalid_activity"}, status=400)
+    activity_type = str(activity.get("type", "") or "")
+    actor_id = ap.activity_object_id(activity.get("actor")).rstrip("/")
+    origin = _ap_origin(env, request)
+    if not actor_id.startswith("https://") or actor_id.startswith(origin + "/"):
+        return json_response({"error": "invalid_actor"}, status=401)
+    if await _ap_domain_blocked(env, urlparse(actor_id).netloc):
+        return json_response({"error": "domain_blocked"}, status=403)
+    object_id = ap.activity_object_id(activity.get("object")).rstrip("/")
+
+    # Actor self-delete: the remote document is already gone, so the key can
+    # no longer be fetched. Clean up local edges without a wasted subrequest —
+    # a spoofed self-delete can at worst drop a follower edge that re-follows.
+    # Mastodon broadcasts every account deletion to every instance it has ever
+    # seen, so nearly all of these are for actors we don't know: check first
+    # (two indexed reads) instead of always issuing two D1 writes.
+    if activity_type == "Delete" and object_id == actor_id:
+        known = await d1_first(
+            env, "SELECT actor_id FROM ap_remote_actors WHERE actor_id=?",
+            actor_id)
+        if not known:
+            known = await d1_first(
+                env, "SELECT follower_id FROM ap_followers WHERE follower_id=?",
+                actor_id)
+        if known:
+            await _ap_forget_remote(env, actor_id)
+        return json_response({"ok": True}, status=202)
+
+    # Anything we'd acknowledge-and-drop after verifying (Like/Announce/
+    # Update/Accept/...) is dropped before the signature dance instead: the
+    # verify path costs a signed GET back to the sender's server (plus D1
+    # reads/writes to cache its actor), so fediverse-wide Like/boost floods
+    # both melted our origin AND hammered Mastodon with actor refetches —
+    # the "too many requests" loop of issue #416.
+    if activity_type not in ("Follow", "Undo", "Create", "Delete"):
+        return json_response({"ok": True}, status=202)
+    if activity_type == "Create":
+        # Two Note shapes matter: replies to our own /ap/o/<uuid> objects
+        # (federated comments) and posts whose Mention tags point at one of
+        # our repo actors (candidate issue requests). Everything else is
+        # dropped here, before the remote-actor fetch (the handler re-checks
+        # after verification). Both gates are pure string parsing — no D1.
+        note = ap.note_essentials(activity.get("object"))
+        if not note or not (
+                ap.parse_local_object_url(origin, note["inReplyTo"])
+                or _ap_note_repo_mention(origin, note)):
+            return json_response({"ok": True}, status=202)
+
+    parsed_sig = ap.parse_signature_header(
+        request.headers.get("signature") or "")
+    if not parsed_sig:
+        return json_response({"error": "signature_required"}, status=401)
+    # The signature must cover the request target and the body digest, or it
+    # proves nothing about this delivery.
+    if ("(request-target)" not in parsed_sig["headers"]
+            or "digest" not in parsed_sig["headers"]):
+        return json_response({"error": "weak_signature"}, status=401)
+    key_url = parsed_sig["keyId"].split("#")[0].rstrip("/")
+    if urlparse(key_url).netloc != urlparse(actor_id).netloc:
+        return json_response({"error": "key_actor_mismatch"}, status=401)
+    if not ap.digest_matches(request.headers.get("digest") or "", body_bytes):
+        return json_response({"error": "digest_mismatch"}, status=401)
+    now = int(Date.now())
+    date_header = (request.headers.get("date")
+                   or request.headers.get("x-date") or "")
+    if date_header:
+        sent = ap.parse_http_date_ms(date_header)
+        if sent and abs(now - sent) > AP_DATE_SKEW_MS:
+            return json_response({"error": "date_skew"}, status=401)
+    elif parsed_sig.get("created") is None:
+        return json_response({"error": "date_required"}, status=401)
+    if (parsed_sig.get("created") is not None
+            and abs(now - parsed_sig["created"] * 1000) > AP_DATE_SKEW_MS):
+        return json_response({"error": "created_skew"}, status=401)
+
+    url = urlparse(request.url)
+    path = url.path + (("?" + url.query) if url.query else "")
+    headers_map = {}
+    for name in parsed_sig["headers"]:
+        if name.startswith("("):
+            continue
+        value = request.headers.get(name)
+        if value is None:
+            return json_response({"error": "missing_header"}, status=401)
+        headers_map[name] = value
+    base = ap.signing_string(
+        "POST", path, headers_map, parsed_sig["headers"],
+        created=parsed_sig.get("created"), expires=parsed_sig.get("expires"))
+    if base is None:
+        return json_response({"error": "bad_signature_params"}, status=401)
+    remote = await _ap_remote_actor(env, key_url)
+    verified = bool(remote and remote.get("pubkey_pem")
+                    and await _ap_rsa_verify(
+                        remote["pubkey_pem"], parsed_sig["signature"], base))
+    if not verified:
+        # The remote key may have rotated since we cached it — refresh once.
+        remote = await _ap_remote_actor(env, key_url, force_refresh=True)
+        verified = bool(remote and remote.get("pubkey_pem")
+                        and await _ap_rsa_verify(
+                            remote["pubkey_pem"], parsed_sig["signature"],
+                            base))
+    if not verified:
+        return json_response({"error": "bad_signature"}, status=401)
+
+    if activity_type == "Follow":
+        return await _ap_handle_follow(env, request, activity, remote)
+    if activity_type == "Undo":
+        return await _ap_handle_undo(env, request, activity)
+    if activity_type == "Create":
+        return await _ap_handle_create(env, request, activity, remote)
+    if activity_type == "Delete":
+        return await _ap_handle_delete(env, activity)
+    # Like/Announce/Update/Accept/... are acknowledged and dropped for now.
+    return json_response({"ok": True}, status=202)
+
+
+# --- Client-facing endpoints ----------------------------------------------------
+
+async def repo_media_handler(env, request, owner, repo, media_kind):
+    # Owner-uploaded repo branding, served publicly (it is the repo's fediverse
+    # avatar/header, fetched by every remote server). Same visibility gate as
+    # the actor itself.
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    # The repo actor's avatar/header: every remote server resolving the actor
+    # fetches both images, so a federated post fans out into a burst here.
+    # Key includes the ?v=<updated_at> buster from the actor document, so a
+    # branding change starts a fresh entry immediately.
+    parts = urlparse(request.url)
+    cache_key = (_ap_origin(env, request) + parts.path
+                 + (("?" + parts.query) if parts.query else ""))
+    cached = await edge_cache_match_media(cache_key, "image/png")
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    if await _repo_is_private(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    row = await d1_first(
+        env, "SELECT data FROM repo_media WHERE repo_bi=? AND kind=?",
+        repo_bi, media_kind)
+    rec = await decrypt_row(env, row.get("data")) if row else None
+    png_b64 = (rec or {}).get("png", "")
+    if not png_b64:
+        return json_response({"error": "not_found"}, status=404)
+    try:
+        raw = base64.b64decode(png_b64)
+    except Exception:
+        return json_response({"error": "not_found"}, status=404)
+    # The actor document busts caches via ?v=<updated_at>, so long edge/browser
+    # caching here is safe.
+    resp = JsResponse.new(_to_js(bytes(raw)), to_js({
+        "status": 200,
+        "headers": {
+            "content-type": "image/png",
+            "cache-control": "public, max-age=86400",
+        },
+    }))
+    await edge_cache_put(cache_key, resp)
+    return resp
+
+
+async def repo_card_handler(env, request, owner, repo):
+    # Social-preview info card (adhoc #46): the repo page's og:image points
+    # here, so a Mastodon/Slack/Twitter unfurl shows the repo's name,
+    # description and stats grid (with the ForkMesh mark small in the corner)
+    # instead of a full-bleed logo. Public — same visibility gate as the page
+    # it previews — and edge-cached so link-preview fetch bursts after a share
+    # cost one render per colo per TTL.
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    parts = urlparse(request.url)
+    cache_key = _ap_origin(env, request) + parts.path
+    cached = await edge_cache_match_media(cache_key, "image/png")
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    if await _repo_is_private(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+    row = await d1_first(
+        env, "SELECT data FROM repositories WHERE key_bi=?", repo_bi)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    rec = (await decrypt_row(env, row.get("data"))) or {}
+    stars_row = await d1_first(
+        env, "SELECT COUNT(*) AS n FROM repo_stars WHERE repo_bi=?", repo_bi)
+    followers = 0
+    if await _ap_enabled(env):
+        handle = ap.repo_handle(str(owner).lower(), str(repo).lower())
+        actor_bi = await _ap_actor_bi(env, AP_ACTOR_REPO, handle)
+        follow_row = await d1_first(
+            env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
+            actor_bi)
+        followers = (follow_row or {}).get("c", 0) or 0
+    # Mirror count the way the network page groups them: catalog records that
+    # share this repo's root commit (memoized decrypted catalog, so this full
+    # pass doesn't re-decrypt per request).
+    mirrors = 0
+    try:
+        now_ms = int(time.time() * 1000)
+        for entry in await _decrypted_public_catalog(env, now_ms):
+            if repo_mirror_same_group(rec, entry.get("data")):
+                mirrors += 1
+    except Exception:
+        mirrors = 0
+    info = {
+        "owner": owner,
+        "repo": repo,
+        "description": rec.get("description", ""),
+        "branch": rec.get("branch", ""),
+        "host": urlparse(_ap_origin(env, request)).netloc or "forkmesh.com",
+        "stars": (stars_row or {}).get("n", 0) or 0,
+        "mirrors": max(1, mirrors),
+        "issues": rec.get("issueCount", ""),
+        "pulls": rec.get("pullCount", ""),
+        "commits": rec.get("commitCount", ""),
+        "branches": rec.get("branchCount", ""),
+        "sizeBytes": rec.get("sizeBytes", 0),
+        "updatedAt": rec.get("updatedAt", ""),
+        "followers": followers,
+    }
+    png = og_card.render_repo_card(info, time.time())
+    # Stats drift, so keep the browser TTL modest; preview crawlers cache the
+    # rendered card on their side anyway.
+    resp = JsResponse.new(_to_js(bytes(png)), to_js({
+        "status": 200,
+        "headers": {
+            "content-type": "image/png",
+            "cache-control": "public, max-age=3600",
+        },
+    }))
+    await edge_cache_put(cache_key, resp)
+    return resp
+
+
+async def repo_star_handler(env, request, owner, repo):
+    # Star/unstar a repo. A star is a plain per-account preference (not signed
+    # by the owner's key), so it lives in its own repo_stars table - the same
+    # trust model as profile_follows - rather than inside the owner-signed
+    # catalog record. GET is public (count + the caller's own state, if a
+    # session is supplied); POST/DELETE require a logged-in session, same as
+    # ACCOUNT_FOLLOW_RE.
+    await ensure_schema(env)
+    method = method_name(request)
+    if method not in ("GET", "POST", "DELETE"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if await _repo_is_private(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
+    repo_bi = await blind_index(env, owner + "/" + repo)
+
+    if method == "GET":
+        viewer_bi, viewer_rec = await _account_session_record(env, request)
+        starred = False
+        if viewer_rec:
+            row = await d1_first(
+                env,
+                "SELECT 1 AS yes FROM repo_stars WHERE repo_bi=? AND account_bi=?",
+                repo_bi, viewer_bi)
+            starred = bool(row)
+        count_row = await d1_first(
+            env, "SELECT COUNT(*) AS n FROM repo_stars WHERE repo_bi=?", repo_bi)
+        return json_response({
+            "ok": True,
+            "count": int((count_row or {}).get("n", 0) or 0),
+            "starred": starred,
+        })
+
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    account_bi, account_rec = await _account_session_record(env, request, data)
+    if not account_rec:
+        return json_response({"error": "invalid_session"}, status=401)
+
+    if method == "POST":
+        await d1_run(
+            env,
+            "INSERT OR IGNORE INTO repo_stars (repo_bi, account_bi, created_at) "
+            "VALUES (?,?,?)",
+            repo_bi, account_bi, int(Date.now()))
+        starred = True
+    else:
+        await d1_run(
+            env, "DELETE FROM repo_stars WHERE repo_bi=? AND account_bi=?",
+            repo_bi, account_bi)
+        starred = False
+
+    count_row = await d1_first(
+        env, "SELECT COUNT(*) AS n FROM repo_stars WHERE repo_bi=?", repo_bi)
+    return json_response({
+        "ok": True,
+        "count": int((count_row or {}).get("n", 0) or 0),
+        "starred": starred,
+    })
+
+
+async def fedi_comments_handler(env, request, owner, repo):
+    # Remote fediverse replies for one thread, shown alongside (never inside)
+    # the Ed25519-signed event log. Public data — same visibility as the
+    # thread itself — so the only gate is repo privacy.
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    if await _repo_is_private(env, owner, repo):
+        return json_response({"error": "not_found"}, status=404)
+    params = parse_qs(urlparse(request.url).query)
+    kind = clean_string(params.get("kind", [""])[0], 20).lower()
+    ref = clean_string(
+        params.get("number", [""])[0] or params.get("ref", [""])[0], 80)
+    if kind not in AP_FEDI_KINDS or not ref:
+        return json_response({"error": "kind_and_ref_required"}, status=400)
+    context_bi = await blind_index(
+        env, "ap-context:" + ap.context_key(owner, repo, kind, ref))
+    rows = await d1_all(
+        env,
+        "SELECT data, ts FROM ap_comments WHERE context_bi=?"
+        " ORDER BY ts ASC LIMIT 200",
+        context_bi)
+    comments = []
+    for row in rows or []:
+        rec = await decrypt_row(env, row.get("data"))
+        if not rec:
+            continue
+        comments.append({
+            "author": rec.get("author", ""),
+            "authorName": rec.get("authorName", ""),
+            "authorUrl": rec.get("authorUrl", ""),
+            "body": rec.get("content", ""),
+            "url": rec.get("remoteUrl", ""),
+            "ts": int(rec.get("ts", 0) or row.get("ts", 0) or 0),
+            "federated": True,
+        })
+    return json_response({"ok": True, "comments": comments},
+                         cache_control="public, max-age=30")
+
+
+async def ap_publish_handler(env, request, owner, repo):
+    # Owner-node push of canonical announcements the relay never sees through
+    # the signed inboxes (published releases, merged PRs). Same signed-token
+    # gate as the inbox drain, so only the owner's key can speak for the repo.
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    if not await _authorize_owner(env, request, owner):
+        return json_response({"error": "unauthorized"}, status=401)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    kind = clean_string(data.get("kind", ""), 20).lower()
+    if kind not in AP_FEDI_KINDS:
+        return json_response({"error": "invalid_kind"}, status=400)
+    default_type = "publish" if kind == "release" else "open"
+    event_type = clean_string(
+        data.get("eventType", "") or default_type, 20).lower()
+    ref = clean_string(
+        str(data.get("ref", "") or data.get("number", "")
+            or data.get("tag", "")), 80)
+    await _ap_publish_repo_event(
+        env, request, owner, repo, kind, event_type, ref,
+        clean_string(data.get("title", ""), 240),
+        clean_string(data.get("body", ""), 4000),
+        clean_string(data.get("author", "") or owner, MAX_NODE_NAME))
+    return json_response({"ok": True}, status=202)
+
+
+async def _authorize_repo_owner_web(env, request, owner, repo, data):
+    """True when the caller may manage this repo's fediverse presence from the
+    web: the repo owner proven by their session token (or an admin acting on
+    the owner's behalf), or the owner's desktop node proving its Ed25519 key —
+    the same trust gate as the About editor / ap-publish, with a distinct
+    canonical so a signed token can't be replayed onto another endpoint."""
+    actor = await _authed_account_name(env, request, data)
+    if actor and (await _account_owns_node(env, actor, owner)
+                  or await _is_admin(env, actor)):
+        return True
+    if data.get("ownerSig") and data.get("ts"):
+        ts = str(data.get("ts", "") or "")
+        owner_pub = await _owner_pubkey(env, owner)
+        canonical = ("forkmesh-ap-posts-v1\n" + owner + "\n" + repo +
+                     "\n" + ts).encode()
+        if owner_pub and _ts_ok(ts) and await ed25519_verify(
+                owner_pub, str(data.get("ownerSig", "") or ""), canonical):
+            return True
+    return False
+
+
+async def ap_posts_handler(env, request, owner, repo):
+    # Repo-owner fediverse-post management (dashboard "manage posts" dropdown,
+    # issue #426): list the repo actor's federated posts, or delete one. A
+    # delete broadcasts a Delete(Tombstone) to every follower inbox so the post
+    # disappears from Mastodon timelines, then drops the local object. POST-only
+    # so the session token rides in the body, never a query string / access log.
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    if not await _authorize_repo_owner_web(env, request, owner, repo, data):
+        return json_response({"error": "not_authorized"}, status=403)
+    action = clean_string(data.get("action", "list"), 12).lower()
+    handle = ap.repo_handle(owner.lower(), repo.lower())
+    actor_bi = await _ap_actor_bi(env, AP_ACTOR_REPO, handle)
+    if action == "list":
+        rows = await d1_all(
+            env,
+            "SELECT object_uuid, data, published FROM ap_objects"
+            " WHERE actor_bi=? ORDER BY published DESC LIMIT 50", actor_bi)
+        posts = []
+        for row in rows or []:
+            rec = await decrypt_row(env, row.get("data"))
+            note = (rec or {}).get("note") or {}
+            posts.append({
+                "id": row.get("object_uuid"),
+                "content": note.get("content") or "",  # our own safe HTML
+                "url": note.get("url") or "",
+                "published": int(row.get("published") or 0),
+            })
+        return json_response({"ok": True, "posts": posts})
+    if action != "delete":
+        return json_response({"error": "bad_action"}, status=400)
+    object_uuid = clean_string(data.get("id", ""), 64).strip()
+    if not object_uuid:
+        return json_response({"error": "missing_id"}, status=400)
+    # Only delete a post the repo actor actually authored: the actor_bi filter
+    # stops one owner's token from reaching another actor's objects.
+    row = await d1_first(
+        env,
+        "SELECT object_uuid FROM ap_objects WHERE object_uuid=? AND actor_bi=?",
+        object_uuid, actor_bi)
+    if not row:
+        return json_response({"error": "not_found"}, status=404)
+    # Drop the local object first: even with federation disabled or zero
+    # followers the owner's intent (remove the post) is honored — /ap/o/<uuid>
+    # starts 404ing and it vanishes from the repo's fediverse profile feed.
+    await d1_run(env, "DELETE FROM ap_objects WHERE object_uuid=?", object_uuid)
+    origin = _ap_origin(env, request)
+    object_url = origin + "/ap/o/" + object_uuid
+    # Drop the edge-parked Note (max-age 300) so the object 404s immediately
+    # rather than lingering a cache TTL after the owner deleted it.
+    await edge_cache_delete(object_url)
+    actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, handle)
+    now = int(Date.now())
+    queued = False
+    if await _ap_enabled(env):
+        followers = await d1_all(
+            env,
+            "SELECT inbox, shared_inbox FROM ap_followers WHERE actor_bi=?",
+            actor_bi)
+        body_str = json.dumps(ap.delete_activity(
+            actor_url, object_url, actor_url + "/followers", now))
+        out_data = await encrypt_row(env, {
+            "body": body_str, "actorKind": AP_ACTOR_REPO,
+            "actorHandle": handle, "actorUrl": actor_url})
+        seen = set()
+        for follower in followers or []:
+            inbox = ((follower.get("shared_inbox") or "").strip()
+                     or (follower.get("inbox") or "").strip())
+            if not inbox or inbox in seen:
+                continue
+            seen.add(inbox)
+            await d1_run(
+                env,
+                "INSERT INTO ap_outbox (inbox, data, attempts, next_ts,"
+                " created_at) VALUES (?,?,0,?,?)",
+                inbox, out_data, now, now)
+            queued = True
+        if queued:
+            await _ap_drain_outbox(env, AP_IMMEDIATE_DELIVERIES)
+    return json_response({"ok": True, "deleted": object_uuid,
+                          "federated": queued})
+
+
+# --- Admin: fediverse configuration ------------------------------------------
+# Same signed-admin gate as the relay allowlist: the admin proves control of
+# their node key and carries is_admin. GET returns the switch + blocklist +
+# live stats; POST flips the switch or (un)blocks a remote domain. Blocking a
+# domain also purges its followers, cached actors and queued deliveries.
+
+async def _admin_ap_settings(env, request):
+    await ensure_schema(env)
+    params = parse_qs(urlparse(request.url).query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    canonical = ("forkmesh-admin-ap-v1\n" + node + "\n" + ts).encode()
+    if not await _admin_authorized(env, node, ts, sig, canonical):
+        return json_response({"error": "unauthorized"}, status=401)
+    settings = await _ap_settings(env, fresh=True)
+    stats = {}
+    for label, table in (("actors", "ap_actors"),
+                         ("followers", "ap_followers"),
+                         ("remoteActors", "ap_remote_actors"),
+                         ("objects", "ap_objects"),
+                         ("comments", "ap_comments"),
+                         ("queuedDeliveries", "ap_outbox")):
+        row = await d1_first(env, "SELECT COUNT(*) AS c FROM " + table)
+        stats[label] = (row or {}).get("c", 0) or 0
+    return json_response({
+        "ok": True,
+        "enabled": settings["enabled"],
+        "blockedDomains": sorted(settings["blocked"]),
+        "stats": stats,
+    })
+
+
+async def _admin_ap_update(env, request):
+    await ensure_schema(env)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+    ts = clean_string(data.get("ts", ""), 20)
+    sig = clean_string(data.get("sig", ""), 200)
+    action = clean_string(data.get("action", ""), 20)
+    domain = clean_string(data.get("domain", ""), 253).lower()
+    if action not in ("enable", "disable", "block", "unblock"):
+        return json_response({"error": "bad_action"}, status=400)
+    canonical = ("forkmesh-admin-ap-update-v1\n" + node + "\n" + action +
+                 "\n" + domain + "\n" + ts).encode()
+    if not await _admin_authorized(env, node, ts, sig, canonical):
+        return json_response({"error": "unauthorized"}, status=401)
+    now = int(Date.now())
+    if action in ("enable", "disable"):
+        await d1_run(
+            env,
+            "INSERT INTO ap_settings (k, v) VALUES ('enabled', ?)"
+            " ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+            "1" if action == "enable" else "0")
+    else:
+        if not ap.valid_domain(domain):
+            return json_response({"error": "invalid_domain"}, status=400)
+        if action == "block":
+            await d1_run(
+                env,
+                "INSERT OR IGNORE INTO ap_blocked_domains (domain, added_by,"
+                " added_at) VALUES (?,?,?)",
+                domain, node, now)
+            # Purge existing state from the blocked server. valid_domain
+            # limits the charset to [a-z0-9.-], so the LIKE patterns cannot
+            # contain SQL wildcards beyond the ones we add.
+            for pattern in ("https://" + domain + "/%",
+                            "https://%." + domain + "/%"):
+                await d1_run(
+                    env, "DELETE FROM ap_followers WHERE follower_id LIKE ?",
+                    pattern)
+                await d1_run(
+                    env,
+                    "DELETE FROM ap_remote_actors WHERE actor_id LIKE ?",
+                    pattern)
+                await d1_run(
+                    env, "DELETE FROM ap_outbox WHERE inbox LIKE ?", pattern)
+        else:
+            await d1_run(
+                env, "DELETE FROM ap_blocked_domains WHERE domain=?", domain)
+    settings = await _ap_settings(env, fresh=True)
+    return json_response({
+        "ok": True,
+        "enabled": settings["enabled"],
+        "blockedDomains": sorted(settings["blocked"]),
+    })
+
+
+async def _owner_signing_pubkeys(env, owner):
+    # Every Ed25519 pubkey allowed to sign as this owner's desktop node: the
+    # account's primary pubkey plus any still-enabled device key that carries
+    # the owner_sign capability. A reinstalled or key-rotated node stores its
+    # new keypair in account_devices (login upserts it) but login only sets the
+    # primary rec["pubkey"] when it is empty, so it is never promoted. A drain
+    # gate that trusted ONLY the primary therefore silently 401'd that node on
+    # every GET /api/sync — its issues/PRs/commits/agent-prompts/about edits and
+    # chat state stopped reaching it, with no visible error (the node just backs
+    # off). The device keys are already stored and account-bound (added only
+    # through an authenticated login/claim), so reusing them is the durable node
+    # identity the account should keep signing with.
+    keys = []
+    owner_pub = await _owner_pubkey(env, owner)
+    if owner_pub:
+        keys.append(owner_pub)
+    account_bi = await blind_index(env, owner)
+    for device in await _account_devices_list(env, account_bi):
+        pub = device.get("pubkey") or ""
+        # enabled == active and not revoked (see _account_devices_list); revoking
+        # a device in settings closes it out of the drain gate immediately.
+        if (pub and pub not in keys and device.get("enabled")
+                and "owner_sign" in (device.get("capabilities") or [])):
+            keys.append(pub)
+    return keys
+
+
+async def _verify_owner_signature(env, owner, sig, canonical):
+    for pub in await _owner_signing_pubkeys(env, owner):
+        if await ed25519_verify(pub, sig, canonical):
+            return True
+    return False
+
 
 async def _authorize_owner(env, request, owner):
     if not owner:
@@ -8301,8 +13124,7 @@ async def _authorize_owner(env, request, owner):
     params = parse_qs(urlparse(request.url).query)
     ts = params.get("ts", [""])[0]
     sig = params.get("sig", [""])[0]
-    owner_pub = await _owner_pubkey(env, owner)
-    if not owner_pub or not ts or not sig:
+    if not ts or not sig:
         return False
     try:
         skew = abs(int(Date.now()) - int(ts))
@@ -8311,7 +13133,7 @@ async def _authorize_owner(env, request, owner):
     if skew > LOGIN_MAX_SKEW_MS:
         return False
     canonical = ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).encode()
-    return await ed25519_verify(owner_pub, sig, canonical)
+    return await _verify_owner_signature(env, owner, sig, canonical)
 
 
 async def _authorize_owner_account(env, owner, data, request=None):
@@ -8329,7 +13151,8 @@ async def _authorize_owner_account(env, owner, data, request=None):
     actor = (rec.get("name", "") if rec else "").strip().lower()
     if not actor:
         return False, json_response({"error": "not_authorized"}, status=403)
-    if actor != str(owner or "").lower() and not await _is_admin(env, actor):
+    if (not await _account_owns_node(env, actor, owner)
+            and not await _is_admin(env, actor)):
         return False, json_response({"error": "not_authorized"}, status=403)
     return True, None
 
@@ -8692,6 +13515,108 @@ async def notifications_handler(env, request):
     return json_response({"error": "method_not_allowed"}, status=405)
 
 
+async def mirror_requests_handler(env, request):
+    # Peer mirror requests (issue #385): a repo owner asks another node to
+    # mirror their repo, the target's holder accepts or rejects, and on accept
+    # that node starts mirroring. The request is parked as a bounded list on the
+    # TARGET account record (heartbeat-delivered, like claim/ownership-transfer);
+    # accepted entries ride back on the target node's signed heartbeat so its
+    # desktop clones the repo. All actions are session-gated (the dashboard
+    # login), exactly like the notification inbox this feeds.
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    action = clean_string(data.get("action", "create"), 20) or "create"
+    actor = await _authed_account_name(env, request, data)
+    if not valid_node_name(actor):
+        return json_response({"error": "unauthorized"}, status=401)
+    now = int(Date.now())
+
+    if action == "create":
+        target = clean_string(data.get("target", ""), MAX_NODE_NAME).lower()
+        owner = clean_string(data.get("owner", ""), MAX_NODE_NAME).lower()
+        repo = clean_string(data.get("repo", ""), MAX_REPO_SEGMENT).strip()
+        if not valid_node_name(target) or not valid_node_name(owner) or not repo:
+            return json_response({"error": "bad_request"}, status=400)
+        # "Ask a node to mirror YOUR repo": only the repo owner (proven by the
+        # session, not a self-asserted body field) may send the request.
+        if owner != actor:
+            return json_response({"error": "forbidden"}, status=403)
+        if target == owner:
+            return json_response({"error": "self_target"}, status=400)
+        if await _repo_is_private(env, owner, repo):
+            # Mirroring is a public-repo affair (the /mirrors payload and clone
+            # fallback are public-only); private repos need a share token flow.
+            return json_response({"error": "private_repo"}, status=400)
+        key_bi = await blind_index(env, owner + "/" + repo)
+        repo_row = await d1_first(
+            env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
+        if not repo_row:
+            return json_response({"error": "repo_not_found"}, status=404)
+        target_bi, target_rec = await _account_row(env, target)
+        if not target_rec or target_rec.get("status") != "active":
+            return json_response({"error": "target_not_found"}, status=404)
+        req_id = mirror_request_id(owner, repo, target)
+        entry = {"id": req_id, "requester": owner, "owner": owner, "repo": repo,
+                 "status": "pending", "ts": now}
+        target_rec["mirror_requests"] = add_mirror_request(
+            target_rec.get("mirror_requests"), entry)
+        await _save_account(env, target_bi, target_rec)
+        await enqueue_notification(
+            env, target, "mirror_request", "Mirror request from " + owner,
+            body=(owner + " asked your node to mirror " + owner + "/" + repo +
+                  ". Accept to start mirroring it."),
+            repo=owner + "/" + repo, href=repo_web_href(owner, repo),
+            actor=owner, source="mirror_request",
+            dedupe="mirror_request:" + req_id,
+            meta={"requestId": req_id, "owner": owner, "repo": repo,
+                  "requester": owner, "state": "pending"})
+        return json_response({"ok": True, "requestId": req_id, "status": "pending"})
+
+    if action in ("accept", "reject"):
+        req_id = clean_string(data.get("requestId", ""), 200).strip().lower()
+        if not req_id:
+            return json_response({"error": "bad_request"}, status=400)
+        target_bi, target_rec = await _account_row(env, actor)
+        if not target_rec:
+            return json_response({"error": "unauthorized"}, status=401)
+        existing = find_mirror_request(target_rec.get("mirror_requests"), req_id)
+        if not existing:
+            return json_response({"error": "not_found"}, status=404)
+        status = "accepted" if action == "accept" else "rejected"
+        updated_list, updated = set_mirror_request_status(
+            target_rec.get("mirror_requests"), req_id, status, ts=now)
+        target_rec["mirror_requests"] = updated_list
+        await _save_account(env, target_bi, target_rec)
+        owner = clean_string((updated or {}).get("owner", ""), MAX_NODE_NAME).lower()
+        repo = clean_string((updated or {}).get("repo", ""), MAX_REPO_SEGMENT).strip()
+        requester = clean_string(
+            (updated or {}).get("requester", ""), MAX_NODE_NAME).lower()
+        # Let the requester know the outcome (recipient != actor is guaranteed:
+        # a request never targets its own owner).
+        if requester and owner and repo:
+            verb = "accepted" if action == "accept" else "declined"
+            tail = (" — their node will start mirroring it shortly."
+                    if action == "accept" else ".")
+            await enqueue_notification(
+                env, requester, "mirror_request",
+                actor + " " + verb + " your mirror request",
+                body=(actor + " " + verb + " your request to mirror " +
+                      owner + "/" + repo + tail),
+                repo=owner + "/" + repo, href=repo_web_href(owner, repo),
+                actor=actor, source="mirror_request",
+                dedupe="mirror_request_reply:" + req_id + ":" + status,
+                meta={"requestId": req_id, "owner": owner, "repo": repo,
+                      "state": status})
+        return json_response({"ok": True, "status": status})
+
+    return json_response({"error": "bad_action"}, status=400)
+
+
 async def subscribe_handler(env, request, owner, repo):
     # Signed subscribe/unsubscribe for one issue or PR thread (issue #361). The
     # request is signed with the node's own Ed25519 key — the same proof of
@@ -8754,6 +13679,12 @@ async def send_notification_digests(env):
             continue
         acct = await d1_first(
             env, "SELECT data FROM accounts WHERE name_bi=?", recipient_bi)
+        if not acct:
+            acct = await d1_first(
+                env, "SELECT data FROM users WHERE user_bi=?", recipient_bi)
+        if not acct:
+            acct = await d1_first(
+                env, "SELECT data FROM nodes WHERE node_bi=?", recipient_bi)
         if not acct:
             continue
         rec = await decrypt_row(env, acct.get("data", ""))
@@ -8825,9 +13756,12 @@ async def send_general_chat_digests(env):
         return
     await ensure_schema(env)
     now = int(Date.now())
+    # Recipients come from the authoritative users table (accounts is legacy and
+    # is drained as records migrate); it only holds user-kind records, exactly
+    # the population eligible for this digest.
     rows = await d1_all(
         env,
-        "SELECT name_bi, data FROM accounts ORDER BY name LIMIT ?",
+        "SELECT user_bi AS name_bi, data FROM users ORDER BY username LIMIT ?",
         GENERAL_CHAT_EMAIL_MAX_RECIPIENTS,
     )
     for row in rows or []:
@@ -8861,20 +13795,35 @@ async def send_general_chat_digests(env):
 
 
 def _forkmesh_email_card_html(heading, intro_html, body_html, footer_html=""):
+    # The card is dark, always. It is painted with inline dark styles AND
+    # declares itself dark-only via <meta name="color-scheme" content="dark">,
+    # so mail clients neither auto-invert it (the way they darken plain light
+    # emails in dark mode) nor repaint it to a light theme. An earlier version
+    # advertised "light dark" with a prefers-color-scheme:light override, but
+    # that override fired in readers whose dark theme doesn't set the OS
+    # prefers-color-scheme (e.g. Gmail's dark theme), leaving ForkMesh mail
+    # glaringly white while every other email showed dark. Forcing dark keeps
+    # the brand card consistent with the rest of a dark inbox.
     return (
-        "<div style=\"margin:0;padding:28px 16px;background:#090909;"
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<meta name=\"color-scheme\" content=\"dark\">"
+        "<meta name=\"supported-color-schemes\" content=\"dark\">"
+        "</head>"
+        "<body style=\"margin:0;padding:0;background:#090909\">"
+        "<div class=\"fm-bg\" style=\"margin:0;padding:28px 16px;background:#090909;"
         "font-family:'ForkMesh Lato',-apple-system,BlinkMacSystemFont,"
         "Segoe UI,Helvetica,Arial,sans-serif;color:#f5f5f5;line-height:1.55\">"
-        "<div style=\"max-width:560px;margin:0 auto;border:1px solid #313134;"
+        "<div class=\"fm-card\" style=\"max-width:560px;margin:0 auto;border:1px solid #313134;"
         "border-radius:8px;background:#141416;padding:24px\">"
-        "<p style=\"margin:0 0 22px;color:#a3a3a3;font-size:13px;"
+        "<p class=\"fm-brand\" style=\"margin:0 0 22px;color:#a3a3a3;font-size:13px;"
         "letter-spacing:0;font-weight:700\">ForkMesh</p>"
-        "<h1 style=\"margin:0 0 14px;color:#f5f5f5;font-size:24px;"
+        "<h1 class=\"fm-h1\" style=\"margin:0 0 14px;color:#f5f5f5;font-size:24px;"
         "line-height:1.25;font-weight:800\">" + heading + "</h1>"
-        "<p style=\"margin:0 0 18px;color:#d4d4d8;font-size:15px\">" +
+        "<p class=\"fm-text\" style=\"margin:0 0 18px;color:#d4d4d8;font-size:15px\">" +
         intro_html + "</p>" + body_html +
         (footer_html if footer_html else "") +
-        "</div></div>")
+        "</div></div></body></html>")
 
 
 def _format_email_ts(ts_ms):
@@ -8931,13 +13880,13 @@ def _notification_digest_email(node, items):
             _html_escape(when) if when else "",
         ]))
         html_items.append(
-            "<div style=\"border:1px solid #313134;border-radius:8px;"
+            "<div class=\"fm-item\" style=\"border:1px solid #313134;border-radius:8px;"
             "background:#0f0f11;padding:12px 14px;margin:0 0 10px\">"
-            "<p style=\"margin:0;color:#f5f5f5;font-size:14px;"
+            "<p class=\"fm-item-title\" style=\"margin:0;color:#f5f5f5;font-size:14px;"
             "font-weight:800\">" + _html_escape(prefix + title) + "</p>" +
-            ("<p style=\"margin:4px 0 0;color:#8a8a93;font-size:12px\">" +
+            ("<p class=\"fm-muted\" style=\"margin:4px 0 0;color:#8a8a93;font-size:12px\">" +
              meta_html + "</p>" if meta_html else "") +
-            ("<p style=\"margin:6px 0 0;color:#a3a3a3;font-size:13px;"
+            ("<p class=\"fm-item-body\" style=\"margin:6px 0 0;color:#a3a3a3;font-size:13px;"
              "line-height:1.45\">" + _html_escape(body) + "</p>"
              if body else "") + "</div>")
     lines += ["", "Open ForkMesh to read and reply.",
@@ -8946,13 +13895,14 @@ def _notification_digest_email(node, items):
     text = "\n".join(lines)
     html = _forkmesh_email_card_html(
         _html_escape(str(n) + " new notification" + ("s" if n != 1 else "")),
-        "Hi <strong style=\"color:#f5f5f5\">" + _html_escape(node or "there") +
+        "Hi <strong class=\"fm-strong\" style=\"color:#f5f5f5\">" +
+        _html_escape(node or "there") +
         "</strong>, you have " + str(n) + " unread ForkMesh notification" +
         ("s" if n != 1 else "") + ".",
         "<div style=\"margin:0 0 18px\">" + "".join(html_items) + "</div>"
-        "<p style=\"margin:0 0 16px;color:#d4d4d8;font-size:14px\">Open "
+        "<p class=\"fm-text\" style=\"margin:0 0 16px;color:#d4d4d8;font-size:14px\">Open "
         "ForkMesh to read and reply.</p>",
-        "<p style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">To stop "
+        "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">To stop "
         "these emails, update email notifications in your profile settings."
         "</p>",
     )
@@ -8973,19 +13923,21 @@ def _general_chat_digest_email(node, count):
     html = _forkmesh_email_card_html(
         _html_escape(str(n) + " encrypted #general message" +
                      ("s" if n != 1 else "")),
-        "Hi <strong style=\"color:#f5f5f5\">" + _html_escape(node or "there") +
+        "Hi <strong class=\"fm-strong\" style=\"color:#f5f5f5\">" +
+        _html_escape(node or "there") +
         "</strong>, #general has encrypted activity since your last digest.",
-        "<div style=\"border:1px solid #313134;border-radius:8px;"
+        "<div class=\"fm-item\" style=\"border:1px solid #313134;border-radius:8px;"
         "background:#0f0f11;padding:14px;margin:0 0 18px\">"
-        "<p style=\"margin:0;color:#f5f5f5;font-size:28px;font-weight:800;line-height:1\">"
+        "<p class=\"fm-item-title\" style=\"margin:0;color:#f5f5f5;font-size:28px;"
+        "font-weight:800;line-height:1\">"
         + str(n) + "</p>"
-        "<p style=\"margin:8px 0 0;color:#d4d4d8;font-size:14px\">encrypted "
+        "<p class=\"fm-item-body\" style=\"margin:8px 0 0;color:#d4d4d8;font-size:14px\">encrypted "
         "#general message" + ("s" if n != 1 else "") + " waiting</p>"
         "</div>"
-        "<p style=\"margin:0;color:#d4d4d8;font-size:14px\">Message contents "
+        "<p class=\"fm-text\" style=\"margin:0;color:#d4d4d8;font-size:14px\">Message contents "
         "are not sent over email. Log in on the web or open the ForkMesh app "
         "to read and reply.</p>",
-        "<p style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">To stop "
+        "<p class=\"fm-muted\" style=\"margin:22px 0 0;color:#8a8a93;font-size:12px\">To stop "
         "these emails, update email notifications in your profile settings."
         "</p>",
     )
@@ -9137,6 +14089,25 @@ def _forkbot_parse_list_command(command):
     return {"count": max(1, min(count, FORKBOT_LIST_MAX))}
 
 
+def _forkbot_parse_count_command(command):
+    """Offline fast path for "how many issues are there" phrasings. These ask
+    for a total, not a listing, so they must not fall through to the list
+    parser above (which would hand back a few issues and never say how many
+    exist in total). Returns True or None."""
+    text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
+    if not text:
+        return None
+    match = re.match(
+        r"(?is)^" + _forkbot_polite_prefix() +
+        r"(?:how\s+many\s+issues\b(?:\s+are\s+there|\s+exist|"
+        r"\s+do\s+we\s+have)?|"
+        r"(?:what(?:'s|\s+is)\s+the\s+)?(?:number|count)\s+of\s+issues|"
+        r"issue\s+count)\s*[?.!]*$",
+        text,
+    )
+    return {} if match else None
+
+
 def _forkbot_parse_search_command(command):
     """Offline fast path for "search issues for X" phrasings. Requires the
     word issue(s) so a bare "find the bug" still flows to the create/AI paths.
@@ -9224,10 +14195,11 @@ def _forkbot_help_message():
     return (
         "I can open an issue from the conversation (\"forkbot open an issue "
         "for the flaky login test\"), list recent issues (\"forkbot list the "
-        "last 5 issues\" - up to %d), search issues (\"forkbot search issues "
-        "for relay retries\"), show one issue (\"forkbot show issue #12\"), "
-        "and - for the repo owner - start a coding agent (\"forkbot start an "
-        "agent on the latest issue\")." % FORKBOT_LIST_MAX
+        "last 5 issues\" - up to %d), say how many issues there are "
+        "(\"forkbot how many issues are there?\"), search issues (\"forkbot "
+        "search issues for relay retries\"), show one issue (\"forkbot show "
+        "issue #12\"), and - for the repo owner - start a coding agent "
+        "(\"forkbot start an agent on the latest issue\")." % FORKBOT_LIST_MAX
     )
 
 
@@ -9315,7 +14287,9 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None):
     in the logs to say why."""
     ai = getattr(env, "AI", None)
     if ai is None or js_nullish(ai) or not hasattr(ai, "run"):
-        _console_error("ForkBot AI unavailable: env.AI binding is missing")
+        await log_error(
+            env, 500, "AI", "forkbot/ai",
+            "ForkBot AI unavailable: env.AI binding is missing")
         return None
     model = clean_string(getattr(env, "FORKBOT_AI_MODEL", ""), 120) or \
         FORKBOT_AI_DEFAULT_MODEL
@@ -9346,7 +14320,8 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None):
             last_error = error
             continue
     if not ran:
-        _console_error(
+        await log_error(
+            env, 500, "AI", "forkbot/ai",
             "ForkBot AI call failed (%s): %s"
             % (model, _safe_error_text(last_error)[:300]))
         return None
@@ -9368,7 +14343,8 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None):
         return result
     if isinstance(result, str):
         return result
-    _console_error(
+    await log_error(
+        env, 500, "AI", "forkbot/ai",
         "ForkBot AI returned an unusable %s response (%s)"
         % (type(result).__name__, model))
     return None
@@ -9389,8 +14365,8 @@ FORKBOT_INTENT_SCHEMA = {
     "type": "object",
     "properties": {
         "intent": {"type": "string", "enum": [
-            "create_issue", "list_issues", "search_issues", "show_issue",
-            "start_agent", "help", "none"]},
+            "create_issue", "list_issues", "count_issues", "search_issues",
+            "show_issue", "start_agent", "help", "none"]},
         "title": {"type": "string"},
         "body": {"type": "string"},
         "count": {"type": "integer"},
@@ -9431,6 +14407,7 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
     Returns one of:
       {"intent": "create_issue", "title", "body"}
       {"intent": "list_issues", "count"}
+      {"intent": "count_issues"}
       {"intent": "search_issues", "query"}
       {"intent": "show_issue", "issueNumber"}   (0 = the most recent issue)
       {"intent": "start_agent", "issueNumber"}  (0 = the most recent issue)
@@ -9444,7 +14421,8 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
         '{"intent":"create_issue","title":"short summary","body":"the problem '
         'or task, with detail from the conversation"}; list recent issues -> '
         '{"intent":"list_issues","count":N} (how many they asked for, 5 if '
-        "unspecified); search existing issues for a topic -> "
+        "unspecified); asking for a TOTAL count of issues rather than a list "
+        '-> {"intent":"count_issues"}; search existing issues for a topic -> '
         '{"intent":"search_issues","query":"the search words"}; show one '
         'existing issue -> {"intent":"show_issue","issueNumber":N} (0 for the '
         "most recent); start a coding agent working on an issue -> "
@@ -9455,7 +14433,8 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
         '{"intent":"none"}. Examples: "issue to add dark mode" -> '
         '{"intent":"create_issue","title":"Add dark mode","body":"Add dark '
         'mode."}; "what came in this week?" -> '
-        '{"intent":"list_issues","count":5}; "anything about relay retries?" '
+        '{"intent":"list_issues","count":5}; "how many issues are there?" -> '
+        '{"intent":"count_issues"}; "anything about relay retries?" '
         '-> {"intent":"search_issues","query":"relay retries"}; "get an '
         'agent going on that new issue" -> '
         '{"intent":"start_agent","issueNumber":0}; "hello!" -> '
@@ -9483,6 +14462,8 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
             count = FORKBOT_LIST_DEFAULT
         return {"intent": "list_issues",
                 "count": max(1, min(count, FORKBOT_LIST_MAX))}
+    if intent == "count_issues":
+        return {"intent": "count_issues"}
     if intent == "search_issues":
         query = clean_string(parsed.get("query", ""), 100).strip()
         if not query:
@@ -9544,8 +14525,20 @@ def _forkbot_missing_tree(data):
         "does not exist", "unknown revision"))
 
 
-def _forkbot_issue_json_path(number):
-    return ".forkmesh/issues/%d/issue-%d.json" % (int(number), int(number))
+def _forkbot_issue_json_path(number, subdir=""):
+    # Issues are split by status into .forkmesh/issues/open/<N>/ and
+    # .forkmesh/issues/closed/<N>/ (adhoc #14); pre-split mirrors keep the
+    # numbered folder directly under the root (subdir "").
+    base = ".forkmesh/issues"
+    if subdir:
+        base += "/" + subdir
+    return "%s/%d/issue-%d.json" % (base, int(number), int(number))
+
+
+def _forkbot_issue_json_candidates(number):
+    """Every path issue <number>'s record may live at, most likely first."""
+    return [_forkbot_issue_json_path(number, subdir)
+            for subdir in ("open", "closed", "")]
 
 
 def _forkbot_blob_text(blob):
@@ -9598,21 +14591,39 @@ def _forkbot_parse_issue_record(text, number):
 async def _forkbot_recent_issue_numbers(env, owner, repo):
     """Issue numbers committed to the live mirror, newest first. Returns None
     when no host could serve the tree (offline), [] when the repo simply has
-    no issues folder yet."""
-    tree = await _forkbot_repo_host_json(
+    no issues folder yet. Issues are split into open/ and closed/ status
+    folders (adhoc #14); numbered folders directly under the root are the
+    pre-split legacy layout."""
+    root = await _forkbot_repo_host_json(
         env, owner, repo, "tree?path=" + quote(".forkmesh/issues", safe=""))
-    if tree is None:
+    if root is None:
         return None
-    entries = tree.get("entries")
+    entries = root.get("entries")
     if not isinstance(entries, list):
-        return [] if _forkbot_missing_tree(tree) else None
+        return [] if _forkbot_missing_tree(root) else None
     numbers = set()
+    subdirs = []
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("type") != "tree":
             continue
         name = str(entry.get("name", ""))
         if name.isdigit():
             numbers.add(int(name))
+        elif name in ("open", "closed"):
+            subdirs.append(name)
+    for subdir in subdirs:
+        tree = await _forkbot_repo_host_json(
+            env, owner, repo,
+            "tree?path=" + quote(".forkmesh/issues/" + subdir, safe=""))
+        sub_entries = tree.get("entries") if isinstance(tree, dict) else None
+        if not isinstance(sub_entries, list):
+            continue
+        for entry in sub_entries:
+            if not isinstance(entry, dict) or entry.get("type") != "tree":
+                continue
+            name = str(entry.get("name", ""))
+            if name.isdigit():
+                numbers.add(int(name))
     return sorted(numbers, reverse=True)
 
 
@@ -9623,15 +14634,23 @@ async def _forkbot_load_issue_records(env, owner, repo, numbers):
     numbers = [int(n) for n in numbers][:FORKBOT_LIST_MAX]
     if not numbers:
         return []
+    # A record lives at open/<N>/, closed/<N>/, or the pre-split legacy <N>/
+    # depending on its status; ask for every candidate in the one batch (3 ×
+    # FORKBOT_LIST_MAX stays within MAX_BLOB_BATCH) and keep whichever answered.
     query = "&".join(
-        "path=" + quote(_forkbot_issue_json_path(n), safe="") for n in numbers)
+        "path=" + quote(path, safe="")
+        for n in numbers for path in _forkbot_issue_json_candidates(n))
     data = await _forkbot_repo_host_json(env, owner, repo, "blobs?" + query)
     blobs = data.get("blobs") if isinstance(data, dict) else None
     if not isinstance(blobs, dict):
         return []
     records = []
     for number in numbers:
-        text = _forkbot_blob_text(blobs.get(_forkbot_issue_json_path(number)))
+        text = ""
+        for path in _forkbot_issue_json_candidates(number):
+            text = _forkbot_blob_text(blobs.get(path))
+            if text:
+                break
         if not text:
             continue
         records.append(_forkbot_parse_issue_record(text, number))
@@ -9728,7 +14747,14 @@ async def _forkbot_next_issue_number(env, repo_bi, owner, repo):
         return 0
 
 
-async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
+async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
+                                 source="forkbot", labels=None,
+                                 attachments=None):
+    """Queue a relay-authored issue for the owner's desktop node. ForkBot chat
+    requests use the defaults; fediverse repo mentions reuse the same path
+    with source/labels "fediverse" and the post's images as attachments
+    ([{name, data(base64)}] — the attachmentData shape a no-write-access node
+    ships, which the desktop materializes into the issue folder on merge)."""
     await ensure_schema(env)
     repo_bi = await blind_index(env, owner + "/" + repo)
     count = await d1_first(
@@ -9753,7 +14779,7 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
         "ts": now,
         "title": clean_string(title, 240),
         "body": clean_string(body, MAX_ISSUE_BYTES),
-        "attachments": [],
+        "attachments": [entry["name"] for entry in (attachments or [])],
         "sig": "",
     }
     item = {
@@ -9761,7 +14787,7 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
         "titleIfNew": event["title"],
         "event": event,
         "meta": {
-            "labels": ["forkbot"],
+            "labels": list(labels) if labels else ["forkbot"],
             "milestone": "",
             "priority": 0,
             "assignees": [],
@@ -9771,10 +14797,14 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
         },
         "submitter": FORKBOT_AUTHOR,
         "submittedAt": now,
-        "source": "forkbot",
+        "source": source,
         "requestedBy": actor,
         "issueNumber": number,
     }
+    if attachments:
+        item["attachmentData"] = [
+            {"name": entry["name"], "data": entry["data"]}
+            for entry in attachments]
     await d1_run(
         env,
         "INSERT INTO issue_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
@@ -9861,6 +14891,26 @@ def _forkbot_host_offline_reply(owner, repo):
             "I couldn't reach a live host for %s/%s — issues are served from "
             "the owner's desktop node. Try again once it's back online."
         ) % (owner, repo),
+    })
+
+
+async def _forkbot_action_count(env, owner, repo):
+    # A "how many" question wants a total, not a capped listing — reusing
+    # _forkbot_action_list here would silently truncate at FORKBOT_LIST_MAX
+    # and never actually answer the question asked.
+    numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
+    if numbers is None:
+        return _forkbot_host_offline_reply(owner, repo)
+    total = len(numbers)
+    if not total:
+        message = "No issues have been filed in %s/%s yet." % (owner, repo)
+    else:
+        message = "There %s %d issue%s in %s/%s." % (
+            "is" if total == 1 else "are", total,
+            "" if total == 1 else "s", owner, repo)
+    return json_response({
+        "ok": True, "action": "issues_counted", "count": total,
+        "botMessage": message,
     })
 
 
@@ -10055,12 +15105,13 @@ async def forkbot_chat_handler(env, request):
     #     work-recording signal at all gets the help hint.
     action = None
     for intent_name, parser in (
+            ("count_issues", _forkbot_parse_count_command),
             ("list_issues", _forkbot_parse_list_command),
             ("search_issues", _forkbot_parse_search_command),
             ("start_agent", _forkbot_parse_agent_command),
             ("show_issue", _forkbot_parse_show_command)):
         parsed_intent = parser(command)
-        if parsed_intent:
+        if parsed_intent is not None:
             action = {"intent": intent_name, **parsed_intent}
             break
     if action is None and _forkbot_parse_help_command(command):
@@ -10088,6 +15139,8 @@ async def forkbot_chat_handler(env, request):
                 fields = _forkbot_fallback_issue_fields(command)
 
     intent = (action or {}).get("intent", "")
+    if intent == "count_issues":
+        return await _forkbot_action_count(env, owner, repo)
     if intent == "list_issues":
         return await _forkbot_action_list(env, owner, repo, action["count"])
     if intent == "search_issues":
@@ -10137,6 +15190,36 @@ async def forkbot_chat_handler(env, request):
     }, status=201)
 
 
+def _clean_issue_attachment_data(value):
+    """Validate the base64 image bytes a no-write-access node ships alongside a
+    signed issue/comment "open"/"comment" event (see MAX_ISSUE_ATTACHMENT_BYTES).
+    Returns (cleaned_list, error); cleaned_list entries are {"name","data"} with
+    data re-encoded from the decoded bytes so nothing but valid base64 survives."""
+    if not isinstance(value, list):
+        return [], None
+    if len(value) > MAX_ISSUE_ATTACHMENTS:
+        return [], "too_many_attachments"
+    cleaned = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            return [], "bad_attachment"
+        name = entry.get("name", "")
+        if not isinstance(name, str) or not ISSUE_ATTACHMENT_NAME_RE.match(name):
+            return [], "bad_attachment"
+        data = entry.get("data", "")
+        if not isinstance(data, str) or len(data) > 4 * (
+                (MAX_ISSUE_ATTACHMENT_BYTES + 2) // 3):
+            return [], "attachment_too_large"
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except Exception:
+            return [], "bad_attachment"
+        if len(raw) > MAX_ISSUE_ATTACHMENT_BYTES:
+            return [], "attachment_too_large"
+        cleaned.append({"name": name, "data": base64.b64encode(raw).decode()})
+    return cleaned, None
+
+
 async def issues_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
@@ -10157,6 +15240,14 @@ async def issues_handler(env, request, owner, repo):
             return json_response({"error": "issue_too_large"}, status=413)
         if not await verify_issue_event(number, event):
             return json_response({"error": "bad_signature"}, status=401)
+        # Screenshots the submitter had no working tree to copy in ride along as
+        # base64 bytes, named to match the signed event's attachments list.
+        attachment_data, attach_err = _clean_issue_attachment_data(
+            data.get("attachmentData"))
+        if attach_err:
+            status = 413 if attach_err in (
+                "too_many_attachments", "attachment_too_large") else 400
+            return json_response({"error": attach_err}, status=status)
         count = await d1_first(
             env, "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=?", repo_bi
         )
@@ -10216,6 +15307,7 @@ async def issues_handler(env, request, owner, repo):
             "titleIfNew": clean_string(data.get("titleIfNew", ""), 240),
             "event": event,
             "meta": meta,
+            "attachmentData": attachment_data,
             "submitter": clean_string(event.get("author", ""), 120),
             "submittedAt": int(Date.now()),
         }
@@ -10253,6 +15345,13 @@ async def issues_handler(env, request, owner, repo):
         await _best_effort_inbox_side_effect(
             subscribe_thread(env, owner, repo, "issue", number, actor))
         await notify_repo_host(env, owner, repo, "issues")
+        # Fediverse: announce content events (opens/comments — never labels or
+        # status flips) to any followers of the repo/author actors.
+        if event.get("type") in ("open", "comment"):
+            await _best_effort_inbox_side_effect(_ap_publish_repo_event(
+                env, request, owner, repo, "issue", event.get("type"),
+                number, item.get("titleIfNew", ""), event.get("body", ""),
+                event.get("authorName", "")))
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -10329,6 +15428,11 @@ async def pulls_handler(env, request, owner, repo):
                                      repo_web_href(owner, repo))
             await subscribe_thread(env, owner, repo, "pull", number, actor)
             await notify_repo_host(env, owner, repo, "pulls")
+            if event.get("type") in ("comment", "review"):
+                await _best_effort_inbox_side_effect(_ap_publish_repo_event(
+                    env, request, owner, repo, "pull", event.get("type"),
+                    number, "", event.get("body", ""),
+                    event.get("authorName", "")))
             return json_response({"ok": True}, status=201)
         pull = data.get("pull")
         if not isinstance(pull, dict):
@@ -10364,6 +15468,25 @@ async def pulls_handler(env, request, owner, repo):
         await notify_mentions(env, owner, repo, actor, title, pull.get("body", ""),
                               repo_web_href(owner, repo), "pull")
         await notify_repo_host(env, owner, repo, "pulls")
+        # Badge (adhoc #44): render the PR's visual fingerprint from the
+        # signed patch and attach it to the federated note as its lead image.
+        # Best-effort — a badge failure must never block the submission.
+        badge = None
+        try:
+            stats = patch_file_stats(pull.get("patch", "") or "")
+            if stats:
+                png = pull_badge_png(
+                    title, clean_string(
+                        pull.get("authorName", "") or pull.get("author", ""),
+                        MAX_NODE_NAME), stats)
+                badge = {"mediaType": "image/png",
+                         "data": base64.b64encode(png).decode("ascii")}
+        except Exception:
+            badge = None
+        await _best_effort_inbox_side_effect(_ap_publish_repo_event(
+            env, request, owner, repo, "pull", "open", 0, title,
+            pull.get("body", ""), pull.get("authorName", ""),
+            extra_images=[badge] if badge else None))
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -10428,6 +15551,9 @@ async def commits_handler(env, request, owner, repo):
         await notify_mentions(env, owner, repo, actor, "Commit " + sha[:12], comment.get("body", ""),
                               repo_web_href(owner, repo), "commit_comment")
         await notify_repo_host(env, owner, repo, "commits")
+        await _best_effort_inbox_side_effect(_ap_publish_repo_event(
+            env, request, owner, repo, "commit", "comment", sha, "",
+            comment.get("body", ""), comment.get("authorName", "")))
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -10500,6 +15626,11 @@ async def discussions_handler(env, request, owner, repo):
         await notify_mentions(env, owner, repo, actor, title, event.get("body", ""),
                               repo_web_href(owner, repo), "discussion", number=number)
         await notify_repo_host(env, owner, repo, "discussions")
+        if event.get("type") in ("open", "comment"):
+            await _best_effort_inbox_side_effect(_ap_publish_repo_event(
+                env, request, owner, repo, "discussion", event.get("type"),
+                number, item.get("titleIfNew", ""), event.get("body", ""),
+                event.get("authorName", "")))
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
@@ -10574,12 +15705,50 @@ async def sync_handler(env, request):
     owner_bi = await blind_index(env, owner)
     rows = await d1_all(
         env, "SELECT key_bi, data FROM repositories WHERE owner_bi=?", owner_bi)
+    repo_bis = [row["key_bi"] for row in rows]
+    # One query per table across ALL of the owner's repos (IN-list) instead of
+    # six queries per repo: /api/sync fires on every pushed event frame AND
+    # the fallback poll, and the old 6N sequential D1 roundtrips were a top
+    # contributor to the 2026-07-11 free-plan overload. Table names are fixed
+    # literals (same convention as _inbox_author_over_quota); inbox items are
+    # NOT deleted here — the node acks a merged inbox with its per-repo DELETE.
+    marks = ",".join("?" for _ in repo_bis)
+    by_repo = {}      # repo_bi -> {topic: [decrypted rows...]}
+    drain_ids = {}    # repo_bi -> {table: [row ids read]}, for exact deletes
+    if repo_bis:
+        for topic, table, ordered in (
+                ("issues", "issue_inbox", True),
+                ("pulls", "pull_inbox", True),
+                ("discussions", "discussion_inbox", True),
+                ("commits", "commit_inbox", True),
+                ("agentPrompts", "agent_prompts", True),
+                ("aboutUpdate", "about_inbox", False)):
+            order = " ORDER BY id ASC" if ordered else ""
+            id_col = "rowid AS drain_id" if table == "about_inbox" else "id AS drain_id"
+            table_rows = await d1_all(
+                env,
+                f"SELECT repo_bi, data, {id_col} FROM {table}"
+                f" WHERE repo_bi IN ({marks})" + order,
+                *repo_bis)
+            for r in table_rows or []:
+                item = await decrypt_row(env, r.get("data"))
+                if item:
+                    by_repo.setdefault(r.get("repo_bi"), {}) \
+                        .setdefault(topic, []).append(item)
+                # Track the exact rows READ (even undecryptable ones — they
+                # can never be delivered, so draining them is correct) so the
+                # drain deletes below can't sweep away rows inserted while
+                # this request was still decrypting (drop-undelivered race).
+                if table in ("agent_prompts", "about_inbox"):
+                    drain_ids.setdefault(r.get("repo_bi"), {}) \
+                        .setdefault(table, []).append(r.get("drain_id"))
     repos = []
     for row in rows:
         rec = await decrypt_row(env, row["data"])
         if not rec:
             continue
         repo_bi = row["key_bi"]
+        pending = by_repo.get(repo_bi, {})
         entry = {
             "name": clean_string(rec.get("name", ""), 120),
             "owner": clean_string(rec.get("owner", owner), 120),
@@ -10588,31 +15757,36 @@ async def sync_handler(env, request):
             "stateHash": rec.get("stateHash", ""),
             "updatedAt": rec.get("updatedAt", ""),
             "source": rec.get("source", ""),
+            "issues": pending.get("issues", []),
+            "pulls": pending.get("pulls", []),
+            "discussions": pending.get("discussions", []),
+            "commits": pending.get("commits", []),
         }
-        # Table names are fixed literals, safe to interpolate (same convention
-        # as _inbox_author_over_quota). Inbox items are NOT deleted here — the
-        # node still acknowledges a merged inbox with its per-repo DELETE.
-        for topic, table in (("issues", "issue_inbox"),
-                             ("pulls", "pull_inbox"),
-                             ("discussions", "discussion_inbox"),
-                             ("commits", "commit_inbox")):
-            inbox_rows = await d1_all(
-                env, f"SELECT data FROM {table} WHERE repo_bi=? ORDER BY id ASC",
-                repo_bi)
-            entry[topic] = [
-                x for x in
-                [await decrypt_row(env, r["data"]) for r in inbox_rows] if x]
-        prompt_rows = await d1_all(
-            env,
-            "SELECT data FROM agent_prompts WHERE repo_bi=? ORDER BY id ASC",
-            repo_bi)
-        prompts = [
-            x for x in
-            [await decrypt_row(env, r["data"]) for r in prompt_rows] if x]
-        if prompts:
+        # Drain-on-read deletes target the EXACT rows this request read (by
+        # id), never the whole repo_bi: a prompt/About edit inserted while
+        # this request was decrypting must survive for the next sync instead
+        # of being swept away undelivered.
+        prompts = pending.get("agentPrompts", [])
+        prompt_ids = drain_ids.get(repo_bi, {}).get("agent_prompts", [])
+        if prompt_ids:
             await d1_run(
-                env, "DELETE FROM agent_prompts WHERE repo_bi=?", repo_bi)
+                env,
+                "DELETE FROM agent_prompts WHERE id IN (%s)"
+                % ",".join("?" for _ in prompt_ids),
+                *prompt_ids)
         entry["agentPrompts"] = prompts
+        # Web About edits, drained on read like agent prompts: the node writes
+        # the change into the repo's committed .forkmesh/info.json.
+        abouts = pending.get("aboutUpdate", [])
+        about_ids = drain_ids.get(repo_bi, {}).get("about_inbox", [])
+        if abouts:
+            entry["aboutUpdate"] = abouts[0]
+        if about_ids:
+            await d1_run(
+                env,
+                "DELETE FROM about_inbox WHERE rowid IN (%s)"
+                % ",".join("?" for _ in about_ids),
+                *about_ids)
         repos.append(entry)
     return json_response(
         {"ok": True, "serverTime": int(Date.now()), "repos": repos})
@@ -10693,17 +15867,41 @@ async def agents_handler(env, request, owner, repo):
         for session in sessions:
             by_id[session["id"]] = session
         sessions = list(by_id.values())
+        # No-op short-circuit: the desktop's 30s safety-net timer mostly
+        # re-pushes an identical snapshot. Re-encrypting and rewriting up to
+        # MAX_AGENT_SESSIONS rows (hundreds of AES-GCM ops + inserts) for a
+        # byte-identical payload was the single strongest CPU spike in the
+        # 2026-07-11 free-plan overload. The digest memo is per-isolate: a
+        # cold isolate rewrites once, then skips.
+        digest = hashlib.sha256(
+            json.dumps(sessions, sort_keys=True,
+                       separators=(",", ":")).encode()).hexdigest()
+        if _AGENT_PUSH_DIGESTS.get(repo_bi) == digest:
+            return json_response({"ok": True, "unchanged": True})
         # Full-replace semantics: the desktop always pushes its whole current
         # view of this repo's sessions, so the stored set is exactly that.
         await d1_run(env, "DELETE FROM repo_agents WHERE repo_bi=?", repo_bi)
         now = int(Date.now())
+        # Multi-row INSERT (chunked under D1's bound-parameter limit) instead
+        # of one awaited roundtrip per session.
+        encrypted = []
         for session in sessions:
+            encrypted.append(
+                (str(session["id"]), await encrypt_row(env, session)))
+        for start in range(0, len(encrypted), 20):
+            chunk = encrypted[start:start + 20]
+            placeholders = ",".join("(?,?,?,?)" for _ in chunk)
+            args = []
+            for agent_id, enc in chunk:
+                args.extend((repo_bi, agent_id, enc, now))
             await d1_run(
                 env,
-                "INSERT INTO repo_agents (repo_bi, agent_id, data, updated_at) "
-                "VALUES (?,?,?,?)",
-                repo_bi, str(session["id"]), await encrypt_row(env, session), now,
-            )
+                "INSERT INTO repo_agents (repo_bi, agent_id, data, updated_at)"
+                " VALUES " + placeholders,
+                *args)
+        _AGENT_PUSH_DIGESTS[repo_bi] = digest
+        if len(_AGENT_PUSH_DIGESTS) > 2000:
+            _AGENT_PUSH_DIGESTS.clear()
         return json_response({"ok": True})
 
     if method == "GET":
@@ -10716,7 +15914,14 @@ async def agents_handler(env, request, owner, repo):
         )
         prompts = [rec for rec in
                    [await decrypt_row(env, r["data"]) for r in rows] if rec]
-        await d1_run(env, "DELETE FROM agent_prompts WHERE repo_bi=?", repo_bi)
+        # Delete exactly the rows read: a prompt queued while we were
+        # decrypting must survive for the next drain, not vanish undelivered.
+        if rows:
+            await d1_run(
+                env,
+                "DELETE FROM agent_prompts WHERE id IN (%s)"
+                % ",".join("?" for _ in rows),
+                *[r["id"] for r in rows])
         return json_response({"ok": True, "prompts": prompts})
 
     return json_response({"error": "method_not_allowed"}, status=405)
@@ -10810,6 +16015,27 @@ async def agents_prompt_handler(env, request, owner, repo, agent_id):
     model_in = clean_string(data.get("model", ""), 60)
     if model_in:
         item["model"] = model_in
+    # Optional pasted/attached screenshots (adhoc #78): data: URLs the node
+    # writes into the agent's working tree so the agent can see them. Only
+    # meaningful when starting a brand-new agent; bounded in count and size.
+    images_in = data.get("images", [])
+    if isinstance(images_in, list) and images_in:
+        images = []
+        total = 0
+        for entry in images_in:
+            if len(images) >= MAX_AGENT_PROMPT_IMAGES:
+                break
+            src = entry if isinstance(entry, str) else ""
+            if not src.startswith("data:image/"):
+                continue
+            if len(src) > MAX_AGENT_PROMPT_IMAGE_BYTES:
+                return json_response({"error": "image_too_large"}, status=400)
+            total += len(src)
+            if total > MAX_AGENT_PROMPT_IMAGES_TOTAL_BYTES:
+                return json_response({"error": "images_too_large"}, status=400)
+            images.append(src)
+        if images:
+            item["images"] = images
     await d1_run(
         env,
         "INSERT INTO agent_prompts (repo_bi, agent_id, data, queued_at) "
@@ -11163,38 +16389,24 @@ async def capture_sentry_cron_check_in(env, status, check_in_id="",
         return False
 
 
-def _console_error(message):
-    try:
-        from js import console
-        console.error(str(message))
-    except Exception:
-        pass
-
-
 def _consume_background_task(task, label):
     try:
         task.result()
     except BaseException as error:
         if type(error).__name__ == "CancelledError":
             return
-        _console_error(
-            "Background task failed (%s): %s" %
-            (str(label or "background"), _safe_error_text(error)))
 
 
 def _fire_and_forget(coro, label="background"):
     try:
         task = asyncio.ensure_future(coro)
-    except BaseException as error:
+    except BaseException:
         try:
             close = getattr(coro, "close", None)
             if close is not None:
                 close()
         except BaseException:
             pass
-        _console_error(
-            "Failed to schedule background task (%s): %s" %
-            (str(label or "background"), _safe_error_text(error)))
         return None
     try:
         task.add_done_callback(
@@ -11244,13 +16456,7 @@ async def capture_worker_exception(env, request, url, error):
     except BaseException:
         message = _safe_error_text(error)
     try:
-        sentry_configured = (
-            _sentry_dsn_parts(getattr(env, "SENTRY_DSN", "")) is not None
-        )
-    except BaseException:
-        sentry_configured = False
-    try:
-        sentry_ok = await capture_sentry_error(
+        await capture_sentry_error(
             env, 500, method, path, message, ray,
             request=request,
             error=error,
@@ -11258,11 +16464,7 @@ async def capture_worker_exception(env, request, url, error):
             service="forkmesh",
         )
     except BaseException:
-        sentry_ok = False
-    if not sentry_ok and sentry_configured:
-        _console_error(
-            "Sentry capture failed for Cloudflare Worker exception 1101; "
-            "re-raising original exception.")
+        pass
     try:
         await _write_error_log(env, 500, method, path, message, ray)
     except BaseException:
@@ -11277,6 +16479,86 @@ def _html_escape(value):
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def _repo_fedi_profile_html(title, bio, handle_full, code_url, actor_json,
+                            icon_url, image_url, followers, post_count,
+                            posts_html):
+    """Server-rendered HTML for a repo actor's fediverse profile page (its
+    `url`). All caller-supplied strings are already HTML-escaped except
+    posts_html, which is our own generated note markup. Self-contained (inline
+    CSS, no dashboard.js) so it stays cheap to build under verification bursts.
+    """
+    return (
+        "<!doctype html><html lang=\"en\"><head>"
+        "<meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,"
+        " initial-scale=1\">"
+        "<title>" + title + " on the fediverse · ForkMesh</title>"
+        "<meta name=\"description\" content=\"" + bio + "\">"
+        "<link rel=\"alternate\" type=\"application/activity+json\" href=\""
+        + actor_json + "\">"
+        "<style>"
+        ":root{color-scheme:dark}"
+        "*{box-sizing:border-box}"
+        "body{margin:0;background:#0b0d12;color:#e6e8ee;font:15px/1.55 "
+        "system-ui,-apple-system,Segoe UI,Roboto,sans-serif}"
+        "a{color:#8b7dff;text-decoration:none}a:hover{text-decoration:underline}"
+        ".wrap{max-width:640px;margin:0 auto;padding:0 16px 48px}"
+        ".banner{height:160px;border-radius:0 0 12px 12px;background-size:cover;"
+        "background-position:center;background-color:#12151c}"
+        ".head{display:flex;gap:16px;align-items:flex-end;margin-top:-44px;"
+        "padding:0 4px}"
+        ".avatar{width:88px;height:88px;border-radius:16px;border:3px solid "
+        "#0b0d12;background:#12151c;object-fit:cover;flex:0 0 auto}"
+        ".id{padding-bottom:6px;min-width:0}"
+        ".id h1{margin:0;font-size:22px;line-height:1.2}"
+        ".badge{display:inline-block;margin-left:8px;padding:1px 8px;"
+        "border:1px solid #232733;border-radius:999px;font-size:11px;"
+        "color:#9aa3b2;vertical-align:middle}"
+        ".handle{color:#9aa3b2;font-family:ui-monospace,SFMono-Regular,"
+        "Menlo,monospace;font-size:13px;word-break:break-all}"
+        ".bio{margin:16px 4px 0}"
+        ".stats{display:flex;gap:20px;margin:14px 4px 0;color:#9aa3b2;"
+        "font-size:13px}"
+        ".stats b{color:#e6e8ee}"
+        ".actions{display:flex;gap:10px;flex-wrap:wrap;margin:18px 4px 0}"
+        ".btn{display:inline-block;padding:8px 14px;border-radius:8px;"
+        "border:1px solid #232733;background:#12151c;color:#e6e8ee;"
+        "font-size:13px;font-weight:600}"
+        ".btn.primary{background:#5a4bff;border-color:#5a4bff;color:#fff}"
+        ".sep{margin:28px 4px 12px;color:#9aa3b2;font-size:12px;"
+        "text-transform:uppercase;letter-spacing:.06em}"
+        ".post{border:1px solid #232733;border-radius:10px;padding:14px 16px;"
+        "margin:0 4px 12px;background:#0f1218}"
+        ".post .body{white-space:pre-wrap;word-wrap:break-word}"
+        ".post .body p{margin:0 0 8px}"
+        ".post .meta{margin-top:10px;color:#9aa3b2;font-size:12px;display:flex;"
+        "gap:14px}"
+        ".empty{color:#9aa3b2;margin:0 4px;padding:20px 0}"
+        ".foot{margin:32px 4px 0;color:#6b7280;font-size:12px}"
+        "</style></head><body><div class=\"wrap\">"
+        "<div class=\"banner\" style=\"background-image:url('" + image_url
+        + "')\"></div>"
+        "<div class=\"head\">"
+        "<img class=\"avatar\" src=\"" + icon_url + "\" alt=\"\">"
+        "<div class=\"id\"><h1>" + title
+        + "<span class=\"badge\">Group</span></h1>"
+        "<div class=\"handle\">" + handle_full + "</div></div></div>"
+        "<p class=\"bio\">" + bio + "</p>"
+        "<div class=\"stats\"><span><b>" + str(followers)
+        + "</b> followers</span><span><b>" + str(post_count)
+        + "</b> posts</span></div>"
+        "<div class=\"actions\">"
+        "<a class=\"btn primary\" href=\"" + code_url + "\">Browse code →</a>"
+        "<a class=\"btn\" href=\"" + actor_json
+        + "\">ActivityPub actor</a></div>"
+        "<div class=\"sep\">Federated activity</div>"
+        + posts_html +
+        "<p class=\"foot\">Follow <span class=\"handle\">" + handle_full
+        + "</span> from Mastodon or any ActivityPub app to get new issues, "
+        "pull requests, discussions and releases in your feed.</p>"
+        "</div></body></html>")
 
 
 def _is_tunnel_content_path(path):
@@ -11952,57 +17234,86 @@ def _admin_href(admin_query, **params):
 
 
 ADMIN_STYLE = """
+ /* Palette: GitHub-dark by default, GitHub-light when the site theme engine
+    (site-header.js, shared localStorage keys + OS preference) stamps
+    html.light. All rules below use only these variables.
+    Every element rule is scoped under .ab-root: the universal site header
+    (site-header.js) injects its own bare <header>/<nav>/<button> markup, and
+    unscoped admin rules used to clobber it (and styles.css's centered
+    max-width `main` clobbered the admin layout right back). */
+ :root{color-scheme:dark;
+   --ab-bg:#0d1117;--ab-fg:#c9d1d9;--ab-muted:#8b949e;--ab-border:#21262d;
+   --ab-border-2:#30363d;--ab-card:#161b22;--ab-link:#58a6ff;
+   --ab-danger:#f85149;--ab-btn:#238636;--ab-btn-hover:#2ea043;
+   --ab-btn-fg:#ffffff;--ab-ok-bg:#11251a;--ab-ok-fg:#aff5c2}
+ html.light{color-scheme:light;
+   --ab-bg:#ffffff;--ab-fg:#1f2328;--ab-muted:#59636e;--ab-border:#d1d9e0;
+   --ab-border-2:#d1d9e0;--ab-card:#f6f8fa;--ab-link:#0969da;
+   --ab-danger:#cf222e;--ab-btn:#1f883d;--ab-btn-hover:#1a7f37;
+   --ab-btn-fg:#ffffff;--ab-ok-bg:#dafbe1;--ab-ok-fg:#116329}
  *{box-sizing:border-box}
- body{font:14px/1.5 system-ui,sans-serif;margin:0;background:#0d1117;color:#c9d1d9}
- header{padding:16px 24px;border-bottom:1px solid #21262d}
- h1{font-size:18px;margin:0}
- .meta{color:#8b949e;font-size:13px;margin-top:4px}
- a{color:#58a6ff;text-decoration:none}
- a:hover{text-decoration:underline}
- .cards{display:flex;gap:12px;flex-wrap:wrap;padding:16px 24px 0}
- .card{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px 18px;min-width:120px}
- .card .n{font-size:24px;font-weight:600}
- .card .l{color:#8b949e;font-size:12px;margin-top:2px}
- .card.warn .n{color:#f85149}
- .tools{padding:12px 24px;display:flex;gap:12px;align-items:center}
- button{background:#238636;color:#fff;border:1px solid #2ea043;border-radius:6px;
-        padding:8px 14px;font:600 13px system-ui;cursor:pointer}
- button:hover{background:#2ea043}
- button[disabled]{background:#30363d;border-color:#30363d;color:#8b949e;cursor:not-allowed}
- .banner{margin:0 24px 8px;padding:10px 14px;border-radius:6px;border:1px solid #2ea043;
-         background:#11251a;color:#aff5c2;white-space:pre-wrap;font:13px ui-monospace,monospace}
- .layout{display:flex;align-items:flex-start}
- nav{width:220px;flex:none;border-right:1px solid #21262d;min-height:60vh;padding:8px 0}
- nav a{display:block;padding:7px 20px;color:#c9d1d9}
- nav a.active{background:#161b22;border-left:3px solid #58a6ff;font-weight:600}
- nav .sec{padding:10px 20px 4px;color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
- main{flex:1;min-width:0;overflow-x:auto;padding:8px 0 40px}
- table{border-collapse:collapse;width:100%}
- th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #21262d;vertical-align:top}
- th{position:sticky;top:0;background:#161b22;color:#8b949e;font-weight:600}
- td{font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;max-width:560px}
- .s5{color:#f85149;font-weight:600}
- tr:hover{background:#161b22}
- .empty{padding:32px 24px;color:#8b949e}
- .title{padding:14px 24px 4px;font-weight:600}
- .navcount{color:#8b949e;font-size:11px;font-weight:400}
- .navlink{color:#58a6ff}
- nav a .navcount{float:right}
- .rowform{padding:8px 24px;max-width:760px}
- .rowfield{display:block;margin:10px 0}
- .rowfield span{display:block;color:#8b949e;font-size:12px;margin-bottom:4px}
- .rowfield input,.rowfield textarea{width:100%;background:#0d1117;color:#c9d1d9;
-        border:1px solid #30363d;border-radius:6px;padding:8px;
+ body{font:14px/1.5 system-ui,sans-serif;margin:0;background:var(--ab-bg);color:var(--ab-fg)}
+ .ab-root header{padding:12px 24px;border-bottom:1px solid var(--ab-border)}
+ .ab-root h1{font-size:18px;margin:0}
+ .ab-root .meta{color:var(--ab-muted);font-size:13px;margin-top:4px}
+ .ab-root a{color:var(--ab-link);text-decoration:none}
+ .ab-root a:hover{text-decoration:underline}
+ .ab-root .cards{display:flex;gap:12px;flex-wrap:wrap;padding:12px 24px 0}
+ .ab-root .card{background:var(--ab-card);border:1px solid var(--ab-border);border-radius:8px;padding:10px 16px;min-width:110px}
+ .ab-root .card .n{font-size:22px;font-weight:600}
+ .ab-root .card .l{color:var(--ab-muted);font-size:12px;margin-top:2px}
+ .ab-root .card.warn .n{color:var(--ab-danger)}
+ .ab-root .tools{padding:10px 24px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+ .ab-root button{background:var(--ab-btn);color:var(--ab-btn-fg);border:1px solid var(--ab-btn-hover);border-radius:6px;
+        padding:6px 12px;font:600 13px system-ui;cursor:pointer}
+ .ab-root button:hover{background:var(--ab-btn-hover)}
+ .ab-root button[disabled]{background:var(--ab-border-2);border-color:var(--ab-border-2);color:var(--ab-muted);cursor:not-allowed}
+ .ab-root input[type=text],.ab-root input[type=password]{background:var(--ab-bg);color:var(--ab-fg);
+        border:1px solid var(--ab-border-2);border-radius:6px;padding:6px 8px;font:13px system-ui}
+ .ab-root .banner{margin:0 24px 8px;padding:10px 14px;border-radius:6px;border:1px solid var(--ab-btn-hover);
+         background:var(--ab-ok-bg);color:var(--ab-ok-fg);white-space:pre-wrap;font:13px ui-monospace,monospace}
+ .ab-root .layout{display:flex;align-items:flex-start;width:100%}
+ .ab-root nav{width:210px;flex:none;border-right:1px solid var(--ab-border);min-height:60vh;padding:8px 0}
+ .ab-root nav a{display:block;padding:5px 20px;color:var(--ab-fg);font-size:13px}
+ .ab-root nav a.active{background:var(--ab-card);border-left:3px solid var(--ab-link);font-weight:600}
+ .ab-root nav .sec{padding:10px 20px 4px;color:var(--ab-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+ .ab-root nav .navsort{float:right;text-transform:none;letter-spacing:normal;font-size:11px}
+ .ab-root main{flex:1;min-width:0;max-width:none;margin:0;overflow-x:auto;padding:4px 0 40px}
+ .ab-root table{border-collapse:collapse;width:100%}
+ .ab-root th,.ab-root td{text-align:left;padding:5px 10px;border-bottom:1px solid var(--ab-border);vertical-align:top}
+ .ab-root th{position:sticky;top:0;background:var(--ab-card);color:var(--ab-muted);font-weight:600;
+        font-size:12px;white-space:nowrap;z-index:1}
+ .ab-root th.jcol{font-style:italic;font-weight:500}
+ .ab-root td{font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap;word-break:break-word;max-width:560px}
+ .ab-root table.compact td{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        word-break:normal;max-width:240px}
+ .ab-root table.compact td[title]{cursor:help;text-decoration:underline dotted var(--ab-muted);
+        text-underline-offset:3px}
+ .ab-root .jsoncell{color:var(--ab-muted)}
+ .ab-root .s5{color:var(--ab-danger);font-weight:600}
+ .ab-root tbody tr:hover{background:var(--ab-card)}
+ .ab-root .empty{padding:32px 24px;color:var(--ab-muted)}
+ .ab-root .title{padding:12px 24px 4px;font-weight:600}
+ .ab-root .navcount{color:var(--ab-muted);font-size:11px;font-weight:400}
+ .ab-root .navlink{color:var(--ab-link)}
+ .ab-root nav a .navcount{float:right}
+ .ab-root .rowform{padding:8px 24px;max-width:760px}
+ .ab-root .rowfield{display:block;margin:10px 0}
+ .ab-root .rowfield span{display:block;color:var(--ab-muted);font-size:12px;margin-bottom:4px}
+ .ab-root .rowfield input,.ab-root .rowfield textarea{width:100%;background:var(--ab-bg);color:var(--ab-fg);
+        border:1px solid var(--ab-border-2);border-radius:6px;padding:8px;
         font:13px ui-monospace,monospace}
- .tools .navlink{padding:8px 4px}
- .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:180px}
- .account-kind button{padding:4px 8px;font-size:12px}
- .kindpill{border:1px solid #30363d;border-radius:999px;padding:3px 8px;
-        color:#c9d1d9;background:#161b22;font:600 12px system-ui,sans-serif}
- .diaggrid{display:flex;gap:24px;flex-wrap:wrap;padding:4px 24px 12px;align-items:flex-start}
- .diagcol{min-width:240px}
- .diagcol h3{font-size:13px;color:#8b949e;margin:8px 0 4px;font-weight:600}
- .diagcol table{width:auto;min-width:220px}
+ .ab-root .tools .navlink{padding:8px 4px}
+ .ab-root .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:nowrap}
+ .ab-root .account-kind button{padding:3px 8px;font-size:12px}
+ .ab-root .kindpill{border:1px solid var(--ab-border-2);border-radius:999px;padding:2px 8px;
+        color:var(--ab-fg);background:var(--ab-card);font:600 12px system-ui,sans-serif}
+ .ab-root .inpill{border:1px solid #1a7f37;border-radius:999px;padding:1px 7px;
+        color:#1a7f37;background:transparent;font:600 11px system-ui,sans-serif;white-space:nowrap}
+ .ab-root .diaggrid{display:flex;gap:24px;flex-wrap:wrap;padding:4px 24px 12px;align-items:flex-start}
+ .ab-root .diagcol{min-width:240px}
+ .ab-root .diagcol h3{font-size:13px;color:var(--ab-muted);margin:8px 0 4px;font-weight:600}
+ .ab-root .diagcol table{width:auto;min-width:220px}
 """
 
 # Cloudflare D1 keeps internal bookkeeping tables; hide them from the browser.
@@ -12019,11 +17330,42 @@ async def _admin_list_tables(env):
             if r.get("name") and r.get("name") not in ADMIN_HIDDEN_TABLES]
 
 
-def _admin_cell(column, value, env_unused=None):
-    text = "" if value is None else str(value)
-    if len(text) > 4000:
-        text = text[:4000] + "…"
-    return _html_escape(text)
+# Generic-table cells render on a single compact line (CSS ellipsizes long
+# values); anything longer than the preview rides in a hover tooltip so rows
+# stay one line tall.
+ADMIN_CELL_PREVIEW = 120
+ADMIN_CELL_TOOLTIP_MAX = 4000
+# Cap on extra columns expanded from the decrypted `data` JSON blob.
+ADMIN_MAX_JSON_COLS = 24
+
+
+def _admin_compact_cell(value, extra_class=""):
+    if value is None or value == "":
+        return "<td></td>"
+    if isinstance(value, bool):
+        text = "true" if value else "false"
+    elif isinstance(value, (dict, list)):
+        text = json.dumps(value, sort_keys=True)
+    else:
+        text = str(value)
+    if len(text) > ADMIN_CELL_TOOLTIP_MAX:
+        text = text[:ADMIN_CELL_TOOLTIP_MAX] + "…"
+    shown = text
+    if len(shown) > ADMIN_CELL_PREVIEW:
+        shown = shown[:ADMIN_CELL_PREVIEW] + "…"
+    title = (' title="%s"' % _html_escape(text)) if shown != text else ""
+    cls = (' class="%s"' % extra_class) if extra_class else ""
+    return "<td%s%s>%s</td>" % (cls, title, _html_escape(shown))
+
+
+def _admin_json_cell(decoded):
+    # Collapse the decrypted `data` JSON to a small marker; the full pretty
+    # JSON shows in the hover tooltip.
+    pretty = json.dumps(decoded, indent=2, sort_keys=True)
+    if len(pretty) > ADMIN_CELL_TOOLTIP_MAX:
+        pretty = pretty[:ADMIN_CELL_TOOLTIP_MAX] + "…"
+    return ('<td class="jsoncell" title="%s">{…} %d key(s)</td>'
+            % (_html_escape(pretty), len(decoded)))
 
 
 # --- Admin bulk select + delete helpers (operate on rowid) -------------------
@@ -12055,7 +17397,7 @@ def _admin_row_checkbox(rowid):
             % _html_escape(rowid))
 
 
-def _admin_account_migration_cell(row, rec, admin_query=""):
+async def _admin_account_migration_cell(env, row, rec, admin_query=""):
     rec = rec if isinstance(rec, dict) else {}
     name = clean_string(rec.get("name") or row.get("name") or "",
                         MAX_NODE_NAME).strip().lower()
@@ -12063,18 +17405,27 @@ def _admin_account_migration_cell(row, rec, admin_query=""):
         return '<td><span class="meta">no account name</span></td>'
     kind = _account_kind(rec)
     action = _admin_href(admin_query, table="accounts", action="migrate_account")
+    # We are phasing out the accounts table. "Move to users/nodes" pins the
+    # record as that kind, (re)mirrors it into the authoritative users/nodes
+    # table, and drains the legacy accounts row — so both buttons stay active
+    # even for the current kind (it recreates the mirror if it went missing).
+    name_bi = row.get("name_bi") or await blind_index(env, name)
+    in_users = bool(await d1_first(
+        env, "SELECT 1 FROM users WHERE user_bi=?", name_bi))
+    in_nodes = bool(await d1_first(
+        env, "SELECT 1 FROM nodes WHERE node_bi=?", name_bi))
+    present = {"user": in_users, "node": in_nodes}
     buttons = []
-    for target, label in (("user", "Make user"), ("node", "Make node")):
-        disabled = ' disabled aria-disabled="true"' if target == kind else ""
-        onclick = (
-            ' onclick="return confirm(\'Migrate account %s to %s?\')"'
-            % (_html_escape(name), target)
-        ) if not disabled else ""
+    for target, table, label in (("user", "users", "Move to users"),
+                                 ("node", "nodes", "Move to nodes")):
+        indicator = (' <span class="inpill" title="Already exists in the %s '
+                     'table">in %s</span>' % (table, table)) if present[target] else ""
         buttons.append(
             '<button type="submit" formmethod="post" formaction="%s" '
-            'name="account_migration" value="%s"%s%s>%s</button>'
-            % (action, _html_escape(name + ":" + target), disabled, onclick,
-               label)
+            'name="account_migration" value="%s" '
+            'onclick="return confirm(\'Move account %s to %s?\')">%s</button>%s'
+            % (action, _html_escape(name + ":" + target), _html_escape(name),
+               table, label, indicator)
         )
     return (
         '<td><div class="account-kind"><span class="kindpill">%s</span>%s</div></td>'
@@ -12279,6 +17630,21 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             '(PBKDF2-hashed); email and payout address are left unchanged.</span>'
             '</div>'
         ) % _admin_href(admin_query, table="accounts", action="set_password")
+        prefix += (
+            '<div class="tools">'
+            '<form method="post" action="%s" '
+            'onsubmit="return confirm(\'Migrate every account with a verified '
+            'email into the users table and remove it from accounts?\')">'
+            + csrf_field +
+            '<button type="submit">Migrate all verified-email users into users</button>'
+            '</form>'
+            '<span class="meta">One-click: pins every account whose email is '
+            'verified as a user, mirrors it into the authoritative users table, '
+            'and deletes its legacy accounts row. Unverified rows are left in '
+            'place.</span>'
+            '</div>'
+        ) % _admin_href(admin_query, table="accounts",
+                        action="migrate_verified_users")
 
     if table == "telemetry":
         # Purpose-built crash/stall dashboard + recent events, newest first.
@@ -12394,36 +17760,56 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             if k != "_rowid_" and k not in columns:
                 columns.append(k)
 
-    body = []
+    # Decrypt each row's `data` blob once, then promote the union of its
+    # top-level JSON keys to real table columns so rows stay one line tall.
+    # The data cell itself collapses to a marker with the pretty JSON in its
+    # hover tooltip.
+    decoded_rows = []
     for r in rows:
+        decoded = None
+        if isinstance(r.get("data"), str) and r.get("data"):
+            decoded = await decrypt_row(env, r.get("data"))
+        decoded_rows.append((r, decoded if isinstance(decoded, dict) else None))
+    json_cols = []
+    for _r, decoded in decoded_rows:
+        if decoded:
+            for k in decoded:
+                if k not in columns and k not in json_cols:
+                    json_cols.append(k)
+    json_cols = json_cols[:ADMIN_MAX_JSON_COLS]
+
+    body = []
+    for r, decoded_data in decoded_rows:
         rid = r.get("_rowid_", "")
-        decoded_data = None
-        if table == "accounts" and isinstance(r.get("data"), str) and r.get("data"):
-            decoded_data = await decrypt_row(env, r.get("data"))
         cells = [_admin_row_checkbox(rid),
                  '<td><a class="navlink" href="%s">Edit</a></td>'
                  % _admin_href(admin_query, table=table, action="edit", rowid=rid)]
         if table == "accounts":
-            cells.append(_admin_account_migration_cell(r, decoded_data, admin_query))
+            cells.append(await _admin_account_migration_cell(
+                env, r, decoded_data, admin_query))
         for col in columns:
             value = r.get(col)
-            if col == "data" and isinstance(value, str) and value:
-                decoded = decoded_data if table == "accounts" else await decrypt_row(env, value)
-                if decoded is not None:
-                    value = json.dumps(decoded, indent=2, sort_keys=True)
-            cells.append("<td>%s</td>" % _admin_cell(col, value))
+            if col == "data" and decoded_data is not None:
+                cells.append(_admin_json_cell(decoded_data))
+                continue
+            cells.append(_admin_compact_cell(value))
+        for col in json_cols:
+            cells.append(_admin_compact_cell(
+                None if decoded_data is None else decoded_data.get(col)))
         body.append("<tr>" + "".join(cells) + "</tr>")
 
     head = (_admin_select_all_th() + "<th>Edit</th>" +
             ("<th>Kind</th>" if table == "accounts" else "")) + "".join(
-        "<th>%s</th>" % _html_escape(c) for c in columns)
+        "<th>%s</th>" % _html_escape(c) for c in columns) + "".join(
+        '<th class="jcol" title="from the data JSON">%s</th>' % _html_escape(c)
+        for c in json_cols)
     return (
         prefix
         + '<div class="title">%s · %d row(s)%s%s</div>'
         % (_html_escape(table), total,
            " (showing 500)" if total > 500 else "", add_link)
         + _admin_bulk_form_open(table, csrf_field, admin_query)
-        + "<table><thead><tr>" + head + "</tr></thead><tbody>"
+        + '<table class="compact"><thead><tr>' + head + "</tr></thead><tbody>"
         + "".join(body) + "</tbody></table></form>"
     )
 
@@ -12447,27 +17833,51 @@ def _render_admin_stats(stats):
     return '<div class="cards">' + "".join(out) + "</div>"
 
 
-def _render_admin_nav(tables, active, counts=None, admin_query=""):
+def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=False):
     counts = counts or {}
-    links = ['<div class="sec">Tables</div>']
+    if sort_records:
+        tables = sorted(tables, key=lambda t: counts.get(t, 0), reverse=True)
+    toggle_label = "A–Z" if sort_records else "Sort by records"
+    toggle_href = _admin_href(admin_query, table=active,
+                              sort=("" if sort_records else "records"))
+    links = ['<div class="sec">Tables <a class="navsort" href="%s">%s</a></div>'
+             % (toggle_href, toggle_label)]
     for t in tables:
         label = "Error logs" if t == "error_log" else t
         cls = ' class="active"' if t == active else ""
         n = counts.get(t)
         suffix = (' <span class="navcount">%d</span>' % n) if n is not None else ""
+        # Carry the active sort along: sort state lives only in the URL, so a
+        # table link that dropped it would silently reset the nav to A–Z.
         links.append('<a href="%s"%s>%s%s</a>'
-                     % (_admin_href(admin_query, table=t), cls,
-                        _html_escape(label), suffix))
+                     % (_admin_href(admin_query, table=t,
+                                    sort=("records" if sort_records else "")),
+                        cls, _html_escape(label), suffix))
     return "<nav>" + "".join(links) + "</nav>"
 
 
 def render_admin_html(env_stats, tables, active_table, table_html, banner="",
-                      counts=None, csrf_field="", admin_query=""):
+                      counts=None, csrf_field="", admin_query="", sort_records=False):
     banner_html = ('<div class="banner">%s</div>' % _html_escape(banner)) if banner else ""
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<title>forkmesh · admin</title><style>" + ADMIN_STYLE + "</style></head><body>"
+        "<meta name=\"color-scheme\" content=\"light dark\">"
+        "<title>forkmesh · admin</title>"
+        # The universal site header (brand, nav, account chip) + the theme
+        # engine it carries: site-header.js stamps html.light/html.dark from
+        # the visitor's saved choice or OS preference, which ADMIN_STYLE's
+        # variable palette keys off. styles.css supplies the header's own
+        # tokens; ADMIN_STYLE loads after it so the admin rules win.
+        "<link rel=\"stylesheet\" href=\"/styles.css\">"
+        "<link rel=\"stylesheet\" href=\"/site-header.css\">"
+        "<script src=\"/posthog.js\"></script>"
+        "<script src=\"/site-header.js\" defer></script>"
+        "<style>" + ADMIN_STYLE + "</style></head><body>"
+        "<div data-forkmesh-header=\"simple\"></div>"
+        # .ab-root scopes every admin style rule so they cannot leak into the
+        # injected site header above (and vice versa).
+        "<div class=\"ab-root\">"
         "<header><h1>forkmesh · admin</h1>"
         "<div class=\"meta\">Live Durable Object load, every D1 table, and "
         "Solana payment-reference status.</div></header>"
@@ -12494,9 +17904,9 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
           'owner approves the confirmation prompt on its own client.</span></div>'
         + banner_html
         + '<div class="layout">'
-        + _render_admin_nav(tables, active_table, counts, admin_query)
+        + _render_admin_nav(tables, active_table, counts, admin_query, sort_records)
         + "<main>" + table_html + "</main>"
-        + "</div>"
+        + "</div></div>"
         "<script>for (const el of document.querySelectorAll('[data-ts]')){"
         "const ms=Number(el.getAttribute('data-ts'));"
         "if(ms)el.textContent=new Date(ms).toLocaleString();}</script>"
@@ -12540,12 +17950,18 @@ async def _admin_migrate_account_kind(env, name, kind):
         return "Account migration failed: no account named '%s'." % name
     old_kind = _account_kind(rec)
     already_pinned = old_kind == kind and rec.get("kind") == kind
-    if already_pinned:
-        return "Account '%s' is already pinned as a %s." % (name, kind)
     rec["kind"] = kind
+    # Persist (mirrors the record into the authoritative users/nodes tables),
+    # then drain the legacy accounts row: making a user or a node moves it out of
+    # the accounts table entirely (adhoc #20).
     await _save_account(env, name_bi, rec)
+    await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
+    if already_pinned:
+        return ("Account '%s' was already a %s; removed its legacy accounts row."
+                % (name, kind))
     verb = "Pinned" if old_kind == kind else "Migrated"
-    msg = "%s account '%s' as %s." % (verb, name, kind)
+    msg = "%s account '%s' as %s (removed from the accounts table)." % (
+        verb, name, kind)
     notes = []
     if kind == "user" and not rec.get("pass_hash"):
         notes.append("Set a password before this user can log in.")
@@ -12553,6 +17969,44 @@ async def _admin_migrate_account_kind(env, name, kind):
         notes.append("Linked nodes on this record were left unchanged; transfer them separately if needed.")
     if notes:
         msg += " " + " ".join(notes)
+    return msg
+
+
+async def _admin_migrate_verified_users(env):
+    # Bulk one-click migration (adhoc #20): every legacy accounts row whose
+    # encrypted record has a verified email is pinned as a user, mirrored into
+    # the authoritative users table, and then removed from the accounts table.
+    rows = await d1_all(env, "SELECT name_bi, data FROM accounts")
+    migrated = 0
+    skipped = 0
+    errors = []
+    for row in rows or []:
+        name_bi = row.get("name_bi")
+        if not name_bi:
+            continue
+        rec = await decrypt_row(env, row.get("data", ""))
+        if not rec or not rec.get("email") or not rec.get("email_verified"):
+            skipped += 1
+            continue
+        try:
+            rec["kind"] = "user"
+            email_bi = await blind_index(
+                env, clean_string(rec.get("email", ""), 254).lower())
+            # _save_account mirrors into users; then drop the legacy row.
+            await _save_account(env, name_bi, rec, email_bi=email_bi)
+            await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
+            migrated += 1
+        except Exception as error:
+            errors.append(clean_string(rec.get("name", "unknown"), MAX_NODE_NAME)
+                          + ": " + _safe_error_text(error))
+    if migrated == 0 and not errors:
+        return ("No accounts with verified emails to migrate "
+                "(%d account row(s) checked)." % skipped)
+    msg = ("Migrated %d verified-email account(s) into the users table and "
+           "removed them from accounts (%d without a verified email left in "
+           "place)." % (migrated, skipped))
+    if errors:
+        msg += " Errors: " + "; ".join(errors[:5])
     return msg
 
 
@@ -12645,6 +18099,21 @@ class Default(WorkerEntrypoint):
         cron_started_ms = int(Date.now())
         cron_failures = []
         minute = int(cron_started_ms // 60000)
+        # Send the "in_progress" check-in FIRST, before any D1/decrypt work,
+        # so Sentry has proof this tick started even if the platform kills
+        # the isolate later (cold Pyodide isolate blowing the invocation's
+        # CPU/wall-clock budget - the same failure mode documented above for
+        # /status samples). Without this, a killed tick sends nothing at all
+        # and Sentry reports it as a "missed check-in" instead of a runtime
+        # error, which is what actually happened; dropping the closing
+        # ok/error check-in on the same check_in_id still only costs one
+        # extra Sentry round trip per tick.
+        try:
+            await capture_sentry_cron_check_in(
+                self.env, "in_progress", check_in_id=cron_check_in_id,
+                cron=cron_expression)
+        except BaseException:
+            pass
         # The /status health sample runs FIRST: it is the cheapest job (no
         # row decryption) and the one whose absence shows publicly as fake
         # downtime, so a tick that dies partway (cold Pyodide isolate blowing
@@ -12677,6 +18146,18 @@ class Default(WorkerEntrypoint):
                 await log_cron_error(
                     self.env, "/cron/sweep-funded-bounties",
                     "sweep_funded_bounties failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
+        # ActivityPub outbound delivery: the publish path already best-effort
+        # sends a few activities inline, this drains the retry backlog (one
+        # cheap indexed SELECT when the queue is empty).
+        if minute % 5 == 0:
+            try:
+                await ensure_schema(self.env)
+                await _ap_drain_outbox(self.env, AP_CRON_DELIVERIES)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/activitypub-deliver",
+                    "_ap_drain_outbox failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
         # Relay federation: a federated relay registers + reports its online
         # nodes to the main relay (two outbound HTTP calls); the main relay
@@ -12745,9 +18226,30 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/chat-history-prune-expired",
                     "chat_history_prune_expired failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # One Sentry check-in per tick (the closing ok/error): the opening
-        # in-progress check-in doubled the outbound Sentry traffic for no
-        # alerting value on a one-minute schedule.
+        # Hourly: prune the reinstall/rotate account_devices sprawl (stale,
+        # superseded keys), never an account's current signing key.
+        if minute % 60 == 47:
+            try:
+                await ensure_schema(self.env)
+                await purge_stale_account_devices(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/purge-stale-account-devices",
+                    "purge_stale_account_devices failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
+        # Hourly: the once-per-user "How are we doing?" founder feedback email
+        # for accounts that crossed the 24h-after-signup mark (batched; also
+        # back-fills accounts that signed up before this feature shipped).
+        if minute % 60 == 22:
+            try:
+                await _send_feedback_emails(self.env)
+            except BaseException as error:
+                await log_cron_error(
+                    self.env, "/cron/feedback-emails",
+                    "_send_feedback_emails failed: " + _safe_error_text(error),
+                    error=error, failures=cron_failures)
+        # Closing check-in for the same check_in_id sent above, so Sentry
+        # resolves the "in_progress" marker to a final ok/error result.
         final_cron_status = "error" if cron_failures else "ok"
         await capture_sentry_cron_check_in(
             self.env, final_cron_status, check_in_id=cron_check_in_id,
@@ -12769,10 +18271,8 @@ class Default(WorkerEntrypoint):
         except Exception as error:
             try:
                 await capture_worker_exception(self.env, request, url, error)
-            except BaseException as handler_error:
-                _console_error(
-                    "Worker exception capture failed before re-raise: " +
-                    _safe_error_text(handler_error))
+            except BaseException:
+                pass
             # Re-raise so Cloudflare records the native Worker failure/Error 1101
             # while Sentry keeps the underlying Python exception and stack trace.
             raise
@@ -12861,6 +18361,11 @@ class Default(WorkerEntrypoint):
                         self.env, name, kind)
                 except Exception as error:
                     banner = "Account migration failed: " + repr(error)
+            elif action == "migrate_verified_users":
+                try:
+                    banner = await _admin_migrate_verified_users(self.env)
+                except Exception as error:
+                    banner = "Verified-user migration failed: " + repr(error)
             elif action == "request_ownership":
                 try:
                     banner = await _admin_console_request_ownership(
@@ -12942,20 +18447,29 @@ class Default(WorkerEntrypoint):
             except Exception:
                 counts[t] = 0
         stats = await admin_stats(self.env)
+        sort_records = params.get("sort", [""])[0] == "records"
         return Response(
             render_admin_html(stats, tables, active, table_html, banner, counts,
-                              csrf_field=csrf_field, admin_query=admin_query),
+                              csrf_field=csrf_field, admin_query=admin_query,
+                              sort_records=sort_records),
             status=200,
             headers={"content-type": "text/html; charset=utf-8"},
         )
 
     async def _route(self, request, url):
+        # Organization repo aliases (issue #388): rewrite /<org>/<repo> git and
+        # /api/repo/<org>/<repo>/... requests to the linked node's namespace
+        # before any route matching — see org_alias_rewrite.
+        aliased = await org_alias_rewrite(self.env, request, url)
+        if aliased is not None:
+            request, url = aliased
+
         # Git smart-HTTP clone, proxied to the hosting client over the tunnel.
         git_info = GIT_INFO_RE.match(url.path)
         if git_info:
             service = parse_qs(url.query).get("service", [""])[0]
             if service == "git-upload-pack":
-                return await self._git_host(
+                return await self._git_advert_cached(
                     request, git_info.group(1), git_info.group(2))
             if service == "git-receive-pack":
                 return await self._git_push(
@@ -13014,6 +18528,13 @@ class Default(WorkerEntrypoint):
                 {
                     "ok": True,
                     "rev": _build_rev(self.env),
+                    # deploy.sh stamps APP_VERSION (qt_client release number)
+                    # alongside BUILD_REV; the dashboard header chip renders
+                    # it. It was documented as echoed here but never was —
+                    # which also left the chip's sessionStorage cache
+                    # unreachable, so every page navigation refetched this.
+                    "version": str(
+                        getattr(self.env, "APP_VERSION", "") or ""),
                     "now": Date.now(),
                 }
             )
@@ -13073,11 +18594,21 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/notifications", "/api/notifications/"):
             return await notifications_handler(self.env, request)
 
+        # Peer mirror requests (issue #385): create/accept/reject a request
+        # asking another node to mirror a repo. Session-gated like the inbox.
+        if url.path in ("/api/mirror-requests", "/api/mirror-requests/"):
+            return await mirror_requests_handler(self.env, request)
+
         # Consolidated lightweight status digest (version + profile/notification
         # change tokens) so the client polls once instead of re-fetching the
         # full profile and notification list every tick.
         if url.path in ("/api/poll", "/api/poll/"):
             return await poll_handler(self.env, request)
+
+        # Shared room-chat key, derived server-side from DATA_KEY and handed only
+        # to authenticated clients — replaces the old public app-wide constant.
+        if url.path in ("/api/chat/room-key", "/api/chat/room-key/"):
+            return await chat_room_key_handler(self.env, request)
 
         # Chat-triggered Cloudflare AI interface. Clients forward explicit
         # "forkbot ..." mentions here; the Worker queues compatible issue-inbox
@@ -13090,30 +18621,150 @@ class Default(WorkerEntrypoint):
 
         # All /api/accounts/* paths (reserve, profile, follow, login, lookup)
         # are dispatched by accounts_handler.
-        if url.path.startswith("/api/federation/"):
+        # Solana payout relay mesh (canonical /api/relay-mesh/*, legacy
+        # /api/federation/* alias) — unrelated to ActivityPub, which is /ap/*.
+        if (url.path.startswith("/api/relay-mesh/")
+                or url.path.startswith("/api/federation/")):
             return await federation_handler(self.env, request)
 
         if url.path.startswith("/api/accounts/"):
             return await accounts_handler(self.env, request)
+
+        # --- Organizations + teams (issue #388) --------------------------
+        if ORGS_RE.match(url.path):
+            return await orgs_handler(self.env, request)
+        org_members_match = ORG_MEMBERS_RE.match(url.path)
+        if org_members_match:
+            org = safe_segment(org_members_match.group(1))
+            if not org:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_members_handler(self.env, request, org)
+        org_team_members_match = ORG_TEAM_MEMBERS_RE.match(url.path)
+        if org_team_members_match:
+            org = safe_segment(org_team_members_match.group(1))
+            team = safe_segment(org_team_members_match.group(2))
+            if not org or not team:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_team_members_handler(
+                self.env, request, org, team)
+        org_teams_match = ORG_TEAMS_RE.match(url.path)
+        if org_teams_match:
+            org = safe_segment(org_teams_match.group(1))
+            if not org:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_teams_handler(self.env, request, org)
+        org_repos_match = ORG_REPOS_RE.match(url.path)
+        if org_repos_match:
+            org = safe_segment(org_repos_match.group(1))
+            if not org:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_repos_handler(self.env, request, org)
+        org_match = ORG_RE.match(url.path)
+        if org_match:
+            org = safe_segment(org_match.group(1))
+            if not org:
+                return json_response({"error": "not_found"}, status=404)
+            return await org_handler(self.env, request, org)
 
         # Founders-outreach email console (/outreach): admins plus the
         # admin-managed outreach_team roster send from the founders address.
         if url.path == "/api/outreach" or url.path.startswith("/api/outreach/"):
             return await outreach_handler(self.env, request)
 
+        # --- ActivityPub federation (fediverse) --------------------------
+        # WebFinger/NodeInfo discovery plus the /ap/* actor, inbox, object
+        # and collection endpoints. Kept clear of /api/federation/*, which is
+        # the (unrelated) Solana payout relay mesh.
+        if url.path == "/.well-known/webfinger":
+            return await ap_webfinger_handler(self.env, request)
+        if url.path == "/.well-known/host-meta":
+            return await ap_hostmeta_handler(self.env, request)
+        if url.path == "/.well-known/nodeinfo":
+            return await ap_nodeinfo_handler(self.env, request, True)
+        if url.path == "/nodeinfo/2.1":
+            return await ap_nodeinfo_handler(self.env, request, False)
+        if url.path in ("/ap/actor", "/ap/actor/"):
+            return await _ap_actor_doc_response(
+                self.env, request, AP_ACTOR_INSTANCE, AP_INSTANCE_HANDLE)
+        if url.path in ("/ap/inbox", "/ap/actor/inbox"):
+            return await ap_inbox_handler(self.env, request)
+        ap_user_match = AP_USER_RE.match(url.path)
+        if ap_user_match:
+            return await _ap_actor_doc_response(
+                self.env, request, AP_ACTOR_USER,
+                ap_user_match.group(1).lower())
+        ap_user_sub = AP_USER_SUB_RE.match(url.path)
+        if ap_user_sub:
+            if ap_user_sub.group(2) == "inbox":
+                return await ap_inbox_handler(self.env, request)
+            return await ap_collection_handler(
+                self.env, request, AP_ACTOR_USER,
+                ap_user_sub.group(1).lower(), ap_user_sub.group(2))
+        ap_repo_match = AP_REPO_RE.match(url.path)
+        if ap_repo_match:
+            ap_owner = safe_segment(ap_repo_match.group(1))
+            ap_repo_name = safe_segment(ap_repo_match.group(2))
+            if not ap_owner or not ap_repo_name:
+                return json_response({"error": "not_found"}, status=404)
+            return await _ap_actor_doc_response(
+                self.env, request, AP_ACTOR_REPO,
+                ap.repo_handle(ap_owner.lower(), ap_repo_name.lower()))
+        ap_repo_sub = AP_REPO_SUB_RE.match(url.path)
+        if ap_repo_sub:
+            ap_owner = safe_segment(ap_repo_sub.group(1))
+            ap_repo_name = safe_segment(ap_repo_sub.group(2))
+            if not ap_owner or not ap_repo_name:
+                return json_response({"error": "not_found"}, status=404)
+            if ap_repo_sub.group(3) == "inbox":
+                return await ap_inbox_handler(self.env, request)
+            return await ap_collection_handler(
+                self.env, request, AP_ACTOR_REPO,
+                ap.repo_handle(ap_owner.lower(), ap_repo_name.lower()),
+                ap_repo_sub.group(3))
+        ap_object_media_match = AP_OBJECT_MEDIA_RE.match(url.path)
+        if ap_object_media_match:
+            return await ap_object_media_handler(
+                self.env, request, ap_object_media_match.group(1),
+                ap_object_media_match.group(2))
+        ap_object_match = AP_OBJECT_RE.match(url.path)
+        if ap_object_match:
+            return await ap_object_handler(
+                self.env, request, ap_object_match.group(1))
+
         # Match the profile route on the percent-decoded, case-folded path:
         # links pasted from address bars / other apps often arrive as /%40name
         # (an encoded @) or /@Name, and both used to fall through to the 404
         # page instead of the profile.
         public_profile = re.match(
-            r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)/?$",
+            r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)(/repositories)?/?$",
             unquote(url.path).lower())
         if public_profile:
-            profile_response = await public_profile_handler(
-                self.env, request, public_profile.group(1))
-            if int(profile_response.status) == 404:
-                return await self._serve_not_found_page(url)
-            return profile_response
+            # Fediverse clients resolve profile URLs with an ActivityPub
+            # Accept header; hand them the actor document instead of HTML.
+            if ap.wants_activity_json(request.headers.get("accept") or ""):
+                return await _ap_actor_doc_response(
+                    self.env, request, AP_ACTOR_USER,
+                    public_profile.group(1))
+            return await self._serve_profile_page(
+                url, public_profile.group(1),
+                repositories=bool(public_profile.group(2)))
+
+        # /@owner.repo — a repo actor's fediverse profile page (a feed of its
+        # federated posts). A user handle never contains a dot, so a dotted
+        # /@handle is unambiguously a repo actor (see ap.split_handle). This is
+        # the repo actor's `url`, so fediverse clients that resolve it with an
+        # ActivityPub Accept header get the actor document instead of HTML.
+        fedi_repo = re.match(r"^/@([^/]+)/?$", unquote(url.path))
+        if fedi_repo:
+            parsed = ap.split_handle(fedi_repo.group(1).lower())
+            if parsed and parsed[0] == "repo":
+                _, ph_owner, ph_repo = parsed
+                if ap.wants_activity_json(request.headers.get("accept") or ""):
+                    return await _ap_actor_doc_response(
+                        self.env, request, AP_ACTOR_REPO,
+                        ap.repo_handle(ph_owner, ph_repo))
+                return await self._serve_repo_profile_page(
+                    url, ph_owner, ph_repo)
 
         issues_match = REPO_ISSUES_RE.match(url.path)
         if issues_match:
@@ -13154,6 +18805,57 @@ class Default(WorkerEntrypoint):
             if not owner or not repo:
                 return json_response({"error": "not_found"}, status=404)
             return await repo_pending_counts_handler(self.env, request, owner, repo)
+
+        # Remote fediverse replies for a repo thread (public read), and the
+        # owner-node push of release/merge announcements into the fediverse.
+        fedi_comments_match = REPO_FEDI_COMMENTS_RE.match(url.path)
+        if fedi_comments_match:
+            owner = safe_segment(fedi_comments_match.group(1))
+            repo = safe_segment(fedi_comments_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await fedi_comments_handler(self.env, request, owner, repo)
+
+        ap_publish_match = REPO_AP_PUBLISH_RE.match(url.path)
+        if ap_publish_match:
+            owner = safe_segment(ap_publish_match.group(1))
+            repo = safe_segment(ap_publish_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await ap_publish_handler(self.env, request, owner, repo)
+
+        ap_posts_match = REPO_AP_POSTS_RE.match(url.path)
+        if ap_posts_match:
+            owner = safe_segment(ap_posts_match.group(1))
+            repo = safe_segment(ap_posts_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await ap_posts_handler(self.env, request, owner, repo)
+
+        repo_media_match = REPO_MEDIA_RE.match(url.path)
+        if repo_media_match:
+            owner = safe_segment(repo_media_match.group(1))
+            repo = safe_segment(repo_media_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_media_handler(
+                self.env, request, owner, repo, repo_media_match.group(3))
+
+        repo_card_match = REPO_CARD_RE.match(url.path)
+        if repo_card_match:
+            owner = safe_segment(repo_card_match.group(1))
+            repo = safe_segment(repo_card_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_card_handler(self.env, request, owner, repo)
+
+        star_match = REPO_STAR_RE.match(url.path)
+        if star_match:
+            owner = safe_segment(star_match.group(1))
+            repo = safe_segment(star_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_star_handler(self.env, request, owner, repo)
 
         subscribe_match = REPO_SUBSCRIBE_RE.match(url.path)
         if subscribe_match:
@@ -13297,6 +18999,7 @@ class Default(WorkerEntrypoint):
             # by the owner account's registered key. Read-only browse/clone of a
             # repo someone else hosts stays public, so only gate the upgrade.
             public_browse = False
+            browse_cache_key = ""  # set only for public /history (fmv-keyed)
             upgrade = (request.headers.get("upgrade") or "").lower()
             if upgrade == "websocket":
                 params = parse_qs(url.query)
@@ -13309,7 +19012,7 @@ class Default(WorkerEntrypoint):
                     await touch_registered_node(self.env, owner_bi, owner_rec)
                 except Exception:
                     pass
-            elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search"):
+            elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats"):
                 # Browsing a private repo's files/commits needs a view token as
                 # ?ts=&sig= (the host-token query shape): the owner's own
                 # (forkmesh-view-v1), or — when ?viewer= names a collaborator the
@@ -13348,6 +19051,23 @@ class Default(WorkerEntrypoint):
                     # same flapping node and returning its error.
                     failed_mirror = None
                     params = parse_qs(url.query)
+                    # The contribution graph fans out one /history fetch per
+                    # repo (up to 12 on a first profile view), each a full
+                    # mirror-selection + DO tunnel round-trip. The client
+                    # already sends fmv=<attested state hash>, so keying on
+                    # the whole URL self-invalidates the moment the repo
+                    # moves (git_advert_cache pattern); the TTL is only a
+                    # backstop. Public repos only — private browse carries
+                    # per-viewer tokens and never sets browse_cache_key.
+                    if (host_match.group(3) == "history"
+                            and params.get("fmv", [""])[0]):
+                        browse_cache_key = (
+                            "https://forkmesh.internal" + url.path
+                            + "?" + url.query)
+                        cached = await edge_cache_match_media(
+                            browse_cache_key, "application/json")
+                        if cached is not None:
+                            return cached
                     pinned = safe_segment(params.get("fmserved", [""])[0])
                     if not (pinned and pinned.lower() == owner.lower()):
                         served = await self._select_browse_mirror(owner, repo)
@@ -13371,6 +19091,12 @@ class Default(WorkerEntrypoint):
                                 fstatus = 0
                             if forwarded is not None and \
                                     fstatus not in (0, 502, 503, 504):
+                                if browse_cache_key and fstatus == 200:
+                                    # Same raw-response store as git adverts:
+                                    # rebuilt with a public max-age so the
+                                    # Cache API accepts it.
+                                    await git_advert_cache_put(
+                                        browse_cache_key, forwarded)
                                 return forwarded
                             failed_mirror = served
             host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
@@ -13414,10 +19140,16 @@ class Default(WorkerEntrypoint):
                                 "/api/repo/%s/%s/%s" % (
                                     fallback, repo, host_match.group(3)))
                             if int(forwarded.status) not in (502, 503, 504):
+                                if browse_cache_key and \
+                                        int(forwarded.status) == 200:
+                                    await git_advert_cache_put(
+                                        browse_cache_key, forwarded)
                                 return forwarded
                         except Exception:
                             pass
                         tried.append(fallback)
+                if browse_cache_key and status == 200:
+                    await git_advert_cache_put(browse_cache_key, response)
             return response
 
         room = room_key_from_path(url.path)
@@ -13447,9 +19179,12 @@ class Default(WorkerEntrypoint):
             return json_response({"error": "unavailable"}, status=503)
 
         # Repo shortcut URLs (/owner/repo and tab/tree/blob deep links) all
-        # serve the prebuilt repo-detail page; its JS resolves the path.
+        # serve the prebuilt repo-detail page; its JS resolves the path. The
+        # per-repo rel="me" head tags are injected at serve time so Mastodon
+        # can verify the repo actor's profile link (green check) against this
+        # very page — a static shared asset can't carry a per-repo link.
         if looks_like_repo_route(url.path):
-            return await self._serve_dashboard_asset(url, DASHBOARD_REPO_ASSET)
+            return await self._serve_repo_page(url)
 
         if url.path == "/dashboard" or url.path.startswith("/dashboard/"):
             # Legacy /dashboard?section=X links 308 to the per-page paths.
@@ -13490,6 +19225,239 @@ class Default(WorkerEntrypoint):
             headers={"content-type": "text/html; charset=utf-8"},
         )
 
+    async def _serve_profile_page(self, url, name, repositories=False):
+        # /@name — the FULL public profile: the same prebuilt dashboard
+        # profile document (sidebar, contribution heatmap, activity feed,
+        # repositories tab) with per-user head tags injected at serve time.
+        # dashboard.js detects the /@name path and renders the named account's
+        # public data instead of the logged-in session (public-profile mode).
+        # Eligibility mirrors the fediverse actor: active + not private —
+        # node-owner accounts get pages too, matching _ap_user_federates.
+        # Served identically to every viewer (personalization happens in
+        # dashboard.js), so the built page lives in the colo edge cache: it is
+        # the rel=me verification target every follower server GETs after an
+        # Update(Person), and those bursts must not each rebuild it at origin.
+        # _ap_broadcast_actor_update purges the key on profile changes.
+        origin = url.scheme + "://" + url.netloc
+        cache_key = "%s/@%s%s" % (
+            origin, quote(name), "/repositories" if repositories else "")
+        cached = await edge_cache_match(cache_key)
+        if cached is not None:
+            return cached
+        await ensure_schema(self.env)
+        _, rec = await _account_row(self.env, name)
+        if (not rec or rec.get("status") != "active"
+                or rec.get("profile_private")):
+            return await self._serve_not_found_page(url)
+        asset = DASHBOARD_PAGE_ASSETS[
+            "/dashboard/profile/repositories" if repositories
+            else "/dashboard/profile"]
+        base = url.scheme + "://" + url.netloc + "/"
+        try:
+            resp = await self.env.ASSETS.fetch(base + asset)
+            body = await resp.text()
+        except Exception:
+            body = "<!doctype html><title>ForkMesh</title>"
+        canonical = "%s/@%s" % (origin, quote(name))
+        # rel="me" is the reciprocal half of the fediverse Person actor's
+        # verified profile link (the actor's `url` is this page); the
+        # alternate link lets fediverse software discover the actor from the
+        # page URL.
+        tags = (
+            "<link rel=\"canonical\" href=\"%s\">"
+            "<link rel=\"me\" href=\"%s\">"
+            "<link rel=\"alternate\" type=\"application/activity+json\" "
+            "href=\"%s/ap/users/%s\">"
+            % (canonical, canonical, origin, quote(name)))
+        if "</head>" in body:
+            body = body.replace("</head>", tags + "</head>", 1)
+        body = re.sub(r"<title>[^<]*</title>",
+                      "<title>@%s · ForkMesh</title>" % _html_escape(name),
+                      body, count=1)
+        page = Response(body, status=200, headers={
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "public, max-age=300",
+        })
+        await edge_cache_put(cache_key, page)
+        return page
+
+    async def _serve_repo_page(self, url):
+        # The shared repo-detail document, plus per-repo head tags:
+        #  - <link rel="me" href="<repo actor url>"> — the reciprocal half of
+        #    the repo actor's verified "Repository" row: that row links this git
+        #    page, so Mastodon fetches it and looks for a rel=me back to the
+        #    actor's `url` (the /@owner.repo fediverse profile) to mark it green;
+        #  - <link rel="alternate" type="application/activity+json"> — lets
+        #    fediverse software discover the actor straight from the page URL.
+        # Identical for every viewer, and the rel=me verification target of
+        # the repo actor: edge-cached so follower-server verification bursts
+        # after an Update(Group) cost one origin build per colo per TTL.
+        origin = url.scheme + "://" + url.netloc
+        parts = [p for p in url.path.split("/") if p]
+        owner = safe_segment(unquote(parts[0])) if len(parts) >= 2 else ""
+        repo = safe_segment(unquote(parts[1])) if len(parts) >= 2 else ""
+        cache_key = ""
+        if owner and repo:
+            cache_key = "%s/%s/%s" % (origin, quote(owner), quote(repo))
+            cached = await edge_cache_match(cache_key)
+            if cached is not None:
+                return cached
+        base = url.scheme + "://" + url.netloc + "/"
+        try:
+            resp = await self.env.ASSETS.fetch(base + DASHBOARD_REPO_ASSET)
+            body = await resp.text()
+        except Exception:
+            body = "<!doctype html><title>ForkMesh Dashboard</title>"
+        if owner and repo and "</head>" in body:
+            canonical = "%s/%s/%s" % (origin, quote(owner), quote(repo))
+            # The repo actor's `url` — the /@owner.repo fediverse profile — is
+            # the rel=me target that verifies this page's "Repository" row.
+            # Lowercased to match the actor id (handles are case-folded).
+            fedi_profile = "%s/@%s.%s" % (origin, owner.lower(), repo.lower())
+            # OpenGraph/Twitter card so social + fediverse shares of the repo
+            # URL (the preview under a federated "new pull request" post, a
+            # Slack unfurl, etc.) render the repo's rendered info card — name,
+            # description and stats grid with the ForkMesh mark in the corner
+            # (adhoc #46, see repo_card_handler / og_card.py) — instead of a
+            # full-bleed logo. og:description carries the catalog description
+            # so the unfurl text matches the repo, not the generic shell copy.
+            og_image = "%s/api/repo/%s/%s/card.png" % (
+                origin, quote(owner), quote(repo))
+            og_description = ""
+            try:
+                await ensure_schema(self.env)
+                repo_bi = await blind_index(self.env, owner + "/" + repo)
+                repo_row = await d1_first(
+                    self.env,
+                    "SELECT data FROM repositories WHERE key_bi=?", repo_bi)
+                rec = (await decrypt_row(
+                    self.env, repo_row.get("data"))) if repo_row else None
+                og_description = str((rec or {}).get("description", "") or "")
+            except Exception:
+                pass
+            if not og_description:
+                og_description = ("%s/%s on ForkMesh — distributed Git "
+                                  "hosting on a mesh of desktop nodes."
+                                  % (owner, repo))
+            title = "%s/%s - ForkMesh" % (owner, repo)
+            tags = (
+                "<link rel=\"me\" href=\"%s\">"
+                "<link rel=\"alternate\" type=\"application/activity+json\" "
+                "href=\"%s/ap/repos/%s/%s\">"
+                "<meta property=\"og:type\" content=\"website\">"
+                "<meta property=\"og:site_name\" content=\"ForkMesh\">"
+                "<meta property=\"og:url\" content=\"%s\">"
+                "<meta property=\"og:title\" content=\"%s\">"
+                "<meta property=\"og:description\" content=\"%s\">"
+                "<meta property=\"og:image\" content=\"%s\">"
+                "<meta property=\"og:image:width\" content=\"%d\">"
+                "<meta property=\"og:image:height\" content=\"%d\">"
+                "<meta name=\"twitter:card\" content=\"summary_large_image\">"
+                "<meta name=\"twitter:title\" content=\"%s\">"
+                "<meta name=\"twitter:description\" content=\"%s\">"
+                "<meta name=\"twitter:image\" content=\"%s\">"
+                % (fedi_profile,
+                   origin, quote(owner), quote(repo),
+                   canonical, title, _html_escape(og_description), og_image,
+                   og_card.CARD_W, og_card.CARD_H,
+                   title, _html_escape(og_description), og_image))
+            body = body.replace("</head>", tags + "</head>", 1)
+        page = Response(body, status=200, headers={
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "public, max-age=300",
+        })
+        if cache_key:
+            await edge_cache_put(cache_key, page)
+        return page
+
+    async def _serve_repo_profile_page(self, url, owner, repo):
+        # The repo actor's `url`: a lightweight, edge-cached fediverse profile —
+        # banner, avatar, bio, follower count and a feed of the repo's federated
+        # posts — so a Mastodon user who clicks the repo handle (in a mention or
+        # via the profile's external-link) lands on a social profile instead of
+        # the git-forge page (adhoc #50). The code is one click away. Fediverse
+        # clients that send an ActivityPub Accept header are handed the actor
+        # document by the caller; this is the HTML view for browsers.
+        origin = url.scheme + "://" + url.netloc
+        handle = ap.repo_handle(owner.lower(), repo.lower())
+        cache_key = "%s/@%s" % (origin, handle)
+        cached = await edge_cache_match(cache_key)
+        if cached is not None:
+            return cached
+        await ensure_schema(self.env)
+        if not await _ap_enabled(self.env):
+            return await self._serve_not_found_page(url)
+        key_bi = await blind_index(self.env, owner + "/" + repo)
+        repo_row = await d1_first(
+            self.env,
+            "SELECT is_private, data FROM repositories WHERE key_bi=?", key_bi)
+        if not repo_row or int(repo_row.get("is_private") or 0):
+            return await self._serve_not_found_page(url)
+        rec = await decrypt_row(self.env, repo_row.get("data"))
+        description = clean_string(
+            (rec or {}).get("description", "") or "", 240).strip()
+        # Branding: owner-uploaded logo/banner (repo About tab), else defaults.
+        icon_url = AP_AVATAR_PATH
+        image_url = AP_BANNER_PATH
+        media_rows = await d1_all(
+            self.env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?",
+            key_bi)
+        for media in media_rows or []:
+            media_url = "/api/repo/%s/%s/media/%s.png?v=%d" % (
+                quote(owner), quote(repo), media.get("kind", ""),
+                int(media.get("updated_at") or 0))
+            if media.get("kind") == "logo":
+                icon_url = media_url
+            elif media.get("kind") == "banner":
+                image_url = media_url
+        actor_bi = await _ap_actor_bi(self.env, AP_ACTOR_REPO, handle)
+        followers_row = await d1_first(
+            self.env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
+            actor_bi)
+        followers = int((followers_row or {}).get("c") or 0)
+        post_rows = await d1_all(
+            self.env,
+            "SELECT data, published FROM ap_objects WHERE actor_bi=?"
+            " ORDER BY published DESC LIMIT 20", actor_bi)
+        posts = []
+        for row in post_rows or []:
+            note_rec = await decrypt_row(self.env, row.get("data"))
+            note = (note_rec or {}).get("note") or {}
+            content = note.get("content") or ""  # our own generated, safe HTML
+            if not content:
+                continue
+            when = ap.iso_utc(int(row.get("published") or 0))[:10]
+            link = str(note.get("url") or "")
+            link_html = ("<a class=\"lnk\" href=\"%s\">View →</a>"
+                         % _html_escape(link)) if link else ""
+            posts.append(
+                "<article class=\"post\"><div class=\"body\">%s</div>"
+                "<div class=\"meta\"><time>%s</time>%s</div></article>"
+                % (content, _html_escape(when), link_html))
+        if not posts:
+            posts.append(
+                "<p class=\"empty\">No federated posts yet — new issues, "
+                "pull requests, discussions and releases will appear here.</p>")
+        title = _html_escape("%s/%s" % (owner, repo))
+        handle_full = _html_escape("@%s@%s" % (handle, _ap_domain_of(origin)))
+        code_url = _html_escape(origin + repo_web_href(owner, repo))
+        actor_json = _html_escape(
+            "%s/ap/repos/%s/%s" % (origin, quote(owner), quote(repo)))
+        bio = (_html_escape(description) if description else
+               "ForkMesh repository — follow for new issues, pull "
+               "requests, discussions and releases.")
+        body = _repo_fedi_profile_html(
+            title=title, bio=bio, handle_full=handle_full, code_url=code_url,
+            actor_json=actor_json, icon_url=_html_escape(icon_url),
+            image_url=_html_escape(image_url), followers=followers,
+            post_count=len(post_rows or []), posts_html="\n".join(posts))
+        page = Response(body, status=200, headers={
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "public, max-age=300",
+        })
+        await edge_cache_put(cache_key, page)
+        return page
+
     async def _serve_dashboard_asset(self, url, asset_rel):
         # The per-page dashboard documents are generated by
         # tools/build_dashboard_assets.py. env.ASSETS.fetch serves the static
@@ -13513,16 +19481,35 @@ class Default(WorkerEntrypoint):
         # off the assets store; no-cache only forces revalidation, matching the
         # platform's default ETag behavior for static assets.
         base = url.scheme + "://" + url.netloc + "/"
+        # Stream the asset body straight through rather than buffering the
+        # whole page into Python with resp.text(). / is the highest-traffic
+        # route and can't be edge-cached (varies on cookie, must revalidate),
+        # so every anonymous visit runs this handler; reassembling the HTML in
+        # the isolate each hit is avoidable Pyodide CPU/memory pressure on the
+        # single event loop — the hot-path work that, under a burst of
+        # visitors, starved the loop enough for the runtime to cancel a request
+        # as hung ("Cannot enter into task"). Passing resp.body to a new
+        # Response only rewrites the headers.
         try:
             resp = await self.env.ASSETS.fetch(base + "index.html")
-            body = await resp.text()
+            return JsResponse.new(resp.body, to_js({
+                "status": 200,
+                "headers": {
+                    "content-type": "text/html; charset=utf-8",
+                    "cache-control": "no-cache",
+                    "vary": "cookie",
+                },
+            }))
         except Exception:
-            body = "<!doctype html><title>ForkMesh</title>"
-        return Response(body, status=200, headers={
-            "content-type": "text/html; charset=utf-8",
-            "cache-control": "no-cache",
-            "vary": "cookie",
-        })
+            return Response(
+                "<!doctype html><title>ForkMesh</title>",
+                status=200,
+                headers={
+                    "content-type": "text/html; charset=utf-8",
+                    "cache-control": "no-cache",
+                    "vary": "cookie",
+                },
+            )
 
     async def _select_clone_fallback(self, owner, repo, force=False):
         # When owner/repo's own host is offline, find a healthy online mirror of the
@@ -13544,28 +19531,11 @@ class Default(WorkerEntrypoint):
                 for r in presence_rows
                 if r.get("repo_bi")
             }
-            rows = await d1_all(
-                self.env,
-                "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
-            try:
-                active_nodes = await active_registered_node_bis(self.env, now)
-            except Exception:
-                active_nodes = None
-            catalog_rows = []
-            for row in rows:
-                if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-                    continue
-                rec = await decrypt_row(self.env, row.get("data"))
-                if not rec:
-                    continue
-                if _is_blocked_catalog_identity(
-                        self.env, rec.get("owner"), rec.get("name")):
-                    continue
-                catalog_rows.append({
-                    "key_bi": row.get("key_bi"),
-                    "is_private": int(row.get("is_private") or 0),
-                    "data": rec,
-                })
+            catalog_rows = [
+                row for row in await _decrypted_public_catalog(self.env, now)
+                if not _is_blocked_catalog_identity(
+                    self.env, row["data"].get("owner"), row["data"].get("name"))
+            ]
             presence = await hydrate_repo_group_live_hosts(
                 self.env, owner, repo, catalog_rows, presence, now)
             source_ts = presence.get(repo_bi) or 0
@@ -13606,28 +19576,11 @@ class Default(WorkerEntrypoint):
                 for r in presence_rows
                 if r.get("repo_bi")
             }
-            rows = await d1_all(
-                self.env,
-                "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
-            try:
-                active_nodes = await active_registered_node_bis(self.env, now)
-            except Exception:
-                active_nodes = None
-            catalog_rows = []
-            for row in rows:
-                if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-                    continue
-                rec = await decrypt_row(self.env, row.get("data"))
-                if not rec:
-                    continue
-                if _is_blocked_catalog_identity(
-                        self.env, rec.get("owner"), rec.get("name")):
-                    continue
-                catalog_rows.append({
-                    "key_bi": row.get("key_bi"),
-                    "is_private": int(row.get("is_private") or 0),
-                    "data": rec,
-                })
+            catalog_rows = [
+                row for row in await _decrypted_public_catalog(self.env, now)
+                if not _is_blocked_catalog_identity(
+                    self.env, row["data"].get("owner"), row["data"].get("name"))
+            ]
             presence = await hydrate_repo_group_live_hosts(
                 self.env, owner, repo, catalog_rows, presence, now)
             candidates = browse_mirror_candidates(
@@ -13663,28 +19616,11 @@ class Default(WorkerEntrypoint):
                 for r in presence_rows
                 if r.get("repo_bi")
             }
-            rows = await d1_all(
-                self.env,
-                "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
-            try:
-                active_nodes = await active_registered_node_bis(self.env, now)
-            except Exception:
-                active_nodes = None
-            catalog_rows = []
-            for row in rows:
-                if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-                    continue
-                rec = await decrypt_row(self.env, row.get("data"))
-                if not rec:
-                    continue
-                if _is_blocked_catalog_identity(
-                        self.env, rec.get("owner"), rec.get("name")):
-                    continue
-                catalog_rows.append({
-                    "key_bi": row.get("key_bi"),
-                    "is_private": int(row.get("is_private") or 0),
-                    "data": rec,
-                })
+            catalog_rows = [
+                row for row in await _decrypted_public_catalog(self.env, now)
+                if not _is_blocked_catalog_identity(
+                    self.env, row["data"].get("owner"), row["data"].get("name"))
+            ]
             presence = await hydrate_repo_group_live_hosts(
                 self.env, owner, repo, catalog_rows, presence, now)
             candidates = release_blob_mirror_candidates(
@@ -13698,6 +19634,61 @@ class Default(WorkerEntrypoint):
             return candidates[0] if candidates else None
         except Exception:
             return None
+
+    async def _clone_advert_cache_key(self, owner, repo):
+        # Edge-cache tag for a public clone's ref advertisement: the requesting
+        # namespace's OWN source-attested state hash, and only when this
+        # namespace is itself the working-copy holder (source == local-node).
+        # That hash is republished on every push, so the key rotates exactly when
+        # the served refs change — a cache hit is byte-identical to the last live
+        # handshake. A mirror or source-forwarded clone is served live (its
+        # authoritative state can lag this record, so it must not be keyed on it),
+        # and private repos are never cached (their advertisement is auth-varying).
+        # Best-effort: any failure returns None → serve live.
+        try:
+            await ensure_schema(self.env)
+            key_bi = await blind_index(self.env, owner + "/" + repo)
+            row = await d1_first(
+                self.env,
+                "SELECT data, is_private FROM repositories WHERE key_bi=?",
+                key_bi)
+            if not row or int(row.get("is_private") or 0):
+                return None
+            rec = await decrypt_row(self.env, row.get("data"))
+            if not rec or str(rec.get("source") or "local-node") != "local-node":
+                return None
+            return git_advert_cache_key(owner, repo, rec.get("stateHash"))
+        except Exception:
+            return None
+
+    async def _git_advert_cached(self, request, owner_raw, repo_raw):
+        # Serve the clone handshake (info/refs upload-pack ref advertisement) from
+        # the colo edge cache when nothing has changed. The handshake is a small,
+        # side-effect-free GET whose bytes are fixed for a given ref state; keying
+        # the cache on the repo's attested state hash means every clone after the
+        # first reuses it WITHOUT waking the host tunnel, and a live fetch reaches
+        # the mirror again only once a push rotates that hash. Wraps _git_host so
+        # every existing fallback/integrity path still runs on a cache miss. The
+        # store is gated on a live source so a mirror's (possibly older) refs are
+        # never cached under the source's current-state key.
+        owner = safe_segment(owner_raw)
+        repo = safe_segment(repo_raw)
+        cache_key = None
+        if owner and repo and method_name(request) == "GET":
+            cache_key = await self._clone_advert_cache_key(owner, repo)
+            if cache_key is not None:
+                hit = await git_advert_cache_get(cache_key)
+                if hit is not None:
+                    return hit
+        response = await self._git_host(request, owner_raw, repo_raw)
+        if cache_key is not None:
+            try:
+                cacheable = int(response.status) == 200
+            except Exception:
+                cacheable = False
+            if cacheable and await self._source_has_live_host(owner, repo):
+                await git_advert_cache_put(cache_key, response)
+        return response
 
     async def _git_host(self, request, owner_raw, repo_raw):
         owner = safe_segment(owner_raw)
@@ -14375,7 +20366,11 @@ class ForkMeshHost(DurableObject):
         now = int(Date.now())
         if now - self._last_presence < HOST_PRESENCE_REFRESH_MS:
             return
-        repo_bi = await self._repo_blind_index(path) if path else self._repo_bi
+        try:
+            repo_bi = (await self._repo_blind_index(path) if path
+                       else self._repo_bi)
+        except Exception:
+            return
         if not repo_bi:
             return
         if getattr(self, "_blocked_presence", False):
@@ -14387,6 +20382,25 @@ class ForkMeshHost(DurableObject):
             pass
 
     async def fetch(self, request):
+        # Nothing above Default.fetch's try/except sees an exception raised in
+        # here: the router awaits a DO *stub*, so the Python traceback dies
+        # inside this isolate and Cloudflare logs only a bare
+        # "outcome: exception" for the request (adhoc #17: git-upload-pack
+        # POSTs failing with no diagnostics anywhere). Capture the real stack
+        # to Sentry ourselves, then answer 503 like the router's other
+        # DO-abort paths — retryable, feeds the mirror fallback, and gives git
+        # clients a readable error instead of an Error 1101 page.
+        try:
+            return await self._fetch_inner(request)
+        except Exception as error:
+            try:
+                await capture_worker_exception(
+                    self.env, request, urlparse(request.url), error)
+            except BaseException:
+                pass
+            return Response("Host tunnel error.", status=503)
+
+    async def _fetch_inner(self, request):
         self._ensure()
         url = urlparse(request.url)
         path = url.path
@@ -14525,7 +20539,7 @@ class ForkMeshHost(DurableObject):
             served = REPO_HOST_RE.match(path)
             served_by = safe_segment(served.group(1)) if served else ""
             return await self._tunnel("search", query, ref, served_by, ua)
-        if action in ("tree", "blob", "history", "commit", "branches"):
+        if action in ("tree", "blob", "history", "commit", "branches", "stats"):
             await self._mark_present(path)
             op = "commits" if action == "history" else action
             # This DO is per-repo, so the owner in its path IS the mirror node
@@ -14592,6 +20606,14 @@ class ForkMeshHost(DurableObject):
                     data = b""
                 if data:
                     stream["last"] = int(Date.now())
+                    if stream.get("hasher") is not None:
+                        # Fold each chunk into the running integrity hash before
+                        # it leaves for the client; verified against verify at
+                        # git-end (content-addressed release assets).
+                        try:
+                            stream["hasher"].update(data)
+                        except Exception:
+                            pass
                     try:
                         # Copy into a JS-owned buffer before it crosses into the
                         # response stream: a view into Python's WASM memory read
@@ -14618,7 +20640,16 @@ class ForkMeshHost(DurableObject):
                     fut.set_result({"ok": bool(msg.get("ok")),
                                     "error": msg.get("error")})
                 try:
-                    if msg.get("ok"):
+                    hasher = stream.get("hasher")
+                    if (msg.get("ok") and hasher is not None and
+                            hasher.hexdigest() != stream.get("verify")):
+                        # Content-addressed asset whose bytes don't hash to the
+                        # requested sha256: a tampered mirror. Abort rather than
+                        # close so the client sees a failed transfer and the
+                        # forged bytes never land as a complete (or edge-cached)
+                        # download — the integrity pin, enforced at the relay.
+                        await stream["writer"].abort("integrity check failed")
+                    elif msg.get("ok"):
                         await stream["writer"].close()
                     else:
                         # Failure after bytes already streamed: the 200 headers
@@ -14768,7 +20799,7 @@ class ForkMeshHost(DurableObject):
             result["servedBy"] = served_by
         return json_response(result)
 
-    async def _stream_request(self, host, message, headers):
+    async def _stream_request(self, host, message, headers, verify_sha256=None):
         # Send a chunked-transfer request to the host and return a Response
         # whose body STREAMS the reply: each git-chunk is written straight
         # through a TransformStream to the client as it arrives, so a full
@@ -14779,6 +20810,14 @@ class ForkMeshHost(DurableObject):
         # per-chunk watchdog aborts a mid-stream stall so a dying host fails
         # the one transfer instead of hanging the client.
         #
+        # verify_sha256 (content-addressed assets only): the relay hashes the
+        # bytes as they stream — keeping just the running hash context, never
+        # the payload — and aborts the transfer at git-end if the digest doesn't
+        # match. This is the integrity pin for release artifacts: a tampered
+        # mirror serving forged bytes for a hash gets its stream cut, so the
+        # client never sees a complete (or edge-cacheable) forged download,
+        # regardless of whether the client itself re-verifies.
+        #
         # Returns (response, error_result): exactly one is non-None. A
         # transport failure yields a ready error Response; a host-reported
         # error yields the result dict so each endpoint maps its own status.
@@ -14788,7 +20827,11 @@ class ForkMeshHost(DurableObject):
         self.pending[req_id] = future
         transform = TransformStream.new()
         writer = transform.writable.getWriter()
-        self.git_streams[req_id] = {"writer": writer, "last": int(Date.now())}
+        self.git_streams[req_id] = {
+            "writer": writer, "last": int(Date.now()),
+            "verify": verify_sha256,
+            "hasher": hashlib.sha256() if verify_sha256 else None,
+        }
         try:
             host.send(json.dumps(message))
         except Exception:
@@ -14926,8 +20969,10 @@ class ForkMeshHost(DurableObject):
         # chunk flows straight to the client (see _stream_request), so
         # arbitrarily large binaries download without the 4 MB inline /blob cap
         # and without ever holding the whole asset in DO memory. Still cached
-        # forever at the edge — the URL is content-addressed — and the client
-        # verifies the bytes against the manifest sha256 (x-content-sha256).
+        # forever at the edge — the URL is content-addressed. The relay itself
+        # now hashes the stream and aborts on mismatch (verify_sha256 below), so
+        # a tampered mirror can't serve forged bytes for this hash even to a
+        # client that doesn't re-verify; x-content-sha256 lets clients that do.
         if not valid_sha256_hex(sha256):
             return Response("not found", status=404)
         self._ensure()
@@ -14946,13 +20991,14 @@ class ForkMeshHost(DurableObject):
                 "cache-control": "public, max-age=31536000, immutable",
                 "x-content-sha256": sha256.lower(),
             },
+            verify_sha256=sha256.lower(),
         )
         if response is not None:
             if repo_bi:
                 # Fire-and-forget: log the download without delaying the
                 # already-streaming response on a D1 round-trip.
                 _fire_and_forget(
-                    record_release_download(self.env, repo_bi, sha256.lower()),
+                    record_release_download(self.env, repo_bi, sha256.lower(), ua),
                     "release download log")
             return response
         status = 404 if str(err.get("error", "")) in (

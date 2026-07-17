@@ -5,6 +5,7 @@
 // the class itself is declared in MainWindow.h. Shared helpers live in
 // MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
 
+#include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 
@@ -684,6 +685,18 @@ QString MainWindow::testWorktreeAheadBehindText(const QString &branch) const
     return QString();
 }
 
+QStringList MainWindow::testWorktreeBranches() const
+{
+    QStringList branches;
+    if (!m_worktreesTable)
+        return branches;
+    for (int row = 0; row < m_worktreesTable->rowCount(); ++row) {
+        if (QTableWidgetItem *item = m_worktreesTable->item(row, 0))
+            branches << item->data(Qt::UserRole).toString();
+    }
+    return branches;
+}
+
 QString MainWindow::testWorktreeBranchLabel() const
 {
     return m_worktreeBranchLabel ? m_worktreeBranchLabel->text() : QString();
@@ -719,6 +732,18 @@ void MainWindow::testClickRepoDetailTab(int id)
         return;
     if (QAbstractButton *b = m_repoDetailTabs->button(id))
         b->click(); // emits idClicked(id) -> the same path a real click takes
+}
+
+bool MainWindow::testOpenMostRecentCommit()
+{
+    if (!m_commitsTable)
+        return false;
+    if (m_commitsTable->rowCount() == 0)
+        loadCommits();
+    if (m_commitsTable->rowCount() == 0)
+        return false;
+    openMostRecentCommit();
+    return true;
 }
 
 bool MainWindow::testWorktreesTableHasKeyboardFocus() const
@@ -935,6 +960,7 @@ int MainWindow::testTopNavTrailingGap() const
     for (QWidget *widget :
          {static_cast<QWidget *>(m_navDrawButton),
           static_cast<QWidget *>(m_navScreenshotButton),
+          static_cast<QWidget *>(m_navResizeButton),
           static_cast<QWidget *>(m_navRebuildButton)}) {
         if (!widget || !widget->isVisibleTo(const_cast<MainWindow *>(this)))
             continue;
@@ -995,6 +1021,15 @@ void MainWindow::startSession()
         m_setupError->show();
         return;
     }
+    if (m_accountAuthenticated &&
+        AccountCapability::normalizedAccount(m_accountName) != name) {
+        setDesktopCapability(m_accountName, false);
+        m_accountAuthenticated = false;
+        m_accountTier = QStringLiteral("free");
+        m_accountSolanaVerified = false;
+        m_isAdmin = false;
+        QSettings().remove(kAuthedAccountSetting);
+    }
 
     // No wallet, no signup: the core flow (clone, mirror, issues, PRs, chat)
     // needs only a node name. Crypto is strictly opt-in and lives behind the
@@ -1030,7 +1065,8 @@ void MainWindow::startSession()
         }
         return false;
     }();
-    if ((m_headless || publishesMirror) && !hasActiveAccountSession() &&
+    if ((m_headless || publishesMirror) &&
+        !hasOwnerSigningCapability(name) &&
         isValidNodeName(name)) {
         bool registered = false;
 #ifdef FORKMESH_WINDOW_TESTS
@@ -1071,11 +1107,15 @@ void MainWindow::startSession()
         m_serverUrlEdit->setText(serverHostDisplay(kDefaultServerUrl));
 
     saveSolanaAddress(m_solanaEdit->text().trimmed());
-    if (m_accountAuthenticated && m_accountName != name) {
+    if (m_accountAuthenticated &&
+        AccountCapability::normalizedAccount(m_accountName) !=
+            AccountCapability::normalizedAccount(name)) {
+        setDesktopCapability(m_accountName, false);
         m_accountAuthenticated = false;
         m_accountTier = QStringLiteral("free");
         m_accountSolanaVerified = false;
         m_isAdmin = false;
+        QSettings().remove(kAuthedAccountSetting);
     }
     m_accountName = name;
     QSettings().setValue(kAccountNameSetting, name);
@@ -1131,7 +1171,8 @@ void MainWindow::startSession()
                                   nodeOwnerDisplayName(),
                                   m_profileIdentity.publicKey(), url,
                                   kDefaultRoomName,
-                                  m_solanaEdit->text().trimmed(), this);
+                                  m_solanaEdit->text().trimmed(),
+                                  m_roomPassphrase, this);
     server->setConnectionAuthorizer([this](const QUrl &endpoint) {
         return authorizeFirewallConnection(QStringLiteral("WebSocket"), endpoint);
     });
@@ -1167,10 +1208,9 @@ void MainWindow::startSession()
         // profiles keep using this machine's node identity.
         updateChatIdentity();
         // Fixed shared channels for the whole network — no per-repo rooms. Every
-        // node joins #general, both split welcome rooms, and #random.
+        // node joins #general, #welcome, and #random.
         m_backend->addChannel(QStringLiteral("general"));
-        m_backend->addChannel(kWelcomeNodesChannel);
-        m_backend->addChannel(kWelcomeUsersChannel);
+        m_backend->addChannel(kWelcomeChannel);
         m_backend->addChannel(QStringLiteral("random"));
         // Re-create any invite-only rooms this node owned or was invited to; the
         // backend clears its channel set each session, so they'd vanish otherwise.
@@ -1204,7 +1244,7 @@ void MainWindow::startSession()
                 m_connectedAtMs = 0;
                 QSettings().setValue(kConnectionTotalSetting, m_totalConnectionMs);
             }
-        } else {
+        } else if (hasOwnerSigningCapability(name)) {
             // Serve already-mirrored repos live to the web for this session.
             startRepoHosts();
             // Heartbeat so an active, online node stays eligible for the reward
@@ -1267,7 +1307,8 @@ void MainWindow::sendNodeHeartbeat()
     const QString name = m_accountName.isEmpty()
                              ? QSettings().value(kAccountNameSetting).toString().trimmed()
                              : m_accountName;
-    if (name.isEmpty() || !m_profileIdentity.isValid())
+    if (name.isEmpty() || !hasOwnerSigningCapability(name) ||
+        !m_profileIdentity.isValid())
         return;
     // Back off exponentially while the relay is failing (offline / HTTP 429) so
     // a rate-limited node stops beating every single minute into the flood.
@@ -1290,6 +1331,19 @@ void MainWindow::sendNodeHeartbeat()
                 emailNotificationPreferencesPayload());
     if (!creditsRefilled.isEmpty())
         body.insert(QStringLiteral("creditsRefilled"), creditsRefilled);
+    // Issue #385: acknowledge the accepted mirror requests we've already acted
+    // on so the relay stops redelivering them on every beat. Rides the same
+    // signed heartbeat as creditsRefilled above.
+    if (!m_pendingMirrorRequestAcks.isEmpty()) {
+        QJsonArray acks;
+        for (const QString &id : m_pendingMirrorRequestAcks)
+            acks.append(id);
+        body.insert(QStringLiteral("mirrorRequestsAck"), acks);
+        // Clear now: if the relay processes this beat it drops the accepted
+        // request; if it doesn't, the still-accepted request is redelivered in
+        // the next reply and its id re-queued for acking below.
+        m_pendingMirrorRequestAcks.clear();
+    }
     QNetworkRequest request(accountsApiUrl("heartbeat"));
     request.setHeader(QNetworkRequest::ContentTypeHeader,
                       QStringLiteral("application/json"));
@@ -1323,10 +1377,17 @@ void MainWindow::sendNodeHeartbeat()
             m_navNodeName->setToolTip(
                 m_isAdmin && !name.isEmpty() ? name + " (admin)" : name);
         }
+        // Fetch the shared room-chat key once the account identity is available,
+        // so it's cached before the user opens chat (no-op once fetched).
+        fetchRoomPassphrase();
         if (m_isAdmin) {
             if (!m_adminPollTimer) {
                 m_adminPollTimer = new QTimer(this);
-                m_adminPollTimer->setInterval(90000);
+                // 5 min: newly-joined users needing verification are not time
+                // critical, and the host-wide network backoff now guards this
+                // poll during a relay overload. (Was 90s with no backoff — a
+                // steady contributor to baseline relay load.)
+                m_adminPollTimer->setInterval(300000);
                 connect(m_adminPollTimer, &QTimer::timeout, this,
                         &MainWindow::pollPendingUsers);
             }
@@ -1366,6 +1427,28 @@ void MainWindow::sendNodeHeartbeat()
             showOwnershipTransferPrompt(transferAdmin);
         } else if (transferAdmin.isEmpty()) {
             m_lastOwnershipTransferAdminShown.clear();
+        }
+        // Issue #385: a peer asked this node to mirror their repo and its holder
+        // accepted on the website; the relay hands us the accepted repos here.
+        // Start mirroring each (idempotent — mirrorNetworkRepo no-ops if we
+        // already host it) and ack its id so it isn't redelivered next beat.
+        const QJsonArray mirrorRequests =
+            resp.value(QStringLiteral("mirrorRequests")).toArray();
+        for (const QJsonValue &value : mirrorRequests) {
+            const QJsonObject req = value.toObject();
+            const QString id = req.value(QStringLiteral("id")).toString().trimmed();
+            const QString owner = req.value(QStringLiteral("owner")).toString().trimmed();
+            const QString repo = req.value(QStringLiteral("repo")).toString().trimmed();
+            if (id.isEmpty() || owner.isEmpty() || repo.isEmpty())
+                continue;
+            if (!m_pendingMirrorRequestAcks.contains(id))
+                m_pendingMirrorRequestAcks.append(id);
+            if (m_handledMirrorRequests.contains(id))
+                continue; // already mirrored this session; just keep acking
+            m_handledMirrorRequests.insert(id);
+            logSystem("Accepted mirror request: mirroring " + owner + "/" + repo +
+                      " for a peer.");
+            mirrorNetworkRepo(owner, repo, QString(), false);
         }
     });
 }
@@ -1436,7 +1519,8 @@ void MainWindow::showOwnershipTransferPrompt(const QString &admin)
 void MainWindow::submitOwnershipTransferDecision(bool approve)
 {
     const QString node = accountOwner();
-    if (node.isEmpty() || !m_profileIdentity.isValid())
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
+        !m_profileIdentity.isValid())
         return;
     const QString action = approve ? QStringLiteral("approve")
                                    : QStringLiteral("deny");
@@ -1468,7 +1552,8 @@ void MainWindow::requestNodeOwnership()
         return;
     const QString target = m_profileNodeName;
     const QString node = accountOwner();
-    if (target.isEmpty() || node.isEmpty() || !m_profileIdentity.isValid())
+    if (target.isEmpty() || node.isEmpty() ||
+        !hasOwnerSigningCapability(node) || !m_profileIdentity.isValid())
         return;
     if (QMessageBox::question(
             this, "Take ownership",
@@ -1512,7 +1597,8 @@ void MainWindow::pollPendingUsers()
     if (!m_isAdmin)
         return;
     const QString node = accountOwner();
-    if (node.isEmpty() || !m_profileIdentity.isValid())
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
+        !m_profileIdentity.isValid())
         return;
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray canonical =
@@ -1557,10 +1643,48 @@ void MainWindow::pollPendingUsers()
     });
 }
 
+void MainWindow::fetchRoomPassphrase()
+{
+    // Fetch once: the shared room key is stable per relay. Signed with the node's
+    // own Ed25519 key (the same proof a heartbeat carries), so the relay hands
+    // the key only to a registered account — it is no longer a public constant.
+    if (!m_roomPassphrase.isEmpty())
+        return;
+    const QString node = accountOwner();
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
+        !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-room-key-v1\n" + node + "\n" + ts).toUtf8();
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/chat/room-key"));
+    QUrlQuery query;
+    query.addQueryItem("node", node);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", m_profileIdentity.signData(canonical));
+    url.setQuery(query);
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        const QString pass = resp.value("passphrase").toString();
+        if (!pass.isEmpty()) {
+            m_roomPassphrase = pass;
+            // The backend may already be connected on the constructor's
+            // fallback key (this fetch races the initial connect) — re-key it
+            // now so it matches the server-derived key web/other nodes use.
+            if (m_backend)
+                m_backend->setRoomPassphrase(pass);
+        }
+    });
+}
+
 void MainWindow::showAdminVerifyDialog()
 {
     const QString node = accountOwner();
-    if (node.isEmpty() || !m_profileIdentity.isValid())
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
+        !m_profileIdentity.isValid())
         return;
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray canonical =
@@ -1627,7 +1751,8 @@ void MainWindow::showAdminVerifyDialog()
 bool MainWindow::adminVerifyEmail(const QString &target)
 {
     const QString node = accountOwner();
-    if (node.isEmpty() || target.isEmpty() || !m_profileIdentity.isValid())
+    if (node.isEmpty() || target.isEmpty() ||
+        !hasOwnerSigningCapability(node) || !m_profileIdentity.isValid())
         return false;
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray canonical =
@@ -1659,7 +1784,7 @@ QString MainWindow::accountOwner() const
 
 QString MainWindow::hostLinkUserName()
 {
-    if (!hasActiveAccountSession())
+    if (!hasOwnerSigningCapability(accountOwner()))
         return QString();
     const QString linkedOwner = m_nodeOwnerUser.trimmed().toLower();
     if (!linkedOwner.isEmpty())
@@ -1693,7 +1818,7 @@ QString MainWindow::hostLinkSigningAccountName(QString *userName)
     if (userName)
         userName->clear();
     const QString signer = accountOwner().trimmed().toLower();
-    if (signer.isEmpty() || !hasActiveAccountSession())
+    if (signer.isEmpty() || !hasOwnerSigningCapability(signer))
         return QString();
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load())
         return QString();
@@ -1785,6 +1910,12 @@ void MainWindow::applyAccountEmailVerified(const QString &accountName, bool veri
     if (!normalized.isEmpty() && verified)
         QSettings().setValue(emailVerifiedSettingKey(normalized), true);
     refreshSettingsEmailVerifiedBadge();
+    // Verifying the email is the gate for the #welcome greeting; if this is the
+    // signed-in user and the room link is already live, greet now instead of
+    // waiting for the next roster tick.
+    if (verified && !normalized.isEmpty() &&
+        normalized == settingsAccountName())
+        maybeAnnounceWelcome();
 }
 
 void MainWindow::refreshSettingsEmailVerifiedBadge()
@@ -1804,6 +1935,55 @@ void MainWindow::refreshSettingsEmailVerifiedBadge()
 bool MainWindow::hasActiveAccountSession() const
 {
     return m_accountAuthenticated && m_accountTier == QStringLiteral("active");
+}
+
+bool MainWindow::hasOwnerSigningCapability(
+    const QString &signerAccount) const
+{
+    if (!AccountCapability::ownerSigningAllowed(
+            hasActiveAccountSession(), m_accountDesktopCapable,
+            m_accountName, signerAccount)) {
+        return false;
+    }
+    const QSettings settings;
+    return AccountCapability::persistedMarkerMatches(
+        settings.value(kDesktopCapableAccountSetting).toString(),
+        settings.value(kDesktopCapablePublicKeySetting).toString(),
+        m_accountName, m_profileIdentity.publicKey());
+}
+
+void MainWindow::setDesktopCapability(const QString &accountName,
+                                      bool capable)
+{
+    const QString normalized =
+        AccountCapability::normalizedAccount(accountName);
+    const QString publicKey = m_profileIdentity.publicKey().trimmed();
+    m_accountDesktopCapable =
+        capable && !normalized.isEmpty() && !publicKey.isEmpty();
+    QSettings settings;
+    if (m_accountDesktopCapable) {
+        settings.setValue(kDesktopCapableAccountSetting, normalized);
+        settings.setValue(kDesktopCapablePublicKeySetting, publicKey);
+        return;
+    }
+    settings.remove(kDesktopCapableAccountSetting);
+    settings.remove(kDesktopCapablePublicKeySetting);
+    if (m_heartbeatTimer)
+        m_heartbeatTimer->stop();
+    stopRepoHosts();
+}
+
+bool MainWindow::restoreDesktopCapability(const QString &accountName)
+{
+    const QString stored =
+        QSettings().value(kDesktopCapableAccountSetting).toString();
+    const QString storedPublicKey =
+        QSettings().value(kDesktopCapablePublicKeySetting).toString();
+    m_accountDesktopCapable =
+        AccountCapability::persistedMarkerMatches(
+            stored, storedPublicKey, accountName,
+            m_profileIdentity.publicKey());
+    return m_accountDesktopCapable;
 }
 
 QString MainWindow::catalogOwner(const RepositoryRecord &repo) const
@@ -1861,7 +2041,8 @@ QUrl MainWindow::catalogListUrl()
     // token so the relay also returns our own private repos (hidden from the public
     // catalog). Anonymous callers still receive the public-only list.
     const QString viewer = accountOwner();
-    if (m_profileIdentity.isValid() && !viewer.isEmpty()) {
+    if (m_profileIdentity.isValid() && !viewer.isEmpty() &&
+        hasOwnerSigningCapability(viewer)) {
         const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
         const QByteArray canonical =
             ("forkmesh-catalog-view-v1\n" + viewer + "\n" + ts).toUtf8();
@@ -2087,13 +2268,15 @@ bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &so
             m_accountName = accountName;
             m_accountTier = QStringLiteral("active");
             m_accountSolanaVerified = true;
+            setDesktopCapability(accountName,
+                                 m_testAccountFlowDesktopCapable);
         }
         Q_UNUSED(solana);
         return m_testAccountFlowResult;
     }
 #endif
     Q_UNUSED(solana);
-    if (m_accountAuthenticated && m_accountName == accountName)
+    if (hasOwnerSigningCapability(accountName))
         return true;
     if (!isValidNodeName(accountName)) {
         QMessageBox::warning(this, "Join the network",
@@ -2124,10 +2307,20 @@ bool MainWindow::ensureNodeAccount(const QString &accountName, const QString &so
 // run on launch without prompting. Returns false (quietly) when it can't confirm.
 bool MainWindow::authenticateSilently(const QString &accountName)
 {
-    if (m_accountAuthenticated && m_accountName == accountName)
+    if (hasOwnerSigningCapability(accountName))
         return true;
     if (!isValidNodeName(accountName))
         return false;
+    if (m_accountAuthenticated &&
+        AccountCapability::normalizedAccount(m_accountName) !=
+            AccountCapability::normalizedAccount(accountName)) {
+        setDesktopCapability(m_accountName, false);
+        m_accountAuthenticated = false;
+        m_accountTier = QStringLiteral("free");
+        m_accountSolanaVerified = false;
+        m_isAdmin = false;
+        QSettings().remove(kAuthedAccountSetting);
+    }
     int status = 0;
     const QJsonObject lookup = getAccountSync(accountName, &status);
     if (lookup.value("exists").toBool() &&
@@ -2137,6 +2330,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
+        setDesktopCapability(accountName, true);
         m_nodeOwnerUser = lookup.value("owner").toString();
         QSettings().setValue(kAuthedAccountSetting, accountName);
         applyAccountEmailVerified(accountName,
@@ -2149,8 +2343,10 @@ bool MainWindow::authenticateSilently(const QString &accountName)
     // already verified network members, so reflect that instead of nagging
     // "verify your payout wallet" on every launch.
     if (lookup.value("exists").toBool() &&
-        lookup.value("status").toString() == "active")
+        lookup.value("status").toString() == "active") {
         m_accountSolanaVerified = true;
+        setDesktopCapability(accountName, false);
+    }
     // Trust a previously authenticated marker whenever the relay gave no
     // authoritative answer — unreachable (status 0), rate-limited or erroring
     // (429/5xx) — so a transient lookup failure doesn't demote a returning user
@@ -2159,8 +2355,11 @@ bool MainWindow::authenticateSilently(const QString &accountName)
     // pubkey matched above. Publishing and heartbeat require this desktop's
     // Ed25519 key, not just an email/password session.
     const bool cachedHere =
-        QSettings().value(kAuthedAccountSetting).toString() == accountName;
-    if (cachedHere && status != 200) {
+        AccountCapability::normalizedAccount(
+            QSettings().value(kAuthedAccountSetting).toString()) ==
+        AccountCapability::normalizedAccount(accountName);
+    if (cachedHere && status != 200 &&
+        restoreDesktopCapability(accountName)) {
         m_accountAuthenticated = true;
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
@@ -2168,6 +2367,8 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         refreshSettingsEmailVerifiedBadge();
         return true;
     }
+    if (status == 200)
+        setDesktopCapability(accountName, false);
     return false;
 }
 
@@ -2184,7 +2385,7 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
         return false;
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load())
         return false;
-    if (m_accountAuthenticated && m_accountName == accountName)
+    if (hasOwnerSigningCapability(accountName))
         return true;
 
     auto activateSession = [&](const QString &owner, bool emailVerified) {
@@ -2192,6 +2393,7 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
+        setDesktopCapability(accountName, true);
         m_nodeOwnerUser = owner;
         QSettings().setValue(kAuthedAccountSetting, accountName);
         applyAccountEmailVerified(accountName, emailVerified);
@@ -2321,6 +2523,7 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
     m_accountName = accountName;
     m_accountTier = QStringLiteral("active");
     m_accountSolanaVerified = true; // registered = active network member
+    setDesktopCapability(accountName, true);
     m_nodeOwnerUser = fresp.value("owner").toString(); // set if a link code linked it
     QSettings().setValue(kAuthedAccountSetting, accountName);
     QSettings().setValue(kAccountNameSetting, accountName);
@@ -2351,7 +2554,7 @@ void MainWindow::scheduleHeadlessRegisterRetry(const QString &accountName)
         m_headlessRegisterRetryTimer->setSingleShot(true);
         connect(m_headlessRegisterRetryTimer, &QTimer::timeout, this,
                 [this, accountName] {
-                    if (hasActiveAccountSession())
+                    if (hasOwnerSigningCapability(accountName))
                         return;
                     if (registerNodeAccountSilently(accountName)) {
                         m_headlessRegisterAttempt = 0;
@@ -2394,13 +2597,28 @@ bool MainWindow::verifyTotpLogin(const QString &email,
 {
     if (fatal)
         *fatal = false;
+    QJsonObject loginRequest{{"email", email}, {"password", password},
+                             {"totp", totp}};
+    const QString publicKey = m_profileIdentity.publicKey();
+    if (!publicKey.isEmpty()) {
+        const QString deviceTs =
+            QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QByteArray deviceCanonical =
+            ForkMeshIdentity::deviceBindCanonical(
+                accountName, publicKey, deviceTs);
+        const QString deviceSig =
+            deviceCanonical.isEmpty()
+                ? QString()
+                : m_profileIdentity.signData(deviceCanonical);
+        if (!deviceSig.isEmpty()) {
+            loginRequest.insert(QStringLiteral("pubkey"), publicKey);
+            loginRequest.insert(QStringLiteral("deviceTs"), deviceTs);
+            loginRequest.insert(QStringLiteral("deviceSig"), deviceSig);
+        }
+    }
     int status = 0;
-    const QJsonObject resp = postAccountSync(
-        "login",
-        QJsonObject{{"email", email}, {"password", password},
-                    {"totp", totp},
-                    {"pubkey", m_profileIdentity.publicKey()}},
-        &status);
+    const QJsonObject resp =
+        postAccountSync("login", loginRequest, &status);
     auto acceptLogin = [&](const QJsonObject &payload, bool ownsDesktopKey) {
         m_accountAuthenticated = true;
         m_accountName = payload.value("nodeName").toString(accountName);
@@ -2409,19 +2627,21 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         // key and can publish/host/sign owner-only actions. False is a safe
         // password-only session for viewing/using the app when the account is
         // bound to another desktop key.
-        m_accountSolanaVerified = ownsDesktopKey;
-        // Remember that this machine successfully authenticated this account so
-        // the next launch opens straight onto the app shell. Without this a
-        // password (cross-device) login — where the node key does NOT own the
-        // account — fails silent auth on every restart and is sent back to the
-        // login screen even with correct credentials.
+        m_accountSolanaVerified = true;
+        setDesktopCapability(m_accountName, ownsDesktopKey);
+        // Remember the account that completed login. Desktop signing capability
+        // is persisted separately, so a password-only marker never restores
+        // owner-signed actions on a later launch.
         QSettings().setValue(kAuthedAccountSetting, m_accountName);
         applyAccountEmailVerified(m_accountName,
                                   payload.value("emailVerified").toBool());
     };
 
     if (status == 200 && resp.value("ok").toBool()) {
-        acceptLogin(resp, true);
+        const bool ownsDesktopKey =
+            resp.value(QStringLiteral("deviceKeyMatched")).toBool(false) &&
+            resp.value(QStringLiteral("desktopCapable")).toBool(false);
+        acceptLogin(resp, ownsDesktopKey);
         return true;
     }
     const QString err = resp.value("error").toString();
@@ -2431,7 +2651,7 @@ bool MainWindow::verifyTotpLogin(const QString &email,
     // web/mobile architecture: a client may use the central Worker with
     // email/password, but only the bound desktop key can publish/host. Do not
     // silently rotate or replace the account key here.
-    if (err == "pubkey_mismatch") {
+    if (AccountCapability::allowsPasswordOnlyFallback(err)) {
         int webStatus = 0;
         const QJsonObject webResp = postAccountSync(
             "login",
@@ -2441,11 +2661,22 @@ bool MainWindow::verifyTotpLogin(const QString &email,
             acceptLogin(webResp, false);
             QMessageBox::information(
                 this, "Logged in",
-                "You are signed in with email/password, but this account is "
-                "already bound to a different desktop key. Browsing and account "
-                "features will work from this device; publishing, hosting, and "
-                "owner-signed actions require the original desktop key or an "
-                "explicit account-key rotation/import.");
+                err == QLatin1String("device_proof_required")
+                    ? "You are signed in with email/password for browsing and "
+                      "account features. This device's identity proof was not "
+                      "accepted, so publishing, hosting, and owner-signed "
+                      "actions stay disabled. Check this computer's clock and "
+                      "identity, then sign in again to restore them."
+                : err == QLatin1String("device_key_conflict")
+                    ? "You are signed in with email/password for browsing and "
+                      "account features. This desktop key belongs to another "
+                      "account, so publishing, hosting, and owner-signed actions "
+                      "stay disabled until you import or create the correct key."
+                    : "You are signed in with email/password, but this account "
+                      "is already bound to a different desktop key. Browsing and "
+                      "account features will work from this device; publishing, "
+                      "hosting, and owner-signed actions require the original "
+                      "desktop key or an explicit account-key rotation/import.");
             return true;
         }
     }
@@ -2468,6 +2699,14 @@ bool MainWindow::verifyTotpLogin(const QString &email,
                                      "desktop key, and password-only fallback also "
                                      "failed. Use the original device, import its "
                                      "identity backup, or rotate the account key."
+                             : err == "device_proof_required"
+                                   ? "This desktop could not prove possession of "
+                                     "its identity key. Reload the identity or "
+                                     "restart ForkMesh, then try again."
+                             : err == "device_key_conflict"
+                                   ? "This desktop identity is already registered "
+                                     "to another account. Import the identity for "
+                                     "this account or use a separate desktop key."
                                          : "Login failed" +
                                                (err.isEmpty() ? QString() : ": " + err) +
                                                ".");
@@ -2669,6 +2908,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
         m_accountName = name;
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true; // joined = active network member
+        setDesktopCapability(name, true);
         QSettings().setValue(kAuthedAccountSetting, name);
         joined = true;
         dialog.accept();
@@ -2806,17 +3046,14 @@ void MainWindow::styleFooterUpdateLog()
 {
     if (!m_footerUpdateLog)
         return;
-    // Theme-aware so the strip reads on either canvas (it carries its own inline
-    // sheet, not the global one).
-    const bool dark = currentThemeIsDark();
-    const QString colour = dark ? QStringLiteral("#8b949e") : QStringLiteral("#656d76");
-    const QString border = dark ? QStringLiteral("#21262d") : QStringLiteral("#d0d7de");
-    const QString canvas = dark ? QStringLiteral("#0d1117") : QStringLiteral("#f6f8fa");
+    // Always a white canvas with near-black ink so the live strip reads like the
+    // Log view regardless of theme (adhoc #19). Per-line severity/category colour
+    // comes from the HTML badge that setFooterUpdateLine() renders; the base text
+    // stays black so plain messages don't wash out on white.
     m_footerUpdateLog->setStyleSheet(
-        QStringLiteral("QPlainTextEdit#footerUpdateLog{color:%1;border:none;"
-                       "border-right:1px solid %2;background:%3;"
-                       "font-family:monospace;font-size:11px;padding:3px 12px;}")
-            .arg(colour, border, canvas));
+        QStringLiteral("QPlainTextEdit#footerUpdateLog{color:#1f2328;border:none;"
+                       "border-right:1px solid #d0d7de;background:#ffffff;"
+                       "font-family:monospace;font-size:11px;padding:3px 12px;}"));
 }
 
 void MainWindow::setFooterUpdateLine(const QString &line)
@@ -2826,12 +3063,33 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     const QString clean = line.trimmed();
     if (clean.isEmpty())
         return;
+    // Render the same colored category badge the Log view uses so the always-on
+    // strip reads at a glance instead of as a wall of grey text (adhoc #19). The
+    // canvas is forced white with black body text by styleFooterUpdateLog(); only
+    // the badge carries colour. Lines from logSystem() arrive fully dated
+    // ("yyyy-MM-dd HH:mm:ss  message"); other callers pass a bare message.
+    QString time, message = clean;
+    if (clean.size() >= 21 && clean.at(10) == QLatin1Char(' ')) {
+        time = clean.mid(11, 8);
+        message = clean.mid(21);
+    }
+    const QString badge = logBadgeFor(clean);
+    const QString accent = logAccentFor(clean);
+    QString html;
+    if (!time.isEmpty())
+        html += QStringLiteral("<span style='color:#656d76'>%1</span>&nbsp;&nbsp;")
+                    .arg(time);
+    html += QStringLiteral(
+                "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
+                "<span style='color:#1f2328'>%3</span>")
+                .arg(accent, badge.leftJustified(7).toHtmlEscaped(),
+                     message.toHtmlEscaped());
     // Only auto-scroll to the new line if the view was already at (or very near)
     // the bottom — otherwise a user who scrolled up to search back through
     // history would get yanked back down by every new event.
     QScrollBar *bar = m_footerUpdateLog->verticalScrollBar();
     const bool wasAtBottom = !bar || bar->value() >= bar->maximum() - 2;
-    m_footerUpdateLog->appendPlainText(clean);
+    m_footerUpdateLog->appendHtml(html);
     if (wasAtBottom && bar)
         bar->setValue(bar->maximum());
 }
@@ -3010,9 +3268,16 @@ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUse
     runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
                       clientDir, [this, buildDir, appPath] {
         setUpdateStatus("Rebuilding...");
+        // Cap parallelism by RAM, not just cores: cc1plus peaks well past
+        // 1 GB on the big Qt translation units, and an OOM kill during an
+        // in-place update can take out the RUNNING node — which nothing
+        // restarts (the fleet daemons run under nohup, no supervisor).
+        int jobs = QThread::idealThreadCount();
+        const qint64 totalRam = SystemStats::totalMemoryBytes();
+        if (totalRam > 0)
+            jobs = qBound(1, int(totalRam / (1536LL * 1024 * 1024)), jobs);
         runUpdateStepUser("cmake",
-                          {"--build", buildDir, "-j",
-                           QString::number(QThread::idealThreadCount())},
+                          {"--build", buildDir, "-j", QString::number(jobs)},
                           buildDir, [this, buildDir, appPath] {
             const QString built = builtExecutablePath(buildDir);
             installAndRelaunch(built, appPath);
@@ -3020,25 +3285,75 @@ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUse
     });
 }
 
+// Run `<binary> --version` (optionally as another user) and require a clean
+// zero exit. --version returns before the Qt platform, root-gate and
+// single-instance setup, so this validates the binary loads and runs on THIS
+// machine (not truncated, right arch, shared libraries resolvable) without
+// disturbing the running node. Binaries predating the flag start the full app
+// instead — the timeout kill fails them, which is the safe direction.
+static bool binaryPassesStartCheck(const QString &binary, const QString &asUser)
+{
+    QProcess probe;
+    if (asUser.isEmpty()) {
+        probe.start(binary, {QStringLiteral("--version")});
+    } else {
+        probe.start(QStringLiteral("sudo"),
+                    {QStringLiteral("-u"), asUser, QStringLiteral("-H"), binary,
+                     QStringLiteral("--version")});
+    }
+    if (!probe.waitForStarted(5000))
+        return false;
+    if (!probe.waitForFinished(15000)) {
+        probe.kill();
+        probe.waitForFinished(2000);
+        return false;
+    }
+    return probe.exitStatus() == QProcess::NormalExit && probe.exitCode() == 0;
+}
+
 void MainWindow::installAndRelaunch(const QString &built, const QString &appPath)
 {
+    // The relaunch MUST carry the arguments this instance was started with:
+    // fleet nodes run headless as `forkmesh --allow-root`, and a respawn with
+    // no arguments hits the root gate in main() and exits immediately. With
+    // no supervisor behind the nohup daemon (install.sh), that argument drop
+    // permanently killed every flag-launched node that completed the v0.6.2
+    // update.
+    const QStringList relaunchArgs = QCoreApplication::arguments().mid(1);
+
     if (!m_updateAsUser.isEmpty()) {
         // Install and relaunch as the user so the binary is theirs, not root's.
+        // Keep the previous binary beside it: no failure past this point may
+        // leave the box with nothing runnable at appPath.
         const QString binDir = QFileInfo(appPath).absolutePath();
         const QString script =
-            QStringLiteral("mkdir -p %1 && cp -f %2 %3 && chmod 0755 %3")
+            QStringLiteral("mkdir -p %1 && { [ ! -e %3 ] || cp -f %3 %3.bak-update; }"
+                           " && cp -f %2 %3 && chmod 0755 %3")
                 .arg(shellSingleQuote(binDir), shellSingleQuote(built),
                      shellSingleQuote(appPath));
         setUpdateStatus("Installing for " + m_updateAsUser + "...");
+        const QString probeUser = m_updateAsUser;
+        if (!binaryPassesStartCheck(built, probeUser)) {
+            setUpdateStatus("Update failed: the new build did not pass its "
+                            "start check; keeping the current version.",
+                            true);
+            stopRestartSpin();
+            if (m_buildButton)
+                m_buildButton->setEnabled(true);
+            return;
+        }
         runUpdateStep("sudo", {"-u", m_updateAsUser, "-H", "sh", "-c", script},
-                      QDir::tempPath(), [this, appPath] {
+                      QDir::tempPath(), [this, appPath, relaunchArgs] {
             setUpdateStatus("Relaunching...");
             const QString user = m_updateAsUser;
             // Release the instance lock first so the replacement process (which
             // runs as a different user here, but may still share this user's
             // data on a single-user box) doesn't bounce off it before we quit.
             forkmesh::releaseSingleInstance();
-            QProcess::startDetached("sudo", {"-u", user, "-H", appPath});
+            QStringList args{QStringLiteral("-u"), user, QStringLiteral("-H"),
+                             appPath};
+            args += relaunchArgs;
+            QProcess::startDetached("sudo", args);
             logRestart(QStringLiteral("relaunched %1; quitting").arg(appPath));
             logSystem(QStringLiteral("=== Restarting now (rebuild & restart) ==="));
             QCoreApplication::quit();
@@ -3046,12 +3361,32 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
         return;
     }
 
-    // In-process update: replace the running binary over its own path (the
-    // running inode stays valid) and relaunch directly.
+    // In-process update: validate the new binary, park the old one as
+    // .bak-update, then replace over the running path (the running inode
+    // stays valid) and relaunch.
+    if (!binaryPassesStartCheck(built, QString())) {
+        setUpdateStatus("Update failed: the new build did not pass its start "
+                        "check; keeping the current version.",
+                        true);
+        stopRestartSpin();
+        if (m_buildButton)
+            m_buildButton->setEnabled(true);
+        return;
+    }
     if (QFileInfo(built).canonicalFilePath() !=
         QFileInfo(appPath).canonicalFilePath()) {
-        QFile::remove(appPath);
+        const QString bak = appPath + QStringLiteral(".bak-update");
+        QFile::remove(bak);
+        if (!QFile::rename(appPath, bak)) {
+            setUpdateStatus("Update failed: could not move the current binary "
+                            "aside at " + appPath, true);
+            stopRestartSpin();
+            if (m_buildButton)
+                m_buildButton->setEnabled(true);
+            return;
+        }
         if (!QFile::copy(built, appPath)) {
+            QFile::rename(bak, appPath); // restore — never leave appPath empty
             setUpdateStatus("Update failed: could not replace " + appPath, true);
             stopRestartSpin();
             if (m_buildButton)
@@ -3069,7 +3404,15 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
     // bounces off the still-held lock (this process hasn't unwound yet) and
     // exits into nothing instead of taking over.
     forkmesh::releaseSingleInstance();
-    QProcess::startDetached(appPath, {});
+    if (!QProcess::startDetached(appPath, relaunchArgs)) {
+        setUpdateStatus("Update installed but the relaunch failed; still "
+                        "running the previous version in memory.",
+                        true);
+        stopRestartSpin();
+        if (m_buildButton)
+            m_buildButton->setEnabled(true);
+        return;
+    }
     logRestart(QStringLiteral("relaunched %1; quitting").arg(appPath));
     logSystem(QStringLiteral("=== Restarting now (rebuild & restart) ==="));
     QCoreApplication::quit();
@@ -3099,6 +3442,208 @@ QString MainWindow::resolveInstallCloneUrl()
     clone.setQuery(QString());
     clone.setFragment(QString());
     return clone.toString();
+}
+
+// ---- Auto-update via prebuilt release artifacts -----------------------------
+// Rebuilding from source next to the live node is what killed the fleet when
+// v0.6.2 was tagged: every auto-updating node cloned through the relay and ran
+// a full cmake build on its own (often 1 GB) box, and any death mid-flow was
+// permanent because the nohup daemons have no supervisor. The release pipeline
+// already publishes sha256-named binaries into the mesh's content-addressed
+// store, so prefer those: verify, smoke-test, swap, relaunch. Source rebuild
+// stays as the fallback for platforms with no matching artifact.
+
+static bool fileSha256Matches(const QString &path, const QString &expected)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    QCryptographicHash hasher(QCryptographicHash::Sha256);
+    if (!hasher.addData(&file))
+        return false;
+    return QString::fromLatin1(hasher.result().toHex()) ==
+           expected.toLower();
+}
+
+bool MainWindow::tryPrebuiltAutoUpdate(const QString &clientDir,
+                                       const QString &tag,
+                                       const QString &tagCommit)
+{
+    // Root-under-sudo installs relaunch as the invoking user through the
+    // rebuild plumbing's sudo wrappers; keep them on that path.
+    if (!invokingNonRootUser().isEmpty())
+        return false;
+
+#if defined(Q_OS_LINUX)
+    const QString wantOs = QStringLiteral("linux");
+#elif defined(Q_OS_MACOS)
+    const QString wantOs = QStringLiteral("macos");
+#elif defined(Q_OS_WIN)
+    const QString wantOs = QStringLiteral("windows");
+#else
+    return false;
+#endif
+    const QString wantArch = QSysInfo::currentCpuArchitecture();
+
+    // The manifest is committed in the repo, so the checkout whose tags were
+    // just fetched already carries it — no extra network round-trip.
+    QByteArray manifestOut;
+    if (!runGitCapture(clientDir,
+                       {QStringLiteral("show"),
+                        tagCommit +
+                            QStringLiteral(":.forkmesh/releases/latest/release.json")},
+                       &manifestOut, nullptr)) {
+        logSystem(QStringLiteral("Auto-update: release %1 publishes no "
+                                 "artifact manifest; building from source.")
+                      .arg(tag));
+        return false;
+    }
+    const QJsonObject manifest = QJsonDocument::fromJson(manifestOut).object();
+    static const QRegularExpression sha256Re(
+        QStringLiteral("\\A[0-9a-f]{64}\\z"));
+    QString assetHash;
+    QString assetName;
+    const QJsonArray assets =
+        manifest.value(QStringLiteral("assets")).toArray();
+    for (const QJsonValue &value : assets) {
+        const QJsonObject asset = value.toObject();
+        if (asset.value(QStringLiteral("os")).toString().trimmed() != wantOs)
+            continue;
+        if (asset.value(QStringLiteral("arch")).toString().trimmed() !=
+            wantArch)
+            continue;
+        const QString hash = asset.value(QStringLiteral("blob_sha256"))
+                                 .toString()
+                                 .trimmed()
+                                 .toLower();
+        if (!sha256Re.match(hash).hasMatch())
+            continue;
+        assetHash = hash;
+        assetName = asset.value(QStringLiteral("name")).toString();
+        break;
+    }
+    const QString manifestRepo =
+        manifest.value(QStringLiteral("repo")).toString().trimmed();
+    const int slash = manifestRepo.indexOf(QLatin1Char('/'));
+    if (assetHash.isEmpty() || slash <= 0) {
+        logSystem(QStringLiteral("Auto-update: release %1 has no prebuilt "
+                                 "artifact for %2/%3; building from source.")
+                      .arg(tag, wantOs, wantArch));
+        return false;
+    }
+
+    // Mirrors of the client repo replicate release artifacts into their CAS
+    // (replicateReleaseArtifacts), so a node that mirrors it usually holds
+    // the bytes already: verify and install with no download at all.
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (repo.previewOnly || repo.mirrorPath.trimmed().isEmpty())
+            continue;
+        const QString identity =
+            repoSegment(repo.owner, QStringLiteral("owner")) +
+            QLatin1Char('/') +
+            repoSegment(repo.name, QStringLiteral("repository"));
+        if (identity.compare(manifestRepo, Qt::CaseInsensitive) != 0)
+            continue;
+        const QString blob = mirrorReleaseBlobPath(repo.mirrorPath, assetHash);
+        if (QFile::exists(blob) && fileSha256Matches(blob, assetHash)) {
+            logSystem(QStringLiteral("Auto-update: installing release %1 from "
+                                     "this node's own artifact store (%2).")
+                          .arg(tag, assetName));
+            installPrebuiltAndRelaunch(blob, tag);
+            return true;
+        }
+    }
+
+    // Otherwise stream the blob from the relay's content-addressed route,
+    // hashing as it downloads (same pattern as downloadNextReleaseBlob).
+    if (!m_networkAccess)
+        return false;
+    const QString owner = manifestRepo.left(slash);
+    const QString name = manifestRepo.mid(slash + 1);
+    const QString staging =
+        QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+            .filePath(QStringLiteral("forkmesh-update-") + assetHash.left(12));
+    auto tmp = std::make_shared<QFile>(staging + QStringLiteral(".part"));
+    if (!tmp->open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    auto hasher =
+        std::make_shared<QCryptographicHash>(QCryptographicHash::Sha256);
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repo/%1/%2/releases/blob/sha256/%3")
+                    .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
+                         QString::fromUtf8(QUrl::toPercentEncoding(name)),
+                         assetHash));
+    logSystem(QStringLiteral(
+                  "Auto-update: downloading the release %1 artifact (%2)...")
+                  .arg(tag, assetName));
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::readyRead, this, [reply, tmp, hasher] {
+        const QByteArray chunk = reply->readAll();
+        tmp->write(chunk);
+        hasher->addData(chunk);
+    });
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, tmp, hasher, staging, assetHash, tag] {
+                const QByteArray rest = reply->readAll();
+                tmp->write(rest);
+                hasher->addData(rest);
+                const bool ok = reply->error() == QNetworkReply::NoError;
+                const QString netError = reply->errorString();
+                reply->deleteLater();
+                tmp->close();
+                const QString actual =
+                    QString::fromLatin1(hasher->result().toHex());
+                if (!ok || actual != assetHash) {
+                    QFile::remove(tmp->fileName());
+                    logSystem(
+                        QStringLiteral(
+                            "Auto-update: artifact download for %1 failed "
+                            "(%2); falling back to a source build.")
+                            .arg(tag, ok ? QStringLiteral("checksum mismatch")
+                                         : netError));
+                    updateRebuildRestart();
+                    return;
+                }
+                QFile::remove(staging);
+                if (!QFile::rename(tmp->fileName(), staging)) {
+                    QFile::remove(tmp->fileName());
+                    updateRebuildRestart();
+                    return;
+                }
+                installPrebuiltAndRelaunch(staging, tag);
+            });
+    return true;
+}
+
+void MainWindow::installPrebuiltAndRelaunch(const QString &artifactPath,
+                                            const QString &tag)
+{
+    // Stage a private executable copy — the CAS blob is not executable and
+    // may sit on a different filesystem than the installed binary.
+    const QString staged =
+        QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+            .filePath(QStringLiteral("forkmesh-update-staged"));
+    if (staged != artifactPath) {
+        QFile::remove(staged);
+        if (!QFile::copy(artifactPath, staged)) {
+            logSystem(QStringLiteral("Auto-update: could not stage the %1 "
+                                     "artifact; falling back to a source "
+                                     "build.")
+                          .arg(tag));
+            updateRebuildRestart();
+            return;
+        }
+    }
+    QFile::setPermissions(staged, QFile::ReadOwner | QFile::WriteOwner |
+                                      QFile::ExeOwner | QFile::ReadGroup |
+                                      QFile::ExeGroup | QFile::ReadOther |
+                                      QFile::ExeOther);
+    logRestart(QStringLiteral("prebuilt update to %1 staged").arg(tag));
+    // installAndRelaunch smoke-tests the staged binary (--version) before
+    // touching the installed one, parks the old binary as .bak-update, and
+    // relaunches with this instance's own arguments.
+    m_updateAsUser.clear();
+    installAndRelaunch(staged, QCoreApplication::applicationFilePath());
 }
 
 void MainWindow::updateRebuildRestart()

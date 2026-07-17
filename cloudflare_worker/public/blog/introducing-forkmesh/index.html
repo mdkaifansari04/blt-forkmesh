@@ -9,13 +9,15 @@
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
     <link rel="manifest" href="/favicon/site.webmanifest" />
     <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/site-header.css">
+    <script src="/site-header.js" defer></script>
     <script src="/static-page.js" defer></script>
 
     <meta property="og:type" content="article">
@@ -64,36 +66,7 @@
     </style>
   </head>
   <body>
-    <header class="site-header">
-      <div class="header-inner">
-        <a class="brand" href="/" aria-label="ForkMesh home">
-          <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
-          <span>ForkMesh</span>
-        </a>
-        <nav class="global-nav" aria-label="Global">
-          <a href="/dashboard">Repositories</a>
-          <a href="/network">Network</a>
-          <a href="/docs/">Docs</a>
-          <a href="/status">Status</a>
-          <a href="/blog">Blog</a>
-          <a href="/changelog">Changelog</a>
-          <a href="/chat">Chat</a>
-          <a class="nav-cta" href="/signup">Sign Up / Log In</a>
-        </nav>
-        <div class="header-actions">
-          <div class="clients-pill" aria-live="polite">
-            <span class="clients-relay-icon" id="clients-dot" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 8.582v5.668a.75.75 0 0 1-1.5 0V8.582a1.75 1.75 0 1 1 1.5 0Zm3.983-7.125a.75.75 0 0 1 1.06.026A7.976 7.976 0 0 1 16 7c0 2.139-.84 4.083-2.207 5.517a.75.75 0 1 1-1.086-1.034A6.474 6.474 0 0 0 14.5 7a6.474 6.474 0 0 0-1.793-4.483.75.75 0 0 1 .026-1.06Zm-9.466 0c.3.286.312.76.026 1.06A6.474 6.474 0 0 0 1.5 7a6.47 6.47 0 0 0 1.793 4.483.75.75 0 0 1-1.086 1.034A7.973 7.973 0 0 1 0 7c0-2.139.84-4.083 2.207-5.517a.75.75 0 0 1 1.06-.026Zm8.556 2.321A4.988 4.988 0 0 1 13 7a4.988 4.988 0 0 1-1.177 3.222.75.75 0 1 1-1.146-.967A3.487 3.487 0 0 0 11.5 7c0-.86-.309-1.645-.823-2.255a.75.75 0 0 1 1.146-.967Zm-6.492.958A3.48 3.48 0 0 0 4.5 7a3.48 3.48 0 0 0 .823 2.255.75.75 0 0 1-1.146.967A4.981 4.981 0 0 1 3 7a4.982 4.982 0 0 1 1.188-3.236.75.75 0 1 1 1.143.972Z"/></svg></span>
-            <span id="clients-count">Checking…</span>
-          </div>
-          <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle theme">
-            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"></path></svg>
-            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path></svg>
-          </button>
-          <a class="nav-admin" data-admin-link href="#" hidden>Admin</a>
-          <a class="install-link" href="/#install-banner">Install</a>
-        </div>
-      </div>
-    </header>
+      <div data-forkmesh-header="simple"></div>
 
     <main class="blog-shell">
       <a class="blog-back" href="/blog">&larr; All posts</a>
@@ -231,15 +204,22 @@
         <p>
           Collaboration history shouldn't live in a proprietary silo either. ForkMesh
           issues and PRs are signed, append-only events that can be represented as files
-          inside the repository:
+          inside the repository. A PR carries a patch — and an optional
+          <code>git format-patch</code> commit series — so it can be submitted with no
+          push access, no fork, and no branch at all; it can also ride a real branch when
+          a contributor has one. Every comment and review is signed too, each bound to
+          its own PR:
         </p>
         <pre><code>forkmesh-pull-event-v1
 &lt;author pubkey&gt;
 &lt;ts&gt;
-sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
+sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code></pre>
         <p>
-          When a maintainer merges, the accepted record becomes part of normal Git
-          history — so the conversation around your code travels with the code, forever.
+          When a maintainer merges, ForkMesh runs a real <code>git merge</code> whenever
+          there's a resolvable commit behind the PR, falling back to replaying the stored
+          patch when there isn't — and the accepted PR, with its whole discussion thread,
+          is committed straight into the repository on its own branch. So the
+          conversation around your code travels with the code, forever.
         </p>
 
         <h2><span class="num">06</span>No center to capture</h2>
@@ -259,10 +239,12 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
         <h2>This is an MVP — and that's exciting</h2>
         <p>
           We'll be honest about where we are: ForkMesh is an early prototype. Live file
-          browsing and clone need at least one host online. <code>git push</code> over the
-          relay isn't production-ready yet, and pull requests today are signed patch
-          records rather than full branch refs. The relay is still a trusted jump layer
-          for connection metadata.
+          browsing, clone, and <code>git push</code> all need at least one host online —
+          the relay itself holds no Git objects, it only routes to whichever mirror is
+          live. Git hosting is scoped to a single relay instance today: a self-hosted
+          relay can already federate with the main relay for node coordination and
+          payouts, but repos don't yet move or merge across independent relay instances.
+          The relay is still a trusted jump layer for connection metadata.
         </p>
         <p>
           But the foundation that matters is already standing: real Ed25519 identity, real

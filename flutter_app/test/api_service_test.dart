@@ -325,6 +325,112 @@ ts: 10
     expect(issues.single.bountyPayoutSig, 'payout-md');
   });
 
+  test('published issues read the split .forkmesh/issues JSON layout', () async {
+    // Issues are split by status into .forkmesh/issues/open/<n>/ and
+    // .forkmesh/issues/closed/<n>/ (pre-split repos keep <n>/ at the root);
+    // each folder holds one issue-<n>.json signed-event record.
+    String record(int number, String status, String title, String body) =>
+        jsonEncode({
+          'schema': 'forkmesh-issue-v1',
+          'number': number,
+          'title': title,
+          'status': status,
+          'authorName': 'Alice',
+          'labels': ['mobile'],
+          'votes': 1,
+          'events': [
+            {
+              'type': 'open',
+              'id': 'open-$number',
+              'authorName': 'Alice',
+              'ts': 1,
+              'title': title,
+              'body': body,
+              'attachments': [],
+            },
+          ],
+        });
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      request.response.headers.contentType = ContentType.json;
+      final path = request.uri.queryParameters['path'] ?? '';
+      Map<String, dynamic>? tree;
+      if (request.uri.path.endsWith('/tree') && path == '.forkmesh/issues') {
+        tree = {
+          'entries': [
+            {'name': 'open', 'path': '.forkmesh/issues/open', 'type': 'dir'},
+            {
+              'name': 'closed',
+              'path': '.forkmesh/issues/closed',
+              'type': 'dir',
+            },
+            {'name': '2', 'path': '.forkmesh/issues/2', 'type': 'dir'},
+          ],
+        };
+      } else if (request.uri.path.endsWith('/tree') &&
+          path == '.forkmesh/issues/open') {
+        tree = {
+          'entries': [
+            {'name': '3', 'path': '.forkmesh/issues/open/3', 'type': 'dir'},
+          ],
+        };
+      } else if (request.uri.path.endsWith('/tree') &&
+          path == '.forkmesh/issues/closed') {
+        tree = {
+          'entries': [
+            {'name': '1', 'path': '.forkmesh/issues/closed/1', 'type': 'dir'},
+          ],
+        };
+      }
+      if (tree != null) {
+        request.response.write(jsonEncode(tree));
+      } else if (request.uri.path.endsWith('/blob') &&
+          path == '.forkmesh/issues/open/3/issue-3.json') {
+        request.response.write(
+          jsonEncode({
+            'content': record(3, 'open', 'Split open', 'From the open folder'),
+          }),
+        );
+      } else if (request.uri.path.endsWith('/blob') &&
+          path == '.forkmesh/issues/closed/1/issue-1.json') {
+        request.response.write(
+          jsonEncode({'content': record(1, 'closed', 'Split closed', 'done')}),
+        );
+      } else if (request.uri.path.endsWith('/blob') &&
+          path == '.forkmesh/issues/2/issue-2.json') {
+        request.response.write(
+          jsonEncode({'content': record(2, 'open', 'Legacy spot', 'old spot')}),
+        );
+      } else {
+        request.response.statusCode = HttpStatus.notFound;
+        request.response.write('not found');
+      }
+      await request.response.close();
+    });
+    addTearDown(() async {
+      await subscription.cancel();
+      await server.close(force: true);
+    });
+
+    SharedPreferences.setMockInitialValues({});
+    final settings = await SettingsService.create();
+    await settings.setServerUrl(
+      'ws://${server.address.host}:${server.port}/ws',
+    );
+    final api = ApiService(settings);
+
+    final issues = await api.publishedIssues('owner', 'repo');
+
+    expect(issues.map((issue) => issue.number).toList(), [3, 2, 1]);
+    expect(issues.first.title, 'Split open');
+    expect(issues.first.body, 'From the open folder');
+    expect(issues.first.author, 'Alice');
+    expect(issues.first.labels, ['mobile']);
+    expect(issues.first.votes, 1);
+    expect(issues.first.isOpen, isTrue);
+    expect(issues.last.status, 'closed');
+  });
+
   test('issue bounty status posts body and parses funding state', () async {
     final requests = <Map<String, dynamic>>[];
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -523,34 +629,34 @@ ts: 10
     final subscription = server.listen((request) async {
       request.response.headers.contentType = ContentType.json;
       final path = request.uri.queryParameters['path'] ?? '';
-      if (request.uri.path.endsWith('/tree') && path == 'discussions') {
+      if (request.uri.path.endsWith('/tree') && path == '.forkmesh/discussions') {
         request.response.write(
           jsonEncode({
             'entries': [
-              {'name': '3', 'path': 'discussions/3', 'type': 'dir'},
+              {'name': '3', 'path': '.forkmesh/discussions/3', 'type': 'dir'},
             ],
           }),
         );
       } else if (request.uri.path.endsWith('/tree') &&
-          path == 'discussions/3') {
+          path == '.forkmesh/discussions/3') {
         request.response.write(
           jsonEncode({
             'entries': [
               {
                 'name': 'discussion.md',
-                'path': 'discussions/3/discussion.md',
+                'path': '.forkmesh/discussions/3/discussion.md',
                 'type': 'file',
               },
               {
                 'name': '001-comment.md',
-                'path': 'discussions/3/001-comment.md',
+                'path': '.forkmesh/discussions/3/001-comment.md',
                 'type': 'file',
               },
             ],
           }),
         );
       } else if (request.uri.path.endsWith('/blob') &&
-          path == 'discussions/3/discussion.md') {
+          path == '.forkmesh/discussions/3/discussion.md') {
         request.response.write(
           jsonEncode({
             'content': '''---
@@ -562,7 +668,7 @@ How should maintainers review from phones?''',
           }),
         );
       } else if (request.uri.path.endsWith('/blob') &&
-          path == 'discussions/3/001-comment.md') {
+          path == '.forkmesh/discussions/3/001-comment.md') {
         request.response.write(
           jsonEncode({
             'content': '''---
@@ -786,7 +892,7 @@ LGTM from mobile.''',
           request.response.write(
             jsonEncode({
               'entries': [
-                {'name': 'latest', 'path': 'releases/latest', 'type': 'dir'},
+                {'name': 'latest', 'path': '.forkmesh/releases/latest', 'type': 'dir'},
               ],
             }),
           );

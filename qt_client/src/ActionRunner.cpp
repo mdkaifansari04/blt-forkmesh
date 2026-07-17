@@ -358,14 +358,14 @@ bool ActionRunner::landReleaseMetadata()
     // has nowhere to commit and can't publish anyway.
     if (m_repoWorkTree.isEmpty() || !QDir(m_repoWorkTree).exists())
         return false;
-    const QDir produced(m_worktree + QStringLiteral("/releases"));
+    const QDir produced(m_worktree + QStringLiteral("/.forkmesh/releases"));
     if (!produced.exists())
         return false;
 
-    // Mirror releases/ from the worktree into the working copy. The metadata is a
+    // Mirror .forkmesh/releases/ from the worktree into the working copy. The metadata is a
     // few tiny text files (SHASUMS256.txt + release.json per channel); the binary
     // bytes are NOT here — they already live in the served CAS.
-    const QDir dest(m_repoWorkTree + QStringLiteral("/releases"));
+    const QDir dest(m_repoWorkTree + QStringLiteral("/.forkmesh/releases"));
     const QString destRoot = dest.absolutePath();
     QDir().mkpath(destRoot);
     const QFileInfoList entries = produced.entryInfoList(
@@ -403,9 +403,9 @@ bool ActionRunner::landReleaseMetadata()
     // Carry the version-header bump the release workflow made (project(ForkMesh
     // VERSION ...)) into the working copy too, so it lands in the same commit.
     // The path is only staged when the bump actually changed something, keeping
-    // the release commit to releases/ alone whenever the header is already in
+    // the release commit to .forkmesh/releases/ alone whenever the header is already in
     // sync (or the tag wasn't a clean semver).
-    QStringList paths{QStringLiteral("releases")};
+    QStringList paths{QStringLiteral(".forkmesh/releases")};
     if (landVersionHeader())
         paths << QStringLiteral("qt_client/CMakeLists.txt");
 

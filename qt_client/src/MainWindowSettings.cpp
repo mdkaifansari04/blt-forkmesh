@@ -5,11 +5,14 @@
 // the class itself is declared in MainWindow.h. Shared helpers live in
 // MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
 
+#include "ClaudeAccountTransfer.h"
+#include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "QrCode.h"
 
 #include <QClipboard>
+#include <QColor>
 #include <QDialog>
 #include <QInputDialog>
 #include "KebabHeaderView.h"
@@ -127,9 +130,63 @@ QWidget *MainWindow::buildSettingsSection()
     m_autostartCheck->setChecked(isAutostartEnabled());
     m_autostartCheck->setToolTip(
         "Start ForkMesh automatically when you log in to this computer.");
-    connect(m_autostartCheck, &QCheckBox::toggled, this, [](bool enabled) {
-        setAutostartEnabled(enabled);
-    });
+
+    // Surface exactly how and where autostart is installed, plus an explicit
+    // "Remove auto startup" button (issue #393). The bare checkbox used to hide
+    // a failed removal — showing the concrete mechanism/path lets the user see
+    // a stale entry and delete it directly.
+    m_autostartInfo = new QLabel;
+    m_autostartInfo->setObjectName("modeHint");
+    m_autostartInfo->setWordWrap(true);
+    m_autostartInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    m_autostartRemoveButton = new QPushButton("Remove auto startup");
+    m_autostartRemoveButton->setObjectName("ghostButton");
+    m_autostartRemoveButton->setCursor(Qt::PointingHandCursor);
+    m_autostartRemoveButton->setToolTip(
+        "Delete the login-autostart entry so ForkMesh no longer starts when you "
+        "log in to this computer.");
+    auto *autostartRemoveRow = new QHBoxLayout;
+    autostartRemoveRow->addWidget(m_autostartRemoveButton);
+    autostartRemoveRow->addStretch();
+
+    // Reflect the real on-disk state in the label + button after every change,
+    // so the UI never claims autostart is off while the entry is still present.
+    auto refreshAutostartInfo = [this]() {
+        const bool on = isAutostartEnabled();
+        m_autostartInfo->setText(
+            (on ? QStringLiteral("Installed as a %1:\n%2")
+                : QStringLiteral("Not installed. Would be added as a %1 at:\n%2"))
+                .arg(autostartMechanismName(), autostartLocation()));
+        m_autostartRemoveButton->setEnabled(on);
+    };
+    refreshAutostartInfo();
+
+    // After enabling/disabling, re-seed the checkbox from disk so it matches
+    // reality even if the write or delete failed — the original bug was that
+    // unchecking left the entry in place and ForkMesh kept starting (#393).
+    auto applyAutostart = [this, refreshAutostartInfo](bool enable) {
+        if (!setAutostartEnabled(enable)) {
+            QMessageBox::warning(
+                this, "Autostart",
+                QStringLiteral(
+                    "Couldn't %1 login autostart.\n\n%2\n\nThe entry may be "
+                    "owned by another user (for example, left by a root "
+                    "installer), so you may need to remove it manually.")
+                    .arg(enable ? QStringLiteral("enable")
+                                : QStringLiteral("disable"),
+                         autostartLocation()));
+        }
+        m_autostartCheck->blockSignals(true);
+        m_autostartCheck->setChecked(isAutostartEnabled());
+        m_autostartCheck->blockSignals(false);
+        refreshAutostartInfo();
+    };
+
+    connect(m_autostartCheck, &QCheckBox::toggled, this,
+            [applyAutostart](bool enabled) { applyAutostart(enabled); });
+    connect(m_autostartRemoveButton, &QPushButton::clicked, this,
+            [applyAutostart]() { applyAutostart(false); });
 
     // Auto-update (adhoc #120): quietly check for a new version and update,
     // rebuild and relaunch when one is found — the same flow as the manual
@@ -180,6 +237,18 @@ QWidget *MainWindow::buildSettingsSection()
         "to the Agents tab and select the new session so you can watch it run.");
     connect(autoSwitchToAgentCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kAutoSwitchToAgentSetting, enabled);
+    });
+
+    auto *excludeExternalClaudeCheck =
+        new QCheckBox("Exclude external Claude Code agents from the Agents tab");
+    excludeExternalClaudeCheck->setChecked(
+        QSettings().value(kExcludeExternalClaudeSetting, true).toBool());
+    excludeExternalClaudeCheck->setToolTip(
+        "Don't detect or list `claude` CLI sessions running outside ForkMesh "
+        "(started directly in a terminal) in a repository's Agents tab. On by "
+        "default so another process's transcripts aren't surfaced unprompted.");
+    connect(excludeExternalClaudeCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kExcludeExternalClaudeSetting, enabled);
     });
 
     // Screenshot: an inline calibration target for the region screenshot tool. It
@@ -807,6 +876,20 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoFixAgentConflictsSetting, enabled);
     });
 
+    // When a repo's tests or build fail, automatically start an agent to fix
+    // the failure instead of waiting for a manual dispatch. On by default.
+    auto *autoFixFailuresCheck =
+        new QCheckBox("Auto-fix test and build failures");
+    autoFixFailuresCheck->setChecked(
+        QSettings().value(kAutoFixFailuresSetting, true).toBool());
+    autoFixFailuresCheck->setToolTip(
+        "When a repo's tests or build fail, automatically start an agent to "
+        "fix the failure instead of waiting for a manual dispatch. "
+        "On by default.");
+    connect(autoFixFailuresCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kAutoFixFailuresSetting, enabled);
+    });
+
     m_codexApiKeyEdit = new QLineEdit;
     m_codexApiKeyEdit->setEchoMode(QLineEdit::Password);
     m_codexApiKeyEdit->setPlaceholderText("OPENAI_API_KEY");
@@ -938,6 +1021,23 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->addRow("Claude Admin key", m_claudeAdminKeyEdit);
     agentForm->addRow("OpenAI command", m_codexCommandEdit);
     agentForm->addRow("Claude command", m_claudeCommandEdit);
+
+    // Move this owner's Claude Code login (+ Claude API key) onto a host node so
+    // it can run "claude-code" agents on the owner's behalf. The desktop is where
+    // the `claude` CLI login lives; hosts start out signed-out.
+    auto *claudeAccountBtn = new QPushButton("Transfer Claude Code account…");
+    claudeAccountBtn->setObjectName("ghostButton");
+    claudeAccountBtn->setCursor(Qt::PointingHandCursor);
+    claudeAccountBtn->setToolTip(
+        "Export your Claude Code login and API key to a bundle, or import one on a "
+        "host so it can take agent requests as you.");
+    connect(claudeAccountBtn, &QPushButton::clicked, this,
+            &MainWindow::transferClaudeCodeAccount);
+    auto *claudeAccountRow = new QHBoxLayout;
+    claudeAccountRow->addWidget(claudeAccountBtn);
+    claudeAccountRow->addStretch();
+    agentForm->addRow("Claude Code account", claudeAccountRow);
+
     agentForm->addRow("Context window", m_agentContextEdit);
     agentForm->addRow("Max output", m_agentMaxOutputEdit);
     agentForm->addRow("Agent prompt", m_agentPromptPreambleEdit);
@@ -1384,10 +1484,13 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addSpacing(6);
     generalCol->addWidget(startupLabel);
     generalCol->addWidget(m_autostartCheck);
+    generalCol->addWidget(m_autostartInfo);
+    generalCol->addLayout(autostartRemoveRow);
     generalCol->addWidget(autoUpdateCheck);
     generalCol->addWidget(defaultTabLabel);
     generalCol->addWidget(defaultTabCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(autoSwitchToAgentCheck);
+    generalCol->addWidget(excludeExternalClaudeCheck);
     generalCol->addSpacing(6);
     generalCol->addWidget(screenshotLabel);
     generalCol->addWidget(screenshotHint);
@@ -1467,6 +1570,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addLayout(agentForm);
     agentsCol->addWidget(autoStallAgentCheck);
     agentsCol->addWidget(autoFixConflictsCheck);
+    agentsCol->addWidget(autoFixFailuresCheck);
     agentsCol->addSpacing(6);
     agentsCol->addWidget(usageLabel);
     agentsCol->addWidget(usageHint);
@@ -1681,6 +1785,237 @@ void MainWindow::backUpIdentityKey()
     dialog.exec();
 }
 
+void MainWindow::transferClaudeCodeAccount()
+{
+    const QString home = QDir::homePath();
+    const QString exportedFrom =
+        QSettings().value(kAccountNameSetting).toString();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Transfer Claude Code account");
+    auto *l = new QVBoxLayout(&dialog);
+
+    auto *intro = new QLabel(
+        "Move your Claude Code login (and any Claude API key) onto a host node so "
+        "it can run \"claude-code\" agents as you. Export a bundle here, copy it to "
+        "the host (scp / paste over SSH), then Import it there. The bundle carries a "
+        "live subscription token — treat it like a password and only put it on hosts "
+        "you trust.\n\nThis machine: " +
+        ClaudeAccountTransfer::describeOauth(
+            ClaudeAccountTransfer::readOauthObject(home)));
+    intro->setWordWrap(true);
+    intro->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    l->addWidget(intro);
+
+    auto currentApiKey = [] {
+        return QSettings().value(kClaudeApiKeySetting).toString().trimmed();
+    };
+
+    auto *saveBtn = new QPushButton("Save bundle…");
+    saveBtn->setObjectName("primaryButton");
+    saveBtn->setCursor(Qt::PointingHandCursor);
+    connect(saveBtn, &QPushButton::clicked, &dialog,
+            [this, &dialog, home, exportedFrom, currentApiKey] {
+                const QJsonObject oauth =
+                    ClaudeAccountTransfer::readOauthObject(home);
+                if (oauth.value("accessToken").toString().isEmpty() &&
+                    currentApiKey().isEmpty()) {
+                    QMessageBox::warning(
+                        &dialog, "Nothing to export",
+                        "No Claude Code login or Claude API key on this machine. "
+                        "Run `claude` and sign in, or set a Claude API key first.");
+                    return;
+                }
+                const QString path = QFileDialog::getSaveFileName(
+                    &dialog, "Save Claude account bundle",
+                    "forkmesh-claude-account.txt",
+                    "ForkMesh Claude account (*.txt);;All files (*)");
+                if (path.isEmpty())
+                    return;
+                QFile f(path);
+                if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    QMessageBox::warning(&dialog, "Save failed",
+                                         "Could not write " + path);
+                    return;
+                }
+                f.write(ClaudeAccountTransfer::encodeBundle(
+                            oauth, currentApiKey(), exportedFrom)
+                            .toUtf8());
+                f.close();
+                QFile::setPermissions(
+                    path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+                QMessageBox::information(
+                    &dialog, "Exported",
+                    "Claude account bundle saved to " + path +
+                        ".\nImport it on a host with \"Transfer Claude Code "
+                        "account\" or `claude-auth import`.");
+            });
+
+    auto *copyBtn = new QPushButton("Copy bundle");
+    copyBtn->setObjectName("ghostButton");
+    copyBtn->setCursor(Qt::PointingHandCursor);
+    connect(copyBtn, &QPushButton::clicked, &dialog,
+            [this, &dialog, home, exportedFrom, currentApiKey] {
+                const QJsonObject oauth =
+                    ClaudeAccountTransfer::readOauthObject(home);
+                if (oauth.value("accessToken").toString().isEmpty() &&
+                    currentApiKey().isEmpty()) {
+                    QMessageBox::warning(
+                        &dialog, "Nothing to export",
+                        "No Claude Code login or Claude API key on this machine.");
+                    return;
+                }
+                QApplication::clipboard()->setText(
+                    ClaudeAccountTransfer::encodeBundle(oauth, currentApiKey(),
+                                                        exportedFrom));
+                QMessageBox::information(
+                    &dialog, "Copied",
+                    "Bundle copied to the clipboard. Paste it into `claude-auth "
+                    "import -` on the host.");
+            });
+
+    auto *importBtn = new QPushButton("Import bundle…");
+    importBtn->setObjectName("ghostButton");
+    importBtn->setCursor(Qt::PointingHandCursor);
+    connect(importBtn, &QPushButton::clicked, &dialog, [this, &dialog, home] {
+        const QString path = QFileDialog::getOpenFileName(
+            &dialog, "Import Claude account bundle", QString(),
+            "ForkMesh Claude account (*.txt *.json);;All files (*)");
+        if (path.isEmpty())
+            return;
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly)) {
+            QMessageBox::warning(&dialog, "Import failed",
+                                 "Could not read " + path);
+            return;
+        }
+        const QByteArray raw = f.readAll();
+        f.close();
+        QJsonObject oauth;
+        QString apiKey, err;
+        if (!ClaudeAccountTransfer::parseBundle(raw, oauth, apiKey, err)) {
+            QMessageBox::warning(&dialog, "Import failed", err);
+            return;
+        }
+        if (!ClaudeAccountTransfer::installOauth(home, oauth, err)) {
+            QMessageBox::warning(&dialog, "Import failed", err);
+            return;
+        }
+        QStringList installed;
+        if (!oauth.value("accessToken").toString().isEmpty())
+            installed << "Claude Code login";
+        if (!apiKey.isEmpty()) {
+            QSettings().setValue(kClaudeApiKeySetting, apiKey);
+            if (m_claudeApiKeyEdit)
+                m_claudeApiKeyEdit->setText(apiKey);
+            installed << "Claude API key";
+        }
+        QMessageBox::information(
+            &dialog, "Imported",
+            "Installed " + installed.join(" + ") +
+                " on this node. It can now take agent requests as the exporting "
+                "owner.");
+    });
+
+    auto *closeBtn = new QPushButton("Close");
+    closeBtn->setCursor(Qt::PointingHandCursor);
+    connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+
+    auto *row = new QHBoxLayout;
+    row->addWidget(saveBtn);
+    row->addWidget(copyBtn);
+    row->addWidget(importBtn);
+    row->addStretch(1);
+    row->addWidget(closeBtn);
+    l->addLayout(row);
+
+    dialog.exec();
+}
+
+QStringList MainWindow::headlessClaudeAuth(const QStringList &args)
+{
+    const QString home = QDir::homePath();
+    const QString sub = args.value(0).toLower();
+    auto apiKey = [] {
+        return QSettings().value(kClaudeApiKeySetting).toString().trimmed();
+    };
+
+    if (sub.isEmpty() || sub == QLatin1String("status")) {
+        QStringList out;
+        out << ClaudeAccountTransfer::describeOauth(
+            ClaudeAccountTransfer::readOauthObject(home));
+        out << (apiKey().isEmpty() ? QStringLiteral("Claude API key: not set")
+                                   : QStringLiteral("Claude API key: set"));
+        out << QStringLiteral(
+            "Use `claude-auth export [path]` to bundle this account, "
+            "`claude-auth import <path>` to install one from an owner.");
+        return out;
+    }
+
+    if (sub == QLatin1String("export")) {
+        const QJsonObject oauth = ClaudeAccountTransfer::readOauthObject(home);
+        if (oauth.value("accessToken").toString().isEmpty() && apiKey().isEmpty())
+            return {QStringLiteral(
+                "Nothing to export: no Claude Code login or Claude API key on "
+                "this node. Run `claude` and sign in first.")};
+        const QString exportedFrom =
+            QSettings().value(kAccountNameSetting).toString();
+        const QString encoded =
+            ClaudeAccountTransfer::encodeBundle(oauth, apiKey(), exportedFrom);
+        // `export -` (or no path) prints the bundle so it can be piped/copied;
+        // otherwise write a keyfile with owner-only permissions.
+        const QString path = args.value(1);
+        if (path.isEmpty() || path == QLatin1String("-"))
+            return {QStringLiteral("--- ForkMesh Claude account bundle ---"),
+                    encoded};
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            return {QStringLiteral("export failed: could not write ") + path};
+        f.write(encoded.toUtf8());
+        f.close();
+        QFile::setPermissions(path,
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        return {QStringLiteral("exported Claude account bundle to ") + path};
+    }
+
+    if (sub == QLatin1String("import")) {
+        const QString path = args.value(1);
+        if (path.isEmpty())
+            return {QStringLiteral("usage: claude-auth import <path>  "
+                                   "(use - to read the bundle from stdin/paste)")};
+        QByteArray raw;
+        if (path == QLatin1String("-")) {
+            // The remaining args are the pasted bundle (base64 has no spaces, so
+            // this also tolerates accidental splitting).
+            raw = args.mid(1).join(QString()).toUtf8();
+        } else {
+            QFile f(path);
+            if (!f.open(QIODevice::ReadOnly))
+                return {QStringLiteral("import failed: could not read ") + path};
+            raw = f.readAll();
+            f.close();
+        }
+        QJsonObject oauth;
+        QString key, err;
+        if (!ClaudeAccountTransfer::parseBundle(raw, oauth, key, err))
+            return {QStringLiteral("import failed: ") + err};
+        if (!ClaudeAccountTransfer::installOauth(home, oauth, err))
+            return {QStringLiteral("import failed: ") + err};
+        QStringList installed;
+        if (!oauth.value("accessToken").toString().isEmpty())
+            installed << QStringLiteral("Claude Code login");
+        if (!key.isEmpty()) {
+            QSettings().setValue(kClaudeApiKeySetting, key);
+            installed << QStringLiteral("Claude API key");
+        }
+        return {QStringLiteral("imported ") + installed.join(" + ") +
+                QStringLiteral("; this node can now take agent requests as the "
+                               "exporting owner")};
+    }
+
+    return {QStringLiteral("usage: claude-auth status|export [path]|import <path>")};
+}
+
 QByteArray MainWindow::effectiveAvatar()
 {
     if (!m_userAvatar.isEmpty())
@@ -1731,18 +2066,69 @@ void MainWindow::updateUserAvatarButton()
 
 void MainWindow::refreshIssueComposerAvatar()
 {
-    if (!m_issueComposerAvatar)
-        return;
-    // Show this node's avatar next to the comment composer so it's clear who is
-    // about to post.
-    const QPixmap pm = roundedAvatar(effectiveAvatar(), 36);
-    if (pm.isNull()) {
-        m_issueComposerAvatar->setPixmap(QPixmap());
-        m_issueComposerAvatar->setText("FM");
-    } else {
-        m_issueComposerAvatar->setText(QString());
-        m_issueComposerAvatar->setPixmap(pm);
+    if (m_issueComposerAvatar) {
+        // Show the user's avatar next to the comment composer so it matches the
+        // "Commenting as <user>" label (and the identity a comment is filed under)
+        // rather than the node's badge.
+        const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 36);
+        if (pm.isNull()) {
+            m_issueComposerAvatar->setPixmap(QPixmap());
+            m_issueComposerAvatar->setText("FM");
+        } else {
+            m_issueComposerAvatar->setText(QString());
+            m_issueComposerAvatar->setPixmap(pm);
+        }
     }
+
+    // The "Commenting as" label is built once with the composer, so it can go
+    // stale once the account name resolves after login. Keep it in sync
+    // whenever the avatar (and thus the identity) refreshes.
+    if (m_issueComposerTitle) {
+        m_issueComposerTitle->setText(
+            QStringLiteral("Commenting as <b>%1</b>")
+                .arg(topBarUserName().toHtmlEscaped()));
+    }
+}
+
+QWidget *MainWindow::makeComposerIdentity(QLabel **outAvatar, const QString &verb)
+{
+    // Freshly built each time a composer is shown (composer widgets are rebuilt
+    // on navigation), so it always reflects the current avatar and username.
+    auto *row = new QWidget;
+    auto *layout = new QHBoxLayout(row);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(8);
+
+    auto *avatar = new QLabel("FM");
+    avatar->setObjectName("issueAvatar");
+    avatar->setAlignment(Qt::AlignCenter);
+    avatar->setFixedSize(28, 28);
+    avatar->setScaledContents(true);
+    // The composer posts under the user identity (topBarUserName), so show the
+    // matching user avatar here instead of the node badge.
+    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 28);
+    if (!pm.isNull()) {
+        avatar->setText(QString());
+        avatar->setPixmap(pm);
+    }
+
+    auto *name = new QLabel;
+    name->setObjectName("issueCommentTitle");
+    name->setTextFormat(Qt::RichText);
+    const QString user = topBarUserName().toHtmlEscaped();
+    if (verb.trimmed().isEmpty())
+        name->setText(QStringLiteral("<b>%1</b>").arg(user));
+    else
+        name->setText(QStringLiteral("%1 as <b>%2</b>")
+                          .arg(verb.trimmed().toHtmlEscaped(), user));
+
+    layout->addWidget(avatar, 0, Qt::AlignVCenter);
+    layout->addWidget(name, 0, Qt::AlignVCenter);
+    layout->addStretch(1);
+
+    if (outAvatar)
+        *outAvatar = avatar;
+    return row;
 }
 
 void MainWindow::setSettingsAvatar(const QByteArray &pngData)
@@ -1848,7 +2234,12 @@ void MainWindow::rebuildAndRelaunch()
 
 void MainWindow::maybeAutoUpdate()
 {
-    if (!QSettings().value(kAutoUpdateSetting, false).toBool())
+    // On by default for headless nodes (no operator is around to click "Update,
+    // rebuild & restart" on a VM), off by default on desktop. main.cpp seeds the
+    // value on first headless launch, but we also default to m_headless here so a
+    // node still auto-updates if that seed never persisted (e.g. an unwritable
+    // config dir). An explicit operator opt-out writes false and is respected.
+    if (!QSettings().value(kAutoUpdateSetting, m_headless).toBool())
         return;
     if (m_autoUpdateChecking)
         return; // a check from an earlier tick is still in flight
@@ -1927,6 +2318,13 @@ void MainWindow::maybeAutoUpdate()
                 logSystem(QStringLiteral("Auto-update: release %1 is available; "
                                          "updating in the background.")
                              .arg(latestTag));
+                // Prefer the release's prebuilt artifact: rebuilding from
+                // source next to the live node is what killed the fleet on
+                // v0.6.2 (OOM/disk during the build, and no supervisor to
+                // restart a node that dies mid-update).
+                if (tryPrebuiltAutoUpdate(clientDir, latestTag,
+                                          tagCommit.trimmed()))
+                    return;
                 updateRebuildRestart();
             });
     fetch->start(QStringLiteral("git"), {"fetch", "--quiet", "--tags"});
@@ -1963,9 +2361,11 @@ void MainWindow::attachBackend(ChatBackend *backend)
     connect(backend, &ChatBackend::latencySampled, this,
             &MainWindow::onRelayLatencySampled);
     connect(backend, &ChatBackend::mirrorUpdated, this, &MainWindow::onPeerMirrorUpdated);
+    connect(backend, &ChatBackend::mirrorSynced, this, &MainWindow::onPeerMirrorSynced);
     connect(backend, &ChatBackend::mirrorRefreshRequested, this,
             &MainWindow::onMirrorRefreshRequested);
     connect(backend, &ChatBackend::coveOpened, this, &MainWindow::onCoveOpened);
+    connect(backend, &ChatBackend::coveInvited, this, &MainWindow::onCoveInvited);
     connect(backend, &ChatBackend::networkDiagnosticsChanged, this, [this] {
         if (m_sectionStack &&
             m_sectionStack->currentIndex() == kNetworkDiagnosticsSectionIndex)
@@ -2720,24 +3120,20 @@ struct NetworkLogStyle {
     QString badge;
 };
 
-NetworkLogStyle networkLogStyleFor(const QString &message)
-{
-    const QString lower = message.toLower();
-    // Errors / failures take precedence over any category.
-    if (lower.contains("fail") || lower.contains("error") ||
-        lower.contains("could not") || lower.contains("couldn't") ||
-        lower.contains("no live") || lower.contains("denied") ||
-        lower.contains("blocks ") || lower.contains("unable")) {
-        return {QStringLiteral("#f85149"), QStringLiteral("ERROR")};
-    }
-    // Each entry: substring to look for (lower-case) -> {accent, badge}. First
-    // match wins, so order from most specific to most general.
-    struct Rule {
-        const char *needle;
-        const char *accent;
-        const char *badge;
-    };
-    static const Rule rules[] = {
+// Each entry: substring to look for (lower-case) -> {accent, badge}. First
+// match wins, so order from most specific to most general. Kept at namespace
+// scope (not local to networkLogStyleFor) so accentForBadge() below can also
+// look a badge's colour up by name for the quick-filter chips.
+struct Rule {
+    const char *needle;
+    const char *accent;
+    const char *badge;
+};
+
+// Red is reserved for ERROR so the log reads "red == something failed" at a
+// glance; every other category (including HOST, previously pink) gets a
+// distinct non-red accent.
+const Rule kNetworkLogRules[] = {
         // App start/stop/rebuild-restart markers — keep above "fork" so
         // "ForkMesh" in the start line doesn't get tagged FORK.
         {"session started", "#f2cc60", "SESSION"},
@@ -2745,6 +3141,9 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
         {"quick update started", "#f2cc60", "SESSION"},
         {"rebuild & restart started", "#f2cc60", "SESSION"},
         {"restarting now", "#f2cc60", "SESSION"},
+        // Firewall messages mention "ForkMesh's ports" — keep above "fork" so
+        // they don't get swept into the FORK badge by that substring.
+        {"firewall", "#f2cc60", "NETWORK"},
         {"pull request", "#3fb950", "PULL"},
         {"pull #", "#3fb950", "PULL"},
         {"merged", "#a371f7", "MERGE"},
@@ -2754,76 +3153,151 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
         {"funded", "#d29922", "BOUNTY"},
         {"mirror", "#39c5cf", "MIRROR"},
         {"sync", "#39c5cf", "SYNC"},
-        {"fork", "#3fb950", "FORK"},
+        // Account heartbeat pings hit "https://forkmesh.com/..." like every
+        // other request, so without this they'd fall into the generic FORK
+        // bucket below purely from the domain name.
+        {"account", "#8b949e", "ACCOUNT"},
+        // Split the fork lifecycle the same way pull requests split into
+        // PULL (opened) vs MERGE (closed) — "forked into" (done) above the
+        // generic "fork" (in progress / location) so they read distinctly.
+        {"forked into", "#3fb950", "FORKED"},
+        // These all mention the "forkmesh/forkmesh" repo name, so without a
+        // dedicated rule above the generic "fork" match below they'd all be
+        // swept into an uninformative green FORK badge. Give each its own
+        // label so the log reads as what actually happened.
+        {"actions: ", "#f0883e", "ACTIONS"},
+        {"integrity pin", "#79c0ff", "PIN"},
+        {"host: ", "#76e3ea", "HOST"},
         {"publish", "#58a6ff", "PUBLISH"},
         {"push", "#58a6ff", "GIT"},
         {"git:", "#58a6ff", "GIT"},
         {"commit", "#58a6ff", "GIT"},
         {"patch", "#58a6ff", "GIT"},
+        {"fork", "#3fb950", "FORK"},
+        // Ad-hoc agent starts ("Started a X agent on your prompt...") mention no
+        // issue at all, so keep this above the generic "issue" match below —
+        // otherwise a prompt-only run would misleadingly badge as ISSUE.
+        {"on your prompt", "#bc8cff", "PROMPT"},
         {"issue", "#bc8cff", "ISSUE"},
         {"admin", "#db6d28", "ADMIN"},
         {"identity", "#79c0ff", "IDENTITY"},
         {"encryption", "#79c0ff", "CRYPTO"},
+        // Split the generic NODE bucket the same way: a peer joining, raw
+        // mainnode traffic and a connection-status change are different
+        // events and shouldn't all read as the same green "NODE" badge.
+        {"node connected", "#3fb950", "PEER"},
+        {"network: ", "#f2cc60", "NETWORK"},
+        {"status: ", "#56d364", "STATUS"},
         {"connected", "#3fb950", "NODE"},
         {"peer", "#3fb950", "NODE"},
         {"node", "#3fb950", "NODE"},
         {"copied", "#8b949e", "CLIP"},
         {"saved", "#3fb950", "SAVE"},
-    };
-    for (const Rule &r : rules) {
+};
+
+NetworkLogStyle networkLogStyleFor(const QString &message)
+{
+    const QString lower = message.toLower();
+    // Errors / failures take precedence over any category — red is reserved
+    // for these so it always means "something failed."
+    if (lower.contains("fail") || lower.contains("error") ||
+        lower.contains("could not") || lower.contains("couldn't") ||
+        lower.contains("no live") || lower.contains("denied") ||
+        lower.contains("blocks ") || lower.contains("unable")) {
+        return {QStringLiteral("#f85149"), QStringLiteral("ERROR")};
+    }
+    for (const Rule &r : kNetworkLogRules) {
         if (lower.contains(QLatin1String(r.needle)))
             return {QString::fromLatin1(r.accent), QString::fromLatin1(r.badge)};
     }
     return {QStringLiteral("#6e7681"), QStringLiteral("INFO")};
 }
-} // namespace
 
-void MainWindow::appendNetworkLogLine(const QString &storedLine)
+// Direct badge-name -> accent lookup (as opposed to networkLogStyleFor's
+// substring match against a message), used to colour the quick-filter chips
+// the same as the log entries they filter.
+QString accentForBadge(const QString &badge)
 {
-    if (!m_settingsLog)
-        return;
+    if (badge == QLatin1String("ERROR"))
+        return QStringLiteral("#f85149");
+    if (badge == QLatin1String("INFO"))
+        return QStringLiteral("#6e7681");
+    for (const Rule &r : kNetworkLogRules) {
+        if (badge == QLatin1String(r.badge))
+            return QString::fromLatin1(r.accent);
+    }
+    return QStringLiteral("#8b949e");
+}
 
-    // The badge accents below read on either canvas, but the timestamp, day
-    // divider and message body need per-theme greys/text so the log isn't grey
-    // text washed out on the light (#ffffff) background. Dark keeps its lighter
-    // ink on the near-black canvas; light uses GitHub's near-black body text.
-    const bool dark = currentThemeIsDark();
-    const QString messageColor =
-        dark ? QStringLiteral("#adbac7") : QStringLiteral("#1f2328");
-    const QString timeColor =
-        dark ? QStringLiteral("#6e7681") : QStringLiteral("#656d76");
-    const QString dividerLabelColor =
-        dark ? QStringLiteral("#8b949e") : QStringLiteral("#656d76");
-    const QString dividerDashColor =
-        dark ? QStringLiteral("#484f58") : QStringLiteral("#afb8c1");
-
-    // Stored format: "yyyy-MM-dd HH:mm:ss  message". Parse leniently so any
-    // legacy/odd line still renders (as a plain message with no timestamp).
-    QString date, time, message = storedLine;
+// Stored format: "yyyy-MM-dd HH:mm:ss  message". Parses leniently so any
+// legacy/odd line still renders (as a plain message with no timestamp).
+void parseStoredLogLine(const QString &storedLine, QString &date, QString &time,
+                         QString &message)
+{
+    message = storedLine;
     if (storedLine.size() >= 21 && storedLine.at(10) == QLatin1Char(' ')) {
         date = storedLine.left(10);
         time = storedLine.mid(11, 8);
         message = storedLine.mid(21);
     }
+}
 
-    // Day divider whenever the calendar date changes from the previous line.
-    if (!date.isEmpty() && date != m_lastLogRenderDate) {
-        m_lastLogRenderDate = date;
-        const QString pretty =
-            QDate::fromString(date, QStringLiteral("yyyy-MM-dd"))
-                .toString(QStringLiteral("dddd, d MMMM yyyy"));
-        m_settingsLog->appendHtml(
-            QString::fromUtf8(
-                "<span style='color:%1'>"
-                "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80&nbsp;</span>"
-                "<span style='color:%2; font-weight:600'>%3</span>"
-                "<span style='color:%4'>&nbsp;"
-                "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80</span>")
-                .arg(dividerDashColor, dividerLabelColor,
-                     (pretty.isEmpty() ? date : pretty).toHtmlEscaped(),
-                     dividerDashColor));
+QString formatDayDividerHtml(const QString &date, bool dark)
+{
+    const QString dividerLabelColor =
+        dark ? QStringLiteral("#8b949e") : QStringLiteral("#656d76");
+    const QString dividerDashColor =
+        dark ? QStringLiteral("#484f58") : QStringLiteral("#afb8c1");
+    const QString pretty =
+        QDate::fromString(date, QStringLiteral("yyyy-MM-dd"))
+            .toString(QStringLiteral("dddd, d MMMM yyyy"));
+    return QString::fromUtf8(
+               "<span style='color:%1'>"
+               "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80&nbsp;</span>"
+               "<span style='color:%2; font-weight:600'>%3</span>"
+               "<span style='color:%4'>&nbsp;"
+               "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80</span>")
+        .arg(dividerDashColor, dividerLabelColor,
+             (pretty.isEmpty() ? date : pretty).toHtmlEscaped(), dividerDashColor);
+}
+
+// Wraps http(s) URLs in the (already HTML-escaped) message with <a> tags so
+// they render as clickable links that open in the system browser (adhoc #42),
+// without disturbing the surrounding escaped text.
+QString linkifyEscapedMessage(const QString &escaped)
+{
+    static const QRegularExpression urlRe(
+        QStringLiteral("https?://(?:[^\\s&<]|&(?:amp|lt|gt|quot|#39);)+"));
+    QString html;
+    int lastEnd = 0;
+    auto it = urlRe.globalMatch(escaped);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        // Trailing punctuation commonly follows a URL in log prose ("...stats.")
+        // and shouldn't be swallowed into the link itself.
+        QString url = m.captured(0);
+        int len = url.size();
+        while (len > 0 &&
+               QStringLiteral(".,;:!?)").contains(url.at(len - 1))) {
+            --len;
+        }
+        url.truncate(len);
+        if (url.isEmpty())
+            continue;
+        html += escaped.mid(lastEnd, m.capturedStart(0) - lastEnd);
+        html += QStringLiteral("<a href='%1' style='color:inherit'>%1</a>").arg(url);
+        lastEnd = m.capturedStart(0) + len;
     }
+    html += escaped.mid(lastEnd);
+    return html;
+}
 
+QString formatLogLineHtml(const QString &time, const QString &message, bool dark)
+{
+    const QString messageColor =
+        dark ? QStringLiteral("#adbac7") : QStringLiteral("#1f2328");
+    const QString timeColor =
+        dark ? QStringLiteral("#6e7681") : QStringLiteral("#656d76");
     const NetworkLogStyle style = networkLogStyleFor(message);
     QString html;
     if (!time.isEmpty())
@@ -2832,11 +3306,96 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
     html += QStringLiteral(
                 "<span style='color:%1; font-weight:700'>%2</span>&nbsp;&nbsp;"
                 "<span style='color:%3'>%4</span>")
-                .arg(style.accent,
-                     style.badge.leftJustified(7).toHtmlEscaped(),
-                     messageColor,
-                     message.toHtmlEscaped());
-    m_settingsLog->appendHtml(html);
+                .arg(style.accent, style.badge.leftJustified(7).toHtmlEscaped(),
+                     messageColor, linkifyEscapedMessage(message.toHtmlEscaped()));
+    return html;
+}
+} // namespace
+
+void MainWindow::appendNetworkLogLine(const QString &storedLine)
+{
+    if (!m_settingsLog)
+        return;
+
+    // The badge accents read on either canvas, but the timestamp, day divider
+    // and message body need per-theme greys/text so the log isn't grey text
+    // washed out on the light (#ffffff) background. Dark keeps its lighter ink
+    // on the near-black canvas; light uses GitHub's near-black body text.
+    const bool dark = currentThemeIsDark();
+
+    QString date, time, message;
+    parseStoredLogLine(storedLine, date, time, message);
+
+    // Day divider whenever the calendar date changes from the previous line.
+    if (!date.isEmpty() && date != m_lastLogRenderDate) {
+        m_lastLogRenderDate = date;
+        m_settingsLog->append(formatDayDividerHtml(date, dark));
+    }
+
+    m_settingsLog->append(formatLogLineHtml(time, message, dark));
+}
+
+// Loads the next older page of matching lines when the user scrolls to the
+// top of the network log, so history beyond the initial segment (adhoc #15)
+// is reachable by scrolling back instead of being capped at whatever first
+// rendered.
+void MainWindow::loadOlderNetworkLogSegment()
+{
+    if (!m_settingsLog || m_logRenderFrom <= 0 || m_logViewMutating)
+        return;
+    m_logViewMutating = true;
+
+    QStringList segment; // oldest -> newest
+    int idx = m_logRenderFrom;
+    while (idx > 0 && segment.size() < kNetworkLogSegmentSize) {
+        --idx;
+        const QString &line = m_networkLog.at(idx);
+        if (!m_logFilter.isEmpty() && logBadgeFor(line) != m_logFilter)
+            continue;
+        segment.prepend(line);
+    }
+    m_logRenderFrom = idx;
+    if (segment.isEmpty()) {
+        m_logViewMutating = false;
+        return;
+    }
+
+    const bool dark = currentThemeIsDark();
+    // Seed empty (not m_lastLogRenderDate, which tracks the log's true bottom)
+    // so this segment's own first line gets its own divider — the line that
+    // was previously topmost already has one from when it was first rendered.
+    QString runningDate;
+    QString html;
+    for (const QString &storedLine : std::as_const(segment)) {
+        QString date, time, message;
+        parseStoredLogLine(storedLine, date, time, message);
+        if (!date.isEmpty() && date != runningDate) {
+            runningDate = date;
+            html += QStringLiteral("<div>%1</div>").arg(formatDayDividerHtml(date, dark));
+        }
+        html += QStringLiteral("<div>%1</div>").arg(formatLogLineHtml(time, message, dark));
+    }
+
+    QScrollBar *sb = m_settingsLog->verticalScrollBar();
+    const int oldMax = sb ? sb->maximum() : 0;
+    const int oldVal = sb ? sb->value() : 0;
+
+    QTextCursor cursor(m_settingsLog->document());
+    cursor.movePosition(QTextCursor::Start);
+    cursor.insertHtml(html);
+
+    // Keep the viewport anchored on the content the user was already looking
+    // at instead of jumping to the very top (or bottom) of the now-longer log.
+    if (sb)
+        sb->setValue(oldVal + (sb->maximum() - oldMax));
+    m_logViewMutating = false;
+}
+
+void MainWindow::onNetworkLogScrolled(int value)
+{
+    QScrollBar *sb = m_settingsLog ? m_settingsLog->verticalScrollBar() : nullptr;
+    if (sb && value <= sb->minimum())
+        loadOlderNetworkLogSegment();
 }
 
 QString MainWindow::logBadgeFor(const QString &storedLine) const
@@ -2847,6 +3406,16 @@ QString MainWindow::logBadgeFor(const QString &storedLine) const
             ? storedLine.mid(21)
             : storedLine;
     return networkLogStyleFor(message).badge;
+}
+
+QString MainWindow::logAccentFor(const QString &storedLine) const
+{
+    // Stored format: "yyyy-MM-dd HH:mm:ss  message" — classify by the message.
+    const QString message =
+        (storedLine.size() >= 21 && storedLine.at(10) == QLatin1Char(' '))
+            ? storedLine.mid(21)
+            : storedLine;
+    return networkLogStyleFor(message).accent;
 }
 
 void MainWindow::rebuildLogFilterButtons()
@@ -2874,6 +3443,21 @@ void MainWindow::rebuildLogFilterButtons()
         chip->setToolTip(category.isEmpty()
                              ? QStringLiteral("Show every event")
                              : QStringLiteral("Show only %1 events").arg(label));
+        // Tint each chip with the same accent its badge uses in the log body
+        // (adhoc #15) so the filter row reads as the log's own legend instead
+        // of a flat, uniformly grey button row.
+        const QString accent =
+            category.isEmpty() ? QStringLiteral("#8b949e") : accentForBadge(category);
+        const QColor accentColor(accent);
+        const QString checkedBg = QStringLiteral("rgba(%1, %2, %3, 0.18)")
+                                       .arg(accentColor.red())
+                                       .arg(accentColor.green())
+                                       .arg(accentColor.blue());
+        chip->setStyleSheet(QStringLiteral(
+                                 "QPushButton#logFilterChip { color: %1; border-color: %1; }"
+                                 "QPushButton#logFilterChip:checked "
+                                 "{ background-color: %2; color: %1; border-color: %1; }")
+                                 .arg(accent, checkedBg));
         m_logFilterGroup->addButton(chip);
         m_logFilterRow->addWidget(chip);
         connect(chip, &QPushButton::clicked, this, [this, category] {
@@ -2885,9 +3469,10 @@ void MainWindow::rebuildLogFilterButtons()
     addChip(QStringLiteral("All"), QString());
     // Show present categories in a stable, readable order.
     static const char *order[] = {
-        "SESSION", "NODE",   "FORK",  "MIRROR",   "SYNC",  "GIT",
-        "PUBLISH", "PULL",   "MERGE", "ISSUE",    "BOUNTY", "WALLET",
-        "CRYPTO",  "IDENTITY", "ADMIN", "SAVE",   "CLIP",  "ERROR",
+        "SESSION", "STATUS", "PEER",  "NODE",   "FORK",  "FORKED", "MIRROR",
+        "SYNC",    "ACCOUNT", "HOST", "ACTIONS", "PIN", "GIT",
+        "PUBLISH", "PULL",   "MERGE", "ISSUE", "PROMPT",    "BOUNTY", "WALLET",
+        "CRYPTO",  "IDENTITY", "ADMIN", "SAVE",   "CLIP",  "NETWORK", "ERROR",
         "INFO",
     };
     for (const char *b : order) {
@@ -2912,13 +3497,27 @@ void MainWindow::rebuildNetworkLogView()
 {
     if (!m_settingsLog)
         return;
+    // Also guards the scrollbar's valueChanged (see m_logViewMutating) against
+    // reacting to the clear()/appendHtml calls below.
+    m_logViewMutating = true;
     m_settingsLog->clear();
     m_lastLogRenderDate.clear();
-    for (const QString &line : std::as_const(m_networkLog)) {
+
+    // Render only the newest segment up front; older history loads lazily as
+    // the user scrolls to the top (see loadOlderNetworkLogSegment).
+    QStringList segment; // oldest -> newest
+    int idx = m_networkLog.size();
+    while (idx > 0 && segment.size() < kNetworkLogSegmentSize) {
+        --idx;
+        const QString &line = m_networkLog.at(idx);
         if (!m_logFilter.isEmpty() && logBadgeFor(line) != m_logFilter)
             continue;
-        appendNetworkLogLine(line);
+        segment.prepend(line);
     }
+    m_logRenderFrom = idx;
+    for (const QString &line : std::as_const(segment))
+        appendNetworkLogLine(line);
+    m_logViewMutating = false;
 }
 
 QString MainWindow::networkLogPath() const
@@ -2972,8 +3571,13 @@ void MainWindow::logSystem(const QString &text)
     plain.replace(QChar(0x2026), QStringLiteral("..."));
     const QString line = time + "  " + plain;
     m_networkLog.append(line);
-    while (m_networkLog.size() > kNetworkLogLimit)
+    while (m_networkLog.size() > kNetworkLogLimit) {
         m_networkLog.removeFirst();
+        // m_logRenderFrom indexes into m_networkLog; trimming the front shifts
+        // every index down by one, so keep it pointed at the same line.
+        if (m_logRenderFrom > 0)
+            --m_logRenderFrom;
+    }
 
     // A category we haven't seen yet earns its own quick-filter chip.
     const QString badge = networkLogStyleFor(plain).badge;
@@ -3004,8 +3608,9 @@ void MainWindow::logSystem(const QString &text)
 }
 
 // Toast pill caps the inline message at this many characters; longer text is
-// elided to one line and revealed in full via the Expand button.
-static constexpr int kToastMaxChars = 100;
+// elided to one line and revealed in full via the Expand button. Sized to the
+// widened 900px toast container (see m_topMessageContainer).
+static constexpr int kToastMaxChars = 160;
 
 // Auto-dismiss windows for the top toast. Every toast counts down visibly so the
 // notification area never flashes a message away unannounced. Success
@@ -3082,18 +3687,19 @@ void MainWindow::renderTopMessage()
 // stay inside the window. Called on expand and on window resize.
 void MainWindow::positionTopMessageOverlay()
 {
-    if (!m_topMessageOverlay || !m_topMessage)
+    if (!m_topMessageOverlay || !m_topMessageContainer)
         return;
     const int margin = 16;
-    const int w = qMin(620, qMax(240, width() - 2 * margin));
+    const int w = qMin(900, qMax(240, width() - 2 * margin));
     m_topMessageOverlay->setFixedWidth(w);
     int h = m_topMessageOverlay->heightForWidth(w);
     if (h <= 0)
         h = m_topMessageOverlay->sizeHint().height();
     m_topMessageOverlay->setFixedHeight(h);
     // Anchor just below the inline toast, horizontally centred on it.
-    const QPoint anchor = m_topMessage->mapTo(this, QPoint(0, m_topMessage->height()));
-    int x = anchor.x() + m_topMessage->width() / 2 - w / 2;
+    const QPoint anchor =
+        m_topMessageContainer->mapTo(this, QPoint(0, m_topMessageContainer->height()));
+    int x = anchor.x() + m_topMessageContainer->width() / 2 - w / 2;
     x = qBound(margin, x, width() - w - margin);
     m_topMessageOverlay->move(x, anchor.y() + 6);
 }
@@ -3137,9 +3743,6 @@ void MainWindow::flashMessage(const QString &text, bool error,
         renderTopMessageCountdown(); // repaint the "(+N more)" suffix
         return;
     }
-    // A generic toast supersedes the integrity-pin warning (it'll be re-shown on the
-    // next refreshRepoPinBanner if still stale), so this is no longer the pin toast.
-    m_pinWarningActive = false;
     m_topMessageError = error;
     m_topMessageRaw = trimmed;
     // Keep the pill compact: a long message (a multi-line git error, say) must not
@@ -3150,6 +3753,8 @@ void MainWindow::flashMessage(const QString &text, bool error,
     m_topMessageExpanded = false; // every new message starts collapsed
     renderTopMessage();
     m_topMessage->show();
+    if (m_topMessageContainer)
+        m_topMessageContainer->show();
 
     if (!m_topMessageTimer) {
         // Ticks once a second so the countdown is visible; when the count runs out
@@ -3218,7 +3823,6 @@ void MainWindow::renderTopMessageCountdown()
 void MainWindow::dismissTopMessage()
 {
     m_loadStatusShowing = false;
-    m_pinWarningActive = false;
     m_topMessageExpanded = false;
     m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
     m_topMessageQueue.clear();
@@ -3228,6 +3832,8 @@ void MainWindow::dismissTopMessage()
         m_topMessage->hide();
         m_topMessage->setWordWrap(false); // back to a one-liner for the next toast
     }
+    if (m_topMessageContainer)
+        m_topMessageContainer->hide();
     if (m_topMessageOverlay)
         m_topMessageOverlay->hide(); // drop the floating expanded panel with the toast
     if (m_topMessageExpand)

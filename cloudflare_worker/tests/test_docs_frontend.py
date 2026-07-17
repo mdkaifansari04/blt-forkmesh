@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Static contract tests for the public docs page shell."""
 
+import re
 from pathlib import Path
 
 
@@ -9,10 +10,38 @@ DOCS_PAGES = (
     PUBLIC / "docs.html",
     PUBLIC / "docs" / "index.html",
 )
+CONTRIBUTION_GUIDE = PUBLIC / "docs" / "contributions" / "index.html"
 
 
 def _read(page: Path) -> str:
     return page.read_text(encoding="utf-8")
+
+
+def test_contribution_counting_guide_documents_native_public_ledger():
+    assert CONTRIBUTION_GUIDE.is_file()
+    html = _read(CONTRIBUTION_GUIDE)
+    docs_index = _read(PUBLIC / "docs" / "index.html")
+
+    for marker in (
+        "How ForkMesh counts contributions",
+        "Commits",
+        "Issues",
+        "Pull requests",
+        "Reviews",
+        "Repositories",
+        "public repositories only",
+        "configured Git identity",
+        "Mirrors",
+        "Languages",
+        "Partial history",
+        "does not depend on GitHub",
+    ):
+        assert marker in html
+
+    assert '<link rel="stylesheet" href="/site-header.css"' in html
+    assert '<script src="/site-header.js"' in html
+    assert '<div data-forkmesh-header="simple"></div>' in html
+    assert 'href="/docs/contributions"' in docs_index
 
 
 def test_docs_pages_use_tailwind_cdn_and_page_local_styles():
@@ -65,23 +94,45 @@ def test_docs_pages_use_home_link_instead_of_github():
 
 
 def test_docs_pages_mount_the_universal_site_header():
-    # The docs' own brand + Home/Contact/Login row was replaced by the shared
-    # session-aware header; the docs toolbar keeps only its search, theme
-    # toggle, and product tabs. A var shim maps the docs light/dark palette
-    # onto the header's variable names so it follows the docs theme toggle.
+    # The shared header is the sole visible theme controller.
+    # The docs toolbar keeps only its search and product tabs beneath it.
     for page in DOCS_PAGES:
         html = _read(page)
 
         assert 'href="/site-header.css"' in html
         assert 'src="/site-header.js"' in html
         assert '<div data-forkmesh-header="simple"></div>' in html
-        assert "--muted: var(--docs-muted);" in html
-        assert "--foreground: var(--docs-fg);" in html
         # The duplicated chrome is gone; docs-specific tools stay.
         assert 'aria-label="Docs header"' not in html
         assert ">Contact Us<" not in html
-        assert 'id="theme-toggle"' in html
+        assert 'id="theme-toggle"' not in html
+        assert "function applyTheme" not in html
+        docs_header = re.search(r"<header\b[^>]*>", html, flags=re.DOTALL)
+        assert docs_header, page
+        class_attribute = re.search(
+            r'class="([^"]*)"',
+            docs_header.group(0),
+        )
+        assert class_attribute, page
+        header_classes = set(class_attribute.group(1).split())
+        assert {"sticky", "top-0", "z-30"} <= header_classes, page
+        assert "z-50" not in header_classes, page
         assert 'id="docs-search"' in html
+
+
+def test_docs_pages_keep_the_desktop_only_single_column_search_row():
+    for page in DOCS_PAGES:
+        html = _read(page)
+
+        assert (
+            'class="mx-auto hidden h-20 max-w-[1540px] '
+            'grid-cols-1 items-center px-5 sm:px-8 md:grid lg:px-12"'
+        ) in html
+        assert ".icon-button" not in html
+        assert "html.dark .moon" not in html
+        assert "html:not(.dark) .sun" not in html
+        assert "Map the docs theme onto the universal header" not in html
+        assert "--foreground: var(--docs-fg)" not in html
 
 
 def test_docs_pages_use_reduced_type_scale():

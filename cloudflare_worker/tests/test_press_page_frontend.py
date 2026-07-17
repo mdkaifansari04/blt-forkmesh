@@ -67,8 +67,19 @@ def test_press_page_uses_solid_dark_background_without_gradients():
     assert "background: var(--background);" in html
 
 
+def test_press_page_headings_swatches_and_status_follow_theme_tokens():
+    html = _press_html()
+
+    assert "color: var(--foreground);" in html
+    assert "border: 1px solid var(--border);" in html
+    assert "color: var(--warning);" in html
+    assert "color: #fff;" not in html
+    assert "color: #f5d78e;" not in html
+
+
 if __name__ == "__main__":
     test_press_page_exists_with_press_kit_content()
     test_press_page_uses_shared_simple_header_and_standard_footer()
     test_press_page_is_discoverable_from_shared_footer()
     test_press_page_uses_solid_dark_background_without_gradients()
+    test_press_page_headings_swatches_and_status_follow_theme_tokens()

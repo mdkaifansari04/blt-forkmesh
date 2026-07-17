@@ -6,7 +6,17 @@
                     <h1 class="text-base font-semibold text-foreground">Repositories</h1>
                     <p class="mt-1 text-sm text-muted-foreground">Mirrors published by ForkMesh desktop nodes. Open a repo to browse files live from its host.</p>
                   </div>
-                  <span data-repo-count class="shrink-0 self-start text-xs text-muted-foreground font-mono px-2.5 py-1 rounded-full border border-border bg-secondary">Loading</span>
+                  <div class="shrink-0 flex items-center gap-3 self-start">
+                    <span data-repo-count class="text-xs text-muted-foreground font-mono px-2.5 py-1 rounded-full border border-border bg-secondary">Loading</span>
+                    <button
+                      data-new-repo-open
+                      type="button"
+                      class="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"
+                    >
+                      <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                      New repository
+                    </button>
+                  </div>
                 </div>
 
                 <div data-repo-toolbar class="px-4 sm:px-5 py-3 border-b border-border flex items-center gap-3">
@@ -42,7 +52,7 @@
                 </div>
 
                 <div id="repoList" class="repo-list divide-y divide-border" aria-live="polite">
-                  <div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">Loading repositories from an online node...</div>
+                  <div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground"><span class="fm-spinner" aria-hidden="true"></span>Loading repositories from an online node...</div>
                 </div>
 
                 <div data-repo-pagination class="border-t border-border px-4 sm:px-5 py-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">

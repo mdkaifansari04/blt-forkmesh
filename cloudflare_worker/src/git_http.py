@@ -61,6 +61,28 @@ def advertised_refs_canonical(data):
     return "\n".join(refs)
 
 
+def git_advert_cache_key(owner, repo, state_tag, service="git-upload-pack"):
+    """Synthetic edge-cache URL for a clone ref-advertisement (info/refs).
+
+    Keyed on the repo's current source-attested state hash (`state_tag`), so the
+    entry rotates — invalidating itself — the moment the served refs change, and
+    a cache hit is guaranteed byte-identical to the last live advertisement. The
+    clone handshake is a small, side-effect-free GET whose bytes are fixed for a
+    given ref state, so once cached at the colo every subsequent clone reuses it
+    without waking the host tunnel; only a push (which publishes a new stateHash)
+    reaches the mirror again. Returns None when any component is missing — the
+    caller then serves live rather than cache under a partial key.
+    """
+    owner = str(owner or "").strip().lower()
+    repo = str(repo or "").strip().lower()
+    tag = str(state_tag or "").strip().lower()
+    service = str(service or "").strip().lower()
+    if not owner or not repo or not tag or not service:
+        return None
+    return "https://forkmesh.internal/git-advert/%s/%s/%s/%s" % (
+        owner, repo, service, tag)
+
+
 def decode_git_request_body(data, content_encoding, max_bytes=8 * 1024 * 1024):
     """Return the Git smart-HTTP body after decoding HTTP content encodings."""
     data = bytes(data or b"")

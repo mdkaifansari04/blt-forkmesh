@@ -7,10 +7,10 @@
 #   2. copies the bytes into the node's content-addressed release store (the CAS,
 #      co-located with the served mirror — NEVER committed to git), and
 #   3. records the asset in the channel's release metadata:
-#        releases/<channel>/SHASUMS256.txt   (sha256sum -c compatible)
-#        releases/<channel>/release.json     (manifest: tag, commit, assets)
+#        .forkmesh/releases/<channel>/SHASUMS256.txt   (sha256sum -c compatible)
+#        .forkmesh/releases/<channel>/release.json     (manifest: tag, commit, assets)
 #
-# Commit the releases/<channel>/ metadata changes (small, text) the usual way;
+# Commit the .forkmesh/releases/<channel>/ metadata changes (small, text) the usual way;
 # install.sh reads SHASUMS256.txt over the git proxy, then downloads each binary
 # from the relay's content-addressed endpoint and verifies the sha256.
 #
@@ -18,7 +18,7 @@
 #   tools/forkmesh-release-publish.sh [--channel latest] [--tag vX.Y.Z] \
 #       [--cas-dir DIR] [--repo owner/repo] BINARY [BINARY ...]
 #
-#   --channel   Release channel directory under releases/ (default: latest, or
+#   --channel   Release channel directory under .forkmesh/releases/ (default: latest, or
 #               $RELEASE_CHANNEL).
 #   --tag       Immutable git tag this release is cut from (default: $FORKMESH_TAG
 #               or the current `git describe --tags`).
@@ -60,7 +60,7 @@ fi
 [ -n "$cas_dir" ] || cas_dir=".forkmesh/release-blobs"
 
 tag_commit="$(git rev-parse HEAD 2>/dev/null || echo "")"
-meta_dir="releases/${channel}"
+meta_dir=".forkmesh/releases/${channel}"
 mkdir -p "$meta_dir" "$cas_dir"
 
 sha256_of() {
@@ -74,6 +74,19 @@ asset_os=""; asset_arch=""
 detect_os_arch() {
   local n="${1%.exe}"
   asset_arch="${n##*-}"; n="${n%-*}"; asset_os="${n##*-}"
+}
+
+# Escape a value for embedding in a JSON string. Filenames/tags are operator
+# supplied, but one containing a double quote or backslash would otherwise
+# corrupt (or inject fields into) the emitted manifest JSON.
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"    # backslash first so later escapes aren't re-escaped
+  s="${s//\"/\\\"}"    # double quote
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
 }
 
 sums_file="${meta_dir}/SHASUMS256.txt"
@@ -95,7 +108,8 @@ for bin in "${bins[@]}"; do
 
   printf '%s  %s\n' "$hash" "$name" >> "${sums_file}.tmp"
   assets_json="${assets_json}${assets_json:+,}$(printf '{"name":"%s","blob_sha256":"%s","size":%s,"os":"%s","arch":"%s"}' \
-    "$name" "$hash" "$size" "$asset_os" "$asset_arch")"
+    "$(json_escape "$name")" "$hash" "$size" \
+    "$(json_escape "$asset_os")" "$(json_escape "$asset_arch")")"
   echo "Staged $name ($size bytes) -> ${blob}"
 done
 
@@ -109,10 +123,10 @@ rm -f "${sums_file}.tmp"
 {
   printf '{\n'
   printf '  "schema": "forkmesh-release-v1",\n'
-  printf '  "repo": "%s",\n' "$repo"
-  printf '  "tag": "%s",\n' "$tag"
-  printf '  "tag_commit": "%s",\n' "$tag_commit"
-  printf '  "channel": "%s",\n' "$channel"
+  printf '  "repo": "%s",\n' "$(json_escape "$repo")"
+  printf '  "tag": "%s",\n' "$(json_escape "$tag")"
+  printf '  "tag_commit": "%s",\n' "$(json_escape "$tag_commit")"
+  printf '  "channel": "%s",\n' "$(json_escape "$channel")"
   printf '  "created_at": %s,\n' "$(date +%s)000"
   printf '  "assets": [%s]\n' "$assets_json"
   printf '}\n'
@@ -121,4 +135,4 @@ rm -f "${sums_file}.tmp"
 echo
 echo "Wrote ${meta_dir}/SHASUMS256.txt and ${meta_dir}/release.json"
 echo "Blobs staged in: ${cas_dir} (NOT committed; served by the node over the relay)"
-echo "Next: commit the releases/${channel}/ metadata, then publish it."
+echo "Next: commit the .forkmesh/releases/${channel}/ metadata, then publish it."

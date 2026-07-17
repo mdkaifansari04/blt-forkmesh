@@ -22,6 +22,8 @@ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8") + "\n" + CATALOG.read_text(encodi
 FUNCS = {
     "sync_handler",
     "_authorize_owner",
+    "_verify_owner_signature",
+    "_owner_signing_pubkeys",
     "_owner_pubkey",
     "method_name",
     "clean_string",
@@ -84,6 +86,11 @@ def _harness():
     async def ed25519_verify(_pubkey, sig, _canonical):
         return sig == "good-sig"
 
+    async def _account_devices_list(_env, _account_bi):
+        # No extra desktop devices by default; the device-key drain path is
+        # exercised by overriding this stub in its own test below.
+        return []
+
     async def decrypt_row(_env, stored, key=None):
         return dict(stored)
 
@@ -92,24 +99,35 @@ def _harness():
             owner_bi = args[0]
             return [{"key_bi": r["key_bi"], "data": r["data"]}
                     for r in repositories if r["owner_bi"] == owner_bi]
+        # sync_handler now selects each inbox table once across all of the
+        # owner's repos with `repo_bi IN (?,...)`, returning repo_bi + data.
+        want = set(args)
         for table, rows in inboxes.items():
             if "FROM " + table in sql:
-                repo_bi = args[0]
-                return [{"data": r["data"]} for r in rows
-                        if r["repo_bi"] == repo_bi]
+                return [{"repo_bi": r["repo_bi"], "data": r["data"]}
+                        for r in rows if r["repo_bi"] in want]
         if "FROM agent_prompts" in sql:
-            repo_bi = args[0]
-            return [{"data": r["data"]} for r in agent_prompts
-                    if r["repo_bi"] == repo_bi]
+            # The drain path selects row ids too (aliased drain_id) so the
+            # delete can target exactly the rows it read.
+            return [{"repo_bi": r["repo_bi"], "data": r["data"],
+                     "drain_id": r["id"]}
+                    for r in agent_prompts if r["repo_bi"] in want]
+        if "FROM about_inbox" in sql:
+            return []
         raise AssertionError("unexpected d1_all: " + sql)
 
     async def d1_run(_env, sql, *args):
-        if sql.startswith("DELETE FROM agent_prompts"):
-            repo_bi = args[0]
+        if sql.startswith("DELETE FROM agent_prompts WHERE id IN"):
+            drained = set(args)
             agent_prompts[:] = [r for r in agent_prompts
-                                if r["repo_bi"] != repo_bi]
+                                if r["id"] not in drained]
+            return
+        if "about_inbox" in sql:
             return
         raise AssertionError("unexpected d1_run: " + sql)
+
+    async def d1_first(_env, sql, *args):
+        raise AssertionError("unexpected d1_first: " + sql)
 
     def safe_segment(value, max_length=100):
         # Stand-in for catalog.py's sanitizer: lowercase pass-through is
@@ -123,10 +141,12 @@ def _harness():
         "ensure_schema": ensure_schema,
         "blind_index": blind_index,
         "_account_row": _account_row,
+        "_account_devices_list": _account_devices_list,
         "ed25519_verify": ed25519_verify,
         "decrypt_row": decrypt_row,
         "d1_all": d1_all,
         "d1_run": d1_run,
+        "d1_first": d1_first,
         "parse_qs": parse_qs,
         "unquote": unquote,
         "urlparse": urlparse,
@@ -188,6 +208,78 @@ def test_sync_rejects_bad_signature_and_stale_ts():
     assert resp["status"] == 401
     resp = asyncio.run(ns["sync_handler"](
         object(), _Request(_sync_url(ts=1))))  # far outside the skew window
+    assert resp["status"] == 401
+
+
+def test_sync_accepts_a_stored_enabled_device_key_not_just_the_primary():
+    # A reinstalled/rotated node signs with a NEW key that login stored in
+    # account_devices (enabled, owner_sign) but never promoted to the account's
+    # primary pubkey. The drain gate must honor that stored device key or the
+    # node silently 401s forever and nothing (issues/chats/etc.) reaches it.
+    ns, repositories, inboxes, _prompts = _harness()
+    repositories.append({
+        "key_bi": "bi:alice/repo-one",
+        "owner_bi": "bi:alice",
+        "data": {"name": "repo-one", "owner": "alice"},
+    })
+    inboxes["issue_inbox"].append(
+        {"repo_bi": "bi:alice/repo-one", "data": {"number": 7}})
+
+    # Primary pubkey is the OLD key; only the new device key verifies the sig.
+    async def _account_row(_env, name):
+        if str(name).lower() == "alice":
+            return "bi:alice", {"pubkey": "PK-old-primary"}
+        return "bi:" + str(name).lower(), None
+
+    async def ed25519_verify(pubkey, sig, _canonical):
+        return sig == "good-sig" and pubkey == "PK-new-device"
+
+    async def devices(_env, account_bi):
+        if account_bi != "bi:alice":
+            return []
+        return [{"pubkey": "PK-new-device", "enabled": True,
+                 "capabilities": ["browse", "owner_sign"]}]
+
+    ns["_account_row"] = _account_row
+    ns["ed25519_verify"] = ed25519_verify
+    ns["_account_devices_list"] = devices
+
+    resp = asyncio.run(ns["sync_handler"](object(), _Request(_sync_url())))
+    assert resp["status"] == 200
+    assert resp["data"]["repos"][0]["issues"] == [{"number": 7}]
+
+
+def test_sync_rejects_a_disabled_or_non_signing_device_key():
+    # A device that is revoked/disabled, or lacks the owner_sign capability, must
+    # NOT be able to drain — broadening the gate to stored keys must not weaken it.
+    ns, repositories, _inboxes, _prompts = _harness()
+    repositories.append({
+        "key_bi": "bi:alice/repo-one",
+        "owner_bi": "bi:alice",
+        "data": {"name": "repo-one", "owner": "alice"},
+    })
+
+    async def _account_row(_env, name):
+        if str(name).lower() == "alice":
+            return "bi:alice", {"pubkey": "PK-old-primary"}
+        return "bi:" + str(name).lower(), None
+
+    async def ed25519_verify(pubkey, sig, _canonical):
+        return sig == "good-sig" and pubkey == "PK-new-device"
+
+    async def devices(_env, account_bi):
+        return [
+            {"pubkey": "PK-new-device", "enabled": False,
+             "capabilities": ["owner_sign"]},               # revoked/disabled
+            {"pubkey": "PK-web", "enabled": True,
+             "capabilities": ["browse", "comment"]},         # no owner_sign
+        ]
+
+    ns["_account_row"] = _account_row
+    ns["ed25519_verify"] = ed25519_verify
+    ns["_account_devices_list"] = devices
+
+    resp = asyncio.run(ns["sync_handler"](object(), _Request(_sync_url())))
     assert resp["status"] == 401
 
 

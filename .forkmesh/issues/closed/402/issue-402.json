@@ -1,0 +1,93 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783470769538,
+    "events": [
+        {
+            "attachments": [
+                "58947dcd.png",
+                "8e24b3f6.png"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "![forkmesh-paste-GbmtqG.png](8e24b3f6.png)",
+            "id": "open-402",
+            "sig": "kr5oloqBNE5IAlsCZkZutCIVpRDezkTT56kHZstekKQph86-rj4yAmVL-FR8h4gVVdNpMMK2alfd7KFUYMNjCQ",
+            "title": "make it so that when we paste an image into an issue it shows right away",
+            "ts": 1783470769538,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 15,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "d371cc26-f593-40fe-a6b2-5e6914947dce",
+            "sig": "AxEjtjjDN3r3uZGN4k8c-rsuiuUAXn99vi85ym-eR2IytwIomaT3jASETCNMBks2KhC2leK8iK0GZTd65Qp3CA",
+            "ts": 1783717218080,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e11771c7-42f6-47ef-8675-439c86716777",
+            "sig": "Tzt1GpsH-RbD-nlv2H3hxDtt5aNbRD99CpizwTiRgoG7AICwJWPJW9YayKE57VBQcp43s3-qI34dCURs6QM2Cw",
+            "ts": 1783717218138,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Closed by merged branch \"agent/issue-402-make-it-so-that-when-we-paste-an-image-into-an-i\".",
+            "id": "1163cd6b-bace-4331-8152-705d94e8456d",
+            "sig": "Sv5j3oe20_suI5jBByVllZasYSpm2DXJbPay77XlHZj_at0_lTCvH69_bzoVoC7CoOpJCkmTjFsxFWGxXEMJCA",
+            "ts": 1783720507508,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "9ab4f6e1-3157-4dca-ae50-fac914f06e08",
+            "sig": "5F7-_apVjQKPZGniFXYBCHQ_hJhema1XN85-fQzL1W2hqFyEF0KQkKe66vp_Jkc8XDoc1qKQCcziwIPzYbTDCA",
+            "status": "closed",
+            "ts": 1783720507566,
+            "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "6df53855-fef5-46aa-b8f5-9e9523a41fec",
+            "sig": "A60EKVJip6paZFySS_WT1-vcQJGLJTPu5y_m_hZbfODlV95YHIa7MR3Ud6FZ2wuz7gZ9CskGFvCEvyYpFVvECg",
+            "ts": 1783721094705,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 402,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "make it so that when we paste an image into an issue it shows right away",
+    "updatedAt": 1783721094705,
+    "votes": 0
+}

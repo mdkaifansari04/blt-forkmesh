@@ -33,9 +33,18 @@
       && repoMatchesKey(repo, routeRepoKey);
     const routeKind = routeMatchesRepo ? routeParts[2] : undefined;
     const routePath = routeMatchesRepo && routeParts.length > 3 ? routeParts.slice(3).map(decodeURIComponent).join("/") : "";
-    const detailPath = repoTabRoutesFor(repo).includes(routeKind)
-      ? `${repoPathUrl(repo)}/${routeKind}`
-      : repoPathUrl(repo, routeKind === "blob" ? "blob" : "tree", routePath);
+    // /owner/repo/pulls/<N> is a record deep link (the desktop client's
+    // "View on website" button, or a refreshed/shared PR detail URL): keep
+    // the number in the address bar and open that record's detail page below.
+    // Issues deep-link the same way so a refresh on an open issue stays on it.
+    const recordRoute = ["pulls", "discussions", "issues"].includes(routeKind) && /^\d+$/.test(routePath)
+      ? { kind: routeKind, number: routePath }
+      : null;
+    const detailPath = recordRoute
+      ? `${repoPathUrl(repo)}/${recordRoute.kind}/${recordRoute.number}`
+      : repoTabRoutesFor(repo).includes(routeKind)
+        ? `${repoPathUrl(repo)}/${routeKind}`
+        : repoPathUrl(repo, routeKind === "blob" ? "blob" : "tree", routePath);
     navigateHistory(detailPath);
     const crumb = $("[data-repo-detail-crumb]");
     if (crumb) crumb.textContent = `${repo.owner || "owner"}/${repo.name || "repository"}`;
@@ -45,8 +54,6 @@
     const discussionsCount = repoCount(repo, ["discussions", "discussionCount"]);
     const commitsCount = repoCount(repo, ["commits", "commitCount", "commitHistory"]);
     const mirrorsCount = repoCount(repo, ["mirrors", "mirrorCount", "hosts"]);
-    const commitId = String(repo.rootCommit || repo.latestCommit || repo.commit || "").slice(0, 7) || "live";
-    const updatedAt = formatDate(repo.updatedAt || repo.lastSync);
     const live = repoIsLive(repo);
     const viaMirror = repoServedByMirror(repo);
     const canEditAbout = sessionOwnsRepo(repo);
@@ -58,6 +65,7 @@
       insights: { label: "Insights", icon: "chart-no-axes-combined", count: "" },
       releases: { label: "Releases", icon: "tag", count: "" },
       issues: { label: "Issues", icon: "circle-dot", count: issuesCount },
+      projects: { label: "Projects", icon: "chart-gantt", count: "" },
       pulls: { label: "Pull requests", icon: "git-pull-request", count: pullsCount },
       discussions: { label: "Discussions", icon: "message-square", count: discussionsCount },
       mirrors: { label: "Mirrors", icon: "radio", count: mirrorsCount },
@@ -65,9 +73,13 @@
     };
     const canSeeAgentsTab = sessionCanAssignAgent(repo);
     const actionSeed = repoKey(repo);
-    const watchCount = stableMockNumber(`${actionSeed}:watch`, 0, 18);
     const forkCount = stableMockNumber(`${actionSeed}:fork`, 0, 12);
-    const starCount = stableMockNumber(`${actionSeed}:star`, 0, 84);
+    // Watch is real: it is the repo's fediverse follower count (see
+    // loadRepoFediverse), and the button opens the follow-from-Mastodon card.
+    const fediHandle = `@${(repo.owner || "").toLowerCase()}.${(repo.name || "").toLowerCase()}@${location.host}`;
+    // Deep link that opens this repo's fediverse actor on Mastodon (any
+    // instance resolves a remote acct handle; mastodon.social is the default).
+    const mastodonUrl = `https://mastodon.social/${fediHandle}`;
     detail.innerHTML = `
       <div data-repo-layout="github-like" class="min-w-0">
         <div data-repo-github-header class="rounded-t-lg border border-border bg-background">
@@ -75,38 +87,49 @@
             <div class="min-w-0">
               <div class="flex min-w-0 flex-wrap items-center gap-2">
                 <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
-                <h2 class="min-w-0 truncate text-lg font-semibold text-foreground"><span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span>${escapeHtml(repo.name || "repository")}</h2>
+                <h2 class="min-w-0 truncate text-lg font-semibold text-foreground"><span class="text-muted-foreground"><a href="/@${encodeURIComponent(String(repo.owner || "").toLowerCase())}" data-repo-owner-link class="hover:text-foreground hover:underline">${escapeHtml(repo.owner || "owner")}</a>/</span>${escapeHtml(repo.name || "repository")}</h2>
                 <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${repo.isPrivate ? "private" : "public"}</span>
                 <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "served by mirror" : live ? "host online" : "host offline"}</span>
               </div>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
             </div>
             <div aria-label="Repository facts" class="flex flex-wrap items-start gap-2 lg:justify-end">
-              <button type="button" data-repo-action-watch class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
-                <i data-lucide="eye" class="h-3.5 w-3.5 text-muted-foreground"></i>
-                Watch
-                <span class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(watchCount)}</span>
-                <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
-              </button>
+              <div data-repo-watch-wrap class="relative">
+                <button type="button" data-repo-action-watch class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
+                  <i data-lucide="eye" class="h-3.5 w-3.5 text-muted-foreground"></i>
+                  Watch
+                  <span data-repo-watch-count class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">–</span>
+                  <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
+                </button>
+                <div data-repo-watch-menu class="absolute right-0 z-30 mt-1 hidden w-72 rounded-lg border border-border bg-background p-3 text-left shadow-xl">
+                  <p class="text-xs font-semibold text-foreground">Watch on the fediverse</p>
+                  <p class="mt-1 text-[11px] leading-5 text-muted-foreground">Follow this repository from Mastodon (or any ActivityPub app) to get new issues, pull requests, discussions and releases in your feed.</p>
+                  <div class="mt-2 flex items-center gap-2">
+                    <code data-repo-watch-handle class="min-w-0 flex-1 truncate rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[11px] text-foreground">${escapeHtml(fediHandle)}</code>
+                    <button type="button" data-dashboard-copy="${escapeHtml(fediHandle)}" aria-label="Copy fediverse handle" class="copy-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i></button>
+                  </div>
+                  <p class="mt-2 text-[11px] text-muted-foreground"><span data-repo-watch-followers class="font-mono text-foreground">–</span> fediverse watchers</p>
+                  <p data-repo-watch-disabled class="mt-1 hidden text-[11px] text-yellow-500">Federation is turned off for this repository.</p>
+                  <div data-repo-watch-list class="mt-2 hidden max-h-44 overflow-auto rounded-md border border-border bg-secondary/40 p-2"></div>
+                  <a data-repo-mastodon-link href="${escapeHtml(mastodonUrl)}" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-2 inline-flex items-center gap-1.5 text-[11px] hover:underline"><i data-lucide="external-link" class="h-3.5 w-3.5 shrink-0"></i>View on Mastodon</a>
+                </div>
+              </div>
               <button type="button" data-repo-action-fork class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
                 <i data-lucide="git-fork" class="h-3.5 w-3.5 text-muted-foreground"></i>
                 Fork
                 <span class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(forkCount)}</span>
                 <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
               </button>
-              <button type="button" data-repo-action-star class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
-                <i data-lucide="star" class="h-3.5 w-3.5 text-muted-foreground"></i>
-                Star
-                <span class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(starCount)}</span>
-                <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
+              <button type="button" data-repo-action-star data-repo-key="${escapeHtml(actionSeed)}" aria-pressed="false" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
+                <i data-lucide="star" data-repo-star-icon class="h-3.5 w-3.5 text-muted-foreground"></i>
+                <span data-repo-star-label>Star</span>
+                <span data-repo-star-count class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(0)}</span>
               </button>
               <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="radio" class="h-3.5 w-3.5"></i>Mirrors <span data-dashboard-repo-count="mirrors" class="font-mono text-foreground">${tabCountLabel(mirrorsCount)}</span></span>
-              <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="hard-drive" class="h-3.5 w-3.5"></i>Data <span class="font-mono text-foreground">${escapeHtml(formatSize(repo.sizeBytes))}</span></span>
-              <span class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs text-muted-foreground"><i data-lucide="activity" class="h-3.5 w-3.5"></i>Host <span class="font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "via mirror" : live ? "online" : "offline"}</span></span>
             </div>
           </div>
           <div class="flex min-w-0 overflow-x-auto px-3" role="tablist">
-            ${["code", "commits", "insights", "releases", "issues", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : [])].map((tab) => {
+            ${["code", "commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : [])].map((tab) => {
               const meta = tabMeta[tab];
               const iconAttr = tab === "issues"
                 ? 'data-lucide="circle-dot"'
@@ -123,15 +146,14 @@
             }).join("")}
           </div>
         </div>
-        ${canSeeAgentsTab ? renderRepoAgentNewComposer() : ""}
-	        <div data-repo-content-grid class="grid min-w-0 gap-5 pt-5 xl:grid-cols-[minmax(0,1fr)_18rem]">
+	        <div data-repo-content-grid class="grid min-w-0 gap-5 pt-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
 		          <div class="min-w-0">
 		            <section data-dashboard-repo-tab-panel="code">
 		              <div data-repo-root-toolbar class="grid gap-2 md:grid-cols-[auto_minmax(0,1fr)_auto_auto]">
 		                ${renderRepoBranchToolbar(repo, branch)}
 		                <button type="button" data-repo-file-finder-open class="inline-flex h-9 min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-left text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"><i data-lucide="search" class="h-3.5 w-3.5 shrink-0"></i><span class="min-w-0 truncate">Go to file</span><span class="ml-auto hidden rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline">T</span></button>
 		                <button type="button" aria-disabled="true" class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background"><i data-lucide="plus" class="h-3.5 w-3.5 text-muted-foreground"></i>Add file<i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i></button>
-		                <button data-dashboard-copy="git clone ${escapeHtml(cloneUrl(repo))}" aria-label="Copy clone" class="copy-button inline-flex h-9 items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i><span>Code</span><i data-lucide="chevron-down" class="h-3 w-3"></i></button>
+		                ${renderRepoCodeButton(repo, false)}
 		              </div>
 		              <div data-repo-pathbar class="my-3 flex min-w-0 flex-col gap-2 md:flex-row md:items-center md:justify-between">
 			                <div class="flex min-w-0 items-center gap-2">
@@ -141,7 +163,7 @@
 		                <div data-repo-focus-actions class="hidden flex shrink-0 flex-wrap items-center gap-2">
 		                  <button type="button" data-repo-file-finder-open class="inline-flex h-8 min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-left text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"><i data-lucide="search" class="h-3.5 w-3.5 shrink-0"></i><span class="min-w-0 truncate">Go to file</span><span class="ml-auto rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">T</span></button>
 		                  <button type="button" aria-disabled="true" class="inline-flex h-8 items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background"><i data-lucide="plus" class="h-3.5 w-3.5 text-muted-foreground"></i>Add file</button>
-		                  <button data-dashboard-copy="git clone ${escapeHtml(cloneUrl(repo))}" aria-label="Copy clone" class="copy-button inline-flex h-8 items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i><span>Code</span></button>
+		                  ${renderRepoCodeButton(repo, true)}
 		                </div>
 		              </div>
 		              <div data-repo-code-workspace class="min-w-0 gap-4">
@@ -161,18 +183,12 @@
 	                    <div data-repo-commit-summary class="grid gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center">
 	                      <div class="flex min-w-0 items-center gap-2">
 	                        <span data-repo-commit-avatar class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 font-mono text-[10px] font-semibold text-primary">${escapeHtml((repo.owner || "F")[0] || "F").toUpperCase()}</span>
-	                        <span data-repo-commit-author class="min-w-0 truncate text-foreground font-medium">${escapeHtml(repo.maintainer || repo.owner || "maintainer")}</span>
-	                        <span data-repo-commit-message class="min-w-0 truncate text-muted-foreground">published latest mirror metadata</span>
+	                        <span data-repo-commit-author class="min-w-0 truncate text-foreground font-medium"><span class="inline-block h-3.5 w-24 max-w-full animate-pulse rounded bg-muted-foreground/20 align-middle"></span></span>
+	                        <span data-repo-commit-message class="min-w-0 truncate text-muted-foreground"><span class="inline-block h-3.5 w-40 max-w-full animate-pulse rounded bg-muted-foreground/20 align-middle"></span></span>
 	                      </div>
-	                      <span data-repo-commit-hash class="font-mono text-muted-foreground">${escapeHtml(commitId)}</span>
-	                      <span data-repo-commit-date class="font-mono text-muted-foreground">${escapeHtml(updatedAt)}</span>
+	                      <span data-repo-commit-hash class="font-mono text-muted-foreground"><span class="inline-block h-3.5 w-14 animate-pulse rounded bg-muted-foreground/20 align-middle"></span></span>
+	                      <span data-repo-commit-date class="font-mono text-muted-foreground"><span class="inline-block h-3.5 w-16 animate-pulse rounded bg-muted-foreground/20 align-middle"></span></span>
 	                      <button type="button" data-dashboard-history-button aria-label="Open commit history" class="inline-flex items-center gap-1 font-medium text-foreground hover:text-primary transition-colors"><i data-lucide="history" class="h-3.5 w-3.5 text-muted-foreground"></i>History</button>
-	                    </div>
-	                    <div class="grid grid-cols-[1.5rem_minmax(0,1fr)_auto] gap-3 border-b border-border bg-secondary/25 px-4 py-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
-	                      <span></span>
-	                      <span>Name</span>
-	                      <span class="hidden sm:block">Last commit message</span>
-	                      <span>Last commit date</span>
 	                    </div>
 	                    <div data-repo-tree></div>
 	                  </div>
@@ -180,7 +196,7 @@
 	                  <section data-repo-readme class="mt-4 overflow-hidden rounded-lg border border-border bg-background">
 	                    <div data-repo-readme-filename class="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-3 text-xs font-medium text-foreground"><i data-lucide="book-open" class="h-3.5 w-3.5 text-muted-foreground"></i>README.md</div>
 	                    <div data-repo-readme-body class="p-4 text-sm leading-6 text-muted-foreground">
-	                      <p class="mt-1">Loading README...</p>
+	                      <p class="mt-1">${loadingHtml("Loading README...")}</p>
 	                    </div>
 	                  </section>
 	                </div>
@@ -201,13 +217,25 @@
             <section data-dashboard-repo-tab-panel="commits" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="git-commit-horizontal" class="h-3.5 w-3.5 text-muted-foreground"></i>Commits</span><span class="font-mono text-[10px] text-muted-foreground">live mirror history</span></div><div data-repo-commits></div></div></section>
             <section data-dashboard-repo-tab-panel="releases" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="tag" class="h-3.5 w-3.5 text-primary"></i>Releases</span><span class="font-mono text-[10px] text-muted-foreground">signed release manifests</span></div><div data-repo-releases></div></div></section>
             ${renderRepoCollectionPanel("issues", repo, issuesCount, repoCount(repo, ["closedIssues", "closedIssueCount"]))}
+            <section data-dashboard-repo-tab-panel="projects" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-gantt" class="h-3.5 w-3.5 text-primary"></i>Projects</span><span class="font-mono text-[10px] text-muted-foreground">linked issues · milestones · gantt</span></div><div data-repo-projects></div></div></section>
             ${renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))}
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
-            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-repo-mirrors></div></div></section>
+            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a notification; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
           </div>
           <aside data-repo-about data-repo-about-rail class="min-w-0 rounded-lg border border-border bg-background p-4">
+            ${repo.isPrivate ? "" : `
+            <div data-repo-social-badge class="-mx-4 -mt-4 mb-4 overflow-hidden rounded-t-lg border-b border-border">
+              <div data-repo-social-banner class="h-20 w-full bg-secondary bg-cover bg-center" style="background-image:url('/assets/fediverse-banner.png')"></div>
+              <div class="flex items-end gap-3 px-4 pb-3">
+                <img data-repo-social-logo src="/assets/fediverse-avatar.png" alt="Repository logo" class="-mt-7 h-14 w-14 shrink-0 rounded-xl border-2 border-background bg-background object-cover shadow" />
+                <div class="min-w-0 pb-0.5">
+                  <a data-repo-social-handle data-repo-mastodon-link href="${escapeHtml(mastodonUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(fediHandle)}" class="block min-w-0 truncate font-mono text-[11px] text-foreground hover:underline">${escapeHtml(fediHandle)}</a>
+                  <div class="text-[11px] text-muted-foreground"><span data-repo-social-followers class="font-mono text-foreground">–</span> fediverse watchers</div>
+                </div>
+              </div>
+            </div>`}
             <div class="flex items-center justify-between gap-3">
               <h3 class="text-sm font-semibold text-foreground">About</h3>
               ${canEditAbout
@@ -215,8 +243,29 @@
                 : `<i data-lucide="settings" class="h-3.5 w-3.5 text-muted-foreground"></i>`}
             </div>
             <p data-repo-about-description class="mt-3 text-sm leading-6 text-foreground">${escapeHtml(repo.description || "No description published.")}</p>
+            <a data-repo-about-website href="#" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-1 hidden min-w-0 items-center gap-1.5 text-xs hover:underline"><i data-lucide="globe" class="h-3.5 w-3.5 shrink-0"></i><span data-repo-about-website-label class="min-w-0 truncate"></span></a>
             <form data-repo-about-form class="mt-3 hidden grid gap-2">
               <textarea data-repo-about-input rows="4" maxlength="240" class="min-h-24 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary">${escapeHtml(repo.description || "")}</textarea>
+              <label class="grid gap-1 text-[11px] text-muted-foreground">Website
+                <input data-repo-about-website-input type="url" maxlength="240" placeholder="https://example.com" class="h-8 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
+              </label>
+              <label class="grid gap-1 text-[11px] text-muted-foreground">Logo — square PNG, up to 256 KB (fediverse avatar)
+                <input data-repo-about-logo type="file" accept="image/png" class="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-secondary file:px-2 file:py-1 file:text-xs file:text-foreground" />
+              </label>
+              <label class="grid gap-1 text-[11px] text-muted-foreground">Banner — 1500×500 PNG, up to 1 MB (fediverse header)
+                <input data-repo-about-banner type="file" accept="image/png" class="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-secondary file:px-2 file:py-1 file:text-xs file:text-foreground" />
+              </label>
+              <span class="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+                <label class="inline-flex items-center gap-1.5"><input data-repo-about-logo-clear type="checkbox" class="h-3 w-3" />Remove logo</label>
+                <label class="inline-flex items-center gap-1.5"><input data-repo-about-banner-clear type="checkbox" class="h-3 w-3" />Remove banner</label>
+              </span>
+              <fieldset class="grid gap-1.5 rounded-md border border-border p-2 text-[11px] text-muted-foreground">
+                <legend class="px-1 text-[10px] font-semibold uppercase tracking-wide">ActivityPub federation</legend>
+                <label class="inline-flex items-start gap-1.5"><input data-repo-ap-federate type="checkbox" class="mt-0.5 h-3 w-3" checked />Federate this repository (fediverse actor and handle)</label>
+                <label class="inline-flex items-start gap-1.5"><input data-repo-ap-broadcast type="checkbox" class="mt-0.5 h-3 w-3" checked />Post new issues, pull requests, discussions and releases to followers</label>
+                <label class="inline-flex items-start gap-1.5"><input data-repo-ap-comments type="checkbox" class="mt-0.5 h-3 w-3" checked />Accept fediverse replies as federated comments</label>
+              </fieldset>
+              <p class="text-[10px] leading-4 text-muted-foreground">Saved to the relay now and written into the repo's committed <span class="font-mono">.forkmesh/info.json</span> (what the desktop app shows) the next time the owner's node syncs.</p>
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <span data-repo-about-status class="text-[11px] text-muted-foreground"></span>
                 <span class="inline-flex items-center gap-2">
@@ -230,35 +279,97 @@
               <a href="${escapeHtml(readmeHref)}" data-repo-readme-link data-repo-readme-path="${escapeHtml(readmePath)}" class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="book-open" class="h-3.5 w-3.5"></i><span>Readme</span></a>
               <a href="${escapeHtml(`${repoPathUrl(repo)}/insights`)}" data-repo-activity-link class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="activity" class="h-3.5 w-3.5"></i><span>Activity</span></a>
             </div>
-            <div class="mt-5 border-t border-border pt-4">
-	              <h4 class="text-xs font-semibold text-foreground">Repository metadata</h4>
-	              <dl class="mt-3 grid gap-3 text-xs">
-	                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Channel</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(repo.channel || "general")}</dd></div>
-	                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Source</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(repo.source || "desktop")}</dd></div>
-	                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Maintainer</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(repo.maintainer || repo.owner || "unknown")}</dd></div>
-	                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Updated</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(updatedAt)}</dd></div>
-	              </dl>
-	            </div>
-		            <div data-repo-live-summary class="mt-5 border-t border-border pt-4">
-		              <h4 class="text-xs font-semibold text-foreground">Live mirror</h4>
-		              <dl class="mt-3 grid gap-3 text-xs">
-		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Mirrors</dt><dd data-dashboard-repo-count="mirrors" class="min-w-0 truncate text-right text-foreground font-mono">${tabCountLabel(mirrorsCount)}</dd></div>
-		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Data</dt><dd class="min-w-0 truncate text-right text-foreground font-mono">${escapeHtml(formatSize(repo.sizeBytes))}</dd></div>
-		                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Clone</dt><dd class="min-w-0 truncate text-right font-mono ${live ? "text-foreground" : "text-muted-foreground"}">${viaMirror ? "via mirror" : live ? "available" : "offline"}</dd></div>
-		              </dl>
-		              <div data-repo-live-mirror-list class="mt-3 overflow-hidden rounded-md border border-border"></div>
-		            </div>
+            ${canEditAbout && !repo.isPrivate ? `
+            <details data-repo-fedi-posts class="mt-5 border-t border-border pt-4">
+              <summary class="flex cursor-pointer list-none items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><span class="inline-flex items-center gap-1.5"><i data-lucide="megaphone" class="h-3.5 w-3.5"></i>Fediverse posts</span><i data-lucide="chevron-down" class="h-3.5 w-3.5 shrink-0 transition-transform"></i></summary>
+              <p class="mt-2 text-[11px] leading-4 text-muted-foreground">Posts this repository published to its Mastodon followers. Deleting one sends a removal to every follower's server so it disappears from their timelines.</p>
+              <div data-repo-fedi-posts-list class="mt-2 grid gap-2"></div>
+            </details>` : ""}
+            <div data-repo-about-release class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Latest release</h4>
+              <div data-repo-about-release-body class="mt-2 text-xs text-muted-foreground"></div>
+            </div>
+            <div data-repo-about-langs class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Languages</h4>
+              <div data-repo-about-langs-bar class="mt-2 flex h-2 w-full overflow-hidden rounded-full bg-secondary"></div>
+              <div data-repo-about-langs-legend class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground"></div>
+            </div>
+            <div data-repo-about-files class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Files</h4>
+              <p data-repo-about-files-count class="mt-2 text-xs text-muted-foreground"></p>
+            </div>
+            <div data-repo-about-contribs class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contributors <span data-repo-about-contribs-count class="font-mono text-foreground"></span></h4>
+              <div data-repo-about-contribs-list class="mt-2 flex flex-wrap gap-1.5"></div>
+            </div>
+            <div data-repo-live-summary class="mt-5 border-t border-border pt-4">
+              <h4 class="text-xs font-semibold text-foreground">Live mirror</h4>
+              <dl class="mt-3 grid gap-3 text-xs">
+                <div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3"><dt class="text-muted-foreground">Mirrors</dt><dd data-dashboard-repo-count="mirrors" class="min-w-0 truncate text-right text-foreground font-mono">${tabCountLabel(mirrorsCount)}</dd></div>
+              </dl>
+              <div data-repo-live-mirror-list class="mt-3 overflow-hidden rounded-md border border-border"></div>
+            </div>
           </aside>
         </div>
       </div>`;
-    window.lucide?.createIcons();
     // Restore whichever tab the URL points at (e.g. a refresh on
-    // /owner/repo/issues) instead of always defaulting back to Code.
+    // /owner/repo/issues) instead of always defaulting back to Code. This
+    // runs right after painting the DOM, before anything else that could
+    // throw (icon rendering, feature-panel loads) — otherwise a later error
+    // would leave the page stuck showing Code even though the URL (and the
+    // markup underneath) is already on the right tab.
     setRepoTab(repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code");
+    window.lucide?.createIcons();
     loadRepositoryTree(repo, routeKind === "tree" ? routePath : "");
+    // A deep link into a subfolder (or a blob) loads a subpath/blob tree that
+    // carries no served counts, so the tab badges would stay on the stale
+    // catalog seed (e.g. Issues showing 7 while the open/ folder holds 11).
+    // Refresh them from the mirror's root counts in that case; the root code
+    // view and the feature-tab routes already fetch the root tree themselves.
+    if ((routeKind === "tree" || routeKind === "blob") && routePath) refreshServedCounts(repo);
     if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
-    loadRepoFeaturePanels(repo);
+    loadRepoFeaturePanels(repo, recordRoute);
     loadRepoPendingCounts(repo);
+    loadRepoAboutRail(repo);
+    loadRepoStarState(repo, $("[data-repo-action-star]"));
+  }
+
+  // GitHub-style "Code" button: a green trigger that opens a popover with the
+  // clone info instead of silently copying on click. Shows the HTTPS clone URL
+  // (readonly, selectable, with a copy button) and the ready-to-paste
+  // `git clone` command. Used both in the code toolbar and the compact
+  // scroll-pinned focus bar (compact=true), each self-contained in its own
+  // relative wrapper so the toggle handler can scope to the clicked one.
+  function renderRepoCodeButton(repo, compact = false) {
+    const url = cloneUrl(repo);
+    const gitCmd = `git clone ${url}`;
+    const btnHeight = compact ? "h-8" : "h-9";
+    const copyBtn = (value, label) =>
+      `<button type="button" data-dashboard-copy="${escapeHtml(value)}" aria-label="${label}" class="copy-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i></button>`;
+    return `
+      <div data-repo-code-wrap class="relative">
+        <button type="button" data-repo-code-button aria-haspopup="true" aria-expanded="false" class="inline-flex ${btnHeight} items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors">
+          <i data-lucide="code" class="h-3.5 w-3.5"></i><span>Code</span><i data-lucide="chevron-down" class="h-3 w-3"></i>
+        </button>
+        <div data-repo-code-menu class="absolute right-0 z-40 mt-1 hidden w-80 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-background p-3 text-left shadow-xl">
+          <div class="flex items-center justify-between gap-2">
+            <span class="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground"><i data-lucide="terminal" class="h-3.5 w-3.5 text-muted-foreground"></i>Clone</span>
+            <span class="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">HTTPS</span>
+          </div>
+          <p class="mt-1 text-[11px] leading-4 text-muted-foreground">Clone this repository from its live ForkMesh mirror over HTTPS.</p>
+          <div class="mt-2 flex items-center gap-2">
+            <input data-repo-clone-url type="text" readonly value="${escapeHtml(url)}" aria-label="Clone URL" class="min-w-0 flex-1 rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[11px] text-foreground outline-none focus:border-primary" />
+            ${copyBtn(url, "Copy clone URL")}
+          </div>
+          <div class="mt-3 border-t border-border pt-2">
+            <span class="text-[11px] font-medium text-muted-foreground">Command line</span>
+            <div class="mt-1 flex items-center gap-2">
+              <code class="min-w-0 flex-1 truncate rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[11px] text-foreground">${escapeHtml(gitCmd)}</code>
+              ${copyBtn(gitCmd, "Copy git clone command")}
+            </div>
+          </div>
+        </div>
+      </div>`;
   }
 
   function findRepository(key) {
@@ -315,6 +426,7 @@
       ["Synced", row.lastSync || ""],
       ["Platform", row.platform || ""],
       ["Version", row.version || ""],
+      ["Node id", row.nodeId ? String(row.nodeId).slice(0, 12) : ""],
       ["CPU", ""],
       ["RAM", ""],
       ["Disk", ""],
@@ -326,6 +438,7 @@
       ["Branches", formatCount(row.branchCount)],
       ["Pulls", formatCount(row.pullCount)],
       ["Discussions", formatCount(row.discussionCount)],
+      ["Worktrees", formatCount(row.worktreeCount)],
       ["Clones", formatCount(row.clonesServed)],
       ["Website", formatCount(row.websiteServed)],
       ["Artifacts", formatCount(row.artifactCount)],
@@ -339,29 +452,59 @@
       .join("");
   }
 
+  // The "Online only" toggle in the Connected nodes header hides offline nodes
+  // (the default, matching the desktop Mirror nodes panel). Turning it off
+  // surfaces nodes that have gone offline but still published a mirror record,
+  // rendered inactive rather than live. Defaults to on until the user flips it.
+  function networkOnlineOnly() {
+    return state.networkOnlineOnly !== false;
+  }
+
   function renderNetworkRows(rows) {
     const list = $("[data-network-node-list]");
     const count = $("[data-network-node-count]");
-    const recent = rows.slice(0, 6);
+    const toggle = $("[data-network-online-only]");
+    const onlineOnly = networkOnlineOnly();
     const onlineCount = rows.filter((row) => row.online).length;
+    const offlineCount = rows.length - onlineCount;
+    const visible = onlineOnly ? rows.filter((row) => row.online) : rows;
 
-    if (count) count.textContent = `${formatCount(onlineCount)} online`;
+    if (toggle) {
+      toggle.setAttribute("aria-pressed", onlineOnly ? "true" : "false");
+      toggle.classList.toggle("border-primary", onlineOnly);
+      toggle.classList.toggle("text-foreground", onlineOnly);
+      toggle.classList.toggle("text-muted-foreground", !onlineOnly);
+      const label = toggle.querySelector("[data-network-online-only-label]");
+      if (label) label.textContent = onlineOnly ? "Online only" : "Showing offline";
+    }
+    if (count) {
+      count.textContent = offlineCount
+        ? `${formatCount(onlineCount)} online · ${formatCount(offlineCount)} offline`
+        : `${formatCount(onlineCount)} online`;
+    }
     if (list) {
-      list.innerHTML = recent.length
-        ? recent.map((row) => `
+      list.innerHTML = visible.length
+        ? visible.map((row) => `
           <div class="px-4 py-3 hover:bg-secondary/50 transition-colors">
             <div class="flex items-center gap-4">
               <div class="flex items-center gap-2 flex-1 min-w-0">
                 <i data-lucide="circle" class="${nodeDotClass(row, "w-2 h-2")}"></i>
                 <span class="text-sm ${row.online ? "text-foreground" : "text-muted-foreground"} font-medium truncate font-mono">${escapeHtml(row.name || "node")}</span>
+                ${row.online ? "" : '<span class="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">offline</span>'}
               </div>
               <span class="text-xs text-muted-foreground w-20 text-right font-mono">${escapeHtml(nodeMetaLabel(row))}</span>
             </div>
             <div class="mt-2 flex flex-wrap gap-1.5 pl-4">${nodeDetailChips(row)}</div>
           </div>
         `).join("")
-        : '<div class="px-4 py-3 text-sm text-muted-foreground">No nodes online right now.</div>';
+        : `<div class="px-4 py-3 text-sm text-muted-foreground">${onlineOnly ? "No nodes online right now." : "No nodes yet."}</div>`;
     }
+  }
+
+  function toggleNetworkOnlineOnly() {
+    state.networkOnlineOnly = !networkOnlineOnly();
+    renderNetworkRows(Array.isArray(state.networkNodeRows) ? state.networkNodeRows : []);
+    window.lucide?.createIcons();
   }
 
   async function renderNetwork() {
@@ -428,6 +571,7 @@
           b.minutes - a.minutes ||
           a.name.localeCompare(b.name),
       );
+      state.networkNodeRows = rows;
       renderNetworkRows(rows);
     } catch (_) {
       $("[data-network-node-list]") && ($("[data-network-node-list]").innerHTML =
@@ -449,6 +593,7 @@
       host_online: "wifi",
       host_offline: "wifi-off",
       pending_inbox: "inbox",
+      mirror_request: "radio",
     })[kind] || "bell";
   }
 
@@ -510,9 +655,125 @@
         </div>
       </div>
       <p class="mt-5 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">${escapeHtml(item.body || "ForkMesh notification")}</p>
+      ${mirrorRequestActionsHtml(item)}
       ${item.href ? `<a href="${escapeHtml(item.href)}" class="mt-5 inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Open context</a>` : ""}
     `;
     window.lucide?.createIcons();
+  }
+
+  // Accept/Reject controls on an incoming "someone asked your node to mirror
+  // their repo" notification (issue #385). Only the still-pending request the
+  // recipient can act on gets buttons; replies ("X accepted…") carry none.
+  function mirrorRequestActionsHtml(item) {
+    if (!item || item.kind !== "mirror_request") return "";
+    const meta = item.meta && typeof item.meta === "object" ? item.meta : {};
+    if (String(meta.state || "") !== "pending") return "";
+    const id = String(meta.requestId || "");
+    if (!id) return "";
+    const enc = escapeHtml(id);
+    return `
+      <div data-mirror-request-actions="${enc}" class="mt-5 flex items-center gap-2">
+        <button type="button" data-mirror-request-accept="${enc}" class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors">Accept &amp; mirror</button>
+        <button type="button" data-mirror-request-reject="${enc}" class="inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Decline</button>
+        <span data-mirror-request-hint class="text-[11px] text-muted-foreground"></span>
+      </div>
+    `;
+  }
+
+  async function resolveMirrorRequest(id, action, trigger) {
+    const node = state.session?.nodeName || "";
+    if (!node || !id) return;
+    const container = trigger?.closest("[data-mirror-request-actions]");
+    const hint = container?.querySelector("[data-mirror-request-hint]");
+    container?.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    if (hint) hint.textContent = action === "accept" ? "Accepting…" : "Declining…";
+    try {
+      const res = await fetch("/api/mirror-requests", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          node, action, requestId: id,
+          sessionToken: state.session?.sessionToken || "",
+        }),
+      });
+      if (!res.ok) throw new Error("request failed");
+      if (hint) hint.textContent = action === "accept"
+        ? "Accepted — your node will start mirroring it shortly."
+        : "Declined.";
+      if (container) container.querySelectorAll("button").forEach((b) => b.remove());
+      await loadNotifications();
+    } catch (_) {
+      if (hint) hint.textContent = "Could not update the request. Try again.";
+      container?.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+    }
+  }
+
+  // "Ask a node to mirror your repo" (issue #385): the owner types a node name;
+  // that node's holder gets a notification and, if they accept, their node
+  // starts mirroring this repo. Only shown to the repo owner (see
+  // renderMirrorRequestForm) — the worker re-checks ownership from the session.
+  async function askNodeToMirror(trigger) {
+    const repo = state.selectedRepo;
+    if (!repo || !isRepoOwner(repo)) return;
+    const wrap = trigger.closest("[data-mirror-request]") || document;
+    const input = wrap.querySelector("[data-mirror-request-target]");
+    const hint = wrap.querySelector("[data-mirror-request-hint]");
+    const setHint = (text, tone) => {
+      if (!hint) return;
+      hint.className = `mt-1.5 text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      hint.textContent = text;
+    };
+    const target = String(input?.value || "").trim().toLowerCase();
+    if (!target) {
+      setHint("Enter the node name to ask.", "bad");
+      input?.focus();
+      return;
+    }
+    if (target === String(repo.owner || "").trim().toLowerCase()) {
+      setHint("That's this repo's own node.", "bad");
+      return;
+    }
+    trigger.disabled = true;
+    setHint("Sending request…");
+    try {
+      const res = await fetch("/api/mirror-requests", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          node: state.session?.nodeName || "",
+          action: "create",
+          target,
+          owner: String(repo.owner || ""),
+          repo: String(repo.name || ""),
+          sessionToken: state.session?.sessionToken || "",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) {
+        const reason = {
+          target_not_found: "No node by that name.",
+          repo_not_found: "This repo isn't published yet.",
+          private_repo: "Only public repos can be mirrored this way.",
+          forbidden: "You can only ask others to mirror your own repos.",
+          self_target: "That's this repo's own node.",
+        }[String(body.error || "")] || "Could not send the request.";
+        setHint(reason, "bad");
+        trigger.disabled = false;
+        return;
+      }
+      if (input) input.value = "";
+      setHint(`Asked ${target} to mirror this repo.`, "good");
+    } catch (_) {
+      setHint("Could not send the request. Try again.", "bad");
+    } finally {
+      trigger.disabled = false;
+    }
+  }
+
+  function renderMirrorRequestForm(repo) {
+    const form = $("[data-mirror-request]");
+    if (!form) return;
+    form.hidden = !isRepoOwner(repo);
   }
 
   function renderNotificationModal() {
@@ -600,6 +861,11 @@
     if (modal) setNotificationModalOpen(true);
   }
 
+  // The release version changes at most per deploy: cache it in sessionStorage
+  // for an hour so repeat page navigations don't refetch /api/version.
+  const APP_VERSION_STORAGE = "forkmesh.appVersion";
+  const APP_VERSION_TTL_MS = 60 * 60 * 1000;
+
   async function renderAppVersion() {
     // Show the live ForkMesh release version (same number as the desktop app -
     // deploy.sh stamps it from qt_client/CMakeLists.txt as the APP_VERSION Worker
@@ -607,12 +873,32 @@
     // is unavailable so the header never shows a broken "v".
     const el = $("[data-app-version]");
     if (!el) return;
+    const show = (version) => {
+      el.textContent = version[0] === "v" ? version : "v" + version;
+      el.classList.remove("hidden");
+    };
+    try {
+      const cached = JSON.parse(sessionStorage.getItem(APP_VERSION_STORAGE) || "null");
+      if (cached?.version && Number(cached.expiresAt) > Date.now()) {
+        show(String(cached.version));
+        return;
+      }
+    } catch (_) {
+      /* unreadable cache entry: fall through to the fetch */
+    }
     try {
       const data = await fetchJson("/api/version");
       const version = (data && data.version ? String(data.version) : "").trim();
       if (!version) return;
-      el.textContent = version[0] === "v" ? version : "v" + version;
-      el.classList.remove("hidden");
+      try {
+        sessionStorage.setItem(APP_VERSION_STORAGE, JSON.stringify({
+          version,
+          expiresAt: Date.now() + APP_VERSION_TTL_MS,
+        }));
+      } catch (_) {
+        /* best-effort cache */
+      }
+      show(version);
     } catch (_) {
       /* leave the version chip hidden */
     }
@@ -731,7 +1017,17 @@
   // awaits this promise before resolving its /owner/repo path.
   let repositoriesReady = null;
 
-  async function loadRepositories({ fresh = true } = {}) {
+  // Resolves once hydrateCanonicalProfile has refreshed the session with the
+  // authoritative nodes/isAdmin fields. The owner-only Agents tab (adhoc #182)
+  // is gated on those, so the repo page waits on this before deciding whether
+  // an /owner/repo/agents deep link is a real tab route or must collapse to
+  // Code — otherwise a hard refresh on Agents races the hydration and bounces
+  // back to the repo root (adhoc #93).
+  let canonicalProfileReady = null;
+
+  // Boot/shared-chrome loads take the cached path (browser + edge cache honor
+  // the server's max-age); only explicit user refresh actions pass fresh:true.
+  async function loadRepositories({ fresh = false } = {}) {
     if (dashboardMockRepositoriesEnabled()) {
       renderRepositories(dashboardMockRepositories(), state.session);
       return;
@@ -791,6 +1087,7 @@
       }
       $("[data-profile-settings-button]")?.classList.add("hidden");
       $("#notificationToggle")?.classList.add("hidden");
+      $("#agentModalToggle")?.classList.add("hidden");
       // Keep the presence cookie honest: localStorage says logged out, so the
       // Worker must stop 302ing / to the dashboard.
       document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
@@ -799,7 +1096,7 @@
     renderProfile(session || { nodeName: "guest" });
     if (session?.nodeName) {
       if (grant) offerLinkGrant(grant);
-      hydrateCanonicalProfile(session).then(() => loadNotifications()).catch(() => {});
+      canonicalProfileReady = hydrateCanonicalProfile(session).then(() => loadNotifications()).catch(() => {});
     }
     repositoriesReady = loadRepositories();
     return true;
@@ -809,6 +1106,9 @@
     renderHomeChangelog();
     // Feed + top repositories fill in when loadRepositories()/loadNotifications()
     // resolve — both re-render the home containers.
+    // Active agent sessions (adhoc #81) need the catalog first so we know which
+    // repos to poll; fetch them once repositories are loaded.
+    repositoriesReady?.then(() => loadHomeAgentSessions()).catch(() => {});
   }
 
   function initReposPage() {
@@ -825,6 +1125,15 @@
   }
 
   function initProfileOverviewPage() {
+    // /@name serves this same document in public-profile mode: render the
+    // named account's public data instead of the logged-in session (viewing
+    // your own /@name keeps the full owner view).
+    const publicName = publicProfileNameFromPath();
+    const own = String(state.session?.nodeName || "").toLowerCase();
+    if (publicName && publicName !== own) {
+      loadPublicProfile(publicName);
+      return;
+    }
     renderProfilePage(state.session);
     refreshPublicProfile(state.session);
   }
@@ -841,13 +1150,24 @@
     const crumb = $("[data-repo-detail-crumb]");
     if (crumb && requested) crumb.textContent = requested;
     if (detail && requested) {
-      detail.innerHTML = '<p class="text-sm text-muted-foreground">Loading repository…</p>';
+      detail.innerHTML = `<p class="text-sm text-muted-foreground">${loadingHtml("Loading repository…")}</p>`;
     }
     // findRepository needs the catalog (alias/canonical grouping), so this page
     // does wait on the shared fetch before rendering the detail body.
     await (repositoriesReady || loadRepositories());
     const repo = requested ? findRepository(requested) : null;
     if (repo) {
+      // The owner-only Agents tab is only a recognized route when the session
+      // can assign agents, which is decided from nodes/isAdmin that only land
+      // after hydrateCanonicalProfile resolves. When the refreshed URL points
+      // at /owner/repo/agents and we can't yet confirm ownership, wait for the
+      // hydration so renderRepoDetail restores the tab instead of collapsing to
+      // Code and rewriting the URL back to the repo root (adhoc #93). Every
+      // other tab is unconditional, so only this case pays the wait.
+      const routeParts = repoRouteParts();
+      if (routeParts[2] === "agents" && !sessionCanAssignAgent(repo)) {
+        await (canonicalProfileReady || Promise.resolve());
+      }
       renderRepoDetail(repo);
       return;
     }
@@ -868,6 +1188,11 @@
 
     if (event.target.closest("[data-mobile-sidebar-backdrop], [data-mobile-drawer-close]")) {
       setMobileSidebarOpen(false);
+      return;
+    }
+
+    if (event.target.closest("[data-network-online-only]")) {
+      toggleNetworkOnlineOnly();
       return;
     }
 
@@ -905,6 +1230,25 @@
       return;
     }
 
+    const mirrorAccept = event.target.closest("[data-mirror-request-accept]");
+    if (mirrorAccept) {
+      event.stopPropagation();
+      await resolveMirrorRequest(mirrorAccept.dataset.mirrorRequestAccept || "", "accept", mirrorAccept);
+      return;
+    }
+    const mirrorReject = event.target.closest("[data-mirror-request-reject]");
+    if (mirrorReject) {
+      event.stopPropagation();
+      await resolveMirrorRequest(mirrorReject.dataset.mirrorRequestReject || "", "reject", mirrorReject);
+      return;
+    }
+    const mirrorAsk = event.target.closest("[data-mirror-request-send]");
+    if (mirrorAsk) {
+      event.stopPropagation();
+      await askNodeToMirror(mirrorAsk);
+      return;
+    }
+
     const notificationOpen = event.target.closest("[data-notification-open]");
     if (notificationOpen) {
       await openNotification(notificationOpen.dataset.notificationOpen || "", Boolean(event.target.closest("#notificationModal")));
@@ -919,6 +1263,17 @@
 
     if (event.target.closest("[data-close-notification-modal], [data-notification-modal-backdrop]")) {
       setNotificationModalOpen(false);
+      return;
+    }
+
+    if (event.target.closest("#agentModalToggle")) {
+      event.stopPropagation();
+      setAgentModalOpen($("#agentModal")?.classList.contains("hidden"));
+      return;
+    }
+
+    if (event.target.closest("[data-agent-modal-close]")) {
+      setAgentModalOpen(false);
       return;
     }
 
@@ -977,10 +1332,14 @@
       return;
     }
 
-    const contributionYear = event.target.closest("[data-profile-contribution-year]");
-    if (contributionYear) {
-      state.profileContributions.year = Number(contributionYear.dataset.profileContributionYear) || new Date().getFullYear();
-      renderProfileContributionGraph();
+    const contributionPeriod = event.target.closest("[data-profile-contribution-period]");
+    if (contributionPeriod) {
+      renderProfileContributionGraph({ period: contributionPeriod.dataset.profileContributionPeriod });
+      return;
+    }
+
+    if (event.target.closest("[data-profile-contribution-retry]")) {
+      renderProfileContributionGraph({ force: true });
       return;
     }
 
@@ -1062,6 +1421,9 @@
     if (!event.target.closest("#notificationToggle, #notificationDropdown")) {
       setNotificationDropdownOpen(false);
     }
+    if (!event.target.closest("#agentModal, #agentModalToggle")) {
+      setAgentModalOpen(false);
+    }
     if (!event.target.closest("[data-repo-branch-control]")) {
       closeRepoBranchMenus();
     }
@@ -1079,6 +1441,14 @@
       if (globalSearchResult) {
         event.preventDefault();
         selectGlobalSearchResult(globalSearchResult.dataset.dashboardOpenRepo || "");
+        return;
+      }
+
+      const starTrigger = event.target.closest("[data-repo-action-star], [data-repo-star-button]");
+      if (starTrigger) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleRepoStar(starTrigger);
         return;
       }
 
@@ -1107,6 +1477,38 @@
         return;
       }
 
+      // Watch popover: the button shows the repo's fediverse follower count
+      // and opens the follow-from-Mastodon card; any click outside closes it.
+      const watchButton = event.target.closest("[data-repo-action-watch]");
+      if (watchButton) {
+        $("[data-repo-watch-menu]")?.classList.toggle("hidden");
+        return;
+      }
+      if (!event.target.closest("[data-repo-watch-wrap]")) {
+        $("[data-repo-watch-menu]")?.classList.add("hidden");
+      }
+
+      // GitHub-style Code dropdown: toggle the clone popover scoped to the
+      // clicked button; a click anywhere outside a code wrapper closes them.
+      const codeButton = event.target.closest("[data-repo-code-button]");
+      if (codeButton) {
+        const wrap = codeButton.closest("[data-repo-code-wrap]");
+        const menu = wrap?.querySelector("[data-repo-code-menu]");
+        const willOpen = Boolean(menu?.classList.contains("hidden"));
+        $$("[data-repo-code-menu]").forEach((m) => m.classList.add("hidden"));
+        $$("[data-repo-code-button]").forEach((b) => b.setAttribute("aria-expanded", "false"));
+        if (menu && willOpen) {
+          menu.classList.remove("hidden");
+          codeButton.setAttribute("aria-expanded", "true");
+          // Pre-select the URL so Ctrl/Cmd+C works immediately, like GitHub.
+          wrap.querySelector("[data-repo-clone-url]")?.select?.();
+        }
+        return;
+      }
+      if (!event.target.closest("[data-repo-code-wrap]")) {
+        $$("[data-repo-code-menu]").forEach((m) => m.classList.add("hidden"));
+      }
+
       const aboutEditButton = event.target.closest("[data-repo-about-edit]");
       if (aboutEditButton && state.selectedRepo && sessionOwnsRepo(state.selectedRepo)) {
         setRepoAboutStatus("");
@@ -1117,6 +1519,26 @@
       if (event.target.closest("[data-repo-about-cancel]")) {
         setRepoAboutStatus("");
         setRepoAboutEditing(false);
+        return;
+      }
+
+      // Owner "Fediverse posts" dropdown: load the post list the moment it's
+      // expanded (setTimeout so the <details> default toggle has applied), and
+      // delete a post from its trash button.
+      const fediPostsSummary = event.target.closest("[data-repo-fedi-posts] > summary");
+      if (fediPostsSummary && state.selectedRepo) {
+        const repo = state.selectedRepo;
+        const details = fediPostsSummary.parentElement;
+        setTimeout(() => { if (details.open) loadRepoFediPosts(repo); }, 0);
+        return;
+      }
+
+      const fediPostDelete = event.target.closest("[data-repo-fedi-post-delete]");
+      if (fediPostDelete && state.selectedRepo) {
+        removeRepoFediPost(
+          state.selectedRepo,
+          fediPostDelete.getAttribute("data-repo-fedi-post-delete"),
+          fediPostDelete);
         return;
       }
 
@@ -1237,6 +1659,24 @@
         return;
       }
 
+      const issuesReloadButton = event.target.closest("[data-repo-issues-reload]");
+      if (issuesReloadButton && state.selectedRepo) {
+        loadRepoIssues(state.selectedRepo);
+        return;
+      }
+
+      const projectFilterButton = event.target.closest("[data-dashboard-project-filter]");
+      if (projectFilterButton) {
+        setProjectFilter(projectFilterButton.dataset.dashboardProjectFilter || "open");
+        return;
+      }
+
+      const projectViewButton = event.target.closest("[data-dashboard-project-view]");
+      if (projectViewButton) {
+        setProjectView(projectViewButton.dataset.dashboardProjectView || "gantt");
+        return;
+      }
+
       const issueCancelButton = event.target.closest("[data-repo-issue-cancel]");
       if (issueCancelButton && state.selectedRepo) {
         renderRepoIssues();
@@ -1245,17 +1685,58 @@
 
       const recordButton = event.target.closest("[data-repo-record-kind][data-repo-record-number]");
       if (recordButton && state.selectedRepo) {
-        loadRepoRecordDetail(state.selectedRepo, recordButton.dataset.repoRecordKind || "", recordButton.dataset.repoRecordNumber || "");
+        const kind = recordButton.dataset.repoRecordKind || "";
+        const number = recordButton.dataset.repoRecordNumber || "";
+        // Mirror the opened record into the address bar (/owner/repo/pulls/4)
+        // so refresh and the desktop client's "View on website" button land on
+        // this same detail page. Pending records have no mirror number yet.
+        if (["pulls", "discussions", "issues"].includes(kind) && /^\d+$/.test(number)) {
+          navigateHistory(`${repoPathUrl(state.selectedRepo)}/${kind}/${number}`);
+        }
+        loadRepoRecordDetail(state.selectedRepo, kind, number);
         return;
       }
 
       const recordBackButton = event.target.closest("[data-repo-record-back]");
       if (recordBackButton && state.selectedRepo) {
         const kind = recordBackButton.dataset.repoRecordBack || "";
+        if (["pulls", "discussions", "issues"].includes(kind)) {
+          navigateHistory(`${repoPathUrl(state.selectedRepo)}/${kind}`);
+        }
+        state.repoRecordDetail = null;
         if (kind === "issues") {
-          renderRepoIssues();
+          // A deep-linked refresh straight into the issue detail never loaded
+          // the list, so fetch it now instead of flashing an empty "No issues".
+          if (state.issuesView.items.length) renderRepoIssues();
+          else loadRepoIssues(state.selectedRepo);
         } else {
           loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
+        }
+        return;
+      }
+
+      // PR detail section tabs (Conversation / Commits / Files changed): all
+      // sections render on the one page, so a tab click highlights itself and
+      // scrolls its section into view.
+      const recordTabButton = event.target.closest("[data-repo-record-tab]");
+      if (recordTabButton) {
+        const article = recordTabButton.closest("[data-repo-record-detail]");
+        if (article) {
+          article.querySelectorAll("[data-repo-record-tab]").forEach((button) => {
+            const active = button === recordTabButton;
+            button.classList.toggle("border-primary", active);
+            button.classList.toggle("border-transparent", !active);
+            button.classList.toggle("text-foreground", active);
+            button.classList.toggle("text-muted-foreground", !active);
+          });
+          const targetSelector = {
+            conversation: "[data-repo-record-conversation]",
+            commits: "[data-repo-record-patch-panel]",
+            files: "[data-repo-record-files-panel]",
+            badge: "[data-repo-record-badge-panel]",
+          }[recordTabButton.dataset.repoRecordTab || ""];
+          const target = targetSelector ? article.querySelector(targetSelector) : null;
+          target?.scrollIntoView({ behavior: "smooth", block: "start" });
         }
         return;
       }
@@ -1266,7 +1747,12 @@
         const targetPage = Number(repoCollectionPageButton.dataset.repoCollectionPageTarget);
         if (kind && Number.isFinite(targetPage)) {
           state.repoCollectionPages[kind] = targetPage;
-          loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
+          // Issues keep their open/closed/all filter (and its filter bar) that
+          // renderRepoIssues applies; routing pagination through
+          // loadRepoCollection would re-render the raw record list unfiltered,
+          // leaking closed issues into the default "open" view (issue #420).
+          if (kind === "issues") renderRepoIssues();
+          else loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
         }
         return;
       }
@@ -1323,15 +1809,55 @@
       if (submit) submit.disabled = true;
       setRepoAboutStatus("Saving...");
       try {
-        const body = await saveRepoAboutFromWeb(state.selectedRepo, description);
+        // Optional branding uploads ride along with the description: a chosen
+        // file becomes a data-URL PNG, a checked "Remove" sends "" (clear),
+        // and an untouched image is simply omitted (left unchanged).
+        const media = {};
+        const readAsDataUrl = (file) => new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ""));
+          reader.onerror = () => reject(new Error("image_read_failed"));
+          reader.readAsDataURL(file);
+        });
+        const logoFile = aboutForm.querySelector("[data-repo-about-logo]")?.files?.[0];
+        const bannerFile = aboutForm.querySelector("[data-repo-about-banner]")?.files?.[0];
+        if (logoFile && logoFile.size > 256 * 1024) throw new Error("logo_too_large");
+        if (bannerFile && bannerFile.size > 1024 * 1024) throw new Error("banner_too_large");
+        if (aboutForm.querySelector("[data-repo-about-logo-clear]")?.checked) media.logoPng = "";
+        else if (logoFile) media.logoPng = await readAsDataUrl(logoFile);
+        if (aboutForm.querySelector("[data-repo-about-banner-clear]")?.checked) media.bannerPng = "";
+        else if (bannerFile) media.bannerPng = await readAsDataUrl(bannerFile);
+        const website = String(
+          aboutForm.querySelector("[data-repo-about-website-input]")?.value || "").trim();
+        media.website = website;
+        // Per-repo federation switches ride the same save (loadRepoFediverse
+        // seeded the checkboxes with the stored values, so an untouched form
+        // round-trips unchanged and the worker writes nothing).
+        const federateBox = aboutForm.querySelector("[data-repo-ap-federate]");
+        if (federateBox) {
+          media.fediverse = {
+            federate: federateBox.checked,
+            broadcastEvents: Boolean(aboutForm.querySelector("[data-repo-ap-broadcast]")?.checked),
+            acceptComments: Boolean(aboutForm.querySelector("[data-repo-ap-comments]")?.checked),
+          };
+        }
+        const body = await saveRepoAboutFromWeb(state.selectedRepo, description, media);
         applyRepoAboutDescription(state.selectedRepo, body.description ?? description);
+        applyRepoAboutWebsite(website);
         setRepoAboutStatus("Saved.", "good");
         setRepoAboutEditing(false);
+        // Refresh the badge header + watch count so the new logo/banner (and
+        // the ?v= cache-buster) show immediately.
+        loadRepoFediverse(state.selectedRepo);
       } catch (error) {
         const code = String(error?.message || "");
         setRepoAboutStatus(
           code === "not_authorized" ? "Only the source node owner can edit About."
             : code === "account_required" ? "Sign in as the source node owner first."
+            : code === "logo_too_large" ? "Logo must be a PNG up to 256 KB."
+            : code === "banner_too_large" ? "Banner must be a PNG up to 1 MB."
+            : code === "image_too_large" ? "Image too large (logo ≤256 KB, banner ≤1 MB)."
+            : code === "bad_image" ? "Images must be PNG files."
             : "Could not save About.",
           "bad");
       } finally {
@@ -1371,9 +1897,11 @@
       return;
     }
     const agentNewForm = event.target.closest("[data-repo-agent-new-form]");
-    if (agentNewForm && state.selectedRepo) {
+    if (agentNewForm) {
       event.preventDefault();
-      handleRepoAgentNewSubmit(state.selectedRepo, agentNewForm);
+      // The form lives in the header modal (adhoc #62): the target repo comes
+      // from the modal's own repository picker, not the open repo page.
+      handleRepoAgentNewSubmit(agentModalSelectedRepo(), agentNewForm);
     }
   });
 
@@ -1423,6 +1951,21 @@
   $("[data-repo-next]")?.addEventListener("click", () => {
     state.page += 1;
     updateRepositoryPagination();
+  });
+
+  // New-repository modal (adhoc #30): open from the Repos header, collect the
+  // create-and-mirror details, then hand off to the desktop node (see
+  // handleNewRepoSubmit — the signed publish + git mirror are desktop-only).
+  $("[data-new-repo-open]")?.addEventListener("click", () => setNewRepoModalOpen(true));
+  $("[data-new-repo-close]")?.addEventListener("click", () => setNewRepoModalOpen(false));
+  $("[data-new-repo-backdrop]")?.addEventListener("click", () => setNewRepoModalOpen(false));
+  $("[data-new-repo-cancel]")?.addEventListener("click", () => setNewRepoModalOpen(false));
+  $$("[data-new-repo-source]").forEach((btn) => {
+    btn.addEventListener("click", () => setNewRepoSource(btn.dataset.newRepoSource));
+  });
+  $("[data-new-repo-form]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    handleNewRepoSubmit();
   });
 
   // [data-profile-settings-button] is a real link to /dashboard/settings now,
@@ -1476,6 +2019,8 @@
 	      setProfileModalOpen(false);
 	      setNotificationDropdownOpen(false);
 	      setNotificationModalOpen(false);
+	      setAgentModalOpen(false);
+	      setNewRepoModalOpen(false);
 	      closeRepoBranchMenus();
 	      closeRepoFileFinder();
 	      closeGlobalSearch();
@@ -1541,6 +2086,23 @@
           // Feature tab (issues, pulls, etc.): restore without re-loading
           // records since they cache in state.
           setRepoTab(kind);
+          // Step Back/Forward between a record detail (/pulls/4) and its list.
+          if (["pulls", "discussions", "issues"].includes(kind)) {
+            if (/^\d+$/.test(path)) {
+              loadRepoRecordDetail(repo, kind, path);
+            } else if (state.repoRecordDetail?.kind === kind) {
+              state.repoRecordDetail = null;
+              // Issues re-render through their filtered list (loadRepoCollection
+              // would leak closed issues into the default Open view); fetch it
+              // if a deep-link landing never populated the list.
+              if (kind === "issues") {
+                if (state.issuesView.items.length) renderRepoIssues();
+                else loadRepoIssues(repo);
+              } else {
+                loadRepoCollection(repo, kind, `[data-repo-${kind}]`);
+              }
+            }
+          }
         } else if (kind === "blob" && path) {
           loadRepositoryBlob(repo, path);
         } else {

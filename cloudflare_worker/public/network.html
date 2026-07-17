@@ -9,7 +9,7 @@
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
@@ -275,7 +275,7 @@
               <span class="network-chip">minute samples</span>
             </div>
             <div id="online-graph" class="online-graph network-activity-graph" aria-label="Node online activity over the last 24 hours">
-              <div class="online-graph-empty">Loading activity...</div>
+              <div class="online-graph-empty"><span class="fm-spinner" aria-hidden="true"></span>Loading activity...</div>
             </div>
           </article>
 
@@ -288,7 +288,7 @@
               <span class="network-chip">eligibility</span>
             </div>
             <div id="network-wallets" class="wallet-table network-wallet-table" aria-live="polite">
-              <div class="online-graph-empty">Loading wallets...</div>
+              <div class="online-graph-empty"><span class="fm-spinner" aria-hidden="true"></span>Loading wallets...</div>
             </div>
           </article>
 
@@ -301,7 +301,7 @@
               <span class="network-chip">network wide</span>
             </div>
             <div id="leaderboards" class="leaderboards network-leaderboards" aria-live="polite">
-              <div class="board-empty">Loading leaderboards...</div>
+              <div class="board-empty"><span class="fm-spinner" aria-hidden="true"></span>Loading leaderboards...</div>
             </div>
           </article>
         </div>
@@ -402,7 +402,7 @@
           } catch (_) {
             root.innerHTML =
               '<div class="online-graph-empty">Activity unavailable right now.</div>';
-            return;
+            return false;
           }
           const hours = Array.isArray(data.hours) ? data.hours : [];
           let nodes = Array.isArray(data.nodes) ? data.nodes : [];
@@ -414,7 +414,7 @@
             if (!total) {
               root.innerHTML =
                 '<div class="online-graph-empty">No node activity sampled yet.</div>';
-              return;
+              return true;
             }
             nodes = [{
               label: "all nodes",
@@ -473,9 +473,29 @@
             row.appendChild(total);
             root.appendChild(row);
           });
+          return true;
         }
-        render();
-        setInterval(render, 60000);
+        // Poll only while the tab is visible, and back off exponentially while
+        // the endpoint is failing (e.g. 429s when the request budget is spent);
+        // a success resets the cadence.
+        const POLL_BASE_MS = 60000;
+        const POLL_MAX_MS = 600000;
+        let pollDelay = POLL_BASE_MS;
+        let pollTimer = 0;
+        function schedulePoll() {
+          window.clearTimeout(pollTimer);
+          if (document.hidden) return; // visibilitychange resumes the loop
+          pollTimer = window.setTimeout(async () => {
+            const ok = await render();
+            pollDelay = ok ? POLL_BASE_MS : Math.min(pollDelay * 2, POLL_MAX_MS);
+            schedulePoll();
+          }, pollDelay);
+        }
+        render().then((ok) => {
+          if (!ok) pollDelay = Math.min(pollDelay * 2, POLL_MAX_MS);
+          schedulePoll();
+        });
+        document.addEventListener("visibilitychange", schedulePoll);
       })();
     </script>
     <script>
@@ -540,7 +560,7 @@
           } catch (_) {
             root.innerHTML =
               '<div class="board-empty">Leaderboards unavailable right now.</div>';
-            return;
+            return false;
           }
           const arr = (k) => (Array.isArray(data[k]) ? data[k] : []);
           const hours = Number(data.windowHours) || 48;
@@ -592,9 +612,28 @@
           root.appendChild(board(
             "Funds · projects", "Most bounty funds earned",
             arr("fundsProjects"), fmtSol));
+          return true;
         }
-        render();
-        setInterval(render, 60000);
+        // Same polling discipline as the activity graph above: pause while the
+        // tab is hidden, exponential backoff on failure, reset on success.
+        const POLL_BASE_MS = 60000;
+        const POLL_MAX_MS = 600000;
+        let pollDelay = POLL_BASE_MS;
+        let pollTimer = 0;
+        function schedulePoll() {
+          window.clearTimeout(pollTimer);
+          if (document.hidden) return; // visibilitychange resumes the loop
+          pollTimer = window.setTimeout(async () => {
+            const ok = await render();
+            pollDelay = ok ? POLL_BASE_MS : Math.min(pollDelay * 2, POLL_MAX_MS);
+            schedulePoll();
+          }, pollDelay);
+        }
+        render().then((ok) => {
+          if (!ok) pollDelay = Math.min(pollDelay * 2, POLL_MAX_MS);
+          schedulePoll();
+        });
+        document.addEventListener("visibilitychange", schedulePoll);
       })();
     </script>
       <div data-forkmesh-footer="standard"></div>

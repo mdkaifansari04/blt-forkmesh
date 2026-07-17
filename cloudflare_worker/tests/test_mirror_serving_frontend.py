@@ -182,10 +182,10 @@ def test_repo_detail_reflects_mirror_serving():
     ]
     assert "const live = repoIsLive(repo);" in detail
     assert "const viaMirror = repoServedByMirror(repo);" in detail
-    # Header badge, Host fact, and Clone availability all key off the group verdict.
+    # The title-row badge keys off the group verdict. (The About rail's
+    # Clone row and the header Data/Host chips were removed in the metadata
+    # cleanup — this badge is the remaining availability surface.)
     assert "viaMirror ? \"served by mirror\" : live ? \"host online\" : \"host offline\"" in detail
-    assert "viaMirror ? \"via mirror\" : live ? \"online\" : \"offline\"" in detail
-    assert "viaMirror ? \"via mirror\" : live ? \"available\" : \"offline\"" in detail
 
 
 def test_served_by_badge_includes_serving_node_counters():
@@ -216,3 +216,29 @@ def test_live_mirror_rows_show_node_version_under_name():
     assert "mirror.version || mirror.appVersion || mirror.clientVersion" in rows
     assert 'rawVersion[0].toLowerCase() === "v"' in rows
     assert "block min-w-0 truncate text-[10px] text-muted-foreground font-mono" in rows
+
+
+def test_live_mirror_browse_reads_bypass_the_cached_fetchjson():
+    # Everything the code tab (and commits/insights) reads over the live tunnel
+    # must be fetched FRESH from whichever mirror the router round-robins to,
+    # exactly like the issue/pull/discussion/release/README readers already do.
+    # The cached, account-scoped fetchJson (cache:"default", inflight dedup,
+    # bearer token) could otherwise pin the page to a stale copy from when the
+    # source-of-truth host was online, or a different mirror answered — so a repo
+    # served entirely by its mirrors would render stale/among rotating nodes.
+    # fetchRepoJson is the no-store live reader; assert the browse surfaces use it
+    # and no live-tunnel path is left on fetchJson.
+    fresh_reads = (
+        'fetchRepoJson(repoLiveUrl(repo, "tree"',
+        'fetchRepoJson(repoLiveUrl(repo, "blob"',
+        'fetchRepoJson(repoLiveUrl(repo, "history"))',
+        'fetchRepoJson(repoLiveUrl(repo, "commit"',
+        "fetchRepoJson(`${repoApiBase(repo)}/branches`)",
+    )
+    for read in fresh_reads:
+        assert read in DASHBOARD_JS, "missing fresh live read: %s" % read
+    # No live-tunnel browse read may fall back to the cached fetchJson. The only
+    # remaining fetchJson repo calls are relay/catalog endpoints (/about,
+    # /mirrors, /releases/downloads, /api/repositories), not host-tunnel reads.
+    assert "fetchJson(repoLiveUrl(" not in DASHBOARD_JS
+    assert "fetchJson(`${repoApiBase(repo)}/branches`)" not in DASHBOARD_JS

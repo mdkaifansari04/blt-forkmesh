@@ -344,6 +344,7 @@ QString MainWindow::adminDeleteCanonical(const QString &conversation,
 void MainWindow::confirmAdminDeleteMessage(const QString &messageId)
 {
     if (!m_backend || messageId.isEmpty() || !m_isAdmin ||
+        !hasOwnerSigningCapability(accountOwner()) ||
         !m_profileIdentity.isValid())
         return;
     const int result = QMessageBox::question(
@@ -592,11 +593,9 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
 
 QString MainWindow::welcomeChannelForIdentity() const
 {
-    // User accounts and nodes linked under one are considered users for the
-    // split welcome flow; standalone/child nodes go to #welcome-nodes.
-    if (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty())
-        return kWelcomeUsersChannel;
-    return kWelcomeNodesChannel;
+    // One shared welcome room for everyone now (see maybeAnnounceWelcome for who
+    // actually posts a greeting).
+    return kWelcomeChannel;
 }
 
 void MainWindow::maybeAnnounceWelcome()
@@ -609,6 +608,15 @@ void MainWindow::maybeAnnounceWelcome()
         return;
     const QString id = m_profileIdentity.publicKey();
     if (id.isEmpty())
+        return;
+    // Only new *users* with a verified email greet the network. Plain nodes and
+    // accounts whose email isn't confirmed never post — this is what stops the
+    // stream of node/unverified "just joined" lines the old #welcome-nodes /
+    // #welcome-users rooms collected. Checked before the one-time flag is
+    // touched so an account that verifies its email later this session still
+    // gets to greet on a subsequent roster tick.
+    if (!m_profileIsUserAccount ||
+        !accountEmailVerified(settingsAccountName()))
         return;
     // The flag lives next to the identity key itself (not QSettings, which can
     // live in a separate, less-persistent config location on some deployments —
@@ -631,7 +639,7 @@ void MainWindow::maybeAnnounceWelcome()
     m_profileIdentity.markWelcomeAnnounced();
     m_welcomeAnnounced = true;
     m_backend->sendChat(
-        welcomeChannelForIdentity(),
+        kWelcomeChannel,
         QString::fromUtf8("\xF0\x9F\x91\x8B Just joined ForkMesh \xE2\x80\x94 hello!"));
 }
 
@@ -652,6 +660,35 @@ static QString chatUserKey(const MemberInfo &member)
         return QStringLiteral("\x01self");
     return chatUserDisplayName(member).toLower();
 }
+
+namespace {
+// One node belonging to a user, rendered as a small OS badge under the name.
+struct ChatNodeBadge {
+    QString label;    // node name, shown in the tooltip
+    QString platform; // linux/macos/windows/… -> osBadgeIcon glyph
+    bool online = false;
+};
+
+// A chat participant collapsed across every node they run, so one person shows
+// up once instead of once per node (issue #411).
+struct ChatUserGroup {
+    MemberInfo primary;         // canonical row (prefers the directory user)
+    QString key;                // grouping key (owning account, when known)
+    QString anchorId;           // a real node id, for disambiguating look-alikes
+    QList<ChatNodeBadge> nodes; // this user's nodes, live and directory-listed
+    QSet<QString> nodeKeys;     // lower(nodeName|id) already added, to dedupe
+    bool online = false;
+};
+
+// The account a directory entry represents: its owner, else its own name.
+QString directoryUserKey(const MemberInfo &u)
+{
+    if (u.self)
+        return QStringLiteral("\x01self");
+    const QString owner = u.ownerUser.trimmed();
+    return (owner.isEmpty() ? u.name.trimmed() : owner).toLower();
+}
+} // namespace
 
 void MainWindow::refreshChatUserDirectory()
 {
@@ -750,8 +787,52 @@ void MainWindow::refreshChatMembers()
         delete item;
     }
 
-    QList<MemberInfo> members;
-    QHash<QString, int> seenByUser; // lowercased user -> index in `members`
+    // The backend directory knows which nodes each user owns. Map every owned
+    // node name back to its user so an unlinked node (no ownerUser on the wire)
+    // still collapses under its owner instead of showing as its own "user".
+    QHash<QString, QString> nodeOwner;      // lower(nodeName) -> user key
+    QHash<QString, QStringList> ownedNodes; // user key -> owned node names
+    for (const MemberInfo &u : std::as_const(m_chatDirectoryUsers)) {
+        const QString key = directoryUserKey(u);
+        const QStringList names =
+            u.nodeName.split(QStringLiteral(", "), Qt::SkipEmptyParts);
+        ownedNodes.insert(key, names);
+        for (const QString &n : names) {
+            const QString nl = n.trimmed().toLower();
+            if (!nl.isEmpty())
+                nodeOwner.insert(nl, key);
+        }
+    }
+
+    // Group by the owning account: ownerUser when advertised, else the node's
+    // owner resolved through the directory, else the display name. Two genuinely
+    // different people with the same name keep separate groups (and get a
+    // disambiguating id below); a person's several nodes fold into one.
+    auto groupKeyFor = [&](const MemberInfo &m) -> QString {
+        const QString owner = m.ownerUser.trimmed().toLower();
+        if (!owner.isEmpty())
+            return owner;
+        const QString nodeL = m.nodeName.trimmed().toLower();
+        if (!nodeL.isEmpty() && nodeOwner.contains(nodeL))
+            return nodeOwner.value(nodeL);
+        const QString nameL = m.name.trimmed().toLower();
+        if (!nameL.isEmpty() && nodeOwner.contains(nameL))
+            return nodeOwner.value(nameL);
+        // "You" must fold into your OWN account's group (its directory entry and
+        // owned nodes), not form a separate "\x01self" island — otherwise the
+        // local user showed up as a second participant next to their own account
+        // (a duplicate "jett"). Only fall back to a self-only key if the account
+        // name is somehow unknown.
+        if (m.self) {
+            const QString selfOwner = accountOwner().trimmed().toLower();
+            if (!selfOwner.isEmpty())
+                return selfOwner;
+        }
+        return chatUserKey(m);
+    };
+
+    QList<ChatUserGroup> groups;
+    QHash<QString, int> groupIndex; // key -> index in `groups`
     auto addMember = [&](MemberInfo member) {
         const bool online = member.self ? (m_backend != nullptr) : member.online;
         member.online = online;
@@ -759,52 +840,106 @@ void MainWindow::refreshChatMembers()
         if (display.isEmpty())
             return;
         member.name = display;
-        const QString key = chatUserKey(member);
-        if (key.isEmpty()) {
-            members.append(member);
-            return;
+        const QString key = groupKeyFor(member);
+        const bool isDirectory = member.id.startsWith(QStringLiteral("user:"));
+
+        int idx;
+        const auto it = groupIndex.constFind(key);
+        if (it == groupIndex.constEnd()) {
+            ChatUserGroup g;
+            g.primary = member;
+            g.key = key;
+            g.online = online;
+            idx = groups.size();
+            groups.append(g);
+            groupIndex.insert(key, idx);
+        } else {
+            idx = *it;
+            ChatUserGroup &g = groups[idx];
+            g.online = g.online || online;
+            // Prefer the directory entry as the canonical row (stable account
+            // name + avatar), but never let it hide that a node is live.
+            const bool curDirectory =
+                g.primary.id.startsWith(QStringLiteral("user:"));
+            if (isDirectory && !curDirectory) {
+                const bool wasOnline = g.primary.online;
+                member.online = wasOnline || online;
+                // Keep the "you" marker when the canonical row becomes the
+                // directory entry, so the merged self group still sorts first
+                // and renders as you.
+                member.self = member.self || g.primary.self;
+                g.primary = member;
+            }
+            const bool curAvatar = !m_avatars.value(g.primary.id).isNull();
+            const bool candAvatar = !m_avatars.value(member.id).isNull();
+            if (!curAvatar && candAvatar)
+                m_avatars.insert(g.primary.id, m_avatars.value(member.id));
         }
-        const auto it = seenByUser.constFind(key);
-        if (it == seenByUser.constEnd()) {
-            seenByUser.insert(key, members.size());
-            members.append(member);
-            return;
-        }
-        MemberInfo &current = members[*it];
-        const bool currentHasAvatar = !m_avatars.value(current.id).isNull();
-        const bool candidateHasAvatar = !m_avatars.value(member.id).isNull();
-        if (!current.online && member.online) {
-            members[*it] = member;
-        } else if (current.online && !member.online && !currentHasAvatar &&
-                   candidateHasAvatar) {
-            m_avatars.insert(current.id, m_avatars.value(member.id));
-        } else if (current.online == member.online && !currentHasAvatar &&
-                   candidateHasAvatar) {
-            members[*it] = member;
-        } else if (currentHasAvatar && !candidateHasAvatar &&
-                   current.id.startsWith(QStringLiteral("user:")) &&
-                   !member.id.startsWith(QStringLiteral("user:"))) {
-            m_avatars.insert(member.id, m_avatars.value(current.id));
+
+        // A directory entry's nodeName is a joined list, not a single node; its
+        // nodes are expanded from ownedNodes below. Live peers are real nodes.
+        if (!isDirectory) {
+            ChatUserGroup &g = groups[idx];
+            if (g.anchorId.isEmpty() && !member.id.isEmpty())
+                g.anchorId = member.id;
+            ChatNodeBadge badge;
+            badge.label = !member.nodeName.trimmed().isEmpty()
+                              ? member.nodeName.trimmed()
+                              : (!member.name.trimmed().isEmpty()
+                                     ? member.name.trimmed()
+                                     : member.id);
+            badge.platform = member.platform;
+            badge.online = online;
+            const QString nk = (member.nodeName.trimmed().isEmpty()
+                                    ? member.id
+                                    : member.nodeName.trimmed())
+                                   .toLower();
+            if (!nk.isEmpty() && !g.nodeKeys.contains(nk)) {
+                g.nodeKeys.insert(nk);
+                g.nodes.append(badge);
+            }
         }
     };
-    for (const MemberInfo &member : std::as_const(m_homeRoster)) {
+    for (const MemberInfo &member : std::as_const(m_homeRoster))
         addMember(member);
-    }
-    for (const MemberInfo &member : std::as_const(m_chatDirectoryUsers)) {
+    for (const MemberInfo &member : std::as_const(m_chatDirectoryUsers))
         addMember(member);
+
+    // Fill in any owned nodes we didn't see live, as offline badges, so a user's
+    // full fleet shows even when some (or all) of it is offline.
+    for (ChatUserGroup &g : groups) {
+        for (const QString &n : ownedNodes.value(g.key)) {
+            const QString nl = n.trimmed().toLower();
+            if (nl.isEmpty() || g.nodeKeys.contains(nl))
+                continue;
+            g.nodeKeys.insert(nl);
+            ChatNodeBadge badge;
+            badge.label = n.trimmed();
+            badge.online = false;
+            g.nodes.append(badge);
+        }
     }
-    std::sort(members.begin(), members.end(),
-              [](const MemberInfo &a, const MemberInfo &b) {
-                  if (a.self != b.self)
-                      return a.self;
+
+    std::sort(groups.begin(), groups.end(),
+              [](const ChatUserGroup &a, const ChatUserGroup &b) {
+                  if (a.primary.self != b.primary.self)
+                      return a.primary.self;
                   if (a.online != b.online)
                       return a.online;
-                  return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
+                  return a.primary.name.compare(b.primary.name,
+                                                Qt::CaseInsensitive) < 0;
               });
 
+    // Which display names are shared by more than one user? Only those rows need
+    // a small id underneath to tell the look-alikes apart.
+    QHash<QString, int> nameCounts;
+    for (const ChatUserGroup &g : std::as_const(groups))
+        ++nameCounts[g.primary.name.toLower()];
+
     int onlineCount = 0;
-    for (const MemberInfo &member : std::as_const(members)) {
-        if (member.online)
+    for (const ChatUserGroup &group : std::as_const(groups)) {
+        const MemberInfo &member = group.primary;
+        if (group.online)
             ++onlineCount;
 
         auto *card = new QWidget;
@@ -821,9 +956,14 @@ void MainWindow::refreshChatMembers()
         icon->setFixedSize(28, 28);
         row->addWidget(icon, 0);
 
-        const QString dotColor = member.online ? QStringLiteral("#3fb950")
-                                               : QStringLiteral("#8b949e");
-        const QString state = member.online ? QStringLiteral("Online")
+        auto *textCol = new QWidget;
+        auto *col = new QVBoxLayout(textCol);
+        col->setContentsMargins(0, 0, 0, 0);
+        col->setSpacing(2);
+
+        const QString dotColor = group.online ? QStringLiteral("#3fb950")
+                                              : QStringLiteral("#8b949e");
+        const QString state = group.online ? QStringLiteral("Online")
                                             : QStringLiteral("Offline");
         QString tooltip = state;
         if (!member.note.isEmpty())
@@ -835,7 +975,62 @@ void MainWindow::refreshChatMembers()
                                  : QString()));
         nameLabel->setTextFormat(Qt::RichText);
         nameLabel->setToolTip(tooltip);
-        row->addWidget(nameLabel, 1);
+        col->addWidget(nameLabel, 0);
+
+        // Disambiguate look-alike usernames with a short, stable id.
+        if (nameCounts.value(member.name.toLower()) > 1) {
+            QString raw = group.anchorId.isEmpty() ? group.key : group.anchorId;
+            if (raw.startsWith(QStringLiteral("user:")))
+                raw = raw.mid(5);
+            const QString shortId = raw.size() > 12
+                ? QString::fromUtf8("%1\xE2\x80\xA6%2")
+                      .arg(raw.left(4), raw.right(4))
+                : raw;
+            if (!shortId.isEmpty()) {
+                auto *idLabel = new QLabel(
+                    QStringLiteral("id %1").arg(shortId.toHtmlEscaped()));
+                idLabel->setStyleSheet(
+                    QStringLiteral("color:#8b949e; font-size:10px;"));
+                idLabel->setToolTip(raw);
+                col->addWidget(idLabel, 0);
+            }
+        }
+
+        // The user's nodes as small OS badges, one per node (issue #411).
+        if (!group.nodes.isEmpty()) {
+            auto *nodesRow = new QWidget;
+            auto *nl = new QHBoxLayout(nodesRow);
+            nl->setContentsMargins(0, 0, 0, 0);
+            nl->setSpacing(3);
+            constexpr int kMaxIcons = 8;
+            int shown = 0;
+            for (const ChatNodeBadge &nb : std::as_const(group.nodes)) {
+                if (shown >= kMaxIcons)
+                    break;
+                auto *ni = new QLabel;
+                ni->setPixmap(osBadgeIcon(nb.platform, nb.online, 14).pixmap(14, 14));
+                ni->setFixedSize(14, 14);
+                QString tip = nb.label.isEmpty() ? QStringLiteral("node") : nb.label;
+                tip += nb.online ? QStringLiteral(" · online")
+                                 : QStringLiteral(" · offline");
+                if (!nb.platform.trimmed().isEmpty())
+                    tip += QStringLiteral(" · ") + nb.platform;
+                ni->setToolTip(tip);
+                nl->addWidget(ni, 0);
+                ++shown;
+            }
+            if (group.nodes.size() > kMaxIcons) {
+                auto *more = new QLabel(
+                    QStringLiteral("+%1").arg(group.nodes.size() - kMaxIcons));
+                more->setStyleSheet(
+                    QStringLiteral("color:#8b949e; font-size:10px;"));
+                nl->addWidget(more, 0);
+            }
+            nl->addStretch(1);
+            col->addWidget(nodesRow, 0);
+        }
+
+        row->addWidget(textCol, 1);
 
         m_chatMembersLayout->insertWidget(m_chatMembersLayout->count() - 1, card);
     }
@@ -843,7 +1038,7 @@ void MainWindow::refreshChatMembers()
     if (m_chatMembersHeading)
         m_chatMembersHeading->setText(
             QString::fromUtf8("USERS \xE2\x80\x94 %1 \xC2\xB7 %2 online")
-                .arg(members.size())
+                .arg(groups.size())
                 .arg(onlineCount));
 }
 
@@ -1064,6 +1259,42 @@ void MainWindow::promptInviteToPrivateChannel()
     menu.exec(QCursor::pos());
 }
 
+void MainWindow::promptDeleteRoom(const QString &channel)
+{
+    if (!m_backend || channel.isEmpty() || isDirectConversation(channel))
+        return;
+    const bool priv = m_privateChannels.contains(channel);
+    const QString what = priv ? QStringLiteral("private room")
+                              : QStringLiteral("channel");
+    const auto choice = QMessageBox::question(
+        this, QStringLiteral("Delete room"),
+        QStringLiteral("Delete the %1 %2?\n\nIt's removed from this device only — "
+                       "other people keep it. You won't see new messages in it "
+                       "unless you re-create or are re-invited to it.")
+            .arg(what, channel),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (choice != QMessageBox::Yes)
+        return;
+
+    m_backend->removeChannel(channel);
+    m_privateChannels.remove(channel);
+    persistPrivateChannels();
+    m_unread.remove(channel);
+    m_unreadCounts.remove(channel);
+    // Leaving the room we're viewing: fall back to the first remaining channel
+    // (or clear the view if none are left).
+    if (m_currentConversation == channel) {
+        m_currentConversation.clear();
+        const QString fallback = m_channels.value(0);
+        if (!fallback.isEmpty())
+            switchConversation(fallback);
+        else
+            m_channelTitle->setText(QString());
+    }
+    scheduleChatSave();
+    logSystem(QStringLiteral("Deleted %1 %2 (this device only).").arg(what, channel));
+}
+
 void MainWindow::restorePrivateChannels()
 {
     if (!m_backend)
@@ -1097,6 +1328,67 @@ void MainWindow::sendCurrentMessage()
         maybeAskForkbot(m_currentConversation, text);
     }
     m_messageInput->clear();
+}
+
+void MainWindow::insertEmojiIntoComposer(const QString &emoji)
+{
+    if (!m_messageInput || emoji.isEmpty())
+        return;
+    m_messageInput->insert(emoji);
+    m_messageInput->setFocus();
+}
+
+void MainWindow::showEmojiPicker(QWidget *anchor)
+{
+    if (!m_messageInput)
+        return;
+    // A curated grid of common emoji, encoded as UTF-8 (the codebase's
+    // convention — a color-emoji font is bundled so these render in color).
+    static const char *const kEmoji[] = {
+        "\xF0\x9F\x98\x80" /*😀*/, "\xF0\x9F\x98\x81", "\xF0\x9F\x98\x82",
+        "\xF0\x9F\xA4\xA3", "\xF0\x9F\x98\x8A", "\xF0\x9F\x98\x8D",
+        "\xF0\x9F\x98\x8E", "\xF0\x9F\x98\x89", "\xF0\x9F\x99\x82",
+        "\xF0\x9F\x98\xA2", "\xF0\x9F\x98\xAD", "\xF0\x9F\x98\xA1",
+        "\xF0\x9F\x98\xB1", "\xF0\x9F\xA4\x94", "\xF0\x9F\x98\xB4",
+        "\xF0\x9F\xA4\xAF", "\xF0\x9F\x91\x8D", "\xF0\x9F\x91\x8E",
+        "\xF0\x9F\x91\x8F", "\xF0\x9F\x99\x8F", "\xF0\x9F\x92\xAA",
+        "\xF0\x9F\x99\x8C", "\xF0\x9F\x91\x8B", "\xF0\x9F\xA4\x9D",
+        "\xF0\x9F\x94\xA5", "\xE2\x9C\xA8", "\xF0\x9F\x8E\x89",
+        "\xF0\x9F\x92\xAF", "\xE2\x9D\xA4\xEF\xB8\x8F", "\xF0\x9F\x92\x94",
+        "\xE2\xAD\x90", "\xE2\x9C\x85", "\xE2\x9D\x8C", "\xF0\x9F\x91\x80",
+        "\xF0\x9F\x9A\x80", "\xF0\x9F\x90\x9B", "\xF0\x9F\x92\xA1",
+        "\xF0\x9F\x93\x8C", "\xE2\x98\x95", "\xF0\x9F\x8D\x95",
+        "\xF0\x9F\x8E\x82", "\xF0\x9F\xA5\xB3",
+    };
+
+    QMenu menu(this);
+    auto *grid = new QWidget(&menu);
+    auto *gridLayout = new QGridLayout(grid);
+    gridLayout->setContentsMargins(6, 6, 6, 6);
+    gridLayout->setSpacing(2);
+    constexpr int kColumns = 7;
+    int index = 0;
+    for (const char *utf8 : kEmoji) {
+        const QString emoji = QString::fromUtf8(utf8);
+        auto *button = new QToolButton(grid);
+        button->setObjectName("emojiPickerButton");
+        button->setText(emoji);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setAutoRaise(true);
+        connect(button, &QToolButton::clicked, &menu, [this, emoji, &menu] {
+            insertEmojiIntoComposer(emoji);
+            menu.close();
+        });
+        gridLayout->addWidget(button, index / kColumns, index % kColumns);
+        ++index;
+    }
+    auto *action = new QWidgetAction(&menu);
+    action->setDefaultWidget(grid);
+    menu.addAction(action);
+    if (anchor)
+        menu.exec(anchor->mapToGlobal(QPoint(0, -menu.sizeHint().height())));
+    else
+        menu.exec(QCursor::pos());
 }
 
 void MainWindow::maybeAskForkbot(const QString &conversation, const QString &text)

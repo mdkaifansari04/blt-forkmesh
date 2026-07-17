@@ -1,0 +1,80 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783435822515,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "",
+            "id": "open-395",
+            "sig": "u1klBuy39FjCu6IdiT5BCN7ge1SMiZKcO8PBnB1NXPWg-D6Uoa4xyDvRrexh-VSFbGlqvpXGr7mlOLN-mH0XDA",
+            "title": "when issues are created from the web the timestamp is wrong",
+            "ts": 1783435822515,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 13,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "536d1182-a067-41fc-98b1-4872f04b310f",
+            "sig": "F0LPfeQQaP5t-gfIPy0LTgGuur5eORpb8_CvEAB_HpbbChTexXfZgaPQnqJA7ZWdX-kd_IPE8B_YIJ1fBzI7BA",
+            "ts": 1783717185313,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "39a9ad4d-e617-433d-bc79-b2c131ac7e52",
+            "sig": "s9tkndCOKzN3oNRkgWJxTEcqfan37AApmVF7guedAHp5kn4tNXmP0PNg6GmTFdAJ-EXE69DT_Ovs6iaz9qMCDg",
+            "ts": 1783717185360,
+            "type": "assignees"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "14c9c859-0040-4a7f-90be-bca8aa7b8309",
+            "sig": "1mZtsQVGGZiUzOOk06j7sEouETPpDpl1Vw01gE_KJkIBFpLuAriXQbUyj7t_7bKixYo2Kud6E6iJAhJqCxCdCQ",
+            "ts": 1783721095134,
+            "type": "agent"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "13515439-1a9b-447e-b107-3ee5cc5dbf01",
+            "sig": "znMXZ-VvkWK9S9fgaiiQCg1lKYUS2ZkVQyI4h9lBgkD_yuONXfUsUEOyJjr1TSd_BcAz-1HTQaWxzGvN06HjAg",
+            "status": "closed",
+            "ts": 1783721095429,
+            "type": "status"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 395,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "when issues are created from the web the timestamp is wrong",
+    "updatedAt": 1783721095429,
+    "votes": 0
+}

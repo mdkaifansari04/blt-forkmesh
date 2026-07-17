@@ -31,6 +31,12 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   final Identity _identity;
   final PerformanceMonitorService? _performanceMonitor;
 
+  // Supplies the shared room-chat passphrase (fetched server-side from the relay,
+  // derived from DATA_KEY) for passphrase-free "shared" rooms, replacing the old
+  // public app constant. Wired to ApiService.roomChatPassphrase in main.dart.
+  Future<String> Function()? roomPassphraseProvider;
+  String _sharedPassphrase = '';
+
   // Presence cadence + staleness window (matches the ServerNode fix: peers not
   // heard from within the window are dropped so stale nodes don't show online).
   static const _presenceInterval = Duration(seconds: 60);
@@ -59,7 +65,22 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   final Map<String, List<ChatMessage>> _history = {};
   final Set<String> _seenIds = {};
   final Set<String> _seenNotificationIds = {};
-  final Set<String> unread = {};
+  // conversation -> number of unread (incoming) messages. Kept as counts, not a
+  // plain set, so the nav badge and the chat banner can show how many messages
+  // are waiting rather than just how many conversations have any.
+  final Map<String, int> _unread = {};
+
+  /// Conversations that currently hold at least one unread message.
+  Iterable<String> get unreadConversations => _unread.keys;
+
+  /// Whether [conversation] has messages the user has not read yet.
+  bool hasUnread(String conversation) => (_unread[conversation] ?? 0) > 0;
+
+  /// Unread message count for a single conversation.
+  int unreadCountFor(String conversation) => _unread[conversation] ?? 0;
+
+  /// Total unread messages across every conversation — the nav badge count.
+  int get totalUnread => _unread.values.fold(0, (sum, n) => sum + n);
 
   String get _nodeId => _identity.nodeId;
   String get _name => _settings.displayName.isEmpty
@@ -100,6 +121,8 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
           version: p.version,
           solanaAddress: p.solana,
           mirrors: p.mirrors,
+          owner: p.owner,
+          nodeName: p.nodeName,
         ),
       );
     }
@@ -107,6 +130,80 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   int get onlineCount => roster().where((m) => m.online).length;
+
+  /// Roster collapsed to one entry per user. Nodes owned by the same identity
+  /// (owning account, then wallet, then display name) are grouped so a single
+  /// person no longer appears online several times as duplicates. When two
+  /// genuinely different users share a display name, each group carries a short
+  /// id so they can still be told apart.
+  List<MemberGroup> rosterGroups() {
+    final byKey = <String, List<Member>>{};
+    for (final m in roster()) {
+      byKey.putIfAbsent(_identityKey(m), () => <Member>[]).add(m);
+    }
+    // How many distinct users share each display name (lowercased)? Only the
+    // colliding names need a disambiguating id under them.
+    final nameCounts = <String, int>{};
+    for (final nodes in byKey.values) {
+      final name = _displayName(nodes.first).toLowerCase();
+      nameCounts[name] = (nameCounts[name] ?? 0) + 1;
+    }
+    final groups = <MemberGroup>[];
+    for (final nodes in byKey.values) {
+      nodes.sort(_compareNodes);
+      final primary = nodes.first;
+      final name = _displayName(primary);
+      final collides = (nameCounts[name.toLowerCase()] ?? 0) > 1;
+      groups.add(
+        MemberGroup(
+          name: name,
+          members: nodes,
+          self: nodes.any((m) => m.self),
+          disambiguator: collides ? _shortIdentity(primary) : '',
+        ),
+      );
+    }
+    return groups;
+  }
+
+  // The visible name for a node, mirroring the Qt client: the owning user
+  // account wins, then the chat name, then the registered node name.
+  String _displayName(Member m) {
+    if (m.owner.trim().isNotEmpty) return m.owner.trim();
+    if (m.name.trim().isNotEmpty) return m.name.trim();
+    if (m.nodeName.trim().isNotEmpty) return m.nodeName.trim();
+    return m.id;
+  }
+
+  // Stable grouping key: the owning account identifies a person across all
+  // their nodes; fall back to wallet, then display name, then node id so a
+  // node with no identity at all still shows up exactly once.
+  String _identityKey(Member m) {
+    if (m.self) return 'self';
+    final owner = m.owner.trim().toLowerCase();
+    if (owner.isNotEmpty) return 'owner:$owner';
+    final wallet = m.solanaAddress.trim();
+    if (wallet.isNotEmpty) return 'wallet:$wallet';
+    final name = _displayName(m).toLowerCase();
+    if (name.isNotEmpty) return 'name:$name';
+    return 'node:${m.id}';
+  }
+
+  // Short, glanceable id for disambiguating look-alike usernames.
+  String _shortIdentity(Member m) {
+    final raw = m.solanaAddress.trim().isNotEmpty
+        ? m.solanaAddress.trim()
+        : m.id;
+    if (raw.length <= 10) return raw;
+    return '${raw.substring(0, 4)}…${raw.substring(raw.length - 4)}';
+  }
+
+  // Self first, then online nodes, so the primary node represents the user.
+  int _compareNodes(Member a, Member b) {
+    if (a.self != b.self) return a.self ? -1 : 1;
+    if (a.online != b.online) return a.online ? -1 : 1;
+    return a.id.compareTo(b.id);
+  }
 
   List<ChatMessage> messages(String conversation) =>
       _history[conversation] ?? const [];
@@ -118,7 +215,7 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   List<ChatMessage> get unreadMessages => recentMessages
-      .where((m) => !m.self && unread.contains(m.conversation))
+      .where((m) => !m.self && _unread.containsKey(m.conversation))
       .toList();
 
   List<ChatMessage> get notificationMessages =>
@@ -192,9 +289,22 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _openUntracked() async {
     await _teardownSocket();
     _setState(RelayConnectionState.connecting);
-    _crypto = _settings.passphrase.isEmpty
-        ? await RoomCrypto.shared(_settings.room)
-        : await RoomCrypto.withPassphrase(_settings.room, _settings.passphrase);
+    if (_settings.passphrase.isNotEmpty) {
+      // Explicit per-room passphrase (a secret only participants share).
+      _crypto = await RoomCrypto.withPassphrase(
+          _settings.room, _settings.passphrase);
+    } else {
+      // Shared room: fetch the server-held key once (cached), no longer a public
+      // constant. Fail closed so we never silently fall back to a weaker key.
+      if (_sharedPassphrase.isEmpty && roomPassphraseProvider != null) {
+        _sharedPassphrase = await roomPassphraseProvider!();
+      }
+      if (_sharedPassphrase.isEmpty) {
+        throw Exception('Sign in to join chat — room key unavailable.');
+      }
+      _crypto = await RoomCrypto.withPassphrase(
+          _settings.room, _sharedPassphrase);
+    }
     try {
       final uri = Uri.parse(_settings.serverUrl);
       final channel = WebSocketChannel.connect(uri);
@@ -373,7 +483,19 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
 
   void switchConversation(String conversation) {
     currentConversation = conversation;
-    unread.remove(conversation);
+    _unread.remove(conversation);
+    notifyListeners();
+  }
+
+  /// Mark a single conversation's messages as read (e.g. when it is opened).
+  void markConversationRead(String conversation) {
+    if (_unread.remove(conversation) != null) notifyListeners();
+  }
+
+  /// Mark every conversation as read, clearing the nav badge in one step.
+  void markAllRead() {
+    if (_unread.isEmpty) return;
+    _unread.clear();
     notifyListeners();
   }
 
@@ -475,7 +597,7 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
     final next = <ChatMessage>[...list, msg]..sort(_compareMessages);
     _history[msg.conversation] = List.unmodifiable(next);
     if (!msg.self && msg.conversation != currentConversation) {
-      unread.add(msg.conversation);
+      _unread[msg.conversation] = (_unread[msg.conversation] ?? 0) + 1;
     }
     return true;
   }
@@ -508,6 +630,10 @@ class RelayService extends ChangeNotifier with WidgetsBindingObserver {
     if (version.isNotEmpty) p.version = version;
     final solana = (m['solana'] ?? '').toString();
     if (solana.isNotEmpty) p.solana = solana;
+    final owner = (m['ownerUser'] ?? m['owner'] ?? '').toString();
+    if (owner.isNotEmpty) p.owner = owner;
+    final nodeName = (m['nodeName'] ?? '').toString();
+    if (nodeName.isNotEmpty) p.nodeName = nodeName;
     final mirrors = m['mirrors'];
     if (mirrors is List) p.mirrors = mirrors.map((e) => e.toString()).toList();
     p.online = true;
@@ -556,6 +682,8 @@ class _Peer {
   String platform = '';
   String version = '';
   String solana = '';
+  String owner = '';
+  String nodeName = '';
   List<String> mirrors = const [];
   bool online = true;
   int lastSeenMs = 0;

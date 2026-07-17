@@ -30,6 +30,44 @@ def clean_string(value, max_length=240):
     return value.strip()[:max_length]
 
 
+def safe_contribution_transport(data):
+    """Return bounded optional snapshot fields without adding them to a record."""
+    if not isinstance(data, dict):
+        return {"present": False, "payload": "", "signature": "", "warning": ""}
+    present = "contributionPayload" in data or "contributionSig" in data
+    if not present:
+        return {"present": False, "payload": "", "signature": "", "warning": ""}
+    payload = data.get("contributionPayload")
+    signature = data.get("contributionSig")
+    if not isinstance(payload, str) or not isinstance(signature, str):
+        return {
+            "present": True,
+            "payload": "",
+            "signature": "",
+            "warning": "invalid_contribution_transport",
+        }
+    if len(payload) > 64 * 1024:
+        return {
+            "present": True,
+            "payload": "",
+            "signature": "",
+            "warning": "contribution_payload_too_large",
+        }
+    if not payload or not signature or len(signature) > 200:
+        return {
+            "present": True,
+            "payload": "",
+            "signature": "",
+            "warning": "invalid_contribution_transport",
+        }
+    return {
+        "present": True,
+        "payload": payload,
+        "signature": signature,
+        "warning": "",
+    }
+
+
 def clean_int_series(value, length=52, max_value=1000000):
     if not isinstance(value, list):
         return [0] * length

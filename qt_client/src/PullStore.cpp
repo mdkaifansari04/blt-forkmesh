@@ -1,6 +1,7 @@
 #include "PullStore.h"
 
 #include "ForkMeshIdentity.h"
+#include "StrictGitReader.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -10,21 +11,38 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonDocument>
+#include <QMap>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStandardPaths>
 #include <QUuid>
 
 #include <algorithm>
+#include <utility>
 
 namespace {
 
 constexpr int kGitTimeoutMs = 15000;
+constexpr qint64 kMaxJsonSafeInteger = 9007199254740991LL;
 // History rewrites (filter-branch) replay every commit, so they need far longer
 // than an ordinary git invocation.
 constexpr int kGitRewriteTimeoutMs = 120000;
+
+bool strictJsonSafeInteger(const QString &text, qint64 minimum,
+                           qint64 *value = nullptr)
+{
+    bool ok = false;
+    const qint64 parsed = text.toLongLong(&ok);
+    if (!ok || parsed < minimum || parsed > kMaxJsonSafeInteger)
+        return false;
+    if (value)
+        *value = parsed;
+    return true;
+}
 
 // Wait for `process` to finish. When `keepGuiAlive` is set the caller is on the
 // GUI thread and the command (a `git apply --check` dry-run) can take a second
@@ -108,6 +126,84 @@ bool deriveFromRefs(const QString &dir, const QString &base, const QString &head
                &mbox);
         *commits = QString::fromUtf8(mbox);
     }
+    return true;
+}
+
+bool validCommitOid(const QString &oid)
+{
+    if (oid.size() != 40 && oid.size() != 64)
+        return false;
+    for (const QChar ch : oid) {
+        const ushort code = ch.unicode();
+        if (!((code >= '0' && code <= '9') ||
+              (code >= 'a' && code <= 'f') ||
+              (code >= 'A' && code <= 'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+QString resolvedCommitOid(const QString &dir, const QString &ref)
+{
+    if (dir.isEmpty() || ref.isEmpty())
+        return {};
+    QByteArray output;
+    if (!runGit(dir,
+                {"rev-parse", "--verify", "--quiet", "--end-of-options",
+                 ref + "^{commit}"},
+                &output)) {
+        return {};
+    }
+    const QString oid = QString::fromUtf8(output).trimmed().toLower();
+    return validCommitOid(oid) ? oid : QString();
+}
+
+bool deriveFromImmutableOids(const QString &dir, const QString &baseOid,
+                             const QString &headOid, QString *patch,
+                             QString *commits,
+                             StrictGitReadInternal::Reader *strictReader = nullptr)
+{
+    if (dir.isEmpty() || !validCommitOid(baseOid) ||
+        !validCommitOid(headOid)) {
+        return false;
+    }
+
+    auto readGit = [&](const QStringList &args, QByteArray *output) {
+        return strictReader ? strictReader->run(dir, args, output)
+                            : runGit(dir, args, output);
+    };
+    QByteArray baseOutput;
+    QByteArray headOutput;
+    if (!readGit({"rev-parse", "--verify", "--quiet", "--end-of-options",
+                  baseOid + "^{commit}"},
+                 &baseOutput) ||
+        !readGit({"rev-parse", "--verify", "--quiet", "--end-of-options",
+                  headOid + "^{commit}"},
+                 &headOutput)) {
+        return false;
+    }
+    const QString resolvedBase = QString::fromUtf8(baseOutput).trimmed();
+    const QString resolvedHead = QString::fromUtf8(headOutput).trimmed();
+    if (resolvedBase.compare(baseOid, Qt::CaseInsensitive) != 0 ||
+        resolvedHead.compare(headOid, Qt::CaseInsensitive) != 0) {
+        return false;
+    }
+
+    QByteArray diff;
+    QByteArray mbox;
+    if (!readGit({"diff", "--no-ext-diff", "--no-textconv", "--binary",
+                  baseOid + "..." + headOid},
+                 &diff) ||
+        !readGit({"format-patch", "--binary", "--stdout",
+                  baseOid + ".." + headOid},
+                 &mbox)) {
+        return false;
+    }
+    if (patch)
+        *patch = QString::fromUtf8(diff);
+    if (commits)
+        *commits = QString::fromUtf8(mbox);
     return true;
 }
 
@@ -223,6 +319,7 @@ bool writeTextFile(const QString &path, const QString &text, QString *error)
 struct FrontMatter {
     QHash<QString, QString> values;
     QString body;
+    bool valid = false;
     QString get(const QString &key) const { return values.value(key); }
     qint64 num(const QString &key) const { return values.value(key).toLongLong(); }
 };
@@ -244,12 +341,15 @@ FrontMatter parseFrontMatter(const QByteArray &bytes)
         else if (lines.at(i).endsWith(':'))
             fm.values.insert(lines.at(i).left(lines.at(i).size() - 1), QString());
     }
+    if (i >= lines.size())
+        return fm;
     QString body = lines.mid(i + 1).join('\n');
     while (body.startsWith('\n'))
         body.remove(0, 1);
     while (body.endsWith('\n'))
         body.chop(1);
     fm.body = body;
+    fm.valid = true;
     return fm;
 }
 
@@ -570,7 +670,9 @@ QJsonObject PullRequest::toJson() const
     return {{"number", number},   {"title", title},   {"description", description},
             {"base", base},       {"head", head},     {"status", status},
             {"ts", double(ts)},   {"author", author}, {"authorName", authorName},
-            {"sig", sig},         {"patch", patch},   {"commits", commits}};
+            {"sig", sig},         {"patch", patch},   {"commits", commits},
+            {"creationBaseOid", creationBaseOid},
+            {"creationHeadOid", creationHeadOid}};
 }
 
 PullRequest PullRequest::fromJson(const QJsonObject &obj)
@@ -588,6 +690,8 @@ PullRequest PullRequest::fromJson(const QJsonObject &obj)
     pr.sig = obj.value("sig").toString();
     pr.patch = obj.value("patch").toString();
     pr.commits = obj.value("commits").toString();
+    pr.creationBaseOid = obj.value("creationBaseOid").toString();
+    pr.creationHeadOid = obj.value("creationHeadOid").toString();
     PullStore::computeStats(pr);
     return pr;
 }
@@ -771,6 +875,21 @@ QByteArray PullStore::canonicalString(const PullRequest &pr)
         pr.title + nul + pr.base + nul + pr.head + nul + pr.patch + nul + pr.commits;
     const QByteArray contentHash =
         QCryptographicHash::hash(content.toUtf8(), QCryptographicHash::Sha256).toHex();
+    QByteArray canonical = "forkmesh-pull-event-v1\n";
+    canonical += pr.author.toUtf8() + "\n";
+    canonical += QByteArray::number(pr.ts) + "\n";
+    canonical += contentHash;
+    return canonical;
+}
+
+QByteArray PullStore::legacyCanonicalString(const PullRequest &pr)
+{
+    const QChar nul(QChar::Null);
+    const QString content =
+        pr.title + nul + pr.base + nul + pr.head + nul + pr.patch;
+    const QByteArray contentHash =
+        QCryptographicHash::hash(content.toUtf8(), QCryptographicHash::Sha256)
+            .toHex();
     QByteArray canonical = "forkmesh-pull-event-v1\n";
     canonical += pr.author.toUtf8() + "\n";
     canonical += QByteArray::number(pr.ts) + "\n";
@@ -1112,6 +1231,10 @@ bool PullStore::writePull(const PullRequest &pr, QString *error) const
     lines << "status: " + pr.status;
     if (pr.branchBacked)
         lines << "derive: branch";
+    if (!pr.creationBaseOid.isEmpty())
+        lines << "creationBaseOid: " + pr.creationBaseOid;
+    if (!pr.creationHeadOid.isEmpty())
+        lines << "creationHeadOid: " + pr.creationHeadOid;
     if (!pr.mergeBase.isEmpty())
         lines << "mergeBase: " + pr.mergeBase;
     if (!pr.mergeHead.isEmpty())
@@ -1158,6 +1281,8 @@ bool PullStore::readPull(int number, PullRequest &out) const
     out.authorName = fm.get("authorName");
     out.sig = fm.get("sig");
     out.branchBacked = fm.get("derive") == QLatin1String("branch");
+    out.creationBaseOid = fm.get("creationBaseOid");
+    out.creationHeadOid = fm.get("creationHeadOid");
     out.mergeBase = fm.get("mergeBase");
     out.mergeHead = fm.get("mergeHead");
     out.description = fm.body;
@@ -1212,6 +1337,29 @@ QList<PullRequest> PullStore::loadAll(QString *error) const
     return pulls;
 }
 
+QList<PullRequest> PullStore::loadAllStrict(QString *error) const
+{
+    if (error)
+        error->clear();
+    if (canWrite()) {
+        const PullStore mirrorView(QString(), m_workTree, nullptr);
+        return mirrorView.loadFromMirror(error, true);
+    }
+    return loadFromMirror(error, true);
+}
+
+QList<PullRequest> PullStore::loadAllStrictAtRef(const QString &ref,
+                                                 QString *error) const
+{
+    if (error)
+        error->clear();
+    if (canWrite()) {
+        const PullStore mirrorView(QString(), m_workTree, nullptr);
+        return mirrorView.loadFromMirror(error, true, ref);
+    }
+    return loadFromMirror(error, true, ref);
+}
+
 int PullStore::createPull(const QString &title, const QString &description,
                           const QString &base, const QString &head,
                           const QString &patch, const QString &commits,
@@ -1248,9 +1396,15 @@ int PullStore::createPull(const QString &title, const QString &description,
         // change. If the refs are missing or the range is empty (e.g. the work is
         // still uncommitted in a worktree), keep the passed patch as a stored PR
         // so nothing is dropped.
-        if (deriveFromRefs(m_workTree, base, head, &dpatch, &dcommits) &&
+        const QString baseOid = resolvedCommitOid(m_workTree, base);
+        const QString headOid = resolvedCommitOid(m_workTree, head);
+        if (!baseOid.isEmpty() && !headOid.isEmpty() &&
+            deriveFromImmutableOids(m_workTree, baseOid, headOid, &dpatch,
+                                    &dcommits) &&
             !dpatch.trimmed().isEmpty()) {
             pr.branchBacked = true;
+            pr.creationBaseOid = baseOid;
+            pr.creationHeadOid = headOid;
             pr.patch = dpatch;
             pr.commits = dcommits;
         }
@@ -1993,6 +2147,8 @@ bool PullStore::deletePullFile(int number, const QString &relPath, QString *erro
     // reconstructed from the branch — persist it as a stored-patch PR (writePull
     // then writes the blobs, which become the source of truth on read).
     pr.branchBacked = false;
+    pr.creationBaseOid.clear();
+    pr.creationHeadOid.clear();
     pr.mergeBase.clear();
     pr.mergeHead.clear();
     if (!writePull(pr, error))
@@ -2446,9 +2602,10 @@ QString PullStore::mirrorRef() const
     return QString();
 }
 
-QByteArray PullStore::showFromMirror(const QString &repoRelPath, bool *ok) const
+QByteArray PullStore::showFromMirror(const QString &repoRelPath, bool *ok,
+                                     const QString &refOverride) const
 {
-    const QString ref = mirrorRef();
+    const QString ref = refOverride.isEmpty() ? mirrorRef() : refOverride;
     QByteArray output;
     const bool good = !ref.isEmpty() &&
                       runGit(m_mirror, {"show", ref + ":" + repoRelPath}, &output);
@@ -2457,32 +2614,255 @@ QByteArray PullStore::showFromMirror(const QString &repoRelPath, bool *ok) const
     return good ? output : QByteArray();
 }
 
-QList<PullRequest> PullStore::loadFromMirror(QString *error) const
+QList<PullRequest> PullStore::loadFromMirror(QString *error, bool strict,
+                                             const QString &refOverride) const
 {
     QList<PullRequest> pulls;
-    if (m_mirror.isEmpty())
+    StrictGitReadInternal::Reader strictReader;
+    auto readGit = [&](const QStringList &args, QByteArray *output = nullptr) {
+        return strict ? strictReader.run(m_mirror, args, output)
+                      : runGit(m_mirror, args, output);
+    };
+    auto readGitInput = [&](const QStringList &args, const QByteArray &input,
+                            QByteArray *output) {
+        return strict
+                   ? strictReader.runInput(m_mirror, args, input, output)
+                   : false;
+    };
+    auto recordStrictError = [&](const QString &message) {
+        if (strict && error && error->isEmpty())
+            *error = message;
+    };
+    if (m_mirror.isEmpty()) {
+        recordStrictError(
+            QStringLiteral("No local mirror to read pull metadata from."));
         return pulls;
-    const QString ref = mirrorRef();
-    if (ref.isEmpty())
+    }
+    QString ref = refOverride;
+    if (ref.isEmpty() && strict) {
+        QByteArray output;
+        if (readGit({"rev-parse", "--verify", "-q",
+                     "refs/heads/forkmesh/pulls^{commit}"},
+                    &output) &&
+            !output.trimmed().isEmpty()) {
+            ref = QStringLiteral("refs/heads/forkmesh/pulls");
+        } else if (readGit({"rev-parse", "--verify", "-q", "HEAD"},
+                           &output) &&
+                   !output.trimmed().isEmpty()) {
+            ref = QStringLiteral("HEAD");
+        } else if (readGit({"for-each-ref", "--format=%(refname)",
+                            "--count=1", "refs/heads/"},
+                           &output)) {
+            ref = QString::fromUtf8(output).trimmed();
+        }
+    } else if (ref.isEmpty()) {
+        ref = mirrorRef();
+    }
+    if (ref.isEmpty()) {
+        recordStrictError(QStringLiteral("Could not resolve pull metadata HEAD."));
         return pulls;
+    }
+    QMap<int, QString> strictPullBases;
+    QHash<QString, QStringList> strictEventNames;
+    QHash<QString, QString> strictOidByPath;
+    QHash<QString, QByteArray> strictContentByOid;
     QByteArray listing;
-    if (!runGit(m_mirror, {"ls-tree", ref, "pulls/"}, &listing))
+    const QStringList listingArgs =
+        strict ? QStringList{QStringLiteral("ls-tree"), QStringLiteral("-r"),
+                             ref, QStringLiteral("pulls/")}
+               : QStringList{QStringLiteral("ls-tree"), ref,
+                             QStringLiteral("pulls/")};
+    if (!readGit(listingArgs, &listing)) {
+        recordStrictError(
+            QStringLiteral("Could not enumerate pull metadata."));
         return pulls;
-    for (const QString &line :
-         QString::fromUtf8(listing).split('\n', Qt::SkipEmptyParts)) {
-        const int tab = line.indexOf('\t');
-        if (tab < 0 || !line.contains(" tree "))
-            continue;
-        const QString base = line.mid(tab + 1).section('/', -1);
+    }
+
+    if (strict) {
+        QMap<QString, QString> relevantOids;
+        const QString prefix = QStringLiteral("pulls/");
+        for (const QString &line :
+             QString::fromUtf8(listing).split('\n', Qt::SkipEmptyParts)) {
+            const int tab = line.indexOf('\t');
+            if (tab < 0)
+                continue;
+            const QStringList meta =
+                line.left(tab).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+            if (meta.size() < 3 || meta.at(1) != QLatin1String("blob"))
+                continue;
+            const QString path = line.mid(tab + 1);
+            if (!path.startsWith(prefix))
+                continue;
+            const QString rel = path.mid(prefix.size());
+            const int slash = rel.indexOf(QLatin1Char('/'));
+            if (slash <= 0)
+                continue;
+            const QString base = rel.left(slash);
+            bool numeric = false;
+            const int number = base.toInt(&numeric);
+            if (!numeric || number <= 0 ||
+                base != QString::number(number)) {
+                recordStrictError(
+                    QStringLiteral("A pull number is invalid."));
+                continue;
+            }
+            const QString name = rel.mid(slash + 1);
+            if (name == QLatin1String("pull.md"))
+                strictPullBases.insert(number, base);
+            if (name == QLatin1String("pull.md") ||
+                name == QLatin1String("changes.patch") ||
+                name == QLatin1String("commits.mbox") ||
+                eventFileRe().match(name).hasMatch()) {
+                relevantOids.insert(path, meta.at(2));
+            }
+        }
+
+        QSet<QString> wantedOids;
+        for (auto it = strictPullBases.constBegin();
+             it != strictPullBases.constEnd(); ++it) {
+            if (!strictReader.consumePullItem()) {
+                recordStrictError(
+                    QStringLiteral("The strict pull item limit was exceeded."));
+                return pulls;
+            }
+            const QString base = it.value();
+            const QString pullPrefix =
+                QStringLiteral("pulls/") + base + QLatin1Char('/');
+            for (auto blob = relevantOids.lowerBound(pullPrefix);
+                 blob != relevantOids.constEnd() &&
+                 blob.key().startsWith(pullPrefix);
+                 ++blob) {
+                const QString name = blob.key().mid(pullPrefix.size());
+                if (eventFileRe().match(name).hasMatch()) {
+                    if (!strictReader.consumeEventItem()) {
+                        recordStrictError(QStringLiteral(
+                            "The strict pull event item limit was exceeded."));
+                        return pulls;
+                    }
+                    strictEventNames[base].append(name);
+                }
+                strictOidByPath.insert(blob.key(), blob.value());
+                wantedOids.insert(blob.value());
+            }
+            strictEventNames[base].sort();
+        }
+
+        if (!wantedOids.isEmpty()) {
+            QStringList sortedOids = wantedOids.values();
+            sortedOids.sort();
+            QByteArray batchInput;
+            for (const QString &oid : std::as_const(sortedOids))
+                batchInput += oid.toUtf8() + '\n';
+            QByteArray batch;
+            if (!readGitInput({QStringLiteral("cat-file"),
+                               QStringLiteral("--batch")},
+                              batchInput, &batch)) {
+                recordStrictError(
+                    QStringLiteral("Could not read pull metadata blobs."));
+                return pulls;
+            }
+            for (qsizetype pos = 0; pos < batch.size();) {
+                const qsizetype nl = batch.indexOf('\n', pos);
+                if (nl < 0) {
+                    recordStrictError(QStringLiteral(
+                        "Pull metadata blob framing is invalid."));
+                    break;
+                }
+                const QList<QByteArray> header =
+                    batch.mid(pos, nl - pos).split(' ');
+                pos = nl + 1;
+                if (header.size() != 3 ||
+                    header.at(1) != QByteArrayLiteral("blob")) {
+                    recordStrictError(
+                        QStringLiteral("A pull metadata blob is missing."));
+                    continue;
+                }
+                bool sizeOk = false;
+                const qlonglong size = header.at(2).toLongLong(&sizeOk);
+                if (!sizeOk || size < 0 || size > batch.size() - pos ||
+                    pos + size >= batch.size() ||
+                    batch.at(pos + size) != '\n') {
+                    recordStrictError(QStringLiteral(
+                        "Pull metadata blob framing is invalid."));
+                    break;
+                }
+                strictContentByOid.insert(QString::fromUtf8(header.at(0)),
+                                         batch.mid(pos, size));
+                pos += size + 1;
+            }
+            if (strictContentByOid.size() != wantedOids.size()) {
+                recordStrictError(QStringLiteral(
+                    "Not all pull metadata blobs could be read."));
+            }
+        }
+    }
+
+    auto readBlob = [&](const QString &repoRelPath, bool *ok) {
+        if (strict) {
+            const QString oid = strictOidByPath.value(repoRelPath);
+            const bool good = !oid.isEmpty() &&
+                              strictContentByOid.contains(oid);
+            if (ok)
+                *ok = good;
+            return good ? strictContentByOid.value(oid) : QByteArray();
+        }
+        QByteArray output;
+        const bool good = readGit({"show", ref + ":" + repoRelPath}, &output);
+        if (ok)
+            *ok = good;
+        return good ? output : QByteArray();
+    };
+
+    QStringList pullBases;
+    if (strict) {
+        pullBases = strictPullBases.values();
+    } else {
+        for (const QString &line :
+             QString::fromUtf8(listing).split('\n', Qt::SkipEmptyParts)) {
+            const int tab = line.indexOf('\t');
+            if (tab < 0 || !line.contains(" tree "))
+                continue;
+            pullBases.append(line.mid(tab + 1).section('/', -1));
+        }
+    }
+    for (const QString &base : std::as_const(pullBases)) {
         bool numeric = false;
         const int number = base.toInt(&numeric);
         if (!numeric)
             continue;
         bool ok = false;
-        const QByteArray md = showFromMirror("pulls/" + base + "/pull.md", &ok);
-        if (!ok)
+        const QByteArray md = readBlob("pulls/" + base + "/pull.md", &ok);
+        if (!ok) {
+            recordStrictError(
+                QStringLiteral("A pull metadata file could not be read."));
             continue;
+        }
         const FrontMatter fm = parseFrontMatter(md);
+        qint64 timestamp = 0;
+        const bool timestampOk = strictJsonSafeInteger(
+            fm.get(QStringLiteral("ts")), 0, &timestamp);
+        qint64 declaredNumber = 0;
+        const bool declaredNumberOk = strictJsonSafeInteger(
+            fm.get(QStringLiteral("number")), 1, &declaredNumber);
+        const bool validFrontMatter =
+            fm.valid && timestampOk && declaredNumberOk &&
+            fm.get(QStringLiteral("schema")) ==
+                QLatin1String("forkmesh-pull-v1") &&
+            declaredNumber == number &&
+            fm.values.contains(QStringLiteral("title")) &&
+            fm.values.contains(QStringLiteral("base")) &&
+            fm.values.contains(QStringLiteral("head")) &&
+            fm.values.contains(QStringLiteral("ts")) &&
+            fm.values.contains(QStringLiteral("author")) &&
+            !fm.get(QStringLiteral("author")).isEmpty() &&
+            fm.values.contains(QStringLiteral("sig")) &&
+            !fm.get(QStringLiteral("sig")).isEmpty();
+        if (!validFrontMatter) {
+            recordStrictError(
+                QStringLiteral("A pull metadata file is invalid."));
+            if (strict)
+                continue;
+        }
         PullRequest pr;
         pr.number = number;
         pr.title = fm.get("title");
@@ -2490,39 +2870,69 @@ QList<PullRequest> PullStore::loadFromMirror(QString *error) const
         pr.head = fm.get("head");
         pr.status = fm.values.contains("status") ? fm.get("status")
                                                   : QStringLiteral("open");
-        pr.ts = fm.num("ts");
+        pr.ts = strict ? timestamp : fm.num("ts");
         pr.author = fm.get("author");
         pr.authorName = fm.get("authorName");
         pr.sig = fm.get("sig");
         pr.branchBacked = fm.get("derive") == QLatin1String("branch");
+        pr.creationBaseOid = fm.get("creationBaseOid");
+        pr.creationHeadOid = fm.get("creationHeadOid");
         pr.mergeBase = fm.get("mergeBase");
         pr.mergeHead = fm.get("mergeHead");
         pr.description = fm.body;
         // Branch-backed PRs carry no committed diff — reconstruct it from the
         // base/head refs the mirror already syncs (the merge snapshot for a
         // merged one). Fall back to committed blobs for legacy/portable PRs.
-        const bool derived =
-            pr.branchBacked &&
-            (!pr.mergeBase.isEmpty() && !pr.mergeHead.isEmpty()
-                 ? deriveFromRefs(m_mirror, pr.mergeBase, pr.mergeHead, &pr.patch,
-                                  &pr.commits)
-                 : deriveFromRefs(m_mirror, pr.base, pr.head, &pr.patch,
-                                  &pr.commits));
+        bool derived = false;
+        if (pr.branchBacked) {
+            if (strict) {
+                derived = deriveFromImmutableOids(
+                    m_mirror, pr.creationBaseOid, pr.creationHeadOid,
+                    &pr.patch, &pr.commits, &strictReader);
+            } else {
+                const bool merged =
+                    !pr.mergeBase.isEmpty() && !pr.mergeHead.isEmpty();
+                const QString deriveBase = merged ? pr.mergeBase : pr.base;
+                const QString deriveHead = merged ? pr.mergeHead : pr.head;
+                derived = deriveFromRefs(m_mirror, deriveBase, deriveHead,
+                                         &pr.patch, &pr.commits);
+            }
+            if (strict && !derived) {
+                recordStrictError(QStringLiteral(
+                    "A branch-backed pull could not be derived from its refs."));
+            }
+        }
+        bool patchOk = false;
+        bool mboxOk = false;
         if (!derived) {
-            bool pok = false;
             pr.patch = QString::fromUtf8(
-                showFromMirror("pulls/" + base + "/changes.patch", &pok));
-            bool mok = false;
+                readBlob("pulls/" + base + "/changes.patch", &patchOk));
             const QByteArray mbox =
-                showFromMirror("pulls/" + base + "/commits.mbox", &mok);
-            if (mok)
+                readBlob("pulls/" + base + "/commits.mbox", &mboxOk);
+            if (mboxOk)
                 pr.commits = QString::fromUtf8(mbox);
+            if (strict && !pr.branchBacked && !patchOk) {
+                recordStrictError(QStringLiteral(
+                    "A pull request's signed patch could not be read."));
+            }
+            if (!patchOk && !mboxOk) {
+                recordStrictError(QStringLiteral(
+                    "A pull request's signed change data could not be read."));
+            }
         }
         computeStats(pr);
-        // Enumerate this PR's conversation event files from the mirror.
-        QByteArray dirListing;
-        if (runGit(m_mirror, {"ls-tree", ref, "pulls/" + base + "/"}, &dirListing)) {
-            QStringList names;
+        QStringList names;
+        bool eventsEnumerated = true;
+        if (strict) {
+            names = strictEventNames.value(base);
+        } else {
+            // Keep permissive loading on its existing per-pull path. Strict
+            // loading already got every event from the recursive tree batch.
+            QByteArray dirListing;
+            eventsEnumerated =
+                readGit({"ls-tree", ref, "pulls/" + base + "/"},
+                        &dirListing);
+            if (eventsEnumerated) {
             for (const QString &l :
                  QString::fromUtf8(dirListing).split('\n', Qt::SkipEmptyParts)) {
                 const int t = l.indexOf('\t');
@@ -2533,18 +2943,49 @@ QList<PullRequest> PullStore::loadFromMirror(QString *error) const
                     names << fname;
             }
             names.sort();
-            for (const QString &name : names) {
-                bool eok = false;
-                const QByteArray evBytes =
-                    showFromMirror("pulls/" + base + "/" + name, &eok);
-                if (eok)
-                    pr.events.append(eventFromFrontMatter(parseFrontMatter(evBytes)));
             }
+        }
+        if (!eventsEnumerated) {
+            recordStrictError(
+                QStringLiteral("Could not enumerate pull event metadata."));
+        }
+        for (const QString &name : std::as_const(names)) {
+            bool eok = false;
+            const QByteArray evBytes =
+                readBlob("pulls/" + base + "/" + name, &eok);
+            if (!eok) {
+                recordStrictError(
+                    QStringLiteral("A pull event file could not be read."));
+                continue;
+            }
+            const FrontMatter eventFrontMatter = parseFrontMatter(evBytes);
+            qint64 eventTimestamp = 0;
+            const bool eventTimestampOk = strictJsonSafeInteger(
+                eventFrontMatter.get(QStringLiteral("ts")), 0,
+                &eventTimestamp);
+            const bool validEvent =
+                eventFrontMatter.valid && eventTimestampOk &&
+                eventFrontMatter.values.contains(QStringLiteral("type")) &&
+                !eventFrontMatter.get(QStringLiteral("type")).isEmpty() &&
+                eventFrontMatter.values.contains(QStringLiteral("author")) &&
+                !eventFrontMatter.get(QStringLiteral("author")).isEmpty() &&
+                eventFrontMatter.values.contains(QStringLiteral("ts")) &&
+                eventFrontMatter.values.contains(QStringLiteral("sig")) &&
+                !eventFrontMatter.get(QStringLiteral("sig")).isEmpty();
+            if (!validEvent) {
+                recordStrictError(
+                    QStringLiteral("A pull event file is invalid."));
+                if (strict)
+                    continue;
+            }
+            PullEvent event = eventFromFrontMatter(eventFrontMatter);
+            if (strict)
+                event.ts = eventTimestamp;
+            pr.events.append(event);
         }
         pulls.append(pr);
     }
     std::sort(pulls.begin(), pulls.end(),
               [](const PullRequest &a, const PullRequest &b) { return a.number < b.number; });
-    Q_UNUSED(error);
     return pulls;
 }

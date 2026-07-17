@@ -82,6 +82,8 @@ int countMatchesIn(const QString &orig, Qt::TextFormat fmt, const QString &query
 }
 } // namespace
 
+static QString capLabelText(const QString &text, bool collapseLines);
+
 // A foldable section: a clickable header (▸/▾) over a body. Instead of a heavy
 // grey card it draws as an open section with a coloured accent bar down the left,
 // so the transcript reads as a lively timeline rather than a stack of boxes. The
@@ -649,6 +651,8 @@ void ClaudeTranscriptView::clear()
     m_searchCurrent = -1;
     emit searchResultsChanged(0, 0);
     m_toolCards.clear();
+    m_liveAgentText.clear();
+    m_liveAgentTextValue.clear();
     m_askCards.clear();
     m_skippedNotice = nullptr;
     m_skippedCount = 0;
@@ -659,6 +663,7 @@ void ClaudeTranscriptView::clear()
     m_liveThinking = nullptr;
     m_thinkingBody = nullptr;
     m_thinkingText.clear();
+    m_lastFinalizedThinkingText.clear();
     m_thinkingTokens = 0;
     m_totalTokens = 0;
     m_totalCost = 0.0;
@@ -742,6 +747,9 @@ void ClaudeTranscriptView::accumulateStatsOnly(const QJsonObject &ev)
         const double cost = ev.value(QStringLiteral("total_cost_usd")).toDouble();
         if (cost > 0)
             m_totalCost = cost; // result carries the run's cumulative cost
+    } else if (type == QLatin1String("_codex_usage")) {
+        m_totalTokens = static_cast<qint64>(
+            ev.value(QStringLiteral("total_tokens")).toDouble());
     }
 }
 
@@ -957,7 +965,11 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
         ensureActivity(); // a tool came back; the agent keeps going
     } else if (type == QLatin1String("rate_limit_event")) {
         const QJsonObject info = ev.value(QStringLiteral("rate_limit_info")).toObject();
-        const int pct = qRound(info.value(QStringLiteral("utilization")).toDouble() * 100);
+        // utilization arrives either as a 0..1 fraction or an already-scaled
+        // 0..100 percentage depending on the CLI build; scale a fraction but pass
+        // a percentage through so the gauge isn't 100x too high (adhoc #47).
+        const double u = info.value(QStringLiteral("utilization")).toDouble();
+        const int pct = qRound(u <= 1.0 ? u * 100.0 : u);
         const QString rlt = info.value(QStringLiteral("rateLimitType")).toString();
         const bool weekly = rlt.contains(QStringLiteral("seven"))
                             || rlt.contains(QStringLiteral("week"));
@@ -972,6 +984,28 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
             emit statsChanged(m_totalTokens, m_totalCost);
         }
         addResult(ev);
+    } else if (type == QLatin1String("_codex_agent_delta")) {
+        finalizeThinking(QString());
+        const QString delta = ev.value(QStringLiteral("delta")).toString(
+            ev.value(QStringLiteral("text")).toString());
+        appendAgentText(ev.value(QStringLiteral("item_id")).toString(),
+                        delta);
+    } else if (type == QLatin1String("_codex_agent_complete")) {
+        finalizeThinking(QString());
+        completeAgentText(ev.value(QStringLiteral("item_id")).toString(),
+                          ev.value(QStringLiteral("text")).toString());
+        clearActivity();
+    } else if (type == QLatin1String("_codex_reasoning_complete")) {
+        finalizeThinking(ev.value(QStringLiteral("text")).toString());
+    } else if (type == QLatin1String("_codex_tool_delta")) {
+        appendToolOutput(ev.value(QStringLiteral("item_id")).toString(),
+                         ev.value(QStringLiteral("delta")).toString());
+    } else if (type == QLatin1String("_codex_usage")) {
+        if (countStats) {
+            m_totalTokens = static_cast<qint64>(
+                ev.value(QStringLiteral("total_tokens")).toDouble());
+            emit statsChanged(m_totalTokens, m_totalCost);
+        }
     } else if (type == QLatin1String("_local_ask_answer")) {
         // Synthetic, host-injected event that records the user's answer to an
         // AskUserQuestion card so the answered state is rebuilt on replay.
@@ -989,6 +1023,44 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
             QStringLiteral("color:%1;background:transparent;").arg(m_p.muted));
         addRow(l);
     }
+}
+
+void ClaudeTranscriptView::appendAgentText(const QString &id, const QString &text)
+{
+    if (id.isEmpty() || text.isEmpty())
+        return;
+    QPointer<QLabel> label = m_liveAgentText.value(id);
+    if (!label) {
+        auto *created = new CacheLabel;
+        created->setTextFormat(Qt::MarkdownText);
+        created->setWordWrap(true);
+        created->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                         Qt::LinksAccessibleByMouse);
+        created->setOpenExternalLinks(true);
+        created->setStyleSheet(
+            QStringLiteral("color:%1;background:transparent;border:none;")
+                .arg(m_p.text));
+        addRow(created);
+        label = created;
+        m_liveAgentText.insert(id, label);
+    }
+    QString &value = m_liveAgentTextValue[id];
+    value += text;
+    label->setText(value);
+}
+
+void ClaudeTranscriptView::completeAgentText(const QString &id,
+                                             const QString &text)
+{
+    QPointer<QLabel> label = m_liveAgentText.value(id);
+    if (label) {
+        const QString complete = text.isEmpty() ? m_liveAgentTextValue.value(id) : text;
+        label->setText(complete);
+        m_liveAgentTextValue[id] = complete;
+        return;
+    }
+    if (!text.trimmed().isEmpty())
+        addAssistantText(text);
 }
 
 void ClaudeTranscriptView::addAssistantBlocks(const QJsonObject &message)
@@ -1049,6 +1121,7 @@ void ClaudeTranscriptView::ensureLiveThinking()
         return;
     clearActivity(); // the thinking card becomes the live indicator
     m_thinkingText.clear();
+    m_lastFinalizedThinkingText.clear();
     m_thinkingTokens = 0;
     m_thinkingStartMs = QDateTime::currentMSecsSinceEpoch();
     m_thinkingBody = new CacheLabel(QStringLiteral("…"));
@@ -1084,19 +1157,34 @@ void ClaudeTranscriptView::appendThinkingDelta(const QString &text)
 
 void ClaudeTranscriptView::finalizeThinking(const QString &fullText)
 {
-    if (!m_liveThinking)
+    const QString completed = fullText.trimmed();
+    if (!m_liveThinking) {
+        if (completed.isEmpty() || completed == m_lastFinalizedThinkingText)
+            return;
+        auto *body = new CacheLabel(completed);
+        body->setWordWrap(true);
+        body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        body->setStyleSheet(
+            QStringLiteral("color:%1;background:transparent;border:none;")
+                .arg(m_p.muted));
+        addRow(makeCollapsible(QStringLiteral("Thought"), body, false), m_p.accent);
+        m_lastFinalizedThinkingText = completed;
         return;
-    const QString text = !fullText.isEmpty() ? fullText : m_thinkingText;
-    if (m_thinkingBody)
-        m_thinkingBody->setText(text.isEmpty() ? QStringLiteral("(thinking)") : text);
+    }
     m_liveThinking->setPulsing(false);
     const qint64 secs = m_thinkingStartMs > 0
         ? (QDateTime::currentMSecsSinceEpoch() - m_thinkingStartMs) / 1000
         : 0;
-    m_liveThinking->setHeaderText(secs > 0
-                                      ? QStringLiteral("Thought for %1s").arg(secs)
-                                      : QStringLiteral("Thought"));
+    const QString label = secs > 0
+        ? QStringLiteral("Thought for %1s").arg(secs)
+        : QStringLiteral("Thought");
+
+    const QString finalText = completed.isEmpty() ? m_thinkingText.trimmed() : completed;
+    m_liveThinking->setHeaderText(label);
     m_liveThinking->setExpanded(false);
+    if (m_thinkingBody)
+        m_thinkingBody->setText(finalText);
+    m_lastFinalizedThinkingText = finalText;
     m_liveThinking = nullptr;
     m_thinkingBody = nullptr;
     m_thinkingText.clear();
@@ -1143,17 +1231,45 @@ QWidget *ClaudeTranscriptView::makeBubble(const QString &title, const QString &m
 // Claude Code conversation view where only the user's turns are boxed.
 bool ClaudeTranscriptView::parseInlineChoices(const QString &markdown, QStringList &options)
 {
-    // A markdown ordered-list item: "1. ..." or "1) ...", one per line.
+    // A markdown ordered-list item: "1. ..." or "1) ...", one per line. Capture
+    // the number too so we can require a real 1, 2, 3, … sequence.
     static const QRegularExpression item(
-        QStringLiteral("(?m)^[ \\t]{0,3}\\d{1,2}[.)][ \\t]+(.+)$"));
+        QStringLiteral("(?m)^[ \\t]{0,3}(\\d{1,2})[.)][ \\t]+(.+)$"));
     QStringList found;
+    QList<int> numbers;
+    int prevEnd = -1;
+    int lastEnd = -1;
+    bool contiguous = true;
     auto it = item.globalMatch(markdown);
-    while (it.hasNext())
-        found << it.next().captured(1).trimmed();
-    // Require at least two options and something that actually reads like a
-    // question, so a plain numbered list (e.g. steps in a plan) isn't mistaken
-    // for a clarifying question.
-    if (found.size() < 2 || !markdown.contains(QLatin1Char('?')))
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        // The items must sit back-to-back (only blank lines between them). A gap
+        // filled with prose means this is an explanation/plan whose paragraphs
+        // happen to start with numbers, not a block of choices.
+        if (prevEnd >= 0
+            && !QStringView(markdown).mid(prevEnd, m.capturedStart(0) - prevEnd)
+                    .trimmed().isEmpty())
+            contiguous = false;
+        numbers << m.captured(1).toInt();
+        found << m.captured(2).trimmed();
+        prevEnd = lastEnd = m.capturedEnd(0);
+    }
+    // Require at least two options so a lone numbered line isn't a "choice".
+    if (found.size() < 2 || !contiguous)
+        return false;
+    // The options must be numbered sequentially from 1 (1, 2, 3, …). Scattered
+    // or restarting numbers are ordinary prose that merely begins with a digit.
+    for (int i = 0; i < numbers.size(); ++i) {
+        if (numbers.at(i) != i + 1)
+            return false;
+    }
+    // The question mark that makes this read like a clarifying question must
+    // appear in the lead-in prose before the options or on an option line —
+    // i.e. at or before the end of the list. A "?" only in text that *follows*
+    // the list (e.g. "I changed:\n1. A\n2. B\nWant me to run tests?") is a
+    // trailing yes/no follow-up, not a selection over these items, so it must
+    // not turn a completed-work summary into a multiple-choice card (adhoc #15).
+    if (!QStringView(markdown).left(lastEnd).contains(QLatin1Char('?')))
         return false;
     options = found;
     return true;
@@ -1271,6 +1387,12 @@ void ClaudeTranscriptView::addToolResult(const QString &id, const QString &text,
     ToolCard &tc = it.value();
     if (!tc.box || !tc.io || tc.hasResult)
         return; // header-only tool, or a result already attached
+    if (tc.liveOutput) {
+        tc.liveOutput->setText(text);
+        tc.liveOutputText = text;
+        tc.hasResult = true;
+        return;
+    }
     auto *divider = new QFrame;
     divider->setFixedHeight(1);
     divider->setStyleSheet(QStringLiteral("background:%1;border:none;").arg(m_p.border));
@@ -1282,14 +1404,44 @@ void ClaudeTranscriptView::addToolResult(const QString &id, const QString &text,
     tc.hasResult = true;
 }
 
+void ClaudeTranscriptView::appendToolOutput(const QString &id,
+                                            const QString &text)
+{
+    auto it = m_toolCards.find(id);
+    if (it == m_toolCards.end() || text.isEmpty())
+        return;
+    ToolCard &tc = it.value();
+    if (!tc.box || !tc.io || tc.hasResult)
+        return;
+    if (!tc.liveOutput) {
+        auto *divider = new QFrame;
+        divider->setFixedHeight(1);
+        divider->setStyleSheet(
+            QStringLiteral("background:%1;border:none;").arg(m_p.border));
+        tc.io->addWidget(divider);
+        auto *label = new CacheLabel;
+        label->setTextFormat(Qt::PlainText);
+        label->setWordWrap(true);
+        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        label->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        label->setStyleSheet(
+            QStringLiteral("color:%1;background:transparent;border:none;")
+                .arg(m_p.text));
+        tc.io->addWidget(ioRow(QStringLiteral("OUT"), label));
+        tc.liveOutput = label;
+    }
+    tc.liveOutputText += text;
+    tc.liveOutput->setText(capLabelText(tc.liveOutputText, true));
+}
+
 // Claude Code's AskUserQuestion tool: render an interactive multiple-choice card
 // (Anthropic Agent SDK "Handle approvals and user input" shape — a `questions`
 // array, each with a question/header/options[label,description]/multiSelect) so
 // the user can answer the clarifying question right in the transcript. Each
 // option is a checkable button; a free-text "Other" field covers answers the
-// options don't. On submit it emits questionAnswered(id, answer); the host turns
-// that into a tool_result for the CLI and records a "_local_ask_answer" event so
-// the answered state replays on rebuild.
+// options don't. On submit it emits questionAnswered(id, answer, sensitive); the
+// host responds through the active CLI protocol and records a redacted
+// "_local_ask_answer" event so the answered state replays on rebuild.
 void ClaudeTranscriptView::addAskUserQuestion(const QString &id,
                                               const QJsonObject &input)
 {
@@ -1303,7 +1455,7 @@ void ClaudeTranscriptView::addAskUserQuestion(const QString &id,
     v->setContentsMargins(14, 12, 14, 12);
     v->setSpacing(10);
 
-    auto *heading = new QLabel(QStringLiteral("Claude has a question"));
+    auto *heading = new QLabel(QStringLiteral("Agent needs your input"));
     heading->setStyleSheet(QStringLiteral(
         "color:%1;font-weight:700;background:transparent;border:none;").arg(m_p.accent));
     v->addWidget(heading);
@@ -1321,11 +1473,13 @@ void ClaudeTranscriptView::addAskUserQuestion(const QString &id,
     struct QState {
         QString question;
         bool multi = false;
+        bool secret = false;
         QList<QPushButton *> optionButtons;
         QStringList optionLabels;
         QLineEdit *other = nullptr;
     };
     QVector<QState> states;
+    bool cardSensitive = false;
 
     const QString optCss = QStringLiteral(
         "QPushButton{background:%1;color:%2;border:1px solid %3;border-radius:6px;"
@@ -1343,6 +1497,8 @@ void ClaudeTranscriptView::addAskUserQuestion(const QString &id,
         QState st;
         st.question = q.value(QStringLiteral("question")).toString();
         st.multi = q.value(QStringLiteral("multiSelect")).toBool();
+        st.secret = q.value(QStringLiteral("isSecret")).toBool();
+        cardSensitive = cardSensitive || st.secret;
 
         auto *qbox = new QWidget;
         qbox->setStyleSheet(QStringLiteral("background:transparent;"));
@@ -1383,6 +1539,8 @@ void ClaudeTranscriptView::addAskUserQuestion(const QString &id,
         }
 
         auto *other = new QLineEdit;
+        if (st.secret)
+            other->setEchoMode(QLineEdit::Password);
         other->setPlaceholderText(
             st.multi ? QStringLiteral("Other… (adds your own answer)")
                      : QStringLiteral("Other… (type your own answer)"));
@@ -1427,9 +1585,10 @@ void ClaudeTranscriptView::addAskUserQuestion(const QString &id,
         "color:%1;font-weight:600;background:transparent;border:none;").arg(m_p.add));
     v->addWidget(status);
 
-    m_askCards.insert(id, AskCard{controls, status});
+    m_askCards.insert(id, AskCard{controls, status, cardSensitive});
 
-    connect(submit, &QPushButton::clicked, this, [this, id, states] {
+    connect(submit, &QPushButton::clicked, this,
+            [this, id, states, cardSensitive] {
         QStringList lines;
         for (const QState &st : states) {
             QStringList picks;
@@ -1457,7 +1616,7 @@ void ClaudeTranscriptView::addAskUserQuestion(const QString &id,
         if (answer.isEmpty())
             return; // nothing chosen yet — keep the card open
         markAskAnswered(id, answer); // instant local feedback
-        emit questionAnswered(id, answer);
+        emit questionAnswered(id, answer, cardSensitive);
     });
 
     addRow(card, m_p.accent);
@@ -1479,8 +1638,10 @@ void ClaudeTranscriptView::markAskAnswered(const QString &id, const QString &ans
         c.buttons->setGraphicsEffect(fx);
     }
     if (c.status) {
-        QString shown = answer;
-        shown.replace(QLatin1Char('\n'), QStringLiteral(" · "));
+        QString shown = c.sensitive ? QStringLiteral("Secret answer submitted")
+                                    : answer;
+        if (!c.sensitive)
+            shown.replace(QLatin1Char('\n'), QStringLiteral(" · "));
         c.status->setText(QStringLiteral("✓ You answered: %1").arg(shown));
         c.status->setVisible(true);
     }
@@ -1534,11 +1695,25 @@ void ClaudeTranscriptView::addResult(const QJsonObject &ev)
     const double cost = ev.value(QStringLiteral("total_cost_usd")).toDouble();
     const double ms = ev.value(QStringLiteral("duration_ms")).toDouble();
     const int turns = ev.value(QStringLiteral("num_turns")).toInt();
-    auto *l = new QLabel(QStringLiteral("%1 Done · %2 turns · %3s · $%4")
-                             .arg(err ? QStringLiteral("✗") : QStringLiteral("✓"))
-                             .arg(turns)
-                             .arg(ms / 1000.0, 0, 'f', 1)
-                             .arg(cost, 0, 'f', 4));
+    QStringList details;
+    if (turns > 0)
+        details << QStringLiteral("%1 turn%2")
+                       .arg(turns)
+                       .arg(turns == 1 ? QString() : QStringLiteral("s"));
+    if (ms > 0)
+        details << QStringLiteral("%1s").arg(ms / 1000.0, 0, 'f', 1);
+    const qint64 tokens = static_cast<qint64>(
+        ev.value(QStringLiteral("total_tokens")).toDouble());
+    if (tokens > 0)
+        details << QStringLiteral("%1 tokens").arg(QLocale().toString(tokens));
+    if (cost > 0)
+        details << QStringLiteral("$%1").arg(cost, 0, 'f', 4);
+    QString label = QStringLiteral("%1 %2")
+                        .arg(err ? QStringLiteral("✗") : QStringLiteral("✓"),
+                             err ? QStringLiteral("Failed") : QStringLiteral("Done"));
+    if (!details.isEmpty())
+        label += QStringLiteral(" · ") + details.join(QStringLiteral(" · "));
+    auto *l = new QLabel(label);
     l->setStyleSheet(QStringLiteral("color:%1;font-weight:600;background:transparent;")
                          .arg(err ? m_p.del : m_p.add));
     addRow(l, err ? m_p.del : m_p.add);
@@ -1567,6 +1742,15 @@ QString ClaudeTranscriptView::toolSubtitle(const QString &name,
         return input.value(QStringLiteral("description")).toString();
     if (name == QLatin1String("Grep"))
         return input.value(QStringLiteral("pattern")).toString();
+    if (name == QLatin1String("FileChange")) {
+        QStringList paths;
+        for (const QJsonValue &value : input.value(QStringLiteral("changes")).toArray()) {
+            const QString path = value.toObject().value(QStringLiteral("path")).toString();
+            if (!path.isEmpty())
+                paths << path;
+        }
+        return paths.join(QStringLiteral(", "));
+    }
     return QString();
 }
 
@@ -1604,6 +1788,24 @@ QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &
                     + QLatin1Char('\n');
         }
         return makeMono(text.trimmed(), false);
+    }
+    if (name == QLatin1String("FileChange")) {
+        auto *holder = new QWidget;
+        holder->setStyleSheet(QStringLiteral("background:transparent;"));
+        auto *layout = new QVBoxLayout(holder);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(8);
+        for (const QJsonValue &value : input.value(QStringLiteral("changes")).toArray()) {
+            const QJsonObject change = value.toObject();
+            auto *path = new QLabel(change.value(QStringLiteral("path")).toString());
+            path->setStyleSheet(
+                QStringLiteral("color:%1;font-weight:600;background:transparent;")
+                    .arg(m_p.muted));
+            layout->addWidget(path);
+            layout->addWidget(makeCode(
+                change.value(QStringLiteral("diff")).toString(), true));
+        }
+        return holder;
     }
     if (name == QLatin1String("Read") || name == QLatin1String("Grep")
         || name == QLatin1String("Glob"))
