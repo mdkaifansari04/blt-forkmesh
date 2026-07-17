@@ -2243,6 +2243,111 @@
     return body;
   }
 
+  // --- Manage federated posts (issue #426) ---------------------------------
+  //
+  // The owner-only "Fediverse posts" dropdown in the About rail lists the
+  // repo actor's posts and lets the owner delete one. A delete makes the relay
+  // broadcast a Delete(Tombstone) to every follower's server, so the post also
+  // disappears from Mastodon — not just the repo's own profile feed. The
+  // backend re-checks ownership from the session token, so this is only the
+  // client surface (same session-auth shape as saveRepoAboutFromWeb).
+
+  async function fetchRepoFediPosts(repo) {
+    const response = await fetch(`${repoApiBase(repo)}/ap-posts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ownerAccount: state.session?.nodeName || "",
+        sessionToken: state.session?.sessionToken || "",
+        action: "list",
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body?.ok === false) {
+      throw new Error(body?.error || "fedi_posts_failed");
+    }
+    return Array.isArray(body.posts) ? body.posts : [];
+  }
+
+  async function deleteRepoFediPost(repo, id) {
+    const response = await fetch(`${repoApiBase(repo)}/ap-posts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ownerAccount: state.session?.nodeName || "",
+        sessionToken: state.session?.sessionToken || "",
+        action: "delete",
+        id,
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body?.ok === false) {
+      throw new Error(body?.error || "fedi_post_delete_failed");
+    }
+    return body;
+  }
+
+  function renderRepoFediPosts(posts) {
+    const list = $("[data-repo-fedi-posts-list]");
+    if (!list) return;
+    if (!posts.length) {
+      list.innerHTML = `<p class="text-[11px] text-muted-foreground">No federated posts yet — new issues, pull requests, discussions and releases will appear here.</p>`;
+      return;
+    }
+    list.innerHTML = posts.map((post) => {
+      const id = escapeHtml(String(post.id || ""));
+      const when = relativeTimeLabel(Number(post.published || 0));
+      // Strip our own generated HTML down to a plain-text preview.
+      const preview = String(post.content || "")
+        .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      const text = escapeHtml(preview.slice(0, 140) || "(no text)");
+      const link = String(post.url || "");
+      const view = /^https?:\/\//i.test(link)
+        ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link hover:underline">View</a>`
+        : "";
+      return `<div data-repo-fedi-post class="grid gap-1 rounded-md border border-border p-2">
+        <p class="text-[11px] leading-4 text-foreground">${text}</p>
+        <div class="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+          <span>${escapeHtml(when)}</span>
+          <span class="inline-flex items-center gap-2">${view}<button type="button" data-repo-fedi-post-delete="${id}" class="inline-flex items-center gap-1 rounded-md border border-destructive/40 px-2 py-0.5 font-medium text-destructive hover:bg-destructive/10"><i data-lucide="trash-2" class="h-3 w-3"></i>Delete</button></span>
+        </div>
+      </div>`;
+    }).join("");
+    window.lucide?.createIcons();
+  }
+
+  async function loadRepoFediPosts(repo) {
+    const list = $("[data-repo-fedi-posts-list]");
+    if (!list) return;
+    list.innerHTML = `<p class="text-[11px] text-muted-foreground">Loading…</p>`;
+    try {
+      const posts = await fetchRepoFediPosts(repo);
+      if (!repoAboutStillCurrent(repo)) return;
+      renderRepoFediPosts(posts);
+    } catch (_) {
+      list.innerHTML = `<p class="text-[11px] text-destructive">Couldn't load federated posts.</p>`;
+    }
+  }
+
+  async function removeRepoFediPost(repo, id, trigger) {
+    if (!id) return;
+    if (!window.confirm("Delete this post? It will be removed from your Mastodon followers' timelines.")) return;
+    if (trigger) trigger.disabled = true;
+    try {
+      await deleteRepoFediPost(repo, id);
+      // Drop the row in place; the follower count/profile feed catch up on
+      // the next reload.
+      trigger?.closest("[data-repo-fedi-post]")?.remove();
+      const list = $("[data-repo-fedi-posts-list]");
+      if (list && !list.querySelector("[data-repo-fedi-post]")) {
+        renderRepoFediPosts([]);
+      }
+    } catch (_) {
+      if (trigger) trigger.disabled = false;
+      window.alert("Couldn't delete that post. Please try again.");
+    }
+  }
+
   // --- About rail: fediverse badge + desktop-parity sections ---------------
   //
   // The desktop app's About panel shows the repo's canonical info from
