@@ -26,7 +26,6 @@ enum MirrorNodeColumn {
     MirrorNodeColBranches,
     MirrorNodeColPulls,
     MirrorNodeColDiscussions,
-    MirrorNodeColWorktrees,
     MirrorNodeColCpu,
     MirrorNodeColRam,
     MirrorNodeColDisk,
@@ -1075,7 +1074,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
         {"Node", "Owner", "Latest commit", "Synced", "Size", "Issues", "Commits",
-         "Branches", "Pulls", "Discussions", "Worktrees", "CPU", "RAM", "Disk",
+         "Branches", "Pulls", "Discussions", "CPU", "RAM", "Disk",
          "Platform", "Version", "Node id", "Clones", "Website", "Artifacts"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -1098,7 +1097,6 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(MirrorNodeColBranches, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColPulls, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColDiscussions, QHeaderView::ResizeToContents);
-    mh->setSectionResizeMode(MirrorNodeColWorktrees, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColCpu, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColRam, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColDisk, QHeaderView::ResizeToContents);
@@ -1513,8 +1511,8 @@ void MainWindow::loadMirrorNodesPanel()
     QSet<QString> shownIds;
     // One activity dot per active node, fed to the live strip atop the panel.
     QVector<MirrorActivityStrip::Dot> activityDots;
-    // Build a right-aligned numeric count cell (Commits/Branches/Pulls/Discussions/
-    // Worktrees): the figure, an em-dash when the node doesn't advertise it (-1, an
+    // Build a right-aligned numeric count cell (Commits/Branches/Pulls/
+    // Discussions): the figure, an em-dash when the node doesn't advertise it (-1, an
     // older peer), and a singular/plural tooltip. Shared by the live-roster rows and
     // the catalog-backed rows below so both render these columns identically.
     auto makeCountCell = [](int n, const QString &singular,
@@ -1767,10 +1765,6 @@ void MainWindow::loadMirrorNodesPanel()
                      QString::number(refDiscussions));
         m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
                                     discussionsItem);
-        m_mirrorNodesTable->setItem(
-            row, MirrorNodeColWorktrees,
-            makeCountCell(advert ? advert->worktreeCount : -1, "worktree",
-                          "worktrees"));
 
         // CPU / RAM / disk usage bars (hover for the underlying figures). The
         // telemetry is per-node, advertised in the node's heartbeats; peers that
@@ -1981,10 +1975,6 @@ void MainWindow::loadMirrorNodesPanel()
                          QString::number(refDiscussions));
             m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
                                         catDiscussionsItem);
-            m_mirrorNodesTable->setItem(
-                row, MirrorNodeColWorktrees,
-                makeCountCell(m.value("worktreeCount").toInt(-1), "worktree",
-                              "worktrees"));
             for (int col : {MirrorNodeColCpu, MirrorNodeColRam, MirrorNodeColDisk})
                 m_mirrorNodesTable->setItem(row, col,
                                             makeResourceBarCell(-1, QString()));

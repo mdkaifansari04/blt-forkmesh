@@ -99,7 +99,7 @@ class _ChannelList extends StatelessWidget {
               title: c,
               icon: Icons.tag,
               selected: relay.currentConversation == c,
-              unread: relay.unread.contains(c),
+              unread: relay.hasUnread(c),
               onTap: () => relay.switchConversation(c),
             ),
           const SizedBox(height: FmSpace.x4),
@@ -396,6 +396,22 @@ class _Transcript extends StatelessWidget {
             ),
           ),
         ),
+        if (relay.totalUnread > 0)
+          _UnreadBanner(
+            count: relay.totalUnread,
+            onTap: () {
+              relay.markAllRead();
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (scroll.hasClients) {
+                  scroll.animateTo(
+                    scroll.position.maxScrollExtent,
+                    duration: const Duration(milliseconds: 200),
+                    curve: Curves.easeOut,
+                  );
+                }
+              });
+            },
+          ),
         Expanded(
           child: ColoredBox(
             color: FmTheme.bgBase(context),
@@ -480,6 +496,61 @@ class _Transcript extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Tappable strip shown above the transcript whenever unread messages are
+/// waiting. Tapping the up arrow marks everything read (clearing the nav badge)
+/// and jumps to the newest messages so they can be seen.
+class _UnreadBanner extends StatelessWidget {
+  const _UnreadBanner({required this.count, required this.onTap});
+
+  final int count;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = count == 1 ? '1 unread message' : '$count unread messages';
+    return Material(
+      color: FmTheme.accentSubtle(context),
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: FmSpace.x4,
+            vertical: FmSpace.x2,
+          ),
+          child: Row(
+            children: [
+              Icon(
+                Icons.mark_chat_unread_outlined,
+                size: 16,
+                color: FmTheme.accent(context),
+              ),
+              const SizedBox(width: FmSpace.x2),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: FmTheme.accent(context),
+                  ),
+                ),
+              ),
+              Tooltip(
+                message: 'Mark as read',
+                child: Icon(
+                  Icons.keyboard_arrow_up_rounded,
+                  size: 22,
+                  color: FmTheme.accent(context),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
