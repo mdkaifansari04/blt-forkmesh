@@ -471,14 +471,40 @@ int countOpenIssues(const QString &mirrorPath, const QString &ref, int *closed)
         }
         return names;
     };
-    // Post-split layout: the folder IS the status, so open/<n> and closed/<n>
-    // count directly with no blob reads.
+    // A deleted (tombstoned) issue keeps its folder for federation but is not
+    // open: the Issues tab and every list filter it out (Issue::isDeleted), so
+    // the served/advertised count must drop it too or it drifts above the tab
+    // (adhoc #16). Detecting a delete/self event needs the record, so read the
+    // open/ blobs (open issues are few) and the legacy ones; closed/<n> folders
+    // are never open regardless, so they still count with no blob read.
+    auto recordTombstoned = [&](const QString &rel) {
+        QByteArray blob;
+        if (!runGit(mirrorPath, {"cat-file", "-p", ref + ":" + rel}, blob))
+            return false; // unreadable -> treat as live (matches loadAll)
+        const QJsonArray events = QJsonDocument::fromJson(blob)
+                                      .object()
+                                      .value(QStringLiteral("events"))
+                                      .toArray();
+        for (const QJsonValue &value : events) {
+            const QJsonObject event = value.toObject();
+            if (event.value(QStringLiteral("type")).toString() ==
+                    QLatin1String("delete") &&
+                event.value(QStringLiteral("target")).toString() ==
+                    QLatin1String("self"))
+                return true;
+        }
+        return false;
+    };
     QSet<QString> counted;
     int open = 0;
     int closedCount = 0;
     for (const QString &name : numberedDirs(QStringLiteral(".forkmesh/issues/open")))
         if (!counted.contains(name)) {
             counted.insert(name);
+            if (recordTombstoned(
+                    QStringLiteral(".forkmesh/issues/open/%1/issue-%1.json")
+                        .arg(name)))
+                continue; // deleted -> counts as neither open nor closed
             ++open;
         }
     for (const QString &name :
@@ -494,10 +520,12 @@ int countOpenIssues(const QString &mirrorPath, const QString &ref, int *closed)
         if (counted.contains(name))
             continue;
         counted.insert(name);
-        QByteArray blob;
-        QString status;
         const QString rel =
             QStringLiteral(".forkmesh/issues/%1/issue-%1.json").arg(name);
+        if (recordTombstoned(rel))
+            continue; // deleted -> counts as neither open nor closed
+        QByteArray blob;
+        QString status;
         if (runGit(mirrorPath, {"cat-file", "-p", ref + ":" + rel}, blob))
             status = QJsonDocument::fromJson(blob)
                          .object()

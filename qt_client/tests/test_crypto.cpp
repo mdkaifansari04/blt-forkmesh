@@ -4055,6 +4055,61 @@ int main(int argc, char *argv[])
                           }),
               "an issue in open/ with a stale status->closed record counts as open");
 
+        // Delete-event authorization (adhoc #16): only the issue's own creator
+        // or the repo owner may tombstone it. A stranger's delete/self event is
+        // unauthorized — loadAll heals it away (strips it, rewrites the record,
+        // commits) so the wrongly-hidden issue reappears and is counted again;
+        // legitimate self- and owner-deletions stay deleted.
+        const QString ownerKey = identity.publicKey();
+        auto writeIssueWithDelete = [&](int number, const QString &creator,
+                                        const QString &deleter) {
+            const QString dir = QDir(tmp.path()).filePath(
+                QStringLiteral(".forkmesh/issues/open/%1").arg(number));
+            QDir().mkpath(dir);
+            QFile f(QDir(dir).filePath(
+                QStringLiteral("issue-%1.json").arg(number)));
+            if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                f.write(QStringLiteral(
+                            "{\"schema\":\"forkmesh-issue-v1\",\"number\":%1,"
+                            "\"title\":\"t%1\",\"status\":\"open\","
+                            "\"events\":[{\"type\":\"open\",\"id\":\"open-%1\","
+                            "\"author\":\"%2\",\"ts\":1,\"title\":\"t%1\","
+                            "\"body\":\"\",\"attachments\":[],\"sig\":\"s\"},"
+                            "{\"type\":\"delete\",\"id\":\"d%1\",\"author\":\"%3\","
+                            "\"ts\":2,\"target\":\"self\",\"sig\":\"s\"}]}")
+                            .arg(QString::number(number), creator, deleter)
+                            .toUtf8());
+        };
+        writeIssueWithDelete(60, "creatorA", "stranger");  // unauthorized
+        writeIssueWithDelete(61, "creatorB", "creatorB");  // creator self-delete
+        writeIssueWithDelete(62, "creatorC", ownerKey);    // owner moderation
+        loaded = repo.loadAll();
+        check(std::any_of(loaded.begin(), loaded.end(),
+                          [](const Issue &i) { return i.number == 60; }),
+              "a stranger's unauthorized delete is healed and the issue reappears");
+        check(std::none_of(loaded.begin(), loaded.end(),
+                           [](const Issue &i) { return i.number == 61; }),
+              "the creator's own self-delete stays deleted");
+        check(std::none_of(loaded.begin(), loaded.end(),
+                           [](const Issue &i) { return i.number == 62; }),
+              "the repo owner's delete stays deleted");
+        {
+            QFile healedFile(QDir(tmp.path()).filePath(QStringLiteral(
+                ".forkmesh/issues/open/60/issue-60.json")));
+            bool noDelete = false;
+            if (healedFile.open(QIODevice::ReadOnly)) {
+                const QJsonArray evs =
+                    QJsonDocument::fromJson(healedFile.readAll())
+                        .object().value("events").toArray();
+                noDelete = std::none_of(
+                    evs.begin(), evs.end(), [](const QJsonValue &v) {
+                        return v.toObject().value("type").toString() == "delete";
+                    });
+            }
+            check(noDelete,
+                  "the unauthorized delete event is stripped from the record");
+        }
+
         check(repo.addComment(n, "a comment", {}, &err), "addComment succeeds");
         QFile issueJson(issueJsonPath);
         const bool commentJsonOk =
