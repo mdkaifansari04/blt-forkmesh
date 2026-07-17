@@ -3396,9 +3396,10 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
     if (isExternalSession(sessionId)) {
         // Rich text so the branch name links to its Branches-tab row and the
         // worktree location links to its Worktrees-tab row (issue #265, adhoc
-        // #123); every other part is HTML-escaped to stay literal. Each part
-        // sits on its own line (adhoc #156).
-        const QString sep = QStringLiteral("<br>");
+        // #123); every other part is HTML-escaped to stay literal. Parts flow
+        // horizontally, wrapping as needed, split by a muted pipe (adhoc #57).
+        const QString sep =
+            QStringLiteral(" <span style='color:#30363d'>|</span> ");
         QString meta = QStringLiteral("External Claude Code") + sep +
                        QStringLiteral("%1/%2")
                            .arg(session->owner.toHtmlEscaped(),
@@ -3425,10 +3426,12 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
                   .toHtmlEscaped();
     // Rich text so the branch name, worktree location, PR and issue are links
     // (issues #265, adhoc #53, adhoc #123, adhoc #138); every other part is
-    // HTML-escaped to stay literal. Each part sits on its own line (adhoc #156),
-    // captioned with a muted "Field:" label so the header reads as a key/value
-    // list rather than a bare stack of strings (adhoc #189).
-    const QString sep = QStringLiteral("<br>");
+    // HTML-escaped to stay literal. Each part is captioned with a muted
+    // "Field:" label so the header reads as a key/value list (adhoc #189), and
+    // the parts flow horizontally, wrapping as needed, split by a muted pipe
+    // rather than stacked one-per-line (adhoc #57).
+    const QString sep =
+        QStringLiteral(" <span style='color:#30363d'>|</span> ");
     auto labeled = [](const QString &label, const QString &valueHtml) {
         return QStringLiteral("<span style='color:#8b949e'>%1:</span> %2")
             .arg(label.toHtmlEscaped(), valueHtml);
