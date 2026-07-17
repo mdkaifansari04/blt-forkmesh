@@ -540,13 +540,36 @@ class ApiService {
   Future<List<Issue>> publishedIssues(String owner, String name) {
     final key = '$owner/$name';
     return _cached(_issuesCache, key, () async {
-      final dirs = await _numberedFolders(owner, name, 'issues');
+      // Issues are split by status into .forkmesh/issues/open/<n>/ and
+      // .forkmesh/issues/closed/<n>/ (pre-split repos keep <n>/ directly under
+      // the root), one signed-event issue-<n>.json record per folder. A split
+      // copy of a number wins over a stale legacy one.
+      final dirByNumber = <String, String>{};
+      for (final dir in await _numberedFolders(owner, name, '.forkmesh/issues')) {
+        dirByNumber[dir] = '.forkmesh/issues/$dir';
+      }
+      for (final sub in const ['open', 'closed']) {
+        final subDirs = await _numberedFolders(
+          owner,
+          name,
+          '.forkmesh/issues/$sub',
+        );
+        for (final dir in subDirs) {
+          dirByNumber[dir] = '.forkmesh/issues/$sub/$dir';
+        }
+      }
+      // Repos from before the JSON tracker published markdown records at
+      // issues/<n>/issue.md; keep reading those when no JSON records exist.
+      if (dirByNumber.isEmpty) return _legacyMarkdownIssues(owner, name);
       final items = await Future.wait(
-        dirs.map((dir) async {
+        dirByNumber.entries.map((entry) async {
           try {
-            final b = await blob(owner, name, 'issues/$dir/issue.md');
-            final events = await _issueEvents(owner, name, dir);
-            return _issueFromMarkdown(dir, b.content, events: events);
+            final b = await blob(
+              owner,
+              name,
+              '${entry.value}/issue-${entry.key}.json',
+            );
+            return _issueFromRecordJson(entry.key, b.content);
           } catch (_) {
             return null;
           }
@@ -554,6 +577,53 @@ class ApiService {
       );
       return items.whereType<Issue>().toList()
         ..sort((a, b) => b.number.compareTo(a.number));
+    });
+  }
+
+  Future<List<Issue>> _legacyMarkdownIssues(String owner, String name) async {
+    final dirs = await _numberedFolders(owner, name, 'issues');
+    final items = await Future.wait(
+      dirs.map((dir) async {
+        try {
+          final b = await blob(owner, name, 'issues/$dir/issue.md');
+          final events = await _issueEvents(owner, name, dir);
+          return _issueFromMarkdown(dir, b.content, events: events);
+        } catch (_) {
+          return null;
+        }
+      }),
+    );
+    return items.whereType<Issue>().toList()
+      ..sort((a, b) => b.number.compareTo(a.number));
+  }
+
+  // One .forkmesh/issues/{open,closed}/<n>/issue-<n>.json signed-event record
+  // -> Issue. The top-level fields mirror the desktop's Issue::toJson; the
+  // body and display author ride on the "open" event, matching the website's
+  // parseIssueJson.
+  Issue? _issueFromRecordJson(String number, String text) {
+    final decoded = jsonDecode(text);
+    if (decoded is! Map<String, dynamic>) return null;
+    Map<String, dynamic>? open;
+    final events = decoded['events'];
+    if (events is List) {
+      for (final event in events.whereType<Map>()) {
+        if (event['type'] == 'open') {
+          open = Map<String, dynamic>.from(event);
+          break;
+        }
+      }
+    }
+    return Issue.fromJson({
+      ...decoded,
+      'number': decoded['number'] ?? int.tryParse(number) ?? 0,
+      'title': decoded['title'] ?? open?['title'] ?? 'Issue #$number',
+      'body': decoded['body'] ?? open?['body'] ?? '',
+      'author':
+          decoded['authorName'] ??
+          open?['authorName'] ??
+          decoded['author'] ??
+          '',
     });
   }
 

@@ -116,9 +116,14 @@ struct IssueMilestone {
     QString description;
 };
 
-// Repo-scoped issue tracker backed by .forkmesh/issues/<n>/issue-<n>.json. For
-// repos with a local working tree the store reads/writes/commits files directly;
-// for repos available only as a bare mirror it reads issues read-only via `git show`.
+// Repo-scoped issue tracker backed by
+// .forkmesh/issues/open/<n>/issue-<n>.json and
+// .forkmesh/issues/closed/<n>/issue-<n>.json (the folder tracks the issue's
+// current status; changing status moves the folder). Pre-split repos kept
+// every issue at .forkmesh/issues/<n>/ — readers still accept that legacy
+// layout, and a writable store migrates it on first use. For repos with a
+// local working tree the store reads/writes/commits files directly; for repos
+// available only as a bare mirror it reads issues read-only via `git show`.
 class IssueStore
 {
 public:
@@ -257,10 +262,21 @@ public:
     static QByteArray canonicalString(int number, const IssueEvent &ev);
     static QString contentForSigning(const IssueEvent &ev);
 
+    // Absolute folder for issue <number> in `workTree`, wherever it currently
+    // lives: open/<n>, closed/<n>, or the pre-split legacy <n>. Falls back to
+    // open/<n> when the issue doesn't exist yet. Static so UI code that only
+    // has the repo path (attachment previews, agent prompts) resolves the same
+    // location the store writes to.
+    static QString issueDirPath(const QString &workTree, int number);
+
 private:
     QString issuesDir() const;                 // <workTree>/.forkmesh/issues
-    QString issueDir(int number) const;        // <workTree>/.forkmesh/issues/<n>
-    QString issueFilePath(int number) const;   // <workTree>/.forkmesh/issues/<n>/issue-<n>.json
+    QString issueDir(int number) const;        // <workTree>/.forkmesh/issues/{open,closed}/<n>
+    QString issueFilePath(int number) const;   // <issueDir>/issue-<n>.json
+    // Move any legacy .forkmesh/issues/<n>/ folders into open/ or closed/ per
+    // their JSON status, committing the moves. Mutates repo files only (no
+    // object state, hence const). No-op once migrated.
+    void migrateLegacyLayout() const;
     bool readIssueFile(int number, Issue &out) const;
     bool writeIssueFile(const Issue &issue, QString *error) const;
     void recomputeMetadata(Issue &issue) const; // fold events into top-level fields

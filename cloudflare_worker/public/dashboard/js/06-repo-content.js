@@ -347,8 +347,17 @@
     return text.slice(1, -1).split(",").map((item) => item.trim()).filter(Boolean);
   }
 
-  function issueJsonPath(number) {
-    return `.forkmesh/issues/${Number(number)}/issue-${Number(number)}.json`;
+  // Issues are split by status into .forkmesh/issues/open/<n>/ and
+  // .forkmesh/issues/closed/<n>/ (adhoc #14); pre-split mirrors keep the
+  // numbered folder directly under the root (no subdir).
+  function issueJsonPath(number, subdir) {
+    const base = subdir ? `.forkmesh/issues/${subdir}` : ".forkmesh/issues";
+    return `${base}/${Number(number)}/issue-${Number(number)}.json`;
+  }
+
+  // Every path issue <number>'s record may live at, most likely first.
+  function issueJsonCandidatePaths(number) {
+    return ["open", "closed", ""].map((subdir) => issueJsonPath(number, subdir));
   }
 
   function parseIssueJson(text, fallbackNumber) {
@@ -1363,7 +1372,23 @@
     try {
       // Pulls read with ref:"" so the host serves the forkmesh/pulls branch.
       const refParams = kind === "pulls" ? { ref: "" } : {};
-      const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: recordPath, ...refParams }));
+      let blob;
+      if (kind === "issues") {
+        // The record lives under open/<n>/ or closed/<n>/ (pre-split mirrors:
+        // <n>/ at the root); probe the candidates until one answers.
+        let lastError = null;
+        for (const path of issueJsonCandidatePaths(Number(number))) {
+          try {
+            blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path }));
+            break;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+        if (!blob) throw lastError || new Error("not_found");
+      } else {
+        blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: recordPath, ...refParams }));
+      }
       // Issues are signed-event JSON (issue-N.json), not markdown front matter,
       // so parse them the same way the list does and map into the shape the
       // detail renderer expects. Any live mirror serving .forkmesh/issues/
@@ -1611,8 +1636,9 @@
     try {
       let tree;
       try {
-        // List the git tree under .forkmesh/issues/ then read one
-        // .forkmesh/issues/${number}/issue-${number}.json blob for each issue.
+        // List the git tree under .forkmesh/issues/ (which also reveals the
+        // open//closed/ status subdirs), then read one issue-${number}.json
+        // blob for each issue from wherever it lives.
         tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: ".forkmesh/issues" }));
       } catch (error) {
         if (isMissingMirrorFolder(error)) {
@@ -1628,20 +1654,39 @@
         }
         throw error;
       }
-      const numbered = (Array.isArray(tree.entries) ? tree.entries : [])
+      const rootEntries = Array.isArray(tree.entries) ? tree.entries : [];
+      // number -> the record path for that issue. Pre-split legacy folders sit
+      // directly under the root; the open//closed/ subdirs are listed next and
+      // win over a stale legacy copy of the same number.
+      const pathByNumber = new Map();
+      rootEntries
         .filter((entry) => entry.type === "tree" && /^\d+$/.test(String(entry.name || "")))
-        .sort((a, b) => Number(b.name) - Number(a.name));
+        .forEach((entry) => pathByNumber.set(Number(entry.name), issueJsonPath(Number(entry.name))));
+      const statusDirs = rootEntries
+        .filter((entry) => entry.type === "tree" && ["open", "closed"].includes(String(entry.name || "")))
+        .map((entry) => String(entry.name));
+      for (const statusDir of statusDirs) {
+        let subTree = null;
+        try {
+          subTree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `.forkmesh/issues/${statusDir}` }));
+        } catch (error) {
+          if (!isMissingMirrorFolder(error)) throw error;
+        }
+        (Array.isArray(subTree?.entries) ? subTree.entries : [])
+          .filter((entry) => entry.type === "tree" && /^\d+$/.test(String(entry.name || "")))
+          .forEach((entry) => pathByNumber.set(Number(entry.name), issueJsonPath(Number(entry.name), statusDir)));
+      }
+      const numbered = Array.from(pathByNumber.keys()).sort((a, b) => b - a);
       // Cap the page at 50 folders, but remember when the mirror holds more so
       // the panel can warn instead of silently hiding them.
       const dirs = numbered.slice(0, 50);
       // One batched request for all of them, not one /blob call per issue.
       const blobs = await fetchRepoBlobs(
-        repo, dirs.map((entry) => issueJsonPath(Number(entry.name))));
+        repo, dirs.map((number) => pathByNumber.get(number)));
       const items = [];
       let missing = [];
-      dirs.forEach((entry) => {
-        const number = Number(entry.name);
-        const blob = blobs[issueJsonPath(number)];
+      dirs.forEach((number) => {
+        const blob = blobs[pathByNumber.get(number)];
         if (blob) items.push(parseIssueJson(blobText(blob), number));
         else missing.push(number);
       });
@@ -1651,10 +1696,10 @@
       // unreadable becomes a flagged placeholder row instead of vanishing.
       if (missing.length) {
         const retry = await fetchRepoBlobs(
-          repo, missing.map((number) => issueJsonPath(number))).catch(() => ({}));
+          repo, missing.map((number) => pathByNumber.get(number))).catch(() => ({}));
         const stillMissing = [];
         missing.forEach((number) => {
-          const blob = retry[issueJsonPath(number)];
+          const blob = retry[pathByNumber.get(number)];
           if (blob) items.push(parseIssueJson(blobText(blob), number));
           else stillMissing.push(number);
         });
@@ -1734,11 +1779,15 @@
         .filter((number) => Number.isFinite(number) && number > 0);
       let issues = [];
       if (linkedNumbers.length) {
-        const issueBlobs = await fetchRepoBlobs(repo, linkedNumbers.map((number) => issueJsonPath(number)));
+        // Each record lives at open/<n>/, closed/<n>/, or the pre-split legacy
+        // <n>/; ask for every candidate in the one batch and keep whichever
+        // answered.
+        const issueBlobs = await fetchRepoBlobs(
+          repo, linkedNumbers.flatMap((number) => issueJsonCandidatePaths(number)));
         issues = linkedNumbers
           .map((number) => {
-            const blob = issueBlobs[issueJsonPath(number)];
-            return blob ? parseIssueJson(blobText(blob), number) : null;
+            const path = issueJsonCandidatePaths(number).find((candidate) => issueBlobs[candidate]);
+            return path ? parseIssueJson(blobText(issueBlobs[path]), number) : null;
           })
           .filter(Boolean);
       }
