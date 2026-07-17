@@ -67,6 +67,15 @@
             "sig": "aUQQDez9rjs80E1-CwHxgL59KePi3g870mRqQyIhCxQrfqbYtgJB7kln39lADfMVfFDtOuMOj5FhFliPLODQCw",
             "ts": 1784330900958,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "49394493-0ae3-4eb9-abdd-03148699b045",
+            "sig": "no84qIkvEGQ8TU-1RBpMz5xelM56oD1DFgTt_UoHodkkxmRk-UKgpSCBGdxJ662C75QutZ9i1nd4cDEDjsGwAQ",
+            "status": "closed",
+            "ts": 1784330901024,
+            "type": "status"
         }
     ],
     "labels": [
@@ -79,8 +88,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "[code + business: needs legal review] Non-custodial on-chain bounty escrow",
-    "updatedAt": 1784330900958,
+    "updatedAt": 1784330901024,
     "votes": 0
 }
