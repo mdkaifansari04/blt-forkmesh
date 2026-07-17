@@ -748,6 +748,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addWidget(agentBox, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
     bottomBar->addWidget(m_quickAddCharCount, 0, Qt::AlignBottom);
+    // The tiny Codex + Claude usage gauges sit immediately left of the send
+    // icons (adhoc #47), moved down from the top bar so the current 5h/weekly
+    // utilisation is visible right where prompts are launched.
+    bottomBar->addWidget(m_navCodexUsage, 0, Qt::AlignBottom);
+    bottomBar->addWidget(m_navTokenUsage, 0, Qt::AlignBottom);
     bottomBar->addLayout(sendColumn);
 
     auto *bottomBarHost = new QWidget;
@@ -3297,11 +3302,8 @@ QWidget *MainWindow::buildBreadcrumb()
     balanceColumn->addWidget(m_navNodeName);
     balanceColumn->addWidget(m_navSolanaBalance);
     mainRow->addLayout(balanceColumn);
-    // The tiny provider usage charts tuck between the earnings and the avatar.
-    mainRow->addSpacing(6);
-    mainRow->addWidget(m_navCodexUsage);
-    mainRow->addSpacing(2);
-    mainRow->addWidget(m_navTokenUsage);
+    // The provider usage gauges used to tuck in here; they now live in the
+    // prompt toolbar next to the send buttons (adhoc #47, see buildNetworkLogDock).
     mainRow->addSpacing(4);
     mainRow->addWidget(m_userAvatarNavButton);
     mainRow->addSpacing(2);
@@ -5544,6 +5546,44 @@ void MainWindow::updateChatButton()
                         .arg(total)
                         .arg(total == 1 ? QString() : QStringLiteral("s"))
                   : QStringLiteral("Chat"));
+
+    updateChatUnreadBanner();
+}
+
+void MainWindow::updateChatUnreadBanner()
+{
+    if (!m_chatUnreadBanner)
+        return;
+    int total = 0;
+    for (const int n : std::as_const(m_unreadCounts))
+        total += n;
+    if (total > 0) {
+        if (m_chatUnreadBannerLabel)
+            m_chatUnreadBannerLabel->setText(
+                QString::fromUtf8("%1 unread message%2")
+                    .arg(total)
+                    .arg(total == 1 ? QString() : QStringLiteral("s")));
+        m_chatUnreadBanner->show();
+    } else {
+        m_chatUnreadBanner->hide();
+    }
+}
+
+void MainWindow::markAllChatRead()
+{
+    if (!m_unread.isEmpty() || !m_unreadCounts.isEmpty()) {
+        m_unread.clear();
+        m_unreadCounts.clear();
+        refreshChannelList();
+        refreshDmList();
+        updateChatButton();
+        // Unread state persists across restarts now; flush the cleared markers so
+        // they don't come back after a restart.
+        scheduleChatSave();
+    }
+    // "...and to see them": jump to the newest messages in the open conversation.
+    m_stickToBottom = true;
+    scrollToBottom();
 }
 
 bool MainWindow::isChatViewVisible() const
