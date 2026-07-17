@@ -21,6 +21,18 @@
             "title": "fix the light / dark mode on the header and remove extra vertical info so the scrollbar is not needed",
             "ts": 1784327691035,
             "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 48,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "b5a49e4b-44cf-4a72-b2b5-42530fe6b065",
+            "sig": "ZAQqsf2YFMuWxZLny5FaJSLQdwhHXDUaPJSWCnUGYM5lx_-9e9G2RX8g7IyzA-QdgGKufnbN8KgaIDbpkD6LCg",
+            "ts": 1784327779329,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -33,6 +45,6 @@
     "startDate": 0,
     "status": "open",
     "title": "fix the light / dark mode on the header and remove extra vertical info so the scrollbar is not needed",
-    "updatedAt": 1784327691035,
+    "updatedAt": 1784327779329,
     "votes": 0
 }
