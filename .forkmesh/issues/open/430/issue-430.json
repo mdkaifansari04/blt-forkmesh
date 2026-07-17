@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1784321445040,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "This is a test issue to verify the creation of issues on the ForkMesh repository.\n\nFiled from a fediverse mention by @forkmesh@mastodon.social: https://mastodon.social/@forkmesh/116937289853833425",
+            "id": "forkbot-1784321445040",
+            "sig": "",
+            "title": "Test Issue Creation",
+            "ts": 1784321445040,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "fediverse"
+    ],
+    "milestone": "",
+    "number": 430,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Test Issue Creation",
+    "updatedAt": 1784321445040,
+    "votes": 0
+}
