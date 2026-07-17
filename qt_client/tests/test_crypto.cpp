@@ -4055,12 +4055,11 @@ int main(int argc, char *argv[])
                           }),
               "an issue in open/ with a stale status->closed record counts as open");
 
-        // Delete-event authorization (adhoc #16): only the issue's own creator
-        // or the repo owner may tombstone it. A stranger's delete/self event is
-        // unauthorized — loadAll heals it away (strips it, rewrites the record,
-        // commits) so the wrongly-hidden issue reappears and is counted again;
-        // legitimate self- and owner-deletions stay deleted.
-        const QString ownerKey = identity.publicKey();
+        // Deletion is shown, not hidden (adhoc #16). A delete/self event only
+        // deletes the issue when its own creator signed it; a delete from anyone
+        // else is an unauthorized attempt that leaves the issue open and counted
+        // but flagged. Every issue is returned by loadAll either way — the UI
+        // badges it — and the record is never rewritten.
         auto writeIssueWithDelete = [&](int number, const QString &creator,
                                         const QString &deleter) {
             const QString dir = QDir(tmp.path()).filePath(
@@ -4080,34 +4079,35 @@ int main(int argc, char *argv[])
                             .arg(QString::number(number), creator, deleter)
                             .toUtf8());
         };
-        writeIssueWithDelete(60, "creatorA", "stranger");  // unauthorized
+        writeIssueWithDelete(60, "creatorA", "stranger");  // unauthorized attempt
         writeIssueWithDelete(61, "creatorB", "creatorB");  // creator self-delete
-        writeIssueWithDelete(62, "creatorC", ownerKey);    // owner moderation
         loaded = repo.loadAll();
-        check(std::any_of(loaded.begin(), loaded.end(),
-                          [](const Issue &i) { return i.number == 60; }),
-              "a stranger's unauthorized delete is healed and the issue reappears");
-        check(std::none_of(loaded.begin(), loaded.end(),
-                           [](const Issue &i) { return i.number == 61; }),
-              "the creator's own self-delete stays deleted");
-        check(std::none_of(loaded.begin(), loaded.end(),
-                           [](const Issue &i) { return i.number == 62; }),
-              "the repo owner's delete stays deleted");
+        const auto find60 = std::find_if(loaded.begin(), loaded.end(),
+            [](const Issue &i) { return i.number == 60; });
+        const auto find61 = std::find_if(loaded.begin(), loaded.end(),
+            [](const Issue &i) { return i.number == 61; });
+        check(find60 != loaded.end() && !find60->isDeleted() &&
+                  find60->hasUnauthorizedDeleteAttempt(),
+              "a non-author's delete is shown, flagged, and does not delete the issue");
+        check(find61 != loaded.end() && find61->isDeleted() &&
+                  !find61->hasUnauthorizedDeleteAttempt(),
+              "a creator's own self-delete marks the issue deleted but still shows it");
         {
-            QFile healedFile(QDir(tmp.path()).filePath(QStringLiteral(
+            // The record is left intact — the delete event is not stripped.
+            QFile keptFile(QDir(tmp.path()).filePath(QStringLiteral(
                 ".forkmesh/issues/open/60/issue-60.json")));
-            bool noDelete = false;
-            if (healedFile.open(QIODevice::ReadOnly)) {
+            bool hasDelete = false;
+            if (keptFile.open(QIODevice::ReadOnly)) {
                 const QJsonArray evs =
-                    QJsonDocument::fromJson(healedFile.readAll())
+                    QJsonDocument::fromJson(keptFile.readAll())
                         .object().value("events").toArray();
-                noDelete = std::none_of(
+                hasDelete = std::any_of(
                     evs.begin(), evs.end(), [](const QJsonValue &v) {
                         return v.toObject().value("type").toString() == "delete";
                     });
             }
-            check(noDelete,
-                  "the unauthorized delete event is stripped from the record");
+            check(hasDelete,
+                  "the unauthorized delete event is preserved, not stripped");
         }
 
         check(repo.addComment(n, "a comment", {}, &err), "addComment succeeds");
@@ -4181,16 +4181,18 @@ int main(int argc, char *argv[])
         check(!withDeletedComment.isDeleted(),
               "deleting a single comment does not tombstone the whole issue");
 
-        // Fast "regular" delete: a tombstone hides the issue from every list but
-        // leaves its history intact in git (and recoverable).
+        // Fast "regular" delete: a creator's self-tombstone marks the issue
+        // deleted but loadAll still returns it (adhoc #16 — shown with a Deleted
+        // badge, not hidden), and its history stays intact in git.
         const int tomb = repo.createIssue("Tombstone me", "body", {}, QString(),
                                           0, {}, {}, &err);
         check(repo.tombstoneIssue(tomb, &err), "tombstoneIssue succeeds");
         const QList<Issue> afterTombstone = repo.loadAll();
-        check(!afterTombstone.isEmpty() &&
-                  std::none_of(afterTombstone.begin(), afterTombstone.end(),
-                               [&](const Issue &i) { return i.number == tomb; }),
-              "tombstoned issue no longer loads but others remain");
+        const auto tombIt =
+            std::find_if(afterTombstone.begin(), afterTombstone.end(),
+                         [&](const Issue &i) { return i.number == tomb; });
+        check(tombIt != afterTombstone.end() && tombIt->isDeleted(),
+              "a self-tombstoned issue still loads, flagged as deleted");
         check(!gitOutput({"log", "--all", "--",
                           QStringLiteral(".forkmesh/issues/open/%1").arg(tomb)})
                    .trimmed()

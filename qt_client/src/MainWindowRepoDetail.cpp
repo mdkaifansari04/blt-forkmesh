@@ -1489,7 +1489,9 @@ void MainWindow::updateRepoIssueCount()
     if (m_repoIssuesTab) {
         int openCount = 0;
         for (const Issue &issue : std::as_const(m_currentIssues)) {
-            if (issue.status != "closed")
+            // An issue its creator deleted isn't open; an unauthorized deletion
+            // attempt leaves it open and counted (adhoc #16).
+            if (issue.status != "closed" && !issue.isDeleted())
                 ++openCount;
         }
         m_repoIssuesTab->setText(
