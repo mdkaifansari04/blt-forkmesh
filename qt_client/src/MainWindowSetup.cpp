@@ -1331,6 +1331,19 @@ void MainWindow::sendNodeHeartbeat()
                 emailNotificationPreferencesPayload());
     if (!creditsRefilled.isEmpty())
         body.insert(QStringLiteral("creditsRefilled"), creditsRefilled);
+    // Issue #385: acknowledge the accepted mirror requests we've already acted
+    // on so the relay stops redelivering them on every beat. Rides the same
+    // signed heartbeat as creditsRefilled above.
+    if (!m_pendingMirrorRequestAcks.isEmpty()) {
+        QJsonArray acks;
+        for (const QString &id : m_pendingMirrorRequestAcks)
+            acks.append(id);
+        body.insert(QStringLiteral("mirrorRequestsAck"), acks);
+        // Clear now: if the relay processes this beat it drops the accepted
+        // request; if it doesn't, the still-accepted request is redelivered in
+        // the next reply and its id re-queued for acking below.
+        m_pendingMirrorRequestAcks.clear();
+    }
     QNetworkRequest request(accountsApiUrl("heartbeat"));
     request.setHeader(QNetworkRequest::ContentTypeHeader,
                       QStringLiteral("application/json"));
@@ -1414,6 +1427,28 @@ void MainWindow::sendNodeHeartbeat()
             showOwnershipTransferPrompt(transferAdmin);
         } else if (transferAdmin.isEmpty()) {
             m_lastOwnershipTransferAdminShown.clear();
+        }
+        // Issue #385: a peer asked this node to mirror their repo and its holder
+        // accepted on the website; the relay hands us the accepted repos here.
+        // Start mirroring each (idempotent — mirrorNetworkRepo no-ops if we
+        // already host it) and ack its id so it isn't redelivered next beat.
+        const QJsonArray mirrorRequests =
+            resp.value(QStringLiteral("mirrorRequests")).toArray();
+        for (const QJsonValue &value : mirrorRequests) {
+            const QJsonObject req = value.toObject();
+            const QString id = req.value(QStringLiteral("id")).toString().trimmed();
+            const QString owner = req.value(QStringLiteral("owner")).toString().trimmed();
+            const QString repo = req.value(QStringLiteral("repo")).toString().trimmed();
+            if (id.isEmpty() || owner.isEmpty() || repo.isEmpty())
+                continue;
+            if (!m_pendingMirrorRequestAcks.contains(id))
+                m_pendingMirrorRequestAcks.append(id);
+            if (m_handledMirrorRequests.contains(id))
+                continue; // already mirrored this session; just keep acking
+            m_handledMirrorRequests.insert(id);
+            logSystem("Accepted mirror request: mirroring " + owner + "/" + repo +
+                      " for a peer.");
+            mirrorNetworkRepo(owner, repo, QString(), false);
         }
     });
 }

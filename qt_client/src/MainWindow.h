@@ -5156,6 +5156,11 @@ private:
     // (adhoc #141), so the per-minute heartbeat doesn't reopen the dialog
     // while the request is still pending a decision.
     QString m_lastOwnershipTransferAdminShown;
+    // Accepted peer mirror requests (issue #385) delivered on the heartbeat:
+    // ids we've already started mirroring this session (so we don't re-clone),
+    // and ids still awaiting acknowledgement to the relay on the next beat.
+    QSet<QString> m_handledMirrorRequests;
+    QStringList m_pendingMirrorRequestAcks;
     // User/avatar controls in the top-right account cluster. m_avatarNavButton
     // is the node avatar with the connection dot; m_userAvatarNavButton is the
     // signed-in/linked user account avatar.

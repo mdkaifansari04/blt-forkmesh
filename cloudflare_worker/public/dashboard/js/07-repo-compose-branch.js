@@ -656,6 +656,8 @@
 
   async function loadRepoMirrors(repo) {
     const container = $("[data-repo-mirrors]");
+    // Owner-only "ask a node to mirror your repo" control (issue #385).
+    renderMirrorRequestForm(repo);
     if (container) container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading mirrors...")}</div>`;
     try {
       const data = await fetchJson(`${repoApiBase(repo)}/mirrors`);

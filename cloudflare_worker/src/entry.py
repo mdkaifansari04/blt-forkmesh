@@ -194,6 +194,7 @@ NOTIFICATION_KINDS = frozenset({
     "host_offline",
     "credits_refilled",
     "pending_inbox",
+    "mirror_request",
 })
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
@@ -209,6 +210,7 @@ NOTIFICATION_EMAIL_KINDS = (
     "general_chat",
     "host_online",
     "host_offline",
+    "mirror_request",
 )
 NOTIFICATION_EMAIL_DEFAULTS = {
     "mention": True,
@@ -224,6 +226,7 @@ NOTIFICATION_EMAIL_DEFAULTS = {
     "general_chat": True,
     "host_online": False,
     "host_offline": False,
+    "mirror_request": True,
 }
 # Email digest bridge (issue #361): the cron rolls a recipient's unread
 # notifications into one email so a reply reaches people who don't have the app
@@ -342,14 +345,20 @@ from git_http import (  # noqa: E402
 from mirrors import (  # noqa: E402
     STATE_PIN_HISTORY,
     _mirror_ms,
+    accepted_mirror_requests,
+    ack_mirror_requests,
+    add_mirror_request,
     browse_mirror_candidates,
     build_repo_mirrors_payload,
     clone_state_pins,
+    find_mirror_request,
+    mirror_request_id,
     mirroring_owner_set,
     release_blob_mirror_candidates,
     repo_clone_online,
     repo_mirror_group_key,
     repo_mirror_same_group,
+    set_mirror_request_status,
     select_clone_fallback,
     served_mirror_groups,
 )
@@ -8096,6 +8105,20 @@ async def _account_heartbeat(env, request):
     elif rec.get("ownership_transfer_pending"):
         rec.pop("ownership_transfer_pending", None)
         await _save_account(env, name_bi, rec)
+    # Accepted peer mirror requests (issue #385) ride back on this node's own
+    # signed heartbeat, the same rail as claim/ownership above: the desktop node
+    # clones each repo it agreed to mirror. It reports the ids it has acted on in
+    # `mirrorRequestsAck` (not part of the signed canonical, like creditsRefilled)
+    # so an accepted request stops being redelivered once the node has it.
+    ack_ids = data.get("mirrorRequestsAck")
+    if isinstance(ack_ids, list) and rec.get("mirror_requests"):
+        remaining = ack_mirror_requests(rec.get("mirror_requests"), ack_ids)
+        if remaining != rec.get("mirror_requests"):
+            rec["mirror_requests"] = remaining
+            await _save_account(env, name_bi, rec)
+    pending_mirrors = accepted_mirror_requests(rec.get("mirror_requests"))
+    if pending_mirrors:
+        response["mirrorRequests"] = pending_mirrors
     return json_response(response)
 
 
@@ -13492,6 +13515,108 @@ async def notifications_handler(env, request):
     return json_response({"error": "method_not_allowed"}, status=405)
 
 
+async def mirror_requests_handler(env, request):
+    # Peer mirror requests (issue #385): a repo owner asks another node to
+    # mirror their repo, the target's holder accepts or rejects, and on accept
+    # that node starts mirroring. The request is parked as a bounded list on the
+    # TARGET account record (heartbeat-delivered, like claim/ownership-transfer);
+    # accepted entries ride back on the target node's signed heartbeat so its
+    # desktop clones the repo. All actions are session-gated (the dashboard
+    # login), exactly like the notification inbox this feeds.
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    action = clean_string(data.get("action", "create"), 20) or "create"
+    actor = await _authed_account_name(env, request, data)
+    if not valid_node_name(actor):
+        return json_response({"error": "unauthorized"}, status=401)
+    now = int(Date.now())
+
+    if action == "create":
+        target = clean_string(data.get("target", ""), MAX_NODE_NAME).lower()
+        owner = clean_string(data.get("owner", ""), MAX_NODE_NAME).lower()
+        repo = clean_string(data.get("repo", ""), MAX_REPO_SEGMENT).strip()
+        if not valid_node_name(target) or not valid_node_name(owner) or not repo:
+            return json_response({"error": "bad_request"}, status=400)
+        # "Ask a node to mirror YOUR repo": only the repo owner (proven by the
+        # session, not a self-asserted body field) may send the request.
+        if owner != actor:
+            return json_response({"error": "forbidden"}, status=403)
+        if target == owner:
+            return json_response({"error": "self_target"}, status=400)
+        if await _repo_is_private(env, owner, repo):
+            # Mirroring is a public-repo affair (the /mirrors payload and clone
+            # fallback are public-only); private repos need a share token flow.
+            return json_response({"error": "private_repo"}, status=400)
+        key_bi = await blind_index(env, owner + "/" + repo)
+        repo_row = await d1_first(
+            env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
+        if not repo_row:
+            return json_response({"error": "repo_not_found"}, status=404)
+        target_bi, target_rec = await _account_row(env, target)
+        if not target_rec or target_rec.get("status") != "active":
+            return json_response({"error": "target_not_found"}, status=404)
+        req_id = mirror_request_id(owner, repo, target)
+        entry = {"id": req_id, "requester": owner, "owner": owner, "repo": repo,
+                 "status": "pending", "ts": now}
+        target_rec["mirror_requests"] = add_mirror_request(
+            target_rec.get("mirror_requests"), entry)
+        await _save_account(env, target_bi, target_rec)
+        await enqueue_notification(
+            env, target, "mirror_request", "Mirror request from " + owner,
+            body=(owner + " asked your node to mirror " + owner + "/" + repo +
+                  ". Accept to start mirroring it."),
+            repo=owner + "/" + repo, href=repo_web_href(owner, repo),
+            actor=owner, source="mirror_request",
+            dedupe="mirror_request:" + req_id,
+            meta={"requestId": req_id, "owner": owner, "repo": repo,
+                  "requester": owner, "state": "pending"})
+        return json_response({"ok": True, "requestId": req_id, "status": "pending"})
+
+    if action in ("accept", "reject"):
+        req_id = clean_string(data.get("requestId", ""), 200).strip().lower()
+        if not req_id:
+            return json_response({"error": "bad_request"}, status=400)
+        target_bi, target_rec = await _account_row(env, actor)
+        if not target_rec:
+            return json_response({"error": "unauthorized"}, status=401)
+        existing = find_mirror_request(target_rec.get("mirror_requests"), req_id)
+        if not existing:
+            return json_response({"error": "not_found"}, status=404)
+        status = "accepted" if action == "accept" else "rejected"
+        updated_list, updated = set_mirror_request_status(
+            target_rec.get("mirror_requests"), req_id, status, ts=now)
+        target_rec["mirror_requests"] = updated_list
+        await _save_account(env, target_bi, target_rec)
+        owner = clean_string((updated or {}).get("owner", ""), MAX_NODE_NAME).lower()
+        repo = clean_string((updated or {}).get("repo", ""), MAX_REPO_SEGMENT).strip()
+        requester = clean_string(
+            (updated or {}).get("requester", ""), MAX_NODE_NAME).lower()
+        # Let the requester know the outcome (recipient != actor is guaranteed:
+        # a request never targets its own owner).
+        if requester and owner and repo:
+            verb = "accepted" if action == "accept" else "declined"
+            tail = (" — their node will start mirroring it shortly."
+                    if action == "accept" else ".")
+            await enqueue_notification(
+                env, requester, "mirror_request",
+                actor + " " + verb + " your mirror request",
+                body=(actor + " " + verb + " your request to mirror " +
+                      owner + "/" + repo + tail),
+                repo=owner + "/" + repo, href=repo_web_href(owner, repo),
+                actor=actor, source="mirror_request",
+                dedupe="mirror_request_reply:" + req_id + ":" + status,
+                meta={"requestId": req_id, "owner": owner, "repo": repo,
+                      "state": status})
+        return json_response({"ok": True, "status": status})
+
+    return json_response({"error": "bad_action"}, status=400)
+
+
 async def subscribe_handler(env, request, owner, repo):
     # Signed subscribe/unsubscribe for one issue or PR thread (issue #361). The
     # request is signed with the node's own Ed25519 key — the same proof of
@@ -18468,6 +18593,11 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/notifications", "/api/notifications/"):
             return await notifications_handler(self.env, request)
+
+        # Peer mirror requests (issue #385): create/accept/reject a request
+        # asking another node to mirror a repo. Session-gated like the inbox.
+        if url.path in ("/api/mirror-requests", "/api/mirror-requests/"):
+            return await mirror_requests_handler(self.env, request)
 
         # Consolidated lightweight status digest (version + profile/notification
         # change tokens) so the client polls once instead of re-fetching the

@@ -1,0 +1,62 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1784327691035,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+                "4ba50f90.png"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "![forkmesh-paste-oSfluh.png](4ba50f90.png)",
+            "id": "open-431",
+            "sig": "2N0mIJ_O3o1jt2aw4J71iqgZUSbQLacRYHnRcCFcRysh0Zs6OApi-_znliB5tnFqyaY6ObqMG6YZ-e5B2g2iCA",
+            "title": "fix the light / dark mode on the header and remove extra vertical info so the scrollbar is not needed",
+            "ts": 1784327691035,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 48,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "b5a49e4b-44cf-4a72-b2b5-42530fe6b065",
+            "sig": "ZAQqsf2YFMuWxZLny5FaJSLQdwhHXDUaPJSWCnUGYM5lx_-9e9G2RX8g7IyzA-QdgGKufnbN8KgaIDbpkD6LCg",
+            "ts": 1784327779329,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "4f8c43c9-d43e-4953-bccf-4593824a8c29",
+            "sig": "ulJ2l_qhpzn5GQl0INGc7B1LuRHIv7AGtIEaClzLv2_Ak4g0fdSdseRXSS_Crs3cW2SLMQAjxUSkaKj5pFgxCQ",
+            "ts": 1784327779387,
+            "type": "assignees"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 431,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "fix the light / dark mode on the header and remove extra vertical info so the scrollbar is not needed",
+    "updatedAt": 1784327779387,
+    "votes": 0
+}
