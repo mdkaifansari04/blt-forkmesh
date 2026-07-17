@@ -32,7 +32,7 @@ FUNCS = {
     "_resolve_claimable_node", "_account_row_by_pubkey", "valid_node_pubkey",
     "_transfer_pending", "_admin_authorized", "_admin_request_ownership",
     "_account_ownership_transfer_confirm", "_park_ownership_transfer",
-    "_admin_migrate_account_kind",
+    "_admin_migrate_account_kind", "_admin_migrate_verified_users",
 }
 
 
@@ -46,6 +46,10 @@ def _load_functions(extra_globals):
     assert {node.name for node in selected} == FUNCS, "missing claim/link functions"
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals)
+    # Per-isolate hot-path memos the heartbeat path references (module-level
+    # in entry.py); fresh per load for test isolation.
+    namespace.setdefault("_MIRRORED_ACCOUNT_BIS", set())
+    namespace.setdefault("_HEARTBEAT_BALANCE_PROBES", {})
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace
 
@@ -89,12 +93,20 @@ def _harness(accounts):
     async def blind_index(_env, value):
         return "bi:" + str(value)
 
+    # `mirror` models the authoritative users/nodes tables: _save_account writes
+    # through to it, and reads fall back to it once a record has been drained out
+    # of the legacy accounts table (adhoc #20 delete-on-make).
+    mirror = {}
+
     async def _account_row(_env, name):
         rec = accounts.get(name)
+        if rec is None:
+            rec = mirror.get(name)
         return "bi:" + name, (dict(rec) if rec is not None else None)
 
     async def _save_account(_env, name_bi, rec, email_bi=None, ip_bi=None):
         accounts[name_bi[3:]] = dict(rec)
+        mirror[name_bi[3:]] = dict(rec)
 
     async def d1_all(_env, sql, *args):
         if "FROM accounts" in sql:
@@ -128,6 +140,10 @@ def _harness(accounts):
         if sql.startswith("DELETE FROM link_codes"):
             link_rows.pop(args[0], None)
             return
+        if sql.startswith("DELETE FROM accounts"):
+            # name_bi is "bi:" + name; accounts is keyed by plain name.
+            accounts.pop(str(args[0])[3:], None)
+            return
         if "account_presence" in sql:
             return
         raise AssertionError("unexpected d1_run: " + sql)
@@ -159,6 +175,9 @@ def _harness(accounts):
     def _ts_ok(_ts):
         return True
 
+    def _safe_error_text(error):
+        return repr(error)
+
     namespace = _load_functions({
         "Date": _DateStub,
         "clean_string": clean_string,
@@ -179,6 +198,7 @@ def _harness(accounts):
         "_solana_balance_lamports": _solana_balance_lamports,
         "_random_bytes": _random_bytes,
         "_ts_ok": _ts_ok,
+        "_safe_error_text": _safe_error_text,
         "MAX_NODE_NAME": 63,
         "CLAIM_CODE_TTL_MS": 10 * 60 * 1000,
         "CLAIM_CODE_MAX_ATTEMPTS": 5,
@@ -190,6 +210,7 @@ def _harness(accounts):
     })
     namespace["_now"] = now
     namespace["_link_rows"] = link_rows
+    namespace["_mirror"] = mirror
     return namespace
 
 
@@ -221,28 +242,56 @@ def test_account_kind_can_be_pinned_independently_of_password():
 def test_admin_migrates_account_between_user_and_node_kinds():
     accounts = {"alice": _user_rec()}
     ns = _harness(accounts)
+    mirror = ns["_mirror"]
     env = object()
 
+    # Making the account a node mirrors it into users/nodes and drains the
+    # legacy accounts row (adhoc #20 delete-on-make).
     migrated = asyncio.run(ns["_admin_migrate_account_kind"](env, "alice", "node"))
-    assert "Migrated account 'alice' as node." in migrated
-    assert accounts["alice"]["kind"] == "node"
-    assert ns["_account_kind"](accounts["alice"]) == "node"
+    assert "Migrated account 'alice' as node" in migrated
+    assert "removed from the accounts table" in migrated
+    assert "alice" not in accounts
+    assert mirror["alice"]["kind"] == "node"
+    assert ns["_account_kind"](mirror["alice"]) == "node"
 
+    # Reads fall back to the mirror, so re-migrating still works end to end.
     migrated = asyncio.run(ns["_admin_migrate_account_kind"](env, "alice", "user"))
-    assert "Migrated account 'alice' as user." in migrated
-    assert accounts["alice"]["kind"] == "user"
-    assert ns["_account_kind"](accounts["alice"]) == "user"
+    assert "Migrated account 'alice' as user" in migrated
+    assert "alice" not in accounts
+    assert mirror["alice"]["kind"] == "user"
+    assert ns["_account_kind"](mirror["alice"]) == "user"
 
 
 def test_admin_user_migration_warns_when_login_password_is_missing():
     accounts = {"mirror1": _node_rec()}
     ns = _harness(accounts)
+    mirror = ns["_mirror"]
 
     migrated = asyncio.run(
         ns["_admin_migrate_account_kind"](object(), "mirror1", "user"))
 
-    assert accounts["mirror1"]["kind"] == "user"
+    assert "mirror1" not in accounts
+    assert mirror["mirror1"]["kind"] == "user"
     assert "Set a password before this user can log in." in migrated
+
+
+def test_admin_migrates_all_verified_email_accounts_into_users():
+    accounts = {
+        "alice": {**_user_rec(), "email_verified": True},
+        "bob": {**_user_rec("bob", "bob@example.com")},  # unverified
+        "mirror1": _node_rec(),  # no email
+    }
+    ns = _harness(accounts)
+    mirror = ns["_mirror"]
+
+    banner = asyncio.run(ns["_admin_migrate_verified_users"](object()))
+
+    assert "Migrated 1" in banner
+    # Only the verified account is drained into users; the rest stay put.
+    assert "alice" not in accounts
+    assert mirror["alice"]["kind"] == "user"
+    assert "bob" in accounts
+    assert "mirror1" in accounts
 
 
 def test_claim_flow_links_node_via_heartbeat_code():

@@ -1,0 +1,51 @@
+{
+    "assignees": [
+    ],
+    "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+    "authorName": "newnewnode",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783116818268,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+            "authorName": "newnewnode",
+            "body": "**Roadmap Phase 6.** ForkMesh currently custodies bounty SOL in per-issue deposit keys — a money-transmission exposure and a honeypot. Move escrow on-chain so ForkMesh never holds user funds.\n\n- Solana program (Anchor: <https://www.anchor-lang.com>): funder deposits into a PDA bound to (repo root commit, issue number); release splits 90/10 to contributor and project when the repo owner's node submits a merge attestation signed with the same Ed25519 key the mesh already trusts; refund path to the funder after expiry.\n- Client keeps the same UX (`MainWindowIssues.cpp` bounty controls); only the destination and release mechanics change.\n- Ship devnet first. Do #367 first — it validates the payout semantics we then freeze into the program.\n- Business (not code, hence the title tag): legal review of whether attestation-gated escrow still creates transmitter obligations, **before** mainnet deploy.",
+            "id": "open-369",
+            "sig": "cVDm0rvBQDOth02leBfjxQ9JLolcforQ3UmkD6BAdhzNFapXAHfXwVA4Wz87w71xdqYogzqhELDb_6KY3L9fDg",
+            "title": "[code + business: needs legal review] Non-custodial on-chain bounty escrow",
+            "ts": 1783116818268,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "**Roadmap Phase 6.** ForkMesh currently custodies bounty SOL in per-issue deposit keys — a money-transmission exposure and a honeypot. Move escrow on-chain so ForkMesh never holds user funds.\n\n- Solana program (Anchor: <https://www.anchor-lang.com>): funder deposits into a PDA bound to (repo root commit, issue number); release splits 90/10 to contributor and project when the repo owner's node submits a merge attestation signed with the same Ed25519 key the mesh already trusts; refund path to the funder after expiry.\n- Client keeps the same UX (`MainWindowIssues.cpp` bounty controls); only the destination and release mechanics change.\n- Business (not code, hence the title tag): legal review of whether attestation-gated escrow still creates transmitter obligations, **before** mainnet deploy.",
+            "id": "63113adf-5fbc-40b2-b62b-73486a624228",
+            "sig": "GIaZZOAqbtxmgS3NftWiAZcB09sj3EbtWnoX9GCPO3airCYAF4qFqERH8UZt8jz3nnOp3uWmNqX4fqh4asvqAA",
+            "target": "open-369",
+            "ts": 1784326583515,
+            "type": "edit"
+        }
+    ],
+    "labels": [
+        "feature",
+        "security"
+    ],
+    "milestone": "Phase 2",
+    "number": 369,
+    "priority": 52,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "[code + business: needs legal review] Non-custodial on-chain bounty escrow",
+    "updatedAt": 1784326583515,
+    "votes": 0
+}

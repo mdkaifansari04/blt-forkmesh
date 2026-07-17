@@ -4,9 +4,11 @@
 
 #include <QByteArray>
 #include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QStandardPaths>
 
 #include <openssl/bio.h>
@@ -90,7 +92,15 @@ bool ForkMeshIdentity::generate(const QString &keyPath)
         m_error = "Could not write the Ed25519 identity key.";
         return false;
     }
-    QFile::setPermissions(keyPath, QFile::ReadOwner | QFile::WriteOwner);
+    if (!QFile::setPermissions(keyPath, QFile::ReadOwner | QFile::WriteOwner)) {
+        // Best-effort hardening: on a filesystem without POSIX permissions this
+        // can fail, which would leave the private identity key group/world
+        // readable. Warn loudly rather than fail identity creation (which some
+        // network-mounted home directories would otherwise trip on).
+        qWarning("ForkMesh: could not restrict permissions on identity key %s; "
+                 "it may be readable by other users on this machine.",
+                 qUtf8Printable(keyPath));
+    }
     return true;
 }
 
@@ -152,7 +162,13 @@ void ForkMeshIdentity::markWelcomeAnnounced() const
     if (m_keyDir.isEmpty())
         return;
     QFile f(m_keyDir + "/welcome_announced");
-    f.open(QIODevice::WriteOnly);
+    if (!f.open(QIODevice::WriteOnly)) {
+        qWarning().noquote()
+            << "Could not persist the welcome marker:"
+            << f.errorString().simplified().left(240);
+        return;
+    }
+    f.close();
 }
 
 QString ForkMeshIdentity::shortPublicKey() const
@@ -260,6 +276,27 @@ bool ForkMeshIdentity::verifySignature(const QString &publicKeyB64url,
     return ok;
 }
 
+QByteArray ForkMeshIdentity::deviceBindCanonical(
+    const QString &accountName, const QString &publicKeyB64url,
+    const QString &timestamp)
+{
+    static const QRegularExpression accountPattern(
+        QStringLiteral("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"));
+    static const QRegularExpression publicKeyPattern(
+        QStringLiteral("^[A-Za-z0-9_-]{43}$"));
+    static const QRegularExpression timestampPattern(
+        QStringLiteral("^(?:0|[1-9][0-9]{0,15})$"));
+    const QString normalizedAccount = accountName.trimmed().toLower();
+    if (!accountPattern.match(normalizedAccount).hasMatch() ||
+        !publicKeyPattern.match(publicKeyB64url).hasMatch() ||
+        !timestampPattern.match(timestamp).hasMatch()) {
+        return {};
+    }
+    return QByteArrayLiteral("forkmesh-device-bind-v1\n") +
+           normalizedAccount.toUtf8() + '\n' + publicKeyB64url.toUtf8() +
+           '\n' + timestamp.toUtf8();
+}
+
 // --- Backup, export & rotation (issue #368) -------------------------------
 
 QByteArray ForkMeshIdentity::rawPrivateSeed() const
@@ -349,7 +386,15 @@ bool ForkMeshIdentity::installRawSeed(const QByteArray &seed)
         m_error = "Could not write the imported identity key.";
         return false;
     }
-    QFile::setPermissions(keyPath, QFile::ReadOwner | QFile::WriteOwner);
+    if (!QFile::setPermissions(keyPath, QFile::ReadOwner | QFile::WriteOwner)) {
+        // Best-effort hardening: on a filesystem without POSIX permissions this
+        // can fail, which would leave the private identity key group/world
+        // readable. Warn loudly rather than fail identity creation (which some
+        // network-mounted home directories would otherwise trip on).
+        qWarning("ForkMesh: could not restrict permissions on identity key %s; "
+                 "it may be readable by other users on this machine.",
+                 qUtf8Printable(keyPath));
+    }
     m_keyDir = dir;
     // A restored key is, by definition, one the user already holds a backup of.
     markBackedUp();
@@ -395,7 +440,13 @@ void ForkMeshIdentity::markBackedUp() const
     if (m_keyDir.isEmpty())
         return;
     QFile f(m_keyDir + "/backed_up");
-    f.open(QIODevice::WriteOnly);
+    if (!f.open(QIODevice::WriteOnly)) {
+        qWarning().noquote()
+            << "Could not persist the identity backup marker:"
+            << f.errorString().simplified().left(240);
+        return;
+    }
+    f.close();
 }
 
 QJsonObject ForkMeshIdentity::signRotation(const QString &newPublicKeyB64url) const

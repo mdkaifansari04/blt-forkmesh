@@ -1,0 +1,91 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
+    "authorName": "mdkaifansari04",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783361961840,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
+            "authorName": "mdkaifansari04",
+            "body": "Description\nwhen user deletes his repo technically the repo is deleted from his account but always there as a local copy due to that user cannot create the repo with same name as deleted repo, this needs to fix\nwhen user deletes the repo it should be deleted completly from users account.",
+            "id": "open-391",
+            "sig": "Pp91G0bkLhF2WTVzeVVhj0lvFR8Fcp75Hm-He9dwgtyQuGnWMuwGEVFfQooY9oXyxJPT7YneEBInGzYhDrwaCw",
+            "title": "BUG: repo delete feature not working",
+            "ts": 1783361961840,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 10,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "47880bcd-0e4d-4442-b73c-64e0210d4972",
+            "sig": "1mtn-11hNYipsmb02diZoJeTdoJhIHZ2Uy57TSOFt7jhd9KfOCDoJfwzR8JIx1i3VS4W2LiX082p2oMXjM30Bg",
+            "ts": 1783717075724,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "27801159-f421-4da2-ab35-08f880364778",
+            "sig": "AOhC7cP4R4QiVwfyhrgAfsK6HJmkIbjSijt6lTb4O0eCRFFZ_sg4zvTXXRhEdAqR6zg-GZuFXDloUxrUwtucCA",
+            "ts": 1783717075784,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-392-bug-repo-delete-feature-not-working\".",
+            "id": "2a85530a-b668-4557-9628-384004179321",
+            "sig": "8txebg6_JxJN20xp0jVLlS7U4t2duTocHeYbgDrHmvc9k2byFqrD-1ndaoeRcXGlr89bpzVAGm8bH1Dx6IMaAA",
+            "ts": 1783720734676,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "d1ed0368-49be-4c80-b8f8-d97d52c40bd3",
+            "sig": "MnN7vnv1xR81IhLE_7lst9gXx6aRPknaH5Fxm6NZfrVayfCiWNGKNyx8uxRxQLc0mF4QeDHwpe9PYqLT_aGuDA",
+            "status": "closed",
+            "ts": 1783720734731,
+            "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "7006c828-0199-4f6a-a2d4-7fe6cd8f8000",
+            "sig": "S4NeqnRjwh3QmeQDb6k7xR1aPQML7u1orYCfqaTV29Diykq2NEbuIpL94mCJR5RmcK-3YCLCovQnv8qUW8giDg",
+            "ts": 1783721095764,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 392,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "BUG: repo delete feature not working",
+    "updatedAt": 1783721095764,
+    "votes": 0
+}

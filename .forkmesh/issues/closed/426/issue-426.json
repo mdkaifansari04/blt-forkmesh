@@ -1,0 +1,92 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783916191297,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-426",
+            "sig": "BAw4MJTnsoceb65IykOjOMopCR8eq8Rxs_HK520-ahNwIiPINPRlwRUbdYTZhjGTfD97H1LeLf03HhRo_B2tCw",
+            "title": "have teh ability for the repo owner to delete posts from mastodon",
+            "ts": 1783916191297,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "this can be a feature on the website have a dropdown to manage all aspects of ths posts ",
+            "id": "1946fd1e-418a-4054-bb5d-a792367dc06e",
+            "sig": "bgHkyC95E93hZXyIsVIKwH7dwqA29uro5Zzp53bVkTVRsZe_ZUshqmj5VAhRDNdr4u4nVJgRI0evruw1vf_bCg",
+            "ts": 1784325417311,
+            "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 39,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "77e46223-13a7-4a10-9ea6-91b157fd5339",
+            "sig": "JD9mLASTn8z8ngxj2eNHFbSXqeQ7XK1-0IFW5lU8GVH7-9yo5dKAppLu2VXEpEICiKfxRqwf-8luE1rZ4f12Aw",
+            "ts": 1784325493423,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "7dbb1814-c43f-481d-bbfe-5ed21cd84e02",
+            "sig": "HqlI7Rx9GLTexb5xzLdSs20T111iKsDu9wC-NjtP91fMt3jOaqul0wvRdR7SKYGju8zN4uW_KTqkspcYiZz0AA",
+            "ts": 1784325493483,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-426-have-teh-ability-for-the-repo-owner-to-delete-po\".",
+            "id": "cd4967e9-4a23-4361-b6e7-2532d242f7c2",
+            "sig": "2ojxE8HLYEi4gn0BnBc19TPicg2KLCcA7Jhlj_dUUy5ikbWoQEh3LP1gxNWk4ZVCcJCquDk4Oc5drd5yuyWzCA",
+            "ts": 1784326385895,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "0e45dee4-6828-471c-874f-ea6e2a8189d2",
+            "sig": "NLykY4-jj-DegfrJqwO5fAv24Il2XL0RYYfHpOJHE4iCWbqlJnX5S_wlMhD1cM4gxJLO-sAjm3ErW45G5J4mAA",
+            "status": "closed",
+            "ts": 1784326385982,
+            "type": "status"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 426,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "have teh ability for the repo owner to delete posts from mastodon",
+    "updatedAt": 1784326385982,
+    "votes": 0
+}

@@ -41,6 +41,12 @@ struct MemberInfo {
     QString name;      // chat/user display name
     QString nodeName;  // registered node account name, when known
     QString ownerUser; // user account that owns this node, when linked/known
+    // "node" (default) or "user" — stamped from the sender's accountKind, so a
+    // user-only profile (e.g. a bot's relayed chat, or a desktop client signed
+    // in as a plain user account, not a linked node) can be told apart from a
+    // real serving node. Empty for older peers that never advertised it, which
+    // callers should treat the same as "node" for backward compatibility.
+    QString accountKind;
     QString note;     // e.g. "(discovered)"
     bool self = false;
     bool online = false; // live link right now (green dot)
@@ -114,6 +120,13 @@ public:
     // chatter stays off the public room); without this stamp a desktop USER'S
     // messages were invisible on the website. Default no-op.
     virtual void setAccountKind(const QString &kind) { Q_UNUSED(kind); }
+    // Re-key room encryption once the server-issued shared passphrase arrives.
+    // The passphrase fetch is async and often resolves after the backend is
+    // already connected (it starts from the first heartbeat, which fires after
+    // the initial connect), so a backend seeded with a fallback key must be
+    // able to switch to the real one without a reconnect. Default no-op for
+    // backends without room encryption.
+    virtual void setRoomPassphrase(const QString &passphrase) { Q_UNUSED(passphrase); }
     // Relay a ForkBot reply into a channel on behalf of this client — the bot
     // has no connection of its own; whichever client triggered it broadcasts
     // the answer (the web surfaces do the same). Default no-op.
@@ -152,6 +165,10 @@ public:
     // Tell peers we started/stopped typing in a conversation.
     virtual void sendTyping(const QString &conversation, bool active) = 0;
     virtual void addChannel(const QString &channel) = 0;
+    // Remove a room from this node: forget its membership and hide it so peer
+    // hellos / re-broadcasts don't resurrect it. Local only — it doesn't delete
+    // the room for anyone else. No-op for backends without rooms.
+    virtual void removeChannel(const QString &channel) { Q_UNUSED(channel); }
     // Create an invite-only room. Unlike addChannel it is NOT advertised to the
     // whole network (no hello/channel broadcast), so it only appears for peers
     // who are explicitly invited via inviteToChannel — the same honour-model as
@@ -168,7 +185,23 @@ public:
     virtual void setMirroredRepos(const QList<MirrorAdvert> &repos) { Q_UNUSED(repos); }
     // Announce that this node just refreshed a repo's mirror from its source of
     // truth, so peers mirroring the same repo can be notified (and refresh).
-    virtual void notifyMirrorUpdated(const QString &ownerName) { Q_UNUSED(ownerName); }
+    // `commit` is the new HEAD the source advanced to, so peers can see exactly
+    // which commit is different without waiting for a fresh advert.
+    virtual void notifyMirrorUpdated(const QString &ownerName,
+                                     const QString &commit = QString())
+    {
+        Q_UNUSED(ownerName);
+        Q_UNUSED(commit);
+    }
+    // Report back that this node finished pulling a repo's mirror up to `commit`
+    // after a mirror-update signal — the closing half of the round trip, so the
+    // source (and other peers) see it converged right away.
+    virtual void notifyMirrorSynced(const QString &ownerName,
+                                    const QString &commit = QString())
+    {
+        Q_UNUSED(ownerName);
+        Q_UNUSED(commit);
+    }
     // Ask online peers mirroring a repo group to immediately re-advertise their
     // current mirror metadata. `source` is the shared source identity; `ownerName`
     // is the caller's clone/catalog identity for compatibility with older adverts.
@@ -196,6 +229,22 @@ public:
         Q_UNUSED(openerName);
         Q_UNUSED(ts);
         Q_UNUSED(signature);
+    }
+    // Announce that `inviteeAccount` was just granted access to an account-scoped
+    // cove. Every online node checks inviteeAccount against its own account and
+    // raises a notification if it matches; everyone else ignores it. Advisory
+    // only (it grants nothing by itself — the actual access grant already lives
+    // in the cove's encrypted invitedAccounts list), so unlike notifyCoveOpened
+    // it isn't signed.
+    virtual void notifyCoveInvited(const QString &inviteeAccount, const QString &coveId,
+                                   const QString &coveName, const QString &inviterName,
+                                   qint64 ts)
+    {
+        Q_UNUSED(inviteeAccount);
+        Q_UNUSED(coveId);
+        Q_UNUSED(coveName);
+        Q_UNUSED(inviterName);
+        Q_UNUSED(ts);
     }
     // Live WebSocket / Durable Object diagnostics for the Network tab. Backends
     // without a socket return an empty list.
@@ -238,7 +287,13 @@ signals:
     void privateChannelJoined(const QString &channel);
     void rosterChanged(const QList<MemberInfo> &members);
     // A peer refreshed its mirror of "owner/name" from the source of truth.
-    void mirrorUpdated(const QString &ownerName, const QString &peerName);
+    // `commit` is the new HEAD it advanced to (empty from older peers).
+    void mirrorUpdated(const QString &ownerName, const QString &peerName,
+                       const QString &commit);
+    // A peer finished pulling "owner/name" up to `commit` after a mirror-update
+    // signal — the round-trip acknowledgement that it has now converged.
+    void mirrorSynced(const QString &ownerName, const QString &peerName,
+                      const QString &commit);
     // A peer asked nodes mirroring `source` to refresh and re-advertise now.
     void mirrorRefreshRequested(const QString &source, const QString &requesterName);
     // A peer opened an encrypted cove. The UI verifies the opener's signature and,
@@ -246,6 +301,10 @@ signals:
     void coveOpened(const QString &creatorKey, const QString &coveId,
                     const QString &coveName, const QString &openerKey,
                     const QString &openerName, qint64 ts, const QString &signature);
+    // A peer granted `inviteeAccount` access to an account-scoped cove. The UI
+    // raises a notification if inviteeAccount is our own account.
+    void coveInvited(const QString &inviteeAccount, const QString &coveId,
+                     const QString &coveName, const QString &inviterName, qint64 ts);
     void networkDiagnosticsChanged();
     // Round-trip time of the room socket's keepalive ping/pong, sampled every
     // ~25s while connected. Feeds the relay radar for free — the footer's

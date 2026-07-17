@@ -62,7 +62,7 @@
     if (!state.globalSearch.open) return;
 
     if (state.repositoriesLoading) {
-      container.innerHTML = '<div class="px-3 py-5 text-sm text-muted-foreground">Loading repositories...</div>';
+      container.innerHTML = `<div class="px-3 py-5 text-sm text-muted-foreground">${loadingHtml("Loading repositories...")}</div>`;
       return;
     }
 
@@ -138,6 +138,14 @@
   // Live, but the named source of truth is down - a mirror node is serving it.
   function repoServedByMirror(repo) {
     return repoIsLive(repo) && !repo?.liveHost;
+  }
+  // The signed-in account owns this repo when their node name matches the repo
+  // owner slug (case-insensitive). Owners get to keep their own offline issue
+  // submissions visible until their source-of-truth node drains them (#379).
+  function isRepoOwner(repo) {
+    const owner = String(repo?.owner || "").trim().toLowerCase();
+    const me = String(state.session?.nodeName || "").trim().toLowerCase();
+    return Boolean(owner && me && owner === me);
   }
 
   function groupRepoMetric(group, keys) {
@@ -250,7 +258,6 @@
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
     const language = repoLanguage(origin);
-    const stars = stableMockNumber(key, 0, 40);
     return `
       <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link" tabindex="0" aria-label="Open ${escapeHtml(key)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
         <div class="repo-layout grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(10rem,12rem)] md:items-center">
@@ -262,10 +269,10 @@
               <span class="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${statusClass}">
                 ${statusText}
               </span>
-              <button data-repo-star-button type="button" aria-label="Star ${escapeHtml(key)}" class="ml-auto hidden shrink-0 items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-foreground hover:bg-background sm:inline-flex">
-                <i data-lucide="star" class="h-3.5 w-3.5 text-muted-foreground"></i>
-                <span>Star</span>
-                <span class="font-mono text-muted-foreground">${formatCount(stars)}</span>
+              <button data-repo-star-button data-repo-key="${escapeHtml(key)}" type="button" aria-pressed="false" aria-label="Star ${escapeHtml(key)}" class="ml-auto hidden shrink-0 items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-foreground hover:bg-background sm:inline-flex">
+                <i data-lucide="star" data-repo-star-icon class="h-3.5 w-3.5 text-muted-foreground"></i>
+                <span data-repo-star-label>Star</span>
+                <span data-repo-star-count class="font-mono text-muted-foreground">${formatCount(0)}</span>
               </button>
             </div>
             <p class="mt-1 truncate text-xs text-muted-foreground">${escapeHtml(repo.description || origin.description || "No description published.")}</p>
@@ -297,7 +304,6 @@
     const visibility = repo.isPrivate ? "Private" : "Public";
     const language = repoLanguage(repo);
     const license = repoLicense(repo);
-    const stars = stableMockNumber(key, 0, 80);
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
     return `<article data-profile-repository-row class="grid gap-3 px-4 py-5 md:grid-cols-[minmax(0,1fr)_12rem]">
@@ -315,10 +321,10 @@
         </span>
       </a>
       <div class="grid content-center gap-3">
-        <button data-repo-star-button type="button" aria-label="Star ${escapeHtml(key)}" class="justify-self-end inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-background">
-          <i data-lucide="star" class="h-3.5 w-3.5 text-muted-foreground"></i>
-          Star
-          <span class="font-mono text-muted-foreground">${formatCount(stars)}</span>
+        <button data-repo-star-button data-repo-key="${escapeHtml(key)}" type="button" aria-pressed="false" aria-label="Star ${escapeHtml(key)}" class="justify-self-end inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-background">
+          <i data-lucide="star" data-repo-star-icon class="h-3.5 w-3.5 text-muted-foreground"></i>
+          <span data-repo-star-label>Star</span>
+          <span data-repo-star-count class="font-mono text-muted-foreground">${formatCount(0)}</span>
         </button>
         ${repoActivitySparkline(activityWeeks, { totalHint: commitTotal })}
       </div>
@@ -341,7 +347,7 @@
 
     if (state.repositoriesLoading) {
       if (list) {
-        list.innerHTML = '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">Loading repositories from an online node...</div>';
+        list.innerHTML = `<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">${loadingHtml("Loading repositories from an online node...")}</div>`;
       }
       if (summary) summary.textContent = "Loading repositories from an online node";
       if (prev) {
@@ -393,6 +399,7 @@
     }
 
     window.lucide?.createIcons();
+    hydrateRepoStarButtons(list);
   }
 
   function renderSidebarRepositories(session) {
@@ -519,20 +526,94 @@
     `).join("");
   }
 
+  // Home left-rail "Active agent sessions" (adhoc #81). Renders the aggregated
+  // non-terminal agent runs collected by loadHomeAgentSessions(). The panel
+  // stays hidden until there is at least one active session so it never shows
+  // an empty box to accounts that don't run agents.
+  function renderHomeAgentSessions() {
+    const panel = $("[data-home-agent-sessions-panel]");
+    const container = $("[data-home-agent-sessions]");
+    if (!panel || !container) return;
+    const sessions = Array.isArray(state.homeAgentSessions) ? state.homeAgentSessions : [];
+    if (!sessions.length) {
+      panel.classList.add("hidden");
+      container.innerHTML = "";
+      return;
+    }
+    panel.classList.remove("hidden");
+    container.innerHTML = sessions.slice(0, 8).map((entry) => {
+      const agent = entry.agent || {};
+      const repo = entry.repo || {};
+      const issueLabel = repoAgentIssueLabel(agent) || repoKey(repo);
+      return `
+        <a href="${escapeHtml(repoPathUrl(repo) + "/agents")}" class="grid gap-1 rounded-md px-2 py-1.5 text-left text-xs hover:bg-secondary">
+          <div class="flex min-w-0 items-center gap-2">
+            <span class="h-2 w-2 shrink-0 rounded-full bg-yellow-500"></span>
+            <span class="min-w-0 flex-1 truncate font-medium text-foreground">${escapeHtml(issueLabel)}</span>
+            <span class="shrink-0 font-mono ${repoAgentStatusTone(agent.status)}">${escapeHtml(agent.status || "unknown")}</span>
+          </div>
+          <span class="truncate pl-4 text-muted-foreground">${escapeHtml(repoKey(repo))}</span>
+        </a>`;
+    }).join("");
+    window.lucide?.createIcons();
+  }
+
+  // Fetch the agent-session list for every repo the session can assign agents
+  // to and keep only the still-running (non-terminal) ones. The per-repo
+  // /agents/list endpoint is owner-gated, so this only runs for a signed-in
+  // account and silently skips repos it can't read.
+  async function loadHomeAgentSessions() {
+    if (!state.session?.nodeName) return;
+    const repos = (state.repositories || []).filter((repo) =>
+      repo?.owner && repo?.name && sessionCanAssignAgent(repo));
+    if (!repos.length) {
+      state.homeAgentSessions = [];
+      renderHomeAgentSessions();
+      return;
+    }
+    const results = await Promise.all(repos.map(async (repo) => {
+      try {
+        const agents = await requestRepoAgentsList(repo);
+        return agents
+          .filter((agent) => repoAgentsCanPrompt(agent.status))
+          .map((agent) => ({ repo, agent }));
+      } catch (_) {
+        return [];
+      }
+    }));
+    state.homeAgentSessions = results.flat();
+    renderHomeAgentSessions();
+  }
+
+  // The repo groups the profile pages list: the whole catalog on the
+  // session's own dashboard, but ONLY the viewed account's repos in
+  // public-profile mode (/@name).
+  function profileRepositoryGroups() {
+    let groups = groupRepositories(state.repositories || []);
+    if (state.publicProfile) {
+      const aliases = profileRepositoryAliases(state.publicProfile);
+      groups = groups.filter((group) =>
+        repoBelongsToProfile(sourceOfTruth(group), aliases) ||
+        (group.members || []).some((member) => repoBelongsToProfile(member, aliases)));
+    }
+    return groups;
+  }
+
   function renderProfileRepositories() {
     const container = $("[data-profile-repo-list]");
     if (!container) return;
     const query = ($("[data-profile-repo-search]")?.value || "").trim().toLowerCase();
-    const groups = groupRepositories(state.repositories || []).filter((group) => {
+    const groups = profileRepositoryGroups().filter((group) => {
       return repositoryMatchesQuery(sourceOfTruth(group), query);
     });
     container.innerHTML = groups.length
       ? groups.map((group) => profileRepositoryRow(group)).join("")
       : '<div class="px-4 py-8 text-sm text-muted-foreground">No repositories match this filter.</div>';
     window.lucide?.createIcons();
+    hydrateRepoStarButtons(container);
   }
 
-  function renderProfileRepositoryCount(count = groupRepositories(state.repositories || []).length) {
+  function renderProfileRepositoryCount(count = profileRepositoryGroups().length) {
     $$("[data-profile-repo-count]").forEach((element) => {
       element.textContent = formatCount(count);
     });
@@ -548,6 +629,7 @@
     renderHomeRepositories();
     renderHomeFeed();
     renderHomeChangelog();
+    renderHomeAgentSessions();
     renderProfileRepositories();
     renderProfileRepositoryCount();
   }
@@ -564,8 +646,103 @@
 
     renderProfileRepositoryCount();
     applyRepositoryFilter();
-    renderProfileContributionGraph();
     renderGlobalSearchResults();
+  }
+
+  // New-repository flow (adhoc #30). Publishing a signed catalog record and
+  // running the git mirror both require the account's Ed25519 key, which lives
+  // on the desktop node — the browser only holds a separate web-issue identity.
+  // So this "Create & mirror" modal collects the repo details on the web, then
+  // hands off the concrete steps to complete it in the desktop node's Repos
+  // page, rather than pretending the pure-web path can publish.
+  function setNewRepoModalOpen(open) {
+    const modal = $("[data-new-repo-modal]");
+    if (!modal) return;
+    modal.classList.toggle("hidden", !open);
+    modal.classList.toggle("flex", open);
+    if (open) {
+      setNewRepoHint("");
+      $("[data-new-repo-steps]")?.classList.add("hidden");
+      window.setTimeout(() => $("[data-new-repo-name]")?.focus(), 0);
+      window.lucide?.createIcons();
+    }
+  }
+
+  function newRepoSource() {
+    return $('[data-new-repo-source][aria-pressed="true"]')?.dataset.newRepoSource || "remote";
+  }
+
+  function setNewRepoSource(source) {
+    $$("[data-new-repo-source]").forEach((btn) => {
+      const active = btn.dataset.newRepoSource === source;
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+      btn.classList.toggle("bg-secondary", active);
+      btn.classList.toggle("text-foreground", active);
+      btn.classList.toggle("text-muted-foreground", !active);
+    });
+    const value = $("[data-new-repo-source-value]");
+    const hint = $("[data-new-repo-source-hint]");
+    if (source === "local") {
+      if (value) value.placeholder = "/home/you/code/my-project";
+      if (hint) hint.textContent = "The desktop node reads this local repo directly — the path never leaves your machine.";
+    } else {
+      if (value) value.placeholder = "https://github.com/owner/repo.git";
+      if (hint) hint.textContent = "ForkMesh clones this URL into a bare mirror you then keep in sync.";
+    }
+  }
+
+  function setNewRepoHint(text, cls) {
+    const hint = $("[data-new-repo-hint]");
+    if (!hint) return;
+    hint.textContent = text || "";
+    hint.className = "min-h-4 text-xs " + (cls === "bad" ? "text-destructive" : cls === "good" ? "text-primary" : "text-muted-foreground");
+  }
+
+  function renderNewRepoSteps(details) {
+    const list = $("[data-new-repo-steps-list]");
+    const panel = $("[data-new-repo-steps]");
+    if (!list || !panel) return;
+    const sourceLabel = details.source === "local" ? "Local repository" : "Remote clone URL";
+    const pick = details.source === "local" ? "Select the local repository" : "Paste the clone URL";
+    const sourceValue = details.sourceValue
+      ? ` (<span class="font-mono text-foreground">${escapeHtml(details.sourceValue)}</span>)` : "";
+    const steps = [
+      `Open the ForkMesh desktop node and go to the <span class="text-foreground">Repos</span> page.`,
+      `Click <span class="text-foreground">+ Add</span>, then choose <span class="text-foreground">${sourceLabel}</span>.`,
+      `${pick}${sourceValue} and name it <span class="font-mono text-foreground">${escapeHtml(details.name)}</span>.`,
+      `Set visibility to <span class="text-foreground">${details.visibility === "private" ? "Private" : "Public"}</span>${details.description ? ` and add your description` : ""}.`,
+      `Publish — the node mirrors it and it appears here in your repositories.`,
+    ];
+    list.innerHTML = steps
+      .map((step, index) => `<li class="flex gap-2"><span class="shrink-0 font-mono text-foreground">${index + 1}.</span><span>${step}</span></li>`)
+      .join("");
+    panel.classList.remove("hidden");
+    window.lucide?.createIcons();
+  }
+
+  function handleNewRepoSubmit() {
+    const name = String($("[data-new-repo-name]")?.value || "").trim();
+    const source = newRepoSource();
+    const sourceValue = String($("[data-new-repo-source-value]")?.value || "").trim();
+    const visibility = $("[data-new-repo-visibility]")?.value === "private" ? "private" : "public";
+    const description = String($("[data-new-repo-description]")?.value || "").trim();
+    if (!name) {
+      setNewRepoHint("Enter a repository name.", "bad");
+      $("[data-new-repo-name]")?.focus();
+      return;
+    }
+    if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+      setNewRepoHint("Use letters, numbers, dots, dashes, or underscores in the name.", "bad");
+      $("[data-new-repo-name]")?.focus();
+      return;
+    }
+    if (!sourceValue) {
+      setNewRepoHint(source === "local" ? "Enter the local repository path." : "Enter a clone URL.", "bad");
+      $("[data-new-repo-source-value]")?.focus();
+      return;
+    }
+    setNewRepoHint("Ready — finish the create & mirror from your desktop node.", "good");
+    renderNewRepoSteps({ name, source, sourceValue, visibility, description });
   }
 
   function setRepoTab(tab) {
@@ -583,6 +760,18 @@
     detail.querySelectorAll("[data-dashboard-repo-tab-panel]").forEach((panel) => {
       panel.classList.toggle("hidden", panel.dataset.dashboardRepoTabPanel !== tab);
     });
+    // The About right-hand rail only belongs next to the file tree/README
+    // (owner decision 2026-07-12, discussion #2): every other tab — commits,
+    // releases, issues, projects, pulls, discussions, insights, mirrors,
+    // agents — goes full-width instead of leaving a rail with nothing beside
+    // it to explain. The explorer focus mode independently hides the rail
+    // (and collapses this same grid) while active on the code tab.
+    const contentGrid = detail.querySelector("[data-repo-content-grid]");
+    const about = detail.querySelector("[data-repo-about]");
+    const showAbout = tab === "code";
+    contentGrid?.classList.toggle("lg:grid-cols-[minmax(0,1fr)_18rem]", showAbout);
+    contentGrid?.classList.toggle("lg:grid-cols-1", !showAbout);
+    about?.classList.toggle("hidden", !showAbout);
   }
 
   // Tab switch requested by the user (or a Back/Forward step): shows the tab,
@@ -603,11 +792,12 @@
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
-    if (["commits", "issues", "pulls", "discussions", "releases", "insights", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
+    if (["commits", "issues", "projects", "pulls", "discussions", "releases", "insights", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
       if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
       state.loadedRepoTabs[tab] = true;
       if (tab === "commits") loadRepoCommits(state.selectedRepo);
       else if (tab === "issues") loadRepoIssues(state.selectedRepo);
+      else if (tab === "projects") loadRepoProjects(state.selectedRepo);
       else if (tab === "releases") loadRepoReleases(state.selectedRepo);
       else if (tab === "insights") loadRepoInsights(state.selectedRepo);
       else if (tab === "agents") loadRepoAgents(state.selectedRepo);
@@ -616,6 +806,8 @@
       // Re-selecting the tab should return to the issues list even if the
       // new-issue compose form was left open.
       renderRepoIssues();
+    } else if (tab === "projects") {
+      renderRepoProjects();
     } else if (tab === "agents") {
       loadRepoAgents(state.selectedRepo);
     }
@@ -716,7 +908,7 @@
       rows.push(entries.map((entry) => {
         const isTree = entry.type === "tree";
         const childPath = repoChildPath(path, entry.name);
-        return `<button type="button" data-repo-explorer-entry data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="${repoExplorerRowClass(false)}"><i data-lucide="${isTree ? "folder" : "file"}" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i><span class="min-w-0 truncate">${escapeHtml(entry.name || "entry")}</span></button>`;
+        return `<button type="button" data-repo-explorer-entry data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="${repoExplorerRowClass(false)}">${fileIconHtml(entry, "h-3.5 w-3.5 shrink-0")}<span class="min-w-0 truncate">${escapeHtml(entry.name || "entry")}</span></button>`;
       }).join(""));
     } else {
       rows.push('<div class="px-3 py-2 text-xs text-muted-foreground">No files in this folder.</div>');
@@ -749,8 +941,10 @@
     const focusActions = detail?.querySelector("[data-repo-focus-actions]");
     if (!detail) return;
 
-    contentGrid?.classList.toggle("xl:grid-cols-[minmax(0,1fr)_18rem]", !active);
-    contentGrid?.classList.toggle("xl:grid-cols-1", active);
+    // The grid collapse matches the base class renderRepoDetail emits (lg:) —
+    // legitimate here because focus mode hides the About rail entirely.
+    contentGrid?.classList.toggle("lg:grid-cols-[minmax(0,1fr)_18rem]", !active);
+    contentGrid?.classList.toggle("lg:grid-cols-1", active);
     workspace?.classList.toggle("grid", active);
     workspace?.classList.toggle("lg:grid-cols-[13rem_minmax(0,1fr)]", active);
     workspace?.classList.toggle("xl:grid-cols-[14rem_minmax(0,1fr)]", active);
@@ -797,7 +991,7 @@
     try {
       while (queue.length && files.length < MAX_REPO_FILE_FINDER_RESULTS && ((Date.now() - started) / 1000) < MAX_REPO_FILE_FINDER_SECONDS) {
         const path = queue.shift();
-        const data = await fetchJson(repoLiveUrl(repo, "tree", { path }));
+        const data = await fetchRepoJson(repoLiveUrl(repo, "tree", { path }));
         const entries = Array.isArray(data.entries) ? data.entries.slice() : [];
         entries.sort((a, b) => {
           if (a.type !== b.type) return a.type === "tree" ? -1 : 1;
@@ -1063,7 +1257,13 @@
       const value = current.get(key);
       if (value) query.set(key, value);
     });
-    query.set("ref", repoSelectedBranch(repo));
+    // pulls/ metadata lives on its own dedicated branch (issue #399): the
+    // host resolves a pulls/ path to refs/heads/forkmesh/pulls only when the
+    // request names NO explicit ref, so pull readers pass ref:"" to defer to
+    // the host instead of pinning the stale pulls/ copy left on the selected
+    // code branch. Every other caller keeps the selected-branch default.
+    if (!("ref" in (params || {}))) query.set("ref", repoSelectedBranch(repo));
+    else if (!String(params.ref || "")) query.delete("ref");
     const version = repoDataVersion(repo);
     if (version) query.set("fmv", version);
     return `${repoApiBase(repo)}/${action}?${query.toString()}`;

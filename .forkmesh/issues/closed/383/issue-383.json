@@ -1,0 +1,106 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+    "authorName": "newnewnode",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783198047886,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+            "authorName": "newnewnode",
+            "body": "log clearly in the log with a big line across when the app starts and stops - also it seems we are not getting the crashes - remove the crash separate log we have completely and make sure to log all of the crashes into network log - we have to catch everythign so make sure its all wrapped and catching",
+            "id": "open-383",
+            "sig": "IDT1xEMSuY2sZkvJqoB3BA_RtOm9JRKA1roccs-jTJ9fAMGm2FgGxx3ilDwuSdav_XLYPn-iBLHCBS9IkCZ-BQ",
+            "title": "log clearly in the log with a big line across when the app starts and stops -…",
+            "ts": 1783198047886,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": true,
+            "agentProvider": "claude-code",
+            "agentSessionId": 284,
+            "agentStatus": "failed",
+            "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+            "authorName": "newnewnode",
+            "id": "ded7e715-20ee-4a98-a129-3b42fd808fda",
+            "sig": "B10NSMZMlTHR8Wyt0-yY6ghzjPy7wlUYYY8rW7e7b4vKT9ChBaEGXSBKMsF_SF1kUbM4fDVK93PS5SSkP7AtBg",
+            "ts": 1783198047969,
+            "type": "agent"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 18,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "3d3b2f7b-b0ba-4676-b2a1-7fd9f2f4fac1",
+            "sig": "OP4l_sReGNSyIp8obqEr-E1XV5z3Bf-_jkK4I9O9dzaDRdxAEnYdhZKOK9Pyi3AfktoFh76RH93vn7lF9teGAA",
+            "ts": 1783881093917,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "e64f394c-abd9-4798-8125-dee0ff16a23f",
+            "sig": "X1Akc6aZGASVuZ62f0rLln-lFYXDXHA74Jd-66SW7Q923APybwHiFk_KKgSBGPwXyNtbpT4CkwfI7DHEfyE-Bg",
+            "ts": 1783881093978,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-383-log-clearly-in-the-log-with-a-big-line-across-wh\".",
+            "id": "facb75fc-404b-4aa4-ba7c-7c3a5b64ab70",
+            "sig": "i1a6XJ9VEMtvXxJfBVML9RDZcGhTxmrIGr3L82U9iWMob-iaPMrv5qGvqjwUZWgy5UJgXCTyLZRMzyo8wbYwBA",
+            "ts": 1783883008800,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "eb332621-0563-495e-b192-3348a7cd7a8d",
+            "sig": "-mBqszalmdiNgG9jXGTbsLnIGR2qUUpla9_9N9i2-VzbUKIiTHZnMSmh0r-YlFHNHjTl_gbg3tVQtRNuiNn4DA",
+            "status": "closed",
+            "ts": 1783883008871,
+            "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "93dda510-b4c0-47e6-81ae-31d2a0d6216c",
+            "sig": "9QnUmiFsDj7OGRMWMP4xF-tBKJxm0V_YfW9iPxDu8ae7zsauJP8bjrw-WWCmYJcU4Q5nL80BCqXD-5-33UgfDw",
+            "ts": 1783892012021,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+        "enhancement"
+    ],
+    "milestone": "",
+    "number": 383,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "log clearly in the log with a big line across when the app starts and stops -…",
+    "updatedAt": 1783892012021,
+    "votes": 0
+}

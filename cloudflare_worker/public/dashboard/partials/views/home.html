@@ -22,15 +22,30 @@
                   <input data-home-repo-search type="search" placeholder="Find a repository..." class="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground" />
                 </label>
                 <div data-home-top-repositories class="grid gap-1">
-                  <div class="rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">Loading repositories...</div>
+                  <div class="rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground"><span class="fm-spinner" aria-hidden="true"></span>Loading repositories...</div>
                 </div>
                 <button type="button" class="mt-4 text-xs font-medium text-muted-foreground hover:text-accent">Show more</button>
+
+                <div data-home-agent-sessions-panel class="mt-8 hidden">
+                  <div class="mb-3 flex items-center justify-between gap-3">
+                    <h2 class="text-sm font-semibold text-foreground">Active agent sessions</h2>
+                    <i data-lucide="bot" class="h-3.5 w-3.5 shrink-0 text-muted-foreground"></i>
+                  </div>
+                  <div data-home-agent-sessions class="grid gap-1"></div>
+                </div>
               </aside>
 
               <section data-home-content-column class="min-w-0 px-4 py-6 sm:px-6 lg:px-8">
                 <h1 class="mb-5 text-2xl font-semibold tracking-normal text-foreground">Home</h1>
 
                 <div data-home-action-panel class="overflow-hidden rounded-lg border border-border bg-card">
+                  <div class="flex min-w-0 items-center gap-2 border-b border-border px-4 py-2.5">
+                    <div data-home-compose-avatar class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-secondary">
+                      <img class="hidden h-full w-full object-cover" alt="" />
+                      <span data-avatar-initial class="text-[10px] font-semibold text-muted-foreground">F</span>
+                    </div>
+                    <span class="min-w-0 truncate text-xs text-muted-foreground">Posting as <span data-home-compose-name class="font-semibold text-foreground">you</span></span>
+                  </div>
                   <textarea
                     data-home-agent-input
                     rows="3"
@@ -66,7 +81,7 @@
                 </div>
 
                 <div data-home-feed class="grid gap-4">
-                  <div class="rounded-lg border border-border bg-card px-4 py-6 text-sm text-muted-foreground">Loading dashboard activity...</div>
+                  <div class="rounded-lg border border-border bg-card px-4 py-6 text-sm text-muted-foreground"><span class="fm-spinner" aria-hidden="true"></span>Loading dashboard activity...</div>
                 </div>
               </section>
 
@@ -98,7 +113,7 @@
                     <a href="/changelog" class="shrink-0 text-xs font-medium text-accent hover:underline">View all</a>
                   </div>
                   <div data-home-changelog-list class="mt-4 grid gap-4 border-l border-border pl-4">
-                    <div class="text-sm text-muted-foreground">Loading release notes...</div>
+                    <div class="text-sm text-muted-foreground"><span class="fm-spinner" aria-hidden="true"></span>Loading release notes...</div>
                   </div>
                 </section>
               </aside>

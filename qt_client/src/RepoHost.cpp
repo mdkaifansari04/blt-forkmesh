@@ -57,6 +57,29 @@ QString endpointDisplay(const QUrl &url)
     return url.toString(QUrl::RemoveUserInfo);
 }
 
+// Bucket a requester's User-Agent into a short, human-readable class for the
+// served-request log (adhoc #19), so the node operator can tell at a glance
+// which kind of agent hit their repo — a git client, a web browser, or a
+// bot/scraper/tool — instead of parsing the raw string. The raw UA is still
+// logged alongside the label. Order matters: git clients and bots frequently
+// also carry a "Mozilla"-style token, so match the more specific classes first.
+QString userAgentClass(const QString &ua)
+{
+    const QString s = ua.toLower();
+    if (s.contains("git/") || s.contains("libgit2") || s.contains("jgit") ||
+        s.contains("git-lfs"))
+        return QStringLiteral("git client");
+    if (s.contains("bot") || s.contains("crawl") || s.contains("spider") ||
+        s.contains("scrape") || s.contains("curl") || s.contains("wget") ||
+        s.contains("python-requests") || s.contains("go-http") ||
+        s.contains("okhttp") || s.contains("java/"))
+        return QStringLiteral("bot/tool");
+    if (s.contains("mozilla") || s.contains("chrome") || s.contains("safari") ||
+        s.contains("firefox") || s.contains("edg/") || s.contains("webkit"))
+        return QStringLiteral("browser");
+    return QStringLiteral("client");
+}
+
 // Reject paths that try to escape the repository tree.
 bool isSafeRepoPath(const QString &path)
 {
@@ -227,7 +250,14 @@ QString refForBranchIn(const QString &mirrorPath, const QString &branch)
 QString refForRepoPath(const QString &mirrorPath, const QString &path,
                        const QString &branch)
 {
-    if (branch.trimmed().isEmpty() && path.startsWith(QLatin1String("pulls/"))) {
+    // Match the pulls directory listing (path == "pulls") as well as the blob
+    // reads under it (path == "pulls/<N>/..."). The website enumerates which PRs
+    // exist by listing the "pulls" tree with no ref; without the bare-"pulls"
+    // case that listing fell through to the default branch, which only carries
+    // the stale pulls/ folder frozen at migration time (issue #399) — so the site
+    // showed old PRs even though fresh ones live on the forkmesh/pulls branch.
+    if (branch.trimmed().isEmpty() &&
+        (path == QLatin1String("pulls") || path.startsWith(QLatin1String("pulls/")))) {
         QByteArray probe;
         if (runGit(mirrorPath,
                    {"rev-parse", "--verify", "-q", "refs/heads/forkmesh/pulls^{commit}"},
@@ -328,8 +358,11 @@ QJsonObject searchReplyFor(const QString &mirrorPath, const QString &rawQuery)
     QSet<int> seenIssue;
     QSet<int> seenPull;
     static const QRegularExpression rowRe(QStringLiteral("^(.+?):(\\d+):(.*)$"));
+    // Issues live under .forkmesh/issues/open/<N>/ or closed/<N>/ (pre-split
+    // mirrors keep the numbered folder directly under the root); capture the
+    // folder prefix too so the title file is read from wherever the hit was.
     static const QRegularExpression issueRe(
-        QStringLiteral("^\\.forkmesh/issues/(\\d+)/"));
+        QStringLiteral("^(\\.forkmesh/issues/(?:open/|closed/)?)(\\d+)/"));
     static const QRegularExpression pullRe(QStringLiteral("^pulls/(\\d+)/"));
     const QString prefix = ref + QLatin1Char(':');
 
@@ -352,7 +385,7 @@ QJsonObject searchReplyFor(const QString &mirrorPath, const QString &rawQuery)
         if (issueMatch.hasMatch() || pullMatch.hasMatch()) {
             const bool isIssue = issueMatch.hasMatch();
             const int number =
-                issueMatch.hasMatch() ? issueMatch.captured(1).toInt()
+                issueMatch.hasMatch() ? issueMatch.captured(2).toInt()
                                       : pullMatch.captured(1).toInt();
             QSet<int> &seen = isIssue ? seenIssue : seenPull;
             if (seen.contains(number))
@@ -363,7 +396,9 @@ QJsonObject searchReplyFor(const QString &mirrorPath, const QString &rawQuery)
             seen.insert(number);
             const QString titleFile =
                 isIssue
-                    ? QStringLiteral(".forkmesh/issues/%1/issue-%1.json").arg(number)
+                    ? QStringLiteral("%1%2/issue-%2.json")
+                          .arg(issueMatch.captured(1))
+                          .arg(number)
                     : QStringLiteral("pulls/%1/pull.md").arg(number);
             bucket.append(QJsonObject{
                 {"number", number},
@@ -378,7 +413,7 @@ QJsonObject searchReplyFor(const QString &mirrorPath, const QString &rawQuery)
 }
 
 // Count the numbered sub-directories (1/, 2/, …) under a metadata folder such
-// as .forkmesh/issues/, pulls/ or discussions/. Each maps to one filed item, so this is
+// as .forkmesh/issues/, pulls/ or .forkmesh/discussions/. Each maps to one filed item, so this is
 // the tally the website shows in its tab badges. A missing folder counts as 0.
 int countNumberedDirs(const QString &mirrorPath, const QString &ref,
                       const QString &dir)
@@ -403,26 +438,158 @@ int countNumberedDirs(const QString &mirrorPath, const QString &ref,
     return count;
 }
 
+// Open-issue tally for the repo header (issue #397): the website badges a repo
+// with the number of OPEN issues, with closed issues opt-in behind the Closed
+// filter. Each .forkmesh/issues/<n>/issue-<n>.json carries a top-level "status"
+// ("open"/"closed"); anything not explicitly "closed" counts as open (matches
+// the web's parseIssueJson default, which treats a missing status as open). The
+// return value is the open count; when `closed` is non-null it receives the
+// remaining (total-minus-open) closed count for the panel's "N Closed" tally.
+int countOpenIssues(const QString &mirrorPath, const QString &ref, int *closed)
+{
+    if (closed)
+        *closed = 0;
+    static const QRegularExpression numericName(QStringLiteral("^[0-9]+$"));
+    // Numeric child folders of one tree; empty when the folder is absent.
+    auto numberedDirs = [&](const QString &path) {
+        QStringList names;
+        QByteArray output;
+        if (!runGit(mirrorPath, {"ls-tree", "-z", ref + ":" + path}, output))
+            return names;
+        for (const QByteArray &record : output.split('\0')) {
+            if (record.isEmpty())
+                continue;
+            const int tab = record.indexOf('\t');
+            if (tab < 0)
+                continue;
+            const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+            if (meta.size() < 2 || meta.at(1) != "tree")
+                continue;
+            const QString name = QString::fromUtf8(record.mid(tab + 1));
+            if (numericName.match(name).hasMatch())
+                names.append(name);
+        }
+        return names;
+    };
+    // An issue its own creator deleted (a self-deletion) is not open: the Issues
+    // tab and lists drop it from the open count (Issue::isDeleted), so the
+    // served/advertised count must too or it drifts above the tab (adhoc #16). A
+    // delete/self event signed by anyone else is an unauthorized attempt that
+    // does NOT delete the issue, so it still counts. Deciding needs the record,
+    // so read the open/ blobs (open issues are few) and the legacy ones;
+    // closed/<n> folders are never open regardless, so they skip the blob read.
+    auto recordTombstoned = [&](const QString &rel) {
+        QByteArray blob;
+        if (!runGit(mirrorPath, {"cat-file", "-p", ref + ":" + rel}, blob))
+            return false; // unreadable -> treat as live (matches loadAll)
+        const QJsonArray events = QJsonDocument::fromJson(blob)
+                                      .object()
+                                      .value(QStringLiteral("events"))
+                                      .toArray();
+        QString creator;
+        for (const QJsonValue &value : events) {
+            const QJsonObject event = value.toObject();
+            if (event.value(QStringLiteral("type")).toString() ==
+                QLatin1String("open")) {
+                creator = event.value(QStringLiteral("author")).toString();
+                break;
+            }
+        }
+        for (const QJsonValue &value : events) {
+            const QJsonObject event = value.toObject();
+            if (event.value(QStringLiteral("type")).toString() ==
+                    QLatin1String("delete") &&
+                event.value(QStringLiteral("target")).toString() ==
+                    QLatin1String("self") &&
+                !creator.isEmpty() &&
+                event.value(QStringLiteral("author")).toString() == creator)
+                return true;
+        }
+        return false;
+    };
+    QSet<QString> counted;
+    int open = 0;
+    int closedCount = 0;
+    for (const QString &name : numberedDirs(QStringLiteral(".forkmesh/issues/open")))
+        if (!counted.contains(name)) {
+            counted.insert(name);
+            if (recordTombstoned(
+                    QStringLiteral(".forkmesh/issues/open/%1/issue-%1.json")
+                        .arg(name)))
+                continue; // deleted -> counts as neither open nor closed
+            ++open;
+        }
+    for (const QString &name :
+         numberedDirs(QStringLiteral(".forkmesh/issues/closed")))
+        if (!counted.contains(name)) {
+            counted.insert(name);
+            ++closedCount;
+        }
+    // Pre-split legacy folders (numbered dirs directly under the root — the
+    // numeric filter skips open/ and closed/) still carry the status only
+    // inside the record; read it as before.
+    for (const QString &name : numberedDirs(QStringLiteral(".forkmesh/issues"))) {
+        if (counted.contains(name))
+            continue;
+        counted.insert(name);
+        const QString rel =
+            QStringLiteral(".forkmesh/issues/%1/issue-%1.json").arg(name);
+        if (recordTombstoned(rel))
+            continue; // deleted -> counts as neither open nor closed
+        QByteArray blob;
+        QString status;
+        if (runGit(mirrorPath, {"cat-file", "-p", ref + ":" + rel}, blob))
+            status = QJsonDocument::fromJson(blob)
+                         .object()
+                         .value(QStringLiteral("status"))
+                         .toString();
+        if (status != QLatin1String("closed"))
+            ++open; // open, reopened, or unreadable -> counts as open
+        else
+            ++closedCount;
+    }
+    if (closed)
+        *closed = closedCount;
+    return open;
+}
+
 QJsonObject rootCountsFor(const QString &mirrorPath, const QString &ref)
 {
     int commits = 0;
     QByteArray output;
     if (runGit(mirrorPath, {"rev-list", "--count", ref}, output))
         commits = QString::fromUtf8(output).trimmed().toInt();
+    // "issues" stays the total; the web reads openIssues/closedIssues to badge
+    // headers with the open count only (issue #397).
+    int closedIssues = 0;
+    const int openIssues = countOpenIssues(mirrorPath, ref, &closedIssues);
+    // Pulls live on the dedicated forkmesh/pulls branch (issue #399), not `ref`.
+    const QString pullsRef =
+        refForRepoPath(mirrorPath, QStringLiteral("pulls/"), QString());
     return QJsonObject{
-        {"issues",
-         countNumberedDirs(mirrorPath, ref, QStringLiteral(".forkmesh/issues"))},
-        {"pulls", countNumberedDirs(mirrorPath, ref, QStringLiteral("pulls"))},
+        {"issues", openIssues + closedIssues},
+        {"openIssues", openIssues},
+        {"closedIssues", closedIssues},
+        {"pulls", countNumberedDirs(mirrorPath, pullsRef, QStringLiteral("pulls"))},
         {"discussions",
-         countNumberedDirs(mirrorPath, ref, QStringLiteral("discussions"))},
+         countNumberedDirs(mirrorPath, ref, QStringLiteral(".forkmesh/discussions"))},
         {"commits", commits}};
 }
 
 QJsonObject commitSummaryForPath(const QString &mirrorPath, const QString &ref,
                                  const QString &path = QString())
 {
-    QStringList args{"log", "-1", "--date=format:%Y-%m-%d",
-                     "--format=%H%x1f%an%x1f%ad%x1f%s", ref};
+    // %cd (committer date), not %ad (author date): a mirror that self-merges or
+    // rebases agent branches keeps each commit's original author date, so the
+    // website's "recent commit" banner and last-commit column looked perpetually
+    // stale (weeks old) even right after a fresh sync. The committer date is when
+    // the commit actually landed in the tree, which is the recency GitHub shows.
+    // iso-strict (not date-only %Y-%m-%d): the website renders these as relative
+    // "N minutes/seconds ago" labels, so truncating to midnight made a commit
+    // pushed seconds ago read as "hours"/"1 day ago". Keep the full timestamp +
+    // timezone so recency is exact down to the second.
+    QStringList args{"log", "-1", "--date=iso-strict",
+                     "--format=%H%x1f%an%x1f%cd%x1f%s", ref};
     if (!path.isEmpty())
         args << "--" << path;
 
@@ -506,6 +673,91 @@ QJsonObject treeReplyFor(const QString &mirrorPath, const QString &path,
     if (path.isEmpty())
         reply.insert("counts", rootCountsFor(mirrorPath, ref));
     return reply;
+}
+
+// Repo insights for the website's About rail (adhoc #88). One round-trip that
+// replaces the browser walking the tree directory-by-directory (slow, capped)
+// and reading only the last 60 commits (an undercount). `ls-tree -r -l` yields
+// every blob's size, so the file count is exact and the language breakdown is
+// weighted by bytes rather than by file count. `shortlog -nse` tallies every
+// author across the FULL history (not the browse cap) with the email the site
+// uses to render a stable per-user icon.
+QJsonObject statsReplyFor(const QString &mirrorPath, const QString &branch)
+{
+    const QString ref = refForRepoPath(mirrorPath, QString(), branch);
+    if (ref.isEmpty())
+        return {{"ok", false}, {"error", "empty_repo"}};
+
+    QByteArray treeOut;
+    QString gitErr;
+    if (!runGit(mirrorPath, {"ls-tree", "-r", "-l", "-z", ref}, treeOut, &gitErr))
+        return {{"ok", false},
+                {"error", gitErr.isEmpty() ? QStringLiteral("ls_tree_failed") : gitErr}};
+
+    int fileCount = 0;
+    QJsonObject extensions; // "ext" -> {bytes, files}
+    for (const QByteArray &record : treeOut.split('\0')) {
+        if (record.isEmpty())
+            continue;
+        const int tab = record.indexOf('\t');
+        if (tab < 0)
+            continue;
+        const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+        if (meta.size() < 4 || meta.at(1) != "blob")
+            continue;
+        bool ok = false;
+        const qlonglong size = meta.at(3).toLongLong(&ok);
+        fileCount += 1;
+        const QString name = QString::fromUtf8(record.mid(tab + 1)).section('/', -1);
+        const int dot = name.lastIndexOf('.');
+        if (dot <= 0) // no extension (or a dotfile like ".gitignore")
+            continue;
+        const QString ext = name.mid(dot + 1).toLower();
+        if (ext.isEmpty() || ext.size() > 12)
+            continue;
+        QJsonObject bucket = extensions.value(ext).toObject();
+        bucket.insert("bytes", bucket.value("bytes").toDouble() + double(ok ? size : 0));
+        bucket.insert("files", bucket.value("files").toDouble() + 1);
+        extensions.insert(ext, bucket);
+    }
+
+    QJsonArray contributors;
+    QByteArray logOut;
+    // An explicit revision makes shortlog walk history itself; without one it
+    // would block reading stdin under QProcess (no tty). -n sorts by commit
+    // count, -s summarises, -e keeps the email.
+    if (runGit(mirrorPath, {"shortlog", "-nse", ref}, logOut, nullptr)) {
+        for (const QByteArray &line : logOut.split('\n')) {
+            const QByteArray trimmed = line.trimmed();
+            if (trimmed.isEmpty())
+                continue;
+            const int tab = trimmed.indexOf('\t');
+            if (tab < 0)
+                continue;
+            bool ok = false;
+            const int commits =
+                QString::fromUtf8(trimmed.left(tab)).trimmed().toInt(&ok);
+            QString who = QString::fromUtf8(trimmed.mid(tab + 1)).trimmed();
+            QString email;
+            const int lt = who.lastIndexOf('<');
+            const int gt = who.lastIndexOf('>');
+            if (lt >= 0 && gt > lt) {
+                email = who.mid(lt + 1, gt - lt - 1).trimmed();
+                who = who.left(lt).trimmed();
+            }
+            if (who.isEmpty() && email.isEmpty())
+                continue;
+            contributors.append(QJsonObject{{"name", who},
+                                            {"email", email},
+                                            {"commits", ok ? commits : 0}});
+        }
+    }
+
+    return QJsonObject{{"ok", true},
+                       {"fileCount", fileCount},
+                       {"extensions", extensions},
+                       {"contributors", contributors},
+                       {"contributorCount", contributors.size()}};
 }
 
 QString imageMimeForPath(const QString &path)
@@ -632,15 +884,18 @@ void RepoHost::connectSocket()
     });
     if (auto *ssl = qobject_cast<QSslSocket *>(m_socket))
         connect(ssl, &QSslSocket::encrypted, this, &RepoHost::onTransportReady);
+    // Leave m_wsConnectedAtMs alone here: scheduleReconnect() reads it to
+    // decide whether the connection stayed healthy long enough to reset the
+    // backoff ramp, and zeroes it itself right after that check. Zeroing it
+    // first made the reset unreachable — attempts only ever grew, so every
+    // host ended up permanently re-dialing at the 5-minute cap.
     connect(m_socket, &QTcpSocket::disconnected, this, [this] {
         m_wsReady = false;
-        m_wsConnectedAtMs = 0;
         emit networkDiagnosticsChanged();
         scheduleReconnect();
     });
     connect(m_socket, &QTcpSocket::errorOccurred, this, [this] {
         m_wsReady = false;
-        m_wsConnectedAtMs = 0;
         emit networkDiagnosticsChanged();
         scheduleReconnect();
     });
@@ -966,13 +1221,16 @@ void RepoHost::handleRequest(const QJsonObject &request)
         action = op.isEmpty() ? QStringLiteral("request") : op;
     // The relay forwards the requester's User-Agent (worker-truncated to 256
     // chars) so the operator can tell a real git client/browser from a bot or
-    // scraper straight from the node log, without the worker storing it.
-    const QString userAgent = request.value("ua").toString().left(200);
+    // scraper straight from the node log, without the worker storing it. Show
+    // the full forwarded UA (the worker's 256-char cap already bounds it) plus
+    // a one-word class (adhoc #19) so the agent is legible at a glance.
+    const QString userAgent = request.value("ua").toString().left(256);
     emit log(userAgent.isEmpty()
                  ? QStringLiteral("Host: served %1 for %2/%3.")
                        .arg(action, m_owner, m_name)
-                 : QStringLiteral("Host: served %1 for %2/%3. [User-Agent: %4]")
-                       .arg(action, m_owner, m_name, userAgent));
+                 : QStringLiteral("Host: served %1 for %2/%3. [User-Agent (%4): %5]")
+                       .arg(action, m_owner, m_name)
+                       .arg(userAgentClass(userAgent), userAgent));
 
     // A clone is two requests: info/refs (ref advertisement) then the
     // git-upload-pack POST that negotiates `want <oid>` against those refs. On a
@@ -1084,6 +1342,24 @@ void RepoHost::handleRequest(const QJsonObject &request)
                 reply.insert("reqId", reqId);
                 reply.insert("op", op);
                 reply.insert("path", path);
+                sendText(QJsonDocument(reply).toJson(QJsonDocument::Compact));
+            });
+        return;
+    }
+
+    // About-rail insights (adhoc #88): ls-tree -r + shortlog over the whole repo
+    // can be several git spawns, so run it off the GUI thread like tree/blob.
+    // Carries no repo path, so it bypasses the isSafeRepoPath gate.
+    if (op == "stats") {
+        const QString mirrorPath = m_mirrorPath;
+        const QString repoBranch = branch;
+        runOffThread(
+            [mirrorPath, repoBranch] { return statsReplyFor(mirrorPath, repoBranch); },
+            [this, reqId, op](QJsonObject reply) {
+                reply.insert("type", "response");
+                reply.insert("reqId", reqId);
+                reply.insert("op", op);
+                reply.insert("path", QString());
                 sendText(QJsonDocument(reply).toJson(QJsonDocument::Compact));
             });
         return;
@@ -1551,9 +1827,24 @@ void RepoHost::scheduleReconnect()
         m_pingTimer->stop();
     if (m_stopping)
         return;
+    // Reset the backoff ramp only after a connection that stayed healthy for
+    // a while — resetting on the 101 upgrade alone let an accept-then-drop
+    // relay (overloaded DO killing sockets) re-dial at the fast rate forever.
+    if (m_wsConnectedAtMs &&
+        QDateTime::currentMSecsSinceEpoch() - m_wsConnectedAtMs > 30000)
+        m_reconnectAttempts = 0;
     m_wsReady = false;
     m_wsConnectedAtMs = 0;
     emit networkDiagnosticsChanged();
-    if (!m_reconnect->isActive())
-        m_reconnect->start(5000);
+    if (m_reconnect->isActive())
+        return;
+    // Exponential backoff with jitter (mirrors ServerNode::scheduleReconnect):
+    // 1s, 2s, 4s … capped at 5 min. A relay redeploy reconnects promptly;
+    // a sustained outage (or a Cloudflare quota 429/5xx) ramps down instead
+    // of every hosted repo re-dialing every fixed 5s and amplifying the load.
+    const int shift = qMin(m_reconnectAttempts, 9);
+    ++m_reconnectAttempts;
+    int delay = qMin(1000 << shift, 300000);
+    delay += int(QRandomGenerator::global()->bounded(delay / 4 + 250));
+    m_reconnect->start(delay);
 }

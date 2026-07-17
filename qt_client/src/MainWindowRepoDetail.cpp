@@ -408,12 +408,12 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeCoveExplorerButton, &QPushButton::clicked, this,
             [this] { showRepoCoveExplorer(); });
 
-    // Git identity (name <email>) configured for the repo we're viewing, pinned
-    // to the far right of this same row. Filled in by updateFooterGitIdentity()
-    // each time a repo opens.
+    // Git identity (name <email>) configured for the repo we're viewing, left
+    // aligned right after the mode toggles it sits beside. Filled in by
+    // updateFooterGitIdentity() each time a repo opens.
     m_footerGitIdentity = new QLabel;
     m_footerGitIdentity->setObjectName("footerGitIdentity");
-    m_footerGitIdentity->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_footerGitIdentity->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_footerGitIdentity->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_footerGitIdentity->setToolTip(
         "Git author identity configured for the repository you're viewing");
@@ -424,8 +424,9 @@ QWidget *MainWindow::buildRepoFilesPanel()
     modeRow->addWidget(m_filesModeOverviewButton);
     modeRow->addWidget(m_filesModeExplorerButton);
     modeRow->addWidget(m_filesModeCoveExplorerButton);
-    modeRow->addStretch();
+    modeRow->addSpacing(12);
     modeRow->addWidget(m_footerGitIdentity);
+    modeRow->addStretch();
 
     auto *panel = new QWidget;
     auto *layout = new QVBoxLayout(panel);
@@ -636,169 +637,11 @@ QWidget *MainWindow::buildRepoOverviewPage()
     leftLayout->addWidget(commitCard);
     leftLayout->addWidget(m_overviewBodyStack, 1);
 
-    auto *body = new QHBoxLayout;
-    body->setContentsMargins(0, 0, 0, 0);
-    body->setSpacing(16);
-    body->addWidget(leftColumn, 1);
-    body->addWidget(buildAboutSidebar());
-
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(16, 10, 16, 16);
     layout->setSpacing(8);
-    layout->addLayout(body);
+    layout->addWidget(leftColumn);
     return page;
-}
-
-QWidget *MainWindow::buildAboutSidebar()
-{
-    auto *side = new QWidget;
-    side->setObjectName("aboutSidebar");
-    side->setFixedWidth(300);
-
-    auto *aboutLabel = new QLabel("About");
-    aboutLabel->setObjectName("aboutHeading");
-    m_aboutEditButton = new QPushButton;
-    m_aboutEditButton->setObjectName("aboutEditButton");
-    m_aboutEditButton->setCursor(Qt::PointingHandCursor);
-    m_aboutEditButton->setToolTip("Edit repository details");
-    m_aboutEditButton->setFixedSize(28, 28);
-    setOcticon(m_aboutEditButton, "gear", 15);
-    connect(m_aboutEditButton, &QPushButton::clicked, this,
-            &MainWindow::editRepoAbout);
-
-    auto *aboutHeader = new QHBoxLayout;
-    aboutHeader->setContentsMargins(0, 0, 0, 0);
-    aboutHeader->setSpacing(6);
-    aboutHeader->addWidget(aboutLabel);
-    aboutHeader->addStretch();
-    aboutHeader->addWidget(m_aboutEditButton);
-
-    m_aboutText = new QLabel;
-    m_aboutText->setObjectName("aboutText");
-    m_aboutText->setWordWrap(true);
-    m_aboutText->setTextFormat(Qt::RichText);
-    m_aboutText->setOpenExternalLinks(true);
-    m_aboutTopics = new QLabel;
-    m_aboutTopics->setObjectName("statusLine");
-    m_aboutTopics->setWordWrap(true);
-    m_aboutTopics->setTextFormat(Qt::RichText);
-
-    // On-disk repository size now lives on the "Code (N MB)" tab label again.
-
-    // Community files (README / LICENSE / CONTRIBUTING …) rendered as links that
-    // open the file in the overview, rather than escaping to a browser.
-    m_aboutFiles = new QLabel;
-    m_aboutFiles->setObjectName("statusLine");
-    m_aboutFiles->setWordWrap(true);
-    m_aboutFiles->setTextFormat(Qt::RichText);
-    connect(m_aboutFiles, &QLabel::linkActivated, this,
-            [this](const QString &href) { openRepoFile(href); });
-
-    m_releaseHeader = new QLabel("LATEST RELEASE");
-    m_releaseHeader->setObjectName("sectionLabel");
-    m_releaseRow = new QLabel;
-    m_releaseRow->setObjectName("statusLine");
-    m_releaseRow->setWordWrap(true);
-    m_releaseRow->setTextFormat(Qt::RichText);
-    connect(m_releaseRow, &QLabel::linkActivated, this, [this](const QString &) {
-        if (m_releasesTabIndex >= 0 && m_repoDetailTabs &&
-            m_repoDetailTabs->button(m_releasesTabIndex)) {
-            m_repoDetailTabs->button(m_releasesTabIndex)->setChecked(true);
-            m_repoDetailStack->setCurrentIndex(m_releasesTabIndex);
-            loadReleasesPanel();
-        }
-    });
-
-    auto *langLabel = new QLabel("LANGUAGES");
-    langLabel->setObjectName("sectionLabel");
-    m_langBar = new QLabel;
-    m_langBar->setObjectName("langBar");
-    m_langBar->setFixedHeight(10);
-    m_langBar->setTextFormat(Qt::RichText);
-    m_langLegend = new QLabel;
-    m_langLegend->setObjectName("statusLine");
-    m_langLegend->setWordWrap(true);
-    m_langLegend->setTextFormat(Qt::RichText);
-
-    m_filesCountHeader = new QLabel("FILES");
-    m_filesCountHeader->setObjectName("sectionLabel");
-    m_filesCountRow = new QLabel;
-    m_filesCountRow->setObjectName("statusLine");
-    m_filesCountRow->setWordWrap(true);
-    m_filesCountRow->setTextFormat(Qt::RichText);
-
-    m_contributorsHeader = new QLabel("CONTRIBUTORS");
-    m_contributorsHeader->setObjectName("sectionLabel");
-    m_contributorsRow = new QLabel;
-    m_contributorsRow->setObjectName("statusLine");
-    m_contributorsRow->setWordWrap(true);
-    m_contributorsRow->setTextFormat(Qt::RichText);
-    connect(m_contributorsRow, &QLabel::linkHovered, this,
-            [this](const QString &link) {
-                if (!m_contributorsRow)
-                    return;
-                if (!link.startsWith("contributor:")) {
-                    m_contributorsRow->setToolTip(QString());
-                    return;
-                }
-                const QString payload =
-                    link.mid(QStringLiteral("contributor:").size());
-                const int sep = payload.indexOf('|');
-                const QString encodedName =
-                    (sep >= 0) ? payload.left(sep) : payload;
-                const QString countText =
-                    (sep >= 0) ? payload.mid(sep + 1) : QString();
-                const QString name =
-                    QUrl::fromPercentEncoding(encodedName.toUtf8());
-                const QString tip = countText.isEmpty()
-                                       ? name
-                                       : QStringLiteral("%1 · %2 commits")
-                                             .arg(name, countText);
-                m_contributorsRow->setToolTip(tip);
-            });
-
-    // Thin hairline separators between sections for a cleaner, carded look.
-    auto rule = [&side]() {
-        auto *line = new QFrame(side);
-        line->setObjectName("aboutRule");
-        line->setFrameShape(QFrame::HLine);
-        line->setFixedHeight(1);
-        return line;
-    };
-
-    // Generous, even spacing so each section can breathe. One gap value is used
-    // on both sides of every hairline rule for a consistent vertical rhythm.
-    const int kSectionGap = 14;
-    auto *layout = new QVBoxLayout(side);
-    layout->setContentsMargins(22, 6, 20, 20);
-    layout->setSpacing(8);
-    layout->addLayout(aboutHeader);
-    layout->addWidget(m_aboutText);
-    layout->addWidget(m_aboutTopics);
-    layout->addWidget(m_aboutFiles);
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(rule());
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(m_releaseHeader);
-    layout->addWidget(m_releaseRow);
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(rule());
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(langLabel);
-    layout->addWidget(m_langBar);
-    layout->addWidget(m_langLegend);
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(rule());
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(m_filesCountHeader);
-    layout->addWidget(m_filesCountRow);
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(rule());
-    layout->addSpacing(kSectionGap);
-    layout->addWidget(m_contributorsHeader);
-    layout->addWidget(m_contributorsRow);
-    layout->addStretch();
-    return side;
 }
 
 QWidget *MainWindow::buildRepoEditorPage()
@@ -998,7 +841,7 @@ QWidget *MainWindow::buildRepoCoveExplorerPage()
     m_coveExplorerInviteButton->setObjectName("ghostButton");
     m_coveExplorerInviteButton->setCursor(Qt::PointingHandCursor);
     m_coveExplorerInviteButton->setToolTip(
-        QStringLiteral("Invite a verified ForkMesh account to this cove"));
+        QStringLiteral("Invite a ForkMesh account to this cove"));
     setOcticon(m_coveExplorerInviteButton, "person", 16);
     connect(m_coveExplorerInviteButton, &QPushButton::clicked, this,
             &MainWindow::inviteUserToCurrentCove);
@@ -1116,6 +959,15 @@ QString MainWindow::iconsDir() const
     if (resolved)
         return cached;
     resolved = true;
+    // Baked into the binary as a Qt resource (see qt_client/CMakeLists.txt) so
+    // the file/folder tree icons show up regardless of how the app was
+    // installed -- a packaged install never has a loose icons/ directory
+    // beside the executable (issue #417).
+    static const QString kResourceDir = QStringLiteral(":/icons/tree");
+    if (QDir(kResourceDir).exists()) {
+        cached = kResourceDir;
+        return cached;
+    }
     const QString src = QStringLiteral(FORKMESH_SOURCE_DIR);
     if (!src.isEmpty()) {
         const QString candidate = QDir(src).absoluteFilePath("../icons");
@@ -1536,9 +1388,6 @@ void MainWindow::openRepoDetail(int repoIndex)
             return;
         loadFileSearchIndex();
     });
-    nodeSwitchStep(QStringLiteral("Loading README & about…"));
-    loadAboutSidebar();
-    logStartup(QStringLiteral("  openRepo: about sidebar loaded"));
     nodeSwitchStep(QStringLiteral("Loading commit history…"));
     // Building the commit table is the single heaviest piece of per-open UI work
     // (up to 300 rows, each with cell widgets, plus several git reads). Most opens
@@ -1640,7 +1489,9 @@ void MainWindow::updateRepoIssueCount()
     if (m_repoIssuesTab) {
         int openCount = 0;
         for (const Issue &issue : std::as_const(m_currentIssues)) {
-            if (issue.status != "closed")
+            // An issue its creator deleted isn't open; an unauthorized deletion
+            // attempt leaves it open and counted (adhoc #16).
+            if (issue.status != "closed" && !issue.isDeleted())
                 ++openCount;
         }
         m_repoIssuesTab->setText(
@@ -1671,6 +1522,28 @@ void MainWindow::loadRepoFileTree()
 {
     if (!m_repoFileTree)
         return;
+
+    // Preserve the user's place across the rebuild: which folders are expanded
+    // and the scroll position, keyed by repo-relative path. Without this a change
+    // (e.g. deleting a folder) would collapse the whole tree and jump to the top.
+    QSet<QString> expanded;
+    std::function<void(QTreeWidgetItem *)> collectExpanded =
+        [&](QTreeWidgetItem *parent) {
+            for (int i = 0; i < parent->childCount(); ++i) {
+                QTreeWidgetItem *child = parent->child(i);
+                if (child->isExpanded()) {
+                    const QString p = child->data(0, Qt::UserRole).toString();
+                    if (!p.isEmpty())
+                        expanded.insert(p);
+                }
+                collectExpanded(child);
+            }
+        };
+    collectExpanded(m_repoFileTree->invisibleRootItem());
+    const int scrollValue = m_repoFileTree->verticalScrollBar()
+                                ? m_repoFileTree->verticalScrollBar()->value()
+                                : 0;
+
     m_repoFileTree->clear();
 
     const QString dir = repoGitDir();
@@ -1778,6 +1651,24 @@ void MainWindow::loadRepoFileTree()
 
     if (paths.isEmpty())
         new QTreeWidgetItem(m_repoFileTree, {"(empty repository)"});
+
+    // Re-expand the folders that were open before and restore the scroll offset,
+    // so refreshing in place keeps the view exactly where the user left it.
+    if (!expanded.isEmpty()) {
+        std::function<void(QTreeWidgetItem *)> restoreExpanded =
+            [&](QTreeWidgetItem *parent) {
+                for (int i = 0; i < parent->childCount(); ++i) {
+                    QTreeWidgetItem *child = parent->child(i);
+                    if (child->data(0, Qt::UserRole + 1).toBool() &&
+                        expanded.contains(child->data(0, Qt::UserRole).toString()))
+                        child->setExpanded(true);
+                    restoreExpanded(child);
+                }
+            };
+        restoreExpanded(m_repoFileTree->invisibleRootItem());
+    }
+    if (m_repoFileTree->verticalScrollBar())
+        m_repoFileTree->verticalScrollBar()->setValue(scrollValue);
 }
 
 // Reject a repo-relative path that would escape the repository or touch .git.
@@ -2190,16 +2081,15 @@ void MainWindow::saveCurrentRepoFile(bool createPull)
     updateRepoFileSaveActions();
 }
 
-QString MainWindow::verifiedCoveAccountName() const
+QString MainWindow::coveAccountName()
 {
-    const QString account = settingsAccountName();
-    if (account.isEmpty() || !hasActiveAccountSession() ||
-        !accountEmailVerified(account))
-        return {};
-    return account;
+    // Coves are keyed to ForkMesh user accounts, so a node session resolves to
+    // the user that owns the node. Email verification only gates node payouts;
+    // any active account session may use coves.
+    return hostLinkUserName();
 }
 
-bool MainWindow::coveInviteAccountVerified(const QString &accountName, QString *error)
+bool MainWindow::coveInviteAccountValid(const QString &accountName, QString *error)
 {
     const QString account = accountName.trimmed().toLower();
     if (account.isEmpty()) {
@@ -2217,11 +2107,6 @@ bool MainWindow::coveInviteAccountVerified(const QString &accountName, QString *
     if (lookup.value("status").toString() != QLatin1String("active")) {
         if (error)
             *error = QStringLiteral("%1 is not an active ForkMesh account.").arg(account);
-        return false;
-    }
-    if (!lookup.value("emailVerified").toBool()) {
-        if (error)
-            *error = QStringLiteral("%1 has not verified their email.").arg(account);
         return false;
     }
     return true;
@@ -2244,11 +2129,11 @@ void MainWindow::loadCoveExplorer()
 
     CoveStore store = coveStoreForRepo(m_repoDetailIndex);
     const bool canCreate = store.canWrite();
-    const QString account = verifiedCoveAccountName();
+    const QString account = coveAccountName();
     if (account.isEmpty()) {
         if (m_coveExplorerStatus)
             m_coveExplorerStatus->setText(
-                QStringLiteral("Sign in with a verified ForkMesh account."));
+                QStringLiteral("Sign in with a ForkMesh account."));
         if (m_coveExplorerNewButton)
             m_coveExplorerNewButton->setEnabled(false);
         if (m_coveExplorerInviteButton)
@@ -2260,7 +2145,7 @@ void MainWindow::loadCoveExplorer()
         if (m_coveExplorerSaveButton)
             m_coveExplorerSaveButton->setEnabled(false);
         new QTreeWidgetItem(m_coveExplorerTree,
-                            {QStringLiteral("(verified account required)")});
+                            {QStringLiteral("(sign in required)")});
         return;
     }
 
@@ -2318,7 +2203,7 @@ void MainWindow::refreshCoveExplorerTree()
             break;
         }
     }
-    const QString account = verifiedCoveAccountName();
+    const QString account = coveAccountName();
     const bool haveCove = coveIndex >= 0;
     const bool canWrite = haveCove && coveStoreForRepo(m_repoDetailIndex).canWrite();
     const bool isOwner =
@@ -2462,7 +2347,7 @@ void MainWindow::saveCurrentCoveExplorerDocument()
             doc.updatedAtMs = QDateTime::currentMSecsSinceEpoch();
             CoveAccessEntry entry;
             entry.who = m_profileIdentity.publicKey();
-            entry.name = verifiedCoveAccountName();
+            entry.name = coveAccountName();
             entry.ts = doc.updatedAtMs;
             entry.action = QStringLiteral("edit");
             CoveStore::appendAccess(cove, entry);
@@ -2483,11 +2368,11 @@ void MainWindow::saveCurrentCoveExplorerDocument()
 
 void MainWindow::createCoveExplorerCove()
 {
-    const QString account = verifiedCoveAccountName();
+    const QString account = coveAccountName();
     if (account.isEmpty()) {
         QMessageBox::warning(this, QStringLiteral("New cove"),
-                             QStringLiteral("Sign in with a verified ForkMesh "
-                                            "account before creating a cove."));
+                             QStringLiteral("Sign in with a ForkMesh account "
+                                            "before creating a cove."));
         return;
     }
     bool ok = false;
@@ -2513,7 +2398,7 @@ void MainWindow::createCoveExplorerCove()
 
 void MainWindow::inviteUserToCurrentCove()
 {
-    const QString account = verifiedCoveAccountName();
+    const QString account = coveAccountName();
     if (account.isEmpty())
         return;
     int coveIndex = -1;
@@ -2590,7 +2475,7 @@ void MainWindow::inviteUserToCurrentCove()
         return;
     }
     QString err;
-    if (!coveInviteAccountVerified(grantee, &err)) {
+    if (!coveInviteAccountValid(grantee, &err)) {
         QMessageBox::warning(this, QStringLiteral("Invite"), err);
         return;
     }
@@ -2603,6 +2488,9 @@ void MainWindow::inviteUserToCurrentCove()
                              QStringLiteral("Could not save invitation: ") + err);
         return;
     }
+    if (m_backend)
+        m_backend->notifyCoveInvited(grantee, cove.id, cove.name, account,
+                                     QDateTime::currentMSecsSinceEpoch());
     m_coveExplorerCurrentId = cove.id;
     loadCoveExplorer();
     setRepoDetailNotice(QStringLiteral("Invited %1 to the cove.").arg(grantee));
@@ -3846,7 +3734,6 @@ void MainWindow::loadCommits()
     // stay frozen on screen until the new ones snap in (one repaint when the guard
     // unwinds, including on the early returns below). Matches every other loader.
     TableRepaintGuard repaintGuard(m_commitsTable);
-    m_commitsTable->setSortingEnabled(false);
     m_commitsTable->setRowCount(0);
     showCommitList(); // always land on the list when (re)loading
     updateRepoCommitCount();
@@ -3858,10 +3745,8 @@ void MainWindow::loadCommits()
         m_repoDetailStack->currentIndex() == m_insightsTabIndex)
         loadRepoInsights();
     const QString dir = repoGitDir();
-    if (dir.isEmpty()) {
-        m_commitsTable->setSortingEnabled(true);
+    if (dir.isEmpty())
         return;
-    }
     QByteArray out;
     // Reset to the base depth whenever the branch being viewed changes; an
     // in-place reload (Refresh, or scroll-to-load-more) keeps the deepened window.
@@ -3884,21 +3769,15 @@ void MainWindow::loadCommits()
     const int rowLimit = m_commitsShowingAll ? kCommitSearchDepth : m_commitsLimit;
     QStringList logArgs{
         "log",
-        "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P"};
+        "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P%x1f%D"};
     logArgs << "-n" << QString::number(rowLimit + 1);
     logArgs << currentRef();
-    if (!runGitCapture(dir, logArgs, &out, nullptr)) {
-        m_commitsTable->setSortingEnabled(true);
+    if (!runGitCapture(dir, logArgs, &out, nullptr))
         return;
-    }
     // Local commits the network mirror doesn't have yet, so the list can flag
     // (and the banner can count) what hasn't synced.
     const QSet<QString> unpushed = unpushedCommitHashes();
-    int unpushedShown = 0;
-    // Rewriting history is only meaningful on the source of truth (the node that
-    // holds the working copy). On a browse-only mirror the delete button is shown
-    // disabled, matching the Branches panel.
-    const bool writable = repoHasWorkingTree();
+    m_commitsUnsyncedHashes.clear();
     // The newest commit (git log's first record, before the table is sorted) is
     // the branch tip; remember it so a later tab click can skip an identical rebuild.
     QString loadedTip;
@@ -4000,28 +3879,51 @@ void MainWindow::loadCommits()
         auto *summary = new SortTableWidgetItem(f.at(5));
         summary->setData(Qt::UserRole, f.at(0));
         summary->setData(kTableSortRole, f.at(5).toLower());
+        // Roles CommitSummaryDelegate paints from: the author at the row's right
+        // edge, the amber unsynced marker, and the expand chevron state.
+        summary->setData(kCommitRowKindRole, 0);
+        summary->setData(kCommitExpandedRole, false);
+        summary->setData(kCommitAuthorRole, f.at(2));
+        summary->setData(kCommitUnsyncedRole, isUnpushed);
+        // Branch / tag pills (git log %D), drawn ahead of the summary text like
+        // the VS Code graph. Capped: a tip carrying many refs would otherwise
+        // crowd out the message.
+        {
+            QStringList refs;
+            const QStringList rawRefs = f.value(7).split(
+                QStringLiteral(", "), Qt::SkipEmptyParts);
+            for (QString ref : rawRefs) {
+                ref = ref.trimmed();
+                if (ref.startsWith(QLatin1String("HEAD -> ")))
+                    ref = ref.mid(8);
+                else if (ref == QLatin1String("HEAD"))
+                    continue; // detached HEAD marker, not a ref
+                if (ref.startsWith(QLatin1String("tag: ")))
+                    ref = ref.mid(5);
+                refs << ref;
+                if (refs.size() >= 3)
+                    break;
+            }
+            if (!refs.isEmpty())
+                summary->setData(kCommitRefsRole, refs);
+        }
         // Action/check status badge for this commit (green check / red x /
         // spinning-blue dot), shown as a leading icon when a workflow ran for it.
         switch (commitStatusCode(f.at(0))) {
         case 1:
             summary->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
-            summary->setToolTip(QString::fromUtf8("Checks passed \xC2\xB7 %1").arg(f.at(1)));
             break;
         case 2:
             summary->setIcon(themedOcticon("x", QColor("#f85149"), 14));
-            summary->setToolTip(QString::fromUtf8("Checks failed \xC2\xB7 %1").arg(f.at(1)));
             break;
         case 3:
             summary->setIcon(themedOcticon("sync", QColor("#58a6ff"), 14));
-            summary->setToolTip(QString::fromUtf8("Checks running \xC2\xB7 %1").arg(f.at(1)));
             break;
         default:
-            summary->setToolTip(
-                QStringLiteral("Click to view the diff for %1").arg(f.at(1)));
             break;
         }
         // Summary (with the commit hash on UserRole) sits last; the metadata
-        // columns are to its left.
+        // columns are to its left (hidden — their data feeds the hover box).
         m_commitsTable->setItem(row, kCommitSummaryCol, summary);
 
         auto *author = new SortTableWidgetItem(f.at(2));
@@ -4037,7 +3939,7 @@ void MainWindow::loadCommits()
             isUnpushed ? QString::fromUtf8("\xE2\x96\xB2 ") + f.at(1) : f.at(1));
         hashItem->setData(kTableSortRole, f.at(1));
         if (isUnpushed) {
-            ++unpushedShown;
+            m_commitsUnsyncedHashes << f.at(0);
             hashItem->setForeground(QColor("#d29922"));
             hashItem->setToolTip(
                 QStringLiteral("%1 — not yet synced to the network mirror").arg(f.at(1)));
@@ -4060,30 +3962,9 @@ void MainWindow::loadCommits()
         delsItem->setForeground(QColor("#f85149"));
         delsItem->setData(kTableSortRole, 0);
         m_commitsTable->setItem(row, 5, delsItem);
-
-        // Per-row "delete from history" button. Enabled only on the source of
-        // truth; on a browse-only mirror it stays visible but disabled so the
-        // reason is discoverable.
-        const QString fullHash = f.at(0);
-        auto *del = new QPushButton;
-        del->setObjectName("issueIconButton");
-        del->setFlat(true);
-        del->setCursor(Qt::PointingHandCursor);
-        // Don't let the per-row button take keyboard focus: as a focusable cell
-        // widget it makes the table scroll itself to keep it visible, which read
-        // as the list "jumping" on click. The row click still selects/opens the
-        // commit; the trash button is mouse-only.
-        del->setFocusPolicy(Qt::NoFocus);
-        del->setIcon(themedOcticon("trash", QColor("#f85149"), 15));
-        del->setIconSize(QSize(15, 15));
-        del->setEnabled(writable);
-        del->setToolTip(writable
-                            ? QStringLiteral("Remove %1 from history").arg(f.at(1))
-                            : QStringLiteral("Read-only mirror — no working tree to "
-                                             "rewrite history in"));
-        connect(del, &QPushButton::clicked, this,
-                [this, fullHash] { deleteCommit(fullHash); });
-        m_commitsTable->setCellWidget(row, kCommitActionCol, del);
+        // The per-row delete button is gone: deleting a commit now lives on the
+        // commit's detail page (double-click / Enter), next to Restore.
+        updateCommitRowHover(row);
     }
     // Size the graph gutter to the widest the lanes ever got, then re-assert the
     // Date-descending sort so rows stay in git-log order (the order the lanes were
@@ -4093,23 +3974,23 @@ void MainWindow::loadCommits()
         m_commitsTable->horizontalHeader()->resizeSection(
             kCommitGraphCol, std::clamp(laneSpan, 22, 140));
     }
-    // Repaints stay suspended (TableRepaintGuard) through the sort, banner update
-    // and filter re-apply below, so the whole reload lands in a single repaint when
-    // the guard unwinds at function scope. Only sorting needs re-enabling by hand.
-    m_commitsTable->setSortingEnabled(true);
-    m_commitsTable->sortByColumn(1, Qt::DescendingOrder);
+    // Repaints stay suspended (TableRepaintGuard) through the banner update and
+    // filter re-apply below, so the whole reload lands in a single repaint when
+    // the guard unwinds at function scope. The rows stay in git-log order (no
+    // header sorting) so the graph lanes always match the topology.
 
-    if (m_commitsUnsyncedBanner) {
-        if (unpushedShown > 0) {
-            showCommitsBanner(
-                QString::fromUtf8(
-                    "<span style='color:#d29922'>\xE2\x96\xB2 %1 commit%2 not yet "
-                    "synced to the network mirror.</span>")
-                    .arg(unpushedShown)
-                    .arg(unpushedShown == 1 ? QString() : QStringLiteral("s")));
-        } else {
-            hideCommitsBanner();
-        }
+    // Banner + expandable file view for the commits still waiting to sync
+    // (m_commitsUnsyncedHashes was rebuilt by the row loop above).
+    updateCommitsUnsyncedFilesPanel();
+    // Pull only makes sense where this node holds the working tree.
+    if (m_commitsPullButton) {
+        const bool writable = repoHasWorkingTree();
+        m_commitsPullButton->setEnabled(writable);
+        m_commitsPullButton->setToolTip(
+            writable ? QStringLiteral("Fast-forward the working tree to the "
+                                      "latest fetched history (git pull --ff-only)")
+                     : QStringLiteral("Read-only mirror \xE2\x80\x94 no working "
+                                      "tree to pull into"));
     }
 
     // Re-apply any active search filter so a reload doesn't drop the user's
@@ -4200,8 +4081,8 @@ void MainWindow::fillCommitStats(int loadGen)
     m_commitsTable->setSortingEnabled(false);
     for (int row = 0; row < m_commitsTable->rowCount(); ++row) {
         const QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
-        if (!sum)
-            continue;
+        if (!sum || sum->data(kCommitRowKindRole).toInt() != 0)
+            continue; // expanded file rows share the hash — commits only
         const auto it = stats.constFind(sum->data(Qt::UserRole).toString());
         if (it == stats.constEnd())
             continue;
@@ -4218,6 +4099,7 @@ void MainWindow::fillCommitStats(int loadGen)
             d->setText(QString::fromUtf8("\xE2\x88\x92%1").arg(s.dels));
             d->setData(kTableSortRole, s.dels);
         }
+        updateCommitRowHover(row); // the hover box shows these counts
     }
     m_commitsTable->setSortingEnabled(wasSorting);
 }
@@ -4236,130 +4118,343 @@ void MainWindow::loadMoreCommits()
     m_commitsLoadingMore = false;
 }
 
-void MainWindow::generatePostFromSelectedCommits()
+// Per-file change counts for one commit, in git-log order. Shared by the
+// in-place row expansion and the pending-sync file view.
+struct CommitFileStat {
+    QString path;
+    int adds = 0;
+    int dels = 0;
+};
+
+static QList<CommitFileStat> commitFileStats(const QString &dir,
+                                             const QString &hash)
+{
+    QList<CommitFileStat> files;
+    QByteArray out;
+    // --root so a repository's first commit lists its files too.
+    if (!runGitCapture(dir,
+                       {QStringLiteral("diff-tree"), QStringLiteral("--root"),
+                        QStringLiteral("--no-commit-id"),
+                        QStringLiteral("--numstat"), QStringLiteral("-r"),
+                        QStringLiteral("-M"), hash},
+                       &out, nullptr))
+        return files;
+    const QStringList lines =
+        QString::fromUtf8(out).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString &line : lines) {
+        const QStringList cols = line.split(QLatin1Char('\t'));
+        if (cols.size() < 3)
+            continue;
+        CommitFileStat f;
+        f.path = cols.mid(2).join(QLatin1Char('\t'));
+        f.adds = cols.at(0).toInt(); // "-" for binary → 0
+        f.dels = cols.at(1).toInt();
+        files << f;
+    }
+    return files;
+}
+
+void MainWindow::toggleCommitFilesRows(int row)
 {
     if (!m_commitsTable)
         return;
-    // Collect the selected rows (de-duped across selection ranges), in the table's
-    // display order (newest first).
-    QSet<int> rowSet;
-    const auto ranges = m_commitsTable->selectedRanges();
-    for (const QTableWidgetSelectionRange &r : ranges)
-        for (int row = r.topRow(); row <= r.bottomRow(); ++row)
-            rowSet.insert(row);
-    QList<int> rows(rowSet.cbegin(), rowSet.cend());
-    std::sort(rows.begin(), rows.end());
-    if (rows.isEmpty()) {
-        flashMessage(
-            QStringLiteral("Select one or more commits first (Ctrl/Shift-click)."),
-            true);
+    QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
+    if (!sum || sum->data(kCommitRowKindRole).toInt() != 0)
+        return;
+    const QString hash = sum->data(Qt::UserRole).toString();
+    QSignalBlocker block(m_commitsTable);
+    if (sum->data(kCommitExpandedRole).toBool()) {
+        while (row + 1 < m_commitsTable->rowCount()) {
+            QTableWidgetItem *next =
+                m_commitsTable->item(row + 1, kCommitSummaryCol);
+            if (!next || next->data(kCommitRowKindRole).toInt() != 1)
+                break;
+            m_commitsTable->removeRow(row + 1);
+        }
+        sum->setData(kCommitExpandedRole, false);
         return;
     }
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || hash.isEmpty())
+        return;
+    const QList<CommitFileStat> files = commitFileStats(dir, hash);
+    if (files.isEmpty())
+        return;
+    // File rows continue the graph's pass-through lanes so the coloured lines
+    // run unbroken behind the expansion; the summary indents one step past the
+    // commit's own lane (CommitSummaryDelegate reads these roles).
+    const QTableWidgetItem *graphIt = m_commitsTable->item(row, kCommitGraphCol);
+    const QVariantList lanes =
+        graphIt ? graphIt->data(kGraphBottomLanesRole).toList() : QVariantList();
+    const int lane = graphIt ? graphIt->data(kGraphNodeLaneRole).toInt() : 0;
+    int at = row + 1;
+    for (const CommitFileStat &f : files) {
+        m_commitsTable->insertRow(at);
+        auto *graph = new QTableWidgetItem;
+        graph->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        graph->setData(kGraphLanesRole, lanes);
+        graph->setData(kGraphBottomLanesRole, lanes);
+        graph->setData(kGraphNodeLaneRole, -1); // no dot: lanes pass through
+        m_commitsTable->setItem(at, kCommitGraphCol, graph);
+        auto *item = new QTableWidgetItem(f.path);
+        item->setData(kCommitRowKindRole, 1);
+        item->setData(Qt::UserRole, hash);
+        item->setData(kCommitFilePathRole, f.path);
+        item->setData(kCommitFileAddsRole, f.adds);
+        item->setData(kCommitFileDelsRole, f.dels);
+        item->setData(kGraphNodeLaneRole, lane); // indent under the commit
+        item->setToolTip(
+            QString::fromUtf8("%1 \xC2\xB7 +%2 \xE2\x88\x92%3<br>"
+                              "Click to open this file's diff")
+                .arg(f.path.toHtmlEscaped())
+                .arg(f.adds)
+                .arg(f.dels));
+        m_commitsTable->setItem(at, kCommitSummaryCol, item);
+        ++at;
+    }
+    sum->setData(kCommitExpandedRole, true);
+}
 
-    QStringList subjects;
-    QStringList bullets;
-    for (int row : std::as_const(rows)) {
-        const QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
-        const QTableWidgetItem *hashIt = m_commitsTable->item(row, kCommitHashCol);
+void MainWindow::collapseAllCommitFileRows()
+{
+    if (!m_commitsTable)
+        return;
+    QSignalBlocker block(m_commitsTable);
+    for (int row = m_commitsTable->rowCount() - 1; row >= 0; --row) {
+        QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
         if (!sum)
             continue;
-        const QString subject = sum->text().trimmed();
-        if (subject.isEmpty())
-            continue;
-        // Strip the leading "▲ " unsynced marker from the hash cell, if present.
-        const QString shortHash =
-            hashIt ? hashIt->text().remove(QChar(0x25B2)).trimmed() : QString();
-        subjects << subject;
-        bullets << (shortHash.isEmpty()
-                        ? QStringLiteral("- %1").arg(subject)
-                        : QStringLiteral("- %1 (%2)").arg(subject, shortHash));
+        if (sum->data(kCommitRowKindRole).toInt() == 1)
+            m_commitsTable->removeRow(row);
+        else
+            sum->setData(kCommitExpandedRole, false);
     }
-    if (subjects.isEmpty()) {
-        flashMessage(QStringLiteral("Couldn't read the selected commits."), true);
+}
+
+void MainWindow::updateCommitRowHover(int row)
+{
+    if (!m_commitsTable)
+        return;
+    QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
+    if (!sum || sum->data(kCommitRowKindRole).toInt() != 0)
+        return;
+    const QTableWidgetItem *author = m_commitsTable->item(row, 0);
+    const QTableWidgetItem *date = m_commitsTable->item(row, 1);
+    const QTableWidgetItem *hashIt = m_commitsTable->item(row, kCommitHashCol);
+    const QTableWidgetItem *filesIt = m_commitsTable->item(row, 3);
+    const QTableWidgetItem *addsIt = m_commitsTable->item(row, 4);
+    const QTableWidgetItem *delsIt = m_commitsTable->item(row, 5);
+    const QString hash = sum->data(Qt::UserRole).toString();
+    const QString shortHash =
+        hashIt ? hashIt->data(kTableSortRole).toString() : hash.left(8);
+    // The date cell keeps the full "x ago" form on its own tooltip.
+    const QString when = date ? date->toolTip() : QString();
+    QString html = QStringLiteral("<b>%1</b>").arg(sum->text().toHtmlEscaped());
+    html += QStringLiteral("<br>%1 committed %2")
+                .arg((author ? author->text() : QString()).toHtmlEscaped(),
+                     when.toHtmlEscaped());
+    html += QStringLiteral("<br><code>%1</code>").arg(shortHash.toHtmlEscaped());
+    const QStringList refs = sum->data(kCommitRefsRole).toStringList();
+    if (!refs.isEmpty())
+        html += QStringLiteral("<br><span style='color:#58a6ff'>%1</span>")
+                    .arg(refs.join(QString::fromUtf8(" \xC2\xB7 ")).toHtmlEscaped());
+    // Files / adds / dels arrive from the deferred stat fill; before that the
+    // cells hold the "·" pending dot.
+    const QString filesTxt = filesIt ? filesIt->text() : QString();
+    if (!filesTxt.isEmpty() && filesTxt != QString::fromUtf8("\xC2\xB7"))
+        html += QString::fromUtf8("<br>%1 file%2 changed \xC2\xB7 "
+                                  "<span style='color:#3fb950'>%3</span> "
+                                  "<span style='color:#f85149'>%4</span>")
+                    .arg(filesTxt, filesTxt == QStringLiteral("1") ? "" : "s",
+                         addsIt ? addsIt->text() : QString(),
+                         delsIt ? delsIt->text() : QString());
+    switch (commitStatusCode(hash)) {
+    case 1:
+        html += QString::fromUtf8(
+            "<br><span style='color:#3fb950'>Checks passed</span>");
+        break;
+    case 2:
+        html += QString::fromUtf8(
+            "<br><span style='color:#f85149'>Checks failed</span>");
+        break;
+    case 3:
+        html += QString::fromUtf8(
+            "<br><span style='color:#58a6ff'>Checks running</span>");
+        break;
+    default:
+        break;
+    }
+    if (sum->data(kCommitUnsyncedRole).toBool())
+        html += QString::fromUtf8("<br><span style='color:#d29922'>\xE2\x96\xB2 "
+                                  "Not yet synced to the network mirror</span>");
+    html += QString::fromUtf8("<br><span style='color:#8b949e'>Click to show "
+                              "files \xC2\xB7 double-click for the full "
+                              "diff</span>");
+    sum->setToolTip(html);
+}
+
+void MainWindow::updateCommitsUnsyncedFilesPanel()
+{
+    const int pending = m_commitsUnsyncedHashes.size();
+    if (m_commitsUnsyncedBanner) {
+        if (pending > 0)
+            showCommitsBanner(
+                QString::fromUtf8(
+                    "<span style='color:#d29922'>\xE2\x96\xB2 %1 commit%2 pending "
+                    "sync to the network mirror.</span> "
+                    "<a href='files' style='color:#d29922'>%3</a>")
+                    .arg(pending)
+                    .arg(pending == 1 ? QString() : QStringLiteral("s"))
+                    .arg(m_commitsUnsyncedExpanded
+                             ? QString::fromUtf8("Hide files \xE2\x96\xB4")
+                             : QString::fromUtf8("Show files \xE2\x96\xBE")));
+        else
+            hideCommitsBanner(); // also hides the file view
+    }
+    if (!m_commitsUnsyncedFiles)
+        return;
+    if (pending == 0 || !m_commitsUnsyncedExpanded) {
+        m_commitsUnsyncedFiles->hide();
         return;
     }
-
-    const QString repoName =
-        (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
-            ? m_repositories.at(m_repoDetailIndex).name
-            : QString();
-    const int n = subjects.size();
-
-    // Release-notes style message.
-    const QString message =
-        QString::fromUtf8("What\xE2\x80\x99s new%1\n\n%2")
-            .arg(repoName.isEmpty() ? QStringLiteral(":")
-                                    : QStringLiteral(" in %1:").arg(repoName),
-                 bullets.join(QLatin1Char('\n')));
-
-    // X/Twitter post: a header plus as many subjects as fit under 280 characters.
-    QString post = QString::fromUtf8("\xF0\x9F\x9A\x80 ");
-    post += repoName.isEmpty()
-                ? QStringLiteral("%1 update%2").arg(n).arg(n == 1 ? QString() : "s")
-                : QStringLiteral("%1: %2 update%3")
-                      .arg(repoName)
-                      .arg(n)
-                      .arg(n == 1 ? QString() : "s");
-    const QString tail = QStringLiteral(" #buildinpublic");
-    QStringList fragments;
-    int budget = 280 - post.size() - tail.size() - 2; // " — " + joins
-    for (const QString &s : std::as_const(subjects)) {
-        const QString frag = s.length() > 70 ? s.left(67) + QStringLiteral("…") : s;
-        const int cost = frag.size() + 2; // "; "
-        if (cost > budget)
-            break;
-        fragments << frag;
-        budget -= cost;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+    m_commitsUnsyncedFiles->clear();
+    // Bounded: the pending set is normally a handful; anything deeper is still
+    // reachable per commit from the list below.
+    const int cap = qMin(pending, 20);
+    for (int i = 0; i < cap; ++i) {
+        const QString hash = m_commitsUnsyncedHashes.at(i);
+        QByteArray meta;
+        runGitCapture(dir,
+                      {QStringLiteral("show"), QStringLiteral("--no-patch"),
+                       QStringLiteral("--format=%h%x1f%s"), hash},
+                      &meta, nullptr);
+        const QStringList mf =
+            QString::fromUtf8(meta).trimmed().split(QLatin1Char('\x1f'));
+        auto *top = new QTreeWidgetItem(
+            m_commitsUnsyncedFiles,
+            {QStringLiteral("%1  %2").arg(mf.value(0), mf.value(1))});
+        top->setIcon(0, themedOcticon("upload", QColor("#d29922"), 14));
+        top->setData(0, Qt::UserRole, hash);
+        top->setToolTip(0, QStringLiteral(
+                               "Waiting to sync \xE2\x80\x94 click to view the "
+                               "commit"));
+        const QList<CommitFileStat> files = commitFileStats(dir, hash);
+        for (const CommitFileStat &f : files) {
+            auto *child = new QTreeWidgetItem(
+                top, {QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
+                          .arg(f.path)
+                          .arg(f.adds)
+                          .arg(f.dels)});
+            child->setData(0, Qt::UserRole, hash);
+            child->setData(0, Qt::UserRole + 1, f.path);
+            child->setToolTip(0, f.path);
+        }
+        top->setExpanded(true);
     }
-    if (!fragments.isEmpty())
-        post += QString::fromUtf8(" \xE2\x80\x94 ") + fragments.join(QStringLiteral("; "));
-    post += tail;
-    if (post.size() > 280)
-        post = post.left(279) + QString::fromUtf8("\xE2\x80\xA6");
+    if (pending > cap)
+        new QTreeWidgetItem(
+            m_commitsUnsyncedFiles,
+            {QString::fromUtf8("\xE2\x80\xA6 and %1 more commit%2")
+                 .arg(pending - cap)
+                 .arg(pending - cap == 1 ? QString() : QStringLiteral("s"))});
+    m_commitsUnsyncedFiles->show();
+}
 
-    // Show both in a copyable dialog.
-    QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("Generate post — %1 commit%2")
-                              .arg(n)
-                              .arg(n == 1 ? QString() : "s"));
-    dialog.resize(560, 460);
-    auto *outer = new QVBoxLayout(&dialog);
+void MainWindow::fetchCurrentRepo()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    // Refresh the served mirror from its source; quiet — the flashes below are
+    // the user feedback for this click.
+    syncRepository(m_repoDetailIndex, /*quiet=*/true);
+    const bool hasWorkTree = !repo.localPath.isEmpty() &&
+                             QDir(repo.localPath).exists(QStringLiteral(".git"));
+    if (!hasWorkTree) {
+        flashMessage(QStringLiteral("Fetching %1/%2 from the network\xE2\x80\xA6")
+                         .arg(repo.owner, repo.name));
+        return;
+    }
+    if (m_commitsFetchButton)
+        m_commitsFetchButton->setEnabled(false);
+    // Also refresh every remote the working copy tracks (no-op without remotes).
+    runGitDetached(repo.localPath,
+                   {QStringLiteral("fetch"), QStringLiteral("--all"),
+                    QStringLiteral("--prune"), QStringLiteral("--tags")},
+                   [this](bool ok, const QByteArray &) {
+                       if (m_commitsFetchButton)
+                           m_commitsFetchButton->setEnabled(true);
+                       flashMessage(ok ? QStringLiteral(
+                                             "Fetched the latest history.")
+                                       : QStringLiteral("Fetch failed \xE2\x80\x94 "
+                                                        "check the remotes."),
+                                    !ok);
+                       if (ok)
+                           loadCommits();
+                   });
+}
 
-    auto addBlock = [&](const QString &title, const QString &body, bool small) {
-        auto *label = new QLabel(title);
-        label->setObjectName("sectionLabel");
-        outer->addWidget(label);
-        auto *edit = new QPlainTextEdit;
-        edit->setPlainText(body);
-        edit->setReadOnly(true);
-        if (small)
-            edit->setMaximumHeight(90);
-        outer->addWidget(edit, small ? 0 : 1);
-        auto *copyBtn = new QPushButton(QStringLiteral("Copy"));
-        copyBtn->setProperty("buttonSize", "sm");
-        copyBtn->setCursor(Qt::PointingHandCursor);
-        connect(copyBtn, &QPushButton::clicked, this, [this, body, title] {
-            QApplication::clipboard()->setText(body);
-            flashMessage(title + QStringLiteral(" copied to the clipboard."));
-        });
-        auto *copyRow = new QHBoxLayout;
-        copyRow->addStretch();
-        copyRow->addWidget(copyBtn);
-        outer->addLayout(copyRow);
-    };
-    addBlock(QString::fromUtf8("X / Twitter post (%1 chars)").arg(post.size()), post,
-             true);
-    addBlock(QStringLiteral("Release notes"), message, false);
-
-    auto *closeBtn = new QPushButton(QStringLiteral("Close"));
-    closeBtn->setCursor(Qt::PointingHandCursor);
-    connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
-    auto *closeRow = new QHBoxLayout;
-    closeRow->addStretch();
-    closeRow->addWidget(closeBtn);
-    outer->addLayout(closeRow);
-
-    dialog.exec();
+void MainWindow::pullCurrentRepo()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    if (repo.localPath.isEmpty() ||
+        !QDir(repo.localPath).exists(QStringLiteral(".git"))) {
+        flashMessage(QStringLiteral("Read-only mirror \xE2\x80\x94 no working "
+                                    "tree to pull into."),
+                     true);
+        return;
+    }
+    // Prefer the configured upstream; with none (a relay-published repo), fast-
+    // forward from the served mirror instead so commits that arrived over the
+    // mesh land in the working copy.
+    QStringList args{QStringLiteral("pull"), QStringLiteral("--ff-only")};
+    if (!runGitCapture(repo.localPath,
+                       {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                        QStringLiteral("--symbolic-full-name"),
+                        QStringLiteral("@{upstream}")},
+                       nullptr, nullptr)) {
+        if (repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists()) {
+            flashMessage(QStringLiteral("No upstream branch or mirror to pull "
+                                        "from."),
+                         true);
+            return;
+        }
+        QByteArray branch;
+        runGitCapture(repo.localPath,
+                      {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
+                       QStringLiteral("HEAD")},
+                      &branch, nullptr);
+        args << repo.mirrorPath << QString::fromUtf8(branch).trimmed();
+    }
+    if (m_commitsPullButton)
+        m_commitsPullButton->setEnabled(false);
+    runGitDetached(repo.localPath, args,
+                   [this](bool ok, const QByteArray &out) {
+                       if (m_commitsPullButton)
+                           m_commitsPullButton->setEnabled(true);
+                       const QString text = QString::fromUtf8(out).trimmed();
+                       if (ok)
+                           flashMessage(
+                               text.contains(QLatin1String("Already up to date"))
+                                   ? QStringLiteral("Already up to date.")
+                                   : QStringLiteral("Pulled the latest history."));
+                       else
+                           flashMessage(QStringLiteral(
+                                            "Pull failed \xE2\x80\x94 the branch "
+                                            "has diverged or has nothing to pull "
+                                            "from (fetch first, or resolve by "
+                                            "hand)."),
+                                        true);
+                       if (ok) {
+                           refreshSourceControl(true);
+                           loadCommits();
+                       }
+                   });
 }
 
 // ---------------------------------------------------------------------------
@@ -5321,7 +5416,7 @@ bool isInboxDataPath(const QString &rel)
 {
     return rel.startsWith(QLatin1String(".forkmesh/issues/"))
         || rel.startsWith(QLatin1String("pulls/"))
-        || rel.startsWith(QLatin1String("commits/"))
+        || rel.startsWith(QLatin1String(".forkmesh/commits/"))
         || rel.startsWith(QLatin1String(".forkmesh/"));
 }
 
@@ -5605,6 +5700,9 @@ void MainWindow::showCommitsBanner(const QString &html)
 
 void MainWindow::hideCommitsBanner()
 {
+    // Nothing pending: the expandable file view under the banner goes with it.
+    if (m_commitsUnsyncedFiles)
+        m_commitsUnsyncedFiles->hide();
     if (!m_commitsUnsyncedBanner || m_commitsUnsyncedBanner->isHidden())
         return;
     // Ease the note away instead of snapping it off, so it stays readable a
@@ -5623,6 +5721,9 @@ void MainWindow::filterCommits(const QString &query)
 {
     if (!m_commitsTable)
         return;
+    // Fold any expanded file rows back in first: they aren't commits, so they
+    // have no business matching (or surviving) a history filter.
+    collapseAllCommitFileRows();
     const QString needle = query.trimmed().toLower();
     // A search should reach well past the lazily-paged window, so a hash or
     // message deeper than the loaded rows still turns up. The first keystroke
@@ -6196,6 +6297,18 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
         }
         fitFileListToWidestEntry(m_commitFileList);
     }
+    // A click on an expanded file row (or a pending-sync file) asked for this
+    // specific file: select it now the list exists — outside the blocker, so the
+    // selection scrolls the diff to that file's anchor.
+    if (m_commitFileList && !m_pendingCommitFileScroll.isEmpty()) {
+        for (int i = 0; i < files.size(); ++i) {
+            if (files.at(i).path == m_pendingCommitFileScroll) {
+                m_commitFileList->setCurrentRow(i);
+                break;
+            }
+        }
+        m_pendingCommitFileScroll.clear();
+    }
 
     // --- Theme-aware diff styling, then the rendered HTML.
     if (m_commitDiffView) {
@@ -6275,7 +6388,7 @@ void MainWindow::submitCommitComment()
         }
         // Push the new comment into the bare mirror and tell mirroring peers
         // right away (like issue/PR comments do) so it converges in seconds
-        // instead of at the next 5-minute auto-sync. Resolve the writable
+        // instead of at the next 15-minute auto-sync. Resolve the writable
         // repo's own index — the open detail may be a read-only preview of a
         // repo we actually host under a different entry.
         const int srcIndex = repoIndexFor(rec.owner, rec.name);
@@ -7026,13 +7139,80 @@ void MainWindow::editRepoAbout()
     form->addRow("Description", descriptionEdit);
     form->addRow("Website", websiteEdit);
 
+    // Per-repo ActivityPub switches. These live on the relay (ap_repo_settings
+    // table), not in .forkmesh/info.json, because the relay enforces them on
+    // its public fediverse endpoints. Seeded async from the public GET /about
+    // and kept disabled until the stored values arrive, so a slow relay can
+    // never cause an accidental "everything back on" save.
+    auto *fediGroup = new QGroupBox("ActivityPub federation", &dialog);
+    auto *fediLayout = new QVBoxLayout(fediGroup);
+    auto *federateBox = new QCheckBox(
+        "Federate this repository (fediverse actor and handle)", fediGroup);
+    auto *broadcastBox = new QCheckBox(
+        "Post new issues, pull requests, discussions and releases to followers",
+        fediGroup);
+    auto *commentsBox = new QCheckBox(
+        "Accept fediverse replies as federated comments", fediGroup);
+    for (QCheckBox *box : {federateBox, broadcastBox, commentsBox}) {
+        box->setChecked(true);
+        box->setEnabled(false);
+        fediLayout->addWidget(box);
+    }
+    auto fediLoaded = std::make_shared<bool>(false);
+    if (repo.publishToNetwork) {
+        const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+        const QString name =
+            repoSegment(repo.name, QStringLiteral("repository"));
+        QNetworkReply *reply = m_networkAccess->get(
+            QNetworkRequest(repoAboutApiUrl(owner, name)));
+        QPointer<QCheckBox> fedPtr(federateBox);
+        QPointer<QCheckBox> broadPtr(broadcastBox);
+        QPointer<QCheckBox> comPtr(commentsBox);
+        connect(reply, &QNetworkReply::finished, this,
+                [reply, fedPtr, broadPtr, comPtr, fediLoaded] {
+                    reply->deleteLater();
+                    if (!fedPtr || !broadPtr || !comPtr ||
+                        reply->error() != QNetworkReply::NoError)
+                        return;
+                    const QJsonObject settings =
+                        QJsonDocument::fromJson(reply->readAll())
+                            .object()
+                            .value(QStringLiteral("fediverse"))
+                            .toObject()
+                            .value(QStringLiteral("settings"))
+                            .toObject();
+                    if (settings.isEmpty())
+                        return;
+                    fedPtr->setChecked(
+                        settings.value(QStringLiteral("federate")).toBool(true));
+                    broadPtr->setChecked(
+                        settings.value(QStringLiteral("broadcastEvents"))
+                            .toBool(true));
+                    comPtr->setChecked(
+                        settings.value(QStringLiteral("acceptComments"))
+                            .toBool(true));
+                    for (QCheckBox *box :
+                         {fedPtr.data(), broadPtr.data(), comPtr.data()})
+                        box->setEnabled(true);
+                    *fediLoaded = true;
+                });
+    } else {
+        fediGroup->setToolTip(
+            "Publish this repository to the network to give it a fediverse "
+            "presence.");
+    }
+
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save |
                                          QDialogButtonBox::Cancel,
                                          Qt::Horizontal, &dialog);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, this, [this, &dialog,
                                                          descriptionEdit,
-                                                         websiteEdit] {
+                                                         websiteEdit,
+                                                         federateBox,
+                                                         broadcastBox,
+                                                         commentsBox,
+                                                         fediLoaded] {
         QString error;
         if (!saveRepoAboutMetadata(descriptionEdit->toPlainText(),
                                    websiteEdit->text(), &error)) {
@@ -7042,6 +7222,18 @@ void MainWindow::editRepoAbout()
                                      : error);
             return;
         }
+        // The relay no-ops an unchanged settings save, so posting the loaded
+        // values back is free; skipped entirely when they never loaded.
+        if (*fediLoaded && m_repoDetailIndex >= 0 &&
+            m_repoDetailIndex < m_repositories.size()) {
+            const RepositoryRecord &current =
+                m_repositories.at(m_repoDetailIndex);
+            saveRepoFediverseSettings(
+                repoSegment(current.owner, QStringLiteral("owner")),
+                repoSegment(current.name, QStringLiteral("repository")),
+                federateBox->isChecked(), broadcastBox->isChecked(),
+                commentsBox->isChecked());
+        }
         dialog.accept();
     });
 
@@ -7049,9 +7241,64 @@ void MainWindow::editRepoAbout()
     layout->setContentsMargins(18, 18, 18, 18);
     layout->setSpacing(12);
     layout->addLayout(form);
+    layout->addWidget(fediGroup);
     layout->addWidget(buttons);
-    dialog.resize(460, 220);
+    dialog.resize(520, 340);
     dialog.exec();
+}
+
+QUrl MainWindow::repoAboutApiUrl(const QString &owner, const QString &name) const
+{
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repo/%1/%2/about").arg(owner, name));
+    return url;
+}
+
+void MainWindow::saveRepoFediverseSettings(const QString &owner,
+                                           const QString &name,
+                                           bool federate, bool broadcastEvents,
+                                           bool acceptComments)
+{
+    if (owner.isEmpty() || name.isEmpty())
+        return;
+    if (!hasOwnerSigningCapability(owner))
+        return;
+    if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
+        logSystem("Fediverse: could not load identity to save federation "
+                  "settings.");
+        return;
+    }
+    // Same shape as the other owner-key gates (fresh ts + ed25519 over an
+    // explicit canonical string), with a distinct prefix so an About token
+    // can never be replayed as a host/view/push/inbox token or vice versa.
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-repo-about-v1\n" + owner + "\n" + name + "\n" + ts).toUtf8();
+    QJsonObject settings;
+    settings.insert(QStringLiteral("federate"), federate);
+    settings.insert(QStringLiteral("broadcastEvents"), broadcastEvents);
+    settings.insert(QStringLiteral("acceptComments"), acceptComments);
+    QJsonObject body;
+    body.insert(QStringLiteral("ts"), ts);
+    body.insert(QStringLiteral("ownerSig"),
+                m_profileIdentity.signData(canonical));
+    body.insert(QStringLiteral("fediverse"), settings);
+    QNetworkRequest request(repoAboutApiUrl(owner, name));
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, owner, name] {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError)
+            logSystem(QStringLiteral(
+                          "Fediverse: saved federation settings for %1/%2.")
+                          .arg(owner, name));
+        else
+            logSystem(QStringLiteral("Fediverse: could not save federation "
+                                     "settings for %1/%2 (%3).")
+                          .arg(owner, name, reply->errorString()));
+    });
 }
 
 bool MainWindow::saveRepoAboutMetadata(const QString &about,
@@ -7069,12 +7316,37 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
                 "Open a repository with a local working copy to edit its About details.");
         return false;
     }
+    if (!applyRepoAboutMetadataAt(m_repoDetailIndex, about, websiteInput, error))
+        return false;
+    setRepoDetailNotice(QStringLiteral("Updated repository details."));
+    return true;
+}
+
+// Index-based core of the About editor, shared with the relay-sync path that
+// applies website gear-icon edits (aboutUpdate in GET /api/sync). Writes the
+// canonical .forkmesh/info.json exactly like the in-app dialog does.
+bool MainWindow::applyRepoAboutMetadataAt(int index, const QString &about,
+                                          const QString &websiteInput,
+                                          QString *error)
+{
+    if (index < 0 || index >= m_repositories.size()) {
+        if (error)
+            *error = QStringLiteral("Unknown repository.");
+        return false;
+    }
+    if (m_repositories.at(index).localPath.isEmpty() ||
+        !QDir(m_repositories.at(index).localPath)
+             .exists(QStringLiteral(".git"))) {
+        if (error)
+            *error = QStringLiteral(
+                "This repository has no local working copy on this node.");
+        return false;
+    }
 
     const QString website = normalizedRepoWebsite(websiteInput, error);
     if (!websiteInput.trimmed().isEmpty() && website.isEmpty())
         return false;
 
-    const int index = m_repoDetailIndex;
     RepositoryRecord &repo = m_repositories[index];
     const QDir repoDir(repo.localPath);
     const QString infoPath = repoDir.filePath(kRepoInfoPath);
@@ -7132,15 +7404,15 @@ bool MainWindow::saveRepoAboutMetadata(const QString &about,
 
     repo.description = aboutText;
     saveRepositories();
-    m_repoInfo.about = aboutText;
-    m_repoInfo.website = website;
-    loadAboutSidebar();
+    if (index == m_repoDetailIndex) {
+        m_repoInfo.about = aboutText;
+        m_repoInfo.website = website;
+    }
     refreshRepositoryList();
     if (repo.publishToNetwork)
         publishRepositoryAfterMirrorRefresh(index, false);
     logSystem(QStringLiteral("Updated About details for %1/%2.")
                   .arg(repo.owner, repo.name));
-    setRepoDetailNotice(QStringLiteral("Updated repository details."));
     return true;
 }
 
@@ -7150,7 +7422,6 @@ void MainWindow::setRepoBranch(const QString &branch)
     if (m_branchButton)
         m_branchButton->setText(branch);
     loadRepoOverview(QString());
-    loadAboutSidebar();
     loadCommits(); // also refreshes the Insights counts when that tab is on screen
 }
 
@@ -7519,7 +7790,11 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Mirror nodes", "server"},
                                 {"Artifacts", "package"},
                                 {"Shortcuts", "rocket"},
-                                {"Settings", "gear"}};
+                                {"Settings", "gear"},
+                                // Projects (issue #384) is appended here so every
+                                // earlier tab keeps its positional id, but its
+                                // button is inserted next to Issues in the row.
+                                {"Projects", "list-unordered"}};
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
     auto *tabRow = new QHBoxLayout;
@@ -7562,8 +7837,15 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_repoReleasesTab = b; // handle for the Releases (N) badge
         if (i == 13)
             m_repoMirrorsTab = b; // handle for the Mirror nodes (N) badge
+        if (i == 17)
+            m_repoProjectsTab = b; // handle for the Projects (N) badge
         m_repoDetailTabs->addButton(b, i);
-        tabRow->addWidget(b);
+        if (i == 17)
+            // Projects sits right after Issues in the row (Code=0, Issues=1
+            // among the visible buttons) despite its appended positional id.
+            tabRow->insertWidget(2, b);
+        else
+            tabRow->addWidget(b);
     }
     tabRow->addStretch();
     auto *tabBar = new QWidget;
@@ -7583,10 +7865,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabBarScroll->setMinimumWidth(0);
     tabBarScroll->setFixedHeight(48);
 
-    // The integrity-pin warning ("clones are being rejected — reset the pin") no
-    // longer lives in an in-page banner here; refreshRepoPinBanner surfaces it in
-    // the top-bar notification toast (see showPinWarning), where its "Reset
-    // integrity pin" and "Why?" actions are clickable links.
+    // The integrity-pin warning ("clones are being rejected — reset the pin")
+    // doesn't live in an in-page banner here; refreshRepoPinBanner surfaces it as
+    // a caution triangle on the self row/dot in the Mirror nodes panel, whose
+    // header carries the "Reset integrity pin" action.
 
     m_repoPushButton = new QPushButton(this);
     m_repoPushButton->setObjectName("primaryButton");
@@ -7701,6 +7983,8 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildShortcutsTab());                   // 15 Shortcuts
     m_settingsTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 16 Settings
+    m_projectsTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildProjectsSection());                // 17 Projects
     // Chat is no longer part of the repo hierarchy: it's a top-level section
     // (m_sectionStack index 2), reached from the always-visible nav.
     m_chatStackIndex = -1;
@@ -7780,6 +8064,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             loadShortcutsPanel();
         else if (id == m_settingsTabIndex)
             refreshRepoSettings();
+        else if (id == m_projectsTabIndex)
+            reloadProjects();
         // Hand keyboard focus to the new tab's list so the user can arrow through
         // its rows right away instead of having to click a row first.
         focusRepoDetailTable(id);
@@ -7788,6 +8074,21 @@ QWidget *MainWindow::buildRepoDetailSection()
     // Land on the Code view; opening a repo refreshes it (see openRepoDetail).
     m_repoDetailStack->setCurrentIndex(0);
 
+    // QStackedWidget sizes itself to the tallest page, even ones that aren't
+    // showing (e.g. Discussions or Settings next to a short Code view). Without
+    // this wrapper that height pushes into the outer app-wide scroll area, which
+    // then scrolls the whole page — header and tab bar included — out of view.
+    // Wrapping just the stack (same trick as contentScroll/settingsScroll) keeps
+    // header + tab bar fixed and scrolls only the active tab's body.
+    auto *repoDetailStackScroll = new QScrollArea;
+    repoDetailStackScroll->setObjectName("repoDetailStackScroll");
+    repoDetailStackScroll->setWidgetResizable(true);
+    repoDetailStackScroll->setFrameShape(QFrame::NoFrame);
+    repoDetailStackScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    repoDetailStackScroll->setMinimumHeight(0);
+    repoDetailStackScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    repoDetailStackScroll->setWidget(m_repoDetailStack);
+
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(6);
@@ -7795,7 +8096,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     layout->addWidget(m_repoDetailNotice);
     layout->addWidget(metaBand);
     layout->addWidget(tabBarScroll);
-    layout->addWidget(m_repoDetailStack, 1);
+    layout->addWidget(repoDetailStackScroll, 1);
     return page;
 }
 
@@ -7806,40 +8107,31 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     // --- Page 0: the commit list.
     auto *listPage = new QWidget;
+    // VS-Code-style graph list: just the graph gutter and the summary line (the
+    // summary carries the author at its right edge; author / date / hash /
+    // files / adds / dels moved into the summary's hover box). The metadata
+    // columns still exist — hidden — so search, stats backfill and the detail
+    // view keep reading the same cells as before.
     m_commitsTable = new QTableWidget(0, 9);
     m_commitsTable->setObjectName("commitsList");
-    installColumnHeaderMenu(m_commitsTable); // 3-dots per-column menu (issue #318)
     enableHoverRowHighlight(m_commitsTable); // green outline selection (issue #252)
-    m_commitsTable->setHorizontalHeaderLabels(
-        {"Author", "Date", "Commit", "Files", "+adds", "-dels", "Summary", "", ""});
+    m_commitsTable->horizontalHeader()->setVisible(false);
     m_commitsTable->verticalHeader()->setVisible(false);
     m_commitsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    // Extended selection so several commits can be picked (Ctrl/Shift-click) and
-    // turned into a summary message / X post; a plain click still opens the diff.
-    m_commitsTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_commitsTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_commitsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_commitsTable->setShowGrid(false);
     m_commitsTable->setWordWrap(false);
-    m_commitsTable->setSortingEnabled(true);
-    m_commitsTable->setToolTip("Click a column header to sort");
+    // No header sorting: the rows stay in git-log order so the graph lanes (and
+    // the indented summaries beside them) always line up with the topology.
+    m_commitsTable->setSortingEnabled(false);
     m_commitsTable->setTextElideMode(Qt::ElideRight);
-    // Fixed default column widths instead of ResizeToContents: the latter
-    // rescans every row on each resize, which makes dragging the splitter
-    // beside a 300-row table choppy. Interactive sections stay smooth.
     QHeaderView *commitHeader = m_commitsTable->horizontalHeader();
     commitHeader->setHighlightSections(false);
-    commitHeader->setSectionResizeMode(QHeaderView::Interactive);
-    // Commit column (index 2) is wider so the short hash — plus the leading
-    // "▲" unsynced marker — isn't clipped.
-    const int commitColWidths[kCommitSummaryCol] = {150, 72, 120, 60, 66, 66};
-    for (int i = 0; i < kCommitSummaryCol; ++i) {
-        commitHeader->setSectionResizeMode(i, QHeaderView::Interactive);
-        commitHeader->resizeSection(i, commitColWidths[i]);
-    }
+    for (int i = 0; i < kCommitSummaryCol; ++i)
+        m_commitsTable->setColumnHidden(i, true);
+    m_commitsTable->setColumnHidden(kCommitActionCol, true);
     commitHeader->setSectionResizeMode(kCommitSummaryCol, QHeaderView::Stretch);
-    // Trailing action column: a fixed, narrow slot for the per-row delete button.
-    commitHeader->setSectionResizeMode(kCommitActionCol, QHeaderView::Fixed);
-    commitHeader->resizeSection(kCommitActionCol, 38);
     // Git-graph gutter: a fixed, narrow column drawn by CommitGraphDelegate and
     // moved to the far left so it reads like a git log graph. Its width is
     // recomputed per load once the lane count is known (see loadCommits).
@@ -7848,27 +8140,36 @@ QWidget *MainWindow::buildRepoCommitsTab()
     commitHeader->moveSection(commitHeader->visualIndex(kCommitGraphCol), 0);
     m_commitsTable->setItemDelegateForColumn(kCommitGraphCol,
                                              new CommitGraphDelegate(m_commitsTable));
-    // Freeze the Summary flex column to a draggable width once rows arrive, so
-    // every column drags independently like a spreadsheet (#263); the Fixed graph
-    // and action columns are left as-is.
-    makeColumnsResizable(m_commitsTable);
-    // Most recent first: sort by the Date column (which sorts on the raw commit
-    // timestamp), matching git-log order so the graph lanes line up.
-    m_commitsTable->sortByColumn(1, Qt::DescendingOrder);
+    m_commitsTable->setItemDelegateForColumn(
+        kCommitSummaryCol, new CommitSummaryDelegate(m_commitsTable));
+    // Single click: expand/collapse the commit's files in place (VS-Code style).
+    // Clicking a file row opens the commit's diff scrolled to that file.
     connect(m_commitsTable, &QTableWidget::cellClicked, this,
             [this](int row, int) {
                 QTableWidgetItem *item = m_commitsTable->item(row, kCommitSummaryCol);
-                if (item)
+                if (!item)
+                    return;
+                if (item->data(kCommitRowKindRole).toInt() == 1) {
+                    m_pendingCommitFileScroll =
+                        item->data(kCommitFilePathRole).toString();
+                    showCommit(item->data(Qt::UserRole).toString());
+                    return;
+                }
+                toggleCommitFilesRows(row);
+            });
+    // Double click (or Enter) on a commit opens its full detail page — diff,
+    // conversation, and the Delete / Restore commit actions.
+    connect(m_commitsTable, &QTableWidget::cellDoubleClicked, this,
+            [this](int row, int) {
+                QTableWidgetItem *item = m_commitsTable->item(row, kCommitSummaryCol);
+                if (item && item->data(kCommitRowKindRole).toInt() == 0)
                     showCommit(item->data(Qt::UserRole).toString());
             });
-    // Arrow-key navigation: when the current row changes (e.g. via Up/Down keys),
-    // load and display the newly selected commit so the diff view stays in sync.
-    connect(m_commitsTable, &QTableWidget::currentCellChanged, this,
-            [this](int row, int, int prevRow, int) {
-                if (row == prevRow || row < 0)
-                    return;
-                QTableWidgetItem *item = m_commitsTable->item(row, kCommitSummaryCol);
-                if (item)
+    connect(m_commitsTable, &QTableWidget::itemActivated, this,
+            [this](QTableWidgetItem *it) {
+                QTableWidgetItem *item =
+                    it ? m_commitsTable->item(it->row(), kCommitSummaryCol) : nullptr;
+                if (item && item->data(kCommitRowKindRole).toInt() == 0)
                     showCommit(item->data(Qt::UserRole).toString());
             });
     // Banner above the list flagging local commits that haven't reached the
@@ -7878,6 +8179,14 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsUnsyncedBanner->setObjectName("statusLine");
     m_commitsUnsyncedBanner->setTextFormat(Qt::RichText);
     m_commitsUnsyncedBanner->setWordWrap(true);
+    // The banner's "Show files" link expands the pending commits into the files
+    // they touch (mirroring how a commit row expands in the list below).
+    m_commitsUnsyncedBanner->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+    connect(m_commitsUnsyncedBanner, &QLabel::linkActivated, this,
+            [this](const QString &) {
+                m_commitsUnsyncedExpanded = !m_commitsUnsyncedExpanded;
+                updateCommitsUnsyncedFilesPanel();
+            });
     // A card background sets the note apart from the rows beneath it.
     m_commitsUnsyncedBanner->setStyleSheet(
         "#statusLine {"
@@ -7912,43 +8221,29 @@ QWidget *MainWindow::buildRepoCommitsTab()
     connect(m_commitSearch, &QLineEdit::textChanged, this,
             &MainWindow::filterCommits);
 
-    // Refresh: force a full rebuild that re-checks which commits are still
-    // waiting to sync. Switching away and back skips the rebuild when nothing
-    // changed, so this is the explicit way to re-scan after a commit/publish.
-    m_commitsRefreshButton = new QPushButton("Refresh");
-    m_commitsRefreshButton->setObjectName("ghostButton");
-    m_commitsRefreshButton->setCursor(Qt::PointingHandCursor);
-    // Idle icon drawn by refreshPixmap (angle 0) so the spinning state is the
-    // same glyph rotating, not a different icon swapping in.
-    m_commitsRefreshButton->setIcon(
-        QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
-    m_commitsRefreshButton->setToolTip(
-        "Reload the commit list and re-check which commits are waiting to sync");
-    connect(m_commitsRefreshButton, &QPushButton::clicked, this, [this] {
-        startCommitsRefreshSpin();
-        // Defer the (synchronous) git + table rebuild one event-loop turn: the
-        // click returns immediately so the button feels responsive and the
-        // spinner paints before the reload briefly blocks the UI thread.
-        QTimer::singleShot(0, this, [this] {
-            loadCommits();
-            // The reload is near-instant, so stop on a short delay: that lets the
-            // spinner actually rotate a few frames as confirmation. The list is
-            // already rebuilt and interactive by now, so this tail is feedback,
-            // not blocking latency.
-            QTimer::singleShot(250, this, [this] { stopCommitsRefreshSpin(); });
-        });
-    });
+    // Fetch / Pull, VS-Code style. Fetch refreshes this repo's refs from the
+    // network (mirror + any upstream remote) without touching the working tree;
+    // Pull fast-forwards the working tree from its upstream (or the served
+    // mirror when no upstream is configured).
+    m_commitsFetchButton = new QPushButton("Fetch");
+    m_commitsFetchButton->setObjectName("ghostButton");
+    m_commitsFetchButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_commitsFetchButton, "cloud", 16);
+    m_commitsFetchButton->setToolTip(
+        "Fetch the latest history from the network without changing your "
+        "working tree, then reload this list");
+    connect(m_commitsFetchButton, &QPushButton::clicked, this,
+            &MainWindow::fetchCurrentRepo);
 
-    // Turn the multi-selected commits into a shareable summary / X post.
-    m_commitsGenerateButton = new QPushButton("Generate post");
-    m_commitsGenerateButton->setObjectName("ghostButton");
-    m_commitsGenerateButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_commitsGenerateButton, "broadcast", 16);
-    m_commitsGenerateButton->setToolTip(
-        "Select one or more commits (Ctrl/Shift-click), then draft a release note "
-        "and an X/Twitter post from them");
-    connect(m_commitsGenerateButton, &QPushButton::clicked, this,
-            &MainWindow::generatePostFromSelectedCommits);
+    m_commitsPullButton = new QPushButton("Pull");
+    m_commitsPullButton->setObjectName("ghostButton");
+    m_commitsPullButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_commitsPullButton, "download", 16);
+    m_commitsPullButton->setToolTip(
+        "Fast-forward the working tree to the latest fetched history "
+        "(git pull --ff-only)");
+    connect(m_commitsPullButton, &QPushButton::clicked, this,
+            &MainWindow::pullCurrentRepo);
 
     // Current-branch indicator + switcher: shows the checked-out branch and opens
     // a dropdown to check out another branch (or create one), like a git client.
@@ -7963,8 +8258,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
     searchRow->setSpacing(8);
     searchRow->addWidget(m_commitsBranchButton);
     searchRow->addWidget(m_commitSearch, 1);
-    searchRow->addWidget(m_commitsGenerateButton);
-    searchRow->addWidget(m_commitsRefreshButton);
+    searchRow->addWidget(m_commitsFetchButton);
+    searchRow->addWidget(m_commitsPullButton);
 
     // Infinite scroll: when the list reaches the bottom and older history remains,
     // deepen the window and rebuild (loadMoreCommits preserves the scroll spot).
@@ -7986,6 +8281,27 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // flags. When hidden it collapses to zero height and the table reclaims it.
     listLayout->addLayout(searchRow);
     listLayout->addWidget(m_commitsUnsyncedBanner);
+    // Files touched by the pending-sync commits, shown when the banner's
+    // "Show files" link is toggled: one expandable entry per pending commit.
+    m_commitsUnsyncedFiles = new QTreeWidget(listPage);
+    m_commitsUnsyncedFiles->setObjectName("commitsUnsyncedFiles");
+    m_commitsUnsyncedFiles->setHeaderHidden(true);
+    m_commitsUnsyncedFiles->setRootIsDecorated(true);
+    m_commitsUnsyncedFiles->setMaximumHeight(180);
+    enableHoverRowHighlight(m_commitsUnsyncedFiles);
+    connect(m_commitsUnsyncedFiles, &QTreeWidget::itemClicked, this,
+            [this](QTreeWidgetItem *item, int) {
+                if (!item)
+                    return;
+                const QString hash = item->data(0, Qt::UserRole).toString();
+                if (hash.isEmpty())
+                    return;
+                m_pendingCommitFileScroll =
+                    item->data(0, Qt::UserRole + 1).toString();
+                showCommit(hash);
+            });
+    m_commitsUnsyncedFiles->hide();
+    listLayout->addWidget(m_commitsUnsyncedFiles);
     listLayout->addWidget(m_commitsTable);
 
     // --- Page 1: the GitHub-style commit diff view.
@@ -8002,17 +8318,24 @@ QWidget *MainWindow::buildRepoCommitsTab()
     setOcticon(m_commitNextButton, "chevron-right", 16);
     m_commitPrevButton->setToolTip("Show the previous (newer) commit");
     m_commitNextButton->setToolTip("Show the next (older) commit");
-    auto goToCommitRow = [this](int row) {
-        if (!m_commitsTable || row < 0 || row >= m_commitsTable->rowCount())
+    // Walks in `dir` (-1 newer / +1 older) past any expanded file rows to the
+    // next actual commit row.
+    auto goToCommitRow = [this](int row, int dir) {
+        if (!m_commitsTable)
             return;
-        QTableWidgetItem *it = m_commitsTable->item(row, kCommitSummaryCol);
-        if (it)
-            showCommit(it->data(Qt::UserRole).toString());
+        while (row >= 0 && row < m_commitsTable->rowCount()) {
+            QTableWidgetItem *it = m_commitsTable->item(row, kCommitSummaryCol);
+            if (it && it->data(kCommitRowKindRole).toInt() == 0) {
+                showCommit(it->data(Qt::UserRole).toString());
+                return;
+            }
+            row += dir;
+        }
     };
     connect(m_commitPrevButton, &QPushButton::clicked, this,
-            [this, goToCommitRow] { goToCommitRow(m_currentCommitRow - 1); });
+            [this, goToCommitRow] { goToCommitRow(m_currentCommitRow - 1, -1); });
     connect(m_commitNextButton, &QPushButton::clicked, this,
-            [this, goToCommitRow] { goToCommitRow(m_currentCommitRow + 1); });
+            [this, goToCommitRow] { goToCommitRow(m_currentCommitRow + 1, +1); });
 
     m_commitTitle = new QLabel;
     m_commitTitle->setObjectName("repoHeaderTitle");
@@ -8139,32 +8462,33 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitMeta->setTextFormat(Qt::RichText);
     m_commitMeta->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
-    m_commitFilesSummary = new QLabel;
-    m_commitFilesSummary->setObjectName("sectionLabel");
-    m_commitFilesSummary->setTextFormat(Qt::RichText);
+    // The old "N files changed" heading is gone: the changed-files tree carries
+    // the file names on its own, so the standalone count label is redundant.
+    m_commitFilesSummary = nullptr;
 
-    // Left: changed-files list (click to scroll the diff to that file).
+    // Left: changed-files list (click to scroll the diff to that file). The
+    // selected file gets the same green outline the other file trees use, so the
+    // active file is obvious at a glance (issue: border the selected file).
     auto *filesPane = new QWidget;
     filesPane->setMinimumWidth(200);
     filesPane->setMaximumWidth(300);
     m_commitFileList = new QListWidget;
     m_commitFileList->setObjectName("commitFileList");
+    enableHoverRowHighlight(m_commitFileList); // green outline on the selected file
     connect(m_commitFileList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
                 if (item && m_commitDiffView)
                     m_commitDiffView->scrollToAnchor(
                         item->data(Qt::UserRole).toString());
             });
-    // Small spinner that sits just after the "N files changed" heading while
-    // showCommit reads + renders the diff, so a slow commit shows progress here
-    // instead of freezing. Hidden until a load starts.
+    // Small spinner that shows load progress while showCommit reads + renders
+    // the diff, so a slow commit shows progress here instead of freezing.
     m_commitDiffSpinner = new BusySpinner(filesPane);
     m_commitDiffSpinner->setToolTip(QString::fromUtf8("Loading diff\xE2\x80\xA6"));
     m_commitDiffSpinner->hide();
     auto *filesSummaryRow = new QHBoxLayout;
     filesSummaryRow->setContentsMargins(0, 0, 0, 0);
     filesSummaryRow->setSpacing(6);
-    filesSummaryRow->addWidget(m_commitFilesSummary);
     filesSummaryRow->addWidget(m_commitDiffSpinner);
     filesSummaryRow->addStretch();
 
@@ -8218,6 +8542,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     commitConversationLayout->setContentsMargins(0, 0, 0, 0);
     commitConversationLayout->setSpacing(8);
     commitConversationLayout->addWidget(commitThreadScroll, 1);
+    commitConversationLayout->addWidget(makeComposerIdentity(nullptr, QStringLiteral("Commenting")));
     commitConversationLayout->addWidget(m_commitComposer);
     commitConversationLayout->addLayout(commitComposerButtons);
 
@@ -8317,327 +8642,6 @@ void MainWindow::loadFileSearchIndex()
                        m_fileCompleter->setModel(
                            new QStringListModel(paths, m_fileCompleter));
                    });
-}
-
-void MainWindow::loadAboutSidebar()
-{
-    // This panel fires several synchronous git reads back to back — `ls-tree`,
-    // `for-each-ref`, a whole-tree `ls-tree -r -l` and a `shortlog -sne --all`
-    // that walks every commit. On a large history those add up to multiple
-    // seconds, and refreshOpenRepoDetail() calls us on every (debounced) push,
-    // so do the reads under a keep-alive scope: waitForGit() then polls in short
-    // slices and pumps the event loop, keeping the window responsive (and the
-    // stall watchdog's heartbeat alive) instead of freezing the GUI thread.
-    GitKeepAlive keepAlive;
-
-    const QString dir = repoGitDir();
-    const RepositoryRecord *repo =
-        (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
-            ? &m_repositories.at(m_repoDetailIndex)
-            : nullptr;
-
-    if (m_aboutEditButton) {
-        const bool editable = repoHasWorkingTree();
-        m_aboutEditButton->setEnabled(editable);
-        m_aboutEditButton->setToolTip(
-            editable
-                ? QStringLiteral("Edit repository details")
-                : QStringLiteral("Open a local working copy to edit repository details"));
-    }
-
-    // About text + website.
-    if (m_aboutText) {
-        QString text = m_repoInfo.about.isEmpty()
-                           ? (repo ? repo->description : QString())
-                           : m_repoInfo.about;
-        if (text.isEmpty())
-            text = "<span style='color:#8b949e'>No description.</span>";
-        else
-            text = text.toHtmlEscaped();
-        if (!m_repoInfo.website.isEmpty())
-            text += QStringLiteral("<br><a href=\"%1\">%1</a>")
-                        .arg(m_repoInfo.website.toHtmlEscaped());
-        m_aboutText->setText(text);
-    }
-    // Topics as chips.
-    if (m_aboutTopics) {
-        QStringList chips;
-        for (const QString &t : m_repoInfo.topics)
-            chips << "<span style='background:#1f6feb33; color:#58a6ff; "
-                     "border-radius:9px; padding:1px 8px;'>" +
-                         t.toHtmlEscaped() + "</span>";
-        m_aboutTopics->setText(chips.join(" "));
-        m_aboutTopics->setVisible(!chips.isEmpty());
-    }
-
-    // Community files: surface README / LICENSE / CONTRIBUTING / … as links that
-    // open the file in the overview. Match the repo root case-insensitively.
-    if (m_aboutFiles) {
-        QStringList roots;
-        QByteArray out;
-        if (!dir.isEmpty() &&
-            runGitCapture(dir, {"ls-tree", "--name-only", currentRef()}, &out,
-                          nullptr)) {
-            for (const QString &line : QString::fromUtf8(out).split('\n')) {
-                const QString t = line.trimmed();
-                if (!t.isEmpty())
-                    roots << t;
-            }
-        }
-        // label, octicon, set of accepted base-name prefixes (lowercase).
-        const struct {
-            const char *label;
-            const char *icon;
-            QStringList prefixes;
-        } wanted[] = {
-            {"README", "repo", {"readme"}},
-            {"License", "shield-check", {"license", "licence", "copying"}},
-            {"Contributing", "people", {"contributing"}},
-            {"Code of Conduct", "comment", {"code_of_conduct"}},
-            {"Security", "lock", {"security"}},
-        };
-        QStringList links;
-        for (const auto &w : wanted) {
-            QString match;
-            for (const QString &f : std::as_const(roots)) {
-                const QString base = f.section('.', 0, 0).toLower();
-                if (w.prefixes.contains(base)) {
-                    match = f;
-                    break;
-                }
-            }
-            if (match.isEmpty())
-                continue;
-            links << QStringLiteral(
-                         "<a href=\"%1\" style='color:#58a6ff; text-decoration:none'>"
-                         "%2%3</a>")
-                         .arg(match.toHtmlEscaped(),
-                              octiconMarkup(w.icon, 13, QColor("#58a6ff")),
-                              QString::fromUtf8("&nbsp;") + QString(w.label));
-        }
-        m_aboutFiles->setText(links.join(QString::fromUtf8("&nbsp;&nbsp; ")));
-        m_aboutFiles->setVisible(!links.isEmpty());
-    }
-
-    // Latest release: newest tag by creation date.
-    if (m_releaseHeader && m_releaseRow) {
-        QString tag, when;
-        QByteArray out;
-        if (!dir.isEmpty() &&
-            runGitCapture(dir,
-                          {"for-each-ref", "--sort=-creatordate", "--count=1",
-                           "--format=%(refname:short)%09%(creatordate:relative)",
-                           "refs/tags"},
-                          &out, nullptr)) {
-            const QString line = QString::fromUtf8(out).trimmed();
-            const int tab = line.indexOf('\t');
-            if (tab > 0) {
-                tag = line.left(tab).trimmed();
-                when = line.mid(tab + 1).trimmed();
-            } else if (!line.isEmpty()) {
-                tag = line;
-            }
-        }
-        const bool has = !tag.isEmpty();
-        m_releaseHeader->setVisible(has);
-        m_releaseRow->setVisible(has);
-        if (has) {
-            QString row =
-                QStringLiteral("<a href=\"#releases\" style='color:#58a6ff; "
-                               "text-decoration:none'>%1<span style='background:"
-                               "#238636; color:#fff; border-radius:9px; "
-                               "padding:1px 8px; font-weight:600'>%2</span></a>")
-                    .arg(octiconMarkup("tag", 14, QColor("#3fb950")) +
-                             QString::fromUtf8("&nbsp;"),
-                         tag.toHtmlEscaped());
-            if (!when.isEmpty())
-                row += QStringLiteral(
-                           "<br><span style='color:#8b949e'>released %1</span>")
-                           .arg(when.toHtmlEscaped());
-            m_releaseRow->setText(row);
-        }
-    }
-
-    // Languages: aggregate blob sizes per language.
-    if (m_langBar && m_langLegend) {
-        QHash<QString, qint64> bytesByLang;
-        qint64 total = 0;
-        QByteArray out;
-        if (!dir.isEmpty() &&
-            runGitCapture(dir, {"ls-tree", "-r", "-l", currentRef()}, &out, nullptr)) {
-            for (const QByteArray &record : out.split('\n')) {
-                const int tab = record.indexOf('\t');
-                if (tab < 0)
-                    continue;
-                const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
-                if (meta.size() < 4)
-                    continue;
-                bool ok = false;
-                const qint64 size = QString::fromUtf8(meta.at(3)).toLongLong(&ok);
-                if (!ok || size <= 0)
-                    continue;
-                const QString name = QString::fromUtf8(record.mid(tab + 1));
-                const QString lang = languageForFile(name);
-                if (lang.isEmpty())
-                    continue;
-                bytesByLang[lang] += size;
-                total += size;
-            }
-        }
-        QList<QPair<QString, qint64>> langs;
-        for (auto it = bytesByLang.constBegin(); it != bytesByLang.constEnd(); ++it)
-            langs.append({it.key(), it.value()});
-        std::sort(langs.begin(), langs.end(),
-                  [](const auto &a, const auto &b) { return a.second > b.second; });
-
-        QString legend;
-        const int shown = qMin(5, int(langs.size()));
-        for (int i = 0; i < shown && total > 0; ++i) {
-            const double pct = 100.0 * langs.at(i).second / total;
-            const QString color = languageColor(langs.at(i).first);
-            // Keep each "● Name 12.3%" entry on one line (all non-breaking
-            // spaces); only the trailing normal space between entries may wrap.
-            legend += QString::fromUtf8(
-                          "<span style='color:%1'>\xE2\x97\x8F</span>&nbsp;"
-                          "<span style='color:#c9d1d9'>%2</span>&nbsp;"
-                          "<span style='color:#8b949e'>%3%</span>&nbsp;&nbsp; ")
-                          .arg(color, langs.at(i).first.toHtmlEscaped(),
-                               QString::number(pct, 'f', 1));
-        }
-        m_langBar->setScaledContents(true);
-        m_langBar->setPixmap(languageBarPixmap(langs, total, shown, 600, 12));
-        m_langLegend->setText(legend.isEmpty()
-                                  ? "<span style='color:#8b949e'>No code yet.</span>"
-                                  : legend);
-    }
-
-    // Total tracked file count for the current ref.
-    if (m_filesCountHeader && m_filesCountRow) {
-        int fileCount = 0;
-        QByteArray out;
-        if (!dir.isEmpty() &&
-            runGitCapture(dir, {"ls-tree", "-r", "--name-only", currentRef()}, &out,
-                          nullptr)) {
-            for (const QByteArray &line : out.split('\n')) {
-                if (!line.trimmed().isEmpty())
-                    ++fileCount;
-            }
-        }
-        m_filesCountRow->setText(
-            QStringLiteral("<span style='color:#c9d1d9'>%1</span> "
-                            "<span style='color:#8b949e'>%2</span>")
-                .arg(formatCount(fileCount), fileCount == 1 ? "file" : "files"));
-    }
-
-    // Contributors from git shortlog, each shown as a deterministic avatar
-    // generated from their email (falling back to name) — gravatar-style.
-    if (m_contributorsRow && m_contributorsHeader) {
-        struct Contrib {
-            QString name;
-            QString email;
-            int count;
-        };
-        QList<Contrib> contribs;
-        QByteArray out;
-        // -e includes the email; lines look like "  12\tName <email>".
-        // Merge commits are counted (no --no-merges) so each tooltip's
-        // "N commits" is that author's true commit total — matching what
-        // `git shortlog -sne` / `git log --author` report — rather than
-        // silently dropping every merge they performed.
-        if (!dir.isEmpty() &&
-            runGitCapture(dir, {"shortlog", "-sne", "--all"}, &out,
-                          nullptr)) {
-            for (const QString &line : QString::fromUtf8(out).split('\n')) {
-                const QString t = line.trimmed();
-                if (t.isEmpty())
-                    continue;
-                const int tab = t.indexOf('\t');
-                if (tab < 0)
-                    continue;
-                QString who = t.mid(tab + 1).trimmed();
-                QString email;
-                const int lt = who.lastIndexOf('<');
-                const int gt = who.lastIndexOf('>');
-                if (lt >= 0 && gt > lt) {
-                    email = who.mid(lt + 1, gt - lt - 1).trimmed();
-                    who = who.left(lt).trimmed();
-                }
-                contribs.append({who, email, t.left(tab).toInt()});
-            }
-        }
-        m_contributorsHeader->setText(
-            QStringLiteral("CONTRIBUTORS %1").arg(formatCount(contribs.size())));
-
-        // Round a source PNG into a circular avatar (rendered at 2x for crisp
-        // hi-dpi edges), then embed it directly in the rich-text label.
-        auto rounded = [](QByteArray src, int px) -> QByteArray {
-            QPixmap p;
-            if (!p.loadFromData(src, "PNG") || p.isNull())
-                return src;
-            const int s = px * 2;
-            const QPixmap scaled = p.scaled(s, s, Qt::KeepAspectRatioByExpanding,
-                                            Qt::SmoothTransformation);
-            QPixmap out(s, s);
-            out.fill(Qt::transparent);
-            QPainter painter(&out);
-            painter.setRenderHint(QPainter::Antialiasing, true);
-            QPainterPath path;
-            path.addEllipse(0, 0, s, s);
-            painter.setClipPath(path);
-            painter.drawPixmap(0, 0, scaled);
-            painter.end();
-            QByteArray result;
-            QBuffer buf(&result);
-            buf.open(QIODevice::WriteOnly);
-            out.save(&buf, "PNG");
-            return result;
-        };
-
-        // Embed each avatar as an inline base64 PNG so it renders in rich text.
-        auto avatarTag = [this, &rounded](const Contrib &c, int px) {
-            const QString custom = m_repoInfo.contributorAvatars.value(c.name);
-            QByteArray png;
-            QPixmap fromFile;
-            if (!custom.isEmpty() && fromFile.load(custom)) {
-                QBuffer buf(&png);
-                buf.open(QIODevice::WriteOnly);
-                fromFile.save(&buf, "PNG");
-            } else {
-                const QString seed =
-                    c.email.isEmpty() ? c.name.toLower() : c.email.toLower();
-                png = forkMeshAvatarPng(seed);
-            }
-            png = rounded(png, px);
-            const QString tip = (c.name + QString::fromUtf8(" \xC2\xB7 ") +
-                                 QString::number(c.count) + " commits")
-                                    .toHtmlEscaped();
-            const QString link = QStringLiteral("contributor:%1|%2")
-                                   .arg(QString::fromLatin1(
-                                            QUrl::toPercentEncoding(c.name)),
-                                        QString::number(c.count));
-            return QStringLiteral(
-                       "<a href='%1'><img src='data:image/png;base64,%2' "
-                       "width='%3' height='%3' title='%4' "
-                       "style='border-radius:999px;'></a>")
-                .arg(link)
-                .arg(QString::fromLatin1(png.toBase64()))
-                .arg(px)
-                .arg(tip);
-        };
-
-        QString html;
-        const int shown = qMin(12, int(contribs.size()));
-        for (int i = 0; i < shown; ++i)
-            html += avatarTag(contribs.at(i), 32) +
-                    QString::fromUtf8("&nbsp;&nbsp;");
-        if (contribs.size() > shown)
-            html += QStringLiteral(
-                        "<span style='color:#8b949e'>&nbsp;+%1</span>")
-                        .arg(contribs.size() - shown);
-        m_contributorsRow->setText(html.isEmpty()
-                                       ? "<span style='color:#8b949e'>None yet.</span>"
-                                       : html);
-    }
 }
 
 void MainWindow::spinRefreshButton(QPushButton *button)
@@ -8742,32 +8746,6 @@ void MainWindow::stopRefreshSpin()
     if (m_refreshButton)
         m_refreshButton->setIcon(
             QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 22)));
-}
-
-void MainWindow::startCommitsRefreshSpin()
-{
-    if (!m_commitsRefreshButton)
-        return;
-    if (!m_commitsRefreshSpinTimer) {
-        m_commitsRefreshSpinTimer = new QTimer(this);
-        connect(m_commitsRefreshSpinTimer, &QTimer::timeout, this, [this] {
-            m_commitsRefreshAngle = (m_commitsRefreshAngle + 30) % 360;
-            if (m_commitsRefreshButton)
-                m_commitsRefreshButton->setIcon(QIcon(refreshPixmap(
-                    QColor(Theme::kTextTertiary), m_commitsRefreshAngle, 16)));
-        });
-    }
-    m_commitsRefreshSpinTimer->start(60);
-}
-
-void MainWindow::stopCommitsRefreshSpin()
-{
-    if (m_commitsRefreshSpinTimer)
-        m_commitsRefreshSpinTimer->stop();
-    m_commitsRefreshAngle = 0;
-    if (m_commitsRefreshButton)
-        m_commitsRefreshButton->setIcon(
-            QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
 }
 
 void MainWindow::startCommitDiffSpin()
@@ -8963,6 +8941,8 @@ void MainWindow::showLoadStatus(const QString &what)
                  what.toHtmlEscaped()));
     m_topMessage->setWordWrap(false);
     m_topMessage->show();
+    if (m_topMessageContainer)
+        m_topMessageContainer->show();
     m_loadStatusShowing = true;
     m_topMessageElided = false;
     m_topMessageExpanded = false;

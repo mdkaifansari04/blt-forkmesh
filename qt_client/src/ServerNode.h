@@ -34,6 +34,10 @@ public:
                const QUrl &serverUrl,
                const QString &roomName,
                const QString &solanaAddress,
+               // Shared room key fetched from the relay (server-derived from
+               // DATA_KEY). Empty keeps the legacy baked-in app key as a fallback
+               // so chat still works before/if the key fetch fails.
+               const QString &roomPassphrase = QString(),
                QObject *parent = nullptr);
 
     bool start();
@@ -50,6 +54,7 @@ public:
 
     void sendChat(const QString &channel, const QString &text) override;
     void setAccountKind(const QString &kind) override;
+    void setRoomPassphrase(const QString &passphrase) override;
     void sendBotChat(const QString &channel, const QString &text) override;
     void sendDirect(const QString &targetId, const QString &text) override;
     void sendFile(const QString &conversation, const QString &fileName,
@@ -69,10 +74,14 @@ public:
     void forgetMember(const QString &peerId) override;
     void sendTyping(const QString &conversation, bool active) override;
     void addChannel(const QString &channel) override;
+    void removeChannel(const QString &channel) override;
     void createPrivateChannel(const QString &channel) override;
     void inviteToChannel(const QString &peerId, const QString &channel) override;
     void setMirroredRepos(const QList<MirrorAdvert> &repos) override;
-    void notifyMirrorUpdated(const QString &ownerName) override;
+    void notifyMirrorUpdated(const QString &ownerName,
+                             const QString &commit = QString()) override;
+    void notifyMirrorSynced(const QString &ownerName,
+                            const QString &commit = QString()) override;
     void requestMirrorRefresh(const QString &source,
                               const QString &ownerName) override;
     void advertiseMirrorsNow() override;
@@ -80,6 +89,9 @@ public:
                           const QString &coveName, const QString &openerKey,
                           const QString &openerName, qint64 ts,
                           const QString &signature) override;
+    void notifyCoveInvited(const QString &inviteeAccount, const QString &coveId,
+                           const QString &coveName, const QString &inviterName,
+                           qint64 ts) override;
     QList<QJsonObject> networkDiagnostics() const override;
     void shutdown() override;
     QString modeName() const override { return "Mainnode"; }
@@ -89,6 +101,7 @@ private:
         QString name;
         QString nodeName;
         QString ownerUser;
+        QString accountKind; // "node" or "user", from the peer's advertised accountKind
         QString solanaAddress;
         QString platform;
         QString version;
@@ -107,6 +120,10 @@ private:
 
     void openConnection();      // (re)create the socket and start connecting
     void scheduleReconnect();   // progressive backoff after a drop/failure
+    // Shared teardown when the link drops — from the socket's disconnected()
+    // signal or from the ping timer's stale-rx watchdog, which catches
+    // half-open sockets that never emit disconnected() at all.
+    void handleLinkLost();
     void advanceEndpoint();     // rotate m_url to the next configured mainnode
     void connectSocketSignals();
     void sendHandshake();
@@ -132,12 +149,18 @@ private:
     void sendChannelHistoryTo(const QString &peerId, const QString &channel);
     void loadKnownPeers();
     void persistKnownPeers() const;
+    // Rooms the user deleted, persisted per room/relay so a delete sticks across
+    // restarts and can't be resurrected by peer traffic.
+    QString hiddenChannelsSettingKey() const;
+    void loadHiddenChannels();
+    void saveHiddenChannels();
     void handlePlain(const QJsonObject &message);
     void emitChat(const QJsonObject &message);
     void emitDm(const QJsonObject &message, const QString &conversationPeer);
     void rememberPeer(const QString &peerId, const QString &name,
                       const QString &nodeName = QString(),
                       const QString &ownerUser = QString(),
+                      const QString &accountKind = QString(),
                       const QString &solanaAddress = QString(),
                       const QString &platform = QString(),
                       const QString &version = QString(), bool online = true);
@@ -146,6 +169,18 @@ private:
     void updateRosterAndStatus();
     void flushRosterAndStatus(); // does the actual roster build + emit
     void storeHistory(const QJsonObject &message);
+    // Record a message's conversation + sender for later edit/delete lookups,
+    // bounded FIFO-style so months of traffic can't grow the maps without
+    // limit on a long-running node (issue #428).
+    void indexMessage(const QString &id, const QString &conversation,
+                      const QString &senderId);
+    // Drop every per-message record (conversation, sender, reactions) for an
+    // id that no longer needs them (evicted from history or the index FIFO).
+    void dropMessageIndex(const QString &id);
+    // Erase peers not heard from in kPeerReapMs — they've long been hidden
+    // from the roster, but their Peer entries (mirror adverts included) would
+    // otherwise accumulate in RAM forever on a long-running node (issue #428).
+    void reapStalePeers();
     void updateStoredMessage(const QString &messageId, const QString &text, bool deleted);
     bool messageIsAuthoredBy(const QString &messageId, const QString &senderId) const;
     void applyEdit(const QString &conversation, const QString &target,
@@ -200,6 +235,9 @@ private:
     // it returns or the user explicitly leaves (adhoc #192, adhoc #66).
     QTimer *m_reconnectTimer = nullptr;
     int m_reconnectAttempts = 0; // consecutive failures since the last upgrade
+    // Aborts a connect/TLS/upgrade attempt that stalls silently — before the
+    // 101 no other timer is running, so a wedged attempt would hang forever.
+    QTimer *m_connectTimeoutTimer = nullptr;
     bool m_userStopped = false;
     QTimer *m_rosterEmitTimer = nullptr; // coalesces roster/status emissions
     QHash<QString, qint64> m_lastHelloReplyMs; // peer id -> last directed hello reply
@@ -222,18 +260,25 @@ private:
     QString m_lastTxType;
     QString m_lastTxScope;
 
-    // Split welcome rooms are the one-time join rooms for nodes/users; every
-    // node starts in both so it can open whichever matches its identity.
-    QStringList m_channels{
-        "#general", "#welcome-nodes", "#welcome-users", "#random"};
+    // Shared network rooms every node starts in. #welcome is the one-time
+    // "just joined" room (only verified users actually post there).
+    QStringList m_channels{"#general", "#welcome", "#random"};
     // Invite-only channels (subset of m_channels). Never advertised in hello or
     // "channel" broadcasts, and messages in them carry "private":true so a peer
     // who wasn't invited drops them instead of auto-joining. See createPrivateChannel.
     QSet<QString> m_privateChannels;
+    // Rooms the user explicitly deleted. Kept out of m_channels and re-checked
+    // whenever a peer hello / channel broadcast / chat would otherwise re-add a
+    // room, so a deleted room stays gone. Persisted in QSettings so it survives
+    // restarts (loadHiddenChannels/saveHiddenChannels).
+    QSet<QString> m_hiddenChannels;
     QHash<QString, Peer> m_peers;
     QHash<QString, QList<QJsonObject>> m_channelHistory;
     QHash<QString, QString> m_messageConversation;
     QHash<QString, QString> m_messageSender;
+    // Insertion order of the ids in the two maps above; oldest are dropped
+    // once the index outgrows its cap (see indexMessage).
+    QQueue<QString> m_messageIndexOrder;
     QHash<QString, QHash<QString, QHash<QString, QString>>> m_reactions;
     QByteArray m_avatarPng;
     QSet<QString> m_seenIds;

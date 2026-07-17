@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.14 (2026-07-04)"
+INSTALLER_VERSION="0.12.15 (2026-07-12)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -48,6 +48,14 @@ FORKMESH_OWNER="${FORKMESH_OWNER:-}"
 # --reinstall on the command line. Non-interactive by nature, so it assumes the
 # destructive confirmation (the Qt-side dialog is the real gate).
 FORKMESH_REINSTALL="${FORKMESH_REINSTALL:-0}"
+# Restart (adhoc): stop the node's already-running daemon just before the
+# launch step so the freshly (re)built binary cleanly takes over. A plain
+# re-run would otherwise leave the old daemon running the old binary and start a
+# SECOND one beside it. Used by the Hosts panel's "Update from source (all
+# hosts)" action (with FORKMESH_FROM_SOURCE=1) to update the fleet straight from
+# source without publishing a release. Unlike a reinstall it does NOT touch the
+# node's identity key or mirrored data — it only stops+relaunches the process.
+FORKMESH_RESTART="${FORKMESH_RESTART:-0}"
 # Link code for attaching this fresh node to the installing user's account
 # (adhoc #53). A headless launch mints one (or honours a pre-set 6-digit value),
 # prints it as "FORKMESH LINK CODE: NNNNNN", and hands it to the daemon, which
@@ -195,8 +203,11 @@ resolve_install_node() {
   esac
   source_url="${FORKMESH_INSTALL_SOURCE_URL}${sep}_=$(date +%s)"
   dbg "Querying install source: $source_url"
-  if ! body="$(curl -sSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$source_url")"; then
-    die "Could not check for an online ForkMesh mirror. Please try again shortly."
+  # A bounded timeout so an unreachable mainnode fails loudly instead of the
+  # install appearing to hang forever with no output (issue #418) — curl has no
+  # timeout by default and can sit for minutes on a dead connection.
+  if ! body="$(curl -sSL -m 20 -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$source_url")"; then
+    die "Could not check for an online ForkMesh mirror (timed out after 20s querying $FORKMESH_INSTALL_SOURCE_URL). Please try again shortly."
   fi
   dbg "install-source response: $body"
   # Prefer the ranked "nodes":[ ... ] list (newer mainnode); fall back to the
@@ -652,9 +663,9 @@ detect_release_asset() {
   ASSET_ARCH="$arch"
   ASSET_NAME="forkmesh-${os}-${arch}"
   [ "$os" = "windows" ] && ASSET_NAME="${ASSET_NAME}.exe"
-  # Release channel: the directory under releases/ the workflow publishes into.
+  # Release channel: the directory under .forkmesh/releases/ the workflow publishes into.
   RELEASE_CHANNEL="${FORKMESH_RELEASE:-latest}"
-  ASSET_REL_PATH="releases/${RELEASE_CHANNEL}/${ASSET_NAME}"
+  ASSET_REL_PATH=".forkmesh/releases/${RELEASE_CHANNEL}/${ASSET_NAME}"
 }
 
 # Sparse-fetch a single committed file (repo-relative path $3) from clone URL $1
@@ -722,16 +733,21 @@ _install_binary() {
 # platform asset's content hash, downloads the bytes from the relay's
 # content-addressed release endpoint, and VERIFIES the sha256 before installing.
 # Falls back to a legacy release that still committed the binary into
-# releases/<channel>/, and then (via the caller) to a source build. Returns
+# .forkmesh/releases/<channel>/, and then (via the caller) to a source build. Returns
 # non-zero when git is unavailable or no mirror can serve a verified asset.
 install_prebuilt_release() {
   command -v git >/dev/null 2>&1 || return 1
   ensure_mirror_candidates
   local tmp repo sums manifest canon hash url bin got attempt attempt_url
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-prebuilt.XXXXXX" 2>/dev/null)" || return 1
-  sums="releases/${RELEASE_CHANNEL}/SHASUMS256.txt"
-  manifest="releases/${RELEASE_CHANNEL}/release.json"
+  sums=".forkmesh/releases/${RELEASE_CHANNEL}/SHASUMS256.txt"
+  manifest=".forkmesh/releases/${RELEASE_CHANNEL}/release.json"
   for repo in "${REPO_CANDIDATES[@]}"; do
+    # The sparse-checkout clone below is silent (redirected to /dev/null so a
+    # missing manifest isn't logged as an error) and can take a while over a
+    # slow mirror, so announce the attempt here — otherwise the install appears
+    # to hang with no output between "Resolving..." and "Downloading..." (#418).
+    say "Checking $repo for a prebuilt release…"
     # New model: manifest checksum + content-addressed download (+ verify). Fetch
     # release.json in the same checkout so the blob can be requested from the repo
     # that staged it — not the mirror that happened to serve this clone.
@@ -773,7 +789,7 @@ install_prebuilt_release() {
         done
       fi
     fi
-    # Legacy model: binary committed directly into releases/<channel>/.
+    # Legacy model: binary committed directly into .forkmesh/releases/<channel>/.
     if _sparse_fetch_file "$repo" "$tmp" "$ASSET_REL_PATH" && _install_binary "$tmp/$ASSET_REL_PATH"; then
       REPO="$repo"; rm -rf "$tmp"
       say "Installed prebuilt ForkMesh ${ASSET_OS}/${ASSET_ARCH} binary to $BIN"
@@ -1224,6 +1240,15 @@ launch_forkmesh() {
 
 CURRENT_STEP="launch"
 LOG_PATH="${XDG_DATA_HOME:-$HOME/.local/share}/forkmesh/node.log"
+# Update-in-place restart (adhoc): the binary/build output has just been
+# refreshed, so stop the daemon that is still running the OLD build before we
+# relaunch — otherwise launch_forkmesh starts a second daemon alongside the
+# stale one. Only the process is stopped; the node's identity key and mirrored
+# data are left in place (this is not a reinstall). Skipped when nothing is
+# going to be launched anyway.
+if [ "$FORKMESH_RESTART" = "1" ] && [ "${FORKMESH_NO_LAUNCH:-0}" != "1" ]; then
+  stop_forkmesh_daemons "restart before relaunch"
+fi
 if [ "${FORKMESH_NO_LAUNCH:-0}" = "1" ]; then
   say "Done. Launch it with:  forkmesh"
   say "  On a server with no display, forkmesh opens an interactive CLI."

@@ -4,6 +4,21 @@
     <meta charset="utf-8" />
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script>
+      // A bare one-segment path (e.g. /forkmesh) is someone's user-or-org
+      // page, but Static Assets can't route it (only the Worker knows which
+      // names exist), so this 404 bounces it to the canonical /@name profile
+      // URL, which is Worker-routed. A missing /@name profile serves this
+      // page again with an @-prefixed path that the regex rejects, so a bad
+      // name can never bounce in a loop.
+      (() => {
+        const parts = location.pathname.split("/").filter(Boolean);
+        if (parts.length !== 1) return;
+        const name = decodeURIComponent(parts[0]).toLowerCase();
+        if (!/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return;
+        location.replace("/@" + encodeURIComponent(name) + location.search);
+      })();
+    </script>
     <title>Page not found - ForkMesh</title>
     <meta
       name="description"
@@ -12,7 +27,7 @@
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
@@ -197,6 +212,7 @@
         text-shadow: 0 0 70px rgba(150, 114, 238, 0.12);
       }
     </style>
+    <link rel="stylesheet" href="/mesh-page-theme.css" />
     <link rel="stylesheet" href="/site-header.css" />
     <script src="/site-header.js" defer></script>
   </head>

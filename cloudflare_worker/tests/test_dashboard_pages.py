@@ -7,6 +7,7 @@ view, the sidebar marks the active page at build time, and legacy
 /dashboard?section= URLs 308 to the per-page paths in the Worker.
 """
 
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -33,6 +34,24 @@ def test_every_page_document_is_built_and_deterministic():
         built = (PUBLIC / meta["asset"]).read_text(encoding="utf-8")
         assert built == assembled_dashboard_page(page_id), (
             "%s is stale — run tools/build_dashboard_assets.py" % meta["asset"])
+
+
+def test_client_bundles_carry_content_hash_cache_busters():
+    # Every built document must reference dashboard.js / dashboard-chat.js with a
+    # per-build content-hash ?v= so a new deploy is never served against a stale,
+    # week-old cached bundle. The hash must match the bundle's actual content, and
+    # the old never-changing ?v=public-profiles query must be gone.
+    versions = dashboard_shell.asset_versions(
+        assembled_dashboard_js(),
+        (PUBLIC / "dashboard-chat.js").read_text(encoding="utf-8"))
+    assert versions["dashboard.js"] != versions["dashboard-chat.js"]
+    for meta in dashboard_shell.PAGES.values():
+        html = (PUBLIC / meta["asset"]).read_text(encoding="utf-8")
+        assert "?v=public-profiles" not in html, meta["asset"]
+        for name in ("dashboard.js", "dashboard-chat.js"):
+            m = re.search(r'src="/%s\?v=([0-9a-f]{6,})"' % re.escape(name), html)
+            assert m is not None, (meta["asset"], name)
+            assert m.group(1) == versions[name], (meta["asset"], name)
 
 
 def test_each_page_document_has_exactly_one_view_and_its_page_marker():

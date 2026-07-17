@@ -12,7 +12,7 @@
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
@@ -30,7 +30,7 @@
       }
 
       .auth-shell {
-        min-height: 100vh;
+        min-height: calc(100vh - 3.5rem);
         display: grid;
         place-items: center;
         padding: 28px 16px;
@@ -100,6 +100,7 @@
         .flow { grid-template-columns: 1fr; }
       }
     </style>
+    <link rel="stylesheet" href="/auth-page-theme.css" />
     <link rel="stylesheet" href="/site-header.css" />
     <script src="/site-header.js" defer></script>
   </head>
@@ -117,7 +118,7 @@
         discoverable. As the network grows, a share of every join donation flows
         back to the nodes keeping it alive.
       </p>
-      <p class="join-sub" id="mp-node">Loading your node…</p>
+      <p class="join-sub" id="mp-node"><span class="fm-spinner" aria-hidden="true"></span>Loading your node…</p>
 
       <div class="calc">
         <h3>Live earnings calculator</h3>

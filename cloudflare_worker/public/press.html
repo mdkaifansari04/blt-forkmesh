@@ -12,7 +12,7 @@
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="canonical" href="https://forkmesh.com/press" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
@@ -63,7 +63,7 @@
       .press-hero h1 {
         max-width: 11ch;
         margin: 0;
-        color: #fff;
+        color: var(--foreground);
         font-size: clamp(42px, 8vw, 92px);
         letter-spacing: 0;
         line-height: 0.94;
@@ -134,7 +134,7 @@
 
       .press-panel h2 {
         margin: 0;
-        color: #fff;
+        color: var(--foreground);
         font-size: 19px;
         line-height: 1.2;
       }
@@ -184,7 +184,7 @@
       .press-swatch-chip {
         width: 44px;
         height: 34px;
-        border: 1px solid rgba(255, 255, 255, 0.18);
+        border: 1px solid var(--border);
         border-radius: var(--radius);
         background: var(--swatch);
       }
@@ -216,7 +216,7 @@
         border: 1px solid color-mix(in srgb, var(--warning) 44%, transparent);
         border-radius: 999px;
         background: color-mix(in srgb, var(--warning) 12%, transparent);
-        color: #f5d78e;
+        color: var(--warning);
         font-size: 13px;
         font-weight: 700;
         white-space: nowrap;

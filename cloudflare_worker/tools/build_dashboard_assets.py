@@ -37,11 +37,19 @@ def _write_if_changed(rel, text):
 
 
 def main():
+    dashboard_js = dashboard_bundle.compose_from_reader(_read)
+    # Content-hash the client bundles into the <script> ?v= query so a changed
+    # deploy always serves fresh JS (see dashboard_shell.stamp_asset_versions).
+    # dashboard-chat.js is an authored file, not composed here, but still needs
+    # busting when it changes.
+    versions = dashboard_shell.asset_versions(
+        dashboard_js, _read("dashboard-chat.js"))
     outputs = {
-        meta["asset"]: dashboard_shell.compose_page_from_reader(_read, page_id)
+        meta["asset"]: dashboard_shell.stamp_asset_versions(
+            dashboard_shell.compose_page_from_reader(_read, page_id), versions)
         for page_id, meta in dashboard_shell.PAGES.items()
     }
-    outputs["dashboard.js"] = dashboard_bundle.compose_from_reader(_read)
+    outputs["dashboard.js"] = dashboard_js
     changed = [rel for rel, text in sorted(outputs.items()) if _write_if_changed(rel, text)]
     # The pre-split SPA duplicate: /dashboard.html routes are gone, the per-page
     # documents replace it. Drop a stale copy left by older builds.

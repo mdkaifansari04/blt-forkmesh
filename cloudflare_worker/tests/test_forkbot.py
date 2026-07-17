@@ -30,6 +30,7 @@ FUNCS = {
     "_forkbot_parse_issue_command",
     "_forkbot_command_hints_issue",
     "_forkbot_polite_prefix",
+    "_forkbot_parse_count_command",
     "_forkbot_parse_list_command",
     "_forkbot_parse_search_command",
     "_forkbot_parse_agent_command",
@@ -39,6 +40,7 @@ FUNCS = {
     "_forkbot_repo_host_json",
     "_forkbot_missing_tree",
     "_forkbot_issue_json_path",
+    "_forkbot_issue_json_candidates",
     "_forkbot_blob_text",
     "_forkbot_parse_issue_record",
     "_forkbot_recent_issue_numbers",
@@ -46,6 +48,7 @@ FUNCS = {
     "_forkbot_search_issues",
     "_forkbot_issue_lines",
     "_forkbot_host_offline_reply",
+    "_forkbot_action_count",
     "_forkbot_action_list",
     "_forkbot_action_search",
     "_forkbot_action_show",
@@ -53,7 +56,7 @@ FUNCS = {
     "_forkbot_enqueue_agent_request",
     "_forkbot_context_text",
     "js_nullish",
-    "_console_error",
+    "log_error",
     "_safe_error_text",
     "_forkbot_issue_title",
     "_forkbot_fallback_issue_fields",
@@ -139,11 +142,14 @@ class _HostResponse:
 
 class _FakeHost:
     """Stands in for env.FORKMESH_HOST: idFromName/get return self, fetch
-    answers the tree/blobs/search tunnel actions with canned payloads."""
+    answers the tree/blobs/search tunnel actions with canned payloads.
+    `tree` answers every /tree read; `trees` (path -> payload) answers per
+    path instead, for split open//closed/ layout fixtures."""
 
-    def __init__(self, tree=None, blobs=None, search=None):
+    def __init__(self, tree=None, blobs=None, search=None, trees=None):
         self.urls = []
         self._tree = tree
+        self._trees = trees
         self._blobs = blobs
         self._search = search
 
@@ -156,7 +162,12 @@ class _FakeHost:
     async def fetch(self, url):
         self.urls.append(url)
         if "/tree?" in url:
-            data = self._tree
+            if self._trees is not None:
+                from urllib.parse import parse_qs, urlparse
+                path = parse_qs(urlparse(url).query).get("path", [""])[0]
+                data = self._trees.get(path)
+            else:
+                data = self._tree
         elif "/blobs?" in url:
             data = self._blobs
         elif "/search?" in url:
@@ -253,6 +264,15 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=()):
     async def is_admin(_env, name):
         return str(name or "").lower() in {str(a).lower() for a in admins}
 
+    # log_error's real implementation from entry.py fans out to these two;
+    # stubbed here (like _load_capture_worker_exception in
+    # test_sentry_worker.py) so AI-failure logging doesn't need a live DSN/D1.
+    async def capture_sentry_error(*_args, **_kwargs):
+        return False
+
+    async def write_error_log(*_args, **_kwargs):
+        return None
+
     ns = _load_forkbot({
         "_is_admin": is_admin,
         "Date": _Date,
@@ -268,6 +288,8 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=()):
         "_inbox_author_over_quota": inbox_author_over_quota,
         "notify_pending_inbox": notify_pending_inbox,
         "notify_mentions": notify_mentions,
+        "capture_sentry_error": capture_sentry_error,
+        "_write_error_log": write_error_log,
     })
     return _Env(), calls, ns
 
@@ -662,6 +684,59 @@ def test_forkbot_parses_list_commands():
     assert parse("issues are piling up") is None
 
 
+def test_forkbot_parses_count_commands():
+    ns = _load_forkbot()
+    parse = ns["_forkbot_parse_count_command"]
+    assert parse("how many issues are there?") == {}
+    assert parse("how many issues are there") == {}
+    assert parse("how many issues exist") == {}
+    assert parse("how many issues do we have") == {}
+    assert parse("how many issues") == {}
+    assert parse("what is the number of issues") == {}
+    assert parse("issue count?") == {}
+    assert parse("please how many issues are there") == {}
+    # Not count requests.
+    assert parse("how many issues are there about relay retries") is None
+    assert parse("list the last 5 issues") is None
+    assert parse("create an issue to fix retries") is None
+
+
+def test_forkbot_counts_issues_from_live_mirror():
+    host = _FakeHost(tree=_issue_tree([1, 2, 3, 4, 5, 6, 7, 8]))
+    env, calls, ns = _env_and_calls(host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot how many issues are there?", "sender": "jett",
+    })))
+    assert response["status"] == 200
+    assert response["data"]["action"] == "issues_counted"
+    assert response["data"]["count"] == 8
+    assert response["data"]["botMessage"] == (
+        "There are 8 issues in forkmesh/forkmesh.")
+    assert calls["inserted"] == []
+    # Only a tree listing was needed — no per-issue blob reads for a count.
+    assert any("/tree?" in url for url in host.urls)
+    assert not any("/blobs?" in url for url in host.urls)
+
+
+def test_forkbot_count_reports_zero_issues_and_offline_host():
+    host = _FakeHost(tree=_issue_tree([]))
+    env, _calls, ns = _env_and_calls(host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot how many issues are there?",
+    })))
+    assert response["data"]["action"] == "issues_counted"
+    assert response["data"]["count"] == 0
+    assert response["data"]["botMessage"] == (
+        "No issues have been filed in forkmesh/forkmesh yet.")
+
+    env, _calls, ns = _env_and_calls()  # no FORKMESH_HOST binding at all
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot how many issues are there?",
+    })))
+    assert response["data"]["action"] == "issues_unavailable"
+    assert "live host" in response["data"]["botMessage"]
+
+
 def test_forkbot_parses_search_commands():
     ns = _load_forkbot()
     parse = ns["_forkbot_parse_search_command"]
@@ -732,6 +807,49 @@ def test_forkbot_lists_recent_issues_from_live_mirror():
     # One tree listing + one batched blob read, over the internal tunnel.
     assert any("/tree?" in url for url in host.urls)
     assert any("/blobs?" in url for url in host.urls)
+
+
+def test_forkbot_lists_issues_from_split_open_closed_folders():
+    # Post-split mirrors (adhoc #14) file issues under .forkmesh/issues/open/
+    # and .forkmesh/issues/closed/; the root tree lists the status folders plus
+    # any pre-split leftover numbered dir. All three locations must be found
+    # and each record read from wherever it lives.
+    def _blob(path, record):
+        return (path, {"ok": True, "encoding": "utf8",
+                       "content": json.dumps(record)})
+
+    host = _FakeHost(
+        trees={
+            ".forkmesh/issues": {"ok": True, "entries": [
+                {"type": "tree", "name": "open"},
+                {"type": "tree", "name": "closed"},
+                {"type": "tree", "name": "2"},
+            ]},
+            ".forkmesh/issues/open": _issue_tree([3]),
+            ".forkmesh/issues/closed": _issue_tree([1]),
+        },
+        blobs={"ok": True, "blobs": dict([
+            _blob(".forkmesh/issues/open/3/issue-3.json",
+                  {"number": 3, "title": "Split open", "status": "open",
+                   "authorName": "jett"}),
+            _blob(".forkmesh/issues/closed/1/issue-1.json",
+                  {"number": 1, "title": "Split closed", "status": "closed",
+                   "authorName": "jett"}),
+            _blob(".forkmesh/issues/2/issue-2.json",
+                  {"number": 2, "title": "Legacy spot", "status": "open",
+                   "authorName": "jett"}),
+        ])},
+    )
+    env, _calls, ns = _env_and_calls(host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot list the last 3 issues",
+    })))
+    assert response["data"]["action"] == "issues_listed"
+    assert [i["number"] for i in response["data"]["issues"]] == [3, 2, 1]
+    message = response["data"]["botMessage"]
+    assert "#3 Split open (open, by jett)" in message
+    assert "#2 Legacy spot (open, by jett)" in message
+    assert "#1 Split closed (closed, by jett)" in message
 
 
 def test_forkbot_list_honors_requested_count():
@@ -916,6 +1034,14 @@ def test_forkbot_ai_intent_routes_list_search_and_agent():
     assert [i["number"] for i in response["data"]["issues"]] == [3, 2]
 
     env, _calls, ns = _env_and_calls(
+        ai=_AI({"intent": "count_issues"}), host=host)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot so how many total issues do we have logged?",
+    })))
+    assert response["data"]["action"] == "issues_counted"
+    assert response["data"]["count"] == 3
+
+    env, _calls, ns = _env_and_calls(
         ai=_AI({"intent": "search_issues", "query": "relay"}), host=host)
     response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
         "message": "forkbot anything on file about the relay?",
@@ -940,7 +1066,8 @@ def test_forkbot_help_lists_every_capability():
     })))
     assert response["data"]["action"] == "help"
     message = response["data"]["botMessage"]
-    for capability in ("open an issue", "list recent issues", "search issues",
+    for capability in ("open an issue", "list recent issues",
+                       "how many issues there are", "search issues",
                        "start a coding agent"):
         assert capability in message
 

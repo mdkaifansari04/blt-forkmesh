@@ -1,0 +1,45 @@
+{
+    "assignees": [
+    ],
+    "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783151179,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "gVAcCW5AmthjCK4QdttsngEN98UpbaXU_wc4PKMQVEw",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783151179",
+            "sig": "mqnCQilHHVJS6DASQHm4rqC7x2bGLrgSjkOqzd_v_wHSpRU4dHEJpnSY41qDaZ6afEVSe1uKT4g33y3Achy9AQ",
+            "title": "500 on /api/repo/newnewnode/forkmesh/agents: Error: D1_ERROR: UNIQUE constraint failed: repo_agents.repo_bi, repo_agents.agent_id: SQLITE_CONSTRAINT (extended: SQLIT (44m ago)",
+            "ts": 1783151179,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "32444b86-c538-493a-90bb-fa71f0ac6a9c",
+            "sig": "MqSzNmaNtEmaDOvgfAMFHKoDPeIaIDVVmM8C23W2xbU8AosVKNwlgWhm0mhH0qSUfp6lWxac0HBoBsDR8Qu9Cg",
+            "status": "closed",
+            "ts": 1783738849651,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "bug"
+    ],
+    "milestone": "",
+    "number": 377,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "500 on /api/repo/newnewnode/forkmesh/agents: Error: D1_ERROR: UNIQUE constraint failed: repo_agents.repo_bi, repo_agents.agent_id: SQLITE_CONSTRAINT (extended: SQLIT (44m ago)",
+    "updatedAt": 1783738849651,
+    "votes": 0
+}

@@ -59,7 +59,7 @@ REPO_AGENTS_TRANSCRIPT_RE = re.compile(
 # Live tunnel: desktop clients connect to /host; the website pulls /tree and
 # /blob, which the worker forwards to the best-connected host.
 REPO_HOST_RE = re.compile(
-    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search)$")
+    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search|stats)$")
 # Release asset download (issue #304): the bytes live in the node's
 # content-addressed store (never in git), streamed back over the host tunnel.
 # Stable, content-addressed URL — immutable, so it caches forever at the edge.
@@ -74,8 +74,61 @@ GIT_PACK_RE = re.compile(r"^/([^/]+)/([^/]+)/git-upload-pack$")
 # git push endpoint (issue #358): receive-pack over the same relay tunnel, gated
 # by an owner-key-signed HTTP Basic token (see verify_push_token).
 GIT_RECEIVE_RE = re.compile(r"^/([^/]+)/([^/]+)/git-receive-pack$")
+# --- Organizations + teams (issue #388) ---------------------------------------
+# Orgs are user-created namespaces that serve linked repos at /<org>/<repo>
+# instead of the hosting node's name. POST /api/orgs creates one (session
+# auth); the per-org members/teams/repos collections manage the roster, the
+# permission teams, and the repo alias map.
+ORGS_RE = re.compile(r"^/api/orgs$")
+ORG_RE = re.compile(r"^/api/orgs/([^/]+)$")
+ORG_MEMBERS_RE = re.compile(r"^/api/orgs/([^/]+)/members$")
+ORG_TEAMS_RE = re.compile(r"^/api/orgs/([^/]+)/teams$")
+ORG_TEAM_MEMBERS_RE = re.compile(r"^/api/orgs/([^/]+)/teams/([^/]+)/members$")
+ORG_REPOS_RE = re.compile(r"^/api/orgs/([^/]+)/repos$")
+# Repo-scoped API prefix, matched once by the org-alias rewrite so an org's
+# /api/repo/<org>/<repo>/... URLs are re-routed to the linked node's repo
+# before any of the per-endpoint patterns above run.
+REPO_API_PREFIX_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)(?:/.*)?$")
 # Account API: reserve/finalize/login and GET /api/accounts/{name} are all
 # single-segment, so this one pattern gates the whole accounts_handler dispatch.
 ACCOUNTS_RE = re.compile(r"^/api/accounts/([^/]+)$")
+# Public native contribution read model for one profile.
+ACCOUNT_CONTRIBUTIONS_RE = re.compile(
+    r"^/api/accounts/([^/]+)/contributions$"
+)
 # Follow/unfollow a public profile: /api/accounts/{name}/follow
 ACCOUNT_FOLLOW_RE = re.compile(r"^/api/accounts/([^/]+)/follow$")
+# --- ActivityPub federation ---------------------------------------------------
+# User actor document + its inbox/outbox/followers/following collections.
+AP_USER_RE = re.compile(r"^/ap/users/([^/]+)$")
+AP_USER_SUB_RE = re.compile(
+    r"^/ap/users/([^/]+)/(inbox|outbox|followers|following)$")
+# Repository actor (followed as @owner.repo@<domain> from the fediverse).
+AP_REPO_RE = re.compile(r"^/ap/repos/([^/]+)/([^/]+)$")
+AP_REPO_SUB_RE = re.compile(
+    r"^/ap/repos/([^/]+)/([^/]+)/(inbox|outbox|followers|following)$")
+# Local ActivityPub object (a published Note), 32-hex uuid.
+AP_OBJECT_RE = re.compile(r"^/ap/o/([0-9a-f]{32})$")
+# An image embedded in that Note's body, re-served from its stored base64 so
+# remote servers (which cannot fetch data: URLs) have a real URL to attach.
+AP_OBJECT_MEDIA_RE = re.compile(r"^/ap/o/([0-9a-f]{32})/media/([0-9]+)$")
+# Remote fediverse replies attached to a repo thread, readable by clients.
+REPO_FEDI_COMMENTS_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/fedi-comments$")
+# Owner-node push of canonical repo announcements (releases, merged PRs) into
+# the fediverse — events the relay never observes through the signed inboxes.
+REPO_AP_PUBLISH_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/ap-publish$")
+# Repo owner's fediverse-post management surface (dashboard): list the repo
+# actor's federated posts and delete one (broadcasts a Delete(Tombstone) so it
+# disappears from Mastodon). Session/owner-key authed, never public.
+REPO_AP_POSTS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/ap-posts$")
+# Owner-uploaded repo branding (logo/banner PNG) served publicly — referenced
+# by the repo's fediverse actor document as its avatar/header.
+REPO_MEDIA_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/media/(logo|banner)\.png$")
+# Rendered social-preview info card (repo stats grid): the repo page's
+# og:image, so Mastodon/Slack/Twitter unfurls show the repo's details.
+REPO_CARD_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/card\.png$")
+# Star/unstar a repo: GET returns the public count (+ the caller's own starred
+# state when a session is supplied); POST/DELETE toggle it for the logged-in
+# account (session-token authenticated, same as ACCOUNT_FOLLOW_RE).
+REPO_STAR_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/star$")

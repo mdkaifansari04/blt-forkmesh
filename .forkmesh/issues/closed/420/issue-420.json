@@ -1,0 +1,104 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783911677,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783911677",
+            "sig": "ePVvOkpn16i5xOx4zFOxZaVVuLqj_oj35Ai1rpPRFScU33vWYyJEw07ufYtYkbiCb86ZNQ5_XNPEnU98MhSVAA",
+            "title": "it seems the website is loading all issues when we go to the issues page and not just the open ones - please fix that Loading issues from the live mirror...",
+            "ts": 1783911677,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "and also show 25 prs and 25 issues and not 5 in the page ",
+            "id": "4daaac3a-063d-4875-888e-1658660c5eaa",
+            "sig": "OMt8kkFIrOEDYUhIJf6lYSYdij-dM4qmIYzZi5TtDtJSjsk6wHVQGbWk99PYBVpSYPRt2Otd9j817OBv8IJsDQ",
+            "ts": 1783914266799,
+            "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 90,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "c317af1c-bc72-4ea3-8641-e06127173be2",
+            "sig": "R930WHf5cvzWz0PDK61IyOws_kW92hPomRui1pGHs1YWifyFbeoytSvQ9_3N-FAzSDUK7-l7rw8woFWjBztoAA",
+            "ts": 1783914270945,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "08344db7-5add-4c6e-af30-6e9b9c20cf67",
+            "sig": "xL4vcF7y6wiBi9SLM7caARvj-zTf8GXuO7Sxr1rUZjNmaXx8BBHWyUZyw62KFuzCBD4HM_JHz6ZUrAiLgbPxAA",
+            "ts": 1783914271003,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-420-it-seems-the-website-is-loading-all-issues-when\".",
+            "id": "bb768838-88d8-430d-8b61-f0847508eee7",
+            "sig": "DNTZxbUqp1iZhrOvIk6UHIv21LDtR8gxgIajfFK1b9H-IO_6rswFnnj75AZ9azNI_PXx3cZX26faKnqerdzYDg",
+            "ts": 1783914686757,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "07a858c0-ca08-48b9-a158-2abb343f1d3c",
+            "sig": "2_ppJzwCC9Mi0Vlu6vapSV60-nqsy5vUxqxOE0StBIpjRJZ9UwaiymYeifxlJ9Ivba2KJpjNhOJiowWRiuRvCA",
+            "status": "closed",
+            "ts": 1783914686823,
+            "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "4b057307-443c-498a-b9a2-890b908bf8af",
+            "sig": "2XKCRcyMNuaoFnT85uC79jKNxVFSOXnKfV7ILOcx_RUzd2R3NWG4w0VMsRSHw-9zFXH-ZZ_trB7suXdlLNV5BQ",
+            "ts": 1783915892106,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 420,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "it seems the website is loading all issues when we go to the issues page and not just the open ones - please fix that Loading issues from the live mirror...",
+    "updatedAt": 1783915892106,
+    "votes": 0
+}

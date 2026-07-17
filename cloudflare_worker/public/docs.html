@@ -12,7 +12,7 @@
     <meta name="application-name" content="ForkMesh" />
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
@@ -172,36 +172,6 @@
         display: block;
       }
 
-      .icon-button {
-        display: inline-grid;
-        place-items: center;
-        width: 2.5rem;
-        height: 2.5rem;
-        border: 0;
-        border-radius: 999px;
-        background: transparent;
-        color: var(--docs-soft);
-        cursor: pointer;
-      }
-
-      .icon-button:hover {
-        color: var(--docs-fg);
-        background: var(--docs-hover);
-      }
-
-      .icon-button svg {
-        width: 1rem;
-        height: 1rem;
-      }
-
-      html.dark .moon {
-        display: none;
-      }
-
-      html:not(.dark) .sun {
-        display: none;
-      }
-
       .docs-scrollbar {
         scrollbar-width: thin;
         scrollbar-color: var(--docs-line-strong) transparent;
@@ -303,26 +273,16 @@
     </style>
     <link rel="stylesheet" href="/site-header.css" />
     <script src="/site-header.js" defer></script>
-    <style>
-      /* Map the docs theme onto the universal header's variable names so it
-         follows the docs light/dark toggle (docs styles use --docs-*). */
-      :root {
-        --muted: var(--docs-muted);
-        --foreground: var(--docs-fg);
-        --border: var(--docs-line);
-        --card: var(--docs-panel);
-      }
-    </style>
   </head>
   <body class="min-h-screen bg-[var(--docs-bg)] text-[var(--docs-fg)]">
     <div data-forkmesh-header="simple"></div>
     <header
-      class="sticky top-0 z-50 border-b border-[var(--docs-line)] bg-[color-mix(in_srgb,var(--docs-bg)_94%,transparent)] backdrop-blur-xl"
+      class="sticky top-0 z-30 border-b border-[var(--docs-line)] bg-[color-mix(in_srgb,var(--docs-bg)_94%,transparent)] backdrop-blur-xl"
     >
       <div
-        class="mx-auto grid h-20 max-w-[1540px] grid-cols-[minmax(220px,520px)_minmax(0,1fr)] items-center gap-5 px-5 sm:px-8 lg:px-12 xl:grid-cols-[minmax(260px,560px)_minmax(0,1fr)] xl:gap-6"
+        class="mx-auto hidden h-20 max-w-[1540px] grid-cols-1 items-center px-5 sm:px-8 md:grid lg:px-12"
       >
-        <div class="relative hidden min-w-0 md:block">
+        <div class="relative min-w-0 max-w-[560px]">
           <label
             class="flex h-11 min-w-0 items-center justify-between gap-4 rounded-2xl border border-[var(--docs-line-strong)] bg-[var(--docs-panel)] px-4 text-left text-[0.92rem] font-semibold text-[var(--docs-soft)] shadow-[inset_0_0_0_1px_rgba(0,0,0,0.01)]"
             aria-label="Search documentation"
@@ -367,28 +327,6 @@
           </div>
         </div>
 
-        <div
-          class="flex min-w-0 items-center justify-end gap-3 sm:gap-4 xl:gap-5"
-        >
-          <button
-            id="theme-toggle"
-            class="icon-button"
-            type="button"
-            aria-label="Toggle theme"
-          >
-            <svg class="moon" viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"
-              ></path>
-            </svg>
-            <svg class="sun" viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="12" cy="12" r="4"></circle>
-              <path
-                d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"
-              ></path>
-            </svg>
-          </button>
-        </div>
       </div>
 
       <div
@@ -891,16 +829,26 @@ sha256hex(content)</code></pre>
             Pull requests
           </h2>
           <p class="mt-4 text-[0.95rem] leading-8 text-[var(--docs-muted)]">
-            Current PRs are signed patch submissions. A maintainer can review
-            and merge them into the repo, at which point the accepted record
-            becomes part of Git-managed project history.
+            A PR is a signed record built around a patch: either a plain diff
+            plus an optional <code>git format-patch</code> commit series a
+            contributor attaches directly (no branch, fork, or push access
+            required), or a pointer to a real branch, whose diff is derived
+            from the live ref instead of stored. The whole PR object, and
+            every comment and review on it, carries its own Ed25519
+            signature bound to that PR's number. A maintainer verifies the
+            signatures and merges &mdash; a real <code>git merge</code> when
+            there is a resolvable commit, falling back to replaying the
+            stored patch/commit series otherwise &mdash; and the accepted
+            record is committed straight into the repository itself, on its
+            own <code>forkmesh/pulls</code> branch, so it travels with the
+            project rather than living only in the relay's database.
           </p>
           <pre
             class="doc-card mt-6 overflow-x-auto p-5 text-sm leading-7 text-[var(--docs-fg)]"
           ><code>forkmesh-pull-event-v1
 &lt;author pubkey&gt;
 &lt;ts&gt;
-sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
+sha256hex(title + NUL + base + NUL + head + NUL + patch + NUL + commits)</code></pre>
         </section>
 
         <section
@@ -1196,10 +1144,13 @@ sha256hex(title + NUL + base + NUL + head + NUL + patch)</code></pre>
               Collaboration, agents, and private access
             </h3>
             <p class="mt-2 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
-              Cross-user work is staged as signed records in D1, then the repo
-              owner drains and merges it into Git. Today the desktop polls owned
-              inboxes every minute and agent prompts every 30 seconds, with
-              exponential backoff on relay failures.
+              Cross-user work is staged as signed records in D1 &mdash; a
+              temporary inbox, not the permanent record &mdash; then the repo
+              owner's node drains it and merges/commits it into Git. Delivery
+              is event-driven: a minimal push frame on the repo's host tunnel
+              triggers one consolidated sync fetch, with a 5-minute poll as
+              the fallback for dropped events, and exponential backoff on
+              relay failures.
             </p>
             <div class="mt-5">
               <div class="route-row">
@@ -1750,7 +1701,7 @@ uvx --from workers-py pywrangler dev
           id="limitations"
           class="mt-16 scroll-mt-44"
           data-search-title="Current limitations"
-          data-search-body="Cloudflare metadata host online Git push receive-pack pull requests Durable Objects storage limitations"
+          data-search-body="Cloudflare metadata host online Git push receive-pack cross-relay federation Durable Objects storage limitations"
         >
           <h2 class="text-[1.5rem] font-black text-[var(--docs-fg)]">
             Current limitations
@@ -1764,12 +1715,14 @@ uvx --from workers-py pywrangler dev
                 metadata.
               </li>
               <li>
-                Fresh file browsing and clone require at least one host online.
+                Fresh file browsing, clone, and push require at least one host
+                online &mdash; the relay itself holds no Git objects.
               </li>
-              <li>Git push and receive-pack are not production-ready yet.</li>
               <li>
-                Pull requests are signed patch records, not full branch or ref
-                PRs.
+                Git hosting and mirroring are scoped to one relay instance
+                today; a self-hosted relay federates with the main relay for
+                node coordination and payouts, but repos don't yet move or
+                merge across independent relay instances.
               </li>
               <li>
                 Durable Objects should not be used as heavy long-term Git
@@ -1956,12 +1909,12 @@ uvx --from workers-py pywrangler dev
             </p>
           </div>
           <button
-            class="icon-button -mr-2 -mt-2"
+            class="-mr-2 -mt-2 grid h-10 w-10 flex-none cursor-pointer place-items-center rounded-full text-[var(--docs-soft)] hover:bg-[var(--docs-hover)] hover:text-[var(--docs-fg)]"
             type="button"
             data-feedback-close
             aria-label="Close feedback"
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
+            <svg class="h-4 w-4" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M18 6 6 18"></path>
               <path d="m6 6 12 12"></path>
             </svg>
@@ -1993,33 +1946,6 @@ uvx --from workers-py pywrangler dev
 
     <script>
       (() => {
-        function applyTheme(mode) {
-          const chosen =
-            mode ||
-            localStorage.getItem("forkmesh.dashboard.theme") ||
-            localStorage.getItem("forkmesh.theme") ||
-            (window.matchMedia &&
-            window.matchMedia("(prefers-color-scheme: dark)").matches
-              ? "dark"
-              : "light");
-          document.documentElement.classList.toggle("dark", chosen === "dark");
-          localStorage.setItem("forkmesh.theme", chosen);
-          localStorage.setItem("forkmesh.dashboard.theme", chosen);
-        }
-
-        applyTheme();
-
-        const themeToggle = document.querySelector("#theme-toggle");
-        if (themeToggle) {
-          themeToggle.addEventListener("click", () => {
-            applyTheme(
-              document.documentElement.classList.contains("dark")
-                ? "light"
-                : "dark",
-            );
-          });
-        }
-
         const docsSearch = document.querySelector("#docs-search");
         const docsSearchPanel = document.querySelector("#docs-search-panel");
         const docsSearchResults = document.querySelector(

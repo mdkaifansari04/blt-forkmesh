@@ -1,3 +1,4 @@
+#include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "CrashHandler.h"
 #include "MainWindowInternal.h"
@@ -6,64 +7,42 @@ using namespace forkmesh::ui;
 
 namespace {
 
-// A crash kills the process before it can log anything about itself, so the
-// only record was ever CrashHandler's ~/.forkmesh/diagnostics/crashes.log (plus
-// stderr/journalctl) — invisible unless someone went looking there. Surface it
-// as a line in the *next* session's own log instead, the same log the user
-// actually reads (adhoc #200). Returns a one-line summary of what's new since
-// `seenOffset`, or empty if nothing new; *newSize is always set to the file's
-// current size so the caller can advance the stored offset unconditionally.
-QString describeNewCrashes(const QString &path, qint64 seenOffset, qint64 *newSize)
+// ForkMesh is event-driven: every HTTP request fires in response to some
+// action/event (a relay sync frame, a catalog publish, an agent poll…). The
+// finished() choke point only sees the reply, so we recover *what drove it*
+// from the endpoint it hit — the most reliable signal available there — and
+// tag the verbose network-log line with it so the traffic reads as events
+// rather than opaque URLs (adhoc #19). Order most-specific first.
+QString networkRequestEventFor(const QUrl &url)
 {
-    QFile f(path);
-    *newSize = seenOffset;
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-        return QString();
-    const qint64 size = f.size();
-    *newSize = size;
-    qint64 from = seenOffset;
-    if (from < 0 || from > size)
-        from = 0; // log rotated/cleared since we last checked
-    if (from >= size)
-        return QString();
-    f.seek(from);
-    const QString tail = QString::fromUtf8(f.readAll());
-
-    static const QString marker = QStringLiteral("===== ForkMesh crash =====");
-    static const QRegularExpression sigRe(QStringLiteral("signal: ([^\\n]+)"));
-    static const QRegularExpression whenRe(QStringLiteral("when \\(epoch\\): (\\d+)"));
-    int count = 0;
-    QString lastSignal, lastWhen;
-    for (int pos = tail.indexOf(marker); pos >= 0;
-         pos = tail.indexOf(marker, pos + marker.size())) {
-        ++count;
-        const auto sigMatch = sigRe.match(tail, pos);
-        if (sigMatch.hasMatch())
-            lastSignal = sigMatch.captured(1);
-        const auto whenMatch = whenRe.match(tail, pos);
-        if (whenMatch.hasMatch())
-            lastWhen = whenMatch.captured(1);
+    const QString path = url.path();
+    struct Route {
+        const char *needle;
+        const char *event;
+    };
+    static const Route routes[] = {
+        {"/api/sync", "relay sync"},
+        {"/api/repositories", "catalog publish"},
+        {"/agents", "agent poll"},
+        {"/issues", "issue fetch"},
+        {"/pulls", "pull fetch"},
+        {"/releases", "release fetch"},
+        {"/mirrors", "mirror sync"},
+        {"/api/repo/", "repo fetch"},
+        {"/api/version", "version check"},
+        {"/api/telemetry", "telemetry"},
+        {"/api/network", "network stats"},
+        {"/api/security", "security report"},
+        {"/api/forkbot", "forkbot chat"},
+        {"/api/chat", "chat"},
+        {"/api/accounts", "account"},
+        {"/api/oauth", "account"},
+    };
+    for (const Route &r : routes) {
+        if (path.contains(QLatin1String(r.needle)))
+            return QString::fromLatin1(r.event);
     }
-    if (count == 0)
-        return QString();
-
-    QString when;
-    bool ok = false;
-    const qint64 epoch = lastWhen.toLongLong(&ok);
-    if (ok)
-        when = QDateTime::fromSecsSinceEpoch(epoch)
-                   .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
-
-    QString msg = QStringLiteral("Previous session failed to exit cleanly and "
-                                 "crashed (%1)")
-                      .arg(lastSignal.isEmpty() ? QStringLiteral("unknown signal")
-                                                : lastSignal);
-    if (!when.isEmpty())
-        msg += QStringLiteral(" at %1").arg(when);
-    if (count > 1)
-        msg += QStringLiteral(" \xE2\x80\x94 %1 crash(es) recorded").arg(count);
-    msg += QStringLiteral(". See ~/.forkmesh/diagnostics/crashes.log for the backtrace.");
-    return msg;
+    return QStringLiteral("request");
 }
 
 } // namespace
@@ -190,14 +169,40 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                                  ? QStringLiteral("ERR %1 %2")
                                        .arg(code.toString(), reply->errorString())
                                  : QStringLiteral("ERR ") + reply->errorString();
+                    // Qt's errorString() for an HTTP error is generic ("server
+                    // replied: <url>") and omits the payload the server actually
+                    // sent — which for a worker 503 is exactly the explanation a
+                    // user needs. peek() (not read()) the first chunk of the body
+                    // so we surface the server's own words without consuming the
+                    // buffer out from under the real reply consumer (adhoc #68).
+                    const QByteArray body = reply->peek(512);
+                    if (!body.isEmpty()) {
+                        const QString snippet = QString::fromUtf8(body).simplified();
+                        if (!snippet.isEmpty())
+                            status += QStringLiteral(" [body: ") + snippet +
+                                      QStringLiteral("]");
+                    }
                 } else {
                     const QVariant code = reply->attribute(
                         QNetworkRequest::HttpStatusCodeAttribute);
                     status = code.isValid() ? code.toString()
                                             : QStringLiteral("done");
+                    // Surface the response payload on success too (not just
+                    // the status code) so the verbose log answers "what did
+                    // this request actually return?" without needing
+                    // devtools. peek() (not read()) so the real reply
+                    // consumer still gets the full body.
+                    const QByteArray body = reply->peek(512);
+                    if (!body.isEmpty()) {
+                        const QString snippet = QString::fromUtf8(body).simplified();
+                        if (!snippet.isEmpty())
+                            status += QStringLiteral(" [body: ") + snippet +
+                                      QStringLiteral("]");
+                    }
                 }
-                logSystem(QStringLiteral("net %1 %2 %3")
-                              .arg(verb, status, reply->url().toString()));
+                logSystem(QStringLiteral("net %1 %2 %3 \xC2\xB7 %4")
+                              .arg(verb, status, reply->url().toString(),
+                                   networkRequestEventFor(reply->url())));
             });
     m_totalConnectionMs = QSettings().value(kConnectionTotalSetting).toLongLong();
     m_nodeOffline = QSettings().value(kNodeOfflineSetting, false).toBool();
@@ -214,23 +219,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     loadCachedFavicons();
     // Restore the network log from disk *before* the log section is built so the
     // history (and prior sessions' start/stop markers) renders on the first
-    // frame, then record this session's start time.
+    // frame, then record this session's start time. Crash records from a prior
+    // unclean exit are already in the loaded log (the crash handler writes to
+    // network_log.txt directly), so no separate crash-file scan is needed.
     loadNetworkLog();
+    logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     logSystem(QStringLiteral("Session started - ForkMesh v" FORKMESH_VERSION "."));
-    // If the previous run ended in a crash, say so here instead of leaving it
-    // silently sitting in crashes.log (adhoc #200).
-    {
-        QSettings crashSettings;
-        const QString crashPath =
-            QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/crashes.log");
-        qint64 newSize = 0;
-        const QString notice = describeNewCrashes(
-            crashPath, crashSettings.value(kCrashLogSeenOffsetSetting, 0).toLongLong(),
-            &newSize);
-        crashSettings.setValue(kCrashLogSeenOffsetSetting, newSize);
-        if (!notice.isEmpty())
-            logSystem(notice);
-    }
+    logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     logStartup(QStringLiteral("servers + favicons loaded"));
 
     // Load the persisted profile state (custom avatar + node name) *before* the
@@ -281,12 +276,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_stack->addWidget(buildChatPage());
     logStartup(QStringLiteral("chat/app page built"));
     setCentralWidget(m_stack);
-    // Avoid a flash of the login/setup screen on restart: if this machine has
-    // already authenticated a node account, open straight onto the app shell.
-    // The deferred auto-start (below) connects it; if silent auth ultimately
-    // fails it falls back to the setup page.
-    if (!QSettings().value(kAuthedAccountSetting).toString().trimmed().isEmpty())
-        m_stack->setCurrentIndex(1);
     loadRepositories();
     refreshRepositoryList();
     logStartup(QStringLiteral("repositories loaded"));
@@ -335,10 +324,21 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     QTimer::singleShot(0, this, [this] { startDiagnostics(); });
 
     // Keep mirrors fresh: periodically fetch each repo so a mirror tracks the
-    // owner's repo as it updates. A first pass runs shortly after startup.
+    // owner's repo as it updates. Push events are the primary signal now —
+    // since bf6323d0 mirror peers are notified the instant a push lands on the
+    // source's bare mirror — so this timer is only a safety net for dropped
+    // events. 15 minutes (kMirrorSyncIntervalMs) with ±15% jitter so a fleet
+    // of nodes doesn't fetch from the relay in lockstep, and gated on relay
+    // health (autoSyncMirrorsIfRelayHealthy) because the git subprocesses
+    // never pass through BackoffNetworkAccessManager's 429 cooldown. A first
+    // pass runs shortly after startup to catch up on pushes missed offline.
     m_mirrorSyncTimer = new QTimer(this);
-    connect(m_mirrorSyncTimer, &QTimer::timeout, this, &MainWindow::autoSyncMirrors);
-    m_mirrorSyncTimer->start(5 * 60 * 1000);
+    connect(m_mirrorSyncTimer, &QTimer::timeout, this,
+            &MainWindow::autoSyncMirrorsIfRelayHealthy);
+    const int mirrorJitterSpanMs = int(kMirrorSyncIntervalMs * 15 / 100);
+    m_mirrorSyncTimer->start(int(kMirrorSyncIntervalMs) +
+                             QRandomGenerator::global()->bounded(
+                                 -mirrorJitterSpanMs, mirrorJitterSpanMs + 1));
     QTimer::singleShot(15000, this, &MainWindow::autoSyncMirrors);
     // Source-of-truth nodes pick up issues/PRs/comments/agent-prompts filed by
     // other nodes through the relay's event push: a minimal frame on the repo's
@@ -358,8 +358,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // off.
     m_autoUpdateTimer = new QTimer(this);
     connect(m_autoUpdateTimer, &QTimer::timeout, this, &MainWindow::maybeAutoUpdate);
-    m_autoUpdateTimer->start(60 * 60 * 1000);
-    QTimer::singleShot(5 * 60 * 1000, this, &MainWindow::maybeAutoUpdate);
+    // Both checks are jittered so a fleet doesn't discover a fresh tag in
+    // lockstep and pile onto the relay (and the one live source mirror) at
+    // the same moment — publishing v0.6.2 turned every node's updater loose
+    // within the same hour.
+    m_autoUpdateTimer->start(
+        60 * 60 * 1000 +
+        int(QRandomGenerator::global()->bounded(-10 * 60 * 1000,
+                                                10 * 60 * 1000 + 1)));
+    QTimer::singleShot(
+        5 * 60 * 1000 +
+            int(QRandomGenerator::global()->bounded(10 * 60 * 1000)),
+        this, &MainWindow::maybeAutoUpdate);
     // Chat messages are retained for 7 days (kChatMessageRetentionMs); sweep
     // local history hourly so a node left running that long doesn't keep
     // showing/serving messages the relay has already dropped (adhoc #49).
@@ -393,6 +403,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         m_setupError->setText(m_profileIdentity.errorString());
         m_setupError->show();
     } else {
+        // Avoid a flash of the login/setup screen on restart only when the
+        // persisted capability belongs to both this account and this exact
+        // local identity key. The identity must be loaded before this check.
+        const QSettings startupSettings;
+        if (AccountCapability::persistedMarkerMatches(
+                startupSettings.value(kDesktopCapableAccountSetting).toString(),
+                startupSettings.value(kDesktopCapablePublicKeySetting).toString(),
+                startupSettings.value(kAuthedAccountSetting).toString(),
+                m_profileIdentity.publicKey())) {
+            m_stack->setCurrentIndex(1);
+        }
         if (m_pubkeyLabel) {
             m_pubkeyLabel->setText("Ed25519 public key: " +
                                    m_profileIdentity.shortPublicKey());
@@ -409,6 +430,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     }
     logStartup(QStringLiteral("identity loaded"));
     updateHomeStats();
+    // Populate the Hosts/Relays nav button counts up front — Nodes' count
+    // follows the roster and updates itself via updateNodeSwitcher().
+    refreshHostsTable();
+    refreshRelaysTable();
     logStartup(QStringLiteral("home stats updated (ctor end)"));
 }
 
@@ -568,7 +593,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
     QSettings().setValue(kWindowGeometrySetting, saveGeometry());
     saveChatHistory();
     // Record this session's stop time, then flush+trim the persisted log.
+    logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     logSystem(QStringLiteral("Session ended."));
+    logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     saveNetworkLog();
     QMainWindow::closeEvent(event);
 }
@@ -586,4 +613,10 @@ void MainWindow::changeEvent(QEvent *event)
         refreshSourceControl();
         refreshCommitMarkersIfStale();
     }
+    // Regaining focus while already parked on the open conversation counts as
+    // reading it too — messages that arrived while the window was in the
+    // background otherwise leave the unread badge stuck until the user
+    // switches away and back.
+    if (event->type() == QEvent::ActivationChange && isActiveWindow())
+        clearActiveConversationUnread();
 }

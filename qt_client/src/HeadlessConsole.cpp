@@ -33,7 +33,7 @@ HeadlessConsole::HeadlessConsole(MainWindow *window, QCoreApplication *app,
 
     // A durable daemon must stop only on an explicit signal, never on a stray
     // terminal hang-up. SIGINT/SIGTERM stay owned by CrashHandler so external
-    // service-manager stops leave a durable signal record in crashes.log.
+    // service-manager stops leave a signal record in the network log.
 
 #if defined(Q_OS_UNIX)
     m_stdin = new QSocketNotifier(STDIN_FILENO, QSocketNotifier::Read, this);
@@ -64,6 +64,10 @@ void HeadlessConsole::printHelp()
              "  repos               list local repositories\n"
              "  mirrors             repos this node mirrors / serves + cpu & memory\n"
              "  sync                sync mirrors + poll owned inboxes now\n"
+             "  claude-auth ...     status | export [path] | import <path> —\n"
+             "                      move an owner's Claude Code login onto this host\n"
+             "                      so it can take agent requests (use - for stdout/\n"
+             "                      stdin instead of a file)\n"
              "  e2e                 run the end-to-end mesh-loop self-test\n"
              "                      (publish->browse->clone->issue->agent PR->merge)\n"
              "  setup <name> [sol]  pick a node name and connect (first run)\n"
@@ -76,7 +80,7 @@ void HeadlessConsole::printHelp()
              "\n"
              "Durable daemon: the node keeps running until you `quit`/`exit` or send\n"
              "SIGINT/SIGTERM (Ctrl-C, kill, systemctl stop; recorded in the\n"
-             "crash diagnostics). Closing stdin does NOT\n"
+             "network log). Closing stdin does NOT\n"
              "stop it — run it detached with `forkmesh --headless </dev/null &`, nohup\n"
              "or a systemd service and it stays up. The `daemon` command does the same\n"
              "on demand: it releases the prompt so you can exit the shell while the\n"
@@ -126,9 +130,22 @@ void HeadlessConsole::attachFeed(ChatBackend *backend)
                              .arg(members.size()));
             });
     connect(backend, &ChatBackend::mirrorUpdated, this,
-            [this](const QString &owner, const QString &peer) {
-                logEvent(QStringLiteral("mirror updated: %1 (by %2)")
-                             .arg(owner, peer));
+            [this](const QString &owner, const QString &peer,
+                   const QString &commit) {
+                logEvent(QStringLiteral("mirror updated: %1 (by %2)%3")
+                             .arg(owner, peer,
+                                  commit.isEmpty()
+                                      ? QString()
+                                      : QStringLiteral(" -> ") + commit.left(10)));
+            });
+    connect(backend, &ChatBackend::mirrorSynced, this,
+            [this](const QString &owner, const QString &peer,
+                   const QString &commit) {
+                logEvent(QStringLiteral("mirror synced: %1 (by %2)%3")
+                             .arg(owner, peer,
+                                  commit.isEmpty()
+                                      ? QString()
+                                      : QStringLiteral(" @ ") + commit.left(10)));
             });
     connect(backend, &ChatBackend::fatalError, this,
             [this](const QString &m) { logEvent(QStringLiteral("ERROR: ") + m); });
@@ -158,6 +175,8 @@ void HeadlessConsole::dispatch(const QString &raw)
     } else if (cmd == QLatin1String("sync")) {
         m_window->headlessSyncNow();
         m_out << "sync triggered" << Qt::endl;
+    } else if (cmd == QLatin1String("claude-auth")) {
+        printLines(m_window->headlessClaudeAuth(args));
     } else if (cmd == QLatin1String("e2e")) {
         runMeshLoopSelfTest();
     } else if (cmd == QLatin1String("setup") || cmd == QLatin1String("connect")) {

@@ -301,6 +301,10 @@ def card_html(info):
 
 
 # ----------------------------------------------------------------------------- server
+_ALLOWED_HOSTS = frozenset({f"127.0.0.1:{PORT}", f"localhost:{PORT}"})
+_ALLOWED_ORIGINS = frozenset({f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"})
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -313,7 +317,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _local_guard(self, require_origin=False):
+        # This server signs and creates real PRs and exposes local diffs, so it
+        # must only ever answer the local operator — never a web page in the
+        # operator's browser. Pin the Host header to a loopback name (defeats
+        # DNS-rebinding, where an attacker domain resolves to 127.0.0.1 but the
+        # Host header carries the attacker's domain). For state-changing POSTs,
+        # also require the Origin (which browsers always send cross-origin) to be
+        # absent or loopback, defeating cross-site form/fetch CSRF.
+        if (self.headers.get("Host") or "") not in _ALLOWED_HOSTS:
+            self._send(403, "{}", "application/json")
+            return False
+        if require_origin:
+            origin = self.headers.get("Origin")
+            if origin and origin not in _ALLOWED_ORIGINS:
+                self._send(403, "{}", "application/json")
+                return False
+        return True
+
     def do_GET(self):
+        if not self._local_guard():
+            return
         if self.path not in ("/", "/index.html"):
             return self._send(404, "not found", "text/plain")
         branches = port_branches()
@@ -323,6 +347,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, PAGE.format(pub=pub, base=BASE, n=len(branches), cards=cards))
 
     def do_POST(self):
+        if not self._local_guard(require_origin=True):
+            return
         if self.path != "/api/create-pr":
             return self._send(404, "{}", "application/json")
         length = int(self.headers.get("Content-Length", 0))

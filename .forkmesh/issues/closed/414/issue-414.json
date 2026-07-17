@@ -1,0 +1,55 @@
+{
+    "assignees": [
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783736416,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783736416",
+            "sig": "XrJS7wByz9-5tZUQAGNravqBOgtDRSS_OeO3_jY4mfuArcweIpTi4O_VaSYLRdW9QR0sp12uBRtaWZnhu2S0Dg",
+            "title": "new issue from website to test fediverse",
+            "ts": 1783736416,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "2cc54da3-e304-4481-a828-6b3ed8447e6a",
+            "sig": "XVsk4CPtLVHdy2c6D9iHuir8Myo_DCX-s4F6H6Zfn9Y2yZDzgI1mBtWNl9LIhWKu-iDxhUsb1D5ty-0Vr1PGAw",
+            "target": "self",
+            "ts": 1783880344712,
+            "type": "delete"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "997f25f1-ec36-4748-9ad1-e0e5084a60ad",
+            "sig": "B4qOkMzYf3cWl7Wx95H1iS9RLa_OKM6pwEHSJFT5eGx3gCEp_puWMI3P9Z8KlTp3Hv5zNjoxu5_Oc6iHL9w4DQ",
+            "status": "closed",
+            "ts": 1784325499242,
+            "type": "status"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 414,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "new issue from website to test fediverse",
+    "updatedAt": 1784325499242,
+    "votes": 0
+}

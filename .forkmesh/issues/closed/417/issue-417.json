@@ -1,0 +1,91 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "8Yz86t8tyEF3o6My2FuW3PnBqfDbDnqy8WZqKrRPZgQ",
+    "authorName": "static-rack-9818",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783808095761,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "8Yz86t8tyEF3o6My2FuW3PnBqfDbDnqy8WZqKrRPZgQ",
+            "authorName": "static-rack-9818",
+            "body": "",
+            "id": "open-417",
+            "sig": "Wi_5VC2Bm5SqcKUcAx9GKLF4APG-Tx8Y8P8h9muAuC7YTe0Mfb7Wgv0euLszXajCkrzPtQGuI90qiBODp-u1CA",
+            "title": "folder icons are not showing on a new install",
+            "ts": 1783808095761,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 3,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "31a5dd07-5ffd-4b80-a975-356c2afe09e7",
+            "sig": "AHjv8WnJN-yuw3McghjleaLgkoOSJC0TZi6opfc2oIsRAyJCYzmvzQGYMfm0M0NH-M5MdVVNAmOp0ALqPfO4Dg",
+            "ts": 1783872927043,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "87357b96-b006-4d00-85db-3f3c7816a1ef",
+            "sig": "LPpJJe1WOI-HNed53kLPuvmbzMHIMEHQuEvjcKTi31Hsrw2u9yVb6Nh96UZh102M0g0XOKzGljaDQffycywtDQ",
+            "ts": 1783872927108,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-417-folder-icons-are-not-showing-on-a-new-install\".",
+            "id": "1afa8674-954e-4fe5-8109-8ada45fae4c5",
+            "sig": "x3V4ZOrKXUxdGu6Cs9jv7_1ikIeyiwff467v0dJpBZQ9ACCoRrRQSX6O0wIn4MW3BFERyMWEOMlmkBvh1D6wDg",
+            "ts": 1783879238598,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "b262039c-5d81-451f-ae6b-b3815dfa9d2b",
+            "sig": "chrScGVZiKqgX6Wa1a23s77vxkVdH8nL47YrdMewq8Pt0zeQXgHPQiLlZiia8JhxzkGbe5itNr9ox208F97QBg",
+            "status": "closed",
+            "ts": 1783879238647,
+            "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e9db0e1c-674c-4a42-9be8-193bb24fbd4f",
+            "sig": "_eqMqAhBa6mloFphCA6_l4HC2gYlP5piJGrPXcIW0-LogdNBpo5QmVKKXBTFrZzFuOZLDMguMRJ_nCBsYAG-Ag",
+            "ts": 1783886822322,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 417,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "folder icons are not showing on a new install",
+    "updatedAt": 1783886822322,
+    "votes": 0
+}

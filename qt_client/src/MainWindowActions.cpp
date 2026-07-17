@@ -50,9 +50,8 @@ void MainWindow::initActions()
                 run,
                 QString::fromUtf8(
                     "\n==> \xE2\x9A\xA0 INTERRUPTED: ForkMesh exited while this "
-                    "run was still running. Check the main Log view plus "
-                    "~/.forkmesh/diagnostics/crashes.log and stalls.log for the "
-                    "app-side failure.\n"));
+                    "run was still running. Check the main Log view (and stalls "
+                    "log) for the app-side failure.\n"));
             run.status = ActionStatus::Failed;
             run.finishedAtMs = interruptedAt;
             m_actionStore->saveRun(run);
@@ -240,6 +239,19 @@ void MainWindow::scanActionSpool()
                 if (!r.previewOnly && r.publishToNetwork &&
                     !r.mirrorPath.trimmed().isEmpty())
                     publishRepository(idx, false);
+                // Tell connected peers that also mirror this repo that it just
+                // advanced, the same ephemeral "mirror-update" frame
+                // syncRepository broadcasts for a fetch-detected change (see
+                // MainWindow::syncRepository/onPeerMirrorUpdated). A push that
+                // lands directly on this served bare mirror never goes through
+                // syncRepository, so without this, peers would only notice at
+                // their next 15-minute auto-sync tick instead of converging in
+                // seconds.
+                if (!r.previewOnly && m_backend)
+                    m_backend->notifyMirrorUpdated(
+                        catalogOwner(r) + "/" +
+                            repoSegment(r.name, QStringLiteral("repository")),
+                        commit);
             }
         }
         // Skip events with no branch update or a branch deletion (all-zero SHA).
@@ -336,7 +348,7 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
         const auto isMetadataPath = [](const QString &p) {
             return p.startsWith(QLatin1String(".forkmesh/issues/")) ||
                    p.startsWith(QLatin1String("pulls/")) ||
-                   p.startsWith(QLatin1String("commits/"));
+                   p.startsWith(QLatin1String(".forkmesh/commits/"));
         };
         if (!changed.isEmpty() &&
             std::all_of(changed.cbegin(), changed.cend(), isMetadataPath)) {
@@ -484,7 +496,6 @@ void MainWindow::refreshOpenRepoDetail()
     // Re-read .forkmesh/ workflows so the "Actions (N)" badge tracks any added
     // or removed workflows a sync may have brought in.
     refreshRepoActions();
-    loadAboutSidebar();
     // loadCommits() above already refreshed the Insights counts if that tab is on
     // screen; off-screen it reloads when next opened, so no extra pass here.
     updateRepoDetailStatus();
@@ -661,7 +672,7 @@ void MainWindow::onReleaseMetadataLanded(int runId)
     if (index < 0)
         return;
     // The release workflow staged the artifact bytes into the served CAS and the
-    // runner committed the tiny releases/ manifest into the working copy. Refresh
+    // runner committed the tiny .forkmesh/releases/ manifest into the working copy. Refresh
     // the served mirror before publishing so install.sh and the website read the
     // same release metadata the catalog advertises.
     logSystem(QStringLiteral(
@@ -1222,40 +1233,27 @@ void MainWindow::refreshCommitTableStatusGlyphs()
         return;
     for (int row = 0; row < m_commitsTable->rowCount(); ++row) {
         QTableWidgetItem *summary = m_commitsTable->item(row, kCommitSummaryCol);
-        if (!summary)
-            continue;
+        if (!summary || summary->data(kCommitRowKindRole).toInt() != 0)
+            continue; // expanded file rows carry the same sha — commits only
         const QString sha = summary->data(Qt::UserRole).toString();
         if (sha.isEmpty())
             continue;
-        QString shortHash = sha.left(8);
-        if (const QTableWidgetItem *hashItem =
-                m_commitsTable->item(row, kCommitHashCol)) {
-            const QString sortHash = hashItem->data(kTableSortRole).toString();
-            if (!sortHash.isEmpty())
-                shortHash = sortHash;
-        }
         switch (commitStatusCode(sha)) {
         case 1:
             summary->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
-            summary->setToolTip(QString::fromUtf8("Checks passed \xC2\xB7 %1")
-                                    .arg(shortHash));
             break;
         case 2:
             summary->setIcon(themedOcticon("x", QColor("#f85149"), 14));
-            summary->setToolTip(QString::fromUtf8("Checks failed \xC2\xB7 %1")
-                                    .arg(shortHash));
             break;
         case 3:
             summary->setIcon(themedOcticon("sync", QColor("#58a6ff"), 14));
-            summary->setToolTip(QString::fromUtf8("Checks running \xC2\xB7 %1")
-                                    .arg(shortHash));
             break;
         default:
             summary->setIcon(QIcon());
-            summary->setToolTip(
-                QStringLiteral("Click to view the diff for %1").arg(shortHash));
             break;
         }
+        // The check state is part of the summary's hover box; rebuild it.
+        updateCommitRowHover(row);
     }
 }
 
@@ -1293,7 +1291,12 @@ void MainWindow::ensureActionStrip()
 {
     if (m_actionStrip || !m_repoActionsTab)
         return;
-    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
+    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
+    // stack now lives inside its own QScrollArea (688850a7), so its parent is
+    // that scroll's viewport. These bars float over the meta band just above the
+    // tab row, so they must be parented to the page — anchoring them to the
+    // viewport pushes them into the scrolled body, away from the tabs.
+    QWidget *page = m_repoDetailSection;
     if (!page)
         return;
     // Parented to the repo-detail page so the bars can float over the meta band
@@ -1488,7 +1491,12 @@ void MainWindow::positionRepoPushButton()
 {
     if (!m_repoPushButton || !m_repoCodeTab)
         return;
-    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
+    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
+    // stack now lives inside its own QScrollArea (688850a7), so its parent is
+    // that scroll's viewport. These bars float over the meta band just above the
+    // tab row, so they must be parented to the page — anchoring them to the
+    // viewport pushes them into the scrolled body, away from the tabs.
+    QWidget *page = m_repoDetailSection;
     if (!page)
         return;
     if (m_repoPushButton->parentWidget() != page)
@@ -1566,7 +1574,12 @@ void MainWindow::positionLooperToggle()
 {
     if (!m_looperToggle || !m_repoIssuesTab)
         return;
-    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
+    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
+    // stack now lives inside its own QScrollArea (688850a7), so its parent is
+    // that scroll's viewport. These bars float over the meta band just above the
+    // tab row, so they must be parented to the page — anchoring them to the
+    // viewport pushes them into the scrolled body, away from the tabs.
+    QWidget *page = m_repoDetailSection;
     if (!page)
         return;
     if (m_looperToggle->parentWidget() != page)
@@ -1608,7 +1621,12 @@ void MainWindow::positionMirrorActivityStrip()
     auto *strip = static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip);
     if (!strip || !m_repoMirrorsTab)
         return;
-    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
+    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
+    // stack now lives inside its own QScrollArea (688850a7), so its parent is
+    // that scroll's viewport. These bars float over the meta band just above the
+    // tab row, so they must be parented to the page — anchoring them to the
+    // viewport pushes them into the scrolled body, away from the tabs.
+    QWidget *page = m_repoDetailSection;
     if (!page)
         return;
     if (strip->parentWidget() != page)
@@ -1647,7 +1665,12 @@ void MainWindow::positionReleaseStrip()
 {
     if (!m_releaseStrip || !m_repoReleasesTab)
         return;
-    QWidget *page = m_repoDetailStack ? m_repoDetailStack->parentWidget() : nullptr;
+    // The repo-detail page itself, not m_repoDetailStack->parentWidget(): the
+    // stack now lives inside its own QScrollArea (688850a7), so its parent is
+    // that scroll's viewport. These bars float over the meta band just above the
+    // tab row, so they must be parented to the page — anchoring them to the
+    // viewport pushes them into the scrolled body, away from the tabs.
+    QWidget *page = m_repoDetailSection;
     if (!page)
         return;
     if (m_releaseStrip->parentWidget() != page)
@@ -2602,14 +2625,14 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionFixModelCombo->hide();
     fillAgentFixModelCombo(m_actionFixModelCombo,
                           m_actionFixAgentCombo->currentData().toString());
-    refreshClaudeModelCombo();
+    applyLiveClaudeModelsToCombos();
     connect(m_actionFixAgentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) {
                 if (m_actionFixAgentCombo && m_actionFixModelCombo) {
                     fillAgentFixModelCombo(
                         m_actionFixModelCombo,
                         m_actionFixAgentCombo->currentData().toString());
-                    refreshClaudeModelCombo();
+                    applyLiveClaudeModelsToCombos();
                 }
             });
 

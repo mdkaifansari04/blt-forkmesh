@@ -1,0 +1,47 @@
+{
+    "assignees": [
+    ],
+    "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+    "authorName": "newnewnode",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783197623567,
+    "events": [
+        {
+            "attachments": [
+                "541a5b95.png",
+                "e0ab979f.png"
+            ],
+            "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+            "authorName": "newnewnode",
+            "body": "",
+            "id": "open-382",
+            "sig": "Z6n2Zij--t166i7yPkLbkC8JAAO_6Ohp7q42m8FzRZw45of5qBQOd0o6byS-JRv1rP90iOVPh6aQ_vztN_ekBQ",
+            "title": "the top usage doesn't seem to be lining up this first image is actual  and this is what we show  please fix it",
+            "ts": 1783197623567,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "dad6d00d-ad52-4867-abc3-e1392c8bd2e3",
+            "sig": "Ee8uR6kSI1cRitHSQIuq5pWc0fRfri-hc6874uyF3jLmVqmDEQvwGqbPZGMCHZO2PmonhFIDM7Wi09vTF-4-Bw",
+            "status": "closed",
+            "ts": 1783738869681,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "bug"
+    ],
+    "milestone": "",
+    "number": 382,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "the top usage doesn't seem to be lining up this first image is actual  and this is what we show  please fix it",
+    "updatedAt": 1783738869681,
+    "votes": 0
+}

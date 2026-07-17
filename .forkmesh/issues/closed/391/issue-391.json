@@ -1,0 +1,102 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
+    "authorName": "mdkaifansari04",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783361912341,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM",
+            "authorName": "mdkaifansari04",
+            "body": "",
+            "id": "open-391",
+            "sig": "d4mIVWknIRn0xsGnccbBgHeu0c6F4wO-4NYwZtTTfxYjaaCVpAhArkviFYJbemqSWE7S0juIq6nfn4pEk63OAw",
+            "title": "BUG: after creating issue, there is redirect to the issue tab, which feels like very laggy, this needs to be fixed.",
+            "ts": 1783361912341,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "this is for the qt app please fix it there so it's instant ",
+            "id": "0f1cf4c4-0418-40e2-8d5e-4fdb774a1fd1",
+            "sig": "jhSJy0sejrj0o6YPMRL0twJ-RqZVOaVOtYeLpR28YqqN11CDK80U1NlOpgGmDAlcZ8PqF0e7Zv5NHBErDAhZCw",
+            "ts": 1783717049519,
+            "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 9,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "00209600-e606-41c7-9143-144c0f3a1268",
+            "sig": "RaXNBDSRERx7ZTWpqecs7yamg4pcuDlVfwek4otd2RIzZKK4WMRA4MO7nI4l9-awoOMoCdlkSakq-Z5n3h0FCA",
+            "ts": 1783717057933,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3a2dbd45-c471-4c1e-87bd-edc939c43a49",
+            "sig": "UlFcUdGiK5Enyu9rMMjJLUJFAhj09HMSiZiP2k1MOWdakk6nkhPDE8oc_nzNpuYLLDPTFQix4nVEytHQAfxjBA",
+            "ts": 1783717057996,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Closed by merged branch \"agent/issue-391-bug-after-creating-issue-there-is-redirect-to-th\".",
+            "id": "713c98c9-505e-4431-a615-2cd4796d6059",
+            "sig": "Hz1gnNQ9agM9j_Xs0BtZhmko0WOZKa-BhJs3cqHC1iocxXzI3pLsPrIl3NsC4hdB8u8pT2_yudMzrk0PleVoBQ",
+            "ts": 1783720055322,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "d76a468f-a894-49d3-9bd6-2d759cd43199",
+            "sig": "KkVj6ZyRaPcNvf4ZdP17qzDynBY3pKskTmgDp9OFjEmwRXSb4-47czLfmnAitg4jR2CgLkNXy-jjdUnfpgUjBQ",
+            "status": "closed",
+            "ts": 1783720055376,
+            "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "ba54bd42-0dba-463a-8f9c-9ee8a90f358f",
+            "sig": "XBrurWLMgVxjBXAu_de7u3OYxCWqyojzYyr0uo9ozYhRc4yeJH97D1Di4ky4hbGiAmrybjs-gijHgzkvzsYXCw",
+            "ts": 1783721095883,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 391,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "BUG: after creating issue, there is redirect to the issue tab, which feels like very laggy, this needs to be fixed.",
+    "updatedAt": 1783721095883,
+    "votes": 0
+}

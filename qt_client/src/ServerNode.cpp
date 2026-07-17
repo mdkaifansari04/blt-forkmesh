@@ -1,3 +1,5 @@
+#include "ForkMeshVersion.h"
+#include "ChatHistoryLimits.h"
 #include "ServerNode.h"
 #include "SystemStats.h"
 
@@ -23,6 +25,15 @@
 namespace {
 
 constexpr int kSeenCacheLimit = 4096;
+// Cap on the message-id -> conversation/sender maps used for edit/delete
+// lookups. Anything older than the newest few thousand messages can no longer
+// be edited or deleted through this node, which is fine — its history entry
+// has been evicted long before then (issue #428).
+constexpr int kMessageIndexLimit = 4096;
+// Peers unseen for this long are erased outright (not just hidden from the
+// roster like kPeerStaleMs does). Every transient visitor id otherwise leaves
+// a Peer entry — mirror adverts included — in m_peers forever (issue #428).
+constexpr qint64 kPeerReapMs = 3600000; // 1 hour
 const QString kKnownRosterGroup = QStringLiteral("mainnode/knownRoster");
 // Each connected node rebroadcasts a lightweight presence frame on this cadence
 // so peers keep its "last seen" fresh; a peer not heard from for longer than the
@@ -31,6 +42,16 @@ const QString kKnownRosterGroup = QStringLiteral("mainnode/knownRoster");
 // of leaving them shown as online indefinitely.
 constexpr int kPresenceIntervalMs = 60000;   // 60s broadcast
 constexpr qint64 kPeerStaleMs = 180000;       // 3 missed beats -> offline
+// Half-open-link watchdog (same guard RepoHost uses on the /host tunnel): if
+// nothing at all has arrived for this long while the link is believed up — not
+// even a pong for the 25s keepalive pings — the TCP socket is a zombie (NAT
+// timeout, silent relay drop). Writes into it still "succeed", so Qt may never
+// emit disconnected() and a headless node would sit "connected" with an empty
+// roster forever while the mesh shows it offline. Tear it down and reconnect.
+constexpr qint64 kStaleRxMs = 70000; // ~2.8x the 25s ping interval
+// A server that accepts TCP/TLS but never answers the WebSocket upgrade would
+// otherwise hang the node forever: the ping timer only starts after the 101.
+constexpr int kConnectTimeoutMs = 30000;
 constexpr qint64 kHelloAdvertiseMinIntervalMs = 30000;
 constexpr qint64 kHelloReplyMinIntervalMs = 120000;
 constexpr qint64 kStatusRepeatMinIntervalMs = 60000;
@@ -238,6 +259,7 @@ ServerNode::ServerNode(const QString &userName, const QString &nodeName,
                        const QUrl &serverUrl,
                        const QString &roomName,
                        const QString &solanaAddress,
+                       const QString &roomPassphrase,
                        QObject *parent)
     : ChatBackend(parent),
       m_userName(userName),
@@ -251,6 +273,14 @@ ServerNode::ServerNode(const QString &userName, const QString &nodeName,
       m_nodeId(stableOrRandomNodeId(stableNodeId)),
       m_crypto(m_roomName)
 {
+    // m_crypto was seeded with the legacy baked-in app key. When the relay's
+    // server-held shared key is available, re-key with it (via the passphrase
+    // constructor) so the room key is no longer a public constant. Empty keeps
+    // the fallback so chat still works if the key fetch hasn't completed yet
+    // (setRoomPassphrase() re-keys once it arrives).
+    if (!roomPassphrase.isEmpty())
+        m_crypto = RoomCrypto(m_roomName, roomPassphrase);
+
     const QByteArray material = m_url.toString().toUtf8() + '\n' +
                                 m_roomName.toUtf8();
     m_rosterStorageKey =
@@ -258,6 +288,7 @@ ServerNode::ServerNode(const QString &userName, const QString &nodeName,
                                 .toHex());
     m_endpoints = {m_url}; // default to the single URL; setEndpoints() adds failovers
     loadKnownPeers();
+    loadHiddenChannels();
 }
 
 void ServerNode::setEndpoints(const QList<QUrl> &endpoints)
@@ -311,7 +342,27 @@ bool ServerNode::start()
         m_pingTimer = new QTimer(this);
         m_pingTimer->setInterval(25000);
         connect(m_pingTimer, &QTimer::timeout, this, [this] {
-            m_pingSentMs = QDateTime::currentMSecsSinceEpoch();
+            // Zombie-link watchdog: if nothing has come back since before the
+            // previous ping went out — not even its pong — the socket is
+            // half-open and disconnected() may never fire on its own. Take the
+            // normal reconnect path instead of pinging into the void forever.
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            const qint64 lastAlive = qMax(m_lastRxMs, m_wsConnectedAtMs);
+            if (m_wsReady && lastAlive > 0 && now - lastAlive > kStaleRxMs) {
+                emit systemMessage(
+                    QString::fromUtf8("Mainnode link went stale (nothing "
+                                      "received for %1s); reconnecting\xE2\x80\xA6")
+                        .arg((now - lastAlive) / 1000));
+                if (m_socket) {
+                    m_socket->disconnect(this);
+                    m_socket->abort();
+                    m_socket->deleteLater();
+                    m_socket = nullptr;
+                }
+                handleLinkLost();
+                return;
+            }
+            m_pingSentMs = now;
             sendControlFrame(0x9);
         });
     }
@@ -323,6 +374,7 @@ bool ServerNode::start()
         m_presenceTimer->setInterval(kPresenceIntervalMs);
         connect(m_presenceTimer, &QTimer::timeout, this, [this] {
             sendPresence();
+            reapStalePeers();
             updateRosterAndStatus(); // re-evaluate staleness even with no traffic
         });
     }
@@ -359,6 +411,31 @@ void ServerNode::openConnection()
         return;
     }
 
+    // Bound the whole connect + TLS + WebSocket-upgrade sequence. A server
+    // that accepts the TCP connection but never answers the upgrade leaves no
+    // timer running (ping/presence only start after the 101), so without this
+    // the node would hang in "Connecting…" forever.
+    if (!m_connectTimeoutTimer) {
+        m_connectTimeoutTimer = new QTimer(this);
+        m_connectTimeoutTimer->setSingleShot(true);
+        connect(m_connectTimeoutTimer, &QTimer::timeout, this, [this] {
+            if (m_wsReady || m_userStopped)
+                return;
+            emit systemMessage(
+                QString::fromUtf8("Mainnode connect to %1 timed out; "
+                                  "retrying\xE2\x80\xA6")
+                    .arg(m_url.host()));
+            if (m_socket) {
+                m_socket->disconnect(this);
+                m_socket->abort();
+                m_socket->deleteLater();
+                m_socket = nullptr;
+            }
+            scheduleReconnect();
+        });
+    }
+    m_connectTimeoutTimer->start(kConnectTimeoutMs);
+
     m_socket = m_url.scheme() == "wss" ? new QSslSocket(this) : new QTcpSocket(this);
     connectSocketSignals();
     const int port = m_url.port(m_url.scheme() == "wss" ? 443 : 80);
@@ -370,6 +447,11 @@ void ServerNode::openConnection()
 
 void ServerNode::scheduleReconnect()
 {
+    // The connect timeout only polices the attempt in flight; while we're
+    // waiting out the backoff there is nothing for it to abort, and letting it
+    // fire mid-wait would log a spurious "timed out". openConnection re-arms it.
+    if (m_connectTimeoutTimer)
+        m_connectTimeoutTimer->stop();
     if (m_userStopped)
         return; // the user left the node; don't keep retrying
     if (m_reconnectTimer && m_reconnectTimer->isActive())
@@ -430,27 +512,36 @@ void ServerNode::connectSocketSignals()
     });
     if (auto *ssl = qobject_cast<QSslSocket *>(m_socket))
         connect(ssl, &QSslSocket::encrypted, this, &ServerNode::onConnectedTransport);
-    connect(m_socket, &QTcpSocket::disconnected, this, [this] {
-        if (m_pingTimer)
-            m_pingTimer->stop();
-        if (m_presenceTimer)
-            m_presenceTimer->stop();
-        if (m_helloAdvertiseTimer)
-            m_helloAdvertiseTimer->stop();
-        m_wsReady = false;
-        m_wsConnectedAtMs = 0;
-        m_peers.clear();
-        m_lastHelloReplyMs.clear();
-        emit networkDiagnosticsChanged();
-        updateRosterAndStatus();
-        scheduleReconnect();
-    });
+    connect(m_socket, &QTcpSocket::disconnected, this,
+            &ServerNode::handleLinkLost);
     connect(m_socket, &QTcpSocket::errorOccurred, this, [this] {
         emit systemMessage("Mainnode socket error: " + m_socket->errorString());
         // A connect failure may not emit disconnected, so retry from here too.
         if (!m_wsReady)
             scheduleReconnect();
     });
+}
+
+void ServerNode::handleLinkLost()
+{
+    // Shared teardown for a socket drop, whichever way it was noticed: the
+    // disconnected() signal, or the ping timer's stale-rx watchdog (a
+    // half-open socket never emits disconnected on its own).
+    if (m_pingTimer)
+        m_pingTimer->stop();
+    if (m_presenceTimer)
+        m_presenceTimer->stop();
+    if (m_helloAdvertiseTimer)
+        m_helloAdvertiseTimer->stop();
+    if (m_connectTimeoutTimer)
+        m_connectTimeoutTimer->stop();
+    m_wsReady = false;
+    m_wsConnectedAtMs = 0;
+    m_peers.clear();
+    m_lastHelloReplyMs.clear();
+    emit networkDiagnosticsChanged();
+    updateRosterAndStatus();
+    scheduleReconnect();
 }
 
 void ServerNode::onConnectedTransport()
@@ -507,6 +598,8 @@ void ServerNode::onSocketReadyRead()
         m_wsReady = true;
         m_wsConnectedAtMs = QDateTime::currentMSecsSinceEpoch();
         m_reconnectAttempts = 0; // link is healthy again; retry fast next drop
+        if (m_connectTimeoutTimer)
+            m_connectTimeoutTimer->stop();
         if (m_pingTimer)
             m_pingTimer->start();
         if (m_presenceTimer)
@@ -910,15 +1003,37 @@ void ServerNode::setMirroredRepos(const QList<MirrorAdvert> &repos)
         sendHello(); // re-advertise so peers see the updated mirror set
 }
 
-void ServerNode::notifyMirrorUpdated(const QString &ownerName)
+void ServerNode::notifyMirrorUpdated(const QString &ownerName,
+                                     const QString &commit)
 {
     if (ownerName.trimmed().isEmpty() || !m_wsReady)
         return;
     QJsonObject message = makeMessage("mirror-update");
     message.insert("repo", ownerName.trimmed().left(160));
+    // Carry the new HEAD so peers see exactly which commit is different and can
+    // confirm when their fetch reaches it, without a separate advert round trip.
+    if (!commit.trimmed().isEmpty())
+        message.insert("commit", commit.trimmed().left(64));
     // Pre-mark our own id so the relay's echo back to us isn't surfaced as a
     // self-notification. This is an ephemeral frame (not in kDurableTypes), so
     // the relay won't retain or replay it.
+    markSeen(message.value("id").toString());
+    sendEncrypted(message, false);
+}
+
+void ServerNode::notifyMirrorSynced(const QString &ownerName,
+                                    const QString &commit)
+{
+    if (ownerName.trimmed().isEmpty() || !m_wsReady)
+        return;
+    // The closing half of the round trip: after pulling a mirror-update signal
+    // forward, announce that this node's mirror now holds `commit`, so the
+    // source and other peers learn it converged the instant the fetch lands
+    // rather than at the next advert/auto-sync tick. Ephemeral, like the update.
+    QJsonObject message = makeMessage("mirror-synced");
+    message.insert("repo", ownerName.trimmed().left(160));
+    if (!commit.trimmed().isEmpty())
+        message.insert("commit", commit.trimmed().left(64));
     markSeen(message.value("id").toString());
     sendEncrypted(message, false);
 }
@@ -969,6 +1084,25 @@ void ServerNode::notifyCoveOpened(const QString &creatorKey, const QString &cove
     sendEncrypted(message, false);
 }
 
+void ServerNode::notifyCoveInvited(const QString &inviteeAccount, const QString &coveId,
+                                   const QString &coveName, const QString &inviterName,
+                                   qint64 ts)
+{
+    if (inviteeAccount.trimmed().isEmpty() || !m_wsReady)
+        return;
+    QJsonObject message = makeMessage("cove-invite");
+    message.insert("invitee", inviteeAccount.left(120));
+    message.insert("coveId", coveId.left(80));
+    message.insert("coveName", coveName.left(160));
+    message.insert("inviterName", inviterName.left(80));
+    message.insert("coveTs", double(ts));
+    // Ephemeral frame (not in kDurableTypes): if the invitee is offline they'll
+    // still see the cove next time they list the repo's coves, so this is a
+    // best-effort live nudge, not the source of truth for the invite.
+    markSeen(message.value("id").toString());
+    sendEncrypted(message, false);
+}
+
 void ServerNode::sendChat(const QString &channel, const QString &text)
 {
     if (text.trimmed().isEmpty())
@@ -987,6 +1121,20 @@ void ServerNode::sendChat(const QString &channel, const QString &text)
 void ServerNode::setAccountKind(const QString &kind)
 {
     m_accountKind = kind.trimmed().left(16);
+}
+
+void ServerNode::setRoomPassphrase(const QString &passphrase)
+{
+    // The passphrase fetch is async and races the initial connect (it's kicked
+    // off from the first heartbeat, which only fires once start() has already
+    // returned), so this backend is commonly still on the constructor's
+    // fallback key by the time the real one shows up. Re-key so this session
+    // matches the server-derived key every other client (web included) uses —
+    // without this, Qt and web would encrypt with different keys and silently
+    // fail to decrypt each other's messages.
+    if (passphrase.isEmpty())
+        return;
+    m_crypto = RoomCrypto(m_roomName, passphrase);
 }
 
 void ServerNode::sendBotChat(const QString &channel, const QString &text)
@@ -1177,6 +1325,31 @@ void ServerNode::sendTyping(const QString &conversation, bool active)
     sendEncrypted(message, false);
 }
 
+QString ServerNode::hiddenChannelsSettingKey() const
+{
+    // Scope the deleted-rooms list to this room/relay so different networks
+    // don't share hidden state.
+    return QStringLiteral("chat/hiddenChannels/") + m_rosterStorageKey;
+}
+
+void ServerNode::loadHiddenChannels()
+{
+    const QStringList hidden =
+        QSettings().value(hiddenChannelsSettingKey()).toStringList();
+    m_hiddenChannels = QSet<QString>(hidden.begin(), hidden.end());
+    // Drop any hidden room the default channel list seeded, so a room deleted in
+    // a previous run doesn't come back on the next launch.
+    for (const QString &name : hidden)
+        m_channels.removeAll(name);
+}
+
+void ServerNode::saveHiddenChannels()
+{
+    QSettings().setValue(hiddenChannelsSettingKey(),
+                         QStringList(m_hiddenChannels.begin(),
+                                     m_hiddenChannels.end()));
+}
+
 void ServerNode::addChannel(const QString &channel)
 {
     QString name = channel.trimmed();
@@ -1184,6 +1357,10 @@ void ServerNode::addChannel(const QString &channel)
         return;
     if (!name.startsWith('#'))
         name.prepend('#');
+    // A room the user deleted stays deleted, even if something tries to re-add
+    // it (default-channel seeding, a peer hello, etc.).
+    if (m_hiddenChannels.contains(name))
+        return;
     if (!m_channels.contains(name)) {
         m_channels.append(name);
         emit channelsChanged(m_channels);
@@ -1194,6 +1371,22 @@ void ServerNode::addChannel(const QString &channel)
     sendEncrypted(message, true);
 }
 
+void ServerNode::removeChannel(const QString &channel)
+{
+    QString name = channel.trimmed();
+    if (name.isEmpty())
+        return;
+    if (!name.startsWith('#'))
+        name.prepend('#');
+    m_hiddenChannels.insert(name);
+    saveHiddenChannels();
+    m_privateChannels.remove(name);
+    if (m_channels.removeAll(name) > 0)
+        emit channelsChanged(m_channels);
+    // Purge any retained history so a re-add can't replay old messages.
+    m_channelHistory.remove(name);
+}
+
 void ServerNode::createPrivateChannel(const QString &channel)
 {
     QString name = channel.trimmed();
@@ -1201,6 +1394,9 @@ void ServerNode::createPrivateChannel(const QString &channel)
         return;
     if (!name.startsWith('#'))
         name.prepend('#');
+    // Creating a room by this name is an explicit re-add: clear any prior delete.
+    if (m_hiddenChannels.remove(name))
+        saveHiddenChannels();
     m_privateChannels.insert(name);
     if (!m_channels.contains(name)) {
         m_channels.append(name);
@@ -1241,6 +1437,8 @@ void ServerNode::shutdown()
         m_pingTimer->stop();
     if (m_presenceTimer)
         m_presenceTimer->stop();
+    if (m_connectTimeoutTimer)
+        m_connectTimeoutTimer->stop();
     QJsonObject bye = makeMessage("bye");
     sendEncrypted(bye, true);
     if (m_socket) {
@@ -1266,12 +1464,13 @@ void ServerNode::handlePlain(const QJsonObject &message)
     const QString sender = message.value("sender").toString();
     const QString nodeName = boundedText(message, "nodeName", kMaxDisplayNameChars);
     const QString ownerUser = boundedText(message, "ownerUser", kMaxDisplayNameChars);
+    const QString accountKind = message.value("accountKind").toString().left(16);
     const QString solanaAddress = boundedText(message, "solana", kMaxSolanaAddressChars);
     const QString platform = message.value("platform").toString().left(16);
     const QString version = boundedText(message, "version", kMaxVersionChars);
     if (!senderId.isEmpty())
-        rememberPeer(senderId, sender, nodeName, ownerUser, solanaAddress, platform,
-                     version);
+        rememberPeer(senderId, sender, nodeName, ownerUser, accountKind,
+                     solanaAddress, platform, version);
 
     // Host resource telemetry (CPU/RAM/disk) the sender advertised; refresh the
     // peer's cached figures so the Mirror nodes view's bars track live load.
@@ -1296,7 +1495,8 @@ void ServerNode::handlePlain(const QJsonObject &message)
         bool changed = false;
         for (const auto &value : message.value("channels").toArray()) {
             const QString channel = value.toString();
-            if (!channel.isEmpty() && !m_channels.contains(channel)) {
+            if (!channel.isEmpty() && !m_channels.contains(channel) &&
+                !m_hiddenChannels.contains(channel)) {
                 m_channels.append(channel);
                 changed = true;
             }
@@ -1343,6 +1543,9 @@ void ServerNode::handlePlain(const QJsonObject &message)
         // the same honour-model as a direct message addressed to someone else.
         if (message.value("private").toBool() && !m_channels.contains(channel))
             return;
+        // A message in a room the user deleted stays out — don't resurrect it.
+        if (m_hiddenChannels.contains(channel))
+            return;
         if (!m_channels.contains(channel))
             m_channels.append(channel);
         storeHistory(message);
@@ -1355,6 +1558,8 @@ void ServerNode::handlePlain(const QJsonObject &message)
             if (!channel.isEmpty()) {
                 if (!channel.startsWith('#'))
                     channel.prepend('#');
+                if (m_hiddenChannels.contains(channel))
+                    return; // stay out of a room we deleted
                 m_privateChannels.insert(channel);
                 if (!m_channels.contains(channel)) {
                     m_channels.append(channel);
@@ -1371,14 +1576,20 @@ void ServerNode::handlePlain(const QJsonObject &message)
             emitDm(message, senderId);
     } else if (type == "channel") {
         const QString name = message.value("name").toString();
-        if (!m_channels.contains(name)) {
+        if (!m_channels.contains(name) && !m_hiddenChannels.contains(name)) {
             m_channels.append(name);
             emit channelsChanged(m_channels);
         }
     } else if (type == "mirror-update") {
         const QString repo = message.value("repo").toString().left(160);
         if (!repo.isEmpty())
-            emit mirrorUpdated(repo, sender);
+            emit mirrorUpdated(repo, sender,
+                               message.value("commit").toString().left(64));
+    } else if (type == "mirror-synced") {
+        const QString repo = message.value("repo").toString().left(160);
+        if (!repo.isEmpty())
+            emit mirrorSynced(repo, sender,
+                              message.value("commit").toString().left(64));
     } else if (type == "mirror-refresh") {
         if (!message.value("to").toString().isEmpty() &&
             message.value("to").toString() != m_nodeId)
@@ -1408,15 +1619,27 @@ void ServerNode::handlePlain(const QJsonObject &message)
                             message.value("openerName").toString().left(80),
                             qint64(message.value("coveTs").toDouble()),
                             message.value("sig").toString().left(200));
+    } else if (type == "cove-invite") {
+        const QString invitee = message.value("invitee").toString().left(120);
+        if (!invitee.isEmpty())
+            emit coveInvited(invitee, message.value("coveId").toString().left(80),
+                             message.value("coveName").toString().left(160),
+                             message.value("inviterName").toString().left(80),
+                             qint64(message.value("coveTs").toDouble()));
     } else if (type == "reaction") {
         const QString target = message.value("target").toString();
         const QString emoji = message.value("emoji").toString();
         const QString reactorId = message.value("reactorId").toString();
         const QString reactorName = message.value("reactorName").toString();
-        if (message.value("added").toBool())
-            m_reactions[target][emoji].insert(reactorId, reactorName);
-        else
-            m_reactions[target][emoji].remove(reactorId);
+        // Only track reactions for messages we actually hold (everything the
+        // UI shows is indexed via emitChat/emitDm); a frame targeting an
+        // arbitrary unknown id must not grow m_reactions without bound.
+        if (m_messageConversation.contains(target)) {
+            if (message.value("added").toBool())
+                m_reactions[target][emoji].insert(reactorId, reactorName);
+            else
+                m_reactions[target][emoji].remove(reactorId);
+        }
         emit reactionChanged(message.value("conversation").toString(), target,
                              emoji, reactorName, message.value("added").toBool());
     } else if (type == "edit") {
@@ -1527,8 +1750,7 @@ void ServerNode::emitChat(const QJsonObject &message)
     out.self = out.senderId == m_nodeId;
     out.edited = message.value("edited").toBool();
     out.deleted = message.value("deleted").toBool();
-    m_messageConversation.insert(out.id, out.conversation);
-    m_messageSender.insert(out.id, out.senderId);
+    indexMessage(out.id, out.conversation, out.senderId);
     emit messageArrived(out);
 }
 
@@ -1550,13 +1772,13 @@ void ServerNode::emitDm(const QJsonObject &message, const QString &conversationP
     out.self = out.senderId == m_nodeId;
     out.edited = message.value("edited").toBool();
     out.deleted = message.value("deleted").toBool();
-    m_messageConversation.insert(out.id, out.conversation);
-    m_messageSender.insert(out.id, out.senderId);
+    indexMessage(out.id, out.conversation, out.senderId);
     emit messageArrived(out);
 }
 
 void ServerNode::rememberPeer(const QString &peerId, const QString &name,
                               const QString &nodeName, const QString &ownerUser,
+                              const QString &accountKind,
                               const QString &solanaAddress,
                               const QString &platform,
                               const QString &version, bool online)
@@ -1569,6 +1791,8 @@ void ServerNode::rememberPeer(const QString &peerId, const QString &name,
         peer.nodeName = nodeName.trimmed().left(kMaxDisplayNameChars);
     if (!ownerUser.trimmed().isEmpty())
         peer.ownerUser = ownerUser.trimmed().left(kMaxDisplayNameChars);
+    if (!accountKind.trimmed().isEmpty())
+        peer.accountKind = accountKind.trimmed().left(16);
     if (!solanaAddress.trimmed().isEmpty())
         peer.solanaAddress = solanaAddress.trimmed().left(kMaxSolanaAddressChars);
     if (!platform.isEmpty())
@@ -1606,6 +1830,7 @@ void ServerNode::flushRosterAndStatus()
     self.name = m_userName;
     self.nodeName = m_nodeName.isEmpty() ? m_userName : m_nodeName;
     self.ownerUser = m_ownerUser;
+    self.accountKind = m_accountKind;
     self.self = true;
     self.online = m_wsReady;
     self.solanaAddress = m_solanaAddress;
@@ -1633,6 +1858,7 @@ void ServerNode::flushRosterAndStatus()
         member.name = it->name;
         member.nodeName = it->nodeName;
         member.ownerUser = it->ownerUser;
+        member.accountKind = it->accountKind;
         member.note = QString();
         member.online = it->online;
         member.solanaAddress = it->solanaAddress;
@@ -1674,8 +1900,48 @@ void ServerNode::persistKnownPeers() const
 void ServerNode::storeHistory(const QJsonObject &message)
 {
     const QString channel = message.value("channel").toString();
-    if (!channel.isEmpty())
-        m_channelHistory[channel].append(message);
+    if (channel.isEmpty())
+        return;
+    const QStringList evicted =
+        ChatHistoryLimits::appendBounded(m_channelHistory[channel], message);
+    for (const QString &id : evicted)
+        dropMessageIndex(id);
+}
+
+void ServerNode::indexMessage(const QString &id, const QString &conversation,
+                              const QString &senderId)
+{
+    if (id.isEmpty())
+        return;
+    if (!m_messageConversation.contains(id))
+        m_messageIndexOrder.enqueue(id);
+    m_messageConversation.insert(id, conversation);
+    m_messageSender.insert(id, senderId);
+    // Ids already dropped by history eviction linger in the queue until they
+    // reach the front; dropping them again is a no-op, and the maps can never
+    // outgrow the queue, so the cap still holds.
+    while (m_messageIndexOrder.size() > kMessageIndexLimit)
+        dropMessageIndex(m_messageIndexOrder.dequeue());
+}
+
+void ServerNode::dropMessageIndex(const QString &id)
+{
+    m_messageConversation.remove(id);
+    m_messageSender.remove(id);
+    m_reactions.remove(id);
+}
+
+void ServerNode::reapStalePeers()
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (auto it = m_peers.begin(); it != m_peers.end();) {
+        if (now - it->lastSeenMs > kPeerReapMs) {
+            m_lastHelloReplyMs.remove(it.key());
+            it = m_peers.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 bool ServerNode::messageIsAuthoredBy(const QString &messageId, const QString &senderId) const

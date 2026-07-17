@@ -6,14 +6,17 @@
 #include "DiscussionStore.h"
 #include "ForkMeshIdentity.h"
 #include "IssueStore.h"
+#include "ProjectStore.h"
 #include "PullStore.h"
 #include "CoveStore.h"
 #include "ActionStore.h"
 #include "ActionFile.h"
+#include "AccountCapability.h"
 #include "AgentStore.h"
 #include "AgentRunner.h"
 #include "ClaudeSessionScan.h"
 #include "RepoSecurity.h"
+#include "RepoContributionSnapshot.h"
 
 struct CommitComment; // CommitCommentStore.h
 
@@ -64,9 +67,12 @@ struct AgentDiffStat {
 
 class MessageRow;
 class MarkdownEditor;
+class PullBadgeWidget;
+class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
 class ClaudeStreamSession;
+class CodexAppServerSession;
 class StallWatchdog;
 class ClaudeTranscriptView;
 class RepoHost;
@@ -79,6 +85,7 @@ class QTextEdit;
 class QCheckBox;
 class QComboBox;
 class QCompleter;
+class QDateEdit;
 class QStringListModel;
 class QGraphicsOpacityEffect;
 class QFrame;
@@ -233,6 +240,13 @@ public:
     void testSetNodeAlertGraceUntilMs(qint64 value) { m_nodeAlertGraceUntilMs = value; }
     QStringList testNetworkLog() const { return m_networkLog; }
     void testResetNetworkLog();
+    void testLogSystem(const QString &text) { logSystem(text); }
+    // Drives the network log's segmented-render + scroll-to-top-loads-more path
+    // (adhoc #15) without needing real scroll-wheel input.
+    void testShowLogSection() { showSection(4); }
+    void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
+    QTextBrowser *testNetworkLogView() const { return m_settingsLog; }
+    void testScrollNetworkLogToTop() { onNetworkLogScrolled(0); }
     QStringList testQuickUpdatePullArguments(const QString &clientDir) const;
     // Issue #214: the ordered "Build & preview" command pipeline — checkout into a
     // throwaway worktree, CMake configure, build — as "<program> <args…>" lines.
@@ -243,13 +257,24 @@ public:
                                          const QString &commit,
                                          bool haveWorktree) const;
     void testSetSetupInputs(const QString &name, const QString &solana);
-    void testSetAccountFlowResult(bool result)
+    void testSetAccountFlowResult(bool result, bool desktopCapable = true)
     {
         m_testUseAccountFlowResult = true;
         m_testAccountFlowResult = result;
+        m_testAccountFlowDesktopCapable = desktopCapable;
         m_testEnsureNodeAccountCalls = 0;
     }
-    void testEnableSessionStartBypass(bool value) { m_testBypassServerStart = value; }
+    void testEnableSessionStartBypass(bool value)
+    {
+        m_testBypassServerStart = value;
+        if (value) {
+            // Keep test windows on the state selected explicitly by the test.
+            m_pendingSilentAuth = false;
+            m_pendingRestoreRepoIndex = -1;
+            m_deferredStartupRun = true;
+        }
+    }
+    void testRunDeferredStartupNow() { runDeferredStartup(); }
     void testStartSession() { startSession(); }
     void testEnablePaidMirroring() { enablePaidMirroring(); }
     int testAccountFlowCalls() const { return m_testEnsureNodeAccountCalls; }
@@ -259,6 +284,10 @@ public:
     QString testSavedSolanaAddress() const;
     bool testAccountAuthenticated() const { return m_accountAuthenticated; }
     QString testAccountTier() const { return m_accountTier; }
+    bool testHasOwnerSigningCapability() const
+    {
+        return hasOwnerSigningCapability(m_accountName);
+    }
     // Verifies makeColumnsResizable(): once rows arrive, every auto-sized column
     // (ResizeToContents and the Stretch flex column) flips to draggable
     // Interactive keeping its current width, while Fixed columns are left alone.
@@ -287,6 +316,17 @@ public:
                                                const QString &website)
     {
         return saveRepoAboutMetadata(about, website, nullptr);
+    }
+    // Drive provisionNewRepository() without its dialog: returns the new repo
+    // index (>= 0) or -1 on failure.
+    Q_INVOKABLE int testProvisionNewRepository(const QString &dest,
+                                               const QString &name,
+                                               const QString &description,
+                                               const QString &firstPrompt,
+                                               bool addReadme)
+    {
+        return provisionNewRepository(dest, name, description, firstPrompt,
+                                      addReadme, nullptr);
     }
     int testAddPublishedRepository(const QString &owner, const QString &name,
                                    const QString &mirrorPath);
@@ -352,6 +392,7 @@ public:
     // Ahead/behind cell text (column 3) for the worktree row on `branch`, so a
     // test can prove the list shows how far each worktree diverges from main.
     QString testWorktreeAheadBehindText(const QString &branch) const;
+    QStringList testWorktreeBranches() const;
     // Focus the worktrees table and deliver an Up/Down key press, returning the
     // branch that ends up selected so a test can prove keyboard arrow keys move
     // the selection (and drive the detail pane) like a click does.
@@ -360,6 +401,7 @@ public:
     // test can prove the tab switch hands keyboard focus to that tab's list.
     int testWorktreesTabIndex() const { return m_worktreesTabIndex; }
     void testClickRepoDetailTab(int id);
+    bool testOpenMostRecentCommit();
     // Activation-independent: is the worktrees table the focus widget of its
     // window? (hasFocus() also requires the window to be active, which an
     // offscreen test window isn't.)
@@ -442,6 +484,10 @@ public:
     // streams to the terminal via the [restart +Nms] log lines.
     void headlessUpdateRestart();
     QStringList headlessStatusLines() const;
+    // `claude-auth status|export [path]|import <path>` from the headless console:
+    // move this owner's Claude Code login (and configured Claude API key) onto a
+    // host so it can service "start an agent" requests. Returns output lines.
+    QStringList headlessClaudeAuth(const QStringList &args);
     QStringList headlessRosterLines() const;
     QStringList headlessRepoLines() const;
     QStringList headlessMirrorLines() const;
@@ -484,6 +530,7 @@ protected:
 private:
     static constexpr int kNetworkReposSectionIndex = 11;
     static constexpr int kNetworkDiagnosticsSectionIndex = 12;
+    static constexpr int kNodesSectionIndex = 13; // "Nodes" directory (adhoc #9)
 
     // Setup page
     QWidget *buildSetupPage();
@@ -538,6 +585,10 @@ private:
     QJsonArray fetchCatalogRepos();
     int fetchNodesOnline();
     bool hasActiveAccountSession() const;
+    bool hasOwnerSigningCapability(
+        const QString &signerAccount = QString()) const;
+    void setDesktopCapability(const QString &accountName, bool capable);
+    bool restoreDesktopCapability(const QString &accountName);
     void mirrorCatalogRepo(const QString &owner, const QString &name,
                            const QString &cloneUrl, bool isPrivate = false);
     // Hosted git URL (https://<mainnode>/<owner>/<name>) for a catalog repo,
@@ -592,6 +643,10 @@ private:
     // Admin: poll for newly-joined users and verify their email by hand (until a
     // real email service is wired up). Only active for accounts in ADMIN_NODES.
     void pollPendingUsers();
+    // Fetch the shared room-chat key (server-derived from DATA_KEY) so it is no
+    // longer a public constant baked into the client. Cached in m_roomPassphrase
+    // and passed to ServerNode; empty falls back to the legacy app key.
+    void fetchRoomPassphrase();
     void showAdminVerifyDialog();
     bool adminVerifyEmail(const QString &target);
     void verifyWallet();
@@ -617,9 +672,19 @@ private:
     void updateRebuildRestart();
     // Settings → "Automatically update ForkMesh": periodic, quiet check for a new
     // tagged release on the update remote (ordinary commits on main don't count).
-    // Only ever triggers updateRebuildRestart() when one is actually found, and
-    // never while an agent is running.
+    // Only ever triggers an update when one is actually found, and never while
+    // an agent is running. Prefers the release's prebuilt artifact
+    // (tryPrebuiltAutoUpdate); updateRebuildRestart() is the source fallback.
     void maybeAutoUpdate();
+    // Install the new release from its sha256-verified prebuilt artifact
+    // (local mirror CAS first, else the relay's content-addressed blob route)
+    // instead of rebuilding from source next to the live node. Returns false
+    // when the tag has no artifact matching this OS/arch — caller falls back
+    // to the source rebuild.
+    bool tryPrebuiltAutoUpdate(const QString &clientDir, const QString &tag,
+                               const QString &tagCommit);
+    void installPrebuiltAndRelaunch(const QString &artifactPath,
+                                    const QString &tag);
     QString resolveInstallCloneUrl();
     void buildAndRelaunch(const QString &clientDir, const QString &asUser = QString(),
                           const QString &relaunchPath = QString(),
@@ -742,10 +807,10 @@ private:
     // Signed catalog-list URL (adds our viewer token so the relay also returns our
     // own private repos). Shared by fetchCatalogRepos() and refreshRepoPinBanner().
     QUrl catalogListUrl();
-    // Show/hide the "clones are being rejected" warning on the owner's node when the
-    // relay's pinned stateHash no longer matches the refs this node serves. The
-    // warning surfaces as the top-bar notification toast (with Reset / Why links),
-    // not an in-page banner.
+    // Detect when the relay's pinned stateHash no longer matches the refs the open
+    // repo's owner node actually serves ("clones are being rejected"). Rather than
+    // an intrusive top-bar toast, this just flags m_repoPinMismatch, which paints
+    // the self row/dot in the Mirror nodes panel as a caution triangle (adhoc #65).
     void refreshRepoPinBanner();
     // Periodic auto-heal: for EVERY repo this node is the source of truth for (not
     // just the open one), re-attest the relay's integrity pin when the refs we
@@ -756,16 +821,8 @@ private:
     // publish), and when the source is offline it simply never runs, so the pin
     // freezes and keeps protecting clones against a tampered mirror as before.
     void reattestStalePins();
-    // Show the integrity-pin warning in the top-bar toast, persistent (like an error
-    // toast) with clickable "Reset integrity pin" and "Why?" links.
-    void showPinWarning();
-    // Clear the top-bar toast only if it is currently the integrity-pin warning, so
-    // an unrelated toast isn't clobbered when the pin becomes healthy again.
-    void dismissPinWarning();
     // Re-attest the open repo's current refs, overwriting a stale relay pin.
     void resetRepoPin();
-    // Dialog explaining what the integrity pin is and why a reset is needed.
-    void showPinExplanation();
     // True when the open repo's branch tracks the ForkMesh relay (which serves
     // clone/fetch only, no git-receive-pack). Such repos publish by syncing the
     // served mirror from the local copy, not by a git push to the relay.
@@ -774,6 +831,15 @@ private:
     void showChatView();           // open the chat view from the top-bar button
     void updateChatButton();       // refresh the top-bar chat unread indicator
     bool isChatViewVisible() const; // chat tab open + window active (i.e. being read)
+    // Clears the unread marker for the open conversation whenever it becomes
+    // actually visible (chat section shown, or window regains focus while
+    // already on it) — called from showSection() and changeEvent().
+    void clearActiveConversationUnread();
+    // Show/hide the in-transcript unread banner and update its count text.
+    void updateChatUnreadBanner();
+    // Mark every conversation read at once (from the unread banner's arrow) and
+    // jump the current transcript to the newest messages.
+    void markAllChatRead();
     void updateConnectionStatus(); // top-right "● Connected · N nodes online"
     // Take this node online / offline from the top-bar toggle. Offline stops the
     // reward heartbeat and live repo serving (so the node stops collecting
@@ -893,9 +959,14 @@ private:
     // — used to chain installs when running against every saved host.
     // reinstall passes FORKMESH_REINSTALL=1 to the hosted installer so it wipes
     // the host's existing install + data before installing fresh (adhoc #258).
+    // fromSource passes FORKMESH_FROM_SOURCE=1 FORKMESH_RESTART=1 to the hosted
+    // installer so it clones/pulls the latest source, rebuilds the client and
+    // stops+relaunches the daemon — an update straight from source without
+    // waiting for a published release (adhoc). A source build never uploads this
+    // app's binary, so fromSource forces the direct-upload path off.
     void runHostInstall(bool forceUploadBinary = false,
                         std::function<void(bool)> onFinished = {},
-                        bool reinstall = false);
+                        bool reinstall = false, bool fromSource = false);
     // SSH into a saved host and run the hosted uninstaller (uninstall.sh),
     // which removes the ForkMesh binary, launcher and ALL of that host's data.
     void runHostUninstall();
@@ -903,18 +974,53 @@ private:
     void viewHostLogsForSelection(int row);
     void runHostLogSession(const QString &ip, const QString &user,
                           const QString &pass, const QString &node);
-    // Direct-upload install (adhoc #257) against every saved host, one at a
-    // time: loads each row into the form and runs runHostInstall(true, ...),
-    // chaining to the next host once the previous one finishes.
+    // Fleet-wide deploys (adhoc): each runs against EVERY saved host in
+    // parallel, streaming into its own pane of the split live-output grid — a
+    // direct-upload binary install (#257), an uninstall+reinstall (#258), or an
+    // update straight from source. Thin wrappers over runHostDeployAllParallel.
     void runHostInstallAllFromBinary();
-    void installNextHostFromBinary(QList<int> remainingRows);
-    // Uninstall + reinstall from binary (adhoc #258) against every saved host,
-    // one at a time: each host wipes its existing install + data and then
-    // installs a fresh copy from this app's binary, re-minting a link code so it
-    // re-attaches to this account.
     void runHostReinstallAllFromBinary();
-    void reinstallNextHostFromBinary(QList<int> remainingRows);
+    void runHostUpdateAllFromSource();
     void appendHostInstallLog(const QString &text);
+    // Parallel fleet deploy (adhoc): deploy against EVERY saved host at once,
+    // each host streaming into its own pane of a split live-output grid, so the
+    // whole fleet updates simultaneously and its live output is visible side by
+    // side. mode selects install-from-binary, uninstall+reinstall or
+    // update-from-source; the runHost*All* drivers above are thin wrappers that
+    // confirm and then call this.
+    enum class FleetDeployMode { InstallBinary, Reinstall, UpdateSource };
+    // One host's slice of a parallel fleet deploy: its own SSH process, output
+    // pane and its own copy of the ANSI-render + link-detect state that the
+    // single-log path keeps in the m_hostInstall* members.
+    struct HostDeploySession {
+        QString node;
+        QString ip;
+        QString user;
+        QString pass;
+        QProcess *proc = nullptr;
+        QPlainTextEdit *log = nullptr;
+        QLabel *header = nullptr;
+        QString ansiCarry;
+        int ansiFg = -1;
+        bool ansiBold = false;
+        QString linkTail;
+        bool linkPrompted = false;
+        bool finished = false;
+    };
+    void runHostDeployAllParallel(FleetDeployMode mode);
+    void startHostDeploySession(HostDeploySession *session, bool uploadBinary,
+                                bool reinstall, bool fromSource);
+    void appendHostDeployLog(HostDeploySession *session, const QString &text);
+    void onHostDeploySessionFinished(HostDeploySession *session, bool ok);
+    // Shared SSH command builder used by both the single-host runHostInstall and
+    // the parallel fleet path. Fills sshArgs/remoteCmd (and, for a binary upload,
+    // the bytes to stream on stdin); returns false with a message in *errorOut on
+    // failure (unresolved installer URL, unreadable local binary).
+    bool buildHostInstallCommand(const QString &ip, const QString &user,
+                                 const QString &node, bool uploadBinary,
+                                 bool reinstall, bool fromSource,
+                                 QStringList *sshArgs, QString *remoteCmd,
+                                 QByteArray *uploadBytes, QString *errorOut);
     // Save the host's server info (name/IP/user/password) from the form without running
     // the installer, so the details are remembered up front and the installer
     // can be run against the saved host later.
@@ -936,6 +1042,19 @@ private:
     QWidget *buildRelaysSection();
     void refreshRelaysTable();   // re-list relays and (re)probe each one
     void probeRelayRow(int row); // measure latency + read version for one relay
+    // Nodes: a sortable directory of every node this client knows about (the same
+    // nodes offered by the top-bar node dropdown), showing each node's platform,
+    // online state, owner, version, repo/mirror counts and telemetry. Selecting a
+    // row opens a detail panel with that node's details plus the repositories it
+    // hosts and mirrors (adhoc #9, #27).
+    QWidget *buildNodesSection();
+    void refreshNodesTable();           // re-list the known nodes into the table
+    void showNodeDetailForRow(int row); // fill the detail panel for a table row
+    // Fetch the relay's list of currently-online node names (/api/network/stats
+    // "onlineNodes": live host tunnel or fresh signed heartbeat). Headless
+    // mirror nodes serve through the relay without joining this client's chat
+    // room, so room presence alone painted them offline (adhoc #27).
+    void fetchRelayOnlineNodes(bool force = false);
     // Firewall: whitelist-only outbound request gate for traffic created by
     // ForkMesh's shared network manager.
     QWidget *buildFirewallSection();
@@ -1021,8 +1140,8 @@ private:
                              const QString &headerHtml, const QString &body,
                              const QString &accent = QString(),
                              const QString &copyLink = QString(),
-                             const QString &authorId = QString());
-    QWidget *buildAboutSidebar();
+                             const QString &authorId = QString(),
+                             const std::function<void()> &onDelete = {});
     QWidget *buildRepoSecurityTab();
     QWidget *buildRepoQualityTab();
     QWidget *buildInsightsTab();
@@ -1037,6 +1156,7 @@ private:
     void updateDiscussionActionState();
     void createDiscussionDialog();
     void postDiscussionComment();
+    void deleteDiscussionComment(int number, const QString &eventId);
     void startDiscussionFromComposer();
     static QString discussionTitleFromBody(const QString &body);
     void submitDiscussionEventToInbox(int number, const DiscussionEvent &ev,
@@ -1060,6 +1180,10 @@ private:
     // Set/clear the conflict badge on a single pull-list row, in place, so async
     // badge updates don't rebuild (and flicker) the whole table.
     void setPullConflictBadge(int number, bool conflict);
+    // Tooltip for a PR's conflict badge: the "why" behind the flag — the files
+    // whose patch no longer applies, pulled from m_pullConflictCache. Falls back
+    // to the bare "has merge conflicts" line when the file list isn't cached.
+    QString pullConflictBadgeTooltip(int number) const;
     void refreshPullList();
     void showPull(int number);
     // Files-changed authorship filter: show only agent- or human-authored files
@@ -1072,6 +1196,19 @@ private:
     void renderPullDiff();
     // Scroll the all-files diff so the given file's section is at the top.
     void scrollPullDiffToFile(const QString &filePath);
+    // Follow the diff scroll (adhoc #56): keep the sticky header showing the
+    // topmost visible file, advance its Pac-Man progress chart as the file
+    // scrolls past, and select that file in the list — without bouncing the
+    // diff back to the file header. Cheap (no re-render); runs on every tick.
+    void updatePullDiffScrollState();
+    // Select a file in the changed-files list without scrolling the diff back to
+    // it (used while the selection follows the scroll).
+    void selectPullFileInList(const QString &filePath);
+    // Position the sticky header overlay across the top of the diff viewport.
+    void layoutPullStickyHeader();
+    // Walk the rendered diff once, caching each file header's absolute y into
+    // m_pullFileTops so the per-scroll-tick sticky-header update stays cheap.
+    void computePullFileTops();
     // Debounced off the diff view's scrollbar (issue: auto-mark viewed on
     // scroll): while m_pullAutoViewedButton is checked, marks every file that
     // has scrolled entirely above the viewport as "Viewed" and re-renders,
@@ -1269,6 +1406,15 @@ private:
     void noteAgentActivity(int sessionId, int bytes = 0);
     void onScannerTick();
     void showAgentSession(int sessionId);
+    // Rebuild only the detail header's meta lines (identity + issue/branch/worktree
+    // /PR chips + run Stats), without a transcript rebuild — used by the live
+    // token/cost/run-summary update paths and the running-row ticker (adhoc #42).
+    void refreshAgentDetailMeta(int sessionId);
+    // Detail-header permission-mode selector (adhoc #26): sync the combo to the
+    // shown session (and hide it for providers without a mode), and apply a live
+    // change back onto the selected session.
+    void syncAgentModeSelector(const AgentSession &session);
+    void applySelectedAgentMode();
     // Populate the raw-log QPlainTextEdit (m_agentLog) only when the content
     // actually changed. setPlainText()+moveCursor(End) forces a full document
     // layout, which for a large transcript blocks the GUI thread for seconds
@@ -1426,25 +1572,27 @@ private:
     void refreshClaudeSpend();
     // Issue #290: pull the live Claude Code rolling-window utilisation (the same
     // 5-hour + weekly figures the CLI's /usage shows) straight from the claude.ai
-    // OAuth usage endpoint. No background timer drives this (adhoc #76) — it
-    // only runs right after a prompt is sent (bumpClaudeCodeUsage) or when the
+    // OAuth usage endpoint. No background timer drives this (adhoc #76), and
+    // adhoc #20 dropped every other trigger too — this now only runs when the
     // user hovers the top-bar chart to check the current figures.
     void refreshClaudeCodeUsage();
     // Ask the provider which models this account can drive right now
     // (GET /v1/models) and merge them into the composer's per-session model
     // picker, so the dropdown reflects the live line-up (new releases appear
     // without an app update). Best-effort: on any failure the static defaults
-    // from populateClaudeModelCombo() stand.
+    // from populateClaudeModelCombo() stand. Only called from the top-bar
+    // usage chart's hover (adhoc #41) so opening/switching model combos never
+    // hits the provider on its own.
     void refreshClaudeModelCombo();
-    // Refresh usage now and again a few seconds later. Use this the moment a new
-    // agent starts or a prompt is sent: at that instant no tokens have been
-    // consumed yet, so an immediate refresh still shows the pre-start figure —
-    // the delayed follow-up catches the first turn's usage.
-    void bumpClaudeCodeUsage();
-    // Codex currently exposes ForkMesh's locally tracked rolling-window
-    // remaining time rather than a live provider utilization API. Keep the
-    // top-bar Codex meter in sync with the Agents-page usage-limit countdown.
+    // Push whatever's already cached in m_liveClaudeModels into every model
+    // combo without touching the network. Call this anywhere a combo is
+    // built/switched so it reflects the last live fetch; only the hover-driven
+    // refreshClaudeModelCombo() actually re-fetches.
+    void applyLiveClaudeModelsToCombos();
+    // Keep the top-bar Codex meter in sync with live app-server rate-limit
+    // updates, falling back to ForkMesh's locally tracked rolling windows.
     void refreshCodexUsageRemaining();
+    void applyCodexRateLimits(const QJsonObject &rateLimits);
     // Push one rolling-window utilisation figure (0..100) into every place that
     // shows it: the per-session usage bar, the top-bar mini chart and the
     // persisted cache. `weekly` picks the window.
@@ -1647,8 +1795,8 @@ private:
     void inviteUserToCurrentCove();
     void createCoveExplorerDocument();
     void deleteCurrentCoveExplorerDocument();
-    QString verifiedCoveAccountName() const;
-    bool coveInviteAccountVerified(const QString &accountName, QString *error);
+    QString coveAccountName();
+    bool coveInviteAccountValid(const QString &accountName, QString *error);
     // IDE-style right-click menu on the file-explorer tree, and the file
     // operations it drives. New/rename/delete commit directly to the default
     // branch and need a working tree we own; copy-path/reveal work on any local
@@ -1854,6 +2002,11 @@ private:
     // above: logs and surfaces a notice on partial failure rather than
     // aborting the whole publish.
     void pruneReleaseTagsForCurrentRepo(const QString &keepTag);
+    // Push a just-published release to the repo's fediverse followers via the
+    // relay's owner-signed POST /ap-publish (releases never pass through the
+    // signed inboxes, so the relay can't federate them on its own).
+    void announceReleaseOnFediverse(const QString &tag, const QString &title,
+                                    const QString &notes);
     // Open a release's full notes + the diff since the previous release.
     void showReleaseDetail(const QString &tag);
     // Per-repo Artifacts tab (adhoc #98): the release binaries this node hosts in
@@ -1955,7 +2108,6 @@ private:
     void deleteTag(const QString &tag);
     bool repoHasWorkingTree() const;
     void loadFileSearchIndex();
-    void loadAboutSidebar();
     // --- Top-bar global search ("search everything"). One box that, as you type,
     // searches across sections, every relay/node/repository, and (for the open
     // repo) its issues, pull requests, branches, files and commit messages, then
@@ -1989,6 +2141,20 @@ private:
     void editRepoAbout();
     bool saveRepoAboutMetadata(const QString &about, const QString &websiteInput,
                                QString *error = nullptr);
+    // Index-based core shared with the relay-sync path (website gear-icon
+    // edits arriving as aboutUpdate in GET /api/sync).
+    bool applyRepoAboutMetadataAt(int index, const QString &about,
+                                  const QString &websiteInput,
+                                  QString *error = nullptr);
+    // The relay's public About/fediverse endpoint for one repo
+    // (GET = branding + follower list + federation switches; POST = save).
+    QUrl repoAboutApiUrl(const QString &owner, const QString &name) const;
+    // Push the per-repo ActivityPub switches (federate / broadcastEvents /
+    // acceptComments) to the relay, proven by the owner key (no browser
+    // session on the desktop). Best-effort fire-and-forget.
+    void saveRepoFediverseSettings(const QString &owner, const QString &name,
+                                   bool federate, bool broadcastEvents,
+                                   bool acceptComments);
     void loadCommits();
     // Fill the Files/+/− columns of the commit list from `git log --numstat`,
     // which diffs every commit in the window and is the slow part of a load. Runs
@@ -1999,9 +2165,22 @@ private:
     // Infinite scroll: when the list is scrolled to the bottom and more history
     // exists, deepen the window (m_commitsLimit) and rebuild, preserving scroll.
     void loadMoreCommits();
-    // Compose a release-notes message and a (<=280 char) X/Twitter post from the
-    // commits the user has multi-selected, shown in a copyable dialog.
-    void generatePostFromSelectedCommits();
+    // VS-Code-style in-place expansion: clicking a commit row inserts one child
+    // row per file it touched (clicking again collapses them). File rows open
+    // the commit's diff scrolled to that file.
+    void toggleCommitFilesRows(int row);
+    void collapseAllCommitFileRows();
+    // Rebuild the Summary item's hover box (author / date / hash / files /
+    // adds / dels / checks) from the row's hidden metadata cells.
+    void updateCommitRowHover(int row);
+    // "N commits pending sync" header above the list: expands into the files
+    // those commits touch, one expandable entry per pending commit.
+    void updateCommitsUnsyncedFilesPanel();
+    // Fetch: refresh this repo's refs from the network (mirror + any upstream
+    // remote) without touching the working tree. Pull: fast-forward the working
+    // tree from its upstream (or the served mirror when no upstream is set).
+    void fetchCurrentRepo();
+    void pullCurrentRepo();
     // --- Source Control panel (working-tree changes) at the top of the Commits
     // tab: stage/unstage/discard/commit, view per-file diffs, and draft the
     // commit message (or an X post) with Claude/OpenAI.
@@ -2141,10 +2320,6 @@ private:
     QIcon iconForDir(bool opened) const;
     void startRefreshSpin();
     void stopRefreshSpin();
-    // Busy feedback for the commits-page Refresh button: rotates its icon while a
-    // reload runs (kept visible briefly after, since the reload is near-instant).
-    void startCommitsRefreshSpin();
-    void stopCommitsRefreshSpin();
     // Small inline spinner shown next to the commit's "files changed" heading
     // while showCommit reads and renders the diff (a big commit can take a second
     // or two), so the click shows progress instead of looking frozen.
@@ -2197,6 +2372,11 @@ private:
     IssueStore issueStoreForCurrentRepo() const; // build a store for that repo
     void refreshIssuesRepoCombo();
     void reloadIssues();        // load issues + label/milestone filters from the store
+    // Splice a just-created issue into m_currentIssues and redisplay it, without
+    // the full loadAll() reloadIssues() would do — that re-reads every issue
+    // file in the repo, which is what made the redirect to the new issue feel
+    // laggy on repos with a lot of issues.
+    void appendCreatedIssue(const IssueStore &store, const Issue &issue);
     void refreshIssueList();    // apply filters into the list widget
     void resetIssueFilters();   // clear status/label/milestone/search filters
     // Switch the issues list stack (0 Issues, 1 Milestones, 2 Labels, 3 Board)
@@ -2338,6 +2518,10 @@ private:
     void deleteCurrentIssueWithHistory(int number);
     void editIssueLabels();
     void editIssueMilestone();
+    // Planned start/end dates (issue #384): opens the inline two-QDateEdit
+    // editor in the sidebar's "Dates" row; save writes a signed "dates" event.
+    void editIssueDates();
+    void saveIssueDatesInline();
     void editIssuePriority();
     // Quick one-click priority nudge in the issue detail sidebar. direction < 0
     // raises priority (toward 1, highest); direction > 0 lowers it (toward 99,
@@ -2391,6 +2575,23 @@ private:
     void saveIssueAssigneesInline();
     void cancelIssueSidebarEditors();
     void updateIssueActionState();
+
+    // Projects tab (issue #384): repo-level projects that group issues, carry
+    // start/end dates and an optional milestone, and render as a list or a
+    // Gantt timeline. Backed by ProjectStore (.forkmesh/projects/).
+    QWidget *buildProjectsSection();
+    ProjectStore projectStoreForCurrentRepo() const; // build a store for that repo
+    void reloadProjects();      // load projects (+ issues, for progress) from the store
+    void refreshProjectList();  // apply the status filter into the table
+    void refreshProjectGantt(); // rebuild the Gantt rows from the loaded data
+    void showProject(int number); // render the selected project's detail pane
+    void promptNewProject();
+    void editProjectLinkedIssues(); // multi-select dialog over the repo's issues
+    void setProjectInlineNotice(const QString &message, bool error = false);
+    // Percent complete for a project: closed share of its linked issues, else
+    // (when only a milestone is linked) the closed share of that milestone.
+    int projectProgressPercent(const Project &project) const;
+
     QUrl issuesApiUrl(const RepositoryRecord &repo) const;
     QUrl bountyApiUrl(const RepositoryRecord &repo) const;
     // Website agent view (adhoc #182): the repo owner watches this node's
@@ -2415,7 +2616,12 @@ private:
     // Start a new ad-hoc agent for a repo from a website "new agent" prompt
     // (adhoc #266): the top-of-list web composer queues these with agentId "new".
     void startWebNewAgentForRepo(const RepositoryRecord &repo, const QString &task,
-                                 const QString &providerOverride = QString());
+                                 const QString &providerOverride = QString(),
+                                 const QStringList &images = QStringList());
+    // Decode pasted/attached screenshot data: URLs queued with a website "new
+    // agent" prompt (adhoc #78) to image files on disk; returns their paths.
+    QStringList saveWebAgentImages(const RepositoryRecord &repo,
+                                   const QStringList &images);
     // Private-repo collaborator ACL (issue #9): share/unshare a private repo with
     // other accounts and list current collaborators.
     QUrl sharesApiUrl(const RepositoryRecord &repo) const;
@@ -2435,7 +2641,9 @@ private:
     // Issue #347: fetch/mint the owner's inbuilt bounty wallet and show its
     // deposit address, QR and live balance so the owner can pre-fund it.
     void showBountyWalletDialog();
-    void submitIssueCommentToInbox(const QString &body);
+    void submitIssueCommentToInbox(const QString &body,
+                                   const QStringList &attachmentSrcPaths = {},
+                                   const QStringList &attachmentPlaceholders = {});
     // Mirror node path: file a signed "assignees" event to the source of truth's
     // inbox so the looper's claim on an issue reaches the owner and syncs back to
     // every mirror (adhoc #38).
@@ -2448,6 +2656,8 @@ private:
     bool submitNewIssueToInbox(const QString &title, const QString &body,
                                const QStringList &labels, const QString &milestone,
                                int priority, const QStringList &assignees,
+                               const QStringList &attachmentSrcPaths = {},
+                               const QStringList &attachmentPlaceholders = {},
                                std::function<void(bool ok, const QString &error)> onDone = {});
     void syncIssuesInbox();
     // Drain one repo's issue/pull inbox (owner-only). `interactive` shows inline
@@ -2499,6 +2709,9 @@ private:
     // #368: identity key backup/export/import UI + first-run "back up" nag.
     void backUpIdentityKey();
     void refreshIdentityBackupNag();
+    // Export/import the Claude Code account (claude.ai OAuth login + Claude API
+    // key) so a host node can run "claude-code" agents as this owner.
+    void transferClaudeCodeAccount();
     void chooseAvatar();
     void setSettingsAvatar(const QByteArray &pngData);
     // Effective avatar bytes: the uploaded/generated one, or a deterministic
@@ -2508,6 +2721,11 @@ private:
     void updateAvatarButton();
     void updateUserAvatarButton();
     void refreshIssueComposerAvatar();
+    // Builds a small "identity" row (self avatar + current username) shown above
+    // compose inputs so it's clear who is about to post. When verb is set the
+    // text reads e.g. "Filing as <b>alice</b>"; otherwise just the username.
+    QWidget *makeComposerIdentity(QLabel **outAvatar = nullptr,
+                                  const QString &verb = QString());
     void logout();
     // Erase every trace of ForkMesh from this computer (data, settings, desktop
     // integration and the program files) after confirmation, then quit.
@@ -2556,11 +2774,24 @@ private:
     // history survives a restart and can be narrowed to one event type. Filter
     // chips are rebuilt as new categories appear.
     QString logBadgeFor(const QString &storedLine) const; // category of a line
+    QString logAccentFor(const QString &storedLine) const; // badge colour of a line
     void rebuildLogFilterButtons(); // (re)build the category chip row
     void rebuildNetworkLogView();   // re-render the log honoring m_logFilter
     QString networkLogPath() const; // on-disk path for the persisted log
     void loadNetworkLog();          // restore log history at startup
     void saveNetworkLog();          // rewrite (and trim) the on-disk log
+    // Only the newest kNetworkLogSegmentSize matching lines are rendered up
+    // front; m_logRenderFrom is the m_networkLog index of the oldest line
+    // currently shown (0 once every matching line has been loaded). Reaching
+    // the top of the scroll area loads the next older segment.
+    int m_logRenderFrom = 0;
+    // Guards against the scrollbar's valueChanged firing (and re-entering the
+    // loader) while rebuildNetworkLogView()/loadOlderNetworkLogSegment() are
+    // themselves mutating the document — clear()/insertHtml() can transiently
+    // report the scrollbar at its minimum mid-edit.
+    bool m_logViewMutating = false;
+    void loadOlderNetworkLogSegment();
+    void onNetworkLogScrolled(int value);
     // Compact, centered success/failure banner shown in the top bar between the
     // breadcrumb and the notifications bell. Auto-clears after a few seconds.
     // `clickHref` makes the whole toast a clickable link routed by the
@@ -2603,6 +2834,13 @@ private:
     void promptAddPrivateChannel();
     // Offer the online members as invitees for the current private room.
     void promptInviteToPrivateChannel();
+    // Confirm, then delete a room from this node (right-click a room in the
+    // sidebar). Local only — the room stays for everyone else.
+    void promptDeleteRoom(const QString &channel);
+    // Pop a small emoji grid under `anchor`; picking one inserts it into the
+    // composer at the caret.
+    void showEmojiPicker(QWidget *anchor);
+    void insertEmojiIntoComposer(const QString &emoji);
     // Re-create the private rooms we own/were invited to after a fresh connect,
     // since the backend clears its channel set each session.
     void restorePrivateChannels();
@@ -2654,9 +2892,21 @@ private:
     // offline). Sorted, de-duplicated, and cheap to build from in-memory state.
     QStringList mentionCandidateNames() const;
     void promptAddRepository();
-    // Create a brand-new, empty Git repository: ask for a name and parent folder,
-    // run `git init`, then mirror + publish it under this node like a local repo.
+    // Create a brand-new Git repository. Opens a single screen that collects the
+    // name, a description, an optional first prompt, and a README choice, then
+    // runs `git init -b main`, seeds the repo, and mirrors + publishes it under
+    // this node like a local repo.
     void createNewRepository();
+    // Core of createNewRepository(), separated from its dialog so it can be
+    // driven by tests. `dest` must be an existing empty directory; on success it
+    // is git-init'd on main, optionally seeded with a README and
+    // .forkmesh/info.json description, initial-committed, registered, published,
+    // and (when firstPrompt is non-empty) has its first issue filed. Returns the
+    // new repository index, or -1 with a message in *error on failure.
+    int provisionNewRepository(const QString &dest, const QString &name,
+                               const QString &description,
+                               const QString &firstPrompt, bool addReadme,
+                               QString *error);
     // Clone a remote repo (GitHub/GitLab/any https git URL) into a local working
     // copy, then add it like a local repo. An optional per-host access token
     // (Settings) authenticates the clone to dodge unauthenticated rate limits.
@@ -2674,21 +2924,41 @@ private:
                         const QStringList &args, const QString &beforeDigest,
                         const QString &beforeHeadCommit);
     void autoSyncMirrors();
+    // Periodic-timer wrapper for autoSyncMirrors(): skips the round while the
+    // relay host sits in BackoffNetworkAccessManager's 429/5xx cooldown, since
+    // the git fetch subprocesses bypass that manager entirely. Explicit "sync
+    // now" paths (headlessSyncNow) call autoSyncMirrors() directly, ungated.
+    void autoSyncMirrorsIfRelayHealthy();
     // Roster-driven catch-up: when a peer advertises a commit our mirror lacks,
     // pull it immediately instead of waiting for the next auto-sync tick.
     void syncMirrorsBehindRoster();
     // After a local change to a repo (new/updated issue, PR, comment, merge),
     // push it to the bare mirror and tell peers immediately instead of waiting
-    // for the 5-minute auto-sync, so counts and content converge right away.
+    // for the 15-minute auto-sync, so counts and content converge right away.
     void propagateRepoUpdate(int index);
     // A peer announced it refreshed "owner/name" from source; notify if we
-    // mirror the same repo.
-    void onPeerMirrorUpdated(const QString &ownerName, const QString &peerName);
+    // mirror the same repo. `commit` is the new HEAD it advanced to.
+    void onPeerMirrorUpdated(const QString &ownerName, const QString &peerName,
+                             const QString &commit);
+    // A peer reported it finished pulling "owner/name" up to `commit` — the
+    // round-trip acknowledgement, surfaced quietly if we hold the same repo.
+    void onPeerMirrorSynced(const QString &ownerName, const QString &peerName,
+                            const QString &commit);
+    // Patch a peer's advertised HEAD for the "owner/name" mirror group in the
+    // live roster to `commit` the instant it reports it (mirror-update / synced
+    // ack), so the Mirror nodes panel converges immediately instead of waiting
+    // for that peer's next hello. Returns true if any advert changed.
+    bool applyPeerMirrorCommit(const QString &ownerName, const QString &peerName,
+                               const QString &commit);
     // A peer opened an encrypted cove. If this node created it (creatorKey matches
     // our identity) and the opener's signature checks out, raise a notification.
     void onCoveOpened(const QString &creatorKey, const QString &coveId,
                       const QString &coveName, const QString &openerKey,
                       const QString &openerName, qint64 ts, const QString &signature);
+    // A peer granted us (inviteeAccount matches our account) access to an
+    // account-scoped cove. Raise a notification so we know to go look.
+    void onCoveInvited(const QString &inviteeAccount, const QString &coveId,
+                       const QString &coveName, const QString &inviterName, qint64 ts);
     void quickRebuildRestart();
     void changeMirrorLocation();
     void changePreviewCacheLocation();
@@ -2821,7 +3091,8 @@ private:
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;
     QString m_connectionStatusColor;      // last dot colour (skip redundant repaints)
-    QLabel *m_topMessage = nullptr;       // compact centered success/failure toast
+    QLabel *m_topMessage = nullptr;       // compact centered success/failure toast text
+    QFrame *m_topMessageContainer = nullptr; // bordered pill wrapping the text + Expand/Copy/✕
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
     QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
     QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
@@ -2840,7 +3111,7 @@ private:
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
     bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
     bool m_topMessageExpanded = false;    // user expanded the truncated toast to its full text
-    bool m_pinWarningActive = false;      // true while the top toast holds the integrity-pin warning
+    bool m_repoPinMismatch = false;       // true when the open repo's served refs no longer match the relay's pinned hash (adhoc #65)
 
     // Setup widgets
     QLineEdit *m_nameEdit;
@@ -2895,11 +3166,13 @@ private:
     QPushButton *m_logNavButton = nullptr; // "Log" button in the persistent top nav
     QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
+    QPushButton *m_nodesNavButton = nullptr;  // "Nodes" top-nav button (adhoc #9)
     QPushButton *m_relaysNavButton = nullptr; // "Relays" top-nav button
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
     QPushButton *m_navDrawButton = nullptr; // pencil -> draw freehand on the screen
+    QPushButton *m_navResizeButton = nullptr; // snap window to a common minimal size
     QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
     QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
     QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
@@ -2923,6 +3196,9 @@ private:
     QPushButton *m_hostInstallAllButton = nullptr;
     // Bulk uninstall + reinstall from binary (adhoc #258).
     QPushButton *m_hostReinstallAllButton = nullptr;
+    // Bulk update from latest source (adhoc): rebuild + restart every saved host
+    // straight from source, no release publish required.
+    QPushButton *m_hostUpdateAllSourceButton = nullptr;
     QLabel *m_hostInstallStatus = nullptr;
     QPlainTextEdit *m_hostInstallLog = nullptr;
     // ANSI parser state for the live install log: a carry buffer holding an
@@ -2939,11 +3215,40 @@ private:
     // per-run guard so the link popup opens once.
     QString m_hostInstallLinkTail;
     bool m_hostLinkPrompted = false;
+
+    // Parallel fleet deploy (adhoc): when an "all hosts" action runs, every
+    // saved host is deployed simultaneously, each streaming into its OWN pane in
+    // a split live-output grid instead of taking turns in the single log above.
+    // HostDeploySession (defined with the fleet-deploy methods above) carries
+    // each host's process, output pane and per-host render/link state.
+    QLabel *m_hostDeployLabel = nullptr;      // "Live output — per host" header
+    QWidget *m_hostDeployPanel = nullptr;     // container holding the per-host panes
+    QGridLayout *m_hostDeployGrid = nullptr;  // lays the panes out roughly square
+    QList<HostDeploySession *> m_hostDeploySessions;
+    int m_hostDeployRemaining = 0;            // sessions still running
+    int m_hostDeployFailed = 0;               // sessions that finished with an error
+
     // Relays section: live list of configured relays with status / latency / version.
     QTableWidget *m_relaysTable = nullptr;
     QLabel *m_relaysStatus = nullptr;       // "Probing N relays…" / last-refreshed line
     QPushButton *m_relaysRefreshButton = nullptr;
     int m_relayProbesInFlight = 0;          // outstanding /api/version probes
+    // Nodes section (adhoc #9): sortable directory of known nodes + a detail panel.
+    QTableWidget *m_nodesTable = nullptr;
+    QLabel *m_nodesStatus = nullptr;            // "N nodes · M online" summary line
+    QPushButton *m_nodesRefreshButton = nullptr;
+    QScrollArea *m_nodeDetailScroll = nullptr;  // detail panel for the selected node
+    // Node names (lowercased) the relay currently reports online — a live host
+    // tunnel or a fresh signed heartbeat. Merged into the Nodes page's status so
+    // headless mirror nodes that serve via the relay (but never join this
+    // client's chat room) show online instead of permanently offline.
+    QSet<QString> m_relayOnlineNodes;
+    qint64 m_relayOnlineNodesFetchedMs = 0; // throttle between relay fetches
+    // True once /api/network/stats has answered at least once, so the Nodes page
+    // knows the relay's authoritative live set is available. Before the first
+    // reply we fall back to the encrypted roster's presence flag; after it, the
+    // relay is trusted over a possibly-stale roster entry (adhoc #43).
+    bool m_relayOnlineNodesFetched = false;
     // Request firewall section: whitelist controls plus recent allow/deny
     // decisions. This is separate from m_firewallBanner, which is the older
     // inbound-peer troubleshooting banner inside Chat.
@@ -2967,6 +3272,7 @@ private:
     QTableWidget *m_networkDiagnosticsTable = nullptr;
     QPushButton *m_networkDiagnosticsRefreshButton = nullptr;
     bool m_networkEndpointFadeScheduled = false;
+    bool m_networkEndpointsUserSorted = false;
     QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     QPushButton *m_repoPushButton = nullptr; // "Publish N" button shown above the tab bar
     QPushButton *m_repoPushEyeButton = nullptr; // eye icon beside Sync -> commits panel
@@ -2978,6 +3284,7 @@ private:
         QIcon icon;
         int index = -1;     // m_repositories index; -2 = advertised mirror
         QString advertised; // ownerName when index == -2
+        QString detail;     // tooltip explaining what distinguishes this entry
     };
     QList<RepoMenuEntry> m_repoMenuEntries;
     QListWidget *m_dmList;
@@ -2989,6 +3296,10 @@ private:
     QLabel *m_firewallBannerLabel;
     QPushButton *m_firewallAllowButton;
     QString m_firewallPrivilegedCommand;
+    // In-transcript "N unread messages" strip with a jump-to-newest arrow that
+    // marks every conversation read in one click. Hidden when nothing is unread.
+    QWidget *m_chatUnreadBanner = nullptr;
+    QLabel *m_chatUnreadBannerLabel = nullptr;
     QScrollArea *m_messageScroll;
     QWidget *m_messageContainer;
     QVBoxLayout *m_messageLayout; // message rows + a trailing stretch
@@ -3010,7 +3321,7 @@ private:
     QLabel *m_settingsEmailVerifiedBadge = nullptr;
     QLabel *m_settingsAvatarPreview = nullptr;
     QLabel *m_identityBackupNag = nullptr; // #368: "back up your key" warning
-    QPlainTextEdit *m_settingsLog = nullptr;
+    QTextBrowser *m_settingsLog = nullptr;
     QHBoxLayout *m_logFilterRow = nullptr;    // chip row above the network log
     QButtonGroup *m_logFilterGroup = nullptr; // exclusive group for filter chips
     QString m_logFilter;                      // active category badge ("" = All)
@@ -3026,6 +3337,8 @@ private:
     QPushButton *m_importButton = nullptr;
     QLabel *m_importStatus = nullptr;
     QCheckBox *m_autostartCheck = nullptr;
+    QLabel *m_autostartInfo = nullptr;
+    QPushButton *m_autostartRemoveButton = nullptr;
     QComboBox *m_themeCombo = nullptr;
     // Default coding-agent provider for new assignments; seeds the quick-add and
     // issue-detail provider pickers. Codex | OpenAI API | Claude API | Claude Code.
@@ -3073,7 +3386,9 @@ private:
     // Shift+Enter inserts a newline; Up/Down still walk the prompt history.
     QPlainTextEdit *m_issueQuickAdd = nullptr;
     QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
-    QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
+    // Agent/model chooser (adhoc #29): also carries a "Manual (create issue)"
+    // entry that replaces the old Agent / Create-issue checkboxes — picking it
+    // files an issue from the prompt instead of starting an agent.
     QComboBox *m_quickAddAgentProvider = nullptr;
     // Prompt-row model chooser (adhoc #261/#349): Claude Code gets the live
     // Claude model list; Codex gets an editable OpenAI model list.
@@ -3083,10 +3398,6 @@ private:
     // backed by the same kClaudeAutoModeSetting as the agent composer's toggle.
     QComboBox *m_quickAddModeSelector = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
-    // "Create issue" toggle (adhoc #99): off by default (remembered via
-    // kQuickAddCreateIssueSetting) — unchecked means the typed prompt starts an
-    // agent directly and skips filing an issue at all.
-    QCheckBox *m_quickAddCreateIssue = nullptr;
     // Up-pointing paper-airplane stacked above the normal send icon (adhoc #99):
     // sends the typed prompt as a follow-up message to the currently-selected
     // agent session instead of the quick-add issue/new-agent flow.
@@ -3267,6 +3578,8 @@ private:
     int m_artifactsTabIndex = -1; // index of the Artifacts page
     int m_shortcutsTabIndex = -1; // index of the Shortcuts page
     int m_settingsTabIndex = -1; // index of the Settings page
+    int m_projectsTabIndex = -1; // index of the Projects page (issue #384)
+    QPushButton *m_repoProjectsTab = nullptr; // handle for the Projects (N) badge
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
     // Splitter holding the branches table + changed-files/scope lists + diff view.
@@ -3424,18 +3737,6 @@ private:
     QComboBox *m_vulnComponentCombo = nullptr;
     QPushButton *m_vulnSubmitButton = nullptr;
     QLabel *m_vulnStatusLabel = nullptr;
-    QPushButton *m_aboutEditButton = nullptr;
-    QLabel *m_aboutText = nullptr;
-    QLabel *m_aboutTopics = nullptr;
-    QLabel *m_aboutFiles = nullptr;
-    QLabel *m_releaseHeader = nullptr;
-    QLabel *m_releaseRow = nullptr;
-    QLabel *m_langBar = nullptr;
-    QLabel *m_langLegend = nullptr;
-    QLabel *m_filesCountHeader = nullptr;
-    QLabel *m_filesCountRow = nullptr;
-    QLabel *m_contributorsHeader = nullptr;
-    QLabel *m_contributorsRow = nullptr;
     QTableWidget *m_commitsTable = nullptr;
     // What the commit table currently shows, so a repeat tab click (or the
     // redundant load when a repo first opens) can skip the full rebuild — 4 git
@@ -3495,6 +3796,15 @@ private:
     int m_searchPending = 0;         // how many of those are still running
     QString m_searchPageQuery;
     QLabel *m_commitsUnsyncedBanner = nullptr; // "N commits not yet synced" banner
+    // Expandable file view under the banner: one entry per pending commit, its
+    // children the files that commit touches. Toggled by the banner's
+    // "Show files" link; the expanded state survives reloads.
+    QTreeWidget *m_commitsUnsyncedFiles = nullptr;
+    bool m_commitsUnsyncedExpanded = false;
+    QStringList m_commitsUnsyncedHashes; // pending commits, newest first
+    // File-row click: open the commit's diff scrolled to this file once the
+    // async detail load lands (renderCommitDetail consumes it).
+    QString m_pendingCommitFileScroll;
     // The unsynced banner sits in the list page's layout above the table; it
     // fades out (collapsing its row) when every commit has synced.
     QWidget *m_commitsListPage = nullptr;
@@ -3763,19 +4073,41 @@ private:
     // while scrolling the PR diff, mirroring GitHub's same-named setting).
     QPushButton *m_pullAutoViewedButton = nullptr;
     QTimer *m_pullAutoViewedDebounce = nullptr;
+    // Sticky diff header overlay (adhoc #56): floats a copy of the current
+    // file's header at the top of the scrolling diff so the filename / +/- stat
+    // / Viewed controls stay visible, with a Pac-Man progress chart that fills
+    // as the file scrolls past and auto-checks Viewed once the bottom is seen.
+    QFrame *m_pullStickyHeader = nullptr;
+    QLabel *m_pullStickyPath = nullptr;
+    PacmanProgress *m_pullStickyPacman = nullptr;
+    QPushButton *m_pullStickyViewed = nullptr;
+    QString m_pullStickyFile; // file path currently shown in the sticky header
+    // path -> compact rich-text label (icon + dir/name + +/-) for that header.
+    QHash<QString, QString> m_pullStickyLabelHtml;
+    // Absolute document y-position of each file header, aligned to
+    // m_pullFileOrder (-1 if not located). Cached because locating anchors walks
+    // the whole document, which is too heavy to redo on every scroll tick; the
+    // diff has word-wrap off, so these stay put until the next re-render clears
+    // the cache. Filled lazily by computePullFileTops().
+    QList<int> m_pullFileTops;
     int m_diffFontPt = 12; // diff viewer text size (the +/- zoom control)
     // Every diff viewer registered for shared text-size zoom (issue #254), so a
     // +/- click or Ctrl+wheel can re-render them all at the new size.
     QList<QTextEdit *> m_diffViews;
     QPushButton *m_pullSplitButton = nullptr; // toggle unified <-> side-by-side
     QListWidget *m_pullCommitsList = nullptr;  // commits that make up the PR
-    // PR detail sub-tabs: Conversation / Commits / Checks / Files changed.
+    // PR detail sub-tabs: Conversation / Commits / Checks / Files changed /
+    // Badge.
     QButtonGroup *m_pullSubTabs = nullptr;
     QStackedWidget *m_pullSubStack = nullptr;
     QPushButton *m_pullTabConversation = nullptr;
     QPushButton *m_pullTabCommits = nullptr;
     QPushButton *m_pullTabChecks = nullptr;
     QPushButton *m_pullTabFiles = nullptr;
+    QPushButton *m_pullTabBadge = nullptr;
+    // Badge tab (adhoc #44): the PR's visual fingerprint — same design the
+    // relay attaches to federated PR-opened notes and the web dashboard shows.
+    PullBadgeWidget *m_pullBadgeWidget = nullptr;
     // Conversation: review thread + inline checks summary + inline composer.
     QScrollArea *m_pullThreadScroll = nullptr;
     QWidget *m_pullThreadContainer = nullptr;
@@ -4043,6 +4375,12 @@ private:
     QLabel *m_agentStatusPill = nullptr; // connected/working/done status
     QLabel *m_agentMeta = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
+    // Permission-mode selector in the detail header (adhoc #26): change the
+    // selected agent's mode in place ("Ask before edits" / "Edit automatically"
+    // / "Plan mode" / "Auto mode"). Persists onto the session and, for a live
+    // Codex session, retargets the next turn so the switch takes effect without
+    // needing to retype the mode in the composer.
+    QComboBox *m_agentModeSelector = nullptr;
     QPushButton *m_agentViewPrButton = nullptr;
     // "Create linked issue" — shown for ad-hoc sessions with no issue yet, so the
     // run can be promoted to a tracked issue from the detail header (adhoc #189).
@@ -4111,10 +4449,10 @@ private:
     // network write when the sessions payload hasn't changed (idle nodes used
     // to re-upload an identical snapshot every 30s).
     QHash<QString, QByteArray> m_lastAgentPushPayload;
-    // Each running Claude Code session has its own worktree + stream + buffered
-    // events, so their output never leaks across sessions; the transcript view is
-    // repainted from the selected session's buffer.
+    // Each running CLI session has its own worktree, transport, and buffered
+    // events, so output never leaks across providers or sessions.
     QHash<int, ClaudeStreamSession *> m_streamSessions;
+    QHash<int, CodexAppServerSession *> m_codexStreams;
     QHash<int, QList<QJsonObject>> m_streamEvents;
     // Which stream session's transcript is currently built into m_agentTranscript,
     // and how many events were rendered. showAgentSession() is hit on every
@@ -4168,6 +4506,12 @@ private:
     void markAgentSessionRunning(int sessionId);
     QHash<int, QStringList> m_streamFiles;
     QHash<int, QString> m_streamWorktree;        // sessionId -> worktree path
+    // In-flight worktree teardown threads (cleanupStreamWorktree), keyed by
+    // sessionId. A resume of the same session must wait for its prior teardown to
+    // finish before re-creating the worktree — the two run `git worktree` on the
+    // same repo and would otherwise race, leaving `claude --resume` in the main
+    // checkout with a red "0 turns" error on the first Add (adhoc #84).
+    QHash<int, QThread *> m_worktreeTeardown;
     // User messages queued while a session has no live CLI (typed after the task
     // finished, or while it resumes after a ForkMesh restart). Flushed as
     // follow-up turns the next time the session's stream starts.
@@ -4189,9 +4533,9 @@ private:
     // customPrompt, when non-empty, is used as the agent's task verbatim (the
     // ad-hoc "start a new agent" composer, issue #273) instead of the prompt
     // derived from `issue`.
-    void startClaudeCodeTranscript(AgentSession &session, const Issue &issue,
-                                   const QString &repoPath,
-                                   const QString &customPrompt = QString());
+    void startCliTranscript(AgentSession &session, const Issue &issue,
+                            const QString &repoPath,
+                            const QString &customPrompt = QString());
     // Auto model mode (adhoc #91): resolve the "auto" sentinel to a concrete
     // model before launching the CLI. A routed choice recorded earlier in this
     // session's transcript is reused; otherwise a local heuristic pass runs,
@@ -4213,6 +4557,7 @@ private:
     // session_id. The most recent one identifies the conversation to `--resume`
     // so a stopped agent is picked up with its full context (adhoc #182).
     QString lastClaudeSessionId(int sessionId) const;
+    QString lastCodexThreadId(int sessionId) const;
     void renderTranscriptForSession(int sessionId);
     // Slice the next batch of earlier events off the selected session's
     // already-in-memory buffer (m_streamEvents; loadEvents() reads the whole
@@ -4345,8 +4690,8 @@ private:
     QSet<QString> m_externalStopped;         // uuids we've stopped — keep them idle
     QSet<QString> ownStreamCwds() const;    // dirs ForkMesh's own streams drive
     // Epoch-ms of the last live provider model-list fetch (see
-    // refreshClaudeModelCombo). Throttles re-fetches so browsing sessions doesn't
-    // hit /v1/models on every click while still keeping the list current.
+    // refreshClaudeModelCombo). Throttles re-fetches so repeated hovers of the
+    // top-bar usage chart don't hammer /v1/models.
     qint64 m_claudeModelsFetchedMs = 0;
     // The `data` array from the last successful /v1/models fetch, cached so a
     // model combo built after the fetch still gets the live line-up merged in
@@ -4392,10 +4737,10 @@ private:
     int m_refreshAngle = 0;
     // Commits-page branch indicator + checkout switcher.
     QPushButton *m_commitsBranchButton = nullptr;
-    // Commits-page Refresh button + its spin animation state.
-    QPushButton *m_commitsRefreshButton = nullptr;
-    QPushButton *m_commitsGenerateButton = nullptr; // "Generate post" (multi-select)
-    QTimer *m_commitsRefreshSpinTimer = nullptr;
+    // Commits-page Fetch (refresh refs from the network) and Pull (fast-forward
+    // the working tree) buttons, VS-Code style.
+    QPushButton *m_commitsFetchButton = nullptr;
+    QPushButton *m_commitsPullButton = nullptr;
     // Infinite-scroll paging for the commit list: how many commits are currently
     // loaded, whether older history remains, and a re-entrancy guard.
     int m_commitsLimit = 300;
@@ -4405,7 +4750,6 @@ private:
     // whole history so the filter spans every commit (incl. by hash); cleared back
     // to the paged window when the search box empties.
     bool m_commitsShowingAll = false;
-    int m_commitsRefreshAngle = 0;
     // Node-switch busy indicator (spinner on the top-nav node button).
     QTimer *m_nodeSwitchSpinTimer = nullptr;
     int m_nodeSwitchAngle = 0;
@@ -4456,6 +4800,7 @@ private:
     QPushButton *m_issueTitleCancelButton = nullptr;
     QLabel *m_issueMeta = nullptr;
     QLabel *m_issueComposerAvatar = nullptr;
+    QLabel *m_issueComposerTitle = nullptr;
     QLabel *m_issueReadonlyNote = nullptr;
     QLabel *m_issueInlineNotice = nullptr;
     QLabel *m_issueAssigneesValue = nullptr;
@@ -4475,6 +4820,15 @@ private:
     QLineEdit *m_issueLabelsEdit = nullptr;
     QComboBox *m_issueMilestoneEdit = nullptr;
     QComboBox *m_issuePriorityEdit = nullptr;
+    // Planned start/end dates row (issue #384): read-only value + an inline
+    // editor of two QDateEdits, each toggled by a "no date" enable checkbox.
+    QLabel *m_issueDatesValue = nullptr;
+    QStackedWidget *m_issueDatesStack = nullptr;
+    QPushButton *m_issueDatesButton = nullptr;
+    QDateEdit *m_issueStartDateEdit = nullptr;
+    QDateEdit *m_issueEndDateEdit = nullptr;
+    QCheckBox *m_issueStartDateEnable = nullptr;
+    QCheckBox *m_issueEndDateEnable = nullptr;
     QScrollArea *m_issueThreadScroll = nullptr;
     QWidget *m_issueThreadContainer = nullptr;
     QVBoxLayout *m_issueThreadLayout = nullptr;
@@ -4578,6 +4932,32 @@ private:
     QString m_issuesLoadedSig;
     QStringList m_pendingIssueAttachments; // images queued for the next comment
 
+    // Projects tab widgets + state (issue #384).
+    QTableWidget *m_projectTable = nullptr;
+    QStackedWidget *m_projectViewStack = nullptr; // 0 list table, 1 Gantt
+    QComboBox *m_projectStatusFilter = nullptr;   // Open | Closed | All
+    // The Gantt chart (a ProjectGantt, kept as a QWidget* since that type is
+    // only included by MainWindowProjects.cpp) and its scroll host.
+    QWidget *m_projectGantt = nullptr;
+    QWidget *m_projectDetailPane = nullptr; // right-hand detail beside the list
+    QLabel *m_projectDetailTitle = nullptr;
+    QLabel *m_projectDetailStatus = nullptr; // Open/Closed status pill
+    QLabel *m_projectDetailBody = nullptr;
+    QLabel *m_projectDetailProgress = nullptr;
+    QLabel *m_projectInlineNotice = nullptr;
+    QDateEdit *m_projectStartEdit = nullptr;
+    QDateEdit *m_projectEndEdit = nullptr;
+    QCheckBox *m_projectStartEnable = nullptr;
+    QCheckBox *m_projectEndEnable = nullptr;
+    QComboBox *m_projectMilestoneCombo = nullptr;
+    QListWidget *m_projectIssuesList = nullptr; // linked issues in the detail pane
+    QPushButton *m_projectNewButton = nullptr;
+    QPushButton *m_projectCloseButton = nullptr; // Close/Reopen the project
+    QPushButton *m_projectDeleteButton = nullptr;
+    QList<Project> m_currentProjects;
+    int m_currentProjectNumber = -1;
+    bool m_projectDeleteConfirmPending = false;
+
     // Node profile panel widgets + the node it currently shows.
     QWidget *m_nodeProfilePanel = nullptr;
     QWidget *m_repoDetailSection = nullptr; // hidden while node profile is full-page
@@ -4662,6 +5042,10 @@ private:
     QSet<QString> m_catalogPublishInFlight;      // owner/name
     QSet<QString> m_catalogPublishQueued;        // owner/name dirtied mid-flight
     QSet<QString> m_catalogPublishDialogQueued;  // owner/name wants UI feedback
+    // Consecutive retryable (429/5xx) publish failures per repo, so the retry
+    // delay can escalate exponentially instead of hammering an overloaded relay
+    // every 60s forever. Reset to 0 on a successful publish.
+    QHash<QString, int> m_catalogPublishConsecutiveFailures; // owner/name -> n
     // Fingerprint (sha256 of the record minus volatile fields) of the last
     // successfully published catalog record per repo, and when it was sent.
     // publishRepositoryNow() skips the network write when nothing the catalog
@@ -4669,6 +5053,15 @@ private:
     // every ~30s, hammering the relay's D1 for no reader-visible difference.
     QHash<QString, QByteArray> m_catalogPublishedFingerprint; // owner/name -> hash
     QHash<QString, qint64> m_catalogPublishedFingerprintAtMs; // owner/name -> ms
+    // Public-repository contribution snapshots are expensive Git reads. This
+    // bounded state coalesces one worker per immutable repo state, remembers a
+    // requested publish dialog, and applies separate success/error TTLs.
+    RepoContributionPublicationCache m_contributionPublicationCache;
+    QHash<QString, QString> m_catalogContributionScanKey;
+    QHash<QString, QString> m_catalogContributionSnapshotKey;
+    QHash<QString, QString> m_catalogContributionDependencyFingerprint;
+    QHash<QString, QString> m_catalogContributionPreparedScanKey;
+    QHash<QString, QString> m_catalogContributionPreparedSnapshotKey;
     QList<RepoHost *> m_repoHosts;
     QSet<QString> m_repoHostKeys; // owner/name + mirror/url for active hosts
     QList<MemberInfo> m_homeRoster;
@@ -4749,6 +5142,7 @@ private:
     bool m_accountAuthenticated = false;
     QString m_accountName;
     bool m_accountSolanaVerified = false;
+    bool m_accountDesktopCapable = false;
     // "free" = view-only (must mirror >=1 repo) until the user joins by
     // donating; "active" = donated + email/password set.
     QString m_accountTier = QStringLiteral("free");
@@ -4756,6 +5150,9 @@ private:
     bool m_isAdmin = false;
     QTimer *m_adminPollTimer = nullptr;
     QStringList m_seenPendingUsers;
+    // Shared room-chat key fetched from the relay (server-derived from DATA_KEY),
+    // replacing the old public app-wide constant. Empty until fetched.
+    QString m_roomPassphrase;
     // Last website-claim confirmation code already shown (adhoc #53), so the
     // per-minute heartbeat doesn't reopen the popup for the same claim.
     QString m_lastClaimCodeShown;
@@ -4763,6 +5160,11 @@ private:
     // (adhoc #141), so the per-minute heartbeat doesn't reopen the dialog
     // while the request is still pending a decision.
     QString m_lastOwnershipTransferAdminShown;
+    // Accepted peer mirror requests (issue #385) delivered on the heartbeat:
+    // ids we've already started mirroring this session (so we don't re-clone),
+    // and ids still awaiting acknowledgement to the relay on the next beat.
+    QSet<QString> m_handledMirrorRequests;
+    QStringList m_pendingMirrorRequestAcks;
     // User/avatar controls in the top-right account cluster. m_avatarNavButton
     // is the node avatar with the connection dot; m_userAvatarNavButton is the
     // signed-in/linked user account avatar.
@@ -4771,6 +5173,7 @@ private:
 #ifdef FORKMESH_WINDOW_TESTS
     bool m_testUseAccountFlowResult = false;
     bool m_testAccountFlowResult = true;
+    bool m_testAccountFlowDesktopCapable = true;
     int m_testEnsureNodeAccountCalls = 0;
     bool m_testBypassServerStart = false;
     TestIssueHistoryDeleteRunner m_testIssueHistoryDeleteRunner;

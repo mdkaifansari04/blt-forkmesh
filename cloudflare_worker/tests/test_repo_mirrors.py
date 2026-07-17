@@ -436,6 +436,12 @@ def _load_handler(*, rows, presence=None, first_hosted=None, live_hosts=None):
             return None
         return live_hosts.get(f"{owner}/{repo}")
 
+    async def edge_cache_match(_key):
+        return None  # always a miss in these unit tests
+
+    async def edge_cache_put(_key, _response):
+        calls.append("edge_cache_put")
+
     namespace = {
         "Date": _Clock,
         "HOST_PRESENCE_STALE_MS": 600_000,
@@ -445,6 +451,9 @@ def _load_handler(*, rows, presence=None, first_hosted=None, live_hosts=None):
         "repo_live_host_count": repo_live_host_count,
         "_is_blocked_catalog_identity": lambda _env, _owner, _name: False,
         "json_response": _response,
+        "edge_cache_match": edge_cache_match,
+        "edge_cache_put": edge_cache_put,
+        "quote": __import__("urllib.parse", fromlist=["quote"]).quote,
     }
     handler, *_ = _load(
         "repo_mirrors_handler",

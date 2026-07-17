@@ -1,0 +1,80 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783233340325,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "",
+            "id": "open-387",
+            "sig": "yO3H8IXRcxdvfZxL3oztLINhDMZlIeUKC5duQekWk6mdenX1-fYvKiYwGcEpbf1aUJmP4Dp1oGGpGXf7HXuGDg",
+            "title": "show a greyed out microphone where the microphoen icon goes  if the user does not have any models installed",
+            "ts": 1783233340325,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 11,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "f3143a77-769a-4bc2-8c3e-76f72428ecff",
+            "sig": "8z3DILkviefdBZ3TNKHxqpyeGLKZ71bGnaSbnPehRJ7jfeIW-vPhx5t6OsjsBhWDhbJKDGPv4h5mFDvO2aFkDA",
+            "ts": 1783717160410,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e03a30d6-214c-440f-8d41-4377415501d6",
+            "sig": "Mmz50Fnzedmo5DxnzZwAVvKHZb3C0STADPc4dEdFu_c9tNrgk0jP4G_dYWvxmTMmgPE1l6bNm0Omn5J4l04AAA",
+            "ts": 1783717160470,
+            "type": "assignees"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "6da3157f-80e8-4837-b07d-278563cd2ba7",
+            "sig": "sDFPOoYrS8H7Qo0F8PDkvLjknvNoZ7o3sb2aWBv5E2qhVUZtsQ0vvi7wV_ZutZefiCSCciRluqBzDUrtu5a8BA",
+            "ts": 1783721095616,
+            "type": "agent"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "b8084442-6ede-4647-b0d0-d41b20dbfe2a",
+            "sig": "SV7_hR8wyFGaMtBaTyfaaZ2WkHT8Pwnz6pu40XSfqoga31NMPtb6H9vjEiikye38AUm2oVXhJS_r1nBUaW9LDQ",
+            "status": "closed",
+            "ts": 1783721095727,
+            "type": "status"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 387,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "show a greyed out microphone where the microphoen icon goes  if the user does not have any models installed",
+    "updatedAt": 1783721095727,
+    "votes": 0
+}

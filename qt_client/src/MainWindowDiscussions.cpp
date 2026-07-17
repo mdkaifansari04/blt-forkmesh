@@ -132,6 +132,7 @@ QWidget *MainWindow::buildDiscussionsTab()
     detailLayout->addWidget(m_discussionMeta);
     detailLayout->addWidget(m_discussionInlineNotice);
     detailLayout->addWidget(m_discussionThreadScroll, 1);
+    detailLayout->addWidget(makeComposerIdentity(nullptr, QStringLiteral("Commenting")));
     detailLayout->addWidget(m_discussionComposer);
     detailLayout->addLayout(composerButtons);
 
@@ -193,11 +194,12 @@ QWidget *MainWindow::buildDiscussionsTab()
 DiscussionStore MainWindow::discussionStoreForCurrentRepo() const
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
-        return DiscussionStore(QString(), QString(), &m_profileIdentity, m_userName);
+        return DiscussionStore(QString(), QString(), &m_profileIdentity,
+                               chatDisplayName());
     const RepositoryRecord &repo =
         writableRecordFor(m_repositories.at(m_repoDetailIndex));
     return DiscussionStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
-                           m_userName);
+                           chatDisplayName());
 }
 
 void MainWindow::reloadDiscussions()
@@ -374,7 +376,7 @@ void MainWindow::showDiscussion(int number)
             const RepositoryRecord &repo =
                 writableRecordFor(m_repositories.at(m_repoDetailIndex));
             m_discussionComposer->setPreviewBasePath(
-                repo.localPath + "/discussions/" + QString::number(found->number));
+                repo.localPath + "/.forkmesh/discussions/" + QString::number(found->number));
         }
     }
     renderDiscussionThread(*found);
@@ -394,6 +396,10 @@ void MainWindow::renderDiscussionThread(const Discussion &discussion)
     if (discussion.number <= 0)
         return;
 
+    // Owning (writable) nodes can moderate the thread by deleting comments; a
+    // read-only clone just shows them.
+    const bool canModerate = discussionStoreForCurrentRepo().canWrite();
+    const int number = discussion.number;
     for (const DiscussionEvent &ev : discussion.events) {
         if (ev.type != QLatin1String("open") &&
             ev.type != QLatin1String("comment"))
@@ -407,8 +413,18 @@ void MainWindow::renderDiscussionThread(const Discussion &discussion)
                      isOpen ? QStringLiteral("opened")
                             : QStringLiteral("commented"),
                      formatIssueRelativeTime(ev.ts).toHtmlEscaped());
+        std::function<void()> onDelete;
+        if (!isOpen && canModerate && !ev.id.isEmpty()) {
+            const QString eventId = ev.id;
+            onDelete = [this, number, eventId] {
+                deleteDiscussionComment(number, eventId);
+            };
+        }
+        // Pass ev.author (the Ed25519 pubkey) so each card shows that author's
+        // real avatar instead of a name-seeded placeholder.
         addConversationCard(m_discussionThreadLayout, who, header, ev.body,
-                            isOpen ? QStringLiteral("#58a6ff") : QString());
+                            isOpen ? QStringLiteral("#58a6ff") : QString(),
+                            QString(), ev.author, onDelete);
     }
     if (m_discussionThreadScroll) {
         QTimer::singleShot(0, this, [this] {
@@ -498,6 +514,7 @@ void MainWindow::createDiscussionDialog()
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     auto *layout = new QVBoxLayout(&dialog);
+    layout->addWidget(makeComposerIdentity(nullptr, QStringLiteral("Posting")));
     layout->addLayout(form);
     layout->addWidget(buttons);
     dialog.resize(560, 460);
@@ -653,6 +670,33 @@ void MainWindow::postDiscussionComment()
     submitDiscussionEventToInbox(m_currentDiscussionNumber, ev);
 }
 
+void MainWindow::deleteDiscussionComment(int number, const QString &eventId)
+{
+    if (number <= 0 || eventId.isEmpty())
+        return;
+    if (QMessageBox::question(
+            this, QStringLiteral("Delete comment"),
+            QStringLiteral("Delete this comment from the discussion? This "
+                           "cannot be undone."),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    DiscussionStore store = discussionStoreForCurrentRepo();
+    QString error;
+    if (!store.deleteComment(number, eventId, &error)) {
+        setDiscussionInlineNotice(
+            error.isEmpty() ? QStringLiteral("Could not delete the comment.")
+                            : error,
+            true);
+        return;
+    }
+    reloadDiscussions();
+    showDiscussion(number);
+    propagateRepoUpdate(m_repoDetailIndex);
+    setDiscussionInlineNotice(QStringLiteral("Comment deleted."));
+}
+
 void MainWindow::submitDiscussionEventToInbox(int number, const DiscussionEvent &ev,
                                               const QString &titleIfNew)
 {
@@ -773,6 +817,8 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactiv
         return;
 
     const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    if (!hasOwnerSigningCapability(owner))
+        return;
     const QString ts = QString::number(nowMs);
     const QByteArray canonical =
         ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
@@ -827,6 +873,8 @@ void MainWindow::applyDiscussionsInboxPayload(const RepositoryRecord &repo,
                                               const QJsonArray &pending,
                                               bool interactive)
 {
+    if (!hasOwnerSigningCapability(repo.owner))
+        return;
     if (pending.isEmpty()) {
         if (interactive)
             setDiscussionInlineNotice("No pending discussion submissions.");

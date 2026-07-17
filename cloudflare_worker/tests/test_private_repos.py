@@ -22,10 +22,11 @@ CATALOG = ENTRY.parent / "catalog.py"
 # Names pulled verbatim from entry.py; the rest of the module (JS imports, async
 # crypto) is never executed.
 _WANT_FUNCS = (
-    "clean_string", "clean_int_series", "safe_segment", "safe_catalog_record")
+    "clean_string", "clean_int_series", "safe_segment", "safe_catalog_record",
+    "safe_contribution_transport")
 
 
-def _load_record_builder():
+def _load_catalog_helpers():
     tree = ast.parse(
         ENTRY.read_text(encoding="utf-8") + "\n"
         + CATALOG.read_text(encoding="utf-8"), filename=str(ENTRY))
@@ -42,10 +43,12 @@ def _load_record_builder():
         "MAX_REPO_SEGMENT": 80,
     }
     exec(compile(module, str(ENTRY), "exec"), namespace)
-    return namespace["safe_catalog_record"]
+    return namespace
 
 
-safe_catalog_record = _load_record_builder()
+_CATALOG_HELPERS = _load_catalog_helpers()
+safe_catalog_record = _CATALOG_HELPERS["safe_catalog_record"]
+safe_contribution_transport = _CATALOG_HELPERS["safe_contribution_transport"]
 
 
 def _base(**overrides):
@@ -82,6 +85,36 @@ def test_activity_weeks_are_clamped_and_padded():
     rec = safe_catalog_record(_base(activityWeeks=[1, "2", -5, "bad", 2_000_000]))
     assert rec["activityWeeks"][-5:] == [1, 2, 0, 0, 1_000_000]
     assert len(rec["activityWeeks"]) == 52
+
+
+def test_contribution_transport_is_bounded_but_never_enters_public_record():
+    data = _base(
+        contributionPayload="payload-bytes",
+        contributionSig="signature-bytes",
+    )
+
+    transport = safe_contribution_transport(data)
+    record = safe_catalog_record(data)
+
+    assert transport == {
+        "present": True,
+        "payload": "payload-bytes",
+        "signature": "signature-bytes",
+        "warning": "",
+    }
+    assert "contributionPayload" not in record
+    assert "contributionSig" not in record
+
+
+def test_contribution_transport_reports_oversize_without_truncating_into_valid_data():
+    transport = safe_contribution_transport(_base(
+        contributionPayload="A" * (64 * 1024 + 1),
+        contributionSig="signature",
+    ))
+
+    assert transport["present"] is True
+    assert transport["payload"] == ""
+    assert transport["warning"] == "contribution_payload_too_large"
 
 
 # --- Logged-in viewer: catalog listing token contract -----------------------

@@ -273,20 +273,6 @@ QPushButton#repoAction {
 QPushButton#repoAction:hover { background-color: #30363d; }
 QPushButton#repoAction::menu-indicator { width: 0; }
 #repoTabBar { border-bottom: 1px solid #30363d; }
-#aboutSidebar { background: transparent; }
-#aboutSidebar QLabel { background: transparent; }
-#aboutHeading { font-size: 15px; font-weight: 700; }
-#aboutText { color: #8b949e; font-size: 11px; }
-QPushButton#aboutEditButton {
-    background-color: transparent; border: 1px solid transparent;
-    border-radius: 6px; padding: 4px;
-}
-QPushButton#aboutEditButton:hover {
-    background-color: #21262d; border-color: #30363d;
-}
-QPushButton#aboutEditButton:disabled { background-color: transparent; }
-#langBar { background-color: #161b22; border-radius: 5px; }
-#aboutRule { background-color: #21262d; border: none; }
 #commitsList {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
 }
@@ -392,8 +378,8 @@ QPushButton#repoMenuButton:hover {
     color: #8b949e; font-size: 13px; font-weight: 700; padding: 5px 10px;
     min-width: 126px; max-width: 126px;
 }
-#topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
-              padding: 2px 12px; font-size: 12px; font-weight: 600; }
+#topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
+#topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
 #topMessageOverlay { background-color: #161b22; border: 1px solid #30363d;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #c9d1d9; }
@@ -614,6 +600,17 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
 #firewallBannerLabel {
     color: #f0b72f; font-size: 13px; background: transparent;
 }
+/* Clickable "N unread messages" strip above the transcript. */
+#chatUnreadBanner {
+    background-color: #0d2136;
+    border-bottom: 1px solid #1f6feb;
+}
+#chatUnreadBanner QLabel { color: #58a6ff; font-size: 13px; font-weight: 600; background: transparent; }
+#chatUnreadBannerButton {
+    background: transparent; border: none; color: #58a6ff; font-weight: 700;
+    padding: 4px 10px; border-radius: 6px;
+}
+#chatUnreadBannerButton:hover { background-color: #1f6feb; color: #ffffff; }
 #solanaBanner {
     background-color: #12261a;
     border-bottom: 1px solid #2ea043;
@@ -681,11 +678,18 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
 #logDock { background-color: #010409; border-top: 1px solid #30363d; }
 #logDock QLabel { background: transparent; }
 #composerBar { background-color: #0d1117; border-top: 1px solid #30363d; }
-#messageInput {
-    background-color: #0d1117; border: 1px solid #30363d;
-    border-radius: 6px; padding: 10px 12px; font-size: 14px;
+#composerInputRow {
+    background-color: #010409; border: 1px solid #30363d; border-radius: 10px;
 }
-#messageInput:focus { border-color: #58a6ff; }
+#messageInput {
+    background-color: transparent; border: none;
+    padding: 9px 4px; font-size: 14px;
+}
+#emojiPickerButton {
+    border: none; background: transparent; font-size: 18px;
+    padding: 3px; border-radius: 6px;
+}
+#emojiPickerButton:hover { background-color: #21262d; }
 
 QScrollBar:vertical {
     background: transparent; width: 10px; margin: 0;
@@ -1420,20 +1424,6 @@ QPushButton#repoAction {
 QPushButton#repoAction:hover { background-color: #f3f4f6; }
 QPushButton#repoAction::menu-indicator { width: 0; }
 #repoTabBar { border-bottom: 1px solid #d0d7de; }
-#aboutSidebar { background: transparent; }
-#aboutSidebar QLabel { background: transparent; }
-#aboutHeading { font-size: 15px; font-weight: 700; }
-#aboutText { color: #656d76; font-size: 11px; }
-QPushButton#aboutEditButton {
-    background-color: transparent; border: 1px solid transparent;
-    border-radius: 6px; padding: 4px;
-}
-QPushButton#aboutEditButton:hover {
-    background-color: #f6f8fa; border-color: #d0d7de;
-}
-QPushButton#aboutEditButton:disabled { background-color: transparent; }
-#langBar { background-color: #eaeef2; border-radius: 5px; }
-#aboutRule { background-color: #d0d7de; border: none; }
 #commitsList {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
 }
@@ -1557,8 +1547,8 @@ QPushButton#repoMenuButton:hover {
     color: #656d76; font-size: 13px; font-weight: 700; padding: 5px 10px;
     min-width: 126px; max-width: 126px;
 }
-#topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
-              padding: 2px 12px; font-size: 12px; font-weight: 600; }
+#topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }
+#topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
 #topMessageOverlay { background-color: #ffffff; border: 1px solid #d0d7de;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #1f2328; }
@@ -1760,6 +1750,17 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #firewallBannerLabel {
     color: #7d4e00; font-size: 13px; background: transparent;
 }
+/* Clickable "N unread messages" strip above the transcript. */
+#chatUnreadBanner {
+    background-color: #ddf4ff;
+    border-bottom: 1px solid #54aeff;
+}
+#chatUnreadBanner QLabel { color: #0969da; font-size: 13px; font-weight: 600; background: transparent; }
+#chatUnreadBannerButton {
+    background: transparent; border: none; color: #0969da; font-weight: 700;
+    padding: 4px 10px; border-radius: 6px;
+}
+#chatUnreadBannerButton:hover { background-color: #0969da; color: #ffffff; }
 #solanaBanner {
     background-color: #dafbe1;
     border-bottom: 1px solid #1f883d;
@@ -1827,11 +1828,18 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
 #logDock QLabel { background: transparent; }
 #composerBar { background-color: #ffffff; border-top: 1px solid #d0d7de; }
-#messageInput {
-    background-color: #ffffff; border: 1px solid #d0d7de;
-    border-radius: 6px; padding: 10px 12px; font-size: 14px;
+#composerInputRow {
+    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px;
 }
-#messageInput:focus { border-color: #0969da; }
+#messageInput {
+    background-color: transparent; border: none;
+    padding: 9px 4px; font-size: 14px;
+}
+#emojiPickerButton {
+    border: none; background: transparent; font-size: 18px;
+    padding: 3px; border-radius: 6px;
+}
+#emojiPickerButton:hover { background-color: #eaeef2; }
 
 QScrollBar:vertical {
     background: transparent; width: 10px; margin: 0;

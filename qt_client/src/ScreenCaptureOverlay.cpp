@@ -145,8 +145,14 @@ protected:
             // dimming content.
             painter.fillRect(rect(), QColor(0, 0, 0, 1));
         }
-        if (!m_owner->m_dragging)
+        // Shade the desktop so the tool visibly reads as "drag to select a
+        // region"; the current selection stays clear so its content shows at
+        // full brightness, like a classic snipping tool.
+        const QColor shade(0, 0, 0, 90);
+        if (!m_owner->m_dragging) {
+            painter.fillRect(rect(), shade);
             return;
+        }
         // Map the global drag endpoints to this panel's local coordinate system.
         // Qt clips the rect at the widget boundary, so only the portion of the
         // selection that falls on this screen is drawn here — the rest shows on
@@ -154,14 +160,36 @@ protected:
         const QPoint origin  = m_owner->m_originGlobal  - m_screenGeom.topLeft();
         const QPoint current = m_owner->m_currentGlobal - m_screenGeom.topLeft();
         const QRect sel = QRect(origin, current).normalized();
-        if (sel.isNull())
+        if (sel.isNull()) {
+            painter.fillRect(rect(), shade);
             return;
+        }
+        for (const QRect &r : QRegion(rect()) - QRegion(sel))
+            painter.fillRect(r, shade);
         QPen pen(QColor("#2f81f7"));
-        pen.setWidth(1);
-        pen.setStyle(Qt::DashLine);
+        pen.setWidth(2);
         painter.setPen(pen);
         painter.setBrush(Qt::NoBrush);
         painter.drawRect(sel.adjusted(0, 0, -1, -1));
+        // Size readout in *global* selection dimensions, drawn only on the
+        // panel the pointer is on so it never appears twice across monitors.
+        if (m_screenGeom.contains(m_owner->m_currentGlobal)) {
+            const QRect globalSel =
+                QRect(m_owner->m_originGlobal, m_owner->m_currentGlobal).normalized();
+            const QString label = QStringLiteral("%1 × %2")
+                                      .arg(globalSel.width())
+                                      .arg(globalSel.height());
+            const QFontMetrics fm = painter.fontMetrics();
+            QRect box = fm.boundingRect(label).adjusted(-6, -3, 6, 3);
+            box.moveTopLeft(sel.topLeft() + QPoint(0, -box.height() - 6));
+            if (box.top() < 0) // selection touches the top edge: drop inside
+                box.moveTopLeft(sel.topLeft() + QPoint(6, 6));
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(0, 0, 0, 180));
+            painter.drawRoundedRect(box, 4, 4);
+            painter.setPen(Qt::white);
+            painter.drawText(box, Qt::AlignCenter, label);
+        }
     }
 
     // Global cursor position derived from this panel's screen anchor rather
@@ -226,30 +254,44 @@ ScreenCaptureOverlay *ScreenCaptureOverlay::begin()
 
 ScreenCaptureOverlay::ScreenCaptureOverlay(const QRect &virtualGeom, qreal dpr,
                                             const QList<QScreen *> &screens)
-    : QObject(nullptr), m_virtualGeom(virtualGeom), m_dpr(dpr)
+    : QObject(nullptr), m_virtualGeom(virtualGeom), m_dpr(dpr), m_screens(screens)
 {
     // Grab the desktop *before* any panel exists, and let the panels paint
     // slices of that frozen shot instead of relying on translucency. Without a
     // compositing window manager (common on bare X11 setups) translucent
     // top-levels can't work — Qt renders them as solid black and every monitor
     // goes dark the moment the tool opens. The frozen shot is opaque, so it
-    // looks like the desktop on any setup. Skip it on Wayland (direct grabs
-    // come back black there, and Wayland always composites, so the translucent
-    // live overlay is safe); likewise fall back to the live overlay if the
-    // grab was refused, which equally implies a compositor is present.
+    // looks like the desktop on any setup.
     if (!runningOnWayland()) {
         const QImage shot = compositeScreens();
         if (!looksLikeFailedGrab(shot))
             m_frozen = shot;
     }
+#ifdef FORKMESH_HAVE_PORTAL
+    else {
+        // Wayland can't use the translucent live overlay either: compositors
+        // put an opaque black backdrop behind fullscreen surfaces, so the
+        // "transparent" panels render every monitor solid black. Direct grabs
+        // are equally forbidden there, so fetch the freeze-frame through the
+        // XDG portal (async) and only show the panels once it arrives.
+        m_awaitingFreezeGrab = true;
+        grabViaPortal(QRect());
+        return;
+    }
+#endif
 
+    createPanels();
+}
+
+void ScreenCaptureOverlay::createPanels()
+{
     const QCursor snip = makeSnipCursor();
     // Push an application-wide override so the snip cursor shows immediately
     // even between panel surfaces or before the first paint.
     QGuiApplication::setOverrideCursor(snip);
     m_cursorPushed = true;
 
-    for (QScreen *s : screens) {
+    for (QScreen *s : m_screens) {
         auto *panel = new PerScreenPanel(this, s->geometry(), snip);
         m_panels.append(panel);
         // Pin the panel to its screen explicitly. On Wayland, clients cannot
@@ -477,10 +519,21 @@ void ScreenCaptureOverlay::grabViaPortal(const QRect &sel)
     bus.asyncCall(call);
 
     // Safety net: never leave the overlay alive forever if the portal (or a
-    // stuck permission dialog) never answers.
-    QTimer::singleShot(8000, this, [this] {
-        if (!m_done)
-            finish(QImage());
+    // stuck permission dialog) never answers. For the pre-capture freeze grab
+    // the user hasn't selected anything yet, so fall back to the live overlay
+    // instead of silently cancelling the tool.
+    const bool freezePhase = m_awaitingFreezeGrab;
+    QTimer::singleShot(8000, this, [this, freezePhase] {
+        if (m_done)
+            return;
+        if (freezePhase) {
+            if (m_awaitingFreezeGrab) {
+                m_awaitingFreezeGrab = false;
+                createPanels();
+            }
+            return; // the freeze grab already resolved; a selection is underway
+        }
+        finish(QImage());
     });
 #else
     finish(grabViaScreens(sel));
@@ -489,14 +542,35 @@ void ScreenCaptureOverlay::grabViaPortal(const QRect &sel)
 
 void ScreenCaptureOverlay::onPortalResponse(uint response, const QVariantMap &results)
 {
-    if (response != 0) { // 1 = user cancelled, 2 = ended some other way
+    QImage full;
+    if (response == 0) { // 1 = user cancelled, 2 = ended some other way
+        const QString path =
+            QUrl(results.value(QStringLiteral("uri")).toString()).toLocalFile();
+        full = QImage(path);
+        if (!path.isEmpty())
+            QFile::remove(path); // the portal drops a temp PNG; don't litter
+    }
+
+    // Pre-capture freeze grab (Wayland): the desktop shot becomes the panels'
+    // backdrop and the selection UI opens now. An explicit user cancel of the
+    // portal dialog cancels the tool; any other failure falls back to the
+    // translucent live overlay so the tool still opens (degraded, but usable).
+    if (m_awaitingFreezeGrab) {
+        m_awaitingFreezeGrab = false;
+        if (response == 1) {
+            finish(QImage());
+            return;
+        }
+        if (!looksLikeFailedGrab(full))
+            m_frozen = full;
+        createPanels();
+        return;
+    }
+
+    if (response != 0) {
         finish(QImage());
         return;
     }
-    const QString path = QUrl(results.value(QStringLiteral("uri")).toString()).toLocalFile();
-    QImage full(path);
-    if (!path.isEmpty())
-        QFile::remove(path); // the portal drops a temp PNG; don't litter
     finish(cropDesktop(full, m_pendingSel));
 }
 

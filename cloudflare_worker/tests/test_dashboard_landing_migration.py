@@ -18,10 +18,10 @@ URLS_TEXT = (ROOT / "src" / "urls.py").read_text(encoding="utf-8")
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
 REDIRECTS = (PUBLIC / "_redirects").read_text(encoding="utf-8")
 REPO_HOST_ROUTE_RE = (
-    'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search)$"'
+    'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search|stats)$"'
 )
 REPO_HOST_BROWSE_ACTIONS = (
-    'elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search"):'
+    'elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats"):'
 )
 
 
@@ -76,7 +76,7 @@ def test_dashboard_exposes_live_hydration_targets():
     dashboard = assembled_dashboard()
 
     assert 'src="/dashboard.js?v=' in dashboard
-    assert 'src="/dashboard-chat.js"' in dashboard
+    assert 'src="/dashboard-chat.js?v=' in dashboard
     for marker in (
         "data-dashboard-profile-name",
         "data-sidebar-user-name",
@@ -359,7 +359,7 @@ def test_dashboard_profile_overview_uses_real_profile_data_not_placeholders():
     assert ">30<" not in profile
     assert ">19<" not in profile
     assert "data-profile-about-panel" in profile
-    assert "data-profile-contribution-grid" in profile
+    assert "data-profile-contribution-card" in profile
     assert "data-profile-activity-list" in profile
     assert "profileFollowers" in dashboard_js
     assert "profileFollowing" in dashboard_js
@@ -369,54 +369,147 @@ def test_dashboard_profile_overview_uses_real_profile_data_not_placeholders():
     assert 'rounded-lg border border-border bg-card p-4' not in profile
 
 
-def test_dashboard_profile_contribution_graph_matches_github_density():
-    dashboard_js = _read(PUBLIC / "dashboard.js")
+def test_dashboard_profile_contribution_card_has_panorama_contract():
     profile = _read(VIEWS / "profile-overview.html")
+    state_js = _read(PUBLIC / "dashboard" / "js" / "01-state.js")
 
     for marker in (
-        "data-profile-contribution-timeline-layout",
-        "data-profile-contribution-main",
-        "data-profile-contribution-years",
-        "data-profile-contribution-grid",
+        "data-profile-contribution-card",
         "data-profile-contribution-summary",
-        "data-profile-contribution-calendar",
-        "data-contribution-months",
-        "data-contribution-cells",
-        "data-contribution-legend",
+        "data-profile-contribution-skyline",
+        "data-profile-contribution-tooltip",
+        "data-profile-contribution-radar",
+        "data-profile-contribution-languages",
+        "data-profile-contribution-metrics",
+        "data-profile-contribution-coverage",
+        "data-profile-contribution-periods",
+        "data-profile-contribution-loading",
+        "data-profile-contribution-empty",
+        "data-profile-contribution-error",
+        "data-profile-contribution-retry",
         "data-profile-activity-items",
         "data-profile-activity-empty",
-        "data-profile-contribution-footer",
         "Contribution settings",
         "Learn how we count contributions",
     ):
-        assert marker in profile
+        if marker == "Contribution settings":
+            assert marker not in profile
+        else:
+            assert marker in profile
 
-    assert "Update your 2FA" not in profile
-    assert "to see contributions within the ForkMesh organization" not in profile
-    assert "grid-cols-[2rem_repeat(26,1rem)]" not in profile
-    assert "max-w-[1432px]" in profile
-    assert 'xl:grid-cols-[minmax(0,1fr)_9rem]' in profile
-    assert 'data-profile-contribution-calendar class="overflow-x-auto rounded-md border border-border bg-background px-6 py-5"' in profile
-    assert "data-profile-contribution-year" in dashboard_js
+    assert "data-profile-contribution-calendar" not in profile
+    assert "data-contribution-months" not in profile
+    assert "data-contribution-cells" not in profile
+    assert "data-contribution-legend" not in profile
+    assert "min-w-[880px]" not in profile
+    assert "#1c1c1f" not in profile
+    assert "#14532d" not in profile
+    assert 'href="/docs/contributions"' in profile
+    assert profile.count("<svg") == 3
+    assert profile.count("<title") == 3
+    assert profile.count("<desc") == 3
     assert 'data-profile-activity-list class="grid gap-6"' in profile
-    assert 'data-profile-activity-list class="rounded-md border border-border bg-card p-5"' not in profile
-    assert "min-w-[880px]" in profile
-    assert "function renderProfileContributionGraph()" in dashboard_js
-    assert "function profileContributionData(" in dashboard_js
-    assert "function loadProfileContributionHistories(" in dashboard_js
-    assert "function profileContributionYears(" in dashboard_js
-    assert "function profileContributionLevel(count, max)" in dashboard_js
-    assert "function profileContributionLevel(week, day)" not in dashboard_js
-    assert "fetchJson(repoLiveUrl(repo, \"history\"))" in dashboard_js
-    assert "contributionDateMs(repo.updatedAt || repo.lastSync || repo.hostedSince)" in dashboard_js
-    assert "addCatalogActivityWeeks" in dashboard_js
-    assert 'const CONTRIBUTION_GRID_COLUMNS = "2.25rem repeat(53, 0.75rem)"' in dashboard_js
-    assert 'const CONTRIBUTION_GRID_GAP = "0.1875rem"' in dashboard_js
-    assert "for (let week = 0; week < 53; week += 1)" in dashboard_js
-    assert "for (let day = 0; day < 7; day += 1)" in dashboard_js
-    assert 'cell.className = "h-3 w-3 rounded-sm"' in dashboard_js
-    assert "data-contribution-cell" in dashboard_js
-    assert "renderProfileContributionGraph();" in dashboard_js
+    for field in (
+        "range: null",
+        "data: null",
+        "loading: false",
+        'error: ""',
+        'requestKey: ""',
+        'selectedDay: ""',
+        "cache: {}",
+    ):
+        assert field in state_js
+    for stale in ("year:", "liveHistory", "loadedYears"):
+        assert stale not in state_js
+
+
+def test_dashboard_profile_contribution_theme_is_semantic_and_responsive():
+    shell = _read(PUBLIC / "dashboard" / "shell.html")
+
+    variables = (
+        "--contribution-commits",
+        "--contribution-issues",
+        "--contribution-pulls",
+        "--contribution-reviews",
+        "--contribution-repositories",
+        "--contribution-empty",
+        "--contribution-unverified",
+        "--contribution-grid-edge",
+        "--contribution-cube-top",
+        "--contribution-cube-left",
+        "--contribution-cube-right",
+        "--contribution-tooltip-bg",
+        "--contribution-tooltip-fg",
+        "--contribution-tooltip-border",
+    )
+    dark = shell[shell.index(":root,"):shell.index('[data-dashboard-theme="light"]')]
+    light = shell[shell.index('[data-dashboard-theme="light"]'):shell.index("html {")]
+    for variable in variables:
+        assert variable in dark
+        assert variable in light
+
+    assert "[data-profile-contribution-panorama]" in shell
+    assert "grid-template-columns: minmax(0, 1fr)" in shell
+    assert "[data-profile-contribution-skyline-viewport]" in shell
+    assert "overflow-x: auto" in shell
+    assert "@media (prefers-reduced-motion: reduce)" in shell
+    assert "[hidden] {" in shell
+    assert "display: none !important" in shell
+    assert "initContributionActivity" not in shell
+    assert "contributionColors" not in shell
+
+
+def test_dashboard_profile_contribution_renderer_uses_one_native_request():
+    account_js = _read(PUBLIC / "dashboard" / "js" / "04-account.js")
+    helpers_js = _read(PUBLIC / "dashboard" / "js" / "02-helpers.js")
+    explorer_js = _read(PUBLIC / "dashboard" / "js" / "05-repo-list-explorer.js")
+    network_js = _read(PUBLIC / "dashboard" / "js" / "08-repo-detail-network.js")
+
+    for helper in (
+        "profileContributionRange",
+        "normalizeProfileContributionDays",
+        "profileContributionStackLevel",
+        "profileContributionCubeFaces",
+        "profileContributionRadarPoints",
+        "profileContributionLanguageSegments",
+        "profileContributionTooltipText",
+        "profileContributionCoverageMessage",
+        "profileContributionCategoryKnown",
+        "renderProfileContributionStatus",
+        "renderProfileActivity",
+    ):
+        assert f"function {helper}" in account_js
+
+    assert '"/api/accounts/" + encodeURIComponent(name) + "/contributions?from="' in account_js
+    assert '"&to=" + encodeURIComponent(range.to)' in account_js
+    assert "state.profileContributions.requestKey !== requestKey" in account_js
+    assert "sessionStorage.setItem(profileContributionCacheKey(requestKey)" in account_js
+    assert 'data-profile-contribution-period="${escapeHtml(period.value)}"' in account_js
+    assert 'aria-current="${active ? "true" : "false"}"' in account_js
+    assert "scrollLeft = viewport.scrollWidth - viewport.clientWidth" in account_js
+    assert "cacheBust: false" in account_js
+    assert "error.status = response.status" in helpers_js
+    assert "temporaryFailure" in account_js
+    assert "if (!temporaryFailure) removeProfileContributionCache(requestKey)" in account_js
+    assert "currentYear - 5" in account_js
+    assert "md:hidden" in account_js
+    assert "Loading verified contribution activity" in account_js
+    assert "Contribution activity is unavailable" in account_js
+
+    for stale in (
+        "loadProfileContributionHistories",
+        "PROFILE_HISTORY_REPO_LIMIT",
+        "PROFILE_HISTORY_CONCURRENCY",
+        "addCatalogActivityWeeks",
+        "commitMatchesProfile",
+        "profileContributionAliases",
+    ):
+        assert stale not in account_js
+    assert 'repoLiveUrl(repo, "history")' not in account_js
+    assert "renderProfileContributionGraph();" not in explorer_js
+    assert "data-profile-contribution-period" in network_js
+    assert "data-profile-contribution-retry" in network_js
+    assert "data-profile-contribution-year" not in network_js
 
 
 def test_dashboard_profile_tabs_are_unified_with_app_header():
@@ -533,7 +626,9 @@ def test_dashboard_profile_repository_count_uses_loaded_repository_groups():
     assert "function renderProfileRepositoryCount" in dashboard_js
     assert '$$("[data-profile-repo-count]").forEach' in dashboard_js
     assert "renderProfileRepositoryCount();" in dashboard_js
-    assert "groupRepositories(state.repositories || []).length" in dashboard_js
+    # Counts follow the same source as the list: the whole catalog on the
+    # dashboard, scoped to the viewed account in public-profile mode.
+    assert "profileRepositoryGroups().length" in dashboard_js
 
 
 def test_dashboard_home_uses_github_dark_typography_and_blue_links():
@@ -727,10 +822,17 @@ def test_dashboard_has_scoped_light_dark_appearance_controls():
     static_js = _read(PUBLIC / "static-page.js")
     assert 'localStorage.getItem("forkmesh.dashboard.theme")' in static_js
     assert 'localStorage.setItem("forkmesh.dashboard.theme", chosen)' in static_js
+    site_header_js = _read(PUBLIC / "site-header.js")
+    for theme_key in ("forkmesh.dashboard.theme", "forkmesh.theme"):
+        assert theme_key in site_header_js
     for docs_page in (PUBLIC / "docs.html", PUBLIC / "docs" / "index.html"):
         docs = _read(docs_page)
-        assert 'localStorage.getItem("forkmesh.dashboard.theme")' in docs
-        assert 'localStorage.setItem("forkmesh.dashboard.theme", chosen)' in docs
+        assert 'src="/site-header.js"' in docs
+        assert 'id="theme-toggle"' not in docs
+        assert "function applyTheme" not in docs
+        assert "localStorage" not in docs
+        assert 'localStorage.getItem("forkmesh.dashboard.theme")' not in docs
+        assert 'localStorage.setItem("forkmesh.dashboard.theme", chosen)' not in docs
 
     assert "function setAppearanceModalOpen(open)" not in dashboard_js
     assert "data-appearance-settings-button" not in dashboard_js
@@ -829,8 +931,8 @@ def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
         "Copy clone",
         "Open clean URL",
         "data-dashboard-repo-tab=\"${tab}\"",
-        '"code", "commits", "insights", "releases", "issues", "pulls", "discussions", "mirrors"',
-        # Releases load lazily on first tab view from releases/<channel>/release.json.
+        '"code", "commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors"',
+        # Releases load lazily on first tab view from .forkmesh/releases/<channel>/release.json.
         "loadRepoReleases(state.selectedRepo)",
         "loadRepoInsights(state.selectedRepo)",
     ):
@@ -937,7 +1039,11 @@ def test_repository_code_page_matches_github_code_layout():
     assert "Fork" in render
     assert "Star" in render
     assert "Add file" in render
-    assert "Last commit date" in render
+    # The Name/Last-commit-message/Last-commit-date column header row was
+    # dropped (adhoc #87) so the file table reads as a compact GitHub-style
+    # commit line; the summary banner still carries commit + date.
+    assert "Last commit date" not in render
+    assert "data-repo-commit-date" in render
     assert ">Code<" in render
 
 
@@ -975,11 +1081,28 @@ def test_dashboard_about_links_readme_activity_and_owner_edit():
     ):
         assert marker in click_handler
     for marker in (
-        "saveRepoAboutFromWeb(state.selectedRepo, description)",
+        "saveRepoAboutFromWeb(state.selectedRepo, description, media)",
         "applyRepoAboutDescription(state.selectedRepo, body.description ?? description)",
         "Only the source node owner can edit About.",
     ):
         assert marker in submit_handler
+
+
+def test_dashboard_about_rail_only_shows_on_code_tab():
+    # The About rail only makes sense beside the file tree/README (owner
+    # decision 2026-07-12, discussion #2): every other tab — commits,
+    # releases, issues, projects, pulls, discussions, insights, mirrors,
+    # agents — should go full-width instead of leaving an orphaned rail.
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    tab_state = dashboard_js[
+        dashboard_js.index("function setRepoTab")
+        : dashboard_js.index("function repoPathParts")
+    ]
+
+    assert 'const showAbout = tab === "code";' in tab_state
+    assert 'contentGrid?.classList.toggle("lg:grid-cols-[minmax(0,1fr)_18rem]", showAbout);' in tab_state
+    assert 'contentGrid?.classList.toggle("lg:grid-cols-1", !showAbout);' in tab_state
+    assert 'about?.classList.toggle("hidden", !showAbout);' in tab_state
 
 
 def test_dashboard_repository_detail_view_uses_full_width_container():
@@ -1019,7 +1142,10 @@ def test_dashboard_repository_folder_icons_are_grey():
         : dashboard_js.index("async function loadRepositoryBlob")
     ]
 
-    assert 'data-lucide="${isTree ? "folder" : "file"}" class="h-4 w-4 shrink-0 text-muted-foreground"' in tree_loader
+    # File rows now use the shared vscode-icons SVGs (same set as the Qt
+    # desktop file browser) via fileIconHtml, not a lucide folder/file glyph
+    # (adhoc #87). Folders stay neutral - no text-primary tint.
+    assert 'fileIconHtml(entry, "h-4 w-4 shrink-0")' in tree_loader
     assert '${isTree ? "text-primary" : "text-muted-foreground"}' not in tree_loader
 
 
@@ -1031,10 +1157,12 @@ def test_dashboard_repository_metadata_constrains_long_values_without_fake_langu
     ]
 
     assert 'grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3' in render
-    assert 'class="min-w-0 truncate text-right text-foreground font-mono"' in render
     assert "flex justify-between gap-3" not in render
     assert "data-repo-live-summary" in render
-    assert "formatSize(repo.sizeBytes)" in render
+    # The Data size chip/row and the Repository metadata block were removed in
+    # the About-rail cleanup; languages now render from the REAL live file
+    # index (loadRepoAboutFilesAndLanguages), never a hardcoded mock mix.
+    assert "formatSize(repo.sizeBytes)" not in render
     assert "TypeScript" not in render
     assert "CSS" not in render
     assert "JavaScript" not in render
@@ -1053,7 +1181,7 @@ def test_dashboard_repository_tabs_read_public_mirror_data_not_owner_inbox():
         'data-dashboard-repo-tab-panel="commits"',
         "data-repo-commits",
         "async function loadRepoCommits(repo)",
-        "fetchJson(repoLiveUrl(repo, \"history\"))",
+        "fetchRepoJson(repoLiveUrl(repo, \"history\"))",
         "function parseFrontMatter(markdown)",
         "async function loadRepoRecordsFromMirror(repo, config)",
         # Issues read the public git tree via loadRepoIssues; pulls and
@@ -1063,8 +1191,8 @@ def test_dashboard_repository_tabs_read_public_mirror_data_not_owner_inbox():
         'dir: ".forkmesh/issues", file: (number) => `issue-${Number(number)}.json`',
         'dir: "pulls", file: "pull.md"',
         'dir: "discussions", file: "discussion.md"',
-        "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path: config.dir }))",
-        "fetchRepoBlobs(repo, dirs.map(recordPath))",
+        "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path: config.dir, ...refParams }))",
+        "fetchRepoBlobs(repo, dirs.map(recordPath), refParams)",
         "Create from desktop client for signed submissions",
     ):
         assert marker in dashboard_js
@@ -1164,8 +1292,8 @@ def test_dashboard_code_tree_rows_use_live_commit_messages():
 
     for marker in (
         "QJsonObject commitSummaryForPath",
-        '"log", "-1", "--date=format:%Y-%m-%d"',
-        '"--format=%H%x1f%an%x1f%ad%x1f%s"',
+        '"log", "-1", "--date=iso-strict"',
+        '"--format=%H%x1f%an%x1f%cd%x1f%s"',
         'args << "--" << path;',
         'entry.insert(QStringLiteral("message"), commit.value(QStringLiteral("subject")));',
         'entry.insert(QStringLiteral("commitMessage"),',
@@ -1174,7 +1302,12 @@ def test_dashboard_code_tree_rows_use_live_commit_messages():
     ):
         assert marker in repo_host
 
-    assert "published latest mirror metadata" in render
+    # The commit summary now paints a loading skeleton on first render and is
+    # filled by the live-commit updater; the placeholder text survives only as
+    # that updater's fallback, never as static render output.
+    assert "published latest mirror metadata" not in render
+    assert 'subject || "published latest mirror metadata"' in dashboard_js
+    assert "animate-pulse rounded bg-muted-foreground/20" in render
     assert 'entry.message || entry.commitMessage || "mirrored repository object"' not in tree_loader
 
 
@@ -1187,7 +1320,6 @@ def test_dashboard_repository_issue_and_pull_tabs_match_github_lists():
 
     for marker in (
         "function renderRepoCollectionPanel(kind, repo, openCount, closedCount)",
-        'data-repo-collection-sidebar="${kind}"',
         'data-repo-collection-toolbar="${kind}"',
         'data-repo-filter-menu="${kind}"',
         'data-repo-filter-query="${kind}"',
@@ -1196,11 +1328,6 @@ def test_dashboard_repository_issue_and_pull_tabs_match_github_lists():
         'placeholder="${kind === "pulls" ? "is:pr is:open" : "Search issues by title, body, author, or #number"}"',
         "New issue",
         "New pull request",
-        "Assigned to me",
-        "Created by me",
-        "Mentioned",
-        "Recent activity",
-        "Views",
         "Author",
         "Labels",
         "Projects",
@@ -1211,6 +1338,8 @@ def test_dashboard_repository_issue_and_pull_tabs_match_github_lists():
     ):
         assert marker in dashboard_js
 
+    # The decorative issues left rail was removed with the About rail (adhoc #25).
+    assert "data-repo-collection-sidebar" not in dashboard_js
     assert 'renderRepoCollectionPanel("issues", repo, issuesCount, repoCount(repo, ["closedIssues", "closedIssueCount"]))' in render
     assert 'renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))' in render
 
@@ -1246,6 +1375,11 @@ def test_dashboard_repository_issue_and_pull_tabs_paginate_records_at_the_bottom
     assert "renderRepoRecordList(items, config, kind)" in collection_loader
     assert "const page = state.repoCollectionPages[kind] || 1;" in record_renderer
     assert "loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);" in click_handler
+    # Issue #420: paginating the Issues list must keep the open/closed/all filter
+    # (renderRepoIssues) instead of re-rendering the raw, unfiltered record list.
+    assert 'if (kind === "issues") renderRepoIssues();' in click_handler
+    # Issue #420: 25 records per page (not 5) for issues and pulls.
+    assert "const REPO_COLLECTION_PAGE_SIZE = 25;" in dashboard_js
 
 
 def test_dashboard_repository_record_chips_and_sidebar_links_use_neutral_github_like_colors():
@@ -1274,10 +1408,8 @@ def test_dashboard_repository_record_chips_and_sidebar_links_use_neutral_github_
     assert 'number === page ? "bg-primary text-primary-foreground border-primary"' not in pagination
     assert 'data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link"' in dashboard_js
     assert "browse-repo-button inline-flex items-center gap-1 text-xs font-medium text-foreground transition-colors" not in dashboard_js
-    # The Clone availability chip keys off the group-liveness verdict (`live`,
-    # which folds in an online mirror serving in place - adhoc #61) but keeps the
-    # neutral GitHub-like foreground/muted colors, never the accent primary.
-    assert '${live ? "text-foreground" : "text-muted-foreground"}' in render
+    # The About rail's Clone-availability row was removed with the metadata
+    # cleanup; the accent-primary variant must stay gone regardless.
     assert '${live ? "text-primary" : "text-muted-foreground"}">${live ? "available" : "offline"}</dd>' not in render
 
 
@@ -1293,9 +1425,9 @@ def test_dashboard_repository_records_open_live_markdown_detail_views():
         "data-repo-record-detail",
         "data-repo-record-back",
         "data-repo-record-body",
-        "const recordPath = `${config.dir}/${number}/${config.file}`;",
-        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: recordPath }))",
-        "loadRepoRecordDetail(state.selectedRepo, recordButton.dataset.repoRecordKind || \"\", recordButton.dataset.repoRecordNumber || \"\")",
+        "const recordPath = `${config.dir}/${number}/${recordFile}`;",
+        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: recordPath, ...refParams }))",
+        "loadRepoRecordDetail(state.selectedRepo, kind, number)",
         "loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);",
     ):
         assert marker in dashboard_js
@@ -1317,7 +1449,8 @@ def test_issue_and_pull_detail_pages_match_github_conversation_layout():
     assert "data-repo-record-sidebar" in detail
     assert 'data-repo-record-tab="conversation"' in detail
     assert 'data-repo-record-tab="commits"' in detail
-    assert 'data-repo-record-tab="checks"' in detail
+    # The Checks tab was a hardcoded 0 with nothing behind it - removed.
+    assert 'data-repo-record-tab="checks"' not in detail
     assert 'data-repo-record-tab="files"' in detail
     assert "Reviewers" in detail
     assert "Assignees" in detail
@@ -1337,7 +1470,7 @@ def test_dashboard_pull_detail_reads_committed_patch_for_files_changed():
         "data-repo-pull-files",
         "data-repo-pull-patch",
         "pulls/${number}/changes.patch",
-        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: patchPath }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: patchPath, ref: \"\" }))",
         "const pullPatch = kind === \"pulls\" ? await loadRepoPullPatch(repo, number) : null;",
         "renderRepoPullFiles(pullPatch.files)",
         "renderRepoPullPatch(pullPatch.patch, `pull:${repoKey(repo)}:${number}`)",
@@ -1358,7 +1491,7 @@ def test_dashboard_commit_history_opens_live_commit_detail_not_inbox_route():
         "function renderRepoCommitDetail(repo, data)",
         "function renderRepoCommitDiff(diff, imageDiffs, key = \"\")",
         "function renderRepoCommitFiles(files)",
-        "fetchJson(repoLiveUrl(repo, \"commit\", { path: hash }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"commit\", { path: hash }))",
         "data-repo-commit-detail",
         "data-repo-commit-back",
         "data-repo-commit-files",
@@ -1407,13 +1540,15 @@ def test_dashboard_repository_tab_counts_wait_for_live_data_and_update_mirrors()
 def test_dashboard_formats_catalog_millisecond_timestamps():
     dashboard_js = _read(PUBLIC / "dashboard.js")
     formatter = dashboard_js[
-        dashboard_js.index("function formatDate")
+        dashboard_js.index("function parseFlexibleDate")
         : dashboard_js.index("function formatSize")
     ]
 
     assert "const numeric = Number(value);" in formatter
     assert "1000000000000" in formatter
     assert "new Date(numeric" in formatter
+    assert "function formatDate(value) {" in formatter
+    assert "function formatTimeAgo(value) {" in formatter
 
 
 def test_worker_routes_public_history_through_live_host_not_commit_inbox():
@@ -1433,7 +1568,7 @@ def test_worker_keeps_commit_inbox_route_separate_from_public_history_route():
     assert 'REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")' in URLS_TEXT
     assert REPO_HOST_ROUTE_RE in URLS_TEXT
     assert REPO_HOST_BROWSE_ACTIONS in ENTRY_TEXT
-    assert 'if action in ("tree", "blob", "history", "commit", "branches"):' in ENTRY_TEXT
+    assert 'if action in ("tree", "blob", "history", "commit", "branches", "stats"):' in ENTRY_TEXT
     assert 'op = "commits" if action == "history" else action' in ENTRY_TEXT
 
 
@@ -1470,7 +1605,7 @@ def test_dashboard_repository_go_to_file_and_add_file_controls_are_present():
         "function moveRepoFileFinderSelection(delta)",
         "MAX_REPO_FILE_FINDER_RESULTS",
         "while (queue.length && files.length < MAX_REPO_FILE_FINDER_RESULTS",
-        "fetchJson(repoLiveUrl(repo, \"tree\", { path }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path }))",
         "data-repo-file-finder-result",
         "loadRepositoryBlob(state.selectedRepo, selected.dataset.repoFileFinderPath || \"\")",
         "event.key.toLowerCase() === \"t\"",
@@ -1504,7 +1639,7 @@ def test_dashboard_repository_branch_button_lists_live_remote_branches():
         "function renderRepoBranchToolbar(repo, branch)",
         "function renderRepoBranchMenu(repo, branches, open)",
         "async function toggleRepoBranchMenu(repo, button)",
-        "fetchJson(`${repoApiBase(repo)}/branches`)",
+        "fetchRepoJson(`${repoApiBase(repo)}/branches`)",
         "filterRepoBranches(repo, branches)",
         "branches.map((branch) =>",
         "data-repo-branch-button",
@@ -1537,12 +1672,12 @@ def test_dashboard_repository_branch_selection_drives_live_mirror_requests():
         "function repoLiveUrl(repo, action, params = {})",
         'query.set("ref", repoSelectedBranch(repo));',
         'return `${repoApiBase(repo)}/${action}?${query.toString()}`;',
-        "fetchJson(repoLiveUrl(repo, \"tree\", { path }))",
-        "fetchJson(repoLiveUrl(repo, \"blob\", { path }))",
-        "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path: config.dir }))",
-        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: recordPath }))",
-        "fetchJson(repoLiveUrl(repo, \"history\"))",
-        "fetchJson(repoLiveUrl(repo, \"commit\", { path: hash }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path: config.dir, ...refParams }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: recordPath, ...refParams }))",
+        "fetchRepoJson(repoLiveUrl(repo, \"history\"))",
+        "fetchRepoJson(repoLiveUrl(repo, \"commit\", { path: hash }))",
         "resetRepoFileFinder(state.selectedRepo);",
         "loadRepositoryTree(state.selectedRepo, \"\");",
         "loadRepoFeaturePanels(state.selectedRepo);",
@@ -1708,7 +1843,7 @@ def test_worker_and_desktop_host_route_live_repository_branches():
     repo_host_h = (ROOT.parent / "qt_client" / "src" / "RepoHost.h").read_text(encoding="utf-8")
 
     for marker in (
-        'if action in ("tree", "blob", "history", "commit", "branches"):',
+        'if action in ("tree", "blob", "history", "commit", "branches", "stats"):',
         'ref = (parse_qs(url.query).get("ref", [""])[0] or "").strip()',
         'op = "commits" if action == "history" else action',
         'return await self._tunnel(op, rel_path, ref, served_by, ua)',
@@ -1773,9 +1908,13 @@ def test_dashboard_network_chat_uses_real_room_integration_without_mock_messages
     chat_js = _read(PUBLIC / "dashboard-chat.js")
     visible = _strip_html_comments(dashboard)
 
-    assert 'src="/dashboard-chat.js"' in dashboard
+    assert 'src="/dashboard-chat.js?v=' in dashboard
     assert 'CHAT_WS_PATH = "/api/repo/mainnode/forkmesh/rooms/general/ws"' in chat_js
-    assert 'ROOM_PASSPHRASE = "forkmesh-shared-room-key-v1"' in chat_js
+    # The room key is fetched from the relay (server-derived from DATA_KEY), not a
+    # public baked-in constant.
+    assert 'forkmesh-shared-room-key-v1' not in chat_js
+    assert 'ROOM_KEY_ENDPOINT = "/api/chat/room-key"' in chat_js
+    assert "fetchRoomPassphrase" in chat_js
     assert "deriveRoomKey" in chat_js
     assert "encryptObject" in chat_js
     assert "decryptObject" in chat_js
@@ -1886,7 +2025,7 @@ def test_dashboard_restores_feature_tab_on_hard_refresh():
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
     assert "function repoRouteParts()" in dashboard_js
-    assert 'const REPO_TAB_ROUTES = ["commits", "insights", "releases", "issues", "pulls", "discussions", "mirrors"];' in dashboard_js
+    assert 'const REPO_TAB_ROUTES = ["commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors"];' in dashboard_js
 
     render_start = dashboard_js.index("function renderRepoDetail(repo)")
     render_body = dashboard_js[render_start:dashboard_js.index("\n  function findRepository(key)")]
@@ -1912,7 +2051,7 @@ def test_dashboard_hard_refresh_preserves_tab_through_404_bounce():
     render_body = dashboard_js[render_start:dashboard_js.index("\n  function findRepository(key)")]
 
     assert "routeMatchesRepo" in render_body
-    assert 'repoTabRoutesFor(repo).includes(routeKind)\n      ? `${repoPathUrl(repo)}/${routeKind}`' in render_body
+    assert 'repoTabRoutesFor(repo).includes(routeKind)\n        ? `${repoPathUrl(repo)}/${routeKind}`' in render_body
     assert "navigateHistory(detailPath);" in render_body
     # The old bare-collapse call must be gone.
     assert "const detailPath = repoPathUrl(repo);" not in render_body

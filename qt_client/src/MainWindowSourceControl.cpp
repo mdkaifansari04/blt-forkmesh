@@ -9,6 +9,9 @@
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
 
+#include <QScrollArea>
+#include <QScrollBar>
+
 #include <algorithm>
 
 using namespace forkmesh::ui;
@@ -170,24 +173,39 @@ QWidget *MainWindow::buildSourceControlPanel()
         b->setCursor(Qt::PointingHandCursor);
     }
 
+    // The message field gets the full panel width on its own row (VS-Code
+    // style). The dense power-user toolbar sits beneath it on a single
+    // horizontally-scrolling row so it never imposes its full width on the
+    // splitter.
+    root->addWidget(m_scmMessage);
+
     m_scmControlsPanel = new QWidget;
-    auto *composeRow = new QHBoxLayout(m_scmControlsPanel);
-    composeRow->setContentsMargins(0, 0, 0, 0);
-    composeRow->setSpacing(6);
-    composeRow->addWidget(m_scmMessage, 1);
-    composeRow->addWidget(m_scmGenerateButton);
-    composeRow->addWidget(m_scmGenModel);
-    composeRow->addWidget(m_scmGenKind);
-    composeRow->addWidget(m_scmGenDuration);
-    composeRow->addWidget(m_scmCopyButton);
-    composeRow->addWidget(m_scmGenStatus);
-    composeRow->addWidget(m_scmStageAllButton);
-    composeRow->addWidget(m_scmUnstageAllButton);
-    composeRow->addWidget(m_scmDiscardAllButton);
-    composeRow->addWidget(m_scmCommitButton);
-    composeRow->addWidget(m_scmCommitPushButton);
-    composeRow->addWidget(m_scmStageCommitPushButton);
-    root->addWidget(m_scmControlsPanel);
+    auto *controlsRow = new QHBoxLayout(m_scmControlsPanel);
+    controlsRow->setContentsMargins(0, 0, 0, 0);
+    controlsRow->setSpacing(6);
+    controlsRow->addWidget(m_scmGenerateButton);
+    controlsRow->addWidget(m_scmGenModel);
+    controlsRow->addWidget(m_scmGenKind);
+    controlsRow->addWidget(m_scmGenDuration);
+    controlsRow->addWidget(m_scmCopyButton);
+    controlsRow->addWidget(m_scmGenStatus);
+    controlsRow->addWidget(m_scmStageAllButton);
+    controlsRow->addWidget(m_scmUnstageAllButton);
+    controlsRow->addWidget(m_scmDiscardAllButton);
+    controlsRow->addWidget(m_scmCommitButton);
+    controlsRow->addWidget(m_scmCommitPushButton);
+    controlsRow->addWidget(m_scmStageCommitPushButton);
+    controlsRow->addStretch();
+
+    m_scmControlsPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
+    auto *controlsScroll = new QScrollArea;
+    controlsScroll->setWidget(m_scmControlsPanel);
+    controlsScroll->setWidgetResizable(true);
+    controlsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    controlsScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    controlsScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    root->addWidget(controlsScroll);
 
     auto *header = new QHBoxLayout;
     auto *title = new QLabel("CHANGES");
@@ -1916,7 +1934,7 @@ RepoSecurityInput MainWindow::buildRepoSecurityInput(const RepositoryRecord &sel
     input.isPrivate = selected.isPrivate;
     input.previewOnly = selected.previewOnly;
     input.actionsEnabled = selected.actionsEnabled;
-    input.integrityWarning = m_pinWarningActive;
+    input.integrityWarning = m_repoPinMismatch;
     input.issues =
         IssueStore(writable.localPath, input.mirrorPath, &m_profileIdentity, m_userName)
             .loadAll();

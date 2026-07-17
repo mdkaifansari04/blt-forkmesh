@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared pywrangler bootstrap for deploy.sh and migrate.sh.
+# Shared pywrangler bootstrap for deploy.sh and migrate.sh
 #
 # Prefer uvx when available: it self-fetches workers-py without a project-local
 # install. On hosts without uv/uvx, install workers-py into a private venv under

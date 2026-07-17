@@ -4,7 +4,13 @@
       localStorage.getItem("forkmesh.dashboard.theme") ||
       localStorage.getItem("forkmesh.theme") ||
       (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    // styles.css palettes key off BOTH classes now: html.dark (the default
+    // palette) and html.light (the light palette added with site-wide theme
+    // support) — stamp them together so every styles.css page responds.
     document.documentElement.classList.toggle("dark", chosen === "dark");
+    document.documentElement.classList.toggle("light", chosen !== "dark");
+    document.documentElement.style.colorScheme =
+      chosen === "dark" ? "dark" : "light";
     localStorage.setItem("forkmesh.theme", chosen);
     localStorage.setItem("forkmesh.dashboard.theme", chosen);
   }

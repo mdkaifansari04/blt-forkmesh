@@ -121,6 +121,11 @@ private:
     QString m_lastTxType;
     QString m_lastTxOp;
     QTimer *m_reconnect = nullptr;
+    // Consecutive failed WS upgrades; drives exponential reconnect backoff so
+    // a relay outage isn't hammered every fixed 5s per hosted repo (that
+    // fixed cadence amplified the 2026-07-11 overload). Reset on a successful
+    // 101 upgrade.
+    int m_reconnectAttempts = 0;
     QTimer *m_pingTimer = nullptr; // keepalive so the relay holds the host link
     std::function<QString()> m_tokenProvider; // fresh /host auth token per connect
     std::function<bool(const QUrl &)> m_connectionAuthorizer;

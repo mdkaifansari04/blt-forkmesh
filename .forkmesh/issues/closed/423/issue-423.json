@@ -1,0 +1,93 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783911859,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783911859",
+            "sig": "IzEeARuvcTMZwwVR3h13YFLmp1oNA2H4ryk4QLNpYcm1pZv6BgPv_s7Y01u-YjcYz1bdBlPRE-GY1GHk4du3AA",
+            "title": "make it so that images can be pasted into the webiste issue reporting",
+            "ts": 1783911859,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 92,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "3f326806-fc99-4bcd-a223-576e20926e54",
+            "sig": "dNASdZ_o3uuSot3qqa_y06ZJniLwjmYbsIjNgpa_gfI14BxjdD84q3aZr2zKh98DjOEBuW4Z8G2lbTNnIGIgDQ",
+            "ts": 1783914306317,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "adfa0127-a233-4bc5-8df8-9ae37807e1b4",
+            "sig": "lU5A7qxZhkG1_cQKvaV9KNTh6kClw_GO2MepNeBcWxsVHE34igyiLG5wxytrR5nmOLrcZse4cQ08TBVfhz5JDQ",
+            "ts": 1783914306378,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-423-make-it-so-that-images-can-be-pasted-into-the-we\".",
+            "id": "5a531d9c-39e7-4f39-af75-3de2fa88c5a9",
+            "sig": "C-nCnXNF8bglZ_RsK4dSD_qIeEzSeDJatzPxi3hjQoujcy79y33flUZZeUU3BIOPn7EfdTiwxgXB-vTadrqsCg",
+            "ts": 1783914556709,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "447cea34-e757-46a6-a08e-7c65943d8475",
+            "sig": "jXCADurYMpPPWV1RvDsPaZEL3qIHEbrss1-WVS_8eOUDsh0zvBoFRppLcvbJiJ79ycwrn8FX73P-AoSNxE5fBg",
+            "status": "closed",
+            "ts": 1783914556780,
+            "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "97f4cb73-3a90-47ff-8889-7f1c516ac01d",
+            "sig": "uFDlMN05WL9RH0Nvs858xTngZanIk5RRYNf5xhaw2Mcq8IzC5c8dAk3CT4diJUQD0U2mWKGP4KiocqUfZ_XsBw",
+            "ts": 1783915794098,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 423,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "make it so that images can be pasted into the webiste issue reporting",
+    "updatedAt": 1783915794098,
+    "votes": 0
+}

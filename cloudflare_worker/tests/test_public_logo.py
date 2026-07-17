@@ -118,9 +118,14 @@ def test_brand_logo_size_comes_from_shared_stylesheet():
 def test_dashboard_assets_are_root_relative_for_deep_links():
     html = (PUBLIC_DIR / "dashboard" / "index.html").read_text(encoding="utf-8")
 
-    assert 'src="/dashboard.js?v=separate-pages"' in html
+    # Root-relative so deep-link paths (/owner/repo/...) resolve the bundle, and
+    # carrying a per-build content-hash ?v= so a new deploy is never served from
+    # a stale cache (the old static ?v=public-profiles never changed).
+    m = re.search(r'src="/dashboard\.js\?v=([0-9a-f]{6,})"', html)
+    assert m is not None, "dashboard.js must be root-relative with a content-hash ?v="
     assert 'href="styles.css"' not in html
     assert 'src="dashboard.js"' not in html
+    assert 'src="/dashboard.js?v=public-profiles"' not in html
 
 
 def test_dashboard_logo_does_not_paint_light_background():

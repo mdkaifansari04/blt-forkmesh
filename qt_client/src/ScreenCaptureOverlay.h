@@ -14,9 +14,11 @@ class PerScreenPanel;
 // every monitor. The user can start the drag on any screen; the coordinator
 // composites all screens on release and emits the cropped image.
 //
-// On Wayland, direct screen grabs return all-black; the capture is routed
-// through the XDG Desktop Portal instead (async). The object deletes itself
-// after emitting captured() or cancelled().
+// On Wayland, direct screen grabs return all-black AND compositors put an
+// opaque black backdrop behind fullscreen surfaces (so a translucent live
+// overlay blacks out every monitor too); both the freeze-frame backdrop and
+// the capture are routed through the XDG Desktop Portal instead (async). The
+// object deletes itself after emitting captured() or cancelled().
 class ScreenCaptureOverlay : public QObject
 {
     Q_OBJECT
@@ -37,6 +39,11 @@ private slots:
 private:
     ScreenCaptureOverlay(const QRect &virtualGeom, qreal dpr,
                          const QList<QScreen *> &screens);
+
+    // Creates and shows one panel per screen (frozen-shot slices when m_frozen
+    // is set, the translucent live overlay otherwise) and pushes the snip
+    // cursor. Deferred on Wayland until the portal freeze-frame arrives.
+    void createPanels();
 
     // Input callbacks from PerScreenPanel — all positions are in global coords:
     void onPress(Qt::MouseButton button, QPoint globalPos);
@@ -63,6 +70,8 @@ private:
     bool m_dragging = false;
     bool m_cursorPushed = false;
     bool m_done = false;      // guards against emitting twice
+    bool m_awaitingFreezeGrab = false; // portal pre-grab (Wayland) still pending
+    QList<QScreen *> m_screens; // screens to cover, captured at begin() time
     QVector<PerScreenPanel *> m_panels; // one per connected screen
 
     friend class PerScreenPanel;

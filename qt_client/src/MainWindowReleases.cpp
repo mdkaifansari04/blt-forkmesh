@@ -26,7 +26,6 @@ enum MirrorNodeColumn {
     MirrorNodeColBranches,
     MirrorNodeColPulls,
     MirrorNodeColDiscussions,
-    MirrorNodeColWorktrees,
     MirrorNodeColCpu,
     MirrorNodeColRam,
     MirrorNodeColDisk,
@@ -275,7 +274,7 @@ void MainWindow::loadArtifactsPanel()
     const QList<MirrorReleaseBlob> blobs = mirrorReleaseBlobs(mirrorPath);
 
     // Map blob sha256 -> asset name / source tag from the release manifests git
-    // already mirrors (releases/<channel>/release.json on the served branch), the
+    // already mirrors (.forkmesh/releases/<channel>/release.json on the served branch), the
     // same way replicateReleaseArtifacts reads them. A blob no manifest names is
     // an orphan and shown as such.
     QHash<QString, QString> nameByHash;
@@ -286,7 +285,7 @@ void MainWindow::loadArtifactsPanel()
         runGitCapture(mirrorPath,
                       {QStringLiteral("ls-tree"), QStringLiteral("-z"),
                        QStringLiteral("--name-only"),
-                       branch + QStringLiteral(":releases")},
+                       branch + QStringLiteral(":.forkmesh/releases")},
                       &channelsOut, nullptr)) {
         for (const QByteArray &raw : channelsOut.split('\0')) {
             const QString channel = QString::fromUtf8(raw).trimmed();
@@ -295,7 +294,7 @@ void MainWindow::loadArtifactsPanel()
             QByteArray manifestOut;
             if (!runGitCapture(mirrorPath,
                                {QStringLiteral("show"),
-                                branch + QStringLiteral(":releases/") + channel +
+                                branch + QStringLiteral(":.forkmesh/releases/") + channel +
                                     QStringLiteral("/release.json")},
                                &manifestOut, nullptr))
                 continue;
@@ -556,7 +555,7 @@ void MainWindow::pruneReleaseTagsForCurrentRepo(const QString &keepTag)
 
     // Deleting only changes the tag refs in the working copy; propagate that
     // into the served bare mirror now (syncRepository fetches heads+tags with
-    // --prune) instead of waiting on the 5-minute auto-sync — the same
+    // --prune) instead of waiting on the 15-minute auto-sync — the same
     // immediacy propagateRepoUpdate already gives freshly committed issues/PRs.
     propagateRepoUpdate(m_repoDetailIndex);
 }
@@ -570,12 +569,12 @@ void MainWindow::loadReleasesPanel()
     const QString dir = repoGitDir();
     const bool writable = repoHasWorkingTree();
 
-    // Release artifacts are published under releases/<channel>/release.json (the
-    // channel is usually "latest", NOT the tag name — see releases/README.md and
+    // Release artifacts are published under .forkmesh/releases/<channel>/release.json (the
+    // channel is usually "latest", NOT the tag name — see .forkmesh/releases/README.md and
     // tools/forkmesh-release-publish.sh). Each manifest records the tag it was cut
     // from in its "tag" field, so scan every channel manifest and key the asset
     // names by that tag. The Artifacts column then looks up each release row by
-    // tag, instead of probing a releases/<tag>/ path that the publisher never
+    // tag, instead of probing a .forkmesh/releases/<tag>/ path that the publisher never
     // writes (which left the column always empty).
     // Each artifact name links to its live download on the relay's
     // content-addressed release endpoint (the exact URL install.sh fetches:
@@ -632,7 +631,7 @@ void MainWindow::loadReleasesPanel()
     QString latestChannelShaTooltip;
     QString latestChannelDownloads;
     if (!dir.isEmpty()) {
-        const QDir releasesDir(dir + QStringLiteral("/releases"));
+        const QDir releasesDir(dir + QStringLiteral("/.forkmesh/releases"));
         const QStringList channels =
             releasesDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
         for (const QString &channel : channels) {
@@ -877,7 +876,7 @@ void MainWindow::loadReleasesPanel()
             }
 
             // Artifacts for this tag come from the channel manifest scanned above
-            // (keyed by the manifest's own "tag" field), not a releases/<tag>/ path.
+            // (keyed by the manifest's own "tag" field), not a .forkmesh/releases/<tag>/ path.
             // The asset names are rendered as live-download links, so use a
             // rich-text label cell that opens the URL in the browser on click.
             QString artifactsHtml = artifactsByTag.value(tag);
@@ -1059,7 +1058,8 @@ QWidget *MainWindow::buildMirrorNodesTab()
     auto *blurb = new QLabel(
         "Nodes across the network that keep a live mirror of this repository. "
         "Each node serves clones and browsing from its own copy; the commit and "
-        "sync time show how fresh that copy is.");
+        "sync time show how fresh that copy is. An underlined value doesn't match "
+        "the source of truth \xE2\x80\x94 that node is serving different data.");
     blurb->setObjectName("statusLine");
     blurb->setWordWrap(true);
     layout->addWidget(blurb);
@@ -1074,7 +1074,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
         {"Node", "Owner", "Latest commit", "Synced", "Size", "Issues", "Commits",
-         "Branches", "Pulls", "Discussions", "Worktrees", "CPU", "RAM", "Disk",
+         "Branches", "Pulls", "Discussions", "CPU", "RAM", "Disk",
          "Platform", "Version", "Node id", "Clones", "Website", "Artifacts"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -1097,7 +1097,6 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(MirrorNodeColBranches, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColPulls, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColDiscussions, QHeaderView::ResizeToContents);
-    mh->setSectionResizeMode(MirrorNodeColWorktrees, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColCpu, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColRam, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColDisk, QHeaderView::ResizeToContents);
@@ -1398,21 +1397,64 @@ void MainWindow::loadMirrorNodesPanel()
     QString sourceCommit;
     QString newestCommit;
     qint64 newestMs = -1;
+    // The advert those two commits came from, so the per-column mismatch check
+    // below can compare a node's advertised counts (issues/commits/branches/…)
+    // against the same reference node, not just its commit. Pointers into
+    // rosterNodes' mirrorDetails / the local selfAdvert, both live to end-of-scope.
+    const MirrorAdvert *sourceAdvert = nullptr;
+    const MirrorAdvert *newestAdvert = nullptr;
     for (const MemberInfo &node : std::as_const(rosterNodes)) {
         bool namedOnly = false;
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
         if (!advert || advert->commit.isEmpty())
             continue;
         if (advert->ownerName == source ||
-            displayNodeName(node, advert).compare(sourceOwner, Qt::CaseInsensitive) == 0)
+            displayNodeName(node, advert).compare(sourceOwner, Qt::CaseInsensitive) == 0) {
             sourceCommit = advert->commit;
+            sourceAdvert = advert;
+        }
         if (advert->updatedMs > newestMs) {
             newestMs = advert->updatedMs;
             newestCommit = advert->commit;
+            newestAdvert = advert;
         }
     }
     const QString referenceCommit =
         !sourceCommit.isEmpty() ? sourceCommit : newestCommit;
+    // The canonical per-column values every mirror should match. Prefer the
+    // source of truth's advert (the owner's), else the freshest node's, mirroring
+    // referenceCommit. A cell that differs from these gets underlined below, so a
+    // node quietly serving different data than the source is visible at a glance.
+    const MirrorAdvert *referenceAdvert =
+        sourceAdvert ? sourceAdvert : newestAdvert;
+    const int refIssues = referenceAdvert ? referenceAdvert->issueCount : -1;
+    const int refCommits = referenceAdvert ? referenceAdvert->commitCount : -1;
+    const int refBranches = referenceAdvert ? referenceAdvert->branchCount : -1;
+    const int refPulls = referenceAdvert ? referenceAdvert->pullCount : -1;
+    const int refDiscussions =
+        referenceAdvert ? referenceAdvert->discussionCount : -1;
+    const int refArtifacts = referenceAdvert ? referenceAdvert->artifactCount : -1;
+    // Underline a cell whose content-derived value doesn't match the reference
+    // node's, and note it in the tooltip. Only content columns (commit + the
+    // metadata counts) are compared — per-node facts like CPU/version/clones are
+    // expected to differ. Skipped when either side is unknown (em-dash) so an
+    // older peer that doesn't advertise a field isn't falsely flagged.
+    auto markMismatch = [](QTableWidgetItem *item, bool mismatch,
+                           const QString &refText) {
+        if (!item || !mismatch)
+            return;
+        QFont f = item->font();
+        f.setUnderline(true);
+        item->setFont(f);
+        const QString note =
+            QStringLiteral("Doesn't match the source of truth (%1)").arg(refText);
+        item->setToolTip(item->toolTip().isEmpty()
+                             ? note
+                             : item->toolTip() + QStringLiteral("\n") + note);
+    };
+    auto countMismatch = [](int value, int ref) {
+        return ref >= 0 && value >= 0 && value != ref;
+    };
 
     // Clone / website-serve tallies are per-node local counters, carried across the
     // network only in each node's published catalog record. Index the catalog cache
@@ -1469,8 +1511,8 @@ void MainWindow::loadMirrorNodesPanel()
     QSet<QString> shownIds;
     // One activity dot per active node, fed to the live strip atop the panel.
     QVector<MirrorActivityStrip::Dot> activityDots;
-    // Build a right-aligned numeric count cell (Commits/Branches/Pulls/Discussions/
-    // Worktrees): the figure, an em-dash when the node doesn't advertise it (-1, an
+    // Build a right-aligned numeric count cell (Commits/Branches/Pulls/
+    // Discussions): the figure, an em-dash when the node doesn't advertise it (-1, an
     // older peer), and a singular/plural tooltip. Shared by the live-roster rows and
     // the catalog-backed rows below so both render these columns identically.
     auto makeCountCell = [](int n, const QString &singular,
@@ -1489,16 +1531,23 @@ void MainWindow::loadMirrorNodesPanel()
     // source of truth attested (or the owner resets the pin). Applied to the
     // Node cell of both live-roster and catalog-backed rows.
     int pinRejectedNodes = 0;
-    auto markPinRejected = [&pinRejectedNodes](QTableWidgetItem *item) {
+    auto markPinRejected = [&pinRejectedNodes](QTableWidgetItem *item, bool isSelf) {
         ++pinRejectedNodes;
         item->setText(item->text() +
                       QString::fromUtf8("  \xE2\x9A\xA0 failing integrity pin"));
         item->setForeground(QColor("#f85149"));
-        const QString note = QString::fromUtf8(
-            "Clones from this node are being rejected: the refs it serves match "
-            "no state the source of truth attested (integrity pin). This clears "
-            "once the node syncs \xE2\x80\x94 or, if the node is already up to "
-            "date, when the owner resets the pin.");
+        const QString note =
+            isSelf
+                ? QString::fromUtf8(
+                      "Clones of this repo are being rejected: the relay's pinned "
+                      "hash no longer matches the refs this node serves. Use "
+                      "\xE2\x80\x9CReset integrity pin\xE2\x80\x9D above to re-sign "
+                      "the current refs and clear it.")
+                : QString::fromUtf8(
+                      "Clones from this node are being rejected: the refs it serves "
+                      "match no state the source of truth attested (integrity pin). "
+                      "This clears once the node syncs \xE2\x80\x94 or, if the node "
+                      "is already up to date, when the owner resets the pin.");
         item->setToolTip(item->toolTip().isEmpty()
                              ? note
                              : item->toolTip() + QStringLiteral("\n\n") + note);
@@ -1509,13 +1558,24 @@ void MainWindow::loadMirrorNodesPanel()
         if (!advert && !namedOnly)
             continue;
 
-        // Node: green/grey dot + name (+ "you") (+ source-of-truth tag).
+        // Node: green/grey dot + name (+ "you") (+ source-of-truth tag). Our own
+        // row also fails here when the relay's pin has drifted past what we
+        // serve (m_repoPinMismatch, adhoc #65) — the relay's /mirrors payload
+        // can't see that on its own, since it only knows the hash we last
+        // published, not our live refs.
         const bool online = node.self ? (m_backend != nullptr) : node.online;
         const bool integrityFailing =
             integrityByNode.value(displayNodeName(node, advert).trimmed().toLower()) ==
-            QLatin1String("rejected");
+                QLatin1String("rejected") ||
+            (node.self && m_repoPinMismatch);
         if (onlineOnly && !online)
             continue;
+        // An online node serving a commit that isn't the source-of-truth's is out
+        // of sync: it catches up at its next heartbeat. Computed here (ahead of the
+        // Node dot) so the dot can go amber; the Synced cell reuses it below.
+        const bool behind = online && advert && !advert->commit.isEmpty() &&
+                            !referenceCommit.isEmpty() &&
+                            advert->commit != referenceCommit;
 
         const QString nodeDisplay = displayNodeName(node, advert);
         const QString ownerDisplay = displayOwnerName(node);
@@ -1537,28 +1597,34 @@ void MainWindow::loadMirrorNodesPanel()
         // from the strip (adhoc #196).
         if (online || integrityFailing)
             activityDots.append(
-                {node.id, nodeDisplay, online, node.self, integrityFailing});
+                {node.id, nodeDisplay, online, node.self, behind, integrityFailing});
         auto *nameItem = new SortTableWidgetItem(
             nodeDisplay + (node.self ? QStringLiteral("  (you)") : QString()) +
             (isSource ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
                       : QString()));
+        // Green when online and in sync, amber when online but out of sync
+        // (behind the source of truth), grey when offline.
         nameItem->setIcon(themedOcticon(
-            "broadcast", QColor(online ? "#3fb950" : "#8b949e"), 14));
+            "broadcast",
+            QColor(!online ? "#8b949e" : behind ? "#d29922" : "#3fb950"), 14));
         nameItem->setData(Qt::UserRole, node.id);
         // Source-of-truth rows sort to the top (★ < letters), then by name.
         nameItem->setData(kTableSortRole,
                           (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
                               nodeDisplay.toLower());
-        nameItem->setToolTip(isSource
-                                 ? QString::fromUtf8("Source of truth \xC2\xB7 %1")
-                                       .arg(online ? "online" : "offline")
-                                 : (online ? "Online now" : "Offline"));
+        nameItem->setToolTip(
+            isSource ? QString::fromUtf8("Source of truth \xC2\xB7 %1")
+                           .arg(online ? "online" : "offline")
+                     : (online ? (behind ? QString::fromUtf8(
+                                               "Online \xC2\xB7 out of sync")
+                                         : QStringLiteral("Online now"))
+                               : QStringLiteral("Offline")));
         if (!node.name.trimmed().isEmpty() &&
             node.name.compare(nodeDisplay, Qt::CaseInsensitive) != 0)
             nameItem->setToolTip(nameItem->toolTip() + QStringLiteral("\nChat: ") +
                                  node.name.trimmed());
         if (integrityFailing)
-            markPinRejected(nameItem);
+            markPinRejected(nameItem, node.self);
         m_mirrorNodesTable->setItem(row, MirrorNodeColNode, nameItem);
         m_mirrorNodesTable->setItem(row, MirrorNodeColOwner,
                                     makeOwnerCell(ownerDisplay));
@@ -1594,6 +1660,11 @@ void MainWindow::loadMirrorNodesPanel()
         }
         auto *commitItem = new QTableWidgetItem(commitText);
         commitItem->setToolTip(commitTip);
+        markMismatch(commitItem,
+                     advert && !advert->commit.isEmpty() &&
+                         !referenceCommit.isEmpty() &&
+                         advert->commit != referenceCommit,
+                     referenceCommit.left(10));
         m_mirrorNodesTable->setItem(row, MirrorNodeColCommit, commitItem);
 
         // Synced: relative time since the node last fetched from source.
@@ -1607,10 +1678,8 @@ void MainWindow::loadMirrorNodesPanel()
                 QDateTime::fromSecsSinceEpoch(syncedSecs).toString(Qt::ISODate));
         // Behind-but-online node: tag the cell so MirrorSyncDelegate draws a
         // pac-man counting down to its next heartbeat/re-sync. In-sync and
-        // offline rows carry no anchor and render as plain text.
-        const bool behind = online && advert && !advert->commit.isEmpty() &&
-                            !referenceCommit.isEmpty() &&
-                            advert->commit != referenceCommit;
+        // offline rows carry no anchor and render as plain text. (`behind` is
+        // computed above so the Node dot can also go amber for it.)
         if (behind) {
             syncedItem->setData(kPacmanAnchorRole,
                                 static_cast<qlonglong>(advert->updatedMs));
@@ -1665,29 +1734,37 @@ void MainWindow::loadMirrorNodesPanel()
                 QString::fromUtf8("Mirroring %1 issue%2")
                     .arg(nodeIssues)
                     .arg(nodeIssues == 1 ? "" : "s"));
+        markMismatch(issuesItem, countMismatch(nodeIssues, refIssues),
+                     QString::number(refIssues));
         m_mirrorNodesTable->setItem(row, MirrorNodeColIssues, issuesItem);
 
         // Commits / Branches / Pulls / Discussions: more per-node tallies
         // advertised alongside the issue count, so the panel shows how much
         // history each node mirrors and how busy it is. Em-dash for older peers.
-        m_mirrorNodesTable->setItem(
-            row, MirrorNodeColCommits,
-            makeCountCell(advert ? advert->commitCount : -1, "commit", "commits"));
-        m_mirrorNodesTable->setItem(
-            row, MirrorNodeColBranches,
-            makeCountCell(advert ? advert->branchCount : -1, "branch", "branches"));
-        m_mirrorNodesTable->setItem(
-            row, MirrorNodeColPulls,
-            makeCountCell(advert ? advert->pullCount : -1, "pull request",
-                          "pull requests"));
-        m_mirrorNodesTable->setItem(
-            row, MirrorNodeColDiscussions,
-            makeCountCell(advert ? advert->discussionCount : -1, "discussion",
-                          "discussions"));
-        m_mirrorNodesTable->setItem(
-            row, MirrorNodeColWorktrees,
-            makeCountCell(advert ? advert->worktreeCount : -1, "worktree",
-                          "worktrees"));
+        const int nodeCommits = advert ? advert->commitCount : -1;
+        const int nodeBranches = advert ? advert->branchCount : -1;
+        const int nodePulls = advert ? advert->pullCount : -1;
+        const int nodeDiscussions = advert ? advert->discussionCount : -1;
+        auto *commitsItem = makeCountCell(nodeCommits, "commit", "commits");
+        markMismatch(commitsItem, countMismatch(nodeCommits, refCommits),
+                     QString::number(refCommits));
+        m_mirrorNodesTable->setItem(row, MirrorNodeColCommits, commitsItem);
+        auto *branchesItem = makeCountCell(nodeBranches, "branch", "branches");
+        markMismatch(branchesItem, countMismatch(nodeBranches, refBranches),
+                     QString::number(refBranches));
+        m_mirrorNodesTable->setItem(row, MirrorNodeColBranches, branchesItem);
+        auto *pullsItem =
+            makeCountCell(nodePulls, "pull request", "pull requests");
+        markMismatch(pullsItem, countMismatch(nodePulls, refPulls),
+                     QString::number(refPulls));
+        m_mirrorNodesTable->setItem(row, MirrorNodeColPulls, pullsItem);
+        auto *discussionsItem =
+            makeCountCell(nodeDiscussions, "discussion", "discussions");
+        markMismatch(discussionsItem,
+                     countMismatch(nodeDiscussions, refDiscussions),
+                     QString::number(refDiscussions));
+        m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
+                                    discussionsItem);
 
         // CPU / RAM / disk usage bars (hover for the underlying figures). The
         // telemetry is per-node, advertised in the node's heartbeats; peers that
@@ -1740,10 +1817,12 @@ void MainWindow::loadMirrorNodesPanel()
         // Artifacts: how many release binaries this node is hosting for download
         // in its content-addressed store (issue #304). A mirror replicates these
         // separately from git, so the count reflects what it can actually serve.
-        m_mirrorNodesTable->setItem(
-            row, MirrorNodeColArtifacts,
-            makeCountCell(advert ? advert->artifactCount : -1, "artifact",
-                          "artifacts"));
+        const int nodeArtifacts = advert ? advert->artifactCount : -1;
+        auto *artifactsItem =
+            makeCountCell(nodeArtifacts, "artifact", "artifacts");
+        markMismatch(artifactsItem, countMismatch(nodeArtifacts, refArtifacts),
+                     QString::number(refArtifacts));
+        m_mirrorNodesTable->setItem(row, MirrorNodeColArtifacts, artifactsItem);
         ++count;
     }
 
@@ -1777,11 +1856,17 @@ void MainWindow::loadMirrorNodesPanel()
                 m.value("integrity").toString() == QLatin1String("rejected");
             if (onlineOnly && !online)
                 continue;
+            // Online catalog node serving a commit other than the source of
+            // truth's is out of sync — its dot goes amber like the live rows.
+            const QString catCommit = m.value("commit").toString();
+            const bool behind = online && !catCommit.isEmpty() &&
+                                !referenceCommit.isEmpty() &&
+                                catCommit != referenceCommit;
             // Only online nodes normally get a dot; keep an offline one too
             // when it's failing the integrity pin (adhoc #196).
             if (online || integrityFailing)
                 catalogOnlyDots.append({m.value("id").toString(), nodeName,
-                                        online, false, integrityFailing});
+                                        online, false, behind, integrityFailing});
             const int row = m_mirrorNodesTable->rowCount();
             m_mirrorNodesTable->insertRow(row);
             const QString ownerUser = m.value(QStringLiteral("ownerUser"))
@@ -1792,22 +1877,25 @@ void MainWindow::loadMirrorNodesPanel()
                                 ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
                                 : QString()));
             nameItem->setIcon(themedOcticon(
-                "broadcast", QColor(online ? "#3fb950" : "#8b949e"), 14));
+                "broadcast",
+                QColor(!online ? "#8b949e" : behind ? "#d29922" : "#3fb950"),
+                14));
             nameItem->setData(kTableSortRole,
                               (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
                                   nodeName.toLower());
             nameItem->setToolTip(
                 online
-                    ? QStringLiteral("Online now")
+                    ? (behind ? QString::fromUtf8("Online \xC2\xB7 out of sync")
+                              : QStringLiteral("Online now"))
                     : QStringLiteral("Published mirror \xC2\xB7 not in the live room"));
             if (integrityFailing)
-                markPinRejected(nameItem);
+                markPinRejected(nameItem, false);
             m_mirrorNodesTable->setItem(row, MirrorNodeColNode, nameItem);
             m_mirrorNodesTable->setItem(row, MirrorNodeColOwner,
                                         makeOwnerCell(ownerUser));
             // Latest commit: the publishing node mirrors its served HEAD into the
             // catalog record, so even an offline node shows its commit (adhoc #56).
-            const QString catCommit = m.value("commit").toString();
+            // (`catCommit` is read above so the dot can go amber for out-of-sync.)
             QString catCommitText = QString::fromUtf8("\xE2\x80\x94");
             if (!catCommit.isEmpty()) {
                 catCommitText = catCommit.left(10);
@@ -1818,6 +1906,10 @@ void MainWindow::loadMirrorNodesPanel()
             auto *catCommitItem = new QTableWidgetItem(catCommitText);
             if (!catCommit.isEmpty())
                 catCommitItem->setToolTip(catCommit);
+            markMismatch(catCommitItem,
+                         !catCommit.isEmpty() && !referenceCommit.isEmpty() &&
+                             catCommit != referenceCommit,
+                         referenceCommit.left(10));
             m_mirrorNodesTable->setItem(row, MirrorNodeColCommit, catCommitItem);
             const qint64 syncedSecs = qint64(m.value("lastSync").toDouble()) / 1000;
             auto *syncedItem = new SortTableWidgetItem(
@@ -1854,27 +1946,35 @@ void MainWindow::loadMirrorNodesPanel()
                 catIssuesItem->setToolTip(QString::fromUtf8("Mirroring %1 issue%2")
                                               .arg(catIssues)
                                               .arg(catIssues == 1 ? "" : "s"));
+            markMismatch(catIssuesItem, countMismatch(catIssues, refIssues),
+                         QString::number(refIssues));
             m_mirrorNodesTable->setItem(row, MirrorNodeColIssues, catIssuesItem);
-            m_mirrorNodesTable->setItem(
-                row, MirrorNodeColCommits,
-                makeCountCell(m.value("commitCount").toInt(-1), "commit",
-                              "commits"));
-            m_mirrorNodesTable->setItem(
-                row, MirrorNodeColBranches,
-                makeCountCell(m.value("branchCount").toInt(-1), "branch",
-                              "branches"));
-            m_mirrorNodesTable->setItem(
-                row, MirrorNodeColPulls,
-                makeCountCell(m.value("pullCount").toInt(-1), "pull request",
-                              "pull requests"));
-            m_mirrorNodesTable->setItem(
-                row, MirrorNodeColDiscussions,
-                makeCountCell(m.value("discussionCount").toInt(-1), "discussion",
-                              "discussions"));
-            m_mirrorNodesTable->setItem(
-                row, MirrorNodeColWorktrees,
-                makeCountCell(m.value("worktreeCount").toInt(-1), "worktree",
-                              "worktrees"));
+            const int catCommits = m.value("commitCount").toInt(-1);
+            const int catBranches = m.value("branchCount").toInt(-1);
+            const int catPulls = m.value("pullCount").toInt(-1);
+            const int catDiscussions = m.value("discussionCount").toInt(-1);
+            auto *catCommitsItem = makeCountCell(catCommits, "commit", "commits");
+            markMismatch(catCommitsItem, countMismatch(catCommits, refCommits),
+                         QString::number(refCommits));
+            m_mirrorNodesTable->setItem(row, MirrorNodeColCommits, catCommitsItem);
+            auto *catBranchesItem =
+                makeCountCell(catBranches, "branch", "branches");
+            markMismatch(catBranchesItem, countMismatch(catBranches, refBranches),
+                         QString::number(refBranches));
+            m_mirrorNodesTable->setItem(row, MirrorNodeColBranches,
+                                        catBranchesItem);
+            auto *catPullsItem =
+                makeCountCell(catPulls, "pull request", "pull requests");
+            markMismatch(catPullsItem, countMismatch(catPulls, refPulls),
+                         QString::number(refPulls));
+            m_mirrorNodesTable->setItem(row, MirrorNodeColPulls, catPullsItem);
+            auto *catDiscussionsItem =
+                makeCountCell(catDiscussions, "discussion", "discussions");
+            markMismatch(catDiscussionsItem,
+                         countMismatch(catDiscussions, refDiscussions),
+                         QString::number(refDiscussions));
+            m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
+                                        catDiscussionsItem);
             for (int col : {MirrorNodeColCpu, MirrorNodeColRam, MirrorNodeColDisk})
                 m_mirrorNodesTable->setItem(row, col,
                                             makeResourceBarCell(-1, QString()));
@@ -1912,10 +2012,14 @@ void MainWindow::loadMirrorNodesPanel()
                 makeServeCountCell(catWebsite, websiteTip(catWebsite)));
             // Artifacts the publishing node reported hosting for download, so the
             // count shows for an offline node too.
-            m_mirrorNodesTable->setItem(
-                row, MirrorNodeColArtifacts,
-                makeCountCell(m.value("artifactCount").toInt(-1), "artifact",
-                              "artifacts"));
+            const int catArtifacts = m.value("artifactCount").toInt(-1);
+            auto *catArtifactsItem =
+                makeCountCell(catArtifacts, "artifact", "artifacts");
+            markMismatch(catArtifactsItem,
+                         countMismatch(catArtifacts, refArtifacts),
+                         QString::number(refArtifacts));
+            m_mirrorNodesTable->setItem(row, MirrorNodeColArtifacts,
+                                        catArtifactsItem);
             ++count;
         }
     }
@@ -2106,7 +2210,7 @@ void MainWindow::replicateReleaseArtifacts(int index)
     if (branch.isEmpty())
         return;
 
-    // Release manifests are committed metadata (releases/<channel>/release.json)
+    // Release manifests are committed metadata (.forkmesh/releases/<channel>/release.json)
     // that git already mirrors; only the binary bytes live out of git in the
     // per-node content-addressed store (issue #304). Read every channel's manifest
     // from the served branch, collect the asset blob hashes we don't already hold,
@@ -2115,9 +2219,9 @@ void MainWindow::replicateReleaseArtifacts(int index)
     if (!runGitCapture(mirrorPath,
                        {QStringLiteral("ls-tree"), QStringLiteral("-z"),
                         QStringLiteral("--name-only"),
-                        branch + QStringLiteral(":releases")},
+                        branch + QStringLiteral(":.forkmesh/releases")},
                        &channelsOut, nullptr))
-        return; // no releases/ tree on this branch — nothing to mirror
+        return; // no .forkmesh/releases/ tree on this branch — nothing to mirror
     static const QRegularExpression sha256Re(QStringLiteral("\\A[0-9a-f]{64}\\z"));
     // Every mirror of this repo shares the same source identity; a manifest that
     // doesn't name its own staging repo falls back to it.
@@ -2132,7 +2236,7 @@ void MainWindow::replicateReleaseArtifacts(int index)
         QByteArray manifestOut;
         if (!runGitCapture(mirrorPath,
                            {QStringLiteral("show"),
-                            branch + QStringLiteral(":releases/") + channel +
+                            branch + QStringLiteral(":.forkmesh/releases/") + channel +
                                 QStringLiteral("/release.json")},
                            &manifestOut, nullptr))
             continue;
@@ -2153,7 +2257,7 @@ void MainWindow::replicateReleaseArtifacts(int index)
             if (QFile::exists(mirrorReleaseBlobPath(mirrorPath, hash)))
                 continue; // already hosting this artifact
             // A blob whose only source node is offline (relay answers 503)
-            // used to be re-requested on every roster flicker and 5-minute
+            // used to be re-requested on every roster flicker and periodic
             // auto-sync, forever — hammering the relay with predictable
             // failures. Back failing hashes off exponentially instead; a
             // successful download clears the streak.
@@ -2454,6 +2558,9 @@ void MainWindow::promptNewRelease()
     const QString notes = notesEdit->toPlainText().trimmed();
     if (message.isEmpty())
         message = tag;
+    // Keep the bare title for the fediverse announcement before the notes are
+    // folded into the tag message below.
+    const QString releaseTitle = message;
     if (!notes.isEmpty())
         message += "\n\n" + notes;
 
@@ -2482,6 +2589,7 @@ void MainWindow::promptNewRelease()
     }
     logSystem(QStringLiteral("Git: tagged release %1 at %2.").arg(tag, targetRef));
     setRepoDetailNotice(QStringLiteral("Published release %1.").arg(tag));
+    announceReleaseOnFediverse(tag, releaseTitle, notes);
     loadBranchesAndTags();
     if (pruneArtifactsCheck->isChecked())
         pruneReleaseArtifactsForCurrentRepo(tag);
@@ -2524,6 +2632,53 @@ void MainWindow::promptNewRelease()
             }
         }
     }
+}
+
+// Announce a freshly published release to the repo's fediverse followers.
+// Releases never pass through the relay's signed inboxes (they are canonical
+// on this node), so the relay can only federate them when the owner node
+// pushes the announcement itself: POST /api/repo/<o>/<r>/ap-publish, gated by
+// the same forkmesh-issues-pull-v1 signed token as the inbox drains.
+// Best-effort fire-and-forget — a relay hiccup must never affect the release.
+void MainWindow::announceReleaseOnFediverse(const QString &tag,
+                                            const QString &title,
+                                            const QString &notes)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    if (!repo.publishToNetwork)
+        return; // unpublished repos have no public fediverse actor
+    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    if (!hasOwnerSigningCapability(owner))
+        return;
+    QUrl url = catalogApiUrl();
+    url.setPath("/api/repo/" + owner + "/" +
+                repoSegment(repo.name, QStringLiteral("repository")) +
+                "/ap-publish");
+    url.setQuery(signedInboxQuery(owner));
+    QJsonObject body;
+    body.insert(QStringLiteral("kind"), QStringLiteral("release"));
+    body.insert(QStringLiteral("eventType"), QStringLiteral("publish"));
+    body.insert(QStringLiteral("tag"), tag);
+    body.insert(QStringLiteral("title"), title);
+    body.insert(QStringLiteral("body"), notes.left(4000));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, tag] {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError)
+            logSystem(
+                QStringLiteral("Fediverse: announced release %1 to followers.")
+                    .arg(tag));
+        else
+            logSystem(
+                QStringLiteral("Fediverse: could not announce release %1 (%2).")
+                    .arg(tag, reply->errorString()));
+    });
 }
 
 void MainWindow::showReleaseDetail(const QString &tag)
@@ -2658,11 +2813,21 @@ void MainWindow::showReleaseDetail(const QString &tag)
     auto *buttons = new QDialogButtonBox;
     auto *browseBtn = buttons->addButton(QStringLiteral("Browse repo at this tag"),
                                          QDialogButtonBox::ActionRole);
+    // Retro-announce: releases published before the automatic ap-publish hook
+    // existed (or while the relay was unreachable) can be pushed to fediverse
+    // followers from here at any time.
+    auto *fediBtn = buttons->addButton(QStringLiteral("Announce on fediverse"),
+                                       QDialogButtonBox::ActionRole);
     buttons->addButton(QDialogButtonBox::Close);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(browseBtn, &QPushButton::clicked, &dialog, [this, &dialog, tag] {
         dialog.accept();
         setRepoBranch(tag); // browse the repo's files at this tag
+    });
+    connect(fediBtn, &QPushButton::clicked, &dialog,
+            [this, tag, subject, body, fediBtn] {
+        fediBtn->setEnabled(false);
+        announceReleaseOnFediverse(tag, subject, body);
     });
     layout->addWidget(buttons);
 

@@ -25,6 +25,8 @@
         <file alias="file-directory.svg">icons/octicons/file-directory.svg</file>
         <file alias="gear.svg">icons/octicons/gear.svg</file>
         <file alias="git-branch.svg">icons/octicons/git-branch.svg</file>
+        <file alias="git-commit.svg">icons/octicons/git-commit.svg</file>
+        <file alias="git-compare.svg">icons/octicons/git-compare.svg</file>
         <file alias="git-merge.svg">icons/octicons/git-merge.svg</file>
         <file alias="git-pull-request.svg">icons/octicons/git-pull-request.svg</file>
         <file alias="graph.svg">icons/octicons/graph.svg</file>

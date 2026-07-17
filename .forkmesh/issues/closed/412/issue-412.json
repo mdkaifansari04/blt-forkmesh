@@ -1,0 +1,44 @@
+{
+    "assignees": [
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783630163,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783630163",
+            "sig": "UDC1fRk52muaaUz2L6_CHZt36V7sOuf02peaFsDf7jIIazaCSWEJtk9sC8Kust9U05Ih2XxmxIXjwkgOBFhXBw",
+            "title": "test",
+            "ts": 1783630163,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "37fcf5d4-945f-4854-a1cb-8806e662f0e1",
+            "sig": "vmSVWUQ-Xr2i6jVyeehXxH4MfClBevL_AQrBzFl8IyJ49S30pPQG34U-AetubDVWh5Uut0AH0fCCoSKCRhiwDQ",
+            "status": "closed",
+            "ts": 1783720924036,
+            "type": "status"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 412,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "status": "closed",
+    "title": "test",
+    "updatedAt": 1783720924036,
+    "votes": 0
+}
