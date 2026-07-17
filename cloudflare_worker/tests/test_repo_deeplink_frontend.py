@@ -93,3 +93,22 @@ def test_popstate_restores_issue_detail_and_list():
         "              loadRepoRecordDetail(repo, kind, path);"
         in DASHBOARD_JS
     )
+
+
+def test_boot_tree_preload_cannot_steal_the_restored_tab():
+    # renderRepoDetail warms the Code tab's tree on every repo open. When the
+    # URL restored a feature tab (adhoc #61: a refresh on /owner/repo/issues
+    # snapped back to the main repo page), that warm-up must run in background
+    # mode so it neither flips the visible tab nor rewrites the address bar.
+    assert (
+        'loadRepositoryTree(repo, routeKind === "tree" ? routePath : "", '
+        '{ background: initialTab !== "code" });'
+    ) in DASHBOARD_JS
+    tree = DASHBOARD_JS[
+        DASHBOARD_JS.index("async function loadRepositoryTree")
+        : DASHBOARD_JS.index("async function loadRepositoryBlob")
+    ]
+    assert 'if (!background) setRepoTab("code");' in tree
+    # Both URL rewrites (empty tree and populated tree) are background-gated.
+    assert tree.count('navigateHistory(repoPathUrl(repo, "tree", path))') == 2
+    assert tree.count('if (!background) navigateHistory(repoPathUrl(repo, "tree", path));') == 2
