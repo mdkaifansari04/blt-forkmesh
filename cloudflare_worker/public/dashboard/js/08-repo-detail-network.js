@@ -314,6 +314,12 @@
     setRepoTab(repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code");
     window.lucide?.createIcons();
     loadRepositoryTree(repo, routeKind === "tree" ? routePath : "");
+    // A deep link into a subfolder (or a blob) loads a subpath/blob tree that
+    // carries no served counts, so the tab badges would stay on the stale
+    // catalog seed (e.g. Issues showing 7 while the open/ folder holds 11).
+    // Refresh them from the mirror's root counts in that case; the root code
+    // view and the feature-tab routes already fetch the root tree themselves.
+    if ((routeKind === "tree" || routeKind === "blob") && routePath) refreshServedCounts(repo);
     if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo, recordRoute);
     loadRepoPendingCounts(repo);
