@@ -66,6 +66,15 @@
             "sig": "2ojxE8HLYEi4gn0BnBc19TPicg2KLCcA7Jhlj_dUUy5ikbWoQEh3LP1gxNWk4ZVCcJCquDk4Oc5drd5yuyWzCA",
             "ts": 1784326385895,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "0e45dee4-6828-471c-874f-ea6e2a8189d2",
+            "sig": "NLykY4-jj-DegfrJqwO5fAv24Il2XL0RYYfHpOJHE4iCWbqlJnX5S_wlMhD1cM4gxJLO-sAjm3ErW45G5J4mAA",
+            "status": "closed",
+            "ts": 1784326385982,
+            "type": "status"
         }
     ],
     "labels": [
@@ -76,8 +85,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "have teh ability for the repo owner to delete posts from mastodon",
-    "updatedAt": 1784326385895,
+    "updatedAt": 1784326385982,
     "votes": 0
 }
