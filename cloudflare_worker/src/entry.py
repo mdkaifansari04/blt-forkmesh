@@ -13382,8 +13382,20 @@ def _forkbot_missing_tree(data):
         "does not exist", "unknown revision"))
 
 
-def _forkbot_issue_json_path(number):
-    return ".forkmesh/issues/%d/issue-%d.json" % (int(number), int(number))
+def _forkbot_issue_json_path(number, subdir=""):
+    # Issues are split by status into .forkmesh/issues/open/<N>/ and
+    # .forkmesh/issues/closed/<N>/ (adhoc #14); pre-split mirrors keep the
+    # numbered folder directly under the root (subdir "").
+    base = ".forkmesh/issues"
+    if subdir:
+        base += "/" + subdir
+    return "%s/%d/issue-%d.json" % (base, int(number), int(number))
+
+
+def _forkbot_issue_json_candidates(number):
+    """Every path issue <number>'s record may live at, most likely first."""
+    return [_forkbot_issue_json_path(number, subdir)
+            for subdir in ("open", "closed", "")]
 
 
 def _forkbot_blob_text(blob):
@@ -13436,21 +13448,39 @@ def _forkbot_parse_issue_record(text, number):
 async def _forkbot_recent_issue_numbers(env, owner, repo):
     """Issue numbers committed to the live mirror, newest first. Returns None
     when no host could serve the tree (offline), [] when the repo simply has
-    no issues folder yet."""
-    tree = await _forkbot_repo_host_json(
+    no issues folder yet. Issues are split into open/ and closed/ status
+    folders (adhoc #14); numbered folders directly under the root are the
+    pre-split legacy layout."""
+    root = await _forkbot_repo_host_json(
         env, owner, repo, "tree?path=" + quote(".forkmesh/issues", safe=""))
-    if tree is None:
+    if root is None:
         return None
-    entries = tree.get("entries")
+    entries = root.get("entries")
     if not isinstance(entries, list):
-        return [] if _forkbot_missing_tree(tree) else None
+        return [] if _forkbot_missing_tree(root) else None
     numbers = set()
+    subdirs = []
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("type") != "tree":
             continue
         name = str(entry.get("name", ""))
         if name.isdigit():
             numbers.add(int(name))
+        elif name in ("open", "closed"):
+            subdirs.append(name)
+    for subdir in subdirs:
+        tree = await _forkbot_repo_host_json(
+            env, owner, repo,
+            "tree?path=" + quote(".forkmesh/issues/" + subdir, safe=""))
+        sub_entries = tree.get("entries") if isinstance(tree, dict) else None
+        if not isinstance(sub_entries, list):
+            continue
+        for entry in sub_entries:
+            if not isinstance(entry, dict) or entry.get("type") != "tree":
+                continue
+            name = str(entry.get("name", ""))
+            if name.isdigit():
+                numbers.add(int(name))
     return sorted(numbers, reverse=True)
 
 
@@ -13461,15 +13491,23 @@ async def _forkbot_load_issue_records(env, owner, repo, numbers):
     numbers = [int(n) for n in numbers][:FORKBOT_LIST_MAX]
     if not numbers:
         return []
+    # A record lives at open/<N>/, closed/<N>/, or the pre-split legacy <N>/
+    # depending on its status; ask for every candidate in the one batch (3 ×
+    # FORKBOT_LIST_MAX stays within MAX_BLOB_BATCH) and keep whichever answered.
     query = "&".join(
-        "path=" + quote(_forkbot_issue_json_path(n), safe="") for n in numbers)
+        "path=" + quote(path, safe="")
+        for n in numbers for path in _forkbot_issue_json_candidates(n))
     data = await _forkbot_repo_host_json(env, owner, repo, "blobs?" + query)
     blobs = data.get("blobs") if isinstance(data, dict) else None
     if not isinstance(blobs, dict):
         return []
     records = []
     for number in numbers:
-        text = _forkbot_blob_text(blobs.get(_forkbot_issue_json_path(number)))
+        text = ""
+        for path in _forkbot_issue_json_candidates(number):
+            text = _forkbot_blob_text(blobs.get(path))
+            if text:
+                break
         if not text:
             continue
         records.append(_forkbot_parse_issue_record(text, number))

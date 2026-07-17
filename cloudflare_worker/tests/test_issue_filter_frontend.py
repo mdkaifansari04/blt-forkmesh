@@ -76,6 +76,11 @@ def test_dashboard_js_loads_issues_from_git_tree_and_counts_open():
     # Published issues come from the repo's .forkmesh/issues/ git folder, not the inbox.
     assert 'repoLiveUrl(repo, "tree", { path: ".forkmesh/issues" })' in load
     assert "issueJsonPath(Number(entry.name))" in load
+    # Issues are split into open/ and closed/ status folders (adhoc #14); the
+    # loader lists both subdirs and reads each record from wherever it lives,
+    # still accepting pre-split numbered folders at the root.
+    assert '.forkmesh/issues/${statusDir}' in load
+    assert "issueJsonPath(Number(entry.name), statusDir)" in load
     assert "parseIssueJson(blobText(blob), number)" in load
     # The default Open view is rendered through the filter, and the tab badge
     # counts the open issues.
@@ -183,7 +188,7 @@ def test_dashboard_js_surfaces_unreadable_issues_instead_of_dropping_them():
     # Null blobs are collected as misses, not dropped.
     assert "else missing.push(number);" in load
     # The misses are re-fetched once before giving up.
-    assert "missing.map((number) => issueJsonPath(number))" in load
+    assert "missing.map((number) => pathByNumber.get(number))" in load
     assert "missing = stillMissing;" in load
     # Whatever is still unreadable becomes a visible placeholder row.
     assert "missing.forEach((number) => items.push(placeholderIssue(number)));" in load
