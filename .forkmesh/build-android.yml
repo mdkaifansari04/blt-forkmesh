@@ -37,23 +37,17 @@ jobs:
           [ -f .forkmesh-skip-android ] && exit 0
           set -e
 
-          # Locate Flutter (CI PATH may not include it).
-          if ! command -v flutter >/dev/null 2>&1; then
-            for d in "$HOME/flutter/bin" "$HOME/development/flutter/bin" \
-                     "$HOME/snap/flutter/common/flutter/bin" /opt/flutter/bin; do
-              if [ -x "$d/flutter" ]; then PATH="$d:$PATH"; break; fi
-            done
-          fi
-          if ! command -v flutter >/dev/null 2>&1; then
-            echo "ERROR: flutter not found on this CI host." >&2
-            echo "Install Flutter + the Android SDK to build the app." >&2
-            exit 1
-          fi
-          flutter --version
+          # Self-install Flutter + the Android SDK + a JDK under
+          # $HOME/.forkmesh/toolchain when this node doesn't already have them
+          # (cached there across runs), the same way cloudflare_worker/
+          # pywrangler.sh self-installs the deploy toolchain instead of
+          # assuming the host has it pre-provisioned.
+          . tools/flutter-android-toolchain.sh
+          "$FLUTTER" --version
 
           cd flutter_app
-          flutter pub get
-          flutter build apk --release
+          "$FLUTTER" pub get
+          "$FLUTTER" build apk --release
 
           apk="build/app/outputs/flutter-apk/app-release.apk"
           if [ ! -f "$apk" ]; then
