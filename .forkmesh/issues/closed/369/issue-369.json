@@ -76,6 +76,18 @@
             "status": "closed",
             "ts": 1784330901024,
             "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "11e9974e-1863-4e9c-b0a7-f8f63ec2d996",
+            "sig": "1lwCzOPwhdGv_D1YPzUKoCSdRwss7fQct4HEbQMY10MInImfsJpVbMpqJ_JYK2DuLJstOqUgIhNRAGEZsIcrDg",
+            "ts": 1784331028355,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -90,6 +102,6 @@
     "startDate": 0,
     "status": "closed",
     "title": "[code + business: needs legal review] Non-custodial on-chain bounty escrow",
-    "updatedAt": 1784330901024,
+    "updatedAt": 1784331028355,
     "votes": 0
 }
