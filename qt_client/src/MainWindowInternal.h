@@ -1070,13 +1070,48 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
 
-        // Rounded card so each chart reads as its own little square.
+        // Rounded card that doubles as the sparkline's full-height track, so the
+        // curve reads as a background layer and the label/value sit over it.
         const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        QPainterPath cardPath;
+        cardPath.addRoundedRect(box, 4, 4);
         QColor card = palette().color(QPalette::WindowText);
-        card.setAlpha(20);
+        card.setAlpha(28);
         p.setPen(Qt::NoPen);
         p.setBrush(card);
-        p.drawRoundedRect(box, 4, 4);
+        p.drawPath(cardPath);
+
+        // The sparkline fills the whole card (adhoc #46), with the most recent
+        // sample at its right edge so the curve scrolls left over time. Clipped
+        // to the rounded card so the fill/line never spill past the corners.
+        const QRectF area = box.adjusted(1.5, 1.5, -1.5, -1.5);
+        if (area.height() >= 2 && m_history.size() >= 2) {
+            p.save();
+            p.setClipPath(cardPath);
+            const QColor line = gaugeColor(m_history.last() / m_max * 100.0);
+            const double step = area.width() / double(kMaxPoints - 1);
+            const int n = m_history.size();
+            QPolygonF curve;
+            for (int i = 0; i < n; ++i) {
+                const double x = area.right() - (n - 1 - i) * step;
+                const double norm = qBound(0.0, m_history.at(i) / m_max, 1.0);
+                curve << QPointF(x, area.bottom() - norm * area.height());
+            }
+            QPolygonF fill = curve;
+            fill << QPointF(curve.last().x(), area.bottom())
+                 << QPointF(curve.first().x(), area.bottom());
+            QColor under = line;
+            under.setAlpha(70);
+            p.setBrush(under);
+            p.setPen(Qt::NoPen);
+            p.drawPolygon(fill);
+            QPen pen(line);
+            pen.setWidthF(1.2);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawPolyline(curve);
+            p.restore();
+        }
 
         // A header font that shrinks until the wider of the label/value lines
         // fits, so neither is clipped however the app's base font is sized.
@@ -1094,55 +1129,23 @@ protected:
         p.setFont(f);
         const QFontMetrics fm(f);
         const int lineH = fm.height();
-        const int headH = lineH * 2;
 
-        // Header: the resource label and its current value stack on their own
-        // centered lines (e.g. "CPU" then "9%"); the chart gets the rest.
+        // Label + value overlaid on the chart: the resource label and its value
+        // stack on centered lines (e.g. "CPU" then "9%"), vertically centered
+        // and given a mild opacity so the curve stays visible behind them.
+        const double topY = (height() - lineH * 2) / 2.0;
         QColor lab = palette().color(QPalette::WindowText);
-        lab.setAlpha(150);
+        lab.setAlpha(170);
         p.setPen(lab);
-        p.drawText(QRectF(3, 1, width() - 6, lineH),
+        p.drawText(QRectF(3, topY, width() - 6, lineH),
                    Qt::AlignVCenter | Qt::AlignHCenter, m_label);
         const double lastPct =
             m_history.isEmpty() ? 0.0 : m_history.last() / m_max * 100.0;
-        p.setPen(gaugeColor(lastPct));
-        p.drawText(QRectF(3, 1 + lineH, width() - 6, lineH),
+        QColor val = gaugeColor(lastPct);
+        val.setAlpha(210);
+        p.setPen(val);
+        p.drawText(QRectF(3, topY + lineH, width() - 6, lineH),
                    Qt::AlignVCenter | Qt::AlignHCenter, m_value);
-
-        // The sparkline track fills the area below the header, with the most
-        // recent sample at its right edge so the curve scrolls left over time.
-        const QRectF area(3, headH + 2, width() - 6, height() - headH - 5);
-        if (area.height() < 2)
-            return;
-        QColor track = palette().color(QPalette::WindowText);
-        track.setAlpha(28);
-        p.setPen(Qt::NoPen);
-        p.setBrush(track);
-        p.drawRoundedRect(area, 2, 2);
-        if (m_history.size() < 2)
-            return;
-        const QColor line = gaugeColor(m_history.last() / m_max * 100.0);
-        const double step = area.width() / double(kMaxPoints - 1);
-        const int n = m_history.size();
-        QPolygonF curve;
-        for (int i = 0; i < n; ++i) {
-            const double x = area.right() - (n - 1 - i) * step;
-            const double norm = qBound(0.0, m_history.at(i) / m_max, 1.0);
-            curve << QPointF(x, area.bottom() - norm * area.height());
-        }
-        QPolygonF fill = curve;
-        fill << QPointF(curve.last().x(), area.bottom())
-             << QPointF(curve.first().x(), area.bottom());
-        QColor under = line;
-        under.setAlpha(55);
-        p.setBrush(under);
-        p.setPen(Qt::NoPen);
-        p.drawPolygon(fill);
-        QPen pen(line);
-        pen.setWidthF(1.2);
-        p.setPen(pen);
-        p.setBrush(Qt::NoBrush);
-        p.drawPolyline(curve);
     }
 
 private:

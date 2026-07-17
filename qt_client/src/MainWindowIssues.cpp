@@ -2812,12 +2812,25 @@ void MainWindow::renderIssueThread(const Issue &issue)
             auto *save = new QPushButton("Save", bodyContainer);
             save->setObjectName("primaryButton");
             save->setCursor(Qt::PointingHandCursor);
-            save->style()->unpolish(save);
-            save->style()->polish(save);
             buttonRow->addStretch();
             buttonRow->addWidget(cancel);
             buttonRow->addWidget(save);
             bodyLayout->addLayout(buttonRow);
+            // Repolishing right after construction can race Qt's own first-show
+            // polish for a widget that was just parented and isn't under layout
+            // management yet, leaving the primaryButton fill/text unpainted
+            // (border-only). Defer it a tick so it runs after the button is
+            // actually part of the shown layout; QPointer guards against the
+            // editor being torn down (Cancel/Save swap the body back out) before
+            // the deferred call fires.
+            QPointer<QPushButton> saveGuard(save);
+            QTimer::singleShot(0, this, [saveGuard]() {
+                if (!saveGuard)
+                    return;
+                saveGuard->style()->unpolish(saveGuard);
+                saveGuard->style()->polish(saveGuard);
+                saveGuard->update();
+            });
             connect(cancel, &QPushButton::clicked, this, [this, num]() { showIssue(num); });
             connect(save, &QPushButton::clicked, this,
                     [this, num, eid, eventAttachments, editor]() {
