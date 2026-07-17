@@ -74,6 +74,21 @@ GIT_PACK_RE = re.compile(r"^/([^/]+)/([^/]+)/git-upload-pack$")
 # git push endpoint (issue #358): receive-pack over the same relay tunnel, gated
 # by an owner-key-signed HTTP Basic token (see verify_push_token).
 GIT_RECEIVE_RE = re.compile(r"^/([^/]+)/([^/]+)/git-receive-pack$")
+# --- Organizations + teams (issue #388) ---------------------------------------
+# Orgs are user-created namespaces that serve linked repos at /<org>/<repo>
+# instead of the hosting node's name. POST /api/orgs creates one (session
+# auth); the per-org members/teams/repos collections manage the roster, the
+# permission teams, and the repo alias map.
+ORGS_RE = re.compile(r"^/api/orgs$")
+ORG_RE = re.compile(r"^/api/orgs/([^/]+)$")
+ORG_MEMBERS_RE = re.compile(r"^/api/orgs/([^/]+)/members$")
+ORG_TEAMS_RE = re.compile(r"^/api/orgs/([^/]+)/teams$")
+ORG_TEAM_MEMBERS_RE = re.compile(r"^/api/orgs/([^/]+)/teams/([^/]+)/members$")
+ORG_REPOS_RE = re.compile(r"^/api/orgs/([^/]+)/repos$")
+# Repo-scoped API prefix, matched once by the org-alias rewrite so an org's
+# /api/repo/<org>/<repo>/... URLs are re-routed to the linked node's repo
+# before any of the per-endpoint patterns above run.
+REPO_API_PREFIX_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)(?:/.*)?$")
 # Account API: reserve/finalize/login and GET /api/accounts/{name} are all
 # single-segment, so this one pattern gates the whole accounts_handler dispatch.
 ACCOUNTS_RE = re.compile(r"^/api/accounts/([^/]+)$")
