@@ -3373,7 +3373,9 @@ private:
     // Shift+Enter inserts a newline; Up/Down still walk the prompt history.
     QPlainTextEdit *m_issueQuickAdd = nullptr;
     QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
-    QCheckBox *m_quickAddAssignAgent = nullptr; // assign a coding agent on add
+    // Agent/model chooser (adhoc #29): also carries a "Manual (create issue)"
+    // entry that replaces the old Agent / Create-issue checkboxes — picking it
+    // files an issue from the prompt instead of starting an agent.
     QComboBox *m_quickAddAgentProvider = nullptr;
     // Prompt-row model chooser (adhoc #261/#349): Claude Code gets the live
     // Claude model list; Codex gets an editable OpenAI model list.
@@ -3383,10 +3385,6 @@ private:
     // backed by the same kClaudeAutoModeSetting as the agent composer's toggle.
     QComboBox *m_quickAddModeSelector = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
-    // "Create issue" toggle (adhoc #99): off by default (remembered via
-    // kQuickAddCreateIssueSetting) — unchecked means the typed prompt starts an
-    // agent directly and skips filing an issue at all.
-    QCheckBox *m_quickAddCreateIssue = nullptr;
     // Up-pointing paper-airplane stacked above the normal send icon (adhoc #99):
     // sends the typed prompt as a follow-up message to the currently-selected
     // agent session instead of the quick-add issue/new-agent flow.
