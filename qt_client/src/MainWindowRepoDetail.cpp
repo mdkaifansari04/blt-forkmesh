@@ -3970,9 +3970,13 @@ void MainWindow::loadCommits()
     // Date-descending sort so rows stay in git-log order (the order the lanes were
     // computed in) after sorting is re-enabled.
     {
-        const int laneSpan = 2 * kGraphMargin + maxGraphLane * kGraphLaneWidth;
+        // Hug the lanes tightly: one leading margin, the lanes, then only enough
+        // trailing room for the node ring — no wide dead gap between the last
+        // coloured line and the commit message beside it (issue #52).
+        const int laneSpan = kGraphMargin + maxGraphLane * kGraphLaneWidth
+                             + static_cast<int>(kGraphNodeOuter) + 3;
         m_commitsTable->horizontalHeader()->resizeSection(
-            kCommitGraphCol, std::clamp(laneSpan, 22, 140));
+            kCommitGraphCol, std::clamp(laneSpan, 18, 140));
     }
     // Repaints stay suspended (TableRepaintGuard) through the banner update and
     // filter re-apply below, so the whole reload lands in a single repaint when
@@ -8085,6 +8089,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     repoDetailStackScroll->setWidgetResizable(true);
     repoDetailStackScroll->setFrameShape(QFrame::NoFrame);
     repoDetailStackScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Hide the outer vertical scrollbar (the right-most one in the window). Each
+    // repo-detail tab manages its own scrolling, so this outer bar was a
+    // redundant second scrollbar. Wheel/keyboard scrolling still works.
+    repoDetailStackScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     repoDetailStackScroll->setMinimumHeight(0);
     repoDetailStackScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     repoDetailStackScroll->setWidget(m_repoDetailStack);
@@ -8462,32 +8470,33 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitMeta->setTextFormat(Qt::RichText);
     m_commitMeta->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
-    m_commitFilesSummary = new QLabel;
-    m_commitFilesSummary->setObjectName("sectionLabel");
-    m_commitFilesSummary->setTextFormat(Qt::RichText);
+    // The old "N files changed" heading is gone: the changed-files tree carries
+    // the file names on its own, so the standalone count label is redundant.
+    m_commitFilesSummary = nullptr;
 
-    // Left: changed-files list (click to scroll the diff to that file).
+    // Left: changed-files list (click to scroll the diff to that file). The
+    // selected file gets the same green outline the other file trees use, so the
+    // active file is obvious at a glance (issue: border the selected file).
     auto *filesPane = new QWidget;
     filesPane->setMinimumWidth(200);
     filesPane->setMaximumWidth(300);
     m_commitFileList = new QListWidget;
     m_commitFileList->setObjectName("commitFileList");
+    enableHoverRowHighlight(m_commitFileList); // green outline on the selected file
     connect(m_commitFileList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
                 if (item && m_commitDiffView)
                     m_commitDiffView->scrollToAnchor(
                         item->data(Qt::UserRole).toString());
             });
-    // Small spinner that sits just after the "N files changed" heading while
-    // showCommit reads + renders the diff, so a slow commit shows progress here
-    // instead of freezing. Hidden until a load starts.
+    // Small spinner that shows load progress while showCommit reads + renders
+    // the diff, so a slow commit shows progress here instead of freezing.
     m_commitDiffSpinner = new BusySpinner(filesPane);
     m_commitDiffSpinner->setToolTip(QString::fromUtf8("Loading diff\xE2\x80\xA6"));
     m_commitDiffSpinner->hide();
     auto *filesSummaryRow = new QHBoxLayout;
     filesSummaryRow->setContentsMargins(0, 0, 0, 0);
     filesSummaryRow->setSpacing(6);
-    filesSummaryRow->addWidget(m_commitFilesSummary);
     filesSummaryRow->addWidget(m_commitDiffSpinner);
     filesSummaryRow->addStretch();
 

@@ -393,6 +393,8 @@
     const labels = labelsList.join(", ");
     return {
       number,
+      events,
+      creator,
       title: issue.title || open.title || `issue #${number}`,
       status,
       deleted,
@@ -450,7 +452,118 @@
         createdAt: issue.createdAtMs,
       },
       body: issue.body,
+      // Every signed event on the issue (comment, status, labels, milestone,
+      // assignees, agent, title, dates, progress, bounty, edit, delete, vote)
+      // so the detail view can render the full activity timeline, not just the
+      // opening comment.
+      issueEvents: issue.events,
     };
+  }
+
+  // Icon + human-readable description for a non-comment issue event, mirroring
+  // the desktop timeline (MainWindowIssues.cpp addActivity). The default branch
+  // still surfaces unknown/future event types so the detail view shows every
+  // action the JSON carries rather than silently dropping it.
+  function issueEventIcon(type) {
+    return ({
+      status: "circle-dot",
+      labels: "tag",
+      milestone: "milestone",
+      priority: "flag",
+      assignees: "user-plus",
+      agent: "bot",
+      title: "pencil",
+      progress: "gauge",
+      dates: "calendar",
+      bounty: "coins",
+      edit: "pencil",
+      delete: "trash-2",
+      vote: "thumbs-up",
+    })[type] || "activity";
+  }
+
+  function issueEventDescription(ev) {
+    switch (ev.type) {
+      case "status":
+        return ev.status === "closed" ? "closed this issue" : "reopened this issue";
+      case "labels":
+        return Array.isArray(ev.labels) && ev.labels.length
+          ? `set labels: ${ev.labels.join(", ")}` : "cleared the labels";
+      case "milestone":
+        return ev.milestone ? `set milestone: ${ev.milestone}` : "cleared the milestone";
+      case "priority":
+        return Number(ev.priority) > 0 ? `set priority: ${Number(ev.priority)}` : "cleared the priority";
+      case "assignees":
+        return Array.isArray(ev.assignees) && ev.assignees.length
+          ? `set assignees: ${ev.assignees.join(", ")}` : "cleared the assignees";
+      case "title":
+        return ev.title ? `changed the title to "${ev.title}"` : "cleared the title";
+      case "progress":
+        return `set progress to ${Number(ev.progress) || 0}%`;
+      case "dates":
+        return "updated the schedule dates";
+      case "bounty":
+        return Number(ev.bountyUsd) > 0
+          ? `set a $${Number(ev.bountyUsd)} bounty${ev.bountyStatus ? ` (${ev.bountyStatus})` : ""}`
+          : "cleared the bounty";
+      case "agent": {
+        const sid = Number(ev.agentSessionId) || 0;
+        if (sid <= 0 || ev.agentStatus === "cleared") return "cleared the agent assignment";
+        let text = `assigned ${ev.agentProvider || "an"} agent session #${sid}`;
+        if (ev.agentCreatePr) text += " with PR creation requested";
+        if (ev.agentStatus) text += ` (${ev.agentStatus})`;
+        return text;
+      }
+      case "edit":
+        return ev.target ? "edited a comment" : "edited the description";
+      case "delete":
+        return ev.target === "self" ? "deleted this issue" : "deleted a comment";
+      case "vote":
+        return "voted on this issue";
+      default:
+        return ev.type ? `recorded a ${ev.type} action` : "recorded an action";
+    }
+  }
+
+  // Full issue activity timeline: comment events render as bodied cards and
+  // every other event as an activity line, in chronological order, so the
+  // detail view shows every action stored in the issue JSON (adhoc #45). The
+  // opening event is omitted here since it's already shown as the issue body.
+  function renderIssueTimeline(events) {
+    const rows = (Array.isArray(events) ? events : [])
+      .filter(Boolean)
+      .slice()
+      .sort((a, b) => (Number(a.ts) || 0) - (Number(b.ts) || 0));
+    const deletedComments = new Set(
+      rows.filter((ev) => ev.type === "delete" && ev.target && ev.target !== "self")
+        .map((ev) => ev.target));
+    const items = [];
+    for (const ev of rows) {
+      if (ev.type === "open") continue;
+      const who = ev.authorName || ev.author || "unknown";
+      const when = formatRecordDate(ev.ts);
+      if (ev.type === "comment") {
+        if (deletedComments.has(ev.id)) continue;
+        const body = String(ev.body || "").trim();
+        items.push(`
+          <div class="border-t border-border px-4 py-3 text-sm first:border-t-0">
+            <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span class="font-medium text-foreground">${escapeHtml(who)}</span>
+              <span>commented</span><span>&middot;</span><span>${escapeHtml(when)}</span>
+            </div>
+            ${body ? `<div class="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">${escapeHtml(body)}</div>` : ""}
+          </div>`);
+        continue;
+      }
+      items.push(`
+        <div class="flex flex-wrap items-center gap-1.5 border-t border-border px-4 py-2.5 text-xs text-muted-foreground first:border-t-0">
+          <i data-lucide="${issueEventIcon(ev.type)}" class="h-3.5 w-3.5 text-primary"></i>
+          <span class="font-medium text-foreground">${escapeHtml(who)}</span>
+          <span>${escapeHtml(issueEventDescription(ev))}</span>
+          <span>&middot;</span><span>${escapeHtml(when)}</span>
+        </div>`);
+    }
+    return items.join("");
   }
 
   function projectJsonPath(number) {
@@ -548,7 +661,7 @@
     discussions: {
       label: "Discussions",
       itemLabel: "discussion",
-      dir: "discussions", file: "discussion.md",
+      dir: ".forkmesh/discussions", file: "discussion.md",
       icon: "message-square",
       tone: "text-muted-foreground",
       empty: "No discussions have been committed to this mirror yet.",
@@ -1271,6 +1384,10 @@
     const metadata = recordDetailMeta(kind, values);
     const pendingNotice = options.pending ? `
         <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
+    const issueTimeline = (!isPulls && !isDiscussions) ? renderIssueTimeline(parsed.issueEvents) : "";
+    const issueTimelineSection = issueTimeline
+      ? `<div data-repo-issue-timeline class="border-t border-border">${issueTimeline}</div>`
+      : "";
     const pullPatch = parsed.pullPatch || { patch: "", files: [], unavailable: false };
     const pullConversation = parsed.pullConversation || [];
     const pullConversationSection = isPulls ? `
@@ -1341,6 +1458,7 @@
                   <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Contributor</span>
                 </div>
                 <div data-repo-record-body class="whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-foreground">${escapeHtml(body)}</div>
+                ${issueTimelineSection}
                 ${pullConversationSection}
               </section>`}
             ${pullFilesSection}
@@ -1649,9 +1767,14 @@
           <button type="button" data-repo-issues-reload class="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2.5 font-medium text-foreground hover:bg-secondary"><i data-lucide="refresh-cw" class="h-3 w-3"></i>Retry</button>
         </div>`
       : "";
-    const emptyLabel = issuesView.query
-      ? `No issues matching "${escapeHtml(issuesView.query)}".`
-      : `No ${issuesView.filter === "all" ? "" : issuesView.filter + " "}issues.`;
+    // While the closed history is still being paged in (issue #427), show a
+    // loader in place of the "No issues" empty state so the Closed view doesn't
+    // flash empty before its rows arrive.
+    const emptyLabel = issuesView.closedLoading
+      ? loadingHtml("Loading closed issues from the live mirror...")
+      : issuesView.query
+        ? `No issues matching "${escapeHtml(issuesView.query)}".`
+        : `No ${issuesView.filter === "all" ? "" : issuesView.filter + " "}issues.`;
     container.innerHTML = filterBar + warnBar + (filtered.length
       ? renderRepoRecordList(filtered, config, "issues")
       : `<div class="px-4 py-3 text-sm text-muted-foreground">${emptyLabel}</div>`);
@@ -1664,6 +1787,14 @@
       btn.setAttribute("aria-pressed", btn.dataset.dashboardIssueFilter === filter ? "true" : "false");
       btn.className = `inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${btn.dataset.dashboardIssueFilter === filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`;
     });
+    // Closed issues are paged in lazily (issue #427); fetch them the first time
+    // the Closed or All view is opened. loadClosedIssues renders a loading state
+    // and then the results itself.
+    if ((filter === "closed" || filter === "all")
+        && !state.issuesView.closedLoaded && !state.issuesView.closedLoading) {
+      loadClosedIssues();
+      return;
+    }
     renderRepoIssues();
   }
 
@@ -1687,19 +1818,26 @@
           state.issuesView.query = "";
           state.issuesView.missing = [];
           state.issuesView.truncated = 0;
+          state.issuesView.repo = repo;
+          state.issuesView.closedPaths = new Map();
+          state.issuesView.closedLoaded = true;
+          state.issuesView.closedLoading = false;
           renderRepoIssues();
           return;
         }
         throw error;
       }
       const rootEntries = Array.isArray(tree.entries) ? tree.entries : [];
-      // number -> the record path for that issue. Pre-split legacy folders sit
-      // directly under the root; the open//closed/ subdirs are listed next and
-      // win over a stale legacy copy of the same number.
-      const pathByNumber = new Map();
+      // number -> record path, split by status. The open/ and closed/ subdirs
+      // (adhoc #14) hold the numbered folders; pre-split legacy mirrors keep
+      // them directly under the root with no status until their blob is read.
+      // A number living in a status subdir supersedes a stale legacy copy.
+      const openPaths = new Map();
+      const closedPaths = new Map();
+      const legacyPaths = new Map();
       rootEntries
         .filter((entry) => entry.type === "tree" && /^\d+$/.test(String(entry.name || "")))
-        .forEach((entry) => pathByNumber.set(Number(entry.name), issueJsonPath(Number(entry.name))));
+        .forEach((entry) => legacyPaths.set(Number(entry.name), issueJsonPath(Number(entry.name))));
       const statusDirs = rootEntries
         .filter((entry) => entry.type === "tree" && ["open", "closed"].includes(String(entry.name || "")))
         .map((entry) => String(entry.name));
@@ -1710,40 +1848,26 @@
         } catch (error) {
           if (!isMissingMirrorFolder(error)) throw error;
         }
+        const target = statusDir === "closed" ? closedPaths : openPaths;
         (Array.isArray(subTree?.entries) ? subTree.entries : [])
           .filter((entry) => entry.type === "tree" && /^\d+$/.test(String(entry.name || "")))
-          .forEach((entry) => pathByNumber.set(Number(entry.name), issueJsonPath(Number(entry.name), statusDir)));
+          .forEach((entry) => {
+            const number = Number(entry.name);
+            target.set(number, issueJsonPath(Number(entry.name), statusDir));
+            legacyPaths.delete(number);
+          });
       }
+      // The Issues tab defaults to Open (issue #427): page in only the open
+      // (and unknown-status legacy) titles now so they show fast, and defer the
+      // closed history - often far larger - to loadClosedIssues, run the first
+      // time the Closed/All filter is opened. Legacy folders ride the open page
+      // and get reclassified once their blob reveals a status.
+      const pathByNumber = new Map([...legacyPaths, ...openPaths]);
       const numbered = Array.from(pathByNumber.keys()).sort((a, b) => b - a);
       // Cap the page at 50 folders, but remember when the mirror holds more so
       // the panel can warn instead of silently hiding them.
       const dirs = numbered.slice(0, 50);
-      // One batched request for all of them, not one /blob call per issue.
-      const blobs = await fetchRepoBlobs(
-        repo, dirs.map((number) => pathByNumber.get(number)));
-      const items = [];
-      let missing = [];
-      dirs.forEach((number) => {
-        const blob = blobs[pathByNumber.get(number)];
-        if (blob) items.push(parseIssueJson(blobText(blob), number));
-        else missing.push(number);
-      });
-      // A batched read can drop entries under relay load; retry just the misses
-      // once so a transient gap doesn't quietly shrink the count vs the Mirror
-      // nodes tab (whose issueCount lists every folder). Anything still
-      // unreadable becomes a flagged placeholder row instead of vanishing.
-      if (missing.length) {
-        const retry = await fetchRepoBlobs(
-          repo, missing.map((number) => pathByNumber.get(number))).catch(() => ({}));
-        const stillMissing = [];
-        missing.forEach((number) => {
-          const blob = retry[pathByNumber.get(number)];
-          if (blob) items.push(parseIssueJson(blobText(blob), number));
-          else stillMissing.push(number);
-        });
-        missing = stillMissing;
-      }
-      missing.forEach((number) => items.push(placeholderIssue(number)));
+      const { items, missing } = await fetchIssuePage(repo, pathByNumber, dirs);
       items.sort((a, b) => Number(b.number) - Number(a.number));
       // Issue #379: fold in the owner's offline submissions (kept locally while
       // their source-of-truth node was down) so they still show up on reload,
@@ -1755,18 +1879,101 @@
       state.issuesView.query = "";
       state.issuesView.missing = missing;
       state.issuesView.truncated = Math.max(0, numbered.length - dirs.length);
-      // An issue its creator deleted isn't open or closed; an unauthorized
-      // deletion attempt leaves it counted (adhoc #16), matching the desktop tab
-      // and the served open count.
-      const openIssues = merged.filter(
+      state.issuesView.repo = repo;
+      state.issuesView.closedPaths = closedPaths;
+      // Closed folders live only in closed/; there is nothing left to lazy-load
+      // once that subdir is empty (a pure-legacy mirror keeps its closed items
+      // in `items` already, classified by status).
+      state.issuesView.closedLoaded = closedPaths.size === 0;
+      state.issuesView.closedLoading = false;
+      // Counts come from the folder listing, not the paged-in blobs, so they
+      // stay right past the 50-per-page cap and match the folder-based tally the
+      // Mirror nodes tab shows (adhoc #96 / issue #397). Legacy pre-split folders
+      // carry no status in the tree, so fold in their loaded split - a
+      // creator-deleted issue is excluded, an unauthorized deletion attempt
+      // still counts (adhoc #16).
+      const loadedLegacy = items.filter((issue) => legacyPaths.has(Number(issue.number)));
+      const legacyOpen = loadedLegacy.filter(
         (issue) => issue.status !== "closed" && !issue.deleted).length;
-      const closedIssues = merged.filter(
+      const legacyClosed = loadedLegacy.filter(
         (issue) => issue.status === "closed" && !issue.deleted).length;
+      const openIssues = openPaths.size + legacyOpen;
+      const closedIssues = closedPaths.size + legacyClosed;
       setRepoTabCount("issues", openIssues);
       setRepoCollectionCounts("issues", openIssues, closedIssues);
       renderRepoIssues();
     } catch (_) {
       container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a live desktop host serves the .forkmesh/issues/ folder.</div>';
+    }
+  }
+
+  // Reads and parses the issue-N.json blobs for a page of numbered folders in
+  // ONE batched request. A batched read can drop entries under relay load, so
+  // retry just the misses once - a transient gap must not quietly shrink the
+  // count vs the Mirror nodes tab (whose issueCount lists every folder).
+  // Anything still unreadable becomes a flagged placeholder row instead of
+  // vanishing. Returns { items, missing } (missing = still-unreadable numbers).
+  async function fetchIssuePage(repo, pathByNumber, dirs) {
+    const items = [];
+    let missing = [];
+    if (!dirs.length) return { items, missing };
+    const blobs = await fetchRepoBlobs(
+      repo, dirs.map((number) => pathByNumber.get(number)));
+    dirs.forEach((number) => {
+      const blob = blobs[pathByNumber.get(number)];
+      if (blob) items.push(parseIssueJson(blobText(blob), number));
+      else missing.push(number);
+    });
+    if (missing.length) {
+      const retry = await fetchRepoBlobs(
+        repo, missing.map((number) => pathByNumber.get(number))).catch(() => ({}));
+      const stillMissing = [];
+      missing.forEach((number) => {
+        const blob = retry[pathByNumber.get(number)];
+        if (blob) items.push(parseIssueJson(blobText(blob), number));
+        else stillMissing.push(number);
+      });
+      missing = stillMissing;
+    }
+    missing.forEach((number) => items.push(placeholderIssue(number)));
+    return { items, missing };
+  }
+
+  // Lazily pages in the closed issues the first time the Closed or All filter is
+  // opened (issue #427). The initial Issues load only pages the open set for
+  // speed, so this fills the closed history in on demand, appends it to the
+  // already-loaded open items, and re-renders. The open/closed counts are not
+  // touched - they were already derived from the full folder listing.
+  async function loadClosedIssues() {
+    const view = state.issuesView;
+    if (view.closedLoaded || view.closedLoading) return;
+    const closedPaths = view.closedPaths instanceof Map ? view.closedPaths : new Map();
+    const numbers = Array.from(closedPaths.keys()).sort((a, b) => b - a);
+    const dirs = numbers.slice(0, 50);
+    if (!dirs.length) {
+      view.closedLoaded = true;
+      renderRepoIssues();
+      return;
+    }
+    view.closedLoading = true;
+    renderRepoIssues();
+    try {
+      const { items, missing } = await fetchIssuePage(
+        view.repo || state.selectedRepo, closedPaths, dirs);
+      // A number already loaded (e.g. a legacy closed copy) keeps its existing
+      // row; the status-subdir copy would be identical.
+      const have = new Set((view.items || []).map((issue) => Number(issue.number)));
+      const fresh = items.filter((issue) => !have.has(Number(issue.number)));
+      view.items = [...(view.items || []), ...fresh];
+      view.items.sort((a, b) => Number(b.number) - Number(a.number));
+      if (missing.length) view.missing = [...(view.missing || []), ...missing];
+      view.truncated = (view.truncated || 0) + Math.max(0, numbers.length - dirs.length);
+      view.closedLoaded = true;
+    } catch (_) {
+      /* leave closedLoaded false so a later toggle retries */
+    } finally {
+      view.closedLoading = false;
+      renderRepoIssues();
     }
   }
 
@@ -2152,6 +2359,111 @@
       throw new Error(body?.error || "about_update_failed");
     }
     return body;
+  }
+
+  // --- Manage federated posts (issue #426) ---------------------------------
+  //
+  // The owner-only "Fediverse posts" dropdown in the About rail lists the
+  // repo actor's posts and lets the owner delete one. A delete makes the relay
+  // broadcast a Delete(Tombstone) to every follower's server, so the post also
+  // disappears from Mastodon — not just the repo's own profile feed. The
+  // backend re-checks ownership from the session token, so this is only the
+  // client surface (same session-auth shape as saveRepoAboutFromWeb).
+
+  async function fetchRepoFediPosts(repo) {
+    const response = await fetch(`${repoApiBase(repo)}/ap-posts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ownerAccount: state.session?.nodeName || "",
+        sessionToken: state.session?.sessionToken || "",
+        action: "list",
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body?.ok === false) {
+      throw new Error(body?.error || "fedi_posts_failed");
+    }
+    return Array.isArray(body.posts) ? body.posts : [];
+  }
+
+  async function deleteRepoFediPost(repo, id) {
+    const response = await fetch(`${repoApiBase(repo)}/ap-posts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ownerAccount: state.session?.nodeName || "",
+        sessionToken: state.session?.sessionToken || "",
+        action: "delete",
+        id,
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body?.ok === false) {
+      throw new Error(body?.error || "fedi_post_delete_failed");
+    }
+    return body;
+  }
+
+  function renderRepoFediPosts(posts) {
+    const list = $("[data-repo-fedi-posts-list]");
+    if (!list) return;
+    if (!posts.length) {
+      list.innerHTML = `<p class="text-[11px] text-muted-foreground">No federated posts yet — new issues, pull requests, discussions and releases will appear here.</p>`;
+      return;
+    }
+    list.innerHTML = posts.map((post) => {
+      const id = escapeHtml(String(post.id || ""));
+      const when = relativeTimeLabel(Number(post.published || 0));
+      // Strip our own generated HTML down to a plain-text preview.
+      const preview = String(post.content || "")
+        .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      const text = escapeHtml(preview.slice(0, 140) || "(no text)");
+      const link = String(post.url || "");
+      const view = /^https?:\/\//i.test(link)
+        ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link hover:underline">View</a>`
+        : "";
+      return `<div data-repo-fedi-post class="grid gap-1 rounded-md border border-border p-2">
+        <p class="text-[11px] leading-4 text-foreground">${text}</p>
+        <div class="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+          <span>${escapeHtml(when)}</span>
+          <span class="inline-flex items-center gap-2">${view}<button type="button" data-repo-fedi-post-delete="${id}" class="inline-flex items-center gap-1 rounded-md border border-destructive/40 px-2 py-0.5 font-medium text-destructive hover:bg-destructive/10"><i data-lucide="trash-2" class="h-3 w-3"></i>Delete</button></span>
+        </div>
+      </div>`;
+    }).join("");
+    window.lucide?.createIcons();
+  }
+
+  async function loadRepoFediPosts(repo) {
+    const list = $("[data-repo-fedi-posts-list]");
+    if (!list) return;
+    list.innerHTML = `<p class="text-[11px] text-muted-foreground">Loading…</p>`;
+    try {
+      const posts = await fetchRepoFediPosts(repo);
+      if (!repoAboutStillCurrent(repo)) return;
+      renderRepoFediPosts(posts);
+    } catch (_) {
+      list.innerHTML = `<p class="text-[11px] text-destructive">Couldn't load federated posts.</p>`;
+    }
+  }
+
+  async function removeRepoFediPost(repo, id, trigger) {
+    if (!id) return;
+    if (!window.confirm("Delete this post? It will be removed from your Mastodon followers' timelines.")) return;
+    if (trigger) trigger.disabled = true;
+    try {
+      await deleteRepoFediPost(repo, id);
+      // Drop the row in place; the follower count/profile feed catch up on
+      // the next reload.
+      trigger?.closest("[data-repo-fedi-post]")?.remove();
+      const list = $("[data-repo-fedi-posts-list]");
+      if (list && !list.querySelector("[data-repo-fedi-post]")) {
+        renderRepoFediPosts([]);
+      }
+    } catch (_) {
+      if (trigger) trigger.disabled = false;
+      window.alert("Couldn't delete that post. Please try again.");
+    }
   }
 
   // --- About rail: fediverse badge + desktop-parity sections ---------------

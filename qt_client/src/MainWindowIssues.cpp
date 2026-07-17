@@ -2627,11 +2627,16 @@ void MainWindow::renderIssueThread(const Issue &issue)
     }
     cancelIssueSidebarEditors();
 
-    // Pre-compute edits (target -> latest edit) and deletions.
+    // Pre-compute edits (target -> latest edit), deletions, and the opening
+    // event id (so an edit targeting it reads as "the description" rather than
+    // "a comment").
     QHash<QString, IssueEvent> edits;
     QSet<QString> deleted;
+    QString openId;
     for (const IssueEvent &ev : issue.events) {
-        if (ev.type == "edit" && !ev.target.isEmpty())
+        if (ev.type == "open")
+            openId = ev.id;
+        else if (ev.type == "edit" && !ev.target.isEmpty())
             edits.insert(ev.target, ev); // later edits overwrite
         else if (ev.type == "delete" && !ev.target.isEmpty() && ev.target != "self")
             deleted.insert(ev.target);
@@ -2807,12 +2812,25 @@ void MainWindow::renderIssueThread(const Issue &issue)
             auto *save = new QPushButton("Save", bodyContainer);
             save->setObjectName("primaryButton");
             save->setCursor(Qt::PointingHandCursor);
-            save->style()->unpolish(save);
-            save->style()->polish(save);
             buttonRow->addStretch();
             buttonRow->addWidget(cancel);
             buttonRow->addWidget(save);
             bodyLayout->addLayout(buttonRow);
+            // Repolishing right after construction can race Qt's own first-show
+            // polish for a widget that was just parented and isn't under layout
+            // management yet, leaving the primaryButton fill/text unpainted
+            // (border-only). Defer it a tick so it runs after the button is
+            // actually part of the shown layout; QPointer guards against the
+            // editor being torn down (Cancel/Save swap the body back out) before
+            // the deferred call fires.
+            QPointer<QPushButton> saveGuard(save);
+            QTimer::singleShot(0, this, [saveGuard]() {
+                if (!saveGuard)
+                    return;
+                saveGuard->style()->unpolish(saveGuard);
+                saveGuard->style()->polish(saveGuard);
+                saveGuard->update();
+            });
             connect(cancel, &QPushButton::clicked, this, [this, num]() { showIssue(num); });
             connect(save, &QPushButton::clicked, this,
                     [this, num, eid, eventAttachments, editor]() {
@@ -2993,7 +3011,38 @@ void MainWindow::renderIssueThread(const Issue &issue)
                     text += QStringLiteral(" (%1)").arg(agentStatusText(ev.agentStatus));
             }
             addActivity(text, ev.ts, who);
-        }
+        } else if (ev.type == "title")
+            addActivity(ev.title.isEmpty()
+                            ? QStringLiteral("cleared the title")
+                            : QStringLiteral("changed the title to \"%1\"").arg(ev.title),
+                        ev.ts, who);
+        else if (ev.type == "progress")
+            addActivity(QStringLiteral("set progress to %1%").arg(ev.progress), ev.ts, who);
+        else if (ev.type == "dates")
+            addActivity(QStringLiteral("updated the schedule dates"), ev.ts, who);
+        else if (ev.type == "bounty")
+            addActivity(ev.bountyUsd > 0
+                            ? QStringLiteral("set a $%1 bounty%2")
+                                  .arg(QString::number(ev.bountyUsd),
+                                       ev.bountyStatus.isEmpty()
+                                           ? QString()
+                                           : QStringLiteral(" (%1)").arg(ev.bountyStatus))
+                            : QStringLiteral("cleared the bounty"),
+                        ev.ts, who);
+        else if (ev.type == "edit")
+            addActivity(ev.target == openId ? QStringLiteral("edited the description")
+                                            : QStringLiteral("edited a comment"),
+                        ev.ts, who);
+        else if (ev.type == "delete")
+            addActivity(ev.target == "self" ? QStringLiteral("deleted this issue")
+                                            : QStringLiteral("deleted a comment"),
+                        ev.ts, who);
+        else if (ev.type == "vote")
+            addActivity(QStringLiteral("voted on this issue"), ev.ts, who);
+        else if (!ev.type.isEmpty())
+            // Surface unknown/future action types rather than silently dropping
+            // them, so the timeline shows every action stored in the issue JSON.
+            addActivity(QStringLiteral("recorded a %1 action").arg(ev.type), ev.ts, who);
     }
     m_issueThreadLayout->addStretch();
 }
@@ -3621,13 +3670,15 @@ void MainWindow::quickAddIssue()
 
     // "No issue" mode (issue #299): don't create an issue at all — hand the typed
     // text straight to a coding agent as its prompt, like the Agents-tab composer.
-    // This is the default (adhoc #99): "Create issue" is off unless the user
-    // turns it on, so most quick-add prompts skip issue filing entirely.
-    if (!m_quickAddCreateIssue || !m_quickAddCreateIssue->isChecked()) {
-        const QString provider =
-            m_quickAddAgentProvider
-                ? m_quickAddAgentProvider->currentData().toString()
-                : QStringLiteral("claude-code");
+    // This is the default (adhoc #29): the provider dropdown files an issue only
+    // when its "Manual (create issue)" entry is picked; any real agent provider
+    // starts a coding agent straight from the prompt.
+    const QString quickAddProvider =
+        m_quickAddAgentProvider
+            ? m_quickAddAgentProvider->currentData().toString()
+            : QStringLiteral("claude-code");
+    if (quickAddProvider != QLatin1String("manual")) {
+        const QString provider = quickAddProvider;
         const QString model = (provider == QLatin1String("claude-code") ||
                                agentIsCodexProvider(provider))
                                   ? selectedModelComboValue(m_quickAddClaudeModel)
@@ -3720,35 +3771,12 @@ void MainWindow::quickAddIssue()
     // A more descriptive confirmation than the old bare "Issue created." — names
     // the number and title so the toast says exactly what landed (issue #299).
     setIssueInlineNotice(QStringLiteral("Issue #%1 created: %2").arg(number).arg(title));
-    // If requested, hand the freshly-created issue straight to a coding agent.
-    if (m_quickAddAssignAgent && m_quickAddAssignAgent->isChecked()) {
-        const QString provider =
-            m_quickAddAgentProvider
-                ? m_quickAddAgentProvider->currentData().toString()
-                : QStringLiteral("codex");
-        const QString model = (provider == QLatin1String("claude-code") ||
-                               agentIsCodexProvider(provider))
-                                  ? selectedModelComboValue(m_quickAddClaudeModel)
-                                  : QString();
-        const bool oldCreatePr =
-            m_issueAgentCreatePrCheck && m_issueAgentCreatePrCheck->isChecked();
-        if (m_issueAgentCreatePrCheck) {
-            const QSignalBlocker block(m_issueAgentCreatePrCheck);
-            m_issueAgentCreatePrCheck->setChecked(m_quickAddCreatePr &&
-                                                  m_quickAddCreatePr->isChecked());
-            assignIssueToAgent(provider, model);
-            m_issueAgentCreatePrCheck->setChecked(oldCreatePr);
-        } else {
-            assignIssueToAgent(provider, model);
-        }
-    } else {
-        // Issue #203: with no agent to hand off to, land the user on the issue
-        // they just created -- open its detail pane, mirroring how the agent path
-        // jumps straight to the new session. reloadIssues() above re-selects the
-        // row in table mode, but call showIssue() explicitly so the detail opens
-        // regardless of the active list view (board, cards, a filtered table).
-        showIssue(number);
-    }
+    // "Manual (create issue)" files the issue only — no agent hand-off (adhoc
+    // #29). Land the user on the issue they just created by opening its detail
+    // pane. reloadIssues() above re-selects the row in table mode, but call
+    // showIssue() explicitly so the detail opens regardless of the active list
+    // view (board, cards, a filtered table). Issue #203.
+    showIssue(number);
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
@@ -3756,13 +3784,13 @@ int MainWindow::testQuickAddIssueNoAgent(const QString &title)
 {
     if (!m_issueQuickAdd)
         return -1;
-    // Type the title and make sure the agent hand-off is off but issue creation
-    // is on, so the plain create-and-open path (issue #203) runs rather than the
-    // agent / no-issue one.
-    if (m_quickAddAssignAgent)
-        m_quickAddAssignAgent->setChecked(false);
-    if (m_quickAddCreateIssue)
-        m_quickAddCreateIssue->setChecked(true);
+    // Select the "Manual (create issue)" provider so the plain create-and-open
+    // path (issue #203) runs rather than the run-an-agent one (adhoc #29).
+    if (m_quickAddAgentProvider) {
+        const int idx = m_quickAddAgentProvider->findData(QStringLiteral("manual"));
+        if (idx >= 0)
+            m_quickAddAgentProvider->setCurrentIndex(idx);
+    }
     m_issueQuickAdd->setPlainText(title);
     quickAddIssue();
     return m_currentIssueNumber;
@@ -6473,6 +6501,23 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
     status->setAlignment(Qt::AlignCenter);
     layout->addWidget(status);
 
+    // Issue #429: while the deposit is landing (received but not yet confirmed)
+    // the status animates a braille spinner; on confirmation it flips to a green
+    // check and the dialog closes itself shortly after.
+    static const char *kBountySpin[] = {
+        "\xE2\xA0\x8B", "\xE2\xA0\x99", "\xE2\xA0\xB9", "\xE2\xA0\xB8",
+        "\xE2\xA0\xBC", "\xE2\xA0\xB4", "\xE2\xA0\xA6", "\xE2\xA0\xA7",
+        "\xE2\xA0\x87", "\xE2\xA0\x8F"};
+    int spinIdx = 0;
+    QString confirmMsg;
+    auto *spin = new QTimer(&dialog);
+    spin->setInterval(120);
+    connect(spin, &QTimer::timeout, &dialog, [&]() {
+        status->setText(QString::fromUtf8(kBountySpin[spinIdx]) +
+                        QStringLiteral(" ") + confirmMsg);
+        spinIdx = (spinIdx + 1) % 10;
+    });
+
     auto *copyBtn = new QPushButton(QStringLiteral("Copy address"));
     connect(copyBtn, &QPushButton::clicked, this, [address] {
         QGuiApplication::clipboard()->setText(address);
@@ -6512,6 +6557,7 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
         if (obj.value("status").toString() == QLatin1String("paid")) {
             paid = true;
             poll->stop();
+            spin->stop();
             if (!isPr) {
                 IssueStore writeStore = issueStoreForCurrentRepo();
                 QString err;
@@ -6521,26 +6567,39 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
                 if (m_repoDetailIndex == issuesRepoIndex())
                     reloadIssues();
             }
+            // Green check on confirmation, then auto-dismiss the window (issue
+            // #429) — the deposit is received and paid out, so there's nothing
+            // left to wait for.
             status->setText(
-                QStringLiteral("Paid out to the author + treasury (tx %1).")
+                QString::fromUtf8("\xE2\x9C\x94 Paid out to the author + "
+                                  "treasury (tx %1).")
                     .arg(obj.value("payoutSig").toString().left(12)));
             status->setStyleSheet("color:#3fb950; background:transparent;");
             closeBtn->setText(QStringLiteral("Close"));
+            QTimer::singleShot(1800, &dialog, &QDialog::accept);
             return;
         }
         const qint64 got =
             obj.value("receivedLamports").toVariant().toLongLong();
-        if (got > 0)
-            status->setText(QStringLiteral("Received %1 SOL — confirming…")
-                                .arg(got / 1000000000.0, 0, 'f', 9));
+        if (got > 0) {
+            confirmMsg = QStringLiteral("Received %1 SOL — confirming…")
+                             .arg(got / 1000000000.0, 0, 'f', 9);
+            if (!spin->isActive()) {
+                spinIdx = 0;
+                spin->start();
+            }
+        }
     });
     poll->start();
     dialog.exec();
     poll->stop();
-    // Closed before the deposit confirmed: keep watching in the background so the
-    // issue is still marked paid once the funds land (the worker cron is the
-    // final backstop regardless).
-    if (!paid)
+    // Closed before the deposit confirmed. Issue bounties still need the local
+    // IssueStore record updated once the funds land, so keep watching for those
+    // in the background. PR bounties have no local state to update — the worker
+    // cron is the payout backstop regardless — so stop checking once the dialog
+    // is closed instead of continuing to poll for a popup the user already
+    // dismissed.
+    if (!paid && !isPr)
         pollBountyPayout(repo, number, amountUsd, kind);
 }
 
@@ -7466,6 +7525,27 @@ QWidget *MainWindow::buildChatSection()
     connect(firewallDismiss, &QPushButton::clicked, m_firewallBanner,
             &QWidget::hide);
 
+    // Unread banner: a thin clickable strip above the transcript that appears
+    // whenever other conversations hold unread messages. Its arrow marks every
+    // conversation read at once and jumps to the newest messages, so the badge
+    // can be cleared without visiting each channel and DM by hand.
+    m_chatUnreadBanner = new QWidget;
+    m_chatUnreadBanner->setObjectName("chatUnreadBanner");
+    m_chatUnreadBannerLabel = new QLabel;
+    auto *unreadReadButton = new QPushButton(QStringLiteral("Mark all read"));
+    unreadReadButton->setObjectName("chatUnreadBannerButton");
+    unreadReadButton->setCursor(Qt::PointingHandCursor);
+    unreadReadButton->setToolTip(
+        QStringLiteral("Mark every conversation read and jump to the newest messages"));
+    setOcticon(unreadReadButton, "chevron-up", 16);
+    auto *unreadLayout = new QHBoxLayout(m_chatUnreadBanner);
+    unreadLayout->setContentsMargins(18, 6, 12, 6);
+    unreadLayout->setSpacing(10);
+    unreadLayout->addWidget(m_chatUnreadBannerLabel, 1);
+    unreadLayout->addWidget(unreadReadButton);
+    m_chatUnreadBanner->hide();
+    connect(unreadReadButton, &QPushButton::clicked, this, &MainWindow::markAllChatRead);
+
     // Scrollable column of message-row widgets (supports avatars, inline
     // images, animated GIFs, file chips, and reaction bars).
     m_messageScroll = new QScrollArea;
@@ -7589,6 +7669,7 @@ QWidget *MainWindow::buildChatSection()
     mainColumn->setSpacing(0);
     mainColumn->addWidget(header);
     mainColumn->addWidget(m_firewallBanner);
+    mainColumn->addWidget(m_chatUnreadBanner);
     mainColumn->addWidget(m_messageScroll, 1);
     mainColumn->addWidget(m_typingLabel);
     mainColumn->addWidget(composer);

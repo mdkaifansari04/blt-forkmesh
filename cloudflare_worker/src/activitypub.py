@@ -482,6 +482,26 @@ def create_activity(note):
     }
 
 
+def delete_activity(actor_url, object_url, followers_url, published_ms):
+    """Delete(Tombstone) broadcast when the repo owner removes a federated
+    post: remote servers replace their cached Note with a Tombstone (Mastodon
+    drops the toot from every timeline that showed it). Addressed to Public +
+    the actor's followers, the same audience the original Create reached."""
+    return {
+        "@context": AS_CONTEXT,
+        "id": object_url + "#delete/" + str(int(published_ms)),
+        "type": "Delete",
+        "actor": actor_url,
+        "published": iso_utc(published_ms),
+        "to": [AS_PUBLIC],
+        "cc": [followers_url],
+        "object": {
+            "id": object_url,
+            "type": "Tombstone",
+        },
+    }
+
+
 def update_activity(actor_url, actor_doc_obj, published_ms):
     """Update(actor) broadcast after a profile/branding change: remote servers
     replace their cached copy (avatar, header, bio) on receipt instead of

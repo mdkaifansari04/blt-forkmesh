@@ -221,7 +221,7 @@
             ${renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))}
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
-            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-repo-mirrors></div></div></section>
+            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a notification; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
           </div>
           <aside data-repo-about data-repo-about-rail class="min-w-0 rounded-lg border border-border bg-background p-4">
@@ -279,6 +279,12 @@
               <a href="${escapeHtml(readmeHref)}" data-repo-readme-link data-repo-readme-path="${escapeHtml(readmePath)}" class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="book-open" class="h-3.5 w-3.5"></i><span>Readme</span></a>
               <a href="${escapeHtml(`${repoPathUrl(repo)}/insights`)}" data-repo-activity-link class="inline-flex min-w-0 items-center gap-2 hover:text-foreground hover:underline"><i data-lucide="activity" class="h-3.5 w-3.5"></i><span>Activity</span></a>
             </div>
+            ${canEditAbout && !repo.isPrivate ? `
+            <details data-repo-fedi-posts class="mt-5 border-t border-border pt-4">
+              <summary class="flex cursor-pointer list-none items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><span class="inline-flex items-center gap-1.5"><i data-lucide="megaphone" class="h-3.5 w-3.5"></i>Fediverse posts</span><i data-lucide="chevron-down" class="h-3.5 w-3.5 shrink-0 transition-transform"></i></summary>
+              <p class="mt-2 text-[11px] leading-4 text-muted-foreground">Posts this repository published to its Mastodon followers. Deleting one sends a removal to every follower's server so it disappears from their timelines.</p>
+              <div data-repo-fedi-posts-list class="mt-2 grid gap-2"></div>
+            </details>` : ""}
             <div data-repo-about-release class="mt-5 hidden border-t border-border pt-4">
               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Latest release</h4>
               <div data-repo-about-release-body class="mt-2 text-xs text-muted-foreground"></div>
@@ -587,6 +593,7 @@
       host_online: "wifi",
       host_offline: "wifi-off",
       pending_inbox: "inbox",
+      mirror_request: "radio",
     })[kind] || "bell";
   }
 
@@ -648,9 +655,125 @@
         </div>
       </div>
       <p class="mt-5 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">${escapeHtml(item.body || "ForkMesh notification")}</p>
+      ${mirrorRequestActionsHtml(item)}
       ${item.href ? `<a href="${escapeHtml(item.href)}" class="mt-5 inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Open context</a>` : ""}
     `;
     window.lucide?.createIcons();
+  }
+
+  // Accept/Reject controls on an incoming "someone asked your node to mirror
+  // their repo" notification (issue #385). Only the still-pending request the
+  // recipient can act on gets buttons; replies ("X accepted…") carry none.
+  function mirrorRequestActionsHtml(item) {
+    if (!item || item.kind !== "mirror_request") return "";
+    const meta = item.meta && typeof item.meta === "object" ? item.meta : {};
+    if (String(meta.state || "") !== "pending") return "";
+    const id = String(meta.requestId || "");
+    if (!id) return "";
+    const enc = escapeHtml(id);
+    return `
+      <div data-mirror-request-actions="${enc}" class="mt-5 flex items-center gap-2">
+        <button type="button" data-mirror-request-accept="${enc}" class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors">Accept &amp; mirror</button>
+        <button type="button" data-mirror-request-reject="${enc}" class="inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Decline</button>
+        <span data-mirror-request-hint class="text-[11px] text-muted-foreground"></span>
+      </div>
+    `;
+  }
+
+  async function resolveMirrorRequest(id, action, trigger) {
+    const node = state.session?.nodeName || "";
+    if (!node || !id) return;
+    const container = trigger?.closest("[data-mirror-request-actions]");
+    const hint = container?.querySelector("[data-mirror-request-hint]");
+    container?.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    if (hint) hint.textContent = action === "accept" ? "Accepting…" : "Declining…";
+    try {
+      const res = await fetch("/api/mirror-requests", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          node, action, requestId: id,
+          sessionToken: state.session?.sessionToken || "",
+        }),
+      });
+      if (!res.ok) throw new Error("request failed");
+      if (hint) hint.textContent = action === "accept"
+        ? "Accepted — your node will start mirroring it shortly."
+        : "Declined.";
+      if (container) container.querySelectorAll("button").forEach((b) => b.remove());
+      await loadNotifications();
+    } catch (_) {
+      if (hint) hint.textContent = "Could not update the request. Try again.";
+      container?.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+    }
+  }
+
+  // "Ask a node to mirror your repo" (issue #385): the owner types a node name;
+  // that node's holder gets a notification and, if they accept, their node
+  // starts mirroring this repo. Only shown to the repo owner (see
+  // renderMirrorRequestForm) — the worker re-checks ownership from the session.
+  async function askNodeToMirror(trigger) {
+    const repo = state.selectedRepo;
+    if (!repo || !isRepoOwner(repo)) return;
+    const wrap = trigger.closest("[data-mirror-request]") || document;
+    const input = wrap.querySelector("[data-mirror-request-target]");
+    const hint = wrap.querySelector("[data-mirror-request-hint]");
+    const setHint = (text, tone) => {
+      if (!hint) return;
+      hint.className = `mt-1.5 text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      hint.textContent = text;
+    };
+    const target = String(input?.value || "").trim().toLowerCase();
+    if (!target) {
+      setHint("Enter the node name to ask.", "bad");
+      input?.focus();
+      return;
+    }
+    if (target === String(repo.owner || "").trim().toLowerCase()) {
+      setHint("That's this repo's own node.", "bad");
+      return;
+    }
+    trigger.disabled = true;
+    setHint("Sending request…");
+    try {
+      const res = await fetch("/api/mirror-requests", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          node: state.session?.nodeName || "",
+          action: "create",
+          target,
+          owner: String(repo.owner || ""),
+          repo: String(repo.name || ""),
+          sessionToken: state.session?.sessionToken || "",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) {
+        const reason = {
+          target_not_found: "No node by that name.",
+          repo_not_found: "This repo isn't published yet.",
+          private_repo: "Only public repos can be mirrored this way.",
+          forbidden: "You can only ask others to mirror your own repos.",
+          self_target: "That's this repo's own node.",
+        }[String(body.error || "")] || "Could not send the request.";
+        setHint(reason, "bad");
+        trigger.disabled = false;
+        return;
+      }
+      if (input) input.value = "";
+      setHint(`Asked ${target} to mirror this repo.`, "good");
+    } catch (_) {
+      setHint("Could not send the request. Try again.", "bad");
+    } finally {
+      trigger.disabled = false;
+    }
+  }
+
+  function renderMirrorRequestForm(repo) {
+    const form = $("[data-mirror-request]");
+    if (!form) return;
+    form.hidden = !isRepoOwner(repo);
   }
 
   function renderNotificationModal() {
@@ -1107,6 +1230,25 @@
       return;
     }
 
+    const mirrorAccept = event.target.closest("[data-mirror-request-accept]");
+    if (mirrorAccept) {
+      event.stopPropagation();
+      await resolveMirrorRequest(mirrorAccept.dataset.mirrorRequestAccept || "", "accept", mirrorAccept);
+      return;
+    }
+    const mirrorReject = event.target.closest("[data-mirror-request-reject]");
+    if (mirrorReject) {
+      event.stopPropagation();
+      await resolveMirrorRequest(mirrorReject.dataset.mirrorRequestReject || "", "reject", mirrorReject);
+      return;
+    }
+    const mirrorAsk = event.target.closest("[data-mirror-request-send]");
+    if (mirrorAsk) {
+      event.stopPropagation();
+      await askNodeToMirror(mirrorAsk);
+      return;
+    }
+
     const notificationOpen = event.target.closest("[data-notification-open]");
     if (notificationOpen) {
       await openNotification(notificationOpen.dataset.notificationOpen || "", Boolean(event.target.closest("#notificationModal")));
@@ -1377,6 +1519,26 @@
       if (event.target.closest("[data-repo-about-cancel]")) {
         setRepoAboutStatus("");
         setRepoAboutEditing(false);
+        return;
+      }
+
+      // Owner "Fediverse posts" dropdown: load the post list the moment it's
+      // expanded (setTimeout so the <details> default toggle has applied), and
+      // delete a post from its trash button.
+      const fediPostsSummary = event.target.closest("[data-repo-fedi-posts] > summary");
+      if (fediPostsSummary && state.selectedRepo) {
+        const repo = state.selectedRepo;
+        const details = fediPostsSummary.parentElement;
+        setTimeout(() => { if (details.open) loadRepoFediPosts(repo); }, 0);
+        return;
+      }
+
+      const fediPostDelete = event.target.closest("[data-repo-fedi-post-delete]");
+      if (fediPostDelete && state.selectedRepo) {
+        removeRepoFediPost(
+          state.selectedRepo,
+          fediPostDelete.getAttribute("data-repo-fedi-post-delete"),
+          fediPostDelete);
         return;
       }
 
@@ -1791,6 +1953,21 @@
     updateRepositoryPagination();
   });
 
+  // New-repository modal (adhoc #30): open from the Repos header, collect the
+  // create-and-mirror details, then hand off to the desktop node (see
+  // handleNewRepoSubmit — the signed publish + git mirror are desktop-only).
+  $("[data-new-repo-open]")?.addEventListener("click", () => setNewRepoModalOpen(true));
+  $("[data-new-repo-close]")?.addEventListener("click", () => setNewRepoModalOpen(false));
+  $("[data-new-repo-backdrop]")?.addEventListener("click", () => setNewRepoModalOpen(false));
+  $("[data-new-repo-cancel]")?.addEventListener("click", () => setNewRepoModalOpen(false));
+  $$("[data-new-repo-source]").forEach((btn) => {
+    btn.addEventListener("click", () => setNewRepoSource(btn.dataset.newRepoSource));
+  });
+  $("[data-new-repo-form]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    handleNewRepoSubmit();
+  });
+
   // [data-profile-settings-button] is a real link to /dashboard/settings now,
   // and [data-settings-section-link] clicks are handled by the delegated
   // document click handler above (with push: true for URL reflection).
@@ -1843,6 +2020,7 @@
 	      setNotificationDropdownOpen(false);
 	      setNotificationModalOpen(false);
 	      setAgentModalOpen(false);
+	      setNewRepoModalOpen(false);
 	      closeRepoBranchMenus();
 	      closeRepoFileFinder();
 	      closeGlobalSearch();

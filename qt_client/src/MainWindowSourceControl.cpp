@@ -9,12 +9,92 @@
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
 
+#include <QLayout>
 #include <QScrollArea>
 #include <QScrollBar>
 
 #include <algorithm>
 
 using namespace forkmesh::ui;
+
+// A left-to-right layout that wraps its items onto the next line when the row
+// runs out of width (the classic Qt FlowLayout). The commit toolbar uses it so
+// every button/action stays visible and wraps down instead of scrolling
+// horizontally off the panel (issue #52).
+namespace {
+class FlowLayout : public QLayout
+{
+public:
+    explicit FlowLayout(QWidget *parent, int margin = 0, int hSpacing = 6,
+                        int vSpacing = 6)
+        : QLayout(parent), m_hSpace(hSpacing), m_vSpace(vSpacing)
+    {
+        setContentsMargins(margin, margin, margin, margin);
+    }
+    ~FlowLayout() override
+    {
+        QLayoutItem *item;
+        while ((item = takeAt(0)))
+            delete item;
+    }
+    void addItem(QLayoutItem *item) override { m_items.append(item); }
+    int count() const override { return m_items.size(); }
+    QLayoutItem *itemAt(int i) const override { return m_items.value(i); }
+    QLayoutItem *takeAt(int i) override
+    {
+        return (i >= 0 && i < m_items.size()) ? m_items.takeAt(i) : nullptr;
+    }
+    Qt::Orientations expandingDirections() const override { return {}; }
+    bool hasHeightForWidth() const override { return true; }
+    int heightForWidth(int width) const override
+    {
+        return doLayout(QRect(0, 0, width, 0), true);
+    }
+    void setGeometry(const QRect &rect) override
+    {
+        QLayout::setGeometry(rect);
+        doLayout(rect, false);
+    }
+    QSize sizeHint() const override { return minimumSize(); }
+    QSize minimumSize() const override
+    {
+        QSize size;
+        for (QLayoutItem *item : m_items)
+            size = size.expandedTo(item->minimumSize());
+        const QMargins m = contentsMargins();
+        return size + QSize(m.left() + m.right(), m.top() + m.bottom());
+    }
+
+private:
+    int doLayout(const QRect &rect, bool testOnly) const
+    {
+        const QMargins m = contentsMargins();
+        const QRect eff =
+            rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom());
+        int x = eff.x();
+        int y = eff.y();
+        int lineHeight = 0;
+        for (QLayoutItem *item : m_items) {
+            const QSize hint = item->sizeHint();
+            int nextX = x + hint.width() + m_hSpace;
+            if (nextX - m_hSpace > eff.right() + 1 && lineHeight > 0) {
+                x = eff.x();
+                y = y + lineHeight + m_vSpace;
+                nextX = x + hint.width() + m_hSpace;
+                lineHeight = 0;
+            }
+            if (!testOnly)
+                item->setGeometry(QRect(QPoint(x, y), hint));
+            x = nextX;
+            lineHeight = qMax(lineHeight, hint.height());
+        }
+        return y + lineHeight - rect.y() + m.bottom();
+    }
+    QList<QLayoutItem *> m_items;
+    int m_hSpace;
+    int m_vSpace;
+};
+} // namespace
 
 // ---- Source Control panel (working-tree changes) ---------------------------
 
@@ -174,46 +254,30 @@ QWidget *MainWindow::buildSourceControlPanel()
     }
 
     // The message field gets the full panel width on its own row (VS-Code
-    // style), with the generation and stage/commit controls in a row beneath it
-    // — so the compose area stays usable in a narrow pane.
+    // style). The dense power-user toolbar sits beneath it and wraps its
+    // buttons onto extra rows when the panel is narrow, so every action stays
+    // visible instead of scrolling horizontally off the edge (issue #52).
     root->addWidget(m_scmMessage);
 
     m_scmControlsPanel = new QWidget;
-    auto *composeRow = new QHBoxLayout(m_scmControlsPanel);
-    composeRow->setContentsMargins(0, 0, 0, 0);
-    composeRow->setSpacing(6);
-    composeRow->addWidget(m_scmGenerateButton);
-    composeRow->addWidget(m_scmGenModel);
-    composeRow->addWidget(m_scmGenKind);
-    composeRow->addWidget(m_scmGenDuration);
-    composeRow->addWidget(m_scmCopyButton);
-    composeRow->addWidget(m_scmGenStatus);
-    composeRow->addWidget(m_scmStageAllButton);
-    composeRow->addWidget(m_scmUnstageAllButton);
-    composeRow->addWidget(m_scmDiscardAllButton);
-    composeRow->addWidget(m_scmCommitButton);
-    composeRow->addWidget(m_scmCommitPushButton);
-    composeRow->addWidget(m_scmStageCommitPushButton);
-    composeRow->addStretch();
+    auto *controlsRow = new FlowLayout(m_scmControlsPanel, 0, 6, 6);
+    controlsRow->addWidget(m_scmGenerateButton);
+    controlsRow->addWidget(m_scmGenModel);
+    controlsRow->addWidget(m_scmGenKind);
+    controlsRow->addWidget(m_scmGenDuration);
+    controlsRow->addWidget(m_scmCopyButton);
+    controlsRow->addWidget(m_scmGenStatus);
+    controlsRow->addWidget(m_scmStageAllButton);
+    controlsRow->addWidget(m_scmUnstageAllButton);
+    controlsRow->addWidget(m_scmDiscardAllButton);
+    controlsRow->addWidget(m_scmCommitButton);
+    controlsRow->addWidget(m_scmCommitPushButton);
+    controlsRow->addWidget(m_scmStageCommitPushButton);
 
-    // This is deliberately a dense power-user toolbar, but it must not impose
-    // its full one-line width on the surrounding commit-workspace splitter.
-    // Scroll just the controls when the left pane is narrow so the commit detail
-    // pane and its primary actions remain visible and every control stays usable.
-    auto *controlsScroll = new QScrollArea;
-    controlsScroll->setObjectName("sourceControlToolbarScroll");
-    controlsScroll->setWidget(m_scmControlsPanel);
-    controlsScroll->setWidgetResizable(true);
-    controlsScroll->setFrameShape(QFrame::NoFrame);
-    controlsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    controlsScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    controlsScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
-    controlsScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    controlsScroll->setMinimumWidth(0);
-    controlsScroll->setFixedHeight(
-        m_scmControlsPanel->sizeHint().height() +
-        controlsScroll->horizontalScrollBar()->sizeHint().height());
-    root->addWidget(controlsScroll);
+    QSizePolicy controlsPolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+    controlsPolicy.setHeightForWidth(true);
+    m_scmControlsPanel->setSizePolicy(controlsPolicy);
+    root->addWidget(m_scmControlsPanel);
 
     auto *header = new QHBoxLayout;
     auto *title = new QLabel("CHANGES");

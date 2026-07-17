@@ -1,0 +1,103 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783250638960,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "",
+            "id": "open-388",
+            "sig": "MbpLvxBGIFPC6ddy7-V01tBjhGBVuMyS2DVc6sQubWvCLxzApX4te8pdQowyMXI6UZUpj_BrzRkxPb-M7EpvCA",
+            "title": "create orgs and teams",
+            "ts": 1783250638960,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "have the ability for orgs / organizations  to show as the name in the url instead of the node name for example forkmesh.com/organization/repository - so that part of the url will be either a username or organization name and not the node name - mirror nodes will all operate under the organization name or username instead - users can create orgnizations and invite users to organizations and organizations can have teams that give a subset of users certain permiossions to the repositories like write / read / maintain / admin  ",
+            "id": "603a46f9-c2e6-4e02-9eb2-09527c684366",
+            "sig": "GSanPxNk86Q2XniLbhr_D6m6hmT9X7-0Ic5Vl25_cWdTJCjelyLkuV2QounAIKTDLEiq1jdHxPp4edO2fhQICQ",
+            "ts": 1784325718348,
+            "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 40,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "a5167f29-a5cc-462e-8069-061112d8c82d",
+            "sig": "-QLraQvnQmT9UcCOm_oK2TDTqZad2EoiqFtjtk33tUe8ESf96NJZ2-9wBwv3Xg9YNlubHXmkU_yxFqtA1VxpAA",
+            "ts": 1784325727084,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "4abe1072-8711-4470-9e38-703742c10827",
+            "sig": "Kphd8eOqUKzLf7Lg0oB62eZE6NgfN70lCuRKeYhcAsq6Ag8S6fEozi62pYOf-W5oj6rCJZ_DHo14hkxnj8YeBw",
+            "ts": 1784325727147,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-388-create-orgs-and-teams\".",
+            "id": "b3370243-1990-4765-b177-6b607d5092ee",
+            "sig": "yjHhGCg72wqn_qUxXcScZ-8r1hfW8jdBaonpgNaX2oYRgRxELctjLqv-qioPVhL0E4rsGfowbnht3cg-uoj-Dw",
+            "ts": 1784326868388,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "4c83e767-0bf5-4e81-ba7e-caa6c6abc1af",
+            "sig": "L9xddh7I-93vd1XVASGcS9uU-DIxqQ_8VtVeYWYATG73U0aP_54cJZwXjdxF5vpIkkmY_Iq-z1va3MYqNzV5BA",
+            "status": "closed",
+            "ts": 1784326868442,
+            "type": "status"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Linked pull request #15.",
+            "id": "b83c7464-b48d-4422-9ea8-d3a40f433b6f",
+            "sig": "AGOURNAa2Wn1n2Be8SQGtvIOZmZuSq4ETXuCCvv1bzBcNw5X5DcQFss4ZGX673qxUkQYDeLe6S-hmuVMUqu_Aw",
+            "ts": 1784329384344,
+            "type": "comment"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 388,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "create orgs and teams",
+    "updatedAt": 1784329384344,
+    "votes": 0
+}

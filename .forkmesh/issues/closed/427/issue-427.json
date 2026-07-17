@@ -1,0 +1,92 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783916615,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1783916615",
+            "sig": "KeV5_YTYVY79EJ2WGEzELtXUQzfHDPeB-_uWotwNXJgp66r1hT9yS9iDYbX71qvrI8UyuCtzjvr49Oqwj9h5BQ",
+            "title": "issues are loading too slow on the web please make it faster it only needs to load the titles of the open issues and show them fast also the open / closed counts are wrong fix those too",
+            "ts": 1783916615,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 36,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "e24bf1c3-9241-4eb4-b438-6f8523df0380",
+            "sig": "Gd2NF7VeucPlym2JAjm_UlrbCsHB94o4_bb3ZuJ7nl67820dciyWDVrnsZIRzJcOqte3Ryg6sUp7O031Nc3VBw",
+            "ts": 1784325072197,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "0706e1a6-35a0-420e-86a9-f9bb9250031a",
+            "sig": "3OuULJv5FH9NnGW7fpHC2ob05vYvKt5DUkYUZYC7lG1j6TF3QRPmgvrypT4Se9o78dAgQhK9jeDFDjcjx8nmBQ",
+            "ts": 1784325072262,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-427-issues-are-loading-too-slow-on-the-web-please-ma\".",
+            "id": "402f6dc1-248d-4fa5-8697-4020bc5c2ebd",
+            "sig": "vw7duv3Fz28dwEV5gMPZRSRKj52SJOvBORSzhTU9IkEr1yrRlhv2WlFE66qjcrD5HqEfOOOl2-L-8tdlnr7kCw",
+            "ts": 1784325794904,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "9ffdf5fb-0811-4ade-8110-be3cc4dad2f3",
+            "sig": "xZPrnjClUnk44nBXnQaDw_AWl6K90JOn2LCaeO6WNjyHV-wPZLBymf6klExpJ4JrzqwkUDjgstzusQSfPaumAQ",
+            "status": "closed",
+            "ts": 1784325794968,
+            "type": "status"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Linked pull request #16.",
+            "id": "d85a67e5-c63e-4430-883e-f94fb10de023",
+            "sig": "wTtsw6szVYcKLiGFiGvQE1LWUCeRkjmYppec3Ms63xnjC7gcnbsOV_LaTS1Na-qx_f5tcFROlpKYj1WvDO1lBw",
+            "ts": 1784329688131,
+            "type": "comment"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 427,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "issues are loading too slow on the web please make it faster it only needs to load the titles of the open issues and show them fast also the open / closed counts are wrong fix those too",
+    "updatedAt": 1784329688131,
+    "votes": 0
+}

@@ -414,12 +414,13 @@ QWidget *MainWindow::buildNetworkLogDock()
             });
     updateQuickAddCharCount();
 
-    m_quickAddAssignAgent = new QCheckBox("Agent");
-    m_quickAddAssignAgent->setObjectName("quickAddAgentCheck");
-    m_quickAddAssignAgent->setToolTip(
-        "When you add the issue, immediately assign a coding agent to it.");
     m_quickAddAgentProvider = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddAgentProvider->setObjectName("quickAddAgentSelector");
+    // "Manual (create issue)" (adhoc #29): the no-agent choice that replaces the
+    // old Agent / Create-issue checkboxes — picking it files an issue from the
+    // typed prompt instead of starting a coding agent.
+    m_quickAddAgentProvider->addItem(QStringLiteral("Manual (create issue)"),
+                                     QStringLiteral("manual"));
     m_quickAddAgentProvider->addItem(QStringLiteral("Codex"), kCodexProvider);
     m_quickAddAgentProvider->addItem(QStringLiteral("OpenAI API"),
                                      QStringLiteral("openai"));
@@ -535,14 +536,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Not shown in the controls row (kept out of the prompt-box chrome); it stays
     // wired up and defaults to checked so quick-add agents still open a PR.
     m_quickAddCreatePr->setVisible(false);
-    // "Create issue" toggle (adhoc #99): off by default and remembered across
-    // launches, since the common quick-add path fires a coding agent straight
-    // from the typed prompt rather than filing an issue first.
-    m_quickAddCreateIssue = new QCheckBox("Create issue");
-    m_quickAddCreateIssue->setObjectName("quickAddCreateIssueCheck");
-    m_quickAddCreateIssue->setToolTip(
-        "Create an issue for this prompt instead of starting an agent "
-        "straight from it.");
     // Attach an image to the quick-add (issue #79): pick a file or paste with
     // Ctrl+V. In "No issue" mode the image path rides along in the agent's prompt;
     // otherwise it's attached to the created issue.
@@ -562,8 +555,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddAttachStrip->setVisible(false);
     updateQuickAddImageButton();
 
-    // Mic: dictate the prompt with the locally-installed whisper.cpp. Hidden
-    // until whisper.cpp is downloaded from Settings (updateVoiceInputButton()).
+    // Mic: dictate the prompt with the locally-installed whisper.cpp. Shown
+    // greyed-out until whisper.cpp is downloaded from Settings, then enabled
+    // (updateVoiceInputButton()).
     m_quickAddMicButton = new QPushButton;
     m_quickAddMicButton->setObjectName("ghostButton");
     m_quickAddMicButton->setCursor(Qt::PointingHandCursor);
@@ -600,45 +594,21 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_quickAddVoiceAutoSubmit, &QCheckBox::toggled, this, [](bool on) {
         QSettings().setValue(kVoiceAutoSubmitSetting, on);
     });
-    // Restore the remembered "Create issue" state (off the first time a profile
-    // runs it, per adhoc #99).
-    m_quickAddCreateIssue->setChecked(
-        QSettings().value(kQuickAddCreateIssueSetting, false).toBool());
-    connect(m_quickAddCreateIssue, &QCheckBox::toggled, this, [](bool on) {
-        QSettings().setValue(kQuickAddCreateIssueSetting, on);
-    });
-    m_quickAddAssignAgent->setChecked(true);
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
     m_quickAddAgentProvider->setEnabled(true);
-    // The provider/PR controls are live whenever an agent will run: either the
-    // user asked to assign one, or "No issue" mode (which always starts one —
-    // i.e. "Create issue" is off). In "No issue" mode the plain "Agent" toggle
-    // is irrelevant, so disable it.
+    // The provider dropdown now carries a "Manual (create issue)" choice (adhoc
+    // #29) in place of the old Agent / Create-issue checkboxes. Picking it files
+    // an issue rather than running an agent, so the model/mode pickers — which
+    // only apply to the two CLI-backed agent providers (Claude Code gets its
+    // Claude model list, Codex its OpenAI list) — hide.
     auto syncQuickAddAgentControls = [this]() {
-        const bool noIssue = !m_quickAddCreateIssue->isChecked();
-        m_quickAddAssignAgent->setEnabled(!noIssue);
-        const bool agentRuns = noIssue || m_quickAddAssignAgent->isChecked();
-        m_quickAddAgentProvider->setEnabled(agentRuns);
-        m_quickAddCreatePr->setEnabled(agentRuns);
-        // The prompt-row model chooser applies to the two CLI-backed providers:
-        // Claude Code gets its Claude model list, Codex gets its OpenAI model
-        // list. The API-only providers keep using their saved defaults here so
-        // the row stays aligned and uncluttered.
         const QString provider = m_quickAddAgentProvider->currentData().toString();
         const bool claudeCode = provider == QLatin1String("claude-code");
         const bool codex = agentIsCodexProvider(provider);
         m_quickAddClaudeModel->setVisible(claudeCode || codex);
-        m_quickAddClaudeModel->setEnabled(agentRuns);
-        // Both structured CLI providers support these modes; API-only providers
-        // still use their saved noninteractive defaults.
         m_quickAddModeSelector->setVisible(claudeCode || codex);
-        m_quickAddModeSelector->setEnabled(agentRuns);
     };
-    connect(m_quickAddAssignAgent, &QCheckBox::toggled, this,
-            [syncQuickAddAgentControls](bool) { syncQuickAddAgentControls(); });
-    connect(m_quickAddCreateIssue, &QCheckBox::toggled, this,
-            [syncQuickAddAgentControls](bool) { syncQuickAddAgentControls(); });
     connect(m_quickAddAgentProvider, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this, syncQuickAddAgentControls, refreshQuickAddModelPicker](int) {
                 QSettings().setValue(
@@ -734,16 +704,16 @@ QWidget *MainWindow::buildNetworkLogDock()
     sendColumn->addWidget(m_quickAddSendToAgentButton);
     sendColumn->addWidget(quickAddSendButton);
 
-    // Agent hand-off controls (adhoc #99): the "Agent" toggle plus the
-    // provider/model/mode dropdowns it governs, grouped as one unit in the
-    // middle of the bottom bar. No border/frame around them any more (adhoc
-    // #111 removed the pill outline) — they just sit inline in the bar.
+    // Agent hand-off controls (adhoc #99): the provider/model/mode dropdowns,
+    // grouped as one unit in the middle of the bottom bar. The provider dropdown
+    // now also carries "Manual (create issue)" (adhoc #29). No border/frame
+    // around them any more (adhoc #111 removed the pill outline) — they just sit
+    // inline in the bar.
     auto *agentBox = new QWidget;
     agentBox->setObjectName("quickAddAgentBox");
     auto *agentBoxRow = new QHBoxLayout(agentBox);
     agentBoxRow->setContentsMargins(6, 1, 4, 1);
     agentBoxRow->setSpacing(2);
-    agentBoxRow->addWidget(m_quickAddAssignAgent);
     agentBoxRow->addWidget(m_quickAddAgentProvider);
     agentBoxRow->addWidget(m_quickAddClaudeModel);
     agentBoxRow->addWidget(m_quickAddModeSelector);
@@ -771,15 +741,18 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addWidget(m_voiceLevelMeter, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddAttachStrip, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddVoiceAutoSubmit, 0, Qt::AlignBottom);
-    bottomBar->addSpacing(14);
-    bottomBar->addWidget(m_quickAddCreateIssue, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
-    // The "/" actions box sits immediately left of the Agent checkbox (adhoc
-    // #116), matching where the Claude Code extension keeps its actions menu.
+    // The "/" actions box sits immediately left of the agent box (adhoc #116),
+    // matching where the Claude Code extension keeps its actions menu.
     bottomBar->addWidget(m_quickAddSlashButton, 0, Qt::AlignBottom);
     bottomBar->addWidget(agentBox, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
     bottomBar->addWidget(m_quickAddCharCount, 0, Qt::AlignBottom);
+    // The tiny Codex + Claude usage gauges sit immediately left of the send
+    // icons (adhoc #47), moved down from the top bar so the current 5h/weekly
+    // utilisation is visible right where prompts are launched.
+    bottomBar->addWidget(m_navCodexUsage, 0, Qt::AlignBottom);
+    bottomBar->addWidget(m_navTokenUsage, 0, Qt::AlignBottom);
     bottomBar->addLayout(sendColumn);
 
     auto *bottomBarHost = new QWidget;
@@ -1431,21 +1404,28 @@ void MainWindow::mentionProjectFileInQuickAdd()
 void MainWindow::updateVoiceInputButton()
 {
     const bool ready = voiceInputReady();
-    // The Auto-send toggle only makes sense alongside the mic, so it follows the
-    // engine's installed state just like the mic button does.
+    // The Auto-send toggle only makes sense alongside a working mic, so it stays
+    // hidden until speech-to-text is set up.
     if (m_quickAddVoiceAutoSubmit)
         m_quickAddVoiceAutoSubmit->setVisible(ready);
     if (m_quickAddMicButton) {
-        m_quickAddMicButton->setVisible(ready);
+        // Keep the mic visible even when speech-to-text isn't set up (adhoc #29):
+        // show it greyed out instead of hiding it, so it's discoverable and its
+        // tooltip can point the user at the Settings download.
+        m_quickAddMicButton->setVisible(true);
+        m_quickAddMicButton->setEnabled(ready);
         // Leave the mic currently recording on its red broadcast glyph.
         if (!(m_voiceRecording && m_voiceActiveButton == m_quickAddMicButton)) {
             setOcticon(m_quickAddMicButton, "mic", 16);
             m_quickAddMicButton->setStyleSheet(QString());
             m_quickAddMicButton->setToolTip(
-                QString::fromUtf8(
-                    "Speak your prompt \xE2\x80\x94 hold to record, release "
-                    "to transcribe.\nVoice model: %1")
-                    .arg(voiceModelLabel()));
+                ready ? QString::fromUtf8(
+                            "Speak your prompt \xE2\x80\x94 hold to record, release "
+                            "to transcribe.\nVoice model: %1")
+                            .arg(voiceModelLabel())
+                      : QString::fromUtf8(
+                            "Speech-to-text isn't set up yet \xE2\x80\x94 download a "
+                            "voice model in Settings to dictate your prompt."));
         }
     }
     for (QPushButton *b : m_voiceButtons) {
@@ -3209,7 +3189,7 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_footerDiagnostics, &QPushButton::clicked, this,
             &MainWindow::showDiagnosticsDialog);
 
-    // Three little button-sized squares beside the diagnostics glyph, each plotting
+    // Three little button-sized squares on the window-chrome line, each plotting
     // one resource — this app's CPU, the host's memory and its disk — as a moving
     // sparkline fed one sample a second by updateFooterDiagnostics. Clicking one
     // opens the same diagnostics dialog as the glyph.
@@ -3244,6 +3224,12 @@ QWidget *MainWindow::buildBreadcrumb()
     searchClusterRow->addWidget(createGlobalSearchBox());
     chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
     chromeRow->addStretch();
+    // Live CPU/MEM/DISK sparklines, moved up onto the window-chrome line next
+    // to the minimize/maximize/close buttons (adhoc #33).
+    chromeRow->addWidget(cpuChart);
+    chromeRow->addWidget(memChart);
+    chromeRow->addWidget(diskChart);
+    chromeRow->addSpacing(8);
 
     auto makeWindowButton = [this](QStyle::StandardPixmap icon, const QString &tip) {
         auto *button = new QPushButton;
@@ -3301,11 +3287,6 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addStretch();
     mainRow->addWidget(m_topMessageContainer);
     mainRow->addStretch();
-    // Live CPU/MEM/DISK sparklines, moved up next to the donate button (adhoc #121).
-    mainRow->addWidget(cpuChart);
-    mainRow->addWidget(memChart);
-    mainRow->addWidget(diskChart);
-    mainRow->addSpacing(8);
     // Donate button + the Reddit/X icons, sat just left of the account cluster
     // (adhoc #117).
     mainRow->addWidget(donateButton);
@@ -3321,11 +3302,8 @@ QWidget *MainWindow::buildBreadcrumb()
     balanceColumn->addWidget(m_navNodeName);
     balanceColumn->addWidget(m_navSolanaBalance);
     mainRow->addLayout(balanceColumn);
-    // The tiny provider usage charts tuck between the earnings and the avatar.
-    mainRow->addSpacing(6);
-    mainRow->addWidget(m_navCodexUsage);
-    mainRow->addSpacing(2);
-    mainRow->addWidget(m_navTokenUsage);
+    // The provider usage gauges used to tuck in here; they now live in the
+    // prompt toolbar next to the send buttons (adhoc #47, see buildNetworkLogDock).
     mainRow->addSpacing(4);
     mainRow->addWidget(m_userAvatarNavButton);
     mainRow->addSpacing(2);
@@ -5568,6 +5546,44 @@ void MainWindow::updateChatButton()
                         .arg(total)
                         .arg(total == 1 ? QString() : QStringLiteral("s"))
                   : QStringLiteral("Chat"));
+
+    updateChatUnreadBanner();
+}
+
+void MainWindow::updateChatUnreadBanner()
+{
+    if (!m_chatUnreadBanner)
+        return;
+    int total = 0;
+    for (const int n : std::as_const(m_unreadCounts))
+        total += n;
+    if (total > 0) {
+        if (m_chatUnreadBannerLabel)
+            m_chatUnreadBannerLabel->setText(
+                QString::fromUtf8("%1 unread message%2")
+                    .arg(total)
+                    .arg(total == 1 ? QString() : QStringLiteral("s")));
+        m_chatUnreadBanner->show();
+    } else {
+        m_chatUnreadBanner->hide();
+    }
+}
+
+void MainWindow::markAllChatRead()
+{
+    if (!m_unread.isEmpty() || !m_unreadCounts.isEmpty()) {
+        m_unread.clear();
+        m_unreadCounts.clear();
+        refreshChannelList();
+        refreshDmList();
+        updateChatButton();
+        // Unread state persists across restarts now; flush the cleared markers so
+        // they don't come back after a restart.
+        scheduleChatSave();
+    }
+    // "...and to see them": jump to the newest messages in the open conversation.
+    m_stickToBottom = true;
+    scrollToBottom();
 }
 
 bool MainWindow::isChatViewVisible() const
@@ -7156,11 +7172,23 @@ void MainWindow::refreshNodesTable()
     // ForkBot's relayed replies or a desktop profile signed in as a user, not a
     // linked node. Missing accountKind (older peers, or a name only known via
     // a locally hosted repo's owner field) still counts as a node.
+    //
+    // Our own row is the same story: when this desktop is signed in as a user
+    // account (it owns a node fleet), the account name is a *user*, not a node —
+    // its nodes show as their own rows. The backend stamps this same predicate as
+    // accountKind "user" on the self roster entry, but that self row also carries
+    // live telemetry and can be painted before the "user" kind propagates, which
+    // left the user showing as a node (adhoc #37: "jett" listed as a node). Gate
+    // the self row on the local predicate directly so it never leaks through.
+    const bool selfIsUserAccount =
+        m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
     QList<NodeMenuEntry> visible;
     QList<MemberInfo> visibleRoster;
     for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
         const MemberInfo mi = rosterInfo(e.name);
         if (mi.accountKind == QLatin1String("user"))
+            continue;
+        if (e.self && selfIsUserAccount)
             continue;
         visible.append(e);
         visibleRoster.append(mi);

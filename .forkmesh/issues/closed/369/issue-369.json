@@ -1,0 +1,95 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+    "authorName": "newnewnode",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1783116818268,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
+            "authorName": "newnewnode",
+            "body": "**Roadmap Phase 6.** ForkMesh currently custodies bounty SOL in per-issue deposit keys — a money-transmission exposure and a honeypot. Move escrow on-chain so ForkMesh never holds user funds.\n\n- Solana program (Anchor: <https://www.anchor-lang.com>): funder deposits into a PDA bound to (repo root commit, issue number); release splits 90/10 to contributor and project when the repo owner's node submits a merge attestation signed with the same Ed25519 key the mesh already trusts; refund path to the funder after expiry.\n- Client keeps the same UX (`MainWindowIssues.cpp` bounty controls); only the destination and release mechanics change.\n- Ship devnet first. Do #367 first — it validates the payout semantics we then freeze into the program.\n- Business (not code, hence the title tag): legal review of whether attestation-gated escrow still creates transmitter obligations, **before** mainnet deploy.",
+            "id": "open-369",
+            "sig": "cVDm0rvBQDOth02leBfjxQ9JLolcforQ3UmkD6BAdhzNFapXAHfXwVA4Wz87w71xdqYogzqhELDb_6KY3L9fDg",
+            "title": "[code + business: needs legal review] Non-custodial on-chain bounty escrow",
+            "ts": 1783116818268,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "**Roadmap Phase 6.** ForkMesh currently custodies bounty SOL in per-issue deposit keys — a money-transmission exposure and a honeypot. Move escrow on-chain so ForkMesh never holds user funds.\n\n- Solana program (Anchor: <https://www.anchor-lang.com>): funder deposits into a PDA bound to (repo root commit, issue number); release splits 90/10 to contributor and project when the repo owner's node submits a merge attestation signed with the same Ed25519 key the mesh already trusts; refund path to the funder after expiry.\n- Client keeps the same UX (`MainWindowIssues.cpp` bounty controls); only the destination and release mechanics change.\n- Business (not code, hence the title tag): legal review of whether attestation-gated escrow still creates transmitter obligations, **before** mainnet deploy.",
+            "id": "63113adf-5fbc-40b2-b62b-73486a624228",
+            "sig": "GIaZZOAqbtxmgS3NftWiAZcB09sj3EbtWnoX9GCPO3airCYAF4qFqERH8UZt8jz3nnOp3uWmNqX4fqh4asvqAA",
+            "target": "open-369",
+            "ts": 1784326583515,
+            "type": "edit"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 50,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "4cf233e3-fffe-4f4f-95cf-48c8a236853e",
+            "sig": "ADCAI_KoJirTFDFIQYffmLzoqLraBlPvgU406tDT1UbZHCTjqW1GndqaCSUkS3TTC3UcxgfnKwcMWRrNhOI7DQ",
+            "ts": 1784328884515,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "90184b03-8caf-4268-8e07-3630345603b4",
+            "sig": "VIYyYpC8NtDWUYPCV4gnXahWXqTjtqiVn1rmTWaTBpgvw439WXIDrHcovGT0HdRBSwdKZnQMjE7Dysj2JdJlAQ",
+            "ts": 1784328884574,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "we're not using issue bounties anymore ",
+            "id": "5d9a8043-97e0-44fb-8785-66ea2f079f86",
+            "sig": "aUQQDez9rjs80E1-CwHxgL59KePi3g870mRqQyIhCxQrfqbYtgJB7kln39lADfMVfFDtOuMOj5FhFliPLODQCw",
+            "ts": 1784330900958,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "49394493-0ae3-4eb9-abdd-03148699b045",
+            "sig": "no84qIkvEGQ8TU-1RBpMz5xelM56oD1DFgTt_UoHodkkxmRk-UKgpSCBGdxJ662C75QutZ9i1nd4cDEDjsGwAQ",
+            "status": "closed",
+            "ts": 1784330901024,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "feature",
+        "security"
+    ],
+    "milestone": "Phase 2",
+    "number": 369,
+    "priority": 52,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "[code + business: needs legal review] Non-custodial on-chain bounty escrow",
+    "updatedAt": 1784330901024,
+    "votes": 0
+}
