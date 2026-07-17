@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
     "authorName": "jett",
@@ -20,6 +21,40 @@
             "title": "have teh ability for the repo owner to delete posts from mastodon",
             "ts": 1783916191297,
             "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "this can be a feature on the website have a dropdown to manage all aspects of ths posts ",
+            "id": "1946fd1e-418a-4054-bb5d-a792367dc06e",
+            "sig": "bgHkyC95E93hZXyIsVIKwH7dwqA29uro5Zzp53bVkTVRsZe_ZUshqmj5VAhRDNdr4u4nVJgRI0evruw1vf_bCg",
+            "ts": 1784325417311,
+            "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 39,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "77e46223-13a7-4a10-9ea6-91b157fd5339",
+            "sig": "JD9mLASTn8z8ngxj2eNHFbSXqeQ7XK1-0IFW5lU8GVH7-9yo5dKAppLu2VXEpEICiKfxRqwf-8luE1rZ4f12Aw",
+            "ts": 1784325493423,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "7dbb1814-c43f-481d-bbfe-5ed21cd84e02",
+            "sig": "HqlI7Rx9GLTexb5xzLdSs20T111iKsDu9wC-NjtP91fMt3jOaqul0wvRdR7SKYGju8zN4uW_KTqkspcYiZz0AA",
+            "ts": 1784325493483,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -32,6 +67,6 @@
     "startDate": 0,
     "status": "open",
     "title": "have teh ability for the repo owner to delete posts from mastodon",
-    "updatedAt": 1783916191297,
+    "updatedAt": 1784325493483,
     "votes": 0
 }
