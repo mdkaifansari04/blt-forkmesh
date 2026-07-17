@@ -75,6 +75,18 @@
             "sig": "wTtsw6szVYcKLiGFiGvQE1LWUCeRkjmYppec3Ms63xnjC7gcnbsOV_LaTS1Na-qx_f5tcFROlpKYj1WvDO1lBw",
             "ts": 1784329688131,
             "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "01a88254-29fd-4bc8-95da-f08bab1e6455",
+            "sig": "k8BNHtBXu1V4izST2iTNmvi-GtgbLAWMo5O83Xxzn_2oB7FZvoDq3Rhjsc7KsJRodUAMCBlMe7mNG775l6bFBQ",
+            "ts": 1784332310180,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -87,6 +99,6 @@
     "startDate": 0,
     "status": "closed",
     "title": "issues are loading too slow on the web please make it faster it only needs to load the titles of the open issues and show them fast also the open / closed counts are wrong fix those too",
-    "updatedAt": 1784329688131,
+    "updatedAt": 1784332310180,
     "votes": 0
 }
