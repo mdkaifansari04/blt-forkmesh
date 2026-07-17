@@ -32,6 +32,16 @@ const QString kKnownRosterGroup = QStringLiteral("mainnode/knownRoster");
 // of leaving them shown as online indefinitely.
 constexpr int kPresenceIntervalMs = 60000;   // 60s broadcast
 constexpr qint64 kPeerStaleMs = 180000;       // 3 missed beats -> offline
+// Half-open-link watchdog (same guard RepoHost uses on the /host tunnel): if
+// nothing at all has arrived for this long while the link is believed up — not
+// even a pong for the 25s keepalive pings — the TCP socket is a zombie (NAT
+// timeout, silent relay drop). Writes into it still "succeed", so Qt may never
+// emit disconnected() and a headless node would sit "connected" with an empty
+// roster forever while the mesh shows it offline. Tear it down and reconnect.
+constexpr qint64 kStaleRxMs = 70000; // ~2.8x the 25s ping interval
+// A server that accepts TCP/TLS but never answers the WebSocket upgrade would
+// otherwise hang the node forever: the ping timer only starts after the 101.
+constexpr int kConnectTimeoutMs = 30000;
 constexpr qint64 kHelloAdvertiseMinIntervalMs = 30000;
 constexpr qint64 kHelloReplyMinIntervalMs = 120000;
 constexpr qint64 kStatusRepeatMinIntervalMs = 60000;
@@ -322,7 +332,27 @@ bool ServerNode::start()
         m_pingTimer = new QTimer(this);
         m_pingTimer->setInterval(25000);
         connect(m_pingTimer, &QTimer::timeout, this, [this] {
-            m_pingSentMs = QDateTime::currentMSecsSinceEpoch();
+            // Zombie-link watchdog: if nothing has come back since before the
+            // previous ping went out — not even its pong — the socket is
+            // half-open and disconnected() may never fire on its own. Take the
+            // normal reconnect path instead of pinging into the void forever.
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            const qint64 lastAlive = qMax(m_lastRxMs, m_wsConnectedAtMs);
+            if (m_wsReady && lastAlive > 0 && now - lastAlive > kStaleRxMs) {
+                emit systemMessage(
+                    QString::fromUtf8("Mainnode link went stale (nothing "
+                                      "received for %1s); reconnecting\xE2\x80\xA6")
+                        .arg((now - lastAlive) / 1000));
+                if (m_socket) {
+                    m_socket->disconnect(this);
+                    m_socket->abort();
+                    m_socket->deleteLater();
+                    m_socket = nullptr;
+                }
+                handleLinkLost();
+                return;
+            }
+            m_pingSentMs = now;
             sendControlFrame(0x9);
         });
     }
@@ -370,6 +400,31 @@ void ServerNode::openConnection()
         return;
     }
 
+    // Bound the whole connect + TLS + WebSocket-upgrade sequence. A server
+    // that accepts the TCP connection but never answers the upgrade leaves no
+    // timer running (ping/presence only start after the 101), so without this
+    // the node would hang in "Connecting…" forever.
+    if (!m_connectTimeoutTimer) {
+        m_connectTimeoutTimer = new QTimer(this);
+        m_connectTimeoutTimer->setSingleShot(true);
+        connect(m_connectTimeoutTimer, &QTimer::timeout, this, [this] {
+            if (m_wsReady || m_userStopped)
+                return;
+            emit systemMessage(
+                QString::fromUtf8("Mainnode connect to %1 timed out; "
+                                  "retrying\xE2\x80\xA6")
+                    .arg(m_url.host()));
+            if (m_socket) {
+                m_socket->disconnect(this);
+                m_socket->abort();
+                m_socket->deleteLater();
+                m_socket = nullptr;
+            }
+            scheduleReconnect();
+        });
+    }
+    m_connectTimeoutTimer->start(kConnectTimeoutMs);
+
     m_socket = m_url.scheme() == "wss" ? new QSslSocket(this) : new QTcpSocket(this);
     connectSocketSignals();
     const int port = m_url.port(m_url.scheme() == "wss" ? 443 : 80);
@@ -381,6 +436,11 @@ void ServerNode::openConnection()
 
 void ServerNode::scheduleReconnect()
 {
+    // The connect timeout only polices the attempt in flight; while we're
+    // waiting out the backoff there is nothing for it to abort, and letting it
+    // fire mid-wait would log a spurious "timed out". openConnection re-arms it.
+    if (m_connectTimeoutTimer)
+        m_connectTimeoutTimer->stop();
     if (m_userStopped)
         return; // the user left the node; don't keep retrying
     if (m_reconnectTimer && m_reconnectTimer->isActive())
@@ -441,27 +501,36 @@ void ServerNode::connectSocketSignals()
     });
     if (auto *ssl = qobject_cast<QSslSocket *>(m_socket))
         connect(ssl, &QSslSocket::encrypted, this, &ServerNode::onConnectedTransport);
-    connect(m_socket, &QTcpSocket::disconnected, this, [this] {
-        if (m_pingTimer)
-            m_pingTimer->stop();
-        if (m_presenceTimer)
-            m_presenceTimer->stop();
-        if (m_helloAdvertiseTimer)
-            m_helloAdvertiseTimer->stop();
-        m_wsReady = false;
-        m_wsConnectedAtMs = 0;
-        m_peers.clear();
-        m_lastHelloReplyMs.clear();
-        emit networkDiagnosticsChanged();
-        updateRosterAndStatus();
-        scheduleReconnect();
-    });
+    connect(m_socket, &QTcpSocket::disconnected, this,
+            &ServerNode::handleLinkLost);
     connect(m_socket, &QTcpSocket::errorOccurred, this, [this] {
         emit systemMessage("Mainnode socket error: " + m_socket->errorString());
         // A connect failure may not emit disconnected, so retry from here too.
         if (!m_wsReady)
             scheduleReconnect();
     });
+}
+
+void ServerNode::handleLinkLost()
+{
+    // Shared teardown for a socket drop, whichever way it was noticed: the
+    // disconnected() signal, or the ping timer's stale-rx watchdog (a
+    // half-open socket never emits disconnected on its own).
+    if (m_pingTimer)
+        m_pingTimer->stop();
+    if (m_presenceTimer)
+        m_presenceTimer->stop();
+    if (m_helloAdvertiseTimer)
+        m_helloAdvertiseTimer->stop();
+    if (m_connectTimeoutTimer)
+        m_connectTimeoutTimer->stop();
+    m_wsReady = false;
+    m_wsConnectedAtMs = 0;
+    m_peers.clear();
+    m_lastHelloReplyMs.clear();
+    emit networkDiagnosticsChanged();
+    updateRosterAndStatus();
+    scheduleReconnect();
 }
 
 void ServerNode::onConnectedTransport()
@@ -518,6 +587,8 @@ void ServerNode::onSocketReadyRead()
         m_wsReady = true;
         m_wsConnectedAtMs = QDateTime::currentMSecsSinceEpoch();
         m_reconnectAttempts = 0; // link is healthy again; retry fast next drop
+        if (m_connectTimeoutTimer)
+            m_connectTimeoutTimer->stop();
         if (m_pingTimer)
             m_pingTimer->start();
         if (m_presenceTimer)
@@ -1336,6 +1407,8 @@ void ServerNode::shutdown()
         m_pingTimer->stop();
     if (m_presenceTimer)
         m_presenceTimer->stop();
+    if (m_connectTimeoutTimer)
+        m_connectTimeoutTimer->stop();
     QJsonObject bye = makeMessage("bye");
     sendEncrypted(bye, true);
     if (m_socket) {

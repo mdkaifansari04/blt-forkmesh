@@ -5438,6 +5438,7 @@ void MainWindow::showRepoMenu()
     if (!m_repoMenuButton)
         return;
     QMenu menu(this);
+    menu.setToolTipsVisible(true);
 
     QAction *header = menu.addAction(
         QStringLiteral("Repositories (%1)").arg(formatCount(m_repoMenuEntries.size())));
@@ -5462,6 +5463,8 @@ void MainWindow::showRepoMenu()
     QStringList repoNames;
     for (const RepoMenuEntry &e : std::as_const(m_repoMenuEntries)) {
         QAction *act = menu.addAction(e.icon, e.label);
+        if (!e.detail.isEmpty())
+            act->setToolTip(e.detail);
         const int index = e.index;
         const QString advertised = e.advertised;
         connect(act, &QAction::triggered, this, [this, index, advertised] {
