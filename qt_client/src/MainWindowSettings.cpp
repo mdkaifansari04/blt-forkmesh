@@ -2041,6 +2041,23 @@ QByteArray MainWindow::effectiveUserAvatar()
     return forkMeshAvatarPng(seed);
 }
 
+void MainWindow::pushAccountAvatar()
+{
+    // Only persist an avatar the user actually chose — never the generated
+    // identicon effectiveUserAvatar() falls back to. Needs a login session
+    // token to authenticate the write.
+    if (m_accountSessionToken.isEmpty() || m_userAvatar.isEmpty())
+        return;
+    postAccountSync(
+        QStringLiteral("profile"),
+        QJsonObject{
+            {QStringLiteral("sessionToken"), m_accountSessionToken},
+            {QStringLiteral("avatarPng"),
+             QString::fromLatin1(m_userAvatar.toBase64())},
+        },
+        nullptr);
+}
+
 void MainWindow::updateAvatarButton()
 {
     if (!m_avatarNavButton)
