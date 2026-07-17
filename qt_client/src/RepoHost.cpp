@@ -471,12 +471,13 @@ int countOpenIssues(const QString &mirrorPath, const QString &ref, int *closed)
         }
         return names;
     };
-    // A deleted (tombstoned) issue keeps its folder for federation but is not
-    // open: the Issues tab and every list filter it out (Issue::isDeleted), so
-    // the served/advertised count must drop it too or it drifts above the tab
-    // (adhoc #16). Detecting a delete/self event needs the record, so read the
-    // open/ blobs (open issues are few) and the legacy ones; closed/<n> folders
-    // are never open regardless, so they still count with no blob read.
+    // An issue its own creator deleted (a self-deletion) is not open: the Issues
+    // tab and lists drop it from the open count (Issue::isDeleted), so the
+    // served/advertised count must too or it drifts above the tab (adhoc #16). A
+    // delete/self event signed by anyone else is an unauthorized attempt that
+    // does NOT delete the issue, so it still counts. Deciding needs the record,
+    // so read the open/ blobs (open issues are few) and the legacy ones;
+    // closed/<n> folders are never open regardless, so they skip the blob read.
     auto recordTombstoned = [&](const QString &rel) {
         QByteArray blob;
         if (!runGit(mirrorPath, {"cat-file", "-p", ref + ":" + rel}, blob))
@@ -485,12 +486,23 @@ int countOpenIssues(const QString &mirrorPath, const QString &ref, int *closed)
                                       .object()
                                       .value(QStringLiteral("events"))
                                       .toArray();
+        QString creator;
+        for (const QJsonValue &value : events) {
+            const QJsonObject event = value.toObject();
+            if (event.value(QStringLiteral("type")).toString() ==
+                QLatin1String("open")) {
+                creator = event.value(QStringLiteral("author")).toString();
+                break;
+            }
+        }
         for (const QJsonValue &value : events) {
             const QJsonObject event = value.toObject();
             if (event.value(QStringLiteral("type")).toString() ==
                     QLatin1String("delete") &&
                 event.value(QStringLiteral("target")).toString() ==
-                    QLatin1String("self"))
+                    QLatin1String("self") &&
+                !creator.isEmpty() &&
+                event.value(QStringLiteral("author")).toString() == creator)
                 return true;
         }
         return false;
