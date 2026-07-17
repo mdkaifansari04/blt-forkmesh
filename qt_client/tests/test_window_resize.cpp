@@ -1154,11 +1154,12 @@ int main(int argc, char *argv[])
             for (int i = 0; i < quickProvider->count(); ++i)
                 providerLabels << quickProvider->itemText(i);
         }
-        check(providerLabels == QStringList({QStringLiteral("Codex"),
+        check(providerLabels == QStringList({QStringLiteral("Manual (create issue)"),
+                                             QStringLiteral("Codex"),
                                              QStringLiteral("OpenAI API"),
                                              QStringLiteral("Claude API"),
                                              QStringLiteral("Claude Code")}),
-              QStringLiteral("quick-add agent dropdown offers Codex plus existing providers"));
+              QStringLiteral("quick-add agent dropdown offers Manual plus the agent providers"));
         check(quickProvider && quickProvider->maxVisibleItems() >= quickProvider->count() &&
                   quickProvider->view() &&
                   quickProvider->view()->verticalScrollBarPolicy() ==

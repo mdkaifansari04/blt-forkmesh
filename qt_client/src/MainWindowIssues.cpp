@@ -3621,13 +3621,15 @@ void MainWindow::quickAddIssue()
 
     // "No issue" mode (issue #299): don't create an issue at all — hand the typed
     // text straight to a coding agent as its prompt, like the Agents-tab composer.
-    // This is the default (adhoc #99): "Create issue" is off unless the user
-    // turns it on, so most quick-add prompts skip issue filing entirely.
-    if (!m_quickAddCreateIssue || !m_quickAddCreateIssue->isChecked()) {
-        const QString provider =
-            m_quickAddAgentProvider
-                ? m_quickAddAgentProvider->currentData().toString()
-                : QStringLiteral("claude-code");
+    // This is the default (adhoc #29): the provider dropdown files an issue only
+    // when its "Manual (create issue)" entry is picked; any real agent provider
+    // starts a coding agent straight from the prompt.
+    const QString quickAddProvider =
+        m_quickAddAgentProvider
+            ? m_quickAddAgentProvider->currentData().toString()
+            : QStringLiteral("claude-code");
+    if (quickAddProvider != QLatin1String("manual")) {
+        const QString provider = quickAddProvider;
         const QString model = (provider == QLatin1String("claude-code") ||
                                agentIsCodexProvider(provider))
                                   ? selectedModelComboValue(m_quickAddClaudeModel)
@@ -3720,35 +3722,12 @@ void MainWindow::quickAddIssue()
     // A more descriptive confirmation than the old bare "Issue created." — names
     // the number and title so the toast says exactly what landed (issue #299).
     setIssueInlineNotice(QStringLiteral("Issue #%1 created: %2").arg(number).arg(title));
-    // If requested, hand the freshly-created issue straight to a coding agent.
-    if (m_quickAddAssignAgent && m_quickAddAssignAgent->isChecked()) {
-        const QString provider =
-            m_quickAddAgentProvider
-                ? m_quickAddAgentProvider->currentData().toString()
-                : QStringLiteral("codex");
-        const QString model = (provider == QLatin1String("claude-code") ||
-                               agentIsCodexProvider(provider))
-                                  ? selectedModelComboValue(m_quickAddClaudeModel)
-                                  : QString();
-        const bool oldCreatePr =
-            m_issueAgentCreatePrCheck && m_issueAgentCreatePrCheck->isChecked();
-        if (m_issueAgentCreatePrCheck) {
-            const QSignalBlocker block(m_issueAgentCreatePrCheck);
-            m_issueAgentCreatePrCheck->setChecked(m_quickAddCreatePr &&
-                                                  m_quickAddCreatePr->isChecked());
-            assignIssueToAgent(provider, model);
-            m_issueAgentCreatePrCheck->setChecked(oldCreatePr);
-        } else {
-            assignIssueToAgent(provider, model);
-        }
-    } else {
-        // Issue #203: with no agent to hand off to, land the user on the issue
-        // they just created -- open its detail pane, mirroring how the agent path
-        // jumps straight to the new session. reloadIssues() above re-selects the
-        // row in table mode, but call showIssue() explicitly so the detail opens
-        // regardless of the active list view (board, cards, a filtered table).
-        showIssue(number);
-    }
+    // "Manual (create issue)" files the issue only — no agent hand-off (adhoc
+    // #29). Land the user on the issue they just created by opening its detail
+    // pane. reloadIssues() above re-selects the row in table mode, but call
+    // showIssue() explicitly so the detail opens regardless of the active list
+    // view (board, cards, a filtered table). Issue #203.
+    showIssue(number);
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
@@ -3756,13 +3735,13 @@ int MainWindow::testQuickAddIssueNoAgent(const QString &title)
 {
     if (!m_issueQuickAdd)
         return -1;
-    // Type the title and make sure the agent hand-off is off but issue creation
-    // is on, so the plain create-and-open path (issue #203) runs rather than the
-    // agent / no-issue one.
-    if (m_quickAddAssignAgent)
-        m_quickAddAssignAgent->setChecked(false);
-    if (m_quickAddCreateIssue)
-        m_quickAddCreateIssue->setChecked(true);
+    // Select the "Manual (create issue)" provider so the plain create-and-open
+    // path (issue #203) runs rather than the run-an-agent one (adhoc #29).
+    if (m_quickAddAgentProvider) {
+        const int idx = m_quickAddAgentProvider->findData(QStringLiteral("manual"));
+        if (idx >= 0)
+            m_quickAddAgentProvider->setCurrentIndex(idx);
+    }
     m_issueQuickAdd->setPlainText(title);
     quickAddIssue();
     return m_currentIssueNumber;
