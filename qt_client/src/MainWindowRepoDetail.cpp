@@ -8462,32 +8462,33 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitMeta->setTextFormat(Qt::RichText);
     m_commitMeta->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
-    m_commitFilesSummary = new QLabel;
-    m_commitFilesSummary->setObjectName("sectionLabel");
-    m_commitFilesSummary->setTextFormat(Qt::RichText);
+    // The old "N files changed" heading is gone: the changed-files tree carries
+    // the file names on its own, so the standalone count label is redundant.
+    m_commitFilesSummary = nullptr;
 
-    // Left: changed-files list (click to scroll the diff to that file).
+    // Left: changed-files list (click to scroll the diff to that file). The
+    // selected file gets the same green outline the other file trees use, so the
+    // active file is obvious at a glance (issue: border the selected file).
     auto *filesPane = new QWidget;
     filesPane->setMinimumWidth(200);
     filesPane->setMaximumWidth(300);
     m_commitFileList = new QListWidget;
     m_commitFileList->setObjectName("commitFileList");
+    enableHoverRowHighlight(m_commitFileList); // green outline on the selected file
     connect(m_commitFileList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
                 if (item && m_commitDiffView)
                     m_commitDiffView->scrollToAnchor(
                         item->data(Qt::UserRole).toString());
             });
-    // Small spinner that sits just after the "N files changed" heading while
-    // showCommit reads + renders the diff, so a slow commit shows progress here
-    // instead of freezing. Hidden until a load starts.
+    // Small spinner that shows load progress while showCommit reads + renders
+    // the diff, so a slow commit shows progress here instead of freezing.
     m_commitDiffSpinner = new BusySpinner(filesPane);
     m_commitDiffSpinner->setToolTip(QString::fromUtf8("Loading diff\xE2\x80\xA6"));
     m_commitDiffSpinner->hide();
     auto *filesSummaryRow = new QHBoxLayout;
     filesSummaryRow->setContentsMargins(0, 0, 0, 0);
     filesSummaryRow->setSpacing(6);
-    filesSummaryRow->addWidget(m_commitFilesSummary);
     filesSummaryRow->addWidget(m_commitDiffSpinner);
     filesSummaryRow->addStretch();
 
