@@ -103,6 +103,10 @@ REPO_FEDI_COMMENTS_RE = re.compile(
 # Owner-node push of canonical repo announcements (releases, merged PRs) into
 # the fediverse — events the relay never observes through the signed inboxes.
 REPO_AP_PUBLISH_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/ap-publish$")
+# Repo owner's fediverse-post management surface (dashboard): list the repo
+# actor's federated posts and delete one (broadcasts a Delete(Tombstone) so it
+# disappears from Mastodon). Session/owner-key authed, never public.
+REPO_AP_POSTS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/ap-posts$")
 # Owner-uploaded repo branding (logo/banner PNG) served publicly — referenced
 # by the repo's fediverse actor document as its avatar/header.
 REPO_MEDIA_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/media/(logo|banner)\.png$")
