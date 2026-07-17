@@ -831,6 +831,10 @@ private:
     void showChatView();           // open the chat view from the top-bar button
     void updateChatButton();       // refresh the top-bar chat unread indicator
     bool isChatViewVisible() const; // chat tab open + window active (i.e. being read)
+    // Clears the unread marker for the open conversation whenever it becomes
+    // actually visible (chat section shown, or window regains focus while
+    // already on it) — called from showSection() and changeEvent().
+    void clearActiveConversationUnread();
     void updateConnectionStatus(); // top-right "● Connected · N nodes online"
     // Take this node online / offline from the top-bar toggle. Offline stops the
     // reward heartbeat and live repo serving (so the node stops collecting
