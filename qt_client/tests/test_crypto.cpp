@@ -4028,6 +4028,33 @@ int main(int argc, char *argv[])
                           }),
               "migrated legacy issue still loads with its folded status");
 
+        // Folder-authoritative status (adhoc #16): an issue still sitting in
+        // open/ whose record carries a stale status->closed event must load as
+        // OPEN, so the Issues-tab tally matches the open/ folder listing and the
+        // served/advertised open count instead of drifting below it (the
+        // 11-vs-7 skew the file browser exposes).
+        const QString skewDir =
+            QDir(tmp.path()).filePath(QStringLiteral(".forkmesh/issues/open/55"));
+        QDir().mkpath(skewDir);
+        QFile skewJson(QDir(skewDir).filePath(QStringLiteral("issue-55.json")));
+        if (skewJson.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            skewJson.write(
+                "{\"schema\":\"forkmesh-issue-v1\",\"number\":55,"
+                "\"title\":\"Stale status\",\"status\":\"closed\","
+                "\"events\":[{\"type\":\"open\",\"id\":\"open-55\","
+                "\"author\":\"a\",\"ts\":1,\"title\":\"Stale status\","
+                "\"body\":\"\",\"attachments\":[],\"sig\":\"s\"},"
+                "{\"type\":\"status\",\"id\":\"s55\",\"author\":\"a\","
+                "\"ts\":2,\"status\":\"closed\",\"sig\":\"s\"}]}");
+        skewJson.close();
+        loaded = repo.loadAll();
+        check(std::any_of(loaded.begin(), loaded.end(),
+                          [](const Issue &i) {
+                              return i.number == 55 &&
+                                     i.status == QStringLiteral("open");
+                          }),
+              "an issue in open/ with a stale status->closed record counts as open");
+
         check(repo.addComment(n, "a comment", {}, &err), "addComment succeeds");
         QFile issueJson(issueJsonPath);
         const bool commentJsonOk =
