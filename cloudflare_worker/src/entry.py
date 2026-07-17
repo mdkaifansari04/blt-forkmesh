@@ -8123,9 +8123,10 @@ async def _account_heartbeat(env, request):
         if remaining != rec.get("mirror_requests"):
             rec["mirror_requests"] = remaining
             await _save_account(env, name_bi, rec)
-    pending_mirrors = accepted_mirror_requests(rec.get("mirror_requests"))
-    if pending_mirrors:
-        response["mirrorRequests"] = pending_mirrors
+    if rec.get("mirror_requests"):
+        pending_mirrors = accepted_mirror_requests(rec.get("mirror_requests"))
+        if pending_mirrors:
+            response["mirrorRequests"] = pending_mirrors
     return json_response(response)
 
 
