@@ -3253,6 +3253,7 @@ private:
         QIcon icon;
         int index = -1;     // m_repositories index; -2 = advertised mirror
         QString advertised; // ownerName when index == -2
+        QString detail;     // tooltip explaining what distinguishes this entry
     };
     QList<RepoMenuEntry> m_repoMenuEntries;
     QListWidget *m_dmList;
