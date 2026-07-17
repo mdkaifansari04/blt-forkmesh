@@ -968,13 +968,10 @@ int main(int argc, char *argv[])
             check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 1) ==
                       QStringLiteral("alice"),
                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 10) ==
-                      QStringLiteral("3"),
-                  QStringLiteral("Mirror nodes Worktrees column is populated before CPU/RAM/Disk"));
-            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 13)
+            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 12)
                       .startsWith(QStringLiteral("Disk:")),
                   QStringLiteral("Mirror nodes Disk column contains disk usage, not platform text"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 14) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 13) ==
                       QStringLiteral("linux"),
                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
             window.testSetMirrorNodesOnlineOnly(false);
