@@ -312,6 +312,22 @@ def test_note_doc_attachments_default_empty_and_pass_through():
          "url": "https://forkmesh.com/ap/o/1/media/0"}]
 
 
+def test_delete_activity_is_tombstone():
+    activity = ap.delete_activity(
+        "https://forkmesh.com/ap/repos/o/r",
+        "https://forkmesh.com/ap/o/" + "cd" * 16,
+        "https://forkmesh.com/ap/repos/o/r/followers", 1783641600000)
+    assert activity["type"] == "Delete"
+    assert activity["actor"] == "https://forkmesh.com/ap/repos/o/r"
+    assert activity["object"] == {
+        "id": "https://forkmesh.com/ap/o/" + "cd" * 16, "type": "Tombstone"}
+    # Same audience the original Create reached, so every timeline that showed
+    # the Note gets the Tombstone.
+    assert activity["to"] == [ap.AS_PUBLIC]
+    assert activity["cc"] == ["https://forkmesh.com/ap/repos/o/r/followers"]
+    assert activity["published"] == "2026-07-10T00:00:00Z"
+
+
 def test_accept_activity_is_deterministic():
     follow = {"id": "https://mastodon.social/x/follow/1", "type": "Follow",
               "actor": "https://mastodon.social/users/bob",
