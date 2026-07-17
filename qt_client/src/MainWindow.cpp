@@ -187,6 +187,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                         QNetworkRequest::HttpStatusCodeAttribute);
                     status = code.isValid() ? code.toString()
                                             : QStringLiteral("done");
+                    // Surface the response payload on success too (not just
+                    // the status code) so the verbose log answers "what did
+                    // this request actually return?" without needing
+                    // devtools. peek() (not read()) so the real reply
+                    // consumer still gets the full body.
+                    const QByteArray body = reply->peek(512);
+                    if (!body.isEmpty()) {
+                        const QString snippet = QString::fromUtf8(body).simplified();
+                        if (!snippet.isEmpty())
+                            status += QStringLiteral(" [body: ") + snippet +
+                                      QStringLiteral("]");
+                    }
                 }
                 logSystem(QStringLiteral("net %1 %2 %3 \xC2\xB7 %4")
                               .arg(verb, status, reply->url().toString(),

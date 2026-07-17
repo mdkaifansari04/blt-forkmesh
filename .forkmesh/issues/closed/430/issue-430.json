@@ -20,6 +20,26 @@
             "title": "Test Issue Creation",
             "ts": 1784321445040,
             "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "it works, I'm closing",
+            "id": "7e6bd1fe-7426-4bf7-a7f5-dd504c58956c",
+            "sig": "vlupwTX-TOATPiM_BUPrV3Ohl3AsMggD8DcFa2iUtEA2Ppx_u4gQHL68zUV7CWp87sjn4ccpOh63FoOfxHLeDQ",
+            "ts": 1784324951013,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "53496c1f-6c4b-4ab4-81de-fca369cf50ef",
+            "sig": "CYfZPWY-g2WW0FGWIC3GG8Q9rTXmM91hbNlmT6KmyvPAwVt0JDLu-_3_q_LiuqTE42XP9D3LGej7J9vNjsXzCw",
+            "status": "closed",
+            "ts": 1784324951081,
+            "type": "status"
         }
     ],
     "labels": [
@@ -31,8 +51,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "Test Issue Creation",
-    "updatedAt": 1784321445040,
+    "updatedAt": 1784324951081,
     "votes": 0
 }
