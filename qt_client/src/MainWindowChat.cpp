@@ -5544,6 +5544,44 @@ void MainWindow::updateChatButton()
                         .arg(total)
                         .arg(total == 1 ? QString() : QStringLiteral("s"))
                   : QStringLiteral("Chat"));
+
+    updateChatUnreadBanner();
+}
+
+void MainWindow::updateChatUnreadBanner()
+{
+    if (!m_chatUnreadBanner)
+        return;
+    int total = 0;
+    for (const int n : std::as_const(m_unreadCounts))
+        total += n;
+    if (total > 0) {
+        if (m_chatUnreadBannerLabel)
+            m_chatUnreadBannerLabel->setText(
+                QString::fromUtf8("%1 unread message%2")
+                    .arg(total)
+                    .arg(total == 1 ? QString() : QStringLiteral("s")));
+        m_chatUnreadBanner->show();
+    } else {
+        m_chatUnreadBanner->hide();
+    }
+}
+
+void MainWindow::markAllChatRead()
+{
+    if (!m_unread.isEmpty() || !m_unreadCounts.isEmpty()) {
+        m_unread.clear();
+        m_unreadCounts.clear();
+        refreshChannelList();
+        refreshDmList();
+        updateChatButton();
+        // Unread state persists across restarts now; flush the cleared markers so
+        // they don't come back after a restart.
+        scheduleChatSave();
+    }
+    // "...and to see them": jump to the newest messages in the open conversation.
+    m_stickToBottom = true;
+    scrollToBottom();
 }
 
 bool MainWindow::isChatViewVisible() const
