@@ -4,7 +4,7 @@ number: 14
 title: Agent: lets update our readme and documentation to better match what is done already…
 base: main
 head: agent/adhoc-24-lets-update-our-readme-and-documentation-to-bett
-status: open
+status: merged
 ts: 1784322265125
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh
