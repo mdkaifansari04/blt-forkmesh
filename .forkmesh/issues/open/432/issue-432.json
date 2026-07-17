@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1784332654205,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+                "210c94da.png"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-432",
+            "sig": "svKfGCnFT_u0TDMtC7zCFKShBOOLz7nBWLaQqR4e_QdUoJgLf2pRWnR2hymaVAh6izG1SIqTw0U9-yCKhMJ5Ag",
+            "title": "on this solana bounty popup show more info like who is the auhtor and all addresses involved with links to their explorer",
+            "ts": 1784332654205,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 432,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "on this solana bounty popup show more info like who is the auhtor and all addresses involved with links to their explorer",
+    "updatedAt": 1784332654205,
+    "votes": 0
+}
