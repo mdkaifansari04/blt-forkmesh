@@ -207,6 +207,234 @@ class ApiService {
     });
   }
 
+  // --- Organizations -------------------------------------------------------
+  // The /api/orgs endpoints authorize by the session bearer token (attached by
+  // _withAuth) and return structured {"error": "<code>"} bodies on rejection.
+  // _orgRequest decodes that body and raises an OrgApiException carrying text
+  // from orgErrorMessage, instead of the generic HTTP error _decodeResponse
+  // throws, so the org UI can show a human-readable reason.
+
+  static String _orgSeg(String value) =>
+      Uri.encodeComponent(value.trim().toLowerCase());
+
+  Future<dynamic> _orgRequest(
+    String method,
+    Uri uri, [
+    Map<String, dynamic>? body,
+  ]) async {
+    final headers = _withAuth({
+      'Accept': 'application/json',
+      if (body != null) 'Content-Type': 'application/json',
+    });
+    final encoded = body == null ? null : jsonEncode(body);
+    Future<dynamic> load() async {
+      final http.Response resp;
+      switch (method) {
+        case 'GET':
+          resp = await http
+              .get(uri, headers: headers)
+              .timeout(const Duration(seconds: 12));
+        case 'POST':
+          resp = await http
+              .post(uri, headers: headers, body: encoded)
+              .timeout(const Duration(seconds: 12));
+        case 'DELETE':
+          resp = await http
+              .delete(uri, headers: headers, body: encoded)
+              .timeout(const Duration(seconds: 12));
+        default:
+          throw ArgumentError('unsupported method $method');
+      }
+      dynamic decoded;
+      if (resp.body.isNotEmpty) {
+        try {
+          decoded = jsonDecode(resp.body);
+        } catch (_) {}
+      }
+      if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        return decoded ?? const <String, dynamic>{};
+      }
+      final code = decoded is Map && decoded['error'] is String
+          ? decoded['error'] as String
+          : '';
+      throw OrgApiException(
+        code.isNotEmpty ? code : 'http_${resp.statusCode}',
+        orgErrorMessage(code),
+      );
+    }
+
+    final monitor = _performanceMonitor;
+    if (monitor == null) return load();
+    return monitor.track('api.$method ${uri.path}', load, details: {
+      'host': uri.host,
+      'path': uri.path,
+    });
+  }
+
+  /// The organizations the signed-in account belongs to (`GET /api/orgs`).
+  Future<List<OrgSummary>> myOrgs() async {
+    final data = await _orgRequest('GET', _base('/api/orgs'));
+    final list = data is Map<String, dynamic> && data['orgs'] is List
+        ? data['orgs'] as List
+        : const [];
+    return list
+        .whereType<Map>()
+        .map((o) => OrgSummary.fromJson(Map<String, dynamic>.from(o)))
+        .where((o) => o.name.isNotEmpty)
+        .toList();
+  }
+
+  /// Create an org; the calling account becomes its first owner.
+  Future<OrgSummary> createOrg({
+    required String name,
+    String displayName = '',
+    String description = '',
+  }) async {
+    final data = await _orgRequest('POST', _base('/api/orgs'), {
+      'name': name.trim().toLowerCase(),
+      if (displayName.trim().isNotEmpty) 'displayName': displayName.trim(),
+      if (description.trim().isNotEmpty) 'description': description.trim(),
+    });
+    final map = data is Map<String, dynamic> ? data : const <String, dynamic>{};
+    return OrgSummary(
+      name: (map['org'] ?? name).toString(),
+      role: (map['role'] ?? 'owner').toString(),
+    );
+  }
+
+  /// Public org profile plus the viewer's role (`GET /api/orgs/<name>`).
+  Future<OrgProfile> orgProfile(String org) async {
+    final data = await _orgRequest('GET', _base('/api/orgs/${_orgSeg(org)}'));
+    return OrgProfile.fromJson(
+      data is Map<String, dynamic> ? data : const <String, dynamic>{},
+    );
+  }
+
+  /// Dissolve an org and all its rows (owners only).
+  Future<void> deleteOrg(String org) =>
+      _orgRequest('DELETE', _base('/api/orgs/${_orgSeg(org)}'), const {});
+
+  Future<List<OrgMember>> orgMembers(String org) async {
+    final data = await _orgRequest(
+      'GET',
+      _base('/api/orgs/${_orgSeg(org)}/members'),
+    );
+    final list = data is Map<String, dynamic> && data['members'] is List
+        ? data['members'] as List
+        : const [];
+    return list
+        .whereType<Map>()
+        .map((m) => OrgMember.fromJson(Map<String, dynamic>.from(m)))
+        .where((m) => m.name.isNotEmpty)
+        .toList();
+  }
+
+  /// Add a member or change its role (owner/admin session).
+  Future<void> setOrgMember(
+    String org,
+    String member, {
+    String role = 'member',
+  }) =>
+      _orgRequest('POST', _base('/api/orgs/${_orgSeg(org)}/members'), {
+        'member': member.trim().toLowerCase(),
+        'role': role.trim().toLowerCase(),
+      });
+
+  Future<void> removeOrgMember(String org, String member) =>
+      _orgRequest('DELETE', _base('/api/orgs/${_orgSeg(org)}/members'), {
+        'member': member.trim().toLowerCase(),
+      });
+
+  Future<List<OrgTeam>> orgTeams(String org) async {
+    final data = await _orgRequest(
+      'GET',
+      _base('/api/orgs/${_orgSeg(org)}/teams'),
+    );
+    final list = data is Map<String, dynamic> && data['teams'] is List
+        ? data['teams'] as List
+        : const [];
+    return list
+        .whereType<Map>()
+        .map((t) => OrgTeam.fromJson(Map<String, dynamic>.from(t)))
+        .where((t) => t.team.isNotEmpty)
+        .toList();
+  }
+
+  /// Create a team or update its permission (owner/admin session).
+  Future<void> setOrgTeam(
+    String org,
+    String team, {
+    String permission = 'read',
+  }) =>
+      _orgRequest('POST', _base('/api/orgs/${_orgSeg(org)}/teams'), {
+        'team': team.trim().toLowerCase(),
+        'permission': permission.trim().toLowerCase(),
+      });
+
+  Future<void> deleteOrgTeam(String org, String team) =>
+      _orgRequest('DELETE', _base('/api/orgs/${_orgSeg(org)}/teams'), {
+        'team': team.trim().toLowerCase(),
+      });
+
+  /// The org members on one team (`GET /api/orgs/<org>/teams/<team>/members`).
+  Future<List<OrgMember>> orgTeamMembers(String org, String team) async {
+    final data = await _orgRequest(
+      'GET',
+      _base('/api/orgs/${_orgSeg(org)}/teams/${_orgSeg(team)}/members'),
+    );
+    final list = data is Map<String, dynamic> && data['members'] is List
+        ? data['members'] as List
+        : const [];
+    return list
+        .whereType<Map>()
+        .map((m) => OrgMember.fromJson(Map<String, dynamic>.from(m)))
+        .where((m) => m.name.isNotEmpty)
+        .toList();
+  }
+
+  /// Add an existing org member to a team (owner/admin session).
+  Future<void> addOrgTeamMember(String org, String team, String member) =>
+      _orgRequest(
+        'POST',
+        _base('/api/orgs/${_orgSeg(org)}/teams/${_orgSeg(team)}/members'),
+        {'member': member.trim().toLowerCase()},
+      );
+
+  Future<void> removeOrgTeamMember(String org, String team, String member) =>
+      _orgRequest(
+        'DELETE',
+        _base('/api/orgs/${_orgSeg(org)}/teams/${_orgSeg(team)}/members'),
+        {'member': member.trim().toLowerCase()},
+      );
+
+  Future<List<OrgRepo>> orgRepos(String org) async {
+    final data = await _orgRequest(
+      'GET',
+      _base('/api/orgs/${_orgSeg(org)}/repos'),
+    );
+    final list = data is Map<String, dynamic> && data['repos'] is List
+        ? data['repos'] as List
+        : const [];
+    return list
+        .whereType<Map>()
+        .map((r) => OrgRepo.fromJson(Map<String, dynamic>.from(r)))
+        .where((r) => r.repo.isNotEmpty)
+        .toList();
+  }
+
+  /// Link one of your node's published repos under the org's `/<org>/<repo>`
+  /// namespace (owner/admin session; the node must be your own account).
+  Future<void> linkOrgRepo(String org, String repo, {String node = ''}) =>
+      _orgRequest('POST', _base('/api/orgs/${_orgSeg(org)}/repos'), {
+        'repo': repo.trim().toLowerCase(),
+        if (node.trim().isNotEmpty) 'node': node.trim().toLowerCase(),
+      });
+
+  Future<void> unlinkOrgRepo(String org, String repo) =>
+      _orgRequest('DELETE', _base('/api/orgs/${_orgSeg(org)}/repos'), {
+        'repo': repo.trim().toLowerCase(),
+      });
+
   Future<List<AgentSession>> agentSessions(
     String owner,
     String name, {
