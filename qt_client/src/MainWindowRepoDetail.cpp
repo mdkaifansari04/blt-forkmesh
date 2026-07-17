@@ -2486,6 +2486,9 @@ void MainWindow::inviteUserToCurrentCove()
                              QStringLiteral("Could not save invitation: ") + err);
         return;
     }
+    if (m_backend)
+        m_backend->notifyCoveInvited(grantee, cove.id, cove.name, account,
+                                     QDateTime::currentMSecsSinceEpoch());
     m_coveExplorerCurrentId = cove.id;
     loadCoveExplorer();
     setRepoDetailNotice(QStringLiteral("Invited %1 to the cove.").arg(grantee));

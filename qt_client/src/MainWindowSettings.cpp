@@ -2365,6 +2365,7 @@ void MainWindow::attachBackend(ChatBackend *backend)
     connect(backend, &ChatBackend::mirrorRefreshRequested, this,
             &MainWindow::onMirrorRefreshRequested);
     connect(backend, &ChatBackend::coveOpened, this, &MainWindow::onCoveOpened);
+    connect(backend, &ChatBackend::coveInvited, this, &MainWindow::onCoveInvited);
     connect(backend, &ChatBackend::networkDiagnosticsChanged, this, [this] {
         if (m_sectionStack &&
             m_sectionStack->currentIndex() == kNetworkDiagnosticsSectionIndex)
