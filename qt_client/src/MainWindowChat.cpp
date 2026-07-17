@@ -3184,7 +3184,7 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_footerDiagnostics, &QPushButton::clicked, this,
             &MainWindow::showDiagnosticsDialog);
 
-    // Three little button-sized squares beside the diagnostics glyph, each plotting
+    // Three little button-sized squares on the window-chrome line, each plotting
     // one resource — this app's CPU, the host's memory and its disk — as a moving
     // sparkline fed one sample a second by updateFooterDiagnostics. Clicking one
     // opens the same diagnostics dialog as the glyph.
@@ -3219,6 +3219,12 @@ QWidget *MainWindow::buildBreadcrumb()
     searchClusterRow->addWidget(createGlobalSearchBox());
     chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
     chromeRow->addStretch();
+    // Live CPU/MEM/DISK sparklines, moved up onto the window-chrome line next
+    // to the minimize/maximize/close buttons (adhoc #33).
+    chromeRow->addWidget(cpuChart);
+    chromeRow->addWidget(memChart);
+    chromeRow->addWidget(diskChart);
+    chromeRow->addSpacing(8);
 
     auto makeWindowButton = [this](QStyle::StandardPixmap icon, const QString &tip) {
         auto *button = new QPushButton;
@@ -3276,11 +3282,6 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addStretch();
     mainRow->addWidget(m_topMessageContainer);
     mainRow->addStretch();
-    // Live CPU/MEM/DISK sparklines, moved up next to the donate button (adhoc #121).
-    mainRow->addWidget(cpuChart);
-    mainRow->addWidget(memChart);
-    mainRow->addWidget(diskChart);
-    mainRow->addSpacing(8);
     // Donate button + the Reddit/X icons, sat just left of the account cluster
     // (adhoc #117).
     mainRow->addWidget(donateButton);
