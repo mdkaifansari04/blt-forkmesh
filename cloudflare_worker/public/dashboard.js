@@ -5303,6 +5303,14 @@
     const number = Number(issue.number || fallbackNumber);
     const events = Array.isArray(issue.events) ? issue.events : [];
     const open = events.find((event) => event && event.type === "open") || {};
+    // A delete/self event tombstones the issue: the desktop (Issue::isDeleted)
+    // and the served open count drop it, so the web list/count must too, or a
+    // deleted issue shows up as open and the tab disagrees with the desktop
+    // (adhoc #16). The owner strips unauthorized deletes before publishing, so
+    // any surviving delete/self here is an authorized (creator or owner)
+    // deletion we can trust.
+    const deleted = events.some(
+      (event) => event && event.type === "delete" && event.target === "self");
     const updatedAt = events.reduce((latest, event) => {
       const ts = Number(event?.ts || 0);
       return Number.isFinite(ts) && ts > latest ? ts : latest;
@@ -5316,6 +5324,7 @@
       number,
       title: issue.title || open.title || `issue #${number}`,
       status,
+      deleted,
       author: issue.authorName || open.authorName || issue.author || open.author || "unknown",
       date: formatRecordDate(updatedAt || issue.createdAt || open.ts),
       labels: labelsList,
@@ -6637,8 +6646,13 @@
       let missing = [];
       dirs.forEach((number) => {
         const blob = blobs[pathByNumber.get(number)];
-        if (blob) items.push(parseIssueJson(blobText(blob), number));
-        else missing.push(number);
+        if (blob) {
+          const issue = parseIssueJson(blobText(blob), number);
+          // Tombstoned issues are dropped from the list and count, matching the
+          // desktop and the served open count (adhoc #16). The folder lingers
+          // for federation, but a deleted issue is neither open nor closed.
+          if (!issue.deleted) items.push(issue);
+        } else missing.push(number);
       });
       // A batched read can drop entries under relay load; retry just the misses
       // once so a transient gap doesn't quietly shrink the count vs the Mirror
@@ -6650,8 +6664,10 @@
         const stillMissing = [];
         missing.forEach((number) => {
           const blob = retry[pathByNumber.get(number)];
-          if (blob) items.push(parseIssueJson(blobText(blob), number));
-          else stillMissing.push(number);
+          if (blob) {
+            const issue = parseIssueJson(blobText(blob), number);
+            if (!issue.deleted) items.push(issue);
+          } else stillMissing.push(number);
         });
         missing = stillMissing;
       }
