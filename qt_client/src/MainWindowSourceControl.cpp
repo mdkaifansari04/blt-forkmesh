@@ -174,46 +174,42 @@ QWidget *MainWindow::buildSourceControlPanel()
     }
 
     // The message field gets the full panel width on its own row (VS-Code
-    // style), with the generation and stage/commit controls in a row beneath it
-    // — so the compose area stays usable in a narrow pane.
+    // style). The dense power-user toolbar sits beneath it, split across two
+    // rows — generation controls above, stage/commit actions below — so the
+    // whole compose area fits a narrow pane without a horizontal scrollbar.
     root->addWidget(m_scmMessage);
 
     m_scmControlsPanel = new QWidget;
-    auto *composeRow = new QHBoxLayout(m_scmControlsPanel);
-    composeRow->setContentsMargins(0, 0, 0, 0);
-    composeRow->setSpacing(6);
-    composeRow->addWidget(m_scmGenerateButton);
-    composeRow->addWidget(m_scmGenModel);
-    composeRow->addWidget(m_scmGenKind);
-    composeRow->addWidget(m_scmGenDuration);
-    composeRow->addWidget(m_scmCopyButton);
-    composeRow->addWidget(m_scmGenStatus);
-    composeRow->addWidget(m_scmStageAllButton);
-    composeRow->addWidget(m_scmUnstageAllButton);
-    composeRow->addWidget(m_scmDiscardAllButton);
-    composeRow->addWidget(m_scmCommitButton);
-    composeRow->addWidget(m_scmCommitPushButton);
-    composeRow->addWidget(m_scmStageCommitPushButton);
-    composeRow->addStretch();
+    auto *controlsCol = new QVBoxLayout(m_scmControlsPanel);
+    controlsCol->setContentsMargins(0, 0, 0, 0);
+    controlsCol->setSpacing(6);
 
-    // This is deliberately a dense power-user toolbar, but it must not impose
-    // its full one-line width on the surrounding commit-workspace splitter.
-    // Scroll just the controls when the left pane is narrow so the commit detail
-    // pane and its primary actions remain visible and every control stays usable.
-    auto *controlsScroll = new QScrollArea;
-    controlsScroll->setObjectName("sourceControlToolbarScroll");
-    controlsScroll->setWidget(m_scmControlsPanel);
-    controlsScroll->setWidgetResizable(true);
-    controlsScroll->setFrameShape(QFrame::NoFrame);
-    controlsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    controlsScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    controlsScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
-    controlsScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    controlsScroll->setMinimumWidth(0);
-    controlsScroll->setFixedHeight(
-        m_scmControlsPanel->sizeHint().height() +
-        controlsScroll->horizontalScrollBar()->sizeHint().height());
-    root->addWidget(controlsScroll);
+    auto *generateRow = new QHBoxLayout;
+    generateRow->setContentsMargins(0, 0, 0, 0);
+    generateRow->setSpacing(6);
+    generateRow->addWidget(m_scmGenerateButton);
+    generateRow->addWidget(m_scmGenModel);
+    generateRow->addWidget(m_scmGenKind);
+    generateRow->addWidget(m_scmGenDuration);
+    generateRow->addWidget(m_scmCopyButton);
+    generateRow->addWidget(m_scmGenStatus);
+    generateRow->addStretch();
+    controlsCol->addLayout(generateRow);
+
+    auto *actionsRow = new QHBoxLayout;
+    actionsRow->setContentsMargins(0, 0, 0, 0);
+    actionsRow->setSpacing(6);
+    actionsRow->addWidget(m_scmStageAllButton);
+    actionsRow->addWidget(m_scmUnstageAllButton);
+    actionsRow->addWidget(m_scmDiscardAllButton);
+    actionsRow->addWidget(m_scmCommitButton);
+    actionsRow->addWidget(m_scmCommitPushButton);
+    actionsRow->addWidget(m_scmStageCommitPushButton);
+    actionsRow->addStretch();
+    controlsCol->addLayout(actionsRow);
+
+    m_scmControlsPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    root->addWidget(m_scmControlsPanel);
 
     auto *header = new QHBoxLayout;
     auto *title = new QLabel("CHANGES");
