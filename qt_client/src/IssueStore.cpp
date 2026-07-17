@@ -12,6 +12,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMap>
+#include <QPair>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QSet>
@@ -661,18 +662,32 @@ QList<Issue> IssueStore::loadAll(QString *error, const std::function<void()> &ti
     QList<Issue> issues;
     QList<int> numbers;
     QSet<int> seen;
-    const QStringList roots{issuesDir() + QLatin1Char('/') + openDirName(),
-                            issuesDir() + QLatin1Char('/') + closedDirName(),
-                            issuesDir()};
-    for (const QString &root : roots)
-        for (int number : numericDirEntries(root))
+    // The status folder an issue lives in is the source of truth for open/closed
+    // (adhoc #14: "the layout itself encodes each issue's state"), matching
+    // countOpenIssues / the advertised + served counts. Record which folder each
+    // number came from so it can win over an event/record status that a missed
+    // folder-move left stale — otherwise an issue still sitting in open/ but
+    // whose record says "closed" would drop the Issues-tab count below the open/
+    // folder count the file browser and Mirror nodes tab show (the 11-vs-7 skew).
+    QHash<int, QString> folderStatus; // number -> "open"/"closed"; empty = legacy
+    const QList<QPair<QString, QString>> roots{
+        {issuesDir() + QLatin1Char('/') + openDirName(), QStringLiteral("open")},
+        {issuesDir() + QLatin1Char('/') + closedDirName(), QStringLiteral("closed")},
+        {issuesDir(), QString()}};
+    for (const QPair<QString, QString> &root : roots)
+        for (int number : numericDirEntries(root.first))
             if (!seen.contains(number)) {
                 seen.insert(number);
                 numbers.append(number);
+                if (!root.second.isEmpty())
+                    folderStatus.insert(number, root.second);
             }
     for (int number : std::as_const(numbers)) {
         Issue issue;
         if (readIssueFile(number, issue)) {
+            const QString folder = folderStatus.value(number);
+            if (!folder.isEmpty())
+                issue.status = folder;
             if (!issue.isDeleted())
                 issues.append(issue);
         } else {
@@ -894,6 +909,12 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
     // One JSON blob per issue at .forkmesh/issues/{open,closed}/<n>/issue-<n>.json
     // (or .forkmesh/issues/<n>/ on a pre-split mirror).
     QByteArray listing;
+    // number -> "open"/"closed" derived from the status folder the blob lives
+    // in. The folder is authoritative for the open/closed tally (adhoc #14), so
+    // it wins over a stale in-record status below — keeping the count aligned
+    // with the open/ folder listing and the served/advertised open count rather
+    // than drifting below it (the 11-vs-7 skew).
+    QHash<int, QString> folderStatus;
     if (readGit({"ls-tree", "-r", ref, issuesRootRel() + "/"}, &listing)) {
         QMap<int, QString> issueJsonOids;
         QSet<QString> wantedOids;
@@ -911,11 +932,16 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
                 continue;
             QString rel = path.mid(prefix.size());
             // Skip the open//closed/ status segment (legacy pre-split repos
-            // have the numbered folder directly under the root).
-            if (rel.startsWith(openDirName() + QLatin1Char('/')))
+            // have the numbered folder directly under the root), remembering
+            // which side it was so the folder can override the record status.
+            QString relFolderStatus;
+            if (rel.startsWith(openDirName() + QLatin1Char('/'))) {
                 rel = rel.mid(openDirName().size() + 1);
-            else if (rel.startsWith(closedDirName() + QLatin1Char('/')))
+                relFolderStatus = QStringLiteral("open");
+            } else if (rel.startsWith(closedDirName() + QLatin1Char('/'))) {
                 rel = rel.mid(closedDirName().size() + 1);
+                relFolderStatus = QStringLiteral("closed");
+            }
             const int slash = rel.indexOf('/');
             if (slash < 0)
                 continue;
@@ -928,6 +954,8 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
                 const QString oid = meta.at(2);
                 issueJsonOids.insert(number, oid);
                 wantedOids.insert(oid);
+                if (!relFolderStatus.isEmpty())
+                    folderStatus.insert(number, relFolderStatus);
             }
         }
 
@@ -989,6 +1017,14 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
             if (issue.number <= 0)
                 issue.number = it.key();
             recomputeMetadata(issue);
+            // Folder wins over a stale record status for the open/closed tally.
+            // Strict verification compares records byte-for-byte for signed
+            // snapshots, so it keeps the record's own status untouched.
+            if (!strict) {
+                const QString folder = folderStatus.value(it.key());
+                if (!folder.isEmpty())
+                    issue.status = folder;
+            }
             if (!issue.isDeleted())
                 issues.append(issue);
         }

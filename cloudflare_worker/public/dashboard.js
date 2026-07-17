@@ -6492,6 +6492,24 @@
     if (Number.isFinite(Number(counts.discussions))) setRepoTabCount("discussions", Number(counts.discussions));
   }
 
+  // The tab badges are seeded from the catalog's last-published tallies, which
+  // lag the live mirror (e.g. issues opened since the owner node last
+  // republished). The authoritative served counts ride only on the ROOT tree
+  // reply (RepoHost::rootCountsFor, gated on path.isEmpty()), so a deep link
+  // straight into a subfolder — e.g. browsing .forkmesh/issues/open — fetches a
+  // subpath tree that carries no counts, leaving the Issues badge stuck on the
+  // stale seed (showing 7 while the open/ folder holds 11). Refresh from the
+  // mirror's root counts in that one case; best-effort, so an offline mirror
+  // just keeps the catalog seed.
+  async function refreshServedCounts(repo) {
+    try {
+      const data = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: "" }));
+      if (data && data.counts) applyServedCounts(data.counts);
+    } catch (_) {
+      /* offline mirror — badges keep their catalog seed */
+    }
+  }
+
   // Free-text issue search: substring match (case-insensitive) over the
   // number, title, body snippet, author, and the status/labels/milestone
   // meta string — everything renderRepoRecordList already shows per row, so
@@ -9456,6 +9474,12 @@
     setRepoTab(repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code");
     window.lucide?.createIcons();
     loadRepositoryTree(repo, routeKind === "tree" ? routePath : "");
+    // A deep link into a subfolder (or a blob) loads a subpath/blob tree that
+    // carries no served counts, so the tab badges would stay on the stale
+    // catalog seed (e.g. Issues showing 7 while the open/ folder holds 11).
+    // Refresh them from the mirror's root counts in that case; the root code
+    // view and the feature-tab routes already fetch the root tree themselves.
+    if ((routeKind === "tree" || routeKind === "blob") && routePath) refreshServedCounts(repo);
     if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo, recordRoute);
     loadRepoPendingCounts(repo);
