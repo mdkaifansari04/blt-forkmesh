@@ -67,7 +67,12 @@ struct Issue {
 
     QJsonObject toJson() const;
     static Issue fromJson(const QJsonObject &obj);
-    bool isDeleted() const; // a delete event targeting "self" tombstones the issue
+    // "Deleted" means the issue's own creator tombstoned it (a self-deletion).
+    // A delete/self event from anyone else is an unauthorized attempt that does
+    // NOT delete the issue — it stays visible and counted, flagged instead of
+    // hidden (adhoc #16: show the info rather than silently dropping the issue).
+    bool isDeleted() const;
+    bool hasUnauthorizedDeleteAttempt() const;
 };
 
 // Issue-level metadata that rides alongside a remote "open" submission. These

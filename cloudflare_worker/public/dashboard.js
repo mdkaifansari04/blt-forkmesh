@@ -5303,14 +5303,17 @@
     const number = Number(issue.number || fallbackNumber);
     const events = Array.isArray(issue.events) ? issue.events : [];
     const open = events.find((event) => event && event.type === "open") || {};
-    // A delete/self event tombstones the issue: the desktop (Issue::isDeleted)
-    // and the served open count drop it, so the web list/count must too, or a
-    // deleted issue shows up as open and the tab disagrees with the desktop
-    // (adhoc #16). The owner strips unauthorized deletes before publishing, so
-    // any surviving delete/self here is an authorized (creator or owner)
-    // deletion we can trust.
-    const deleted = events.some(
+    // Deletion is shown, not hidden (adhoc #16), and classified by who signed it,
+    // mirroring the desktop (Issue::isDeleted / hasUnauthorizedDeleteAttempt).
+    // A delete/self signed by the issue's own creator deletes it; one signed by
+    // anyone else is an unauthorized attempt that leaves the issue open but
+    // flagged.
+    const creator = open.author || "";
+    const deletes = events.filter(
       (event) => event && event.type === "delete" && event.target === "self");
+    const deleted = deletes.some((event) => event.author && event.author === creator);
+    const deleteAttempted = !deleted &&
+      deletes.some((event) => event.author && event.author !== creator);
     const updatedAt = events.reduce((latest, event) => {
       const ts = Number(event?.ts || 0);
       return Number.isFinite(ts) && ts > latest ? ts : latest;
@@ -5325,6 +5328,7 @@
       title: issue.title || open.title || `issue #${number}`,
       status,
       deleted,
+      deleteAttempted,
       author: issue.authorName || open.authorName || issue.author || open.author || "unknown",
       date: formatRecordDate(updatedAt || issue.createdAt || open.ts),
       labels: labelsList,
@@ -5610,6 +5614,8 @@
           <span class="min-w-0">
             <span class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <span class="min-w-0 truncate text-sm font-semibold text-foreground">${escapeHtml(item.title)}</span>
+              ${item.deleted ? '<span class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-medium text-muted-foreground" title="Deleted by its author.">deleted</span>' : ""}
+              ${item.deleteAttempted ? '<span class="inline-flex items-center gap-1 rounded-full border border-yellow-500/40 bg-yellow-500/10 px-2 py-0.5 text-[10px] font-medium text-yellow-600" title="Someone who did not open this issue tried to delete it; the deletion was not applied."><i data-lucide="triangle-alert" class="h-3 w-3"></i>unauthorized deletion</span>' : ""}
               ${labelParts.map((label) => `<span class="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-medium text-muted-foreground">${escapeHtml(label)}</span>`).join("")}
             </span>
             <span class="mt-1 block truncate text-xs text-muted-foreground">${escapeHtml(numberLabel)} opened by ${escapeHtml(item.author)} ${escapeHtml(item.date)}${item.body ? ` - ${escapeHtml(item.body).slice(0, 140)}` : ""}</span>
@@ -6540,6 +6546,11 @@
     if (!container) return;
     const issuesView = state.issuesView;
     const filtered = issuesView.items.filter((issue) => {
+      // A deleted issue (its creator tombstoned it) is shown only under "All",
+      // badged, so it doesn't pad the Open/Closed lists the tab count tracks
+      // (adhoc #16). An unauthorized deletion attempt leaves the issue in its
+      // normal Open/Closed list, flagged.
+      if (issue.deleted && issuesView.filter !== "all") return false;
       if (issuesView.filter === "all") return true;
       // "Open" means "not closed", matching the desktop advert and served counts
       // (RepoHost::countOpenIssues / mirrorOpenIssueCount both use status !=
@@ -6646,13 +6657,8 @@
       let missing = [];
       dirs.forEach((number) => {
         const blob = blobs[pathByNumber.get(number)];
-        if (blob) {
-          const issue = parseIssueJson(blobText(blob), number);
-          // Tombstoned issues are dropped from the list and count, matching the
-          // desktop and the served open count (adhoc #16). The folder lingers
-          // for federation, but a deleted issue is neither open nor closed.
-          if (!issue.deleted) items.push(issue);
-        } else missing.push(number);
+        if (blob) items.push(parseIssueJson(blobText(blob), number));
+        else missing.push(number);
       });
       // A batched read can drop entries under relay load; retry just the misses
       // once so a transient gap doesn't quietly shrink the count vs the Mirror
@@ -6664,10 +6670,8 @@
         const stillMissing = [];
         missing.forEach((number) => {
           const blob = retry[pathByNumber.get(number)];
-          if (blob) {
-            const issue = parseIssueJson(blobText(blob), number);
-            if (!issue.deleted) items.push(issue);
-          } else stillMissing.push(number);
+          if (blob) items.push(parseIssueJson(blobText(blob), number));
+          else stillMissing.push(number);
         });
         missing = stillMissing;
       }
@@ -6683,9 +6687,15 @@
       state.issuesView.query = "";
       state.issuesView.missing = missing;
       state.issuesView.truncated = Math.max(0, numbered.length - dirs.length);
-      setRepoTabCount("issues", merged.filter((issue) => issue.status !== "closed").length);
-      const openIssues = merged.filter((issue) => issue.status !== "closed").length;
-      setRepoCollectionCounts("issues", openIssues, merged.length - openIssues);
+      // An issue its creator deleted isn't open or closed; an unauthorized
+      // deletion attempt leaves it counted (adhoc #16), matching the desktop tab
+      // and the served open count.
+      const openIssues = merged.filter(
+        (issue) => issue.status !== "closed" && !issue.deleted).length;
+      const closedIssues = merged.filter(
+        (issue) => issue.status === "closed" && !issue.deleted).length;
+      setRepoTabCount("issues", openIssues);
+      setRepoCollectionCounts("issues", openIssues, closedIssues);
       renderRepoIssues();
     } catch (_) {
       container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a live desktop host serves the .forkmesh/issues/ folder.</div>';
