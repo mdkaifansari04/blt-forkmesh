@@ -10464,6 +10464,20 @@ AP_DATE_SKEW_MS = 12 * 60 * 60 * 1000
 AP_IMMEDIATE_DELIVERIES = 5
 AP_CRON_DELIVERIES = 20
 AP_FEDI_KINDS = ("issue", "pull", "discussion", "commit", "release")
+# Fediverse repo mentions ("@owner.repo@host please fix X") that Workers AI
+# classifies as issue requests become issue-inbox submissions. Images from the
+# post ride along the same channel as a no-write-access node's screenshots
+# (attachmentData), so the per-file cap must stay within
+# MAX_ISSUE_ATTACHMENT_BYTES; the count cap bounds the media subrequests one
+# inbound activity can trigger.
+AP_MENTION_MAX_IMAGES = 4
+AP_MENTION_MAX_IMAGE_BYTES = 1 * 1024 * 1024
+# Media types worth attaching, mapped to the extensions
+# ISSUE_ATTACHMENT_NAME_RE accepts (the desktop materializes these files).
+AP_MENTION_IMAGE_EXTS = {
+    "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
+    "image/webp": "webp", "image/bmp": "bmp", "image/svg+xml": "svg",
+}
 # Brand images served from Static Assets, shown as every actor's avatar and
 # profile header on Mastodon-compatible servers.
 AP_AVATAR_PATH = "/assets/fediverse-avatar.png"
@@ -11494,19 +11508,24 @@ async def _ap_handle_undo(env, request, activity):
 
 async def _ap_handle_create(env, request, activity, remote):
     # A remote reply to one of our published Notes becomes a federated comment
-    # on the underlying thread. Anything that isn't a reply to our content is
-    # acknowledged and dropped (we host repos, not timelines).
+    # on the underlying thread; a post that @-mentions one of our repo actors
+    # may become an issue-inbox submission. Anything else is acknowledged and
+    # dropped (we host repos, not timelines).
     note = ap.note_essentials(activity.get("object"))
     if not note:
         return json_response({"ok": True}, status=202)
-    origin = _ap_origin(env, request)
-    parent_uuid = ap.parse_local_object_url(origin, note["inReplyTo"])
-    if not parent_uuid:
-        return json_response({"ok": True}, status=202)
-    # The reply's author must be the signing actor (same host is not enough:
+    # The note's author must be the signing actor (same host is not enough:
     # one compromised account must not be able to speak for a whole server).
     if note["attributedTo"].split("#")[0].rstrip("/") != remote["actor_id"]:
         return json_response({"error": "author_mismatch"}, status=401)
+    origin = _ap_origin(env, request)
+    parent_uuid = ap.parse_local_object_url(origin, note["inReplyTo"])
+    if not parent_uuid:
+        mention = _ap_note_repo_mention(origin, note)
+        if mention:
+            return await _ap_handle_repo_mention(
+                env, request, note, remote, mention[0], mention[1])
+        return json_response({"ok": True}, status=202)
     row = await d1_first(
         env, "SELECT data, context_bi FROM ap_objects WHERE object_uuid=?",
         parent_uuid)
@@ -11557,6 +11576,257 @@ async def _ap_handle_create(env, request, activity, remote):
         href=repo_web_href(context.get("owner", ""), context.get("repo", "")),
         source="fediverse", dedupe="ap-comment:" + note["id"]))
     return json_response({"ok": True}, status=202)
+
+
+def _ap_note_repo_mention(origin, note):
+    """First Mention tag pointing at one of our repo actors -> (owner, repo)
+    (lowercased), else None. Pure string parsing so the inbox can gate on it
+    before the signature dance."""
+    for href in note.get("mentions", []):
+        target = ap.parse_local_actor_url(origin, href)
+        if target and target[0] == "repo":
+            return target[1], target[2]
+    return None
+
+
+# Workers AI JSON-mode schema for classifying a repo-actor mention. Two-way
+# (create_issue / none) on purpose: unlike ForkBot in chat, a stranger's
+# Mastodon post must never trigger list/search/agent actions.
+AP_MENTION_INTENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intent": {"type": "string", "enum": ["create_issue", "none"]},
+        "title": {"type": "string"},
+        "body": {"type": "string"},
+    },
+    "required": ["intent"],
+}
+
+
+async def _ap_mention_ai_intent(env, text):
+    """Workers AI decides whether a fediverse post that mentioned a repo actor
+    is asking for work to be recorded. Returns {"intent":"create_issue",
+    "title","body"} or {"intent":"none"}, or None when the model is
+    unreachable/unparseable — callers treat None as "AI could not decide" and
+    fall back to a heuristic, the same contract as _forkbot_ai_interpret."""
+    system_prompt = (
+        "A fediverse (Mastodon) user mentioned a ForkMesh repository in a "
+        "public post. Decide whether the post reports a bug or asks for a "
+        "task/feature to be recorded as an issue on that repository. Respond "
+        "with ONLY one JSON object, no other text. A bug report, problem "
+        "description, or work request -> "
+        '{"intent":"create_issue","title":"short summary","body":"the '
+        'problem or request, restated from the post"}; praise, questions, '
+        'small talk, spam, or anything else -> {"intent":"none"}.'
+    )
+    result = await _forkbot_run_ai(
+        env, system_prompt, clean_string(text, FORKBOT_MAX_COMMAND),
+        schema=AP_MENTION_INTENT_SCHEMA)
+    if result is None:
+        return None
+    parsed = result if isinstance(result, dict) else \
+        _forkbot_json_object_from_text(result)
+    if not isinstance(parsed, dict):
+        return None
+    intent = clean_string(parsed.get("intent", ""), 40).strip().lower()
+    if intent != "create_issue":
+        return {"intent": "none"} if intent == "none" else None
+    fields = _forkbot_clean_ai_issue_fields(parsed)
+    if not fields:
+        # The model wanted an issue but produced no usable draft — let the
+        # caller's heuristic take over instead of refusing.
+        return None
+    return {"intent": "create_issue", "title": fields["title"],
+            "body": fields["body"]}
+
+
+async def _ap_fetch_note_images(env, images):
+    """Download the post's image attachments (bounded) and shape them like a
+    remote issue submission's attachmentData: content-addressed names
+    (sha256[:8] + ext — the same scheme as the desktop's attachmentNameFor)
+    that the owner's node materializes into the issue folder on merge.
+    Best-effort: an unfetchable or oversized image is skipped, never fatal."""
+    from js import fetch as js_fetch
+    out = []
+    for att in images:
+        if len(out) >= AP_MENTION_MAX_IMAGES:
+            break
+        url = str(att.get("url", "") or "")
+        ext = AP_MENTION_IMAGE_EXTS.get(att.get("mediaType", ""))
+        if not ext or not url.startswith("https://"):
+            continue
+        if await _ap_domain_blocked(env, urlparse(url).netloc):
+            continue
+        try:
+            resp = await js_fetch(url, to_js({"method": "GET"}))
+            if int(getattr(resp, "status", 0)) != 200:
+                continue
+            data = (await resp.arrayBuffer()).to_bytes()
+        except Exception:
+            continue
+        if not data or len(data) > AP_MENTION_MAX_IMAGE_BYTES:
+            continue
+        name = hashlib.sha256(data).hexdigest()[:8] + "." + ext
+        if any(entry["name"] == name for entry in out):
+            continue
+        # Alt text becomes the markdown label; brackets would break the link.
+        alt = re.sub(r"[\[\]()]+", " ", clean_string(att.get("name", ""), 120))
+        out.append({
+            "name": name,
+            "data": base64.b64encode(data).decode(),
+            "alt": re.sub(r"\s+", " ", alt).strip(),
+        })
+    return out
+
+
+async def _ap_send_mention_reply(env, request, owner, repo, remote, note,
+                                 text, issue_number):
+    """Reply to the mentioning post as the repo actor: a public Note in the
+    author's thread with a Mention tag so their server notifies them. Queued
+    through ap_outbox so a lost delivery retries on the cron drain. The stored
+    object carries the new issue's context, so fediverse replies to OUR reply
+    land as federated comments on that issue."""
+    origin = _ap_origin(env, request)
+    handle = ap.repo_handle(owner, repo)
+    local = await _ap_local_actor(env, AP_ACTOR_REPO, handle, create=True)
+    if not local:
+        return
+    actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, handle)
+    now = int(Date.now())
+    object_uuid = _ap_uuid()
+    reply = ap.note_doc(
+        origin + "/ap/o/" + object_uuid, actor_url, actor_url + "/followers",
+        ap.note_html_from_text(text), now,
+        web_url=origin + repo_web_href(owner, repo) + "/issues",
+        in_reply_to=note["id"])
+    # Address the author directly (still public, so the exchange is visible
+    # in the thread); the Mention tag is what triggers their notification.
+    reply["to"] = [remote["actor_id"]]
+    reply["cc"] = [ap.AS_PUBLIC, actor_url + "/followers"]
+    tag = {"type": "Mention", "href": remote["actor_id"]}
+    if remote.get("handle"):
+        tag["name"] = "@" + remote["handle"]
+    reply["tag"] = [tag]
+    ckey = ap.context_key(owner, repo, "issue", issue_number)
+    rec = {"note": reply,
+           "context": {"owner": owner, "repo": repo, "kind": "issue",
+                       "ref": str(issue_number), "key": ckey},
+           "media": []}
+    await d1_run(
+        env,
+        "INSERT INTO ap_objects (object_uuid, actor_bi, context_bi, data,"
+        " published) VALUES (?,?,?,?,?)",
+        object_uuid, await _ap_actor_bi(env, AP_ACTOR_REPO, handle),
+        await blind_index(env, "ap-context:" + ckey),
+        await encrypt_row(env, rec), now)
+    inbox = ((remote.get("inbox") or "").strip()
+             or (remote.get("shared_inbox") or "").strip())
+    if not inbox:
+        return
+    out_data = await encrypt_row(env, {
+        "body": json.dumps(ap.create_activity(reply)),
+        "actorKind": AP_ACTOR_REPO, "actorHandle": handle,
+        "actorUrl": actor_url})
+    await d1_run(
+        env,
+        "INSERT INTO ap_outbox (inbox, data, attempts, next_ts, created_at)"
+        " VALUES (?,?,0,?,?)",
+        inbox, out_data, now, now)
+    await _ap_drain_outbox(env, 1)
+
+
+async def _ap_handle_repo_mention(env, request, note, remote, owner, repo):
+    """A verified fediverse post that @-mentions one of our repo actors
+    ("@owner.repo@host this button is broken ..."). Workers AI reads the post;
+    when it asks for a bug/task/feature to be recorded, the request becomes an
+    issue-inbox submission (the owner's desktop node assigns the real number
+    and merges it, exactly like a ForkBot chat request), the post's image
+    attachments ride along, and the repo actor replies to the author with the
+    outcome. Anything else is acknowledged and dropped — and every path
+    answers 202, because fediverse redelivery storms must never see a 4xx."""
+    dropped = json_response({"ok": True}, status=202)
+    # Same visibility gate as the actor itself, plus the owner's remote-content
+    # switch: a mention-created issue is remote content entering the repo, the
+    # same trust decision acceptComments already governs (an unpublished repo
+    # has no fediverse presence, so a missing catalog row also drops).
+    key_bi = await blind_index(env, owner + "/" + repo)
+    row = await d1_first(
+        env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
+    if not row or int(row.get("is_private") or 0):
+        return dropped
+    settings = await _ap_repo_settings_get(env, owner, repo)
+    if not settings["federate"] or not settings["acceptComments"]:
+        return dropped
+    mention_bi = await blind_index(env, "ap-mention:" + note["id"])
+    seen = await d1_first(
+        env, "SELECT ts FROM ap_mentions WHERE remote_id_bi=?", mention_bi)
+    if seen:
+        return dropped
+    # The handle itself ("@owner.repo@host") is addressing, not content — the
+    # model should judge what remains.
+    text = ap.sanitize_remote_html(note["content"])
+    text = re.sub(
+        r"(?i)@" + re.escape(ap.repo_handle(owner, repo))
+        + r"(?:@[A-Za-z0-9.-]+)?", " ", text)
+    text = "\n".join(
+        re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n"))
+    text = text.strip()
+    if not text:
+        return dropped
+    now = int(Date.now())
+    intent = await _ap_mention_ai_intent(env, text)
+    if intent is None:
+        # AI unreachable (distinct from a confident "none"): same degradation
+        # contract as ForkBot — an obviously issue-shaped post still files,
+        # anything ambiguous stays unmarked so a redelivery can retry once
+        # the model is back.
+        if not _forkbot_command_hints_issue(text):
+            return dropped
+        fields = _forkbot_fallback_issue_fields(text)
+    elif intent.get("intent") != "create_issue":
+        # Confident "not an issue": remember the note so redeliveries don't
+        # re-run the model.
+        await d1_run(
+            env,
+            "INSERT OR IGNORE INTO ap_mentions (remote_id_bi, ts)"
+            " VALUES (?,?)", mention_bi, now)
+        return dropped
+    else:
+        fields = {"title": intent["title"], "body": intent["body"]}
+    author_label = ("@" + remote["handle"]) if remote.get("handle") \
+        else remote.get("actor_id", "")
+    images = await _ap_fetch_note_images(env, note.get("images") or [])
+    body = fields["body"]
+    for img in images:
+        body += "\n\n![%s](%s)" % (img["alt"] or "attachment", img["name"])
+    body += "\n\nFiled from a fediverse mention by %s: %s" % (
+        author_label, note["url"])
+    ok, result = await _forkbot_enqueue_issue(
+        env, owner, repo, fields["title"], body, author_label,
+        source="fediverse", labels=["fediverse"], attachments=images)
+    await d1_run(
+        env,
+        "INSERT OR IGNORE INTO ap_mentions (remote_id_bi, ts) VALUES (?,?)",
+        mention_bi, now)
+    if not ok:
+        return dropped
+    number = int(result.get("issueNumber", 0) or 0)
+    issue_url = _ap_origin(env, request) + repo_web_href(owner, repo) \
+        + "/issues"
+    title = result.get("titleIfNew") or fields["title"]
+    if number > 0:
+        message = (
+            '%s I\'ve opened issue #%d in %s/%s: "%s". It will appear at %s '
+            "once the maintainer's node syncs its inbox."
+        ) % (author_label, number, owner, repo, title, issue_url)
+    else:
+        message = (
+            '%s I\'ve opened an issue in %s/%s: "%s". It will appear at %s '
+            "once the maintainer's node syncs its inbox."
+        ) % (author_label, owner, repo, title, issue_url)
+    await _best_effort_inbox_side_effect(_ap_send_mention_reply(
+        env, request, owner, repo, remote, note, message, number))
+    return dropped
 
 
 async def _ap_handle_delete(env, activity):
@@ -11624,12 +11894,15 @@ async def ap_inbox_handler(env, request):
     if activity_type not in ("Follow", "Undo", "Create", "Delete"):
         return json_response({"ok": True}, status=202)
     if activity_type == "Create":
-        # Only replies to our own /ap/o/<uuid> objects become federated
-        # comments; mentions and unrelated statuses are dropped here, before
-        # the remote-actor fetch (the handler re-checks after verification).
+        # Two Note shapes matter: replies to our own /ap/o/<uuid> objects
+        # (federated comments) and posts whose Mention tags point at one of
+        # our repo actors (candidate issue requests). Everything else is
+        # dropped here, before the remote-actor fetch (the handler re-checks
+        # after verification). Both gates are pure string parsing — no D1.
         note = ap.note_essentials(activity.get("object"))
-        if not note or not ap.parse_local_object_url(
-                origin, note["inReplyTo"]):
+        if not note or not (
+                ap.parse_local_object_url(origin, note["inReplyTo"])
+                or _ap_note_repo_mention(origin, note)):
             return json_response({"ok": True}, status=202)
 
     parsed_sig = ap.parse_signature_header(
@@ -13604,7 +13877,14 @@ async def _forkbot_next_issue_number(env, repo_bi, owner, repo):
         return 0
 
 
-async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
+async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
+                                 source="forkbot", labels=None,
+                                 attachments=None):
+    """Queue a relay-authored issue for the owner's desktop node. ForkBot chat
+    requests use the defaults; fediverse repo mentions reuse the same path
+    with source/labels "fediverse" and the post's images as attachments
+    ([{name, data(base64)}] — the attachmentData shape a no-write-access node
+    ships, which the desktop materializes into the issue folder on merge)."""
     await ensure_schema(env)
     repo_bi = await blind_index(env, owner + "/" + repo)
     count = await d1_first(
@@ -13629,7 +13909,7 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
         "ts": now,
         "title": clean_string(title, 240),
         "body": clean_string(body, MAX_ISSUE_BYTES),
-        "attachments": [],
+        "attachments": [entry["name"] for entry in (attachments or [])],
         "sig": "",
     }
     item = {
@@ -13637,7 +13917,7 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
         "titleIfNew": event["title"],
         "event": event,
         "meta": {
-            "labels": ["forkbot"],
+            "labels": list(labels) if labels else ["forkbot"],
             "milestone": "",
             "priority": 0,
             "assignees": [],
@@ -13647,10 +13927,14 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester):
         },
         "submitter": FORKBOT_AUTHOR,
         "submittedAt": now,
-        "source": "forkbot",
+        "source": source,
         "requestedBy": actor,
         "issueNumber": number,
     }
+    if attachments:
+        item["attachmentData"] = [
+            {"name": entry["name"], "data": entry["data"]}
+            for entry in attachments]
     await d1_run(
         env,
         "INSERT INTO issue_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
