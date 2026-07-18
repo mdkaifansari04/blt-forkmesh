@@ -621,6 +621,19 @@ void MainWindow::refreshOpenRepoDetail()
         return;
     }
     const ScopedFlag refreshGuard(m_heavyRefreshInFlight);
+    // Don't yank the keyboard out of the prompt while the user is mid-sentence
+    // (adhoc #160): this heavy rebuild — tables, transcripts, the file view —
+    // runs on every code sync and can move focus off whatever text field is
+    // being typed into, stopping the user mid-keystroke. Remember which text
+    // input held focus and, if the rebuild stole it, hand it straight back.
+    QPointer<QWidget> typingFocus;
+    if (QWidget *focused = QApplication::focusWidget()) {
+        if ((qobject_cast<QLineEdit *>(focused) ||
+             qobject_cast<QPlainTextEdit *>(focused) ||
+             qobject_cast<QTextEdit *>(focused)) &&
+            focused->window() == this)
+            typingFocus = focused;
+    }
     // Re-read the branch tip, commit list, About sidebar and the current file
     // view so a freshly pushed commit shows without reopening the repo.
     loadBranchesAndTags();
@@ -648,6 +661,12 @@ void MainWindow::refreshOpenRepoDetail()
     // Rebuild the Mirror nodes view (cheap, roster-based) so its tab count badge
     // stays current even when that tab isn't the one on screen.
     loadMirrorNodesPanel();
+    // Restore focus to the field the user was typing in if the rebuild moved it
+    // (adhoc #160). Only when it's still alive, on-screen and editable, and only
+    // if focus actually drifted — so we never fight a focus the user just moved.
+    if (typingFocus && typingFocus->isVisibleTo(this) &&
+        typingFocus->isEnabled() && QApplication::focusWidget() != typingFocus)
+        typingFocus->setFocus(Qt::OtherFocusReason);
 }
 
 void MainWindow::processActionQueue()
