@@ -1660,8 +1660,10 @@ private:
     AgentRunner *runnerForSession(int sessionId) const;
     // Returns an idle pooled runner, creating (and wiring) a new one if needed.
     AgentRunner *acquireAgentRunner();
-    // True while any pooled runner is executing a session.
+    // True while any pooled runner or stream/codex process is executing a session.
     bool anyAgentRunning() const;
+    // The sessions anyAgentRunning() is counting, described for the restart log.
+    QStringList runningAgentBlockers() const;
     void onAgentLog(int sessionId, const QString &text);
     // Live-append a line to the raw-output edit, but only while it's the visible
     // surface (the buffer carries it otherwise); avoids per-line text-layout stalls.
@@ -3242,6 +3244,10 @@ private:
     // A manual rebuild & restart was requested while an agent was still running:
     // hold it until the fleet goes idle, then fire automatically (adhoc #75).
     bool m_rebuildRestartQueued = false;
+    // Rechecks the queued rebuild every few seconds while it waits — a safety net
+    // for agent-completion paths that miss their maybeStartQueuedRebuild() call
+    // (adhoc #104/#111/#116/#134/#143 each found one more).
+    QTimer *m_rebuildQueuePollTimer = nullptr;
     QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
     QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
     QTableWidget *m_networkReposTable = nullptr;
