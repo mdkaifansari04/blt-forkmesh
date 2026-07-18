@@ -1205,6 +1205,27 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoSyncIssuesSetting, enabled);
     });
 
+    // Auto-sync on merge (adhoc #110): several owners were surprised that hitting
+    // "Merge" published the merge commit to main with no confirming click. Off by
+    // default — the merge lands locally and waits behind the floating "Sync"
+    // button. On → merging pushes to the served mirror and notifies peers right
+    // away, the old behaviour.
+    auto *pullsSyncLabel = new QLabel("PULL REQUESTS");
+    pullsSyncLabel->setObjectName("sectionLabel");
+    auto *autoSyncMergeCheck =
+        new QCheckBox("Immediately sync merges to main");
+    autoSyncMergeCheck->setChecked(
+        QSettings().value(kAutoSyncOnMergeSetting, false).toBool());
+    autoSyncMergeCheck->setToolTip(
+        "When on, merging a pull request pushes the new merge commit to main "
+        "(the served mirror) and notifies peers the moment you click \"Merge\". "
+        "When off (the default), the merge lands locally only — the floating "
+        "\"Sync\" button surfaces the pending commit and nothing reaches main "
+        "until you click it.");
+    connect(autoSyncMergeCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kAutoSyncOnMergeSetting, enabled);
+    });
+
     // Start a repository under this node: either spin up a brand-new empty repo
     // (git init) or adopt an existing local Git folder. Both then mirror + publish
     // under the account, exactly like the import flow below.
@@ -1521,6 +1542,9 @@ QWidget *MainWindow::buildSettingsSection()
     reposCol->addSpacing(6);
     reposCol->addWidget(issuesSyncLabel);
     reposCol->addWidget(autoSyncIssuesCheck);
+    reposCol->addSpacing(6);
+    reposCol->addWidget(pullsSyncLabel);
+    reposCol->addWidget(autoSyncMergeCheck);
     reposCol->addStretch();
     addTab(reposTab, "Repositories");
 
