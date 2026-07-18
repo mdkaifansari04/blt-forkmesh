@@ -2199,8 +2199,8 @@ void MainWindow::quickRebuildRestart()
     // Queue behind any in-flight agent work: relaunching mid-run would kill a
     // running agent session, so hold the rebuild until the fleet goes idle and
     // let maybeStartQueuedRebuild() re-invoke us once it does (adhoc #75). The
-    // click handler already spun the button, so leave it spinning as the visible
-    // "queued" indicator.
+    // click handler already spun the button; switch that spin to a spinning
+    // hourglass while queued so it reads as "waiting", not "building" (adhoc #91).
     if (anyAgentRunning()) {
         m_rebuildRestartQueued = true;
         m_buildButton = m_rebuildButton;
@@ -2209,9 +2209,11 @@ void MainWindow::quickRebuildRestart()
         showUpdateLog();
         setUpdateStatus(QStringLiteral(
             "Waiting for running actions to finish before rebuilding\xE2\x80\xA6"));
+        setRestartSpinHourglass(true);
         return;
     }
     m_rebuildRestartQueued = false;
+    setRestartSpinHourglass(false);
     // Incremental rebuild + relaunch (no cache wipe) for fast iteration. Reuses
     // the Settings rebuild button/status as the progress target.
     beginRestartLog();
