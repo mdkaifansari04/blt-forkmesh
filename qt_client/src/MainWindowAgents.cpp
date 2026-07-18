@@ -6813,10 +6813,18 @@ void MainWindow::updateAgentStatusCell(int sessionId)
     // push so the browser view picks it up shortly after, without a request
     // per flip (adhoc #182).
     scheduleAgentSessionsPush();
-    if (!m_agentTable)
-        return;
     AgentSession *s = findAgentSession(sessionId);
     if (!s)
+        return;
+    // anyAgentRunning() falls back to this frozen creation-time snapshot for a
+    // stream/codex session that hasn't landed in m_agentSessions yet (see
+    // startCliTranscript). Keep it in step with every real transition here so a
+    // session that finishes its turn before that first reloadAgents() catch-up
+    // can't be read as forever "Running" and block "Rebuild & restart" from
+    // going right away (adhoc #116).
+    if (auto it = m_streamSessionInfo.find(sessionId); it != m_streamSessionInfo.end())
+        it->status = s->status;
+    if (!m_agentTable)
         return;
     for (int r = 0; r < m_agentTable->rowCount(); ++r) {
         QTableWidgetItem *idItem = m_agentTable->item(r, 0);
