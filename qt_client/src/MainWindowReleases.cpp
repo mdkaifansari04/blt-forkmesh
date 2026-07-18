@@ -2566,22 +2566,52 @@ void MainWindow::promptNewRelease()
                              QStringLiteral("claude-code"));
     selectDefaultAgentProvider(agentNotesCombo);
     agentNotesCombo->setToolTip("Which agent writes the release notes");
+    // Model picker: the options depend on the chosen provider (Claude models for
+    // the Claude agents, GPT models otherwise), so repopulate it whenever the
+    // provider changes. The data string is passed straight through as the model.
+    auto *agentNotesModelCombo = new QComboBox;
+    agentNotesModelCombo->setToolTip("Which model the agent uses");
+    auto populateModels = [agentNotesModelCombo](const QString &provider) {
+        agentNotesModelCombo->clear();
+        if (agentIsClaudeProvider(provider)) {
+            agentNotesModelCombo->addItem(QStringLiteral("Haiku"),
+                                          QStringLiteral("claude-haiku-4-5"));
+            agentNotesModelCombo->addItem(QStringLiteral("Sonnet"),
+                                          QStringLiteral("claude-sonnet-5"));
+            agentNotesModelCombo->addItem(QStringLiteral("Opus"),
+                                          QStringLiteral("claude-opus-4-8"));
+        } else {
+            agentNotesModelCombo->addItem(QStringLiteral("GPT nano"),
+                                          QStringLiteral("gpt-4.1-nano"));
+            agentNotesModelCombo->addItem(QStringLiteral("GPT mini"),
+                                          QStringLiteral("gpt-4.1-mini"));
+            agentNotesModelCombo->addItem(QStringLiteral("GPT"),
+                                          QStringLiteral("gpt-4.1"));
+        }
+    };
+    populateModels(agentNotesCombo->currentData().toString());
+    connect(agentNotesCombo, &QComboBox::currentTextChanged, &dialog,
+            [agentNotesCombo, populateModels](const QString &) {
+                populateModels(agentNotesCombo->currentData().toString());
+            });
     auto *agentNotesRow = new QWidget;
     auto *agentNotesRowLayout = new QHBoxLayout(agentNotesRow);
     agentNotesRowLayout->setContentsMargins(0, 0, 0, 0);
     agentNotesRowLayout->setSpacing(6);
     agentNotesRowLayout->addWidget(agentNotesButton);
     agentNotesRowLayout->addWidget(agentNotesCombo);
+    agentNotesRowLayout->addWidget(agentNotesModelCombo);
     agentNotesRowLayout->addStretch(1);
     connect(agentNotesButton, &QPushButton::clicked, &dialog,
             [this, dir, prevTag, tagEdit, targetEdit, notesEdit, agentNotesButton,
-             agentNotesCombo] {
+             agentNotesCombo, agentNotesModelCombo] {
                 const QString targetRef = targetEdit->currentText().trimmed();
                 if (targetRef.isEmpty())
                     return;
                 generateReleaseNotesWithAgent(
                     dir, prevTag, tagEdit->text().trimmed(), targetRef,
-                    agentNotesCombo->currentData().toString(), notesEdit,
+                    agentNotesCombo->currentData().toString(),
+                    agentNotesModelCombo->currentData().toString(), notesEdit,
                     agentNotesButton);
             });
     form->addRow("Tag", tagEdit);
@@ -2691,8 +2721,8 @@ void MainWindow::promptNewRelease()
 
 void MainWindow::generateReleaseNotesWithAgent(
     const QString &dir, const QString &prevTag, const QString &newTag,
-    const QString &targetRef, const QString &provider, QPlainTextEdit *notesEdit,
-    QPushButton *button)
+    const QString &targetRef, const QString &provider, const QString &modelChoice,
+    QPlainTextEdit *notesEdit, QPushButton *button)
 {
     if (!m_networkAccess || !notesEdit || targetRef.isEmpty())
         return;
@@ -2761,15 +2791,18 @@ void MainWindow::generateReleaseNotesWithAgent(
     const QString version = newTag.isEmpty() ? targetRef : newTag;
     const QString task =
         QStringLiteral(
-            "Write concise, well-organized GitHub-style release notes in Markdown "
-            "for version %1. Start with a `## What's Changed` heading, then group "
-            "related commits under short bold category headings (Features, Fixes, "
-            "etc.) as bullet points, keeping each commit's `(short-sha)` reference. "
-            "Summarize clearly and drop noise like version bumps. Output only the "
-            "Markdown notes, no preamble.\n\n----- COMMITS -----\n%2")
+            "Write the release notes for version %1 as a single friendly, "
+            "conversational paragraph — like a nicely written changelog blurb a "
+            "human would post. Highlight the most important changes in flowing "
+            "prose, skip noise like version bumps, and don't use headings, bullet "
+            "points, or Markdown lists. Keep it under 500 characters. Output only "
+            "the paragraph, no preamble.\n\n----- COMMITS -----\n%2")
             .arg(version, commits.join(QLatin1Char('\n')));
+    // The dialog's model picker wins; fall back to the provider's default.
     const QString model =
-        claude ? QStringLiteral("claude-haiku-4-5") : kIssueAskAiModel;
+        !modelChoice.isEmpty()
+            ? modelChoice
+            : (claude ? QStringLiteral("claude-haiku-4-5") : kIssueAskAiModel);
 
     QNetworkReply *reply = nullptr;
     if (claude) {
