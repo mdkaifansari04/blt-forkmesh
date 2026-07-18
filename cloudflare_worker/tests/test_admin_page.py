@@ -61,6 +61,33 @@ def test_admin_page_requires_signed_login_cookie():
     assert '\"location\": \"/login?next=\" + quote(next_path)' in ENTRY_TEXT
 
 
+def test_admin_session_reissued_from_session_token():
+    # A logged-in admin whose short-lived admin-page cookie has lapsed can
+    # re-mint it from their still-valid account session token, so the admin
+    # dashboard no longer bounces them to a password re-entry (adhoc #163).
+    assert "async def _account_admin_session" in ENTRY_TEXT
+    assert 'url.path == "/api/accounts/admin-session"' in ENTRY_TEXT
+    assert "_account_session_token_name(env, token)" in ENTRY_TEXT
+    assert "_admin_session_cookie(env, name)" in ENTRY_TEXT
+
+    # The grant is gated on is_admin, never on a self-asserted name, and it
+    # never mints a session token — it only trades an existing one for the cookie.
+    module = ast.parse(ENTRY_TEXT)
+    fn = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_account_admin_session"
+    )
+    calls = {
+        node.func.id
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_is_admin" in calls
+    assert "_admin_session_cookie" in calls
+    assert "_account_session_token" not in calls
+
+
 def test_admin_accounts_table_can_migrate_account_kind():
     assert "def _admin_account_migration_cell" in ENTRY_TEXT
     assert 'name="account_migration"' in ENTRY_TEXT
