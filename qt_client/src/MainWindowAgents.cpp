@@ -1201,7 +1201,25 @@ void MainWindow::sendPromptToSelectedAgent(const QString &prompt)
         session && (session->provider == QLatin1String("claude-code") ||
                     agentIsCodexProvider(session->provider))) {
         bool changed = false;
-        if (m_quickAddClaudeModel) {
+        // The composer's provider dropdown is the user's live choice for which
+        // agent continues this session. Honor a switch to a *different*
+        // CLI-backed provider (Claude Code <-> Codex) so a session can be handed
+        // off across providers on the next resume (adhoc #76). The model combo
+        // below reflects this same provider, so capturing it only when the
+        // composer sits on a CLI provider is also what keeps a Claude model from
+        // being written onto a Codex session (or vice versa) — the mismatch the
+        // Codex CLI rejects with "model is not supported when using Codex".
+        const QString composerProvider =
+            m_quickAddAgentProvider ? m_quickAddAgentProvider->currentData().toString()
+                                    : QString();
+        const bool composerIsCli =
+            composerProvider == QLatin1String("claude-code") ||
+            agentIsCodexProvider(composerProvider);
+        if (composerIsCli && composerProvider != session->provider) {
+            session->provider = composerProvider;
+            changed = true;
+        }
+        if (composerIsCli && m_quickAddClaudeModel) {
             const QString chosen = selectedModelComboValue(m_quickAddClaudeModel);
             if (session->model != chosen) {
                 session->model = chosen;
@@ -4351,7 +4369,9 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         // anchor to, so the task rides through the config as an override prompt.
         AgentRunner::Config config = agentConfigForProvider(provider);
         config.taskOverride = task;
-        if (!session.model.isEmpty())
+        // Ignore a model left over from a different provider (adhoc #76).
+        if (!session.model.isEmpty() &&
+            agentModelMatchesProvider(provider, session.model))
             config.model = session.model;
         markAgentLimitWindow(provider);
         acquireAgentRunner()->start(session, Issue(), repo.localPath, config);
@@ -4901,8 +4921,10 @@ void MainWindow::processAgentQueue()
         markAgentLimitWindow(snapshot.provider);
         AgentRunner::Config config = agentConfigForProvider(session->provider);
         // A model picked when the session was started (e.g. the issue sidebar's
-        // agent/model dropdown) overrides the provider's default.
-        if (!snapshot.model.isEmpty())
+        // agent/model dropdown) overrides the provider's default — but ignore a
+        // model left over from a different provider (adhoc #76).
+        if (!snapshot.model.isEmpty() &&
+            agentModelMatchesProvider(snapshot.provider, snapshot.model))
             config.model = snapshot.model;
         // Ad-hoc API-key runs ride their saved task through the config override,
         // mirroring startAdHocAgentForRepo so they resume the same way after a restart.
@@ -5674,13 +5696,21 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // otherwise fall back to the footer quick-add bar's persisted choice (adhoc
     // #261). Empty leaves the CLI on its own default; otherwise it's passed
     // through as `--model`.
-    const QString selectedModel =
+    QString selectedModel =
         !model.isEmpty()
             ? model
             : QSettings()
                   .value(codex ? kCodexModelSetting : kClaudeCodeModelSetting)
                   .toString()
                   .trimmed();
+    // A session continued by a different provider may still carry the previous
+    // provider's model (e.g. a Codex session left with "claude-opus-4-8"); the
+    // CLI rejects a foreign model, so drop it and fall back to this provider's
+    // default rather than fail the turn (adhoc #76).
+    const QString launchProvider =
+        codex ? kCodexProvider : QStringLiteral("claude-code");
+    if (!agentModelMatchesProvider(launchProvider, selectedModel))
+        selectedModel.clear();
     // Auto mode (adhoc #91) routes on the task itself, not the full workflow
     // prompt — `lead` carries the user's ask (or the issue + its comments).
     const QString routeTask = lead;
@@ -7804,6 +7834,9 @@ void MainWindow::onAgentStatusChanged(int sessionId, const QString &)
         m_repoDetailStack->currentIndex() == 0 && m_overviewBodyStack &&
         m_overviewBodyStack->currentIndex() == 2)
         loadBranchesPanel();
+    // A live stream session going idle may not fire onAgentFinished, so also
+    // release any queued rebuild here once the fleet is idle (adhoc #75).
+    maybeStartQueuedRebuild();
 }
 
 void MainWindow::onAgentNeedsAttention(int sessionId, const QString &message)
@@ -7846,6 +7879,7 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
     }
     processAgentQueue();
     looperOnSessionFinished(sessionId); // adhoc #92: chain to the next open issue
+    maybeStartQueuedRebuild(); // adhoc #75: a rebuild may be waiting on this run
 }
 
 void MainWindow::updateAgentActionState()

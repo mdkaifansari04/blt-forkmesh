@@ -2980,6 +2980,40 @@ inline const QList<ClaudeAutoRung> &claudeAutoLadder()
     return kLadder;
 }
 
+// Whether a model id/alias belongs to the Claude family (Claude Code or Claude
+// API): a "claude-*" id, one of the short CLI aliases (opus/sonnet/haiku/fable),
+// or the "auto" router sentinel. Used to keep a model captured under one
+// provider from being handed to another when a session is continued by a
+// different agent (adhoc #76) — passing a Claude model to Codex, or a Codex
+// model to Claude, makes the CLI reject the turn.
+inline bool agentModelIsClaudeStyle(const QString &model)
+{
+    const QString m = model.trimmed().toLower();
+    if (m.isEmpty())
+        return false;
+    if (m == kClaudeAutoModelId || m.startsWith(QLatin1String("claude")))
+        return true;
+    for (const ClaudeAutoRung &r : claudeAutoLadder())
+        if (m == r.alias)
+            return true;
+    return false;
+}
+
+// Whether `model` is compatible with `provider`. An empty model always matches
+// (the provider falls back to its own default). Claude providers need a
+// Claude-style model; the Codex/OpenAI CLIs need a non-Claude one. This lets a
+// session be continued by a different provider without the leftover model from
+// the previous provider breaking the run (adhoc #76).
+inline bool agentModelMatchesProvider(const QString &provider, const QString &model)
+{
+    if (model.trimmed().isEmpty())
+        return true;
+    if (provider == QLatin1String("claude-code") ||
+        provider.startsWith(QLatin1String("claude")))
+        return agentModelIsClaudeStyle(model);
+    return !agentModelIsClaudeStyle(model);
+}
+
 // Pre-model router for auto mode: a self-hosted, zero-cost heuristic pass over
 // the task text. Only the obvious cases are decided here — an explicit "use
 // opus"-style request, clearly trivial edits, or clearly heavyweight work.
