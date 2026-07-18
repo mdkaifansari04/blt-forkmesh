@@ -2652,21 +2652,12 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *bar = new QWidget;
     bar->setObjectName("breadcrumbBar");
 
-    // --- Relay switcher: bigger favicon (shows that relay's nodes when
-    // clicked), a "domain ▾ count" dropdown (search / switch / add), and an
-    // open-in-browser icon. ---------------------------------------------------
-    m_relayIconButton = new QPushButton;
-    m_relayIconButton->setObjectName("relayIconButton");
-    m_relayIconButton->setCursor(Qt::PointingHandCursor);
-    m_relayIconButton->setFixedSize(38, 38);
-    m_relayIconButton->setIconSize(QSize(30, 30));
-    m_relayIconButton->setToolTip("Show this relay's nodes");
-    connect(m_relayIconButton, &QPushButton::clicked, this,
-            [this] { showSection(0); });
-
+    // --- Relay switcher: a "favicon  domain ▾ count" dropdown (search / switch
+    // / add) plus a separate open-in-browser icon. ----------------------------
     m_relayMenuButton = new QPushButton;
     m_relayMenuButton->setObjectName("relayMenuButton");
     m_relayMenuButton->setCursor(Qt::PointingHandCursor);
+    m_relayMenuButton->setIconSize(QSize(18, 18));
     m_relayMenuButton->setToolTip("Switch, search, or add relays");
     connect(m_relayMenuButton, &QPushButton::clicked, this,
             &MainWindow::showRelayMenu);
@@ -2993,7 +2984,6 @@ QWidget *MainWindow::buildBreadcrumb()
         l->setObjectName("navCaption");
         return l;
     };
-    m_relayLabel = makeCaption(QStringLiteral("Relay"));
     m_userLabel = makeCaption(QStringLiteral("User"));
     m_nodeLabel = makeCaption(QStringLiteral("Node"));
     m_repoLabel = makeCaption(QStringLiteral("Repo"));
@@ -3319,8 +3309,6 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *mainRow = new QHBoxLayout;
     mainRow->setContentsMargins(16, 0, 16, 0);
     mainRow->setSpacing(8);
-    mainRow->addWidget(m_relayIconButton);
-    mainRow->addWidget(m_relayLabel);
     // m_relayRadar (radar + latency) now lives on the window-chrome line, just
     // left of the CPU/MEM/DISK sparklines (adhoc #87).
     mainRow->addWidget(m_relayMenuButton);
@@ -3699,13 +3687,11 @@ void MainWindow::updateRelaySwitcher()
     if (m_activeServer >= 0 && m_activeServer < m_servers.size())
         host = serverHost(m_servers.at(m_activeServer).url);
 
-    if (m_relayIconButton) {
-        m_relayIconButton->setIcon(
-            (m_activeServer >= 0 && m_activeServer < m_servers.size())
-                ? QIcon(faviconFor(m_servers.at(m_activeServer)))
-                : QIcon(letterFavicon(host.isEmpty() ? QStringLiteral("ForkMesh")
-                                                     : host)));
-    }
+    m_relayMenuButton->setIcon(
+        (m_activeServer >= 0 && m_activeServer < m_servers.size())
+            ? QIcon(faviconFor(m_servers.at(m_activeServer)))
+            : QIcon(letterFavicon(host.isEmpty() ? QStringLiteral("ForkMesh")
+                                                 : host)));
     if (m_relayOpenButton)
         m_relayOpenButton->setEnabled(!host.isEmpty());
 
