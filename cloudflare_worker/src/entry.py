@@ -5313,27 +5313,41 @@ async def _save_account(env, name_bi, rec, email_bi=None, ip_bi=None):
     # `name` column mirrors the (public) node name so an operator can grant admin
     # in the DB by name; is_admin is never written here, so a value set directly in
     # the DB survives ordinary account updates.
-    enc = await encrypt_row(env, rec)
-    name = rec.get("name", "")
-    # Column names here are fixed literals (never user input), so building the
-    # statement by name is safe.
-    cols = ["data", "name"]
-    vals = [enc, name]
-    if email_bi is not None:
-        cols.append("email_bi")
-        vals.append(email_bi)
-    if ip_bi is not None:
-        cols.append("ip_bi")
-        vals.append(ip_bi)
-    insert_cols = ", ".join(["name_bi"] + cols)
-    placeholders = ", ".join(["?"] * (1 + len(vals)))
-    set_clause = ", ".join(c + "=excluded." + c for c in cols)
-    await d1_run(
-        env,
-        "INSERT INTO accounts (" + insert_cols + ") VALUES (" + placeholders + ") "
-        "ON CONFLICT(name_bi) DO UPDATE SET " + set_clause,
-        name_bi, *vals,
-    )
+    #
+    # New users are born straight into the physical users table and never touch the
+    # legacy accounts store (issue #172): when the record is user-kind and no
+    # accounts row already exists for it, skip the accounts INSERT and rely solely
+    # on the users/nodes mirror below (reads fall back to users when the accounts
+    # row is absent). Legacy accounts rows that still exist keep getting updated in
+    # place — reads prefer accounts, so leaving one stale would shadow the fresh
+    # users record — until an explicit drain removes them.
+    write_accounts = True
+    if _account_kind(rec) == "user":
+        existing = await d1_first(
+            env, "SELECT name_bi FROM accounts WHERE name_bi=?", name_bi)
+        write_accounts = existing is not None
+    if write_accounts:
+        enc = await encrypt_row(env, rec)
+        name = rec.get("name", "")
+        # Column names here are fixed literals (never user input), so building the
+        # statement by name is safe.
+        cols = ["data", "name"]
+        vals = [enc, name]
+        if email_bi is not None:
+            cols.append("email_bi")
+            vals.append(email_bi)
+        if ip_bi is not None:
+            cols.append("ip_bi")
+            vals.append(ip_bi)
+        insert_cols = ", ".join(["name_bi"] + cols)
+        placeholders = ", ".join(["?"] * (1 + len(vals)))
+        set_clause = ", ".join(c + "=excluded." + c for c in cols)
+        await d1_run(
+            env,
+            "INSERT INTO accounts (" + insert_cols + ") VALUES (" + placeholders + ") "
+            "ON CONFLICT(name_bi) DO UPDATE SET " + set_clause,
+            name_bi, *vals,
+        )
     await _mirror_account_identity_tables(
         env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
 
