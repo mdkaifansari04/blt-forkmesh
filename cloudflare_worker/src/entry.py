@@ -21218,25 +21218,35 @@ class ForkMeshHost(DurableObject):
             source = str(target.get("source") or "local-node")
             catalog_rows = []
             if source != "local-node":
-                try:
-                    active_nodes = await active_registered_node_bis(
-                        self.env, int(Date.now()))
-                except Exception:
-                    active_nodes = None
-                rows = await d1_all(
-                    self.env, "SELECT key_bi, owner_bi, data FROM repositories")
-                for r in rows:
-                    if (active_nodes is not None and
-                            str(r.get("owner_bi") or "") not in active_nodes):
-                        continue
-                    rec = await decrypt_row(self.env, r.get("data"))
-                    if rec:
+                # Same-group source records from the shared per-isolate catalog
+                # memo (same fix as _online_source_of_truth, adhoc #144): a raw
+                # repositories scan + sequential decrypt_row() per row ran here
+                # on EVERY public info/refs of a mirror namespace, and under a
+                # clone burst that held the single Worker event loop long
+                # enough for the runtime to cancel concurrent requests as hung
+                # ("Cannot enter into task"). The memo's public/active-node
+                # scoping is harmless: the raw scan already applied the
+                # active-node filter, and a group source invisible to the memo
+                # just drops clone_state_pins to the target's own pins — the
+                # pre-existing legacy fallback.
+                for r in await _decrypted_public_catalog(
+                        self.env, int(Date.now())):
+                    if repo_mirror_same_group(target, r["data"]):
                         catalog_rows.append(
-                            {"key_bi": r.get("key_bi"), "data": rec})
+                            {"key_bi": r.get("key_bi"), "data": r["data"]})
+            # Pin history scoped to the keys clone_state_pins can actually use
+            # (target + same-group sources) — the old unscoped SELECT read
+            # every repo's history on every info/refs (same scoping fix as the
+            # /mirrors payload).
             history = {}
+            keys = [k for k in
+                    [str(key_bi)] +
+                    [str(r.get("key_bi") or "") for r in catalog_rows] if k]
             hist_rows = await d1_all(
                 self.env,
-                "SELECT key_bi, state_hash FROM repo_state_history")
+                "SELECT key_bi, state_hash FROM repo_state_history"
+                " WHERE key_bi IN (%s)" % ",".join("?" for _ in keys),
+                *keys)
             for r in hist_rows:
                 history.setdefault(str(r.get("key_bi") or ""), []).append(
                     r.get("state_hash"))
