@@ -5731,6 +5731,14 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             showAgentSession(sid);
         looperOnSessionFinished(sid); // adhoc #92: chain to the next open issue
         processAgentQueue(); // pick the re-queued session back up
+        // processAgentQueue() can drop this session straight to Failed (repo/
+        // checkout/issue missing) without anything else picking it back up, and
+        // that happens after the reloadAgents() above already ran — so a rebuild
+        // queued behind this run can miss its only chance to recheck and be left
+        // stuck on "Waiting for running actions to finish" forever even though
+        // the fleet just went idle. onAgentFinished (the legacy AgentRunner path)
+        // already guards this the same way (adhoc #75); mirror it here.
+        maybeStartQueuedRebuild();
     };
     if (codex) {
         auto *stream = new CodexAppServerSession(this);
