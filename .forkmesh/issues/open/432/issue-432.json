@@ -56,6 +56,17 @@
             "sig": "EJWMrgvqENBH9R54zmjGpInPhlbAFletnW1C0FkTa1Xbmo80d0VQBeooSUpTbYwhMtdgL4dT_Zy2lvzmfO7ODQ",
             "ts": 1784332686306,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Linked pull request #19.",
+            "id": "3f7eab5c-43ea-47f8-b4ec-b4a7c82e0027",
+            "sig": "JhPSCi0wbEXXDEPSOetkHLqf8wgVncBP5ojQ7LVBrJoh_cBMglvkSpOXSGlW8dtP17Ge2FtZ4cEvuFOO7Ny5BQ",
+            "ts": 1784333789886,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -68,6 +79,6 @@
     "startDate": 0,
     "status": "open",
     "title": "on this solana bounty popup show more info like who is the auhtor and all addresses involved with links to their explorer",
-    "updatedAt": 1784332686306,
+    "updatedAt": 1784333789886,
     "votes": 0
 }
