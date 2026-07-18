@@ -14,7 +14,7 @@
     "progress": 0,
     "assignees": [],
     "createdAt": 1784402987615,
-    "updatedAt": 1784402987616,
+    "updatedAt": 1784405765197,
     "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
     "authorName": "forkmesh",
     "bountyUsd": 0.0,
@@ -42,6 +42,28 @@
             "authorName": "forkmesh",
             "ts": 1784402987616,
             "sig": "nL2hbm5Oocf4hSPwApXD2hHPkWsl1ytMxj4LiLDcuPoiP7S_1nlhyCVnxDhdfMLQJJ2ViBLbviSbod_BRC8JDg"
+        },
+        {
+            "type": "edit",
+            "id": "96a23eba-e85c-4172-b47a-bbd1cbda2417",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500059,
+            "body": "## Outcome\n\nGuarantee standard Git interoperability with a matrix generated entirely by executable probes through real repository-serving paths.\n\n## Implementation\n\n- Probe full clone, fetch, remote management, authenticated push, protected and unprotected force-push, branch and tag deletion, shallow clone, partial clone, submodules, bundles, signed commits, signed push certificates, local hooks, and unchanged third-party Git porcelain behavior.\n- Delegate standard large-object probes to #467 and dependency-client probes to #455 while including their results in the same generated matrix.\n- After each accepted write, clone again and assert exact refs and object identifiers.\n- Emit a stable compatibility report with probe identifier, pass or fail, tested commit, route, and concise diagnostic.\n- Render documentation only from the report and retain no handwritten capability claims.\n\n## Acceptance criteria\n\n- Every roadmap compatibility row is passing by the August 1 release gate; unsupported is allowed only as an in-sprint diagnostic and blocks release.\n- Authorized writes, unauthorized rejection, protected-ref rejection, and post-write cloneability are proven.\n- Partial, shallow, submodule, bundle, hook, signature, large-object, and dependency behavior each have an offline fixture.\n- A previously passing probe regression fails continuous integration.\n- No probe requires a live external service or personal credential.\n\n## Dependencies\n\nDepends on #434; consumes #441, #455, and #467 before release closure.\n\n## Verification\n\nRun the matrix twice against fresh repositories and standard client subprocesses, compare normalized reports and object ids, and inject one regression per operation family.",
+            "attachments": [],
+            "target": "open-435",
+            "sig": "C1eB0fS3rF5XrJ-vxev0Z1cLrXl-4jkZqWMuxAfD4nBKOepCQncaFUN74nRdQQD6aSslUAf1HjjYVVcHFsSjDQ"
+        },
+        {
+            "type": "edit",
+            "id": "96443231-d24e-429c-831f-539b68a29785",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405765197,
+            "body": "## Outcome\n\nGuarantee standard Git interoperability with a matrix generated entirely by executable probes through real repository-serving paths.\n\n## Implementation\n\n- Probe full clone, fetch, remote management, authenticated push, protected and unprotected force-push, branch and tag deletion, shallow clone, partial clone, submodules, bundles, signed commits, signed push certificates, local hooks, and unchanged third-party Git porcelain behavior.\n- Delegate standard large-object probes to #467 and dependency-client probes to #455 while including their results in the same generated matrix.\n- After each accepted write, clone again and assert exact refs and object identifiers.\n- Emit a stable compatibility report with probe identifier, pass or fail, tested commit, route, and concise diagnostic.\n- Render documentation only from the report and retain no handwritten capability claims.\n\n## Acceptance criteria\n\n- Every baseline row owned by #435 passes by July 22; later linked probes compose into the same report, and any unsupported row blocks the August 1 release gate.\n- Authorized writes, unauthorized rejection, protected-ref rejection, and post-write cloneability are proven.\n- Partial, shallow, submodule, bundle, hook, signature, large-object, and dependency behavior each have an offline fixture.\n- A previously passing probe regression fails continuous integration.\n- No probe requires a live external service or personal credential.\n\n## Dependencies\n\nDepends on #434; consumes #441, #455, and #467 before release closure.\n\n## Verification\n\nRun the matrix twice against fresh repositories and standard client subprocesses, compare normalized reports and object ids, and inject one regression per operation family.",
+            "attachments": [],
+            "target": "open-435",
+            "sig": "2460F6Pk7TzmdNaGVXMTNwNzdjTXwAVF1W-1TON4adHvQTgHHwU-O4aBcSqWJnD0LvGZAu5N_FpQ7KWWkLzOBg"
         }
     ]
 }
