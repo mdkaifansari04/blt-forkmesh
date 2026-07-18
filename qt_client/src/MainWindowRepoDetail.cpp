@@ -3769,7 +3769,7 @@ void MainWindow::loadCommits()
     const int rowLimit = m_commitsShowingAll ? kCommitSearchDepth : m_commitsLimit;
     QStringList logArgs{
         "log",
-        "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P%x1f%D"};
+        "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P%x1f%D%x1f%b"};
     logArgs << "-n" << QString::number(rowLimit + 1);
     logArgs << currentRef();
     if (!runGitCapture(dir, logArgs, &out, nullptr))
@@ -3783,9 +3783,8 @@ void MainWindow::loadCommits()
     QString loadedTip;
     // Commit-graph lane state, walked newest-first alongside the rows. Each entry
     // is the hash the lane is currently waiting to reach; an empty entry is a free
-    // slot a new branch can reuse. maxGraphLane sizes the gutter column afterwards.
+    // slot a new branch can reuse.
     QList<QString> activeLanes;
-    int maxGraphLane = 0;
     // Repaints stay suspended by the TableRepaintGuard above while up to 300 rows
     // (each with a cell-widget button) are built: otherwise the table repaints on
     // every insertRow/setItem, which is what made a refresh feel sluggish.
@@ -3799,11 +3798,11 @@ void MainWindow::loadCommits()
             m_commitsHasMore = true;
             break;
         }
-        const QStringList lines =
-            QString::fromUtf8(record).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-        if (lines.isEmpty())
-            continue;
-        const QStringList f = lines.first().split(QLatin1Char('\x1f'));
+        // Split the record on the field separator directly (not per line): the
+        // trailing %b body field is multi-line, so the record can no longer be
+        // read as just its first line.
+        const QStringList f =
+            QString::fromUtf8(record).split(QLatin1Char('\x1f'));
         if (f.size() < 6)
             continue;
         if (loadedTip.isEmpty())
@@ -3829,10 +3828,8 @@ void MainWindow::loadCommits()
         // Snapshot the lanes drawn through this row before advancing them.
         QVariantList laneCols;
         for (int i = 0; i < activeLanes.size(); ++i) {
-            if (!activeLanes.at(i).isEmpty()) {
+            if (!activeLanes.at(i).isEmpty())
                 laneCols.append(i);
-                maxGraphLane = std::max(maxGraphLane, i);
-            }
         }
         // Close any other lane also waiting for this commit (it merges in here).
         for (int i = 0; i < activeLanes.size(); ++i)
@@ -3861,10 +3858,8 @@ void MainWindow::loadCommits()
         // merge/branch curves into and out of the node.
         QVariantList botLaneCols;
         for (int i = 0; i < activeLanes.size(); ++i) {
-            if (!activeLanes.at(i).isEmpty()) {
+            if (!activeLanes.at(i).isEmpty())
                 botLaneCols.append(i);
-                maxGraphLane = std::max(maxGraphLane, i);
-            }
         }
 
         const int row = m_commitsTable->rowCount();
@@ -3875,6 +3870,8 @@ void MainWindow::loadCommits()
         graphItem->setData(kGraphLanesRole, laneCols);
         graphItem->setData(kGraphNodeLaneRole, nodeLane);
         graphItem->setData(kGraphBottomLanesRole, botLaneCols);
+        // Merges draw as a bullseye ring, regular commits as a solid dot.
+        graphItem->setData(kGraphIsMergeRole, parents.size() > 1);
         m_commitsTable->setItem(row, kCommitGraphCol, graphItem);
         auto *summary = new SortTableWidgetItem(f.at(5));
         summary->setData(Qt::UserRole, f.at(0));
@@ -3885,6 +3882,11 @@ void MainWindow::loadCommits()
         summary->setData(kCommitExpandedRole, false);
         summary->setData(kCommitAuthorRole, f.at(2));
         summary->setData(kCommitUnsyncedRole, isUnpushed);
+        // Full message body: the row shows only the subject, the hover box
+        // (updateCommitRowHover) carries the whole commit message.
+        const QString msgBody = f.value(8).trimmed();
+        if (!msgBody.isEmpty())
+            summary->setData(kCommitBodyRole, msgBody);
         // Branch / tag pills (git log %D), drawn ahead of the summary text like
         // the VS Code graph. Capped: a tip carrying many refs would otherwise
         // crowd out the message.
@@ -3966,18 +3968,9 @@ void MainWindow::loadCommits()
         // commit's detail page (double-click / Enter), next to Restore.
         updateCommitRowHover(row);
     }
-    // Size the graph gutter to the widest the lanes ever got, then re-assert the
-    // Date-descending sort so rows stay in git-log order (the order the lanes were
-    // computed in) after sorting is re-enabled.
-    {
-        // Hug the lanes tightly: one leading margin, the lanes, then only enough
-        // trailing room for the node ring — no wide dead gap between the last
-        // coloured line and the commit message beside it (issue #52).
-        const int laneSpan = kGraphMargin + maxGraphLane * kGraphLaneWidth
-                             + static_cast<int>(kGraphNodeOuter) + 3;
-        m_commitsTable->horizontalHeader()->resizeSection(
-            kCommitGraphCol, std::clamp(laneSpan, 18, 140));
-    }
+    // The graph gutter needs no sizing pass: it is painted inside the summary
+    // cell and each row's text indents to its own rightmost lane (capped by
+    // kGraphMaxTextIndent in CommitSummaryDelegate).
     // Repaints stay suspended (TableRepaintGuard) through the banner update and
     // filter re-apply below, so the whole reload lands in a single repaint when
     // the guard unwinds at function scope. The rows stay in git-log order (no
@@ -4201,6 +4194,7 @@ void MainWindow::toggleCommitFilesRows(int row)
         graph->setData(kGraphNodeLaneRole, -1); // no dot: lanes pass through
         m_commitsTable->setItem(at, kCommitGraphCol, graph);
         auto *item = new QTableWidgetItem(f.path);
+        item->setIcon(iconForFile(f.path.section(QLatin1Char('/'), -1)));
         item->setData(kCommitRowKindRole, 1);
         item->setData(Qt::UserRole, hash);
         item->setData(kCommitFilePathRole, f.path);
@@ -4254,6 +4248,18 @@ void MainWindow::updateCommitRowHover(int row)
     // The date cell keeps the full "x ago" form on its own tooltip.
     const QString when = date ? date->toolTip() : QString();
     QString html = QStringLiteral("<b>%1</b>").arg(sum->text().toHtmlEscaped());
+    // The full commit message rides the hover box (the row shows only the
+    // subject line). Very long bodies are capped so the tooltip stays usable.
+    QString msgBody = sum->data(kCommitBodyRole).toString();
+    if (!msgBody.isEmpty()) {
+        if (msgBody.size() > 1500) {
+            msgBody.truncate(1500);
+            msgBody += QChar(0x2026);
+        }
+        html += QStringLiteral("<br><span style='color:#8b949e; "
+                               "white-space:pre-wrap'>%1</span>")
+                    .arg(msgBody.toHtmlEscaped());
+    }
     html += QStringLiteral("<br>%1 committed %2")
                 .arg((author ? author->text() : QString()).toHtmlEscaped(),
                      when.toHtmlEscaped());
@@ -6119,8 +6125,12 @@ void MainWindow::showCommit(const QString &hash)
         m_commitNextButton->setEnabled(m_commitsTable &&
                                        m_currentCommitRow >= 0 &&
                                        m_currentCommitRow < m_commitsTable->rowCount() - 1);
-    // Keep the table highlight in sync so the selected row follows Prev/Next.
-    if (m_commitsTable && m_currentCommitRow >= 0) {
+    // Keep the table highlight in sync so the selected row follows Prev/Next —
+    // unless this open came from a click on an expanded file row: that row
+    // keeps the selection, so its green border marks the file whose diff is
+    // being shown.
+    if (m_commitsTable && m_currentCommitRow >= 0 &&
+        m_pendingCommitFileScroll.isEmpty()) {
         QSignalBlocker blk(m_commitsTable);
         m_commitsTable->selectRow(m_currentCommitRow);
     }
@@ -6202,6 +6212,31 @@ void MainWindow::showCommit(const QString &hash)
         });
 }
 
+// Renders the commit-detail message label from the subject/body/expanded
+// properties stashed on it: the body stays collapsed behind a ▸ arrow until
+// toggled (the label's linkActivated handler flips "expanded" and re-renders),
+// and the full message always rides the label's hover tooltip.
+static void refreshCommitMessageLabel(QLabel *label)
+{
+    if (!label)
+        return;
+    const QString subject = label->property("subjectHtml").toString();
+    const QString body = label->property("bodyHtml").toString();
+    const bool expanded = label->property("expanded").toBool();
+    QString msg;
+    if (!body.isEmpty())
+        msg += QStringLiteral("<a href='toggle-msg' "
+                              "style='color:#8b949e;text-decoration:none'>%1</a> ")
+                   .arg(expanded ? QString::fromUtf8("\xE2\x96\xBE")
+                                 : QString::fromUtf8("\xE2\x96\xB8"));
+    msg += QStringLiteral("<b>%1</b>").arg(subject);
+    if (expanded && !body.isEmpty())
+        msg += QStringLiteral(
+                   "<br><span style='color:#8b949e; white-space:pre-wrap'>%1</span>")
+                   .arg(body);
+    label->setText(msg);
+}
+
 // The synchronous tail of showCommit(): all git output is in hand (metaFields
 // from `show -s`, patchRaw from `diff -M`), so this is pure widget population.
 void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
@@ -6234,13 +6269,17 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
             QStringLiteral("Commit <code>%1</code>").arg(breakableHash));
     }
     if (m_commitMessage) {
-        QString msg =
-            QStringLiteral("<b>%1</b>").arg(linkifyIssueRefs(subject.toHtmlEscaped()));
-        if (!body.isEmpty())
-            msg += QStringLiteral(
-                       "<br><span style='color:#8b949e; white-space:pre-wrap'>%1</span>")
-                       .arg(linkifyIssueRefs(body.toHtmlEscaped()));
-        m_commitMessage->setText(msg);
+        // Collapsed by default: just the subject, with a ▸ arrow to expand the
+        // body in place. The hover tooltip always shows the whole message.
+        m_commitMessage->setProperty("subjectHtml",
+                                     linkifyIssueRefs(subject.toHtmlEscaped()));
+        m_commitMessage->setProperty("bodyHtml",
+                                     linkifyIssueRefs(body.toHtmlEscaped()));
+        m_commitMessage->setProperty("expanded", false);
+        m_commitMessage->setToolTip(
+            body.isEmpty() ? subject
+                           : subject + QStringLiteral("\n\n") + body);
+        refreshCommitMessageLabel(m_commitMessage);
     }
 
     // --- Render the diff and collect per-file stats.
@@ -8114,14 +8153,11 @@ QWidget *MainWindow::buildRepoCommitsTab()
         m_commitsTable->setColumnHidden(i, true);
     m_commitsTable->setColumnHidden(kCommitActionCol, true);
     commitHeader->setSectionResizeMode(kCommitSummaryCol, QHeaderView::Stretch);
-    // Git-graph gutter: a fixed, narrow column drawn by CommitGraphDelegate and
-    // moved to the far left so it reads like a git log graph. Its width is
-    // recomputed per load once the lane count is known (see loadCommits).
-    commitHeader->setSectionResizeMode(kCommitGraphCol, QHeaderView::Fixed);
-    commitHeader->resizeSection(kCommitGraphCol, 24);
-    commitHeader->moveSection(commitHeader->visualIndex(kCommitGraphCol), 0);
-    m_commitsTable->setItemDelegateForColumn(kCommitGraphCol,
-                                             new CommitGraphDelegate(m_commitsTable));
+    // Git-graph gutter: its lane data rides a hidden column that
+    // CommitSummaryDelegate reads via the row's sibling cell and paints inside
+    // the summary cell itself, so each row's message starts right beside its
+    // own rightmost lane instead of after a shared fixed-width gutter.
+    m_commitsTable->setColumnHidden(kCommitGraphCol, true);
     m_commitsTable->setItemDelegateForColumn(
         kCommitSummaryCol, new CommitSummaryDelegate(m_commitsTable));
     // Single click: expand/collapse the commit's files in place (VS-Code style).
@@ -8433,7 +8469,13 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // Markdown reference links.
     connect(m_commitMessage, &QLabel::linkActivated, this,
             [this](const QString &href) {
-                if (href.startsWith(QStringLiteral("ref:")))
+                if (href == QLatin1String("toggle-msg")) {
+                    // The ▸/▾ arrow: expand or collapse the message body.
+                    m_commitMessage->setProperty(
+                        "expanded",
+                        !m_commitMessage->property("expanded").toBool());
+                    refreshCommitMessageLabel(m_commitMessage);
+                } else if (href.startsWith(QStringLiteral("ref:")))
                     openCommitReference(href.mid(4).toInt());
                 else if (href.startsWith(QStringLiteral("commit:")))
                     openCommitHashReference(href.mid(7));
