@@ -1,0 +1,1844 @@
+diff --git a/.forkmesh/releases/latest/SHASUMS256.txt b/.forkmesh/releases/latest/SHASUMS256.txt
+index a94a8cf2..fd2b8e88 100644
+--- a/.forkmesh/releases/latest/SHASUMS256.txt
++++ b/.forkmesh/releases/latest/SHASUMS256.txt
+@@ -1,2 +1,2 @@
+-6d6cbb35cf0fdbb29077683756122335e29edcd42e3d578c1af0f88244a65a27  forkmesh-linux-x86_64
+-a0cf5c970cad5613f2590b3a1689647029505096b4be51bef77d0f0ec9681445  forkmesh-linux-x86_64.AppDir.tar.gz
++349e3ed0c05e5134d08fdc0f248b845661c759823ef96950bc54ed8c91b28d96  forkmesh-linux-x86_64
++06c1bb0ed18f61da1d15c3140c5a54ce12d61c25fa716b0c5416fc05fc289384  forkmesh-linux-x86_64.AppDir.tar.gz
+diff --git a/.forkmesh/releases/latest/release.json b/.forkmesh/releases/latest/release.json
+index 47f9aba8..af3d63e8 100644
+--- a/.forkmesh/releases/latest/release.json
++++ b/.forkmesh/releases/latest/release.json
+@@ -1,9 +1,9 @@
+ {
+   "schema": "forkmesh-release-v1",
+   "repo": "forkmesh/forkmesh",
+-  "tag": "v0.6.18",
+-  "tag_commit": "4f12c8a9823c0ca808b2c29dd1970e486b54d7c8",
++  "tag": "v0.6.19",
++  "tag_commit": "40b118bd9ec5146825764d1aa5298525bf7fe987",
+   "channel": "latest",
+-  "created_at": 1784298301000,
+-  "assets": [{"name":"forkmesh-linux-x86_64","blob_sha256":"6d6cbb35cf0fdbb29077683756122335e29edcd42e3d578c1af0f88244a65a27","size":20535424,"os":"linux","arch":"x86_64"},{"name":"forkmesh-linux-x86_64.AppDir.tar.gz","blob_sha256":"a0cf5c970cad5613f2590b3a1689647029505096b4be51bef77d0f0ec9681445","size":11026305,"os":"linux","arch":"x86_64.AppDir.tar.gz"}]
++  "created_at": 1784396790000,
++  "assets": [{"name":"forkmesh-linux-x86_64","blob_sha256":"349e3ed0c05e5134d08fdc0f248b845661c759823ef96950bc54ed8c91b28d96","size":20762632,"os":"linux","arch":"x86_64"},{"name":"forkmesh-linux-x86_64.AppDir.tar.gz","blob_sha256":"06c1bb0ed18f61da1d15c3140c5a54ce12d61c25fa716b0c5416fc05fc289384","size":11115312,"os":"linux","arch":"x86_64.AppDir.tar.gz"}]
+ }
+diff --git a/cloudflare_worker/public/dashboard.js b/cloudflare_worker/public/dashboard.js
+index 615555c3..57f34282 100644
+--- a/cloudflare_worker/public/dashboard.js
++++ b/cloudflare_worker/public/dashboard.js
+@@ -3081,7 +3081,7 @@
+     button.disabled = !(
+       state.nodeNameAvailability.available &&
+       Boolean(state.session?.emailVerified) &&
+-      Boolean(profilePassword("[data-profile-page-password]"))
++      Boolean(profilePassword("[data-profile-rename-password]"))
+     );
+     button.classList.toggle("opacity-40", button.disabled);
+   }
+@@ -3246,10 +3246,10 @@
+     renderNotificationPreferences(session);
+     if (!session?.emailVerified) {
+       state.nodeNameAvailability.available = false;
+-      setRenameStatus("Verify your email before changing your node name.", "bad");
++      setRenameStatus("Verify your email before changing your username.", "bad");
+     } else if (!($("[data-profile-rename-input]")?.value || "").trim()) {
+       state.nodeNameAvailability.available = false;
+-      setRenameStatus("Enter a new node name to check availability.", "");
++      setRenameStatus("Enter a new username to check availability.", "");
+     }
+     updateRenameButton();
+     renderClaimNodePanel(session);
+@@ -3466,7 +3466,7 @@
+     state.nodeNameAvailability.available = false;
+     if (input && input.value !== candidate) input.value = candidate;
+     if (!candidate) {
+-      setRenameStatus("Enter a new node name to check availability.", "");
++      setRenameStatus("Enter a new username to check availability.", "");
+       updateRenameButton();
+       return;
+     }
+@@ -3476,12 +3476,12 @@
+       return;
+     }
+     if (candidate === String(state.session?.nodeName || "").toLowerCase()) {
+-      setRenameStatus("This is already your current node name.", "bad");
++      setRenameStatus("This is already your current username.", "bad");
+       updateRenameButton();
+       return;
+     }
+     if (!state.session?.emailVerified) {
+-      setRenameStatus("Verify your email before changing your node name.", "bad");
++      setRenameStatus("Verify your email before changing your username.", "bad");
+       updateRenameButton();
+       return;
+     }
+@@ -3500,8 +3500,8 @@
+       state.nodeNameAvailability.available = Boolean(response.ok && body.available);
+       setRenameStatus(
+         state.nodeNameAvailability.available
+-          ? "Node name is available."
+-          : "That node name is already taken.",
++          ? "Username is available."
++          : "That username is already taken.",
+         state.nodeNameAvailability.available ? "good" : "bad",
+       );
+     } catch (_) {
+@@ -3518,13 +3518,13 @@
+   async function renameNodeName() {
+     const input = $("[data-profile-rename-input]");
+     const newNodeName = (input?.value || "").trim().toLowerCase();
+-    const password = profilePassword("[data-profile-page-password]");
++    const password = profilePassword("[data-profile-rename-password]");
+     if (!state.nodeNameAvailability.available || !newNodeName) {
+-      setRenameStatus("Choose an available node name first.", "bad");
++      setRenameStatus("Choose an available username first.", "bad");
+       return;
+     }
+     if (!password) {
+-      setRenameStatus("Enter your current password to update your node name.", "bad");
++      setRenameStatus("Enter your current password to update your username.", "bad");
+       updateRenameButton();
+       return;
+     }
+@@ -3533,22 +3533,22 @@
+     try {
+       await postProfile({ newNodeName }, password);
+       if (input) input.value = "";
+-      $("[data-profile-page-password]") && ($("[data-profile-page-password]").value = "");
++      $("[data-profile-rename-password]") && ($("[data-profile-rename-password]").value = "");
+       state.nodeNameAvailability.available = false;
+-      setRenameStatus("Node name updated. Repositories are refreshing.", "good");
++      setRenameStatus("Username updated. Repositories are refreshing.", "good");
+       await refreshRepositories();
+       renderProfilePage(state.session);
+     } catch (error) {
+       const messages = {
+-        email_not_verified: "Verify your email before changing your node name.",
+-        invalid_node_name: "Enter a valid node name.",
+-        node_name_taken: "That node name is already taken.",
+-        node_name_unchanged: "Enter a different node name.",
++        email_not_verified: "Verify your email before changing your username.",
++        invalid_node_name: "Enter a valid username.",
++        node_name_taken: "That username is already taken.",
++        node_name_unchanged: "Enter a different username.",
+         repo_namespace_conflict: "That namespace already has repository data.",
+       };
+-      setRenameStatus(messages[error.message] || "Could not update node name. Check your password and try again.", "bad");
++      setRenameStatus(messages[error.message] || "Could not update username. Check your password and try again.", "bad");
+     } finally {
+-      if (button) { button.disabled = false; button.textContent = "Update node name"; }
++      if (button) { button.disabled = false; button.textContent = "Update username"; }
+       updateRenameButton();
+     }
+   }
+@@ -12092,7 +12092,7 @@
+     window.clearTimeout(state.nodeNameAvailability.timer);
+     state.nodeNameAvailability.timer = window.setTimeout(checkNodeNameAvailability, 250);
+   });
+-  $("[data-profile-page-password]")?.addEventListener("input", updateRenameButton);
++  $("[data-profile-rename-password]")?.addEventListener("input", updateRenameButton);
+   $("[data-profile-delete-confirm]")?.addEventListener("input", () => {
+     const button = $("[data-profile-delete-account]");
+     if (!button) return;
+diff --git a/cloudflare_worker/public/dashboard/chat/index.html b/cloudflare_worker/public/dashboard/chat/index.html
+index ec49a665..8e39cb47 100644
+--- a/cloudflare_worker/public/dashboard/chat/index.html
++++ b/cloudflare_worker/public/dashboard/chat/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=f03e31f15317" defer></script>
++    <script src="/dashboard.js?v=f67c5b1f169e" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="chat">
+@@ -853,9 +853,9 @@
+ 
+           <a
+             data-profile-settings-button
+-            href="/dashboard/settings"
+-            aria-label="Open profile settings"
+-            title="Profile settings"
++            href="/dashboard/profile"
++            aria-label="Go to your profile"
++            title="Your profile"
+             class="ml-0.5 flex items-center justify-center rounded-full hover:opacity-90 transition-opacity focus:outline-none focus:ring-1 focus:ring-foreground/20"
+           >
+             <span
+diff --git a/cloudflare_worker/public/dashboard/index.html b/cloudflare_worker/public/dashboard/index.html
+index 73d30c3d..66bd4810 100644
+--- a/cloudflare_worker/public/dashboard/index.html
++++ b/cloudflare_worker/public/dashboard/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=f03e31f15317" defer></script>
++    <script src="/dashboard.js?v=f67c5b1f169e" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="home">
+@@ -853,9 +853,9 @@
+ 
+           <a
+             data-profile-settings-button
+-            href="/dashboard/settings"
+-            aria-label="Open profile settings"
+-            title="Profile settings"
++            href="/dashboard/profile"
++            aria-label="Go to your profile"
++            title="Your profile"
+             class="ml-0.5 flex items-center justify-center rounded-full hover:opacity-90 transition-opacity focus:outline-none focus:ring-1 focus:ring-foreground/20"
+           >
+             <span
+diff --git a/cloudflare_worker/public/dashboard/js/04-account.js b/cloudflare_worker/public/dashboard/js/04-account.js
+index 7fecccfd..c4393d92 100644
+--- a/cloudflare_worker/public/dashboard/js/04-account.js
++++ b/cloudflare_worker/public/dashboard/js/04-account.js
+@@ -1723,7 +1723,7 @@
+     button.disabled = !(
+       state.nodeNameAvailability.available &&
+       Boolean(state.session?.emailVerified) &&
+-      Boolean(profilePassword("[data-profile-page-password]"))
++      Boolean(profilePassword("[data-profile-rename-password]"))
+     );
+     button.classList.toggle("opacity-40", button.disabled);
+   }
+@@ -1888,10 +1888,10 @@
+     renderNotificationPreferences(session);
+     if (!session?.emailVerified) {
+       state.nodeNameAvailability.available = false;
+-      setRenameStatus("Verify your email before changing your node name.", "bad");
++      setRenameStatus("Verify your email before changing your username.", "bad");
+     } else if (!($("[data-profile-rename-input]")?.value || "").trim()) {
+       state.nodeNameAvailability.available = false;
+-      setRenameStatus("Enter a new node name to check availability.", "");
++      setRenameStatus("Enter a new username to check availability.", "");
+     }
+     updateRenameButton();
+     renderClaimNodePanel(session);
+@@ -2108,7 +2108,7 @@
+     state.nodeNameAvailability.available = false;
+     if (input && input.value !== candidate) input.value = candidate;
+     if (!candidate) {
+-      setRenameStatus("Enter a new node name to check availability.", "");
++      setRenameStatus("Enter a new username to check availability.", "");
+       updateRenameButton();
+       return;
+     }
+@@ -2118,12 +2118,12 @@
+       return;
+     }
+     if (candidate === String(state.session?.nodeName || "").toLowerCase()) {
+-      setRenameStatus("This is already your current node name.", "bad");
++      setRenameStatus("This is already your current username.", "bad");
+       updateRenameButton();
+       return;
+     }
+     if (!state.session?.emailVerified) {
+-      setRenameStatus("Verify your email before changing your node name.", "bad");
++      setRenameStatus("Verify your email before changing your username.", "bad");
+       updateRenameButton();
+       return;
+     }
+@@ -2142,8 +2142,8 @@
+       state.nodeNameAvailability.available = Boolean(response.ok && body.available);
+       setRenameStatus(
+         state.nodeNameAvailability.available
+-          ? "Node name is available."
+-          : "That node name is already taken.",
++          ? "Username is available."
++          : "That username is already taken.",
+         state.nodeNameAvailability.available ? "good" : "bad",
+       );
+     } catch (_) {
+@@ -2160,13 +2160,13 @@
+   async function renameNodeName() {
+     const input = $("[data-profile-rename-input]");
+     const newNodeName = (input?.value || "").trim().toLowerCase();
+-    const password = profilePassword("[data-profile-page-password]");
++    const password = profilePassword("[data-profile-rename-password]");
+     if (!state.nodeNameAvailability.available || !newNodeName) {
+-      setRenameStatus("Choose an available node name first.", "bad");
++      setRenameStatus("Choose an available username first.", "bad");
+       return;
+     }
+     if (!password) {
+-      setRenameStatus("Enter your current password to update your node name.", "bad");
++      setRenameStatus("Enter your current password to update your username.", "bad");
+       updateRenameButton();
+       return;
+     }
+@@ -2175,22 +2175,22 @@
+     try {
+       await postProfile({ newNodeName }, password);
+       if (input) input.value = "";
+-      $("[data-profile-page-password]") && ($("[data-profile-page-password]").value = "");
++      $("[data-profile-rename-password]") && ($("[data-profile-rename-password]").value = "");
+       state.nodeNameAvailability.available = false;
+-      setRenameStatus("Node name updated. Repositories are refreshing.", "good");
++      setRenameStatus("Username updated. Repositories are refreshing.", "good");
+       await refreshRepositories();
+       renderProfilePage(state.session);
+     } catch (error) {
+       const messages = {
+-        email_not_verified: "Verify your email before changing your node name.",
+-        invalid_node_name: "Enter a valid node name.",
+-        node_name_taken: "That node name is already taken.",
+-        node_name_unchanged: "Enter a different node name.",
++        email_not_verified: "Verify your email before changing your username.",
++        invalid_node_name: "Enter a valid username.",
++        node_name_taken: "That username is already taken.",
++        node_name_unchanged: "Enter a different username.",
+         repo_namespace_conflict: "That namespace already has repository data.",
+       };
+-      setRenameStatus(messages[error.message] || "Could not update node name. Check your password and try again.", "bad");
++      setRenameStatus(messages[error.message] || "Could not update username. Check your password and try again.", "bad");
+     } finally {
+-      if (button) { button.disabled = false; button.textContent = "Update node name"; }
++      if (button) { button.disabled = false; button.textContent = "Update username"; }
+       updateRenameButton();
+     }
+   }
+diff --git a/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js b/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
+index 57b4e6fc..f186d626 100644
+--- a/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
++++ b/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
+@@ -1983,7 +1983,7 @@
+     window.clearTimeout(state.nodeNameAvailability.timer);
+     state.nodeNameAvailability.timer = window.setTimeout(checkNodeNameAvailability, 250);
+   });
+-  $("[data-profile-page-password]")?.addEventListener("input", updateRenameButton);
++  $("[data-profile-rename-password]")?.addEventListener("input", updateRenameButton);
+   $("[data-profile-delete-confirm]")?.addEventListener("input", () => {
+     const button = $("[data-profile-delete-account]");
+     if (!button) return;
+diff --git a/cloudflare_worker/public/dashboard/network/index.html b/cloudflare_worker/public/dashboard/network/index.html
+index 84133892..e0a78b42 100644
+--- a/cloudflare_worker/public/dashboard/network/index.html
++++ b/cloudflare_worker/public/dashboard/network/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=f03e31f15317" defer></script>
++    <script src="/dashboard.js?v=f67c5b1f169e" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="network">
+@@ -853,9 +853,9 @@
+ 
+           <a
+             data-profile-settings-button
+-            href="/dashboard/settings"
+-            aria-label="Open profile settings"
+-            title="Profile settings"
++            href="/dashboard/profile"
++            aria-label="Go to your profile"
++            title="Your profile"
+             class="ml-0.5 flex items-center justify-center rounded-full hover:opacity-90 transition-opacity focus:outline-none focus:ring-1 focus:ring-foreground/20"
+           >
+             <span
+diff --git a/cloudflare_worker/public/dashboard/partials/header.html b/cloudflare_worker/public/dashboard/partials/header.html
+index 7377ed75..71012014 100644
+--- a/cloudflare_worker/public/dashboard/partials/header.html
++++ b/cloudflare_worker/public/dashboard/partials/header.html
+@@ -164,9 +164,9 @@
+ 
+           <a
+             data-profile-settings-button
+-            href="/dashboard/settings"
+-            aria-label="Open profile settings"
+-            title="Profile settings"
++            href="/dashboard/profile"
++            aria-label="Go to your profile"
++            title="Your profile"
+             class="ml-0.5 flex items-center justify-center rounded-full hover:opacity-90 transition-opacity focus:outline-none focus:ring-1 focus:ring-foreground/20"
+           >
+             <span
+diff --git a/cloudflare_worker/public/dashboard/partials/views/settings.html b/cloudflare_worker/public/dashboard/partials/views/settings.html
+index 5f33adca..1cb66de6 100644
+--- a/cloudflare_worker/public/dashboard/partials/views/settings.html
++++ b/cloudflare_worker/public/dashboard/partials/views/settings.html
+@@ -88,11 +88,18 @@
+                     <h2 class="text-2xl font-semibold tracking-normal text-foreground">Public profile</h2>
+                     <div class="mt-5 grid gap-10 xl:grid-cols-[minmax(0,42rem)_20rem]">
+                       <div class="grid min-w-0 content-start gap-5">
+-                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+-                          Name
+-                          <span data-profile-page-node-name class="flex h-10 items-center rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground">My Profile</span>
+-                          <span class="text-sm font-normal leading-5 text-muted-foreground">Your node name appears around ForkMesh where you contribute or are mentioned.</span>
+-                        </label>
++                        <div class="grid gap-2">
++                          <label class="grid gap-2 text-sm font-semibold text-foreground">
++                            Username
++                            <input data-profile-rename-input type="text" inputmode="latin" autocomplete="off" placeholder="new-username" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
++                          </label>
++                          <span class="text-sm font-normal leading-5 text-muted-foreground">Your username is your node name and repository namespace. It appears around ForkMesh where you contribute or are mentioned; renaming moves owned repository URLs to the new namespace.</span>
++                          <input data-profile-rename-password type="password" autocomplete="current-password" placeholder="Current password" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
++                          <p data-profile-rename-status class="min-h-4 text-xs text-muted-foreground">Enter a new username to check availability.</p>
++                          <button data-profile-rename-save type="button" disabled class="inline-flex h-9 w-fit items-center justify-center rounded-md border border-border bg-secondary px-4 text-sm font-semibold text-foreground opacity-40 hover:bg-muted transition-colors">
++                            Update username
++                          </button>
++                        </div>
+ 
+                         <label id="settings-email" class="grid gap-2 text-sm font-semibold text-foreground">
+                           Public email
+@@ -324,17 +331,7 @@
+ 
+                   <section id="settings-account" data-settings-section="account" class="hidden pb-8">
+                     <h2 class="text-2xl font-semibold tracking-normal text-foreground">Account</h2>
+-                    <p class="mt-1 text-sm leading-6 text-muted-foreground">Your node name is your public account and repository namespace. Renaming it moves owned repository URLs to the new namespace.</p>
+-                    <div class="mt-5 grid max-w-2xl gap-4">
+-                      <label class="grid gap-2 text-sm font-semibold text-foreground">
+-                        New node name
+-                        <input data-profile-rename-input type="text" inputmode="latin" autocomplete="off" placeholder="new-node-name" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+-                      </label>
+-                      <p data-profile-rename-status class="min-h-4 text-xs text-muted-foreground">Enter a new node name to check availability.</p>
+-                      <button data-profile-rename-save type="button" disabled class="inline-flex h-9 w-fit items-center justify-center rounded-md border border-border bg-secondary px-4 text-sm font-semibold text-foreground opacity-40 hover:bg-muted transition-colors">
+-                        Update node name
+-                      </button>
+-                    </div>
++                    <p class="mt-1 text-sm leading-6 text-muted-foreground">Your node name is your public account and repository namespace. Change your username from the <button data-settings-section-link="public-profile" type="button" class="font-semibold text-[#2f81f7] hover:underline">Public profile</button> settings — renaming it moves owned repository URLs to the new namespace.</p>
+                   </section>
+ 
+                   <section id="settings-nodes" data-settings-section="nodes" class="hidden pb-8">
+diff --git a/cloudflare_worker/public/dashboard/profile/index.html b/cloudflare_worker/public/dashboard/profile/index.html
+index 066642a1..6a5d762c 100644
+--- a/cloudflare_worker/public/dashboard/profile/index.html
++++ b/cloudflare_worker/public/dashboard/profile/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=f03e31f15317" defer></script>
++    <script src="/dashboard.js?v=f67c5b1f169e" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="profile">
+@@ -853,9 +853,9 @@
+ 
+           <a
+             data-profile-settings-button
+-            href="/dashboard/settings"
+-            aria-label="Open profile settings"
+-            title="Profile settings"
++            href="/dashboard/profile"
++            aria-label="Go to your profile"
++            title="Your profile"
+             class="ml-0.5 flex items-center justify-center rounded-full hover:opacity-90 transition-opacity focus:outline-none focus:ring-1 focus:ring-foreground/20"
+           >
+             <span
+diff --git a/cloudflare_worker/public/dashboard/profile/repositories/index.html b/cloudflare_worker/public/dashboard/profile/repositories/index.html
+index 7a5b09ce..9c5d6748 100644
+--- a/cloudflare_worker/public/dashboard/profile/repositories/index.html
++++ b/cloudflare_worker/public/dashboard/profile/repositories/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=f03e31f15317" defer></script>
++    <script src="/dashboard.js?v=f67c5b1f169e" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="profile-repositories">
+@@ -853,9 +853,9 @@
+ 
+           <a
+             data-profile-settings-button
+-            href="/dashboard/settings"
+-            aria-label="Open profile settings"
+-            title="Profile settings"
++            href="/dashboard/profile"
++            aria-label="Go to your profile"
++            title="Your profile"
+             class="ml-0.5 flex items-center justify-center rounded-full hover:opacity-90 transition-opacity focus:outline-none focus:ring-1 focus:ring-foreground/20"
+           >
+             <span
+diff --git a/cloudflare_worker/public/dashboard/repo.html b/cloudflare_worker/public/dashboard/repo.html
+index d26acc99..eb0d5bd9 100644
+--- a/cloudflare_worker/public/dashboard/repo.html
++++ b/cloudflare_worker/public/dashboard/repo.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=f03e31f15317" defer></script>
++    <script src="/dashboard.js?v=f67c5b1f169e" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="repo">
+@@ -853,9 +853,9 @@
+ 
+           <a
+             data-profile-settings-button
+-            href="/dashboard/settings"
+-            aria-label="Open profile settings"
+-            title="Profile settings"
++            href="/dashboard/profile"
++            aria-label="Go to your profile"
++            title="Your profile"
+             class="ml-0.5 flex items-center justify-center rounded-full hover:opacity-90 transition-opacity focus:outline-none focus:ring-1 focus:ring-foreground/20"
+           >
+             <span
+diff --git a/cloudflare_worker/public/dashboard/repos/index.html b/cloudflare_worker/public/dashboard/repos/index.html
+index fdc6e086..162ae8f6 100644
+--- a/cloudflare_worker/public/dashboard/repos/index.html
++++ b/cloudflare_worker/public/dashboard/repos/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=f03e31f15317" defer></script>
++    <script src="/dashboard.js?v=f67c5b1f169e" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="repos">
+@@ -853,9 +853,9 @@
+ 
+           <a
+             data-profile-settings-button
+-            href="/dashboard/settings"
+-            aria-label="Open profile settings"
+-            title="Profile settings"
++            href="/dashboard/profile"
++            aria-label="Go to your profile"
++            title="Your profile"
+             class="ml-0.5 flex items-center justify-center rounded-full hover:opacity-90 transition-opacity focus:outline-none focus:ring-1 focus:ring-foreground/20"
+           >
+             <span
+diff --git a/cloudflare_worker/public/dashboard/settings/index.html b/cloudflare_worker/public/dashboard/settings/index.html
+index 6790e033..54d8457d 100644
+--- a/cloudflare_worker/public/dashboard/settings/index.html
++++ b/cloudflare_worker/public/dashboard/settings/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=f03e31f15317" defer></script>
++    <script src="/dashboard.js?v=f67c5b1f169e" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="settings">
+@@ -853,9 +853,9 @@
+ 
+           <a
+             data-profile-settings-button
+-            href="/dashboard/settings"
+-            aria-label="Open profile settings"
+-            title="Profile settings"
++            href="/dashboard/profile"
++            aria-label="Go to your profile"
++            title="Your profile"
+             class="ml-0.5 flex items-center justify-center rounded-full hover:opacity-90 transition-opacity focus:outline-none focus:ring-1 focus:ring-foreground/20"
+           >
+             <span
+@@ -1019,11 +1019,18 @@
+                     <h2 class="text-2xl font-semibold tracking-normal text-foreground">Public profile</h2>
+                     <div class="mt-5 grid gap-10 xl:grid-cols-[minmax(0,42rem)_20rem]">
+                       <div class="grid min-w-0 content-start gap-5">
+-                        <label class="grid gap-2 text-sm font-semibold text-foreground">
+-                          Name
+-                          <span data-profile-page-node-name class="flex h-10 items-center rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground">My Profile</span>
+-                          <span class="text-sm font-normal leading-5 text-muted-foreground">Your node name appears around ForkMesh where you contribute or are mentioned.</span>
+-                        </label>
++                        <div class="grid gap-2">
++                          <label class="grid gap-2 text-sm font-semibold text-foreground">
++                            Username
++                            <input data-profile-rename-input type="text" inputmode="latin" autocomplete="off" placeholder="new-username" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
++                          </label>
++                          <span class="text-sm font-normal leading-5 text-muted-foreground">Your username is your node name and repository namespace. It appears around ForkMesh where you contribute or are mentioned; renaming moves owned repository URLs to the new namespace.</span>
++                          <input data-profile-rename-password type="password" autocomplete="current-password" placeholder="Current password" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
++                          <p data-profile-rename-status class="min-h-4 text-xs text-muted-foreground">Enter a new username to check availability.</p>
++                          <button data-profile-rename-save type="button" disabled class="inline-flex h-9 w-fit items-center justify-center rounded-md border border-border bg-secondary px-4 text-sm font-semibold text-foreground opacity-40 hover:bg-muted transition-colors">
++                            Update username
++                          </button>
++                        </div>
+ 
+                         <label id="settings-email" class="grid gap-2 text-sm font-semibold text-foreground">
+                           Public email
+@@ -1255,17 +1262,7 @@
+ 
+                   <section id="settings-account" data-settings-section="account" class="hidden pb-8">
+                     <h2 class="text-2xl font-semibold tracking-normal text-foreground">Account</h2>
+-                    <p class="mt-1 text-sm leading-6 text-muted-foreground">Your node name is your public account and repository namespace. Renaming it moves owned repository URLs to the new namespace.</p>
+-                    <div class="mt-5 grid max-w-2xl gap-4">
+-                      <label class="grid gap-2 text-sm font-semibold text-foreground">
+-                        New node name
+-                        <input data-profile-rename-input type="text" inputmode="latin" autocomplete="off" placeholder="new-node-name" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+-                      </label>
+-                      <p data-profile-rename-status class="min-h-4 text-xs text-muted-foreground">Enter a new node name to check availability.</p>
+-                      <button data-profile-rename-save type="button" disabled class="inline-flex h-9 w-fit items-center justify-center rounded-md border border-border bg-secondary px-4 text-sm font-semibold text-foreground opacity-40 hover:bg-muted transition-colors">
+-                        Update node name
+-                      </button>
+-                    </div>
++                    <p class="mt-1 text-sm leading-6 text-muted-foreground">Your node name is your public account and repository namespace. Change your username from the <button data-settings-section-link="public-profile" type="button" class="font-semibold text-[#2f81f7] hover:underline">Public profile</button> settings — renaming it moves owned repository URLs to the new namespace.</p>
+                   </section>
+ 
+                   <section id="settings-nodes" data-settings-section="nodes" class="hidden pb-8">
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index 05c36aa5..6c48b453 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -20028,16 +20028,22 @@ class Default(WorkerEntrypoint):
+             # truth, so serve it directly (no catalog scan, no self-redirect).
+             if str(target.get("source") or "local-node") == "local-node":
+                 return None, None
+-            # Find the freshest-synced source-of-truth record in the same group.
+-            rows = await d1_all(
+-                self.env, "SELECT data FROM repositories WHERE is_private = 0")
++            # Find the freshest-synced source-of-truth record in the same group,
++            # from the shared per-isolate catalog memo. This runs on EVERY
++            # public clone of a mirror namespace (info/refs AND the upload-pack
++            # POST); a raw scan + sequential decrypt_row() per request here was
++            # the one such pass left on the clone path after the 2026-07-12
++            # fix, and under a clone burst it congested the single Worker event
++            # loop until the runtime canceled requests as hung ("Cannot enter
++            # into task" on git-upload-pack info/refs). The memo's active-node
++            # filter is harmless: a source must pass _source_has_live_host
++            # below anyway, and a node with a connected host is active.
+             best_owner = None
+             best_repo = None
+             best_sync = -1
+-            for r in rows:
+-                rec = await decrypt_row(self.env, r.get("data"))
+-                if not rec:
+-                    continue
++            for row in await _decrypted_public_catalog(
++                    self.env, int(Date.now())):
++                rec = row["data"]
+                 if str(rec.get("source") or "local-node") != "local-node":
+                     continue
+                 if not repo_mirror_same_group(target, rec):
+diff --git a/qt_client/CMakeLists.txt b/qt_client/CMakeLists.txt
+index 1b842335..9a692a43 100644
+--- a/qt_client/CMakeLists.txt
++++ b/qt_client/CMakeLists.txt
+@@ -1,5 +1,5 @@
+ cmake_minimum_required(VERSION 3.16)
+-project(ForkMesh VERSION 0.6.18 LANGUAGES CXX)
++project(ForkMesh VERSION 0.6.19 LANGUAGES CXX)
+ 
+ # The version stamped into the binary. It tracks the project() version above on
+ # every configure, so bumping that line (e.g. cutting a release) immediately
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index b156332a..e5a712ab 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -57,6 +57,7 @@ struct AgentDiffStat {
+ #include <QMetaType>
+ #include <QPixmap>
+ #include <QSet>
++#include <QTextBlockUserData>
+ #include <QTextCursor>
+ #include <QThread>
+ #include <QUrl>
+@@ -65,6 +66,15 @@ struct AgentDiffStat {
+ #include <functional>
+ #include <limits>
+ 
++// Attached to each block of the always-on footer log (adhoc #133) so a clipped,
++// no-wrap line still carries its full untruncated text — surfaced on hover and
++// used to open the full Log view at the matching entry on click.
++class FooterLogLineData : public QTextBlockUserData {
++public:
++    explicit FooterLogLineData(QString line) : rawLine(std::move(line)) {}
++    QString rawLine;
++};
++
+ class MessageRow;
+ class MarkdownEditor;
+ class PullBadgeWidget;
+@@ -711,6 +721,9 @@ private:
+     // (Re)apply the always-on footer log line's inline stylesheet for the active
+     // theme, tinting the text by the current line's tone. Called on theme switch.
+     void styleFooterUpdateLog();
++    // Open the full Log section (section 4) and scroll it to the entry matching a
++    // line clicked in the always-on footer strip (adhoc #133).
++    void openFullLogAtFooterLine(const QString &rawLine);
+     void persistProfile();
+ 
+     // Chat page
+@@ -1647,8 +1660,10 @@ private:
+     AgentRunner *runnerForSession(int sessionId) const;
+     // Returns an idle pooled runner, creating (and wiring) a new one if needed.
+     AgentRunner *acquireAgentRunner();
+-    // True while any pooled runner is executing a session.
++    // True while any pooled runner or stream/codex process is executing a session.
+     bool anyAgentRunning() const;
++    // The sessions anyAgentRunning() is counting, described for the restart log.
++    QStringList runningAgentBlockers() const;
+     void onAgentLog(int sessionId, const QString &text);
+     // Live-append a line to the raw-output edit, but only while it's the visible
+     // surface (the buffer carries it otherwise); avoids per-line text-layout stalls.
+@@ -1754,6 +1769,8 @@ private:
+     void updateNotificationButton();
+     // Show/hide the small top-bar rebuild+restart button per the opt-in setting.
+     void updateNavRebuildButton();
++    // Reposition the floating "Log" button to the live-log strip's corner.
++    void positionFloatingLogButton();
+     int pendingActionCount() const;
+     void openActionRunFromNotification(int runId);
+     // Show a desktop notification with both a title and body, using notify-send
+@@ -2021,6 +2038,17 @@ private:
+     QWidget *buildReleasesTab();
+     void loadReleasesPanel();
+     void promptNewRelease();
++    // Ask the chosen agent (Codex / OpenAI API / Claude API / Claude Code) to
++    // write GitHub-style release notes from the commits since `prevTag`, then
++    // drop the result into the draft dialog's Notes box. Async: the reply may
++    // land after the dialog is dismissed, so the widgets are held via QPointer.
++    void generateReleaseNotesWithAgent(const QString &dir, const QString &prevTag,
++                                       const QString &newTag,
++                                       const QString &targetRef,
++                                       const QString &provider,
++                                       const QString &modelChoice,
++                                       QPlainTextEdit *notesEdit,
++                                       QPushButton *button);
+     void pruneReleaseArtifactsForCurrentRepo(const QString &releaseTag);
+     // Deletes every other release tag in this repo's history, keeping only
+     // `keepTag` (the one just published). Best-effort like the artifact prune
+@@ -2478,6 +2506,9 @@ private:
+     // comment composer). `button` is the mic that was pressed, so its icon swaps to
+     // red while recording and the transcript lands in `target`.
+     void startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *button);
++    // Jump to Settings and land on the Voice tab — used when the mic is
++    // clicked before speech-to-text is set up (adhoc #132).
++    void openVoiceSettings();
+     // Build a reusable push-to-talk mic bound to a comment composer; it speaks into
+     // the composer's source editor and is registered so updateVoiceInputButton()
+     // keeps its visibility/idle look in sync with the voice-engine install state.
+@@ -3199,7 +3230,8 @@ private:
+     QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row
+     QPushButton *m_reposNavButton = nullptr; // network-wide "Repos" section
+     QPushButton *m_settingsNavButton = nullptr; // Settings button on the repo header row
+-    QPushButton *m_logNavButton = nullptr; // "Log" button in the persistent top nav
++    QPushButton *m_logNavButton = nullptr; // retired (adhoc #137): Log now opens via m_floatingLogButton
++    QPushButton *m_floatingLogButton = nullptr; // "Log" button floating over the live-log strip
+     QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
+     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
+     QPushButton *m_nodesNavButton = nullptr;  // "Nodes" top-nav button (adhoc #9)
+@@ -3213,6 +3245,10 @@ private:
+     // A manual rebuild & restart was requested while an agent was still running:
+     // hold it until the fleet goes idle, then fire automatically (adhoc #75).
+     bool m_rebuildRestartQueued = false;
++    // Rechecks the queued rebuild every few seconds while it waits — a safety net
++    // for agent-completion paths that miss their maybeStartQueuedRebuild() call
++    // (adhoc #104/#111/#116/#134/#143 each found one more).
++    QTimer *m_rebuildQueuePollTimer = nullptr;
+     QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
+     QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
+     QTableWidget *m_networkReposTable = nullptr;
+@@ -3543,6 +3579,10 @@ private:
+     QComboBox *m_parakeetModelCombo = nullptr;
+     QProcess *m_parakeetInstallProc = nullptr;
+     QComboBox *m_voiceDeviceCombo = nullptr;     // mic to capture from (adhoc #10)
++    // Settings tab widget + the index of its Voice tab, so openVoiceSettings()
++    // can land the mic-not-set-up click directly on that tab (adhoc #132).
++    QTabWidget *m_settingsTabs = nullptr;
++    int m_voiceSettingsTabIndex = -1;
+     // Settings "Test mic" (adhoc #14): a self-contained mic check. m_voiceTestProc
+     // records the chosen device to m_voiceTestWavPath; m_voiceTestTimer samples its
+     // growing tail (from byte offset m_voiceTestPos) to drive m_voiceTestMeter.
+diff --git a/qt_client/src/MainWindowActions.cpp b/qt_client/src/MainWindowActions.cpp
+index 0a5675c0..4f3e2e50 100644
+--- a/qt_client/src/MainWindowActions.cpp
++++ b/qt_client/src/MainWindowActions.cpp
+@@ -957,9 +957,8 @@ void MainWindow::updateNotificationButton()
+     if (!m_notificationButton)
+         return;
+     const int pending = pendingActionCount();
+-    m_notificationButton->setText(pending > 0
+-                                      ? QStringLiteral("Notifications •")
+-                                      : QStringLiteral("Notifications"));
++    // Icon-only bell (adhoc #137): the pending count rides on the tooltip and the
++    // amber "alert" accent below rather than a "•" appended to a text label.
+     m_notificationButton->setToolTip(
+         pending > 0
+             ? QStringLiteral("%1 action(s) waiting for approval").arg(pending)
+diff --git a/qt_client/src/MainWindowAgents.cpp b/qt_client/src/MainWindowAgents.cpp
+index 3649961a..da5010b0 100644
+--- a/qt_client/src/MainWindowAgents.cpp
++++ b/qt_client/src/MainWindowAgents.cpp
+@@ -2574,6 +2574,21 @@ void MainWindow::initAgents()
+ 
+     m_agentSessions = m_agentStore->loadAllSessions();
+     for (AgentSession &session : m_agentSessions) {
++        if (session.merged && (session.status == AgentStatus::Running ||
++                               session.status == AgentStatus::Queued)) {
++            // A merged session's work already landed in the base branch, and the
++            // UI presents it as "merged" rather than running. Resuming it here
++            // spawned an invisible CLI process that kept anyAgentRunning() true
++            // and blocked Rebuild & restart while the user saw no running
++            // actions — and every restart resurrected it again (adhoc #143).
++            // Settle it as done instead.
++            session.status = AgentStatus::Success;
++            session.lastError.clear();
++            if (session.finishedAtMs <= 0)
++                session.finishedAtMs = QDateTime::currentMSecsSinceEpoch();
++            m_agentStore->saveSession(session);
++            continue;
++        }
+         if (session.status == AgentStatus::Running) {
+             // ForkMesh was restarted while this agent was working. The previous
+             // run's process is gone (its output pipe died with the old app), so
+@@ -4924,34 +4939,61 @@ AgentRunner *MainWindow::runnerForSession(int sessionId) const
+     return nullptr;
+ }
+ 
+-bool MainWindow::anyAgentRunning() const
++// Everything anyAgentRunning() counts as "in flight", described for the restart
++// log. Every round of "Rebuild & restart stuck waiting" (adhoc #91/#104/#111/
++// #116/#134/#143) came down to guessing which invisible session the gate was
++// counting — log the blockers instead so the next report names them.
++QStringList MainWindow::runningAgentBlockers() const
+ {
+     // Only a session actively executing a turn (Running) counts as "in flight"
+     // here. Waiting means the agent paused for the user's approval/reply — that
+     // can sit unanswered indefinitely, so treating it as still-running left a
+     // queued rebuild stuck showing "Waiting for running actions" forever even
+-    // though nothing was actually working (adhoc #91).
+-    auto sessionIsActive = [this](int id) {
++    // though nothing was actually working (adhoc #91). A merged session is
++    // excluded even if its stored status is still Running (stale from an app
++    // kill mid-run): the whole UI — table cell, footer dot, tooltips — presents
++    // it as "merged", so counting it blocked the rebuild while the user
++    // correctly saw no running actions (adhoc #143).
++    auto sessionIsActive = [this](int id, QString *status) {
+         for (const AgentSession &session : m_agentSessions) {
+-            if (session.id == id)
+-                return session.status == AgentStatus::Running;
++            if (session.id == id) {
++                if (status)
++                    *status = session.status;
++                return !session.merged && session.status == AgentStatus::Running;
++            }
+         }
+         const auto pending = m_streamSessionInfo.constFind(id);
+-        return pending != m_streamSessionInfo.constEnd() &&
+-               pending->status == AgentStatus::Running;
++        if (pending == m_streamSessionInfo.constEnd())
++            return false;
++        if (status)
++            *status = pending->status + QStringLiteral(" [pre-reload snapshot]");
++        return pending->status == AgentStatus::Running;
+     };
++    QStringList blockers;
+     for (AgentRunner *runner : m_agentRunners)
+         if (runner->busy())
+-            return true;
++            blockers << QStringLiteral("session %1 (agent runner busy)")
++                            .arg(runner->currentSessionId());
+     for (auto it = m_streamSessions.constBegin(); it != m_streamSessions.constEnd(); ++it) {
+-        if (it.value() && it.value()->running() && sessionIsActive(it.key()))
+-            return true;
++        QString status;
++        if (it.value() && it.value()->running() && sessionIsActive(it.key(), &status))
++            blockers << QStringLiteral("session %1 (claude process, status %2)")
++                            .arg(it.key())
++                            .arg(status);
+     }
+     for (auto it = m_codexStreams.constBegin(); it != m_codexStreams.constEnd(); ++it) {
+-        if (it.value() && it.value()->running() && sessionIsActive(it.key()))
+-            return true;
++        QString status;
++        if (it.value() && it.value()->running() && sessionIsActive(it.key(), &status))
++            blockers << QStringLiteral("session %1 (codex process, status %2)")
++                            .arg(it.key())
++                            .arg(status);
+     }
+-    return false;
++    return blockers;
++}
++
++bool MainWindow::anyAgentRunning() const
++{
++    return !runningAgentBlockers().isEmpty();
+ }
+ 
+ AgentRunner *MainWindow::acquireAgentRunner()
+@@ -5731,6 +5773,14 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
+             showAgentSession(sid);
+         looperOnSessionFinished(sid); // adhoc #92: chain to the next open issue
+         processAgentQueue(); // pick the re-queued session back up
++        // processAgentQueue() can drop this session straight to Failed (repo/
++        // checkout/issue missing) without anything else picking it back up, and
++        // that happens after the reloadAgents() above already ran — so a rebuild
++        // queued behind this run can miss its only chance to recheck and be left
++        // stuck on "Waiting for running actions to finish" forever even though
++        // the fleet just went idle. onAgentFinished (the legacy AgentRunner path)
++        // already guards this the same way (adhoc #75); mirror it here.
++        maybeStartQueuedRebuild();
+     };
+     if (codex) {
+         auto *stream = new CodexAppServerSession(this);
+diff --git a/qt_client/src/MainWindowBranches.cpp b/qt_client/src/MainWindowBranches.cpp
+index b300feb3..3131ff5d 100644
+--- a/qt_client/src/MainWindowBranches.cpp
++++ b/qt_client/src/MainWindowBranches.cpp
+@@ -1028,6 +1028,22 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
+                 .arg(branch, base),
+             true);
+     }
++    // adhoc #139: a clean "Merge to main" from the Branches view (no worktree or
++    // agent to tear down) leaves the merged branch in the list, so re-selecting it
++    // would just re-render the now-empty diff. Instead advance the selection to the
++    // next branch in the list so the user can keep merging down the list without the
++    // page snapping back to the branch they just finished. Steer loadBranchesPanel()'s
++    // "re-select the previously-viewed branch" logic (which reads m_branchDiffBranch)
++    // at the neighbour, exactly like the post-delete flow does (adhoc #256). Compute
++    // the neighbour now, while the table still holds the pre-refresh row order. Only
++    // for the non-destructive Branches-view button — the Worktrees/Agents merge flows
++    // delete the branch and keep their own selection handling.
++    if (merged && !hasConflicts && branchInBase && worktreePath.isEmpty()
++        && !deleteAgent) {
++        const QString next = neighbourBranchInList(branch);
++        if (!next.isEmpty())
++            m_branchDiffBranch = next;
++    }
+     // adhoc #100: the merge just landed a new commit (or, on a failed merge, an
+     // aborted one) directly in this checkout, so the top "Sync" button and the
+     // Changes panel would otherwise stay stale — showing 0 pending commits — until
+diff --git a/qt_client/src/MainWindowChat.cpp b/qt_client/src/MainWindowChat.cpp
+index 7d6332f2..f3da4315 100644
+--- a/qt_client/src/MainWindowChat.cpp
++++ b/qt_client/src/MainWindowChat.cpp
+@@ -932,13 +932,25 @@ QWidget *MainWindow::buildNetworkLogDock()
+     m_footerUpdateLog->setObjectName("footerUpdateLog");
+     m_footerUpdateLog->setReadOnly(true);
+     m_footerUpdateLog->setFrameShape(QFrame::NoFrame);
+-    m_footerUpdateLog->setLineWrapMode(QPlainTextEdit::WidgetWidth);
++    // Don't wrap (adhoc #133): a long line clips at the right edge instead of
++    // reflowing onto extra rows, so every entry stays one row tall and the strip
++    // reads like a dense log tail. The full text is still reachable — hovering a
++    // line shows it in a tooltip and clicking opens the full Log view at it.
++    m_footerUpdateLog->setLineWrapMode(QPlainTextEdit::NoWrap);
+     m_footerUpdateLog->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+     m_footerUpdateLog->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+     m_footerUpdateLog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+     m_footerUpdateLog->setMinimumWidth(0);
+     m_footerUpdateLog->setToolTip(
+-        "Live log \xE2\x80\x94 scroll up to search back through recent history.");
++        "Live log \xE2\x80\x94 click a line to open the full Log at it; scroll up "
++        "to search back through recent history.");
++    // Per-line hover tooltips (the full, untruncated line) and click-to-open are
++    // driven from MainWindow::eventFilter on the viewport; the hand cursor hints
++    // that the lines are clickable. Mouse tracking is left off deliberately so a
++    // plain hover doesn't fire QPlainTextEdit's own mouse-move handler, which
++    // would otherwise flip the cursor back to an I-beam over the text.
++    m_footerUpdateLog->viewport()->setCursor(Qt::PointingHandCursor);
++    m_footerUpdateLog->viewport()->installEventFilter(this);
+     // Bound the live buffer the same way the seed below is bounded, so it can't
+     // grow without limit over a long-running session.
+     m_footerUpdateLog->setMaximumBlockCount(kFooterLogSeedLines);
+@@ -958,6 +970,21 @@ QWidget *MainWindow::buildNetworkLogDock()
+         m_footerUpdateLog->setPlainText(QStringLiteral("ForkMesh ready"));
+     }
+ 
++    // Floating "Log" button overlaid on the bottom-right of the live-log strip
++    // (adhoc #137): opens the full network Log section (index 4) without taking a
++    // slot in the crowded section-nav row. Parented to the strip so it floats over
++    // its corner; repositioned as the strip resizes via the eventFilter branch.
++    m_floatingLogButton = new QPushButton(QStringLiteral("Log"), m_footerUpdateLog);
++    m_floatingLogButton->setObjectName("floatingLogButton");
++    m_floatingLogButton->setCursor(Qt::PointingHandCursor);
++    m_floatingLogButton->setToolTip(
++        QString::fromUtf8("Network log \xE2\x80\x94 all activity"));
++    setOcticon(m_floatingLogButton, "list-unordered", 14);
++    connect(m_floatingLogButton, &QPushButton::clicked, this,
++            [this] { showSection(4); });
++    m_footerUpdateLog->installEventFilter(this);
++    positionFloatingLogButton();
++
+     // Horizontal split: live-log strip on the left half, prompt card on the right.
+     auto *dockRow = new QHBoxLayout(dock);
+     dockRow->setContentsMargins(0, 0, 0, 0);
+@@ -1487,11 +1514,12 @@ void MainWindow::updateVoiceInputButton()
+     if (m_quickAddVoiceAutoSubmit)
+         m_quickAddVoiceAutoSubmit->setVisible(ready);
+     if (m_quickAddMicButton) {
+-        // Keep the mic visible even when speech-to-text isn't set up (adhoc #29):
+-        // show it greyed out instead of hiding it, so it's discoverable and its
+-        // tooltip can point the user at the Settings download.
++        // Keep the mic visible (and clickable) even when speech-to-text isn't set
++        // up (adhoc #29): rather than disabling it, clicking it while unready jumps
++        // to the Settings > Voice tab (see startVoiceCaptureFor / openVoiceSettings,
++        // adhoc #132) so the mic is a path to setup, not a dead end.
+         m_quickAddMicButton->setVisible(true);
+-        m_quickAddMicButton->setEnabled(ready);
++        m_quickAddMicButton->setEnabled(true);
+         // Leave the mic currently recording on its red broadcast glyph.
+         if (!(m_voiceRecording && m_voiceActiveButton == m_quickAddMicButton)) {
+             setOcticon(m_quickAddMicButton, "mic", 16);
+@@ -1502,8 +1530,8 @@ void MainWindow::updateVoiceInputButton()
+                             "to transcribe.\nVoice model: %1")
+                             .arg(voiceModelLabel())
+                       : QString::fromUtf8(
+-                            "Speech-to-text isn't set up yet \xE2\x80\x94 download a "
+-                            "voice model in Settings to dictate your prompt."));
++                            "Speech-to-text isn't set up yet \xE2\x80\x94 click to open "
++                            "Settings and set up voice input."));
+         }
+     }
+     for (QPushButton *b : m_voiceButtons) {
+@@ -1579,6 +1607,7 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
+ 
+     if (!voiceInputReady()) {
+         updateVoiceInputButton();
++        openVoiceSettings();
+         return;
+     }
+     // Don't start a fresh recording while the previous clip is still transcribing
+@@ -1744,6 +1773,16 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
+     target->setPlaceholderText("listening\xE2\x80\xA6 release the mic to stop");
+ }
+ 
++// Land on Settings > Voice — called when a mic is clicked before speech-to-text
++// is set up, so the click goes somewhere useful instead of a silent no-op
++// (adhoc #132).
++void MainWindow::openVoiceSettings()
++{
++    showSection(1); // Settings
++    if (m_settingsTabs && m_voiceSettingsTabIndex >= 0)
++        m_settingsTabs->setCurrentIndex(m_voiceSettingsTabIndex);
++}
++
+ // Run whisper.cpp over the recorded WAV and drop the transcript into the prompt
+ // box. Called both live (finalPass=false, while the clip is still growing) and
+ // once after recording stops (finalPass=true, authoritative). Only one pass runs
+@@ -2173,14 +2212,22 @@ void MainWindow::updateFooterDiagnostics()
+                 : QStringLiteral("Drive space in use"));
+     }
+ 
+-    // The footer button keeps only the UI-stall badge now that CPU/MEM live in
+-    // the charts; the 🖥 glyph stays as the labelled click target.
+-    QString txt = QString::fromUtf8("\xF0\x9F\x96\xA5"); // 🖥
+-    if (m_stallCount > 0)
+-        txt += QString::fromUtf8("  \xE2\x9A\xA0 %1 stall%2")
+-                   .arg(m_stallCount)
+-                   .arg(m_stallCount == 1 ? QString() : QStringLiteral("s"));
+-    m_footerDiagnostics->setText(txt.trimmed());
++    // The diagnostics indicator rides beside the CPU/MEM/DISK sparklines now
++    // (adhoc #145). Crisp octicons replace the old 🖥/⚠ emoji: a muted monitor
++    // while the UI has stayed smooth, and an amber alert plus the running count
++    // once a stall has been recorded so it reads as a real warning.
++    if (m_stallCount > 0) {
++        m_footerDiagnostics->setIcon(
++            themedOcticon(QStringLiteral("alert"), QColor("#d29922"), 14));
++        m_footerDiagnostics->setIconSize(QSize(14, 14));
++        m_footerDiagnostics->setText(
++            QStringLiteral(" %1 stall%2")
++                .arg(m_stallCount)
++                .arg(m_stallCount == 1 ? QString() : QStringLiteral("s")));
++    } else {
++        setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
++        m_footerDiagnostics->setText(QString());
++    }
+ }
+ 
+ // A UI stall ended: record it, surface it in the system log, and reflect the
+@@ -2294,9 +2341,9 @@ void MainWindow::clearStallLog()
+         QFile::remove(m_stallLogPath);
+     if (m_footerDiagnostics)
+         m_footerDiagnostics->setToolTip(
+-            QStringLiteral("Live CPU and memory use of this app. Click for UI-stall "
+-                           "diagnostics (when the UI freezes long enough to trip the "
+-                           "Wait/Kill prompt)."));
++            QStringLiteral("UI-stall diagnostics: any freezes long enough to trip the "
++                           "Wait/Kill prompt land here. Click for the recorded stall "
++                           "details."));
+     updateFooterDiagnostics();
+ }
+ 
+@@ -2844,7 +2891,9 @@ QWidget *MainWindow::buildBreadcrumb()
+     // The live connection indicator is now a small status dot painted over the
+     // top-right avatar (created with the avatar below), not a separate text pill.
+ 
+-    m_notificationButton = new QPushButton(QStringLiteral("Notifications"));
++    // Icon-only bell (adhoc #137): sits beside the user avatar in the top-right
++    // account cluster rather than as a labelled tab in the section nav.
++    m_notificationButton = new QPushButton;
+     m_notificationButton->setObjectName("topNavButton");
+     m_notificationButton->setCheckable(true);
+     m_notificationButton->setCursor(Qt::PointingHandCursor);
+@@ -3025,8 +3074,10 @@ QWidget *MainWindow::buildBreadcrumb()
+     m_chatUnreadBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
+     m_chatUnreadBadge->hide();
+ 
+-    // Settings: its own top-level section (m_sectionStack index 1).
+-    m_settingsNavButton = new QPushButton(QStringLiteral("Settings"));
++    // Settings: its own top-level section (m_sectionStack index 1). Icon-only
++    // (adhoc #137): it lives in the right-hand utility cluster next to the
++    // rebuild/restart button rather than as a labelled tab in the section nav.
++    m_settingsNavButton = new QPushButton;
+     m_settingsNavButton->setObjectName("topNavButton");
+     m_settingsNavButton->setCheckable(true);
+     m_settingsNavButton->setCursor(Qt::PointingHandCursor);
+@@ -3036,16 +3087,9 @@ QWidget *MainWindow::buildBreadcrumb()
+     connect(m_settingsNavButton, &QPushButton::clicked, this,
+             [this] { showSection(1); });
+ 
+-    // Log: the full network log, next to Settings (m_sectionStack index 4).
+-    m_logNavButton = new QPushButton(QStringLiteral("Log"));
+-    m_logNavButton->setObjectName("topNavButton");
+-    m_logNavButton->setCheckable(true);
+-    m_logNavButton->setCursor(Qt::PointingHandCursor);
+-    m_logNavButton->setToolTip(QString::fromUtf8("Network log \xE2\x80\x94 all activity"));
+-    setOcticon(m_logNavButton, "list-unordered", 16);
+-    m_navGroup->addButton(m_logNavButton, 4); // section 4: Log
+-    connect(m_logNavButton, &QPushButton::clicked, this,
+-            [this] { showSection(4); });
++    // Log (m_sectionStack index 4) no longer has a labelled tab in the section
++    // nav (adhoc #137): it's opened via the floating "Log" button overlaid on
++    // the always-on live-log strip, created in buildNetworkLogDock().
+ 
+     // Leaderboards: the public network rankings (issue #11), section index 5.
+     m_leaderboardNavButton = new QPushButton(QStringLiteral("Leaderboards"));
+@@ -3217,20 +3261,21 @@ QWidget *MainWindow::buildBreadcrumb()
+     socialRow->addWidget(twitterButton);
+     socialRow->addWidget(mastodonButton);
+ 
+-    // Live diagnostics, also moved up out of the footer (adhoc #117): CPU / memory
+-    // of this process plus a count of detected UI stalls. Click to see the stall
+-    // details.
++    // UI-stall indicator (adhoc #117/#145): an octicon that sits beside the
++    // CPU/MEM/DISK sparklines on the window-chrome line and shows the count of
++    // detected UI stalls. Click to see the stall details.
+     m_footerDiagnostics = new QPushButton;
+     m_footerDiagnostics->setObjectName("footerDiagnostics");
+     m_footerDiagnostics->setFlat(true);
+     m_footerDiagnostics->setCursor(Qt::PointingHandCursor);
+     m_footerDiagnostics->setToolTip(
+-        "Live CPU and memory use of this app. Click for UI-stall diagnostics "
+-        "(when the UI freezes long enough to trip the Wait/Kill prompt).");
++        "UI-stall diagnostics: any freezes long enough to trip the Wait/Kill "
++        "prompt land here. Click for the recorded stall details.");
+     m_footerDiagnostics->setStyleSheet(
+-        "QPushButton#footerDiagnostics{color:#8b949e;border:none;background:transparent;"
+-        "font-size:11px;padding:2px 6px;}"
++        "QPushButton#footerDiagnostics{color:#d29922;border:none;background:transparent;"
++        "font-size:11px;padding:2px 6px;spacing:4px;}"
+         "QPushButton#footerDiagnostics:hover{color:#e6edf3;}");
++    setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
+     connect(m_footerDiagnostics, &QPushButton::clicked, this,
+             &MainWindow::showDiagnosticsDialog);
+ 
+@@ -3278,6 +3323,9 @@ QWidget *MainWindow::buildBreadcrumb()
+     chromeRow->addWidget(cpuChart);
+     chromeRow->addWidget(memChart);
+     chromeRow->addWidget(diskChart);
++    // UI-stall diagnostics indicator, moved up beside the CPU/MEM/DISK sparklines
++    // (adhoc #145) with a proper octicon in place of the old emoji glyphs.
++    chromeRow->addWidget(m_footerDiagnostics);
+     chromeRow->addSpacing(8);
+ 
+     auto makeWindowButton = [this](QStyle::StandardPixmap icon, const QString &tip) {
+@@ -3350,6 +3398,8 @@ QWidget *MainWindow::buildBreadcrumb()
+     // The provider usage gauges used to tuck in here; they now live in the
+     // prompt toolbar next to the send buttons (adhoc #47, see buildNetworkLogDock).
+     mainRow->addSpacing(4);
++    // Notification bell, tucked just left of the account avatar (adhoc #137).
++    mainRow->addWidget(m_notificationButton);
+     mainRow->addWidget(m_userAvatarNavButton);
+     auto *mainRowHost = new QWidget;
+     mainRowHost->setLayout(mainRow);
+@@ -3389,17 +3439,17 @@ QWidget *MainWindow::buildBreadcrumb()
+     navRow->addWidget(m_reposNavButton);
+     navRow->addWidget(m_agentsNavButton);
+     navRow->addWidget(m_chatButton);
+-    navRow->addWidget(m_notificationButton);
+-    navRow->addWidget(m_settingsNavButton);
+-    navRow->addWidget(m_logNavButton);
++    // Notifications (bell) and Settings (gear) moved out of the section nav
++    // (adhoc #137): the bell rides beside the avatar in mainRow, and the gear
++    // sits in the right-hand utility cluster next to the rebuild button. Log is
++    // now a floating button on the live-log strip.
+     navRow->addWidget(m_leaderboardNavButton);
+     navRow->addWidget(m_hostsNavButton);
+     navRow->addWidget(m_nodesNavButton);
+     navRow->addWidget(m_relaysNavButton);
+     navRow->addWidget(m_networkNavButton);
+-    navRow->addSpacing(16);
+-    // Live diagnostics glyph (CPU/MEM/DISK sparklines moved up to mainRow for adhoc #121).
+-    navRow->addWidget(m_footerDiagnostics);
++    // The live-diagnostics indicator moved up onto the window-chrome line next to
++    // the CPU/MEM/DISK sparklines (adhoc #145).
+     navRow->addStretch();
+     auto *navRowHost = new QWidget;
+     navRowHost->setLayout(navRow);
+@@ -3426,6 +3476,7 @@ QWidget *MainWindow::buildBreadcrumb()
+     navUtilityRow->addWidget(m_navDrawButton);
+     navUtilityRow->addWidget(m_navScreenshotButton);
+     navUtilityRow->addWidget(m_navResizeButton);
++    navUtilityRow->addWidget(m_settingsNavButton); // gear, next to rebuild (adhoc #137)
+     navUtilityRow->addWidget(m_navRebuildButton);
+     auto *navUtilityHost = new QWidget;
+     navUtilityHost->setLayout(navUtilityRow);
+@@ -3460,6 +3511,25 @@ void MainWindow::updateNavRebuildButton()
+             QSettings().value(kShowRebuildButtonSetting, false).toBool());
+ }
+ 
++// Pin the floating "Log" button to the bottom-right corner of the live-log
++// strip, clearing the vertical scrollbar when it's showing so the button never
++// overlaps it. Called on creation and on every strip resize (see eventFilter).
++void MainWindow::positionFloatingLogButton()
++{
++    if (!m_floatingLogButton || !m_footerUpdateLog)
++        return;
++    m_floatingLogButton->adjustSize();
++    constexpr int kMargin = 8;
++    const QSize sz = m_floatingLogButton->size();
++    int scrollbarW = 0;
++    if (QScrollBar *sb = m_footerUpdateLog->verticalScrollBar(); sb && sb->isVisible())
++        scrollbarW = sb->width();
++    m_floatingLogButton->move(
++        m_footerUpdateLog->width() - sz.width() - kMargin - scrollbarW,
++        m_footerUpdateLog->height() - sz.height() - kMargin);
++    m_floatingLogButton->raise();
++}
++
+ // Screenshot button: drop a transparent overlay (the live desktop stays visible),
+ // let the user drag a dotted rectangle anywhere on the computer, then grab that
+ // region on release and save it to a temp PNG queued as the next attachment.
+diff --git a/qt_client/src/MainWindowInternal.h b/qt_client/src/MainWindowInternal.h
+index 6f4e57e4..38c561a8 100644
+--- a/qt_client/src/MainWindowInternal.h
++++ b/qt_client/src/MainWindowInternal.h
+@@ -1339,60 +1339,6 @@ protected:
+         p.setBrush(accent);
+         p.drawEllipse(c, 1.4, 1.4);
+ 
+-        // Mirror nodes echoed as blips scattered across the dish, in the same
+-        // colours/shapes as the Mirror-nodes activity strip (adhoc #122). Each
+-        // node's position is derived from a hash of its id so blips stay put
+-        // between repaints instead of jittering as the sweep spins.
+-        //
+-        // Like a real radar, a blip is dark until the sweep's leading edge
+-        // crosses it, then flashes bright and fades back to nothing over the
+-        // next kFadeDeg of rotation before the line comes back around (adhoc
+-        // #123, timing fixed in #127). The pie/gradient start at Qt angle
+-        // -m_angle, and Qt angles run counter-clockwise on screen while the
+-        // blip positions below use (cos, sin) in y-down coordinates — i.e.
+-        // clockwise. So in the blips' clockwise convention the leading edge
+-        // sits at +m_angle, and a blip lights the moment the sweep passes its
+-        // own hash-derived angle.
+-        p.setPen(Qt::NoPen);
+-        const int leadDeg = m_angle % 360;
+-        constexpr int kFadeDeg = 150; // how far the sweep travels before a blip goes dark
+-        for (const Blip &b : m_blips) {
+-            const uint h = qHash(b.id);
+-            const int blipDeg = int(h % 360);
+-            // Degrees the sweep has advanced past this blip since it was hit.
+-            const int delta = (leadDeg - blipDeg + 360) % 360;
+-            if (delta > kFadeDeg)
+-                continue; // hidden until the sweep line reaches it again
+-            const qreal glow = 1.0 - qreal(delta) / kFadeDeg;
+-
+-            const qreal ang = qDegreesToRadians(qreal(blipDeg));
+-            const qreal frac = 0.42 + qreal((h >> 9) % 100) / 100.0 * 0.42;
+-            const QPointF pos = c + QPointF(qCos(ang), qSin(ang)) * (r * frac);
+-            QColor col = b.online ? QColor(b.behind ? "#d29922" : "#3fb950")
+-                                  : QColor("#484f58");
+-
+-            // Soft halo that pulses out brightest right as the line catches it.
+-            QColor halo = col;
+-            halo.setAlphaF(0.35 * glow);
+-            p.setBrush(halo);
+-            p.drawEllipse(pos, 3.0 + 4.0 * glow, 3.0 + 4.0 * glow);
+-
+-            if (b.integrityFailing) {
+-                // Amber caution triangle, matching MirrorActivityStrip.
+-                QColor tri("#d29922");
+-                tri.setAlphaF(glow);
+-                p.setBrush(tri);
+-                const qreal s = 4.0;
+-                p.drawPolygon(QPolygonF({QPointF(pos.x(), pos.y() - s),
+-                                         QPointF(pos.x() + s, pos.y() + s),
+-                                         QPointF(pos.x() - s, pos.y() + s)}));
+-            } else {
+-                col.setAlphaF(glow);
+-                p.setBrush(col);
+-                p.drawEllipse(pos, 3.0, 3.0);
+-            }
+-        }
+-
+         // Latency text / alert, centered in the middle of the dish — mirrors
+         // how ResourceSparkline overlays its value on top of its chart.
+         QFont f = font();
+@@ -1429,6 +1375,64 @@ protected:
+         p.drawEllipse(c, textR, textR);
+         p.setPen(textCol);
+         p.drawText(dishRect, Qt::AlignCenter, label);
++
++        // Mirror nodes echoed as blips on the dish, in the same colours/shapes
++        // as the Mirror-nodes activity strip (adhoc #122). Every blip is always
++        // visible — a solid filled shape with no border and no delay waiting on
++        // the sweep (adhoc #141). The passing beam still adds a soft phosphor
++        // halo flare so the scope keeps its live feel, but the shape underneath
++        // never dims or hides. Each node owns an evenly-spaced slot around one
++        // ring so the blips fan out cleanly and never overlap. Drawn last, on
++        // top of the centre latency read-out and pushed out near the rim, so
++        // every shape reads as a complete circle (or an integrity-warning
++        // triangle) rather than a slice clipped by the dish edge or the text
++        // backing disc.
++        //
++        // The pie/gradient start at Qt angle -m_angle, and Qt angles run
++        // counter-clockwise on screen while the blip positions below use
++        // (cos, sin) in y-down coordinates — i.e. clockwise. So in the blips'
++        // clockwise convention the leading edge sits at +m_angle, and the beam
++        // flares a blip as the sweep passes its own slot angle.
++        const int leadDeg = m_angle % 360;
++        constexpr int kFadeDeg = 130; // beam flare: degrees the halo brightens behind the sweep
++        const int n = m_blips.size();
++        for (int i = 0; i < n; ++i) {
++            const Blip &b = m_blips.at(i);
++            // Evenly space the blips around the ring by index, so a growing
++            // roster fans out cleanly instead of clustering on a hash.
++            const int blipDeg = n > 0 ? (i * 360) / n : 0;
++            // Degrees the sweep has advanced past this blip; drives the halo
++            // flare only — the blip itself is always drawn at full brightness.
++            const int delta = (leadDeg - blipDeg + 360) % 360;
++            const qreal flare = delta <= kFadeDeg ? 1.0 - qreal(delta) / kFadeDeg : 0.0;
++
++            const qreal ang = qDegreesToRadians(qreal(blipDeg));
++            const QPointF pos = c + QPointF(qCos(ang), qSin(ang)) * (r * 0.80);
++            QColor col = b.online ? QColor(b.behind ? "#d29922" : "#3fb950")
++                                  : QColor("#484f58");
++            if (b.integrityFailing)
++                col = QColor("#d29922"); // amber caution, matching the strip
++
++            // Soft phosphor halo, brightest as the beam catches the blip.
++            QColor halo = col;
++            halo.setAlphaF(0.35 * flare);
++            p.setPen(Qt::NoPen);
++            p.setBrush(halo);
++            p.drawEllipse(pos, 2.6 + 2.0 * flare, 2.6 + 2.0 * flare);
++
++            // The solid filled shape itself — always visible, no border.
++            p.setPen(Qt::NoPen);
++            p.setBrush(col);
++            if (b.integrityFailing) {
++                // Amber caution triangle, matching MirrorActivityStrip.
++                const qreal s = 3.2;
++                p.drawPolygon(QPolygonF({QPointF(pos.x(), pos.y() - s),
++                                         QPointF(pos.x() + s, pos.y() + s),
++                                         QPointF(pos.x() - s, pos.y() + s)}));
++            } else {
++                p.drawEllipse(pos, 2.8, 2.8);
++            }
++        }
+     }
+ 
+ private:
+diff --git a/qt_client/src/MainWindowIssues.cpp b/qt_client/src/MainWindowIssues.cpp
+index 0e83d37b..1636c4c5 100644
+--- a/qt_client/src/MainWindowIssues.cpp
++++ b/qt_client/src/MainWindowIssues.cpp
+@@ -4610,6 +4610,11 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
+     if (event->type() == QEvent::Resize && m_pullDiff &&
+         obj == m_pullDiff->viewport())
+         layoutPullStickyHeader();
++    // Keep the floating "Log" button pinned to the live-log strip's bottom-right
++    // corner as the strip resizes (adhoc #137). Don't consume — the strip still
++    // needs the resize.
++    if (event->type() == QEvent::Resize && obj == m_footerUpdateLog)
++        positionFloatingLogButton();
+     // Right-click on selected text anywhere in the app: offer "Send to
+     // Prompt" alongside the widget's normal Copy/Select-All menu (adhoc #126).
+     if (event->type() == QEvent::ContextMenu) {
+@@ -4713,6 +4718,39 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
+         if (handleIssueProgressDrag(static_cast<QMouseEvent *>(event)))
+             return true;
+     }
++    // Footer live-log strip (adhoc #133): with wrapping off, a long line clips at
++    // the right edge, so hovering a line shows its full untruncated text in a
++    // tooltip and clicking it opens the full Log view scrolled to that entry.
++    // Both resolve the line under the cursor from the block's stored raw text.
++    if (m_footerUpdateLog && obj == m_footerUpdateLog->viewport() &&
++        (event->type() == QEvent::ToolTip ||
++         event->type() == QEvent::MouseButtonRelease)) {
++        auto lineAt = [this](const QPoint &pos) -> QString {
++            const QTextCursor cur = m_footerUpdateLog->cursorForPosition(pos);
++            if (auto *data =
++                    static_cast<FooterLogLineData *>(cur.block().userData()))
++                return data->rawLine;
++            return QString();
++        };
++        if (event->type() == QEvent::ToolTip) {
++            auto *he = static_cast<QHelpEvent *>(event);
++            const QString line = lineAt(he->pos());
++            if (!line.isEmpty()) {
++                QToolTip::showText(he->globalPos(), line,
++                                   m_footerUpdateLog->viewport());
++                return true;
++            }
++        } else { // MouseButtonRelease
++            auto *me = static_cast<QMouseEvent *>(event);
++            if (me->button() == Qt::LeftButton) {
++                const QString line = lineAt(me->position().toPoint());
++                if (!line.isEmpty()) {
++                    openFullLogAtFooterLine(line);
++                    return true;
++                }
++            }
++        }
++    }
+     // Global search box: drive the floating results dropdown from the keyboard
+     // (the dropdown is NoFocus, so it never takes the keyboard itself).
+     if (obj == m_globalSearch) {
+diff --git a/qt_client/src/MainWindowReleases.cpp b/qt_client/src/MainWindowReleases.cpp
+index e40803c3..0690a08f 100644
+--- a/qt_client/src/MainWindowReleases.cpp
++++ b/qt_client/src/MainWindowReleases.cpp
+@@ -2549,10 +2549,76 @@ void MainWindow::promptNewRelease()
+                 }
+                 notesEdit->setPlainText(text);
+             });
++    // Second generator: hand the same commit range to an AI agent so it writes
++    // grouped, human-readable notes instead of a raw commit list. The picker
++    // chooses which provider runs it, seeded to the user's default agent.
++    auto *agentNotesButton = new QPushButton("Generate release notes with agent");
++    agentNotesButton->setObjectName("ghostButton");
++    agentNotesButton->setCursor(Qt::PointingHandCursor);
++    setOcticon(agentNotesButton, "rocket", 14);
++    auto *agentNotesCombo = new QComboBox;
++    agentNotesCombo->addItem(QStringLiteral("Codex"), kCodexProvider);
++    agentNotesCombo->addItem(QStringLiteral("OpenAI API"),
++                             QStringLiteral("openai"));
++    agentNotesCombo->addItem(QStringLiteral("Claude API"),
++                             QStringLiteral("claude-api"));
++    agentNotesCombo->addItem(QStringLiteral("Claude Code"),
++                             QStringLiteral("claude-code"));
++    selectDefaultAgentProvider(agentNotesCombo);
++    agentNotesCombo->setToolTip("Which agent writes the release notes");
++    // Model picker: the options depend on the chosen provider (Claude models for
++    // the Claude agents, GPT models otherwise), so repopulate it whenever the
++    // provider changes. The data string is passed straight through as the model.
++    auto *agentNotesModelCombo = new QComboBox;
++    agentNotesModelCombo->setToolTip("Which model the agent uses");
++    auto populateModels = [agentNotesModelCombo](const QString &provider) {
++        agentNotesModelCombo->clear();
++        if (agentIsClaudeProvider(provider)) {
++            agentNotesModelCombo->addItem(QStringLiteral("Haiku"),
++                                          QStringLiteral("claude-haiku-4-5"));
++            agentNotesModelCombo->addItem(QStringLiteral("Sonnet"),
++                                          QStringLiteral("claude-sonnet-5"));
++            agentNotesModelCombo->addItem(QStringLiteral("Opus"),
++                                          QStringLiteral("claude-opus-4-8"));
++        } else {
++            agentNotesModelCombo->addItem(QStringLiteral("GPT nano"),
++                                          QStringLiteral("gpt-4.1-nano"));
++            agentNotesModelCombo->addItem(QStringLiteral("GPT mini"),
++                                          QStringLiteral("gpt-4.1-mini"));
++            agentNotesModelCombo->addItem(QStringLiteral("GPT"),
++                                          QStringLiteral("gpt-4.1"));
++        }
++    };
++    populateModels(agentNotesCombo->currentData().toString());
++    connect(agentNotesCombo, &QComboBox::currentTextChanged, &dialog,
++            [agentNotesCombo, populateModels](const QString &) {
++                populateModels(agentNotesCombo->currentData().toString());
++            });
++    auto *agentNotesRow = new QWidget;
++    auto *agentNotesRowLayout = new QHBoxLayout(agentNotesRow);
++    agentNotesRowLayout->setContentsMargins(0, 0, 0, 0);
++    agentNotesRowLayout->setSpacing(6);
++    agentNotesRowLayout->addWidget(agentNotesButton);
++    agentNotesRowLayout->addWidget(agentNotesCombo);
++    agentNotesRowLayout->addWidget(agentNotesModelCombo);
++    agentNotesRowLayout->addStretch(1);
++    connect(agentNotesButton, &QPushButton::clicked, &dialog,
++            [this, dir, prevTag, tagEdit, targetEdit, notesEdit, agentNotesButton,
++             agentNotesCombo, agentNotesModelCombo] {
++                const QString targetRef = targetEdit->currentText().trimmed();
++                if (targetRef.isEmpty())
++                    return;
++                generateReleaseNotesWithAgent(
++                    dir, prevTag, tagEdit->text().trimmed(), targetRef,
++                    agentNotesCombo->currentData().toString(),
++                    agentNotesModelCombo->currentData().toString(), notesEdit,
++                    agentNotesButton);
++            });
+     form->addRow("Tag", tagEdit);
+     form->addRow("Target", targetEdit);
+     form->addRow("Title", titleEdit);
+     form->addRow(QString(), genNotesButton);
++    form->addRow(QString(), agentNotesRow);
+     form->addRow("Notes", notesEdit);
+     form->addRow(QString(), pruneArtifactsCheck);
+     form->addRow(QString(), pruneTagsCheck);
+@@ -2653,6 +2719,178 @@ void MainWindow::promptNewRelease()
+     }
+ }
+ 
++void MainWindow::generateReleaseNotesWithAgent(
++    const QString &dir, const QString &prevTag, const QString &newTag,
++    const QString &targetRef, const QString &provider, const QString &modelChoice,
++    QPlainTextEdit *notesEdit, QPushButton *button)
++{
++    if (!m_networkAccess || !notesEdit || targetRef.isEmpty())
++        return;
++
++    // Same commit window the deterministic generator uses: everything since the
++    // previous release, or a capped recent slice for the very first one.
++    QStringList args{"log", "--no-merges", "--date-order",
++                     "--format=%s%x1f%h%x1f%an"};
++    if (prevTag.isEmpty())
++        args << QStringLiteral("--max-count=250") << targetRef;
++    else
++        args << QStringLiteral("%1..%2").arg(prevTag, targetRef);
++    QByteArray log;
++    runGitCapture(dir, args, &log, nullptr);
++
++    QStringList commits;
++    for (const QByteArray &line : log.split('\n')) {
++        const QString entry = QString::fromUtf8(line).trimmed();
++        if (entry.isEmpty())
++            continue;
++        const QStringList f = entry.split(QLatin1Char('\x1f'));
++        const QString subject = f.value(0).trimmed();
++        const QString sha = f.value(1).trimmed();
++        const QString author = f.value(2).trimmed();
++        if (subject.isEmpty())
++            continue;
++        QString c = QStringLiteral("- %1 (%2)").arg(subject, sha);
++        if (!author.isEmpty())
++            c += QStringLiteral(" by %1").arg(author);
++        commits << c;
++    }
++    if (commits.isEmpty()) {
++        setRepoDetailNotice(
++            prevTag.isEmpty()
++                ? QStringLiteral("No commits to write release notes from.")
++                : QStringLiteral("No changes since %1 to write notes from.")
++                      .arg(prevTag),
++            true);
++        return;
++    }
++    // A big history would blow the request budget; cap what the agent sees.
++    if (commits.size() > 250)
++        commits = commits.mid(0, 250);
++
++    const bool claude = agentIsClaudeProvider(provider);
++    const bool claudeCode = provider == QLatin1String("claude-code");
++    const QString oauthToken = claudeCode ? claudeCodeOAuthToken() : QString();
++    const QString apiKey =
++        claudeCode ? QString()
++                   : (claude ? QSettings().value(kClaudeApiKeySetting)
++                             : QSettings().value(kCodexApiKeySetting))
++                         .toString()
++                         .trimmed();
++    if (apiKey.isEmpty() && oauthToken.isEmpty()) {
++        setRepoDetailNotice(
++            claudeCode
++                ? QStringLiteral(
++                      "Sign in to Claude Code first (run `claude` and log in).")
++                : claude ? QStringLiteral("Add a Claude API key in Settings first.")
++                         : QStringLiteral(
++                               "Add an OpenAI API key in Settings first."),
++            true);
++        return;
++    }
++
++    const QString version = newTag.isEmpty() ? targetRef : newTag;
++    const QString task =
++        QStringLiteral(
++            "Write the release notes for version %1 as a single friendly, "
++            "conversational paragraph — like a nicely written changelog blurb a "
++            "human would post. Highlight the most important changes in flowing "
++            "prose, skip noise like version bumps, and don't use headings, bullet "
++            "points, or Markdown lists. Keep it under 500 characters. Output only "
++            "the paragraph, no preamble.\n\n----- COMMITS -----\n%2")
++            .arg(version, commits.join(QLatin1Char('\n')));
++    // The dialog's model picker wins; fall back to the provider's default.
++    const QString model =
++        !modelChoice.isEmpty()
++            ? modelChoice
++            : (claude ? QStringLiteral("claude-haiku-4-5") : kIssueAskAiModel);
++
++    QNetworkReply *reply = nullptr;
++    if (claude) {
++        QJsonObject payload;
++        payload.insert("model", model);
++        payload.insert("max_tokens", 2000);
++        QJsonArray messages;
++        QJsonObject um;
++        um.insert("role", "user");
++        um.insert("content", task);
++        messages.append(um);
++        payload.insert("messages", messages);
++        QNetworkRequest req(
++            QUrl(QStringLiteral("https://api.anthropic.com/v1/messages")));
++        if (!oauthToken.isEmpty()) {
++            req.setRawHeader("Authorization", "Bearer " + oauthToken.toUtf8());
++            req.setRawHeader("anthropic-beta", "oauth-2025-04-20");
++            payload.insert("system", kClaudeCodeOAuthSystem);
++        } else {
++            req.setRawHeader("x-api-key", apiKey.toUtf8());
++        }
++        req.setRawHeader("anthropic-version", "2023-06-01");
++        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
++        reply = m_networkAccess->post(
++            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
++    } else {
++        QJsonObject payload;
++        payload.insert("model", model);
++        payload.insert("input", task);
++        payload.insert("max_output_tokens", 2000);
++        QNetworkRequest req = openAiRequest(
++            QUrl(QStringLiteral("https://api.openai.com/v1/responses")), apiKey);
++        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
++        reply = m_networkAccess->post(
++            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
++    }
++
++    // The draft dialog is modal but its event loop keeps spinning, so the reply
++    // fires while it's open. Guard the dialog-scoped widgets with QPointer in
++    // case the user dismisses the dialog before the response lands.
++    QPointer<QPlainTextEdit> notesGuard(notesEdit);
++    QPointer<QPushButton> buttonGuard(button);
++    if (button) {
++        button->setEnabled(false);
++        button->setText(QString::fromUtf8("Generating\xE2\x80\xA6"));
++    }
++    connect(reply, &QNetworkReply::finished, this,
++            [this, reply, claude, notesGuard, buttonGuard] {
++                const QByteArray body = reply->readAll();
++                reply->deleteLater();
++                if (buttonGuard) {
++                    buttonGuard->setEnabled(true);
++                    buttonGuard->setText("Generate release notes with agent");
++                }
++                if (reply->error() != QNetworkReply::NoError) {
++                    setRepoDetailNotice(
++                        "Release-notes request failed: " +
++                            apiErrorSummary(reply, body),
++                        true);
++                    return;
++                }
++                const QJsonObject obj = QJsonDocument::fromJson(body).object();
++                QString text;
++                if (claude) {
++                    for (const QJsonValue &v : obj.value("content").toArray()) {
++                        const QJsonObject o = v.toObject();
++                        if (o.value("type").toString() == QLatin1String("text"))
++                            text += o.value("text").toString();
++                    }
++                } else {
++                    text = openAiResponseText(obj);
++                }
++                text = text.trimmed();
++                if (text.isEmpty()) {
++                    setRepoDetailNotice(
++                        "The agent returned no release notes.", true);
++                    return;
++                }
++                if (notesGuard)
++                    notesGuard->setPlainText(text);
++                else
++                    setRepoDetailNotice(
++                        "Release notes are ready, but the draft dialog was "
++                        "closed.",
++                        true);
++            });
++}
++
+ // Announce a freshly published release to the repo's fediverse followers.
+ // Releases never pass through the relay's signed inboxes (they are canonical
+ // on this node), so the relay can only federate them when the owner node
+diff --git a/qt_client/src/MainWindowSettings.cpp b/qt_client/src/MainWindowSettings.cpp
+index 03dc36c8..f5b9878d 100644
+--- a/qt_client/src/MainWindowSettings.cpp
++++ b/qt_client/src/MainWindowSettings.cpp
+@@ -1603,16 +1603,25 @@ QWidget *MainWindow::buildSettingsSection()
+     agentsCol->addWidget(ideLabel);
+     agentsCol->addWidget(ideIntegrationCheck);
+     agentsCol->addWidget(ideStatus);
+-    agentsCol->addSpacing(6);
+-    agentsCol->addWidget(voiceLabel);
+-    agentsCol->addWidget(voiceHint);
+-    agentsCol->addLayout(voiceRow);
+-    agentsCol->addLayout(voiceDeviceRow);
+-    agentsCol->addLayout(voiceTestRow);
+-    agentsCol->addWidget(m_whisperStatusLabel);
+     agentsCol->addStretch();
+     addTab(agentsTab, "Agents & IDE");
+ 
++    // Voice: local speech-to-text engine setup, mic device and test — its own
++    // tab so it's easy to land on directly (see openVoiceSettings(), adhoc #132).
++    auto *voiceTab = new QWidget;
++    auto *voiceCol = new QVBoxLayout(voiceTab);
++    voiceCol->setContentsMargins(2, 14, 2, 14);
++    voiceCol->setSpacing(10);
++    voiceCol->addWidget(voiceLabel);
++    voiceCol->addWidget(voiceHint);
++    voiceCol->addLayout(voiceRow);
++    voiceCol->addLayout(voiceDeviceRow);
++    voiceCol->addLayout(voiceTestRow);
++    voiceCol->addWidget(m_whisperStatusLabel);
++    voiceCol->addStretch();
++    m_voiceSettingsTabIndex = tabs->count();
++    addTab(voiceTab, "Voice");
++
+     // Secrets & Coves: shared action variables and encrypted coves.
+     auto *secretsTab = new QWidget;
+     auto *secretsCol = new QVBoxLayout(secretsTab);
+@@ -1634,6 +1643,7 @@ QWidget *MainWindow::buildSettingsSection()
+     // cleanup. Built in its own translation unit (MainWindowData.cpp).
+     addTab(buildDataSection(), "Data");
+ 
++    m_settingsTabs = tabs;
+     layout->addWidget(tabs, 1);
+     layout->addWidget(m_rebuildStatus);
+     layout->addLayout(footerRow);
+@@ -2221,7 +2231,8 @@ void MainWindow::quickRebuildRestart()
+     // let maybeStartQueuedRebuild() re-invoke us once it does (adhoc #75). The
+     // click handler already spun the button; switch that spin to a spinning
+     // hourglass while queued so it reads as "waiting", not "building" (adhoc #91).
+-    if (anyAgentRunning()) {
++    const QStringList blockers = runningAgentBlockers();
++    if (!blockers.isEmpty()) {
+         m_rebuildRestartQueued = true;
+         m_buildButton = m_rebuildButton;
+         m_buildStatusLabel = m_rebuildStatus;
+@@ -2229,10 +2240,29 @@ void MainWindow::quickRebuildRestart()
+         showUpdateLog();
+         setUpdateStatus(QStringLiteral(
+             "Waiting for running actions to finish before rebuilding\xE2\x80\xA6"));
++        // Name what the gate is actually counting: every past "stuck waiting"
++        // report (adhoc #91/#104/#111/#116/#134/#143) hinged on the user seeing
++        // no running actions while the gate counted something invisible.
++        logRestart(QStringLiteral("waiting on: %1")
++                       .arg(blockers.join(QStringLiteral(", "))));
+         setRestartSpinHourglass(true);
++        // Safety net for that same missed-notification bug family: every agent
++        // completion path is supposed to call maybeStartQueuedRebuild(), but each
++        // adhoc round above found one more path that didn't. While a rebuild is
++        // queued, also recheck on a timer so a missed signal delays the restart
++        // by seconds instead of blocking it forever.
++        if (!m_rebuildQueuePollTimer) {
++            m_rebuildQueuePollTimer = new QTimer(this);
++            m_rebuildQueuePollTimer->setInterval(2000);
++            connect(m_rebuildQueuePollTimer, &QTimer::timeout, this,
++                    &MainWindow::maybeStartQueuedRebuild);
++        }
++        m_rebuildQueuePollTimer->start();
+         return;
+     }
+     m_rebuildRestartQueued = false;
++    if (m_rebuildQueuePollTimer)
++        m_rebuildQueuePollTimer->stop();
+     setRestartSpinHourglass(false);
+     // Incremental rebuild + relaunch (no cache wipe) for fast iteration. Reuses
+     // the Settings rebuild button/status as the progress target.
+@@ -2266,7 +2296,12 @@ void MainWindow::maybeStartQueuedRebuild()
+     // A manual rebuild & restart is waiting for agents to finish. Once the last
+     // one goes idle, run it — but not while a rebuild is already underway (the
+     // rebuild button is disabled for its duration).
+-    if (!m_rebuildRestartQueued || anyAgentRunning())
++    if (!m_rebuildRestartQueued) {
++        if (m_rebuildQueuePollTimer)
++            m_rebuildQueuePollTimer->stop();
++        return;
++    }
++    if (anyAgentRunning())
+         return;
+     if (m_rebuildButton && !m_rebuildButton->isEnabled())
+         return;
+@@ -3588,6 +3623,48 @@ void MainWindow::rebuildNetworkLogView()
+     m_logViewMutating = false;
+ }
+ 
++void MainWindow::openFullLogAtFooterLine(const QString &rawLine)
++{
++    // Drop any active category filter first so the clicked entry is guaranteed to
++    // be in the rendered segment (a filtered view might omit it), and reflect that
++    // in the chips.
++    const bool hadFilter = !m_logFilter.isEmpty();
++    if (hadFilter) {
++        m_logFilter.clear();
++        rebuildLogFilterButtons();
++    }
++    // Open the Log section. On its first visit showSection() renders the deferred
++    // history and clears m_networkLogViewStale; force a rebuild here only when it
++    // didn't (already visited, or we just cleared a filter) so the full tail —
++    // which contains this line — is on screen to scroll to.
++    showSection(4);
++    if (m_logNavButton)
++        m_logNavButton->setChecked(true);
++    if ((hadFilter || m_networkLogViewStale) && m_settingsLog) {
++        m_networkLogViewStale = false;
++        rebuildNetworkLogView();
++    }
++    if (!m_settingsLog)
++        return;
++
++    // The footer stores the full dated line ("yyyy-MM-dd HH:mm:ss  message"); the
++    // Log view renders the timestamp separately, so match on the message body.
++    QString message = rawLine.trimmed();
++    if (message.size() >= 21 && message.at(10) == QLatin1Char(' '))
++        message = message.mid(21);
++    if (message.isEmpty())
++        return;
++
++    // Search backward from the end so the newest occurrence (the one the footer
++    // was showing) wins when a message repeats, then bring it into view. The
++    // match stays selected so the clicked entry is easy to spot.
++    m_settingsLog->moveCursor(QTextCursor::End);
++    if (m_settingsLog->find(message, QTextDocument::FindBackward))
++        m_settingsLog->ensureCursorVisible();
++    else
++        m_settingsLog->moveCursor(QTextCursor::End);
++}
++
+ QString MainWindow::networkLogPath() const
+ {
+     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+diff --git a/qt_client/src/MainWindowSetup.cpp b/qt_client/src/MainWindowSetup.cpp
+index 122755cd..bedf21a5 100644
+--- a/qt_client/src/MainWindowSetup.cpp
++++ b/qt_client/src/MainWindowSetup.cpp
+@@ -3141,6 +3141,11 @@ void MainWindow::setFooterUpdateLine(const QString &line)
+     QScrollBar *bar = m_footerUpdateLog->verticalScrollBar();
+     const bool wasAtBottom = !bar || bar->value() >= bar->maximum() - 2;
+     m_footerUpdateLog->appendHtml(html);
++    // Remember the full, untruncated line on the block just appended so the
++    // no-wrap strip can still show it on hover and open the full Log at it on
++    // click (adhoc #133), even though the visible text is clipped at the edge.
++    if (QTextBlock last = m_footerUpdateLog->document()->lastBlock(); last.isValid())
++        last.setUserData(new FooterLogLineData(clean));
+     if (wasAtBottom && bar)
+         bar->setValue(bar->maximum());
+ }
+diff --git a/qt_client/src/Theme.h b/qt_client/src/Theme.h
+index d480a237..39bcb8b1 100644
+--- a/qt_client/src/Theme.h
++++ b/qt_client/src/Theme.h
+@@ -346,6 +346,11 @@ QPushButton#topNavButton[alert="true"] { color: #d29922; border-color: #9e6a03;
+ QPushButton#topNavButton[alert="true"]:checked {
+     background-color: #1c1908; color: #f0b72f; border-color: #9e6a03;
+ }
++QPushButton#floatingLogButton {
++    background-color: #21262d; border: 1px solid #30363d; border-radius: 6px;
++    color: #c9d1d9; font-size: 12px; font-weight: 600; padding: 4px 10px;
++}
++QPushButton#floatingLogButton:hover { background-color: #30363d; color: #e6edf3; }
+ QPushButton#windowChromeButton, QPushButton#windowChromeCloseButton {
+     background: transparent; border: 1px solid transparent; border-radius: 6px;
+     color: #8b949e; padding: 0;
+@@ -1557,6 +1562,11 @@ QPushButton#topNavButton[alert="true"] { color: #9a6700; border-color: #d4a72c;
+ QPushButton#topNavButton[alert="true"]:checked {
+     background-color: #fff8c5; color: #7d4e00; border-color: #d4a72c;
+ }
++QPushButton#floatingLogButton {
++    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
++    color: #24292f; font-size: 12px; font-weight: 600; padding: 4px 10px;
++}
++QPushButton#floatingLogButton:hover { background-color: #f3f4f6; color: #1f2328; }
+ /* Top-row switchers (relay / node / repo): dropdown (relay's shows its
+    favicon inline) + open-in-browser */
+ QPushButton#relayOpenButton {
