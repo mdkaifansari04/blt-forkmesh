@@ -2549,10 +2549,46 @@ void MainWindow::promptNewRelease()
                 }
                 notesEdit->setPlainText(text);
             });
+    // Second generator: hand the same commit range to an AI agent so it writes
+    // grouped, human-readable notes instead of a raw commit list. The picker
+    // chooses which provider runs it, seeded to the user's default agent.
+    auto *agentNotesButton = new QPushButton("Generate release notes with agent");
+    agentNotesButton->setObjectName("ghostButton");
+    agentNotesButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(agentNotesButton, "rocket", 14);
+    auto *agentNotesCombo = new QComboBox;
+    agentNotesCombo->addItem(QStringLiteral("Codex"), kCodexProvider);
+    agentNotesCombo->addItem(QStringLiteral("OpenAI API"),
+                             QStringLiteral("openai"));
+    agentNotesCombo->addItem(QStringLiteral("Claude API"),
+                             QStringLiteral("claude-api"));
+    agentNotesCombo->addItem(QStringLiteral("Claude Code"),
+                             QStringLiteral("claude-code"));
+    selectDefaultAgentProvider(agentNotesCombo);
+    agentNotesCombo->setToolTip("Which agent writes the release notes");
+    auto *agentNotesRow = new QWidget;
+    auto *agentNotesRowLayout = new QHBoxLayout(agentNotesRow);
+    agentNotesRowLayout->setContentsMargins(0, 0, 0, 0);
+    agentNotesRowLayout->setSpacing(6);
+    agentNotesRowLayout->addWidget(agentNotesButton);
+    agentNotesRowLayout->addWidget(agentNotesCombo);
+    agentNotesRowLayout->addStretch(1);
+    connect(agentNotesButton, &QPushButton::clicked, &dialog,
+            [this, dir, prevTag, tagEdit, targetEdit, notesEdit, agentNotesButton,
+             agentNotesCombo] {
+                const QString targetRef = targetEdit->currentText().trimmed();
+                if (targetRef.isEmpty())
+                    return;
+                generateReleaseNotesWithAgent(
+                    dir, prevTag, tagEdit->text().trimmed(), targetRef,
+                    agentNotesCombo->currentData().toString(), notesEdit,
+                    agentNotesButton);
+            });
     form->addRow("Tag", tagEdit);
     form->addRow("Target", targetEdit);
     form->addRow("Title", titleEdit);
     form->addRow(QString(), genNotesButton);
+    form->addRow(QString(), agentNotesRow);
     form->addRow("Notes", notesEdit);
     form->addRow(QString(), pruneArtifactsCheck);
     form->addRow(QString(), pruneTagsCheck);
@@ -2651,6 +2687,175 @@ void MainWindow::promptNewRelease()
             }
         }
     }
+}
+
+void MainWindow::generateReleaseNotesWithAgent(
+    const QString &dir, const QString &prevTag, const QString &newTag,
+    const QString &targetRef, const QString &provider, QPlainTextEdit *notesEdit,
+    QPushButton *button)
+{
+    if (!m_networkAccess || !notesEdit || targetRef.isEmpty())
+        return;
+
+    // Same commit window the deterministic generator uses: everything since the
+    // previous release, or a capped recent slice for the very first one.
+    QStringList args{"log", "--no-merges", "--date-order",
+                     "--format=%s%x1f%h%x1f%an"};
+    if (prevTag.isEmpty())
+        args << QStringLiteral("--max-count=250") << targetRef;
+    else
+        args << QStringLiteral("%1..%2").arg(prevTag, targetRef);
+    QByteArray log;
+    runGitCapture(dir, args, &log, nullptr);
+
+    QStringList commits;
+    for (const QByteArray &line : log.split('\n')) {
+        const QString entry = QString::fromUtf8(line).trimmed();
+        if (entry.isEmpty())
+            continue;
+        const QStringList f = entry.split(QLatin1Char('\x1f'));
+        const QString subject = f.value(0).trimmed();
+        const QString sha = f.value(1).trimmed();
+        const QString author = f.value(2).trimmed();
+        if (subject.isEmpty())
+            continue;
+        QString c = QStringLiteral("- %1 (%2)").arg(subject, sha);
+        if (!author.isEmpty())
+            c += QStringLiteral(" by %1").arg(author);
+        commits << c;
+    }
+    if (commits.isEmpty()) {
+        setRepoDetailNotice(
+            prevTag.isEmpty()
+                ? QStringLiteral("No commits to write release notes from.")
+                : QStringLiteral("No changes since %1 to write notes from.")
+                      .arg(prevTag),
+            true);
+        return;
+    }
+    // A big history would blow the request budget; cap what the agent sees.
+    if (commits.size() > 250)
+        commits = commits.mid(0, 250);
+
+    const bool claude = agentIsClaudeProvider(provider);
+    const bool claudeCode = provider == QLatin1String("claude-code");
+    const QString oauthToken = claudeCode ? claudeCodeOAuthToken() : QString();
+    const QString apiKey =
+        claudeCode ? QString()
+                   : (claude ? QSettings().value(kClaudeApiKeySetting)
+                             : QSettings().value(kCodexApiKeySetting))
+                         .toString()
+                         .trimmed();
+    if (apiKey.isEmpty() && oauthToken.isEmpty()) {
+        setRepoDetailNotice(
+            claudeCode
+                ? QStringLiteral(
+                      "Sign in to Claude Code first (run `claude` and log in).")
+                : claude ? QStringLiteral("Add a Claude API key in Settings first.")
+                         : QStringLiteral(
+                               "Add an OpenAI API key in Settings first."),
+            true);
+        return;
+    }
+
+    const QString version = newTag.isEmpty() ? targetRef : newTag;
+    const QString task =
+        QStringLiteral(
+            "Write concise, well-organized GitHub-style release notes in Markdown "
+            "for version %1. Start with a `## What's Changed` heading, then group "
+            "related commits under short bold category headings (Features, Fixes, "
+            "etc.) as bullet points, keeping each commit's `(short-sha)` reference. "
+            "Summarize clearly and drop noise like version bumps. Output only the "
+            "Markdown notes, no preamble.\n\n----- COMMITS -----\n%2")
+            .arg(version, commits.join(QLatin1Char('\n')));
+    const QString model =
+        claude ? QStringLiteral("claude-haiku-4-5") : kIssueAskAiModel;
+
+    QNetworkReply *reply = nullptr;
+    if (claude) {
+        QJsonObject payload;
+        payload.insert("model", model);
+        payload.insert("max_tokens", 2000);
+        QJsonArray messages;
+        QJsonObject um;
+        um.insert("role", "user");
+        um.insert("content", task);
+        messages.append(um);
+        payload.insert("messages", messages);
+        QNetworkRequest req(
+            QUrl(QStringLiteral("https://api.anthropic.com/v1/messages")));
+        if (!oauthToken.isEmpty()) {
+            req.setRawHeader("Authorization", "Bearer " + oauthToken.toUtf8());
+            req.setRawHeader("anthropic-beta", "oauth-2025-04-20");
+            payload.insert("system", kClaudeCodeOAuthSystem);
+        } else {
+            req.setRawHeader("x-api-key", apiKey.toUtf8());
+        }
+        req.setRawHeader("anthropic-version", "2023-06-01");
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reply = m_networkAccess->post(
+            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    } else {
+        QJsonObject payload;
+        payload.insert("model", model);
+        payload.insert("input", task);
+        payload.insert("max_output_tokens", 2000);
+        QNetworkRequest req = openAiRequest(
+            QUrl(QStringLiteral("https://api.openai.com/v1/responses")), apiKey);
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reply = m_networkAccess->post(
+            req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    }
+
+    // The draft dialog is modal but its event loop keeps spinning, so the reply
+    // fires while it's open. Guard the dialog-scoped widgets with QPointer in
+    // case the user dismisses the dialog before the response lands.
+    QPointer<QPlainTextEdit> notesGuard(notesEdit);
+    QPointer<QPushButton> buttonGuard(button);
+    if (button) {
+        button->setEnabled(false);
+        button->setText(QString::fromUtf8("Generating\xE2\x80\xA6"));
+    }
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, claude, notesGuard, buttonGuard] {
+                const QByteArray body = reply->readAll();
+                reply->deleteLater();
+                if (buttonGuard) {
+                    buttonGuard->setEnabled(true);
+                    buttonGuard->setText("Generate release notes with agent");
+                }
+                if (reply->error() != QNetworkReply::NoError) {
+                    setRepoDetailNotice(
+                        "Release-notes request failed: " +
+                            apiErrorSummary(reply, body),
+                        true);
+                    return;
+                }
+                const QJsonObject obj = QJsonDocument::fromJson(body).object();
+                QString text;
+                if (claude) {
+                    for (const QJsonValue &v : obj.value("content").toArray()) {
+                        const QJsonObject o = v.toObject();
+                        if (o.value("type").toString() == QLatin1String("text"))
+                            text += o.value("text").toString();
+                    }
+                } else {
+                    text = openAiResponseText(obj);
+                }
+                text = text.trimmed();
+                if (text.isEmpty()) {
+                    setRepoDetailNotice(
+                        "The agent returned no release notes.", true);
+                    return;
+                }
+                if (notesGuard)
+                    notesGuard->setPlainText(text);
+                else
+                    setRepoDetailNotice(
+                        "Release notes are ready, but the draft dialog was "
+                        "closed.",
+                        true);
+            });
 }
 
 // Announce a freshly published release to the repo's fediverse followers.
