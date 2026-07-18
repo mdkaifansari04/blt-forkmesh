@@ -1250,6 +1250,19 @@ void MainWindow::refreshActionsTable()
             when = rel == QStringLiteral("now") ? rel
                                                 : rel + QStringLiteral(" ago");
         }
+        // For a run that's still queued or running, tack on how long the same
+        // workflow took last time it ran, so the "When" column shows the target
+        // the shrinking line above the tab is counting down against (adhoc #105).
+        if (run.status == ActionStatus::Queued ||
+            run.status == ActionStatus::Running) {
+            const qint64 last = estimatedRunDurationMs(run);
+            if (last > 0) {
+                const QString lastStr =
+                    QStringLiteral("last %1").arg(formatDuration(last));
+                when = when.isEmpty() ? lastStr
+                                      : when + QStringLiteral(" \xC2\xB7 ") + lastStr;
+            }
+        }
         auto *whenItem = new QTableWidgetItem(when);
         if (run.createdAtMs > 0)
             whenItem->setToolTip(QDateTime::fromMSecsSinceEpoch(run.createdAtMs)
@@ -1456,15 +1469,17 @@ void MainWindow::updateActionStrip()
     if (!m_actionStrip || !m_actionStripCol)
         return;
 
-    // This repo's runs that are actually executing (queued ones haven't started
-    // the clock yet, so they don't get a growing bar).
+    // This repo's runs that are queued or running: one line each (adhoc #105).
+    // Queued runs haven't started their clock, so their line stays full until the
+    // runner picks them up and they begin counting down.
     QList<const ActionRun *> live;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         const QString owner = m_repositories.at(m_repoDetailIndex).owner;
         const QString name = m_repositories.at(m_repoDetailIndex).name;
         for (const ActionRun &run : m_actionRuns)
             if (run.owner == owner && run.name == name &&
-                run.status == ActionStatus::Running)
+                (run.status == ActionStatus::Running ||
+                 run.status == ActionStatus::Queued))
                 live.append(&run);
     }
 
@@ -1493,8 +1508,11 @@ void MainWindow::updateActionStrip()
             // Each run is one fixed box whose coloured lines drain down toward the
             // estimated duration (see ActionEstimateBox). startedAtMs is set once
             // the runner picks the run up; fall back to createdAtMs.
+            // Only a running run counts down; a queued one keeps a full line.
             const qint64 started =
-                r->startedAtMs > 0 ? r->startedAtMs : r->createdAtMs;
+                r->status != ActionStatus::Running ? 0
+                : r->startedAtMs > 0               ? r->startedAtMs
+                                                   : r->createdAtMs;
             auto *box = new ActionEstimateBox;
             box->configure(r->workflowName.trimmed().isEmpty()
                                ? QStringLiteral("workflow")
@@ -1518,8 +1536,11 @@ void MainWindow::updateActionStrip()
                 m_actionStripCol->itemAt(i++)->widget());
             if (!box)
                 continue;
+            // Only a running run counts down; a queued one keeps a full line.
             const qint64 started =
-                r->startedAtMs > 0 ? r->startedAtMs : r->createdAtMs;
+                r->status != ActionStatus::Running ? 0
+                : r->startedAtMs > 0               ? r->startedAtMs
+                                                   : r->createdAtMs;
             box->configure(r->workflowName.trimmed().isEmpty()
                                ? QStringLiteral("workflow")
                                : r->workflowName.trimmed(),
@@ -1572,29 +1593,30 @@ void MainWindow::positionActionStrip()
     if (!page)
         return;
 
-    // The boxes are fixed-size (ActionEstimateBox); the strip just needs to be
-    // sized to hold the stack and pinned above the tab.
+    // Span the Actions tab exactly so the lines never bleed over the neighbouring
+    // Security tab (adhoc #105): every box is stretched to the tab's width.
+    const int tabWidth = qMax(1, m_repoActionsTab->width());
     const int rows = m_actionStripCol->count();
-    int widest = 0, h = 0;
+    int h = 0;
     for (int i = 0; i < rows; ++i) {
         auto *box = m_actionStripCol->itemAt(i)->widget();
         if (!box)
             continue;
-        widest = qMax(widest, box->width());
+        box->setFixedWidth(tabWidth);
         h += box->height() + (i > 0 ? m_actionStripCol->spacing() : 0);
     }
-    if (widest <= 0)
+    if (rows <= 0)
         return;
 
-    m_actionStrip->resize(widest, h);
+    m_actionStrip->resize(tabWidth, h);
 
     const QPoint tl = m_repoActionsTab->mapTo(page, QPoint(0, 0));
     int x = tl.x();
     int y = tl.y() - h - 1;
     if (y < 0)
         y = 0;
-    if (x + widest > page->width())
-        x = qMax(0, page->width() - widest);
+    if (x + tabWidth > page->width())
+        x = qMax(0, page->width() - tabWidth);
     m_actionStrip->move(x, y);
     m_actionStrip->raise();
 }

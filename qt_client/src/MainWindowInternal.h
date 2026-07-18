@@ -2111,26 +2111,30 @@ public:
     }
 };
 
-// The fixed-size box shown in the floating strip above the Actions tab for each
-// running workflow (adhoc #95). Rather than a bar that grows without bound, the
-// box is filled with a stack of coloured horizontal lines that drain away from
-// the top as the run advances toward its estimated duration (the previous run of
-// the same workflow), so the remaining colour is a rough "time left" gauge that
-// "progress-bars down". The workflow name sits on top; no elapsed-time readout.
-// Pure QWidget (no moc); the owner ticks it via update() and reads the run id
-// back off the "actionRunId" dynamic property in its event filter.
+// One row shown in the floating strip above the Actions tab for each queued or
+// running workflow (adhoc #95, adhoc #105). Each action gets a single coloured
+// line drawn behind its name; the line shrinks from the right as the run advances
+// toward its estimated duration (the previous run of the same workflow), so its
+// remaining length is a rough "time left" gauge. Queued runs (no estimate to
+// count down against, or not started) keep a full line. The strip is sized by the
+// owner to span the Actions tab exactly, so the lines never bleed over the
+// neighbouring Security tab. Pure QWidget (no moc); the owner ticks it via
+// update() and reads the run id back off the "actionRunId" dynamic property in
+// its event filter.
 class ActionEstimateBox : public QWidget
 {
 public:
     explicit ActionEstimateBox(QWidget *parent = nullptr) : QWidget(parent)
     {
-        setFixedSize(180, 42);
+        // A single-line row; width is set by the owner to match the tab.
+        setFixedHeight(24);
         setCursor(Qt::PointingHandCursor);
     }
 
-    // startedAtMs: when the run's clock began. estimateMs: expected duration from
-    // the previous run of the same workflow (0 = unknown, so the box stays full
-    // as there's nothing to count down against).
+    // startedAtMs: when the run's clock began (0 = queued/not started, so the line
+    // stays full). estimateMs: expected duration from the previous run of the same
+    // workflow (0 = unknown, so the line stays full as there's nothing to count
+    // down against).
     void configure(const QString &name, qint64 startedAtMs, qint64 estimateMs)
     {
         m_name = name;
@@ -2146,8 +2150,9 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
         const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
 
-        // Fraction of the estimate still remaining (1 = just started, 0 = at/over
-        // estimate). Without an estimate we can't count down, so stay full.
+        // Fraction of the estimate still remaining (1 = just started/queued, 0 =
+        // at/over estimate). Without a started clock or an estimate we can't count
+        // down, so stay full.
         double remaining = 1.0;
         if (m_estimate > 0 && m_started > 0) {
             const qint64 elapsed =
@@ -2156,37 +2161,36 @@ protected:
                 qBound(0.0, 1.0 - double(elapsed) / double(m_estimate), 1.0);
         }
 
-        // A fixed stack of evenly spaced lines fully spanning the box. Lines drain
-        // from the top down as time passes, so only the bottom `remaining`
-        // fraction stays lit — the colour recedes downward as the run runs on.
-        const int kLines = 9;
-        const double top = box.top() + 3;
-        const double bottom = box.bottom() - 3;
-        const double span = bottom - top;
-        const double x0 = box.left() + 5;
-        const double x1 = box.right() - 5;
-        const int lit = qBound(0, qCeil(kLines * remaining), kLines);
-        const int drained = kLines - lit;
-        for (int i = drained; i < kLines; ++i) {
-            const double y = top + span * (i + 0.5) / kLines;
-            // Cycle the hue across the stack for a rainbow gauge.
-            const QColor c = QColor::fromHsv((i * 360 / kLines) % 360, 200, 235);
-            p.setPen(QPen(c, 3));
-            p.drawLine(QPointF(x0, y), QPointF(x1, y));
+        // One horizontal line, centred behind the name, shrinking from the right
+        // as time elapses. A rainbow gradient keeps the colourful gauge look.
+        const double x0 = box.left() + 4;
+        const double x1 = box.right() - 4;
+        const double y = box.center().y();
+        const double x1lit = x0 + (x1 - x0) * remaining;
+        if (x1lit > x0) {
+            QLinearGradient grad(x0, y, x1, y);
+            const int kStops = 6;
+            for (int i = 0; i <= kStops; ++i)
+                grad.setColorAt(double(i) / kStops,
+                                QColor::fromHsv((i * 300 / kStops) % 360, 200, 235));
+            p.setPen(QPen(QBrush(grad), 4, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(x0, y), QPointF(x1lit, y));
         }
 
-        // Rounded border over the lines.
+        // Rounded border over the line.
         p.setPen(QPen(QColor(0, 0, 0, 160), 1));
         p.setBrush(Qt::NoBrush);
         p.drawRoundedRect(box, 4, 4);
 
-        // Workflow name on top, anchored to the upper-left of the box.
+        // Workflow name on top of (in front of) the line, left-aligned.
         QFont f = font();
         f.setBold(true);
         p.setFont(f);
         p.setPen(QColor(0, 0, 0));
-        p.drawText(box.adjusted(6, 2, -6, -2),
-                   Qt::AlignTop | Qt::AlignLeft, m_name);
+        const QString elided = p.fontMetrics().elidedText(
+            m_name, Qt::ElideRight, int(box.width()) - 12);
+        p.drawText(box.adjusted(6, 0, -6, 0),
+                   Qt::AlignVCenter | Qt::AlignLeft, elided);
     }
 
 private:
