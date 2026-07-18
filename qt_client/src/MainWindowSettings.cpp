@@ -2196,6 +2196,22 @@ void MainWindow::chooseAvatar()
 
 void MainWindow::quickRebuildRestart()
 {
+    // Queue behind any in-flight agent work: relaunching mid-run would kill a
+    // running agent session, so hold the rebuild until the fleet goes idle and
+    // let maybeStartQueuedRebuild() re-invoke us once it does (adhoc #75). The
+    // click handler already spun the button, so leave it spinning as the visible
+    // "queued" indicator.
+    if (anyAgentRunning()) {
+        m_rebuildRestartQueued = true;
+        m_buildButton = m_rebuildButton;
+        m_buildStatusLabel = m_rebuildStatus;
+        beginRestartLog();
+        showUpdateLog();
+        setUpdateStatus(QStringLiteral(
+            "Waiting for running actions to finish before rebuilding\xE2\x80\xA6"));
+        return;
+    }
+    m_rebuildRestartQueued = false;
     // Incremental rebuild + relaunch (no cache wipe) for fast iteration. Reuses
     // the Settings rebuild button/status as the progress target.
     beginRestartLog();
@@ -2221,6 +2237,19 @@ void MainWindow::quickRebuildRestart()
     // Release update reconfigures the shared build dir and forces one full
     // rebuild on the switch.
     buildAndRelaunch(clientDir, QString(), QString(), QStringLiteral("Debug"));
+}
+
+void MainWindow::maybeStartQueuedRebuild()
+{
+    // A manual rebuild & restart is waiting for agents to finish. Once the last
+    // one goes idle, run it — but not while a rebuild is already underway (the
+    // rebuild button is disabled for its duration).
+    if (!m_rebuildRestartQueued || anyAgentRunning())
+        return;
+    if (m_rebuildButton && !m_rebuildButton->isEnabled())
+        return;
+    logRestart(QStringLiteral("running actions finished; starting queued rebuild"));
+    quickRebuildRestart();
 }
 
 void MainWindow::rebuildAndRelaunch()
