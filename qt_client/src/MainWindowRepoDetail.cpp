@@ -9,6 +9,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
 
 #include <QSignalBlocker>
@@ -372,7 +373,7 @@ QWidget *MainWindow::buildRepoFilesPanel()
 {
     // Three modes: a GitHub-style overview, the repository explorer/editor, and
     // an account-gated Cove Explorer rooted in .forkmesh/coves.
-    m_filesStack = new QStackedWidget;
+    m_filesStack = new CurrentPageStack;
     m_filesStack->addWidget(buildRepoOverviewPage());      // 0 overview
     m_filesStack->addWidget(buildRepoEditorPage());        // 1 editor
     m_filesStack->addWidget(buildRepoCoveExplorerPage());  // 2 secure cove
@@ -623,7 +624,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     filesBodyLayout->addWidget(m_overviewList, 2);
     filesBodyLayout->addWidget(m_readmeView, 3);
 
-    m_overviewBodyStack = new QStackedWidget;
+    m_overviewBodyStack = new CurrentPageStack;
     m_overviewBodyStack->addWidget(filesBody);             // 0 files + README
     m_overviewBodyStack->addWidget(buildRepoCommitsTab()); // 1 commit history
     m_overviewBodyStack->addWidget(buildBranchesTab());    // 2 branches panel
@@ -7964,7 +7965,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_releaseStrip->hide();
 
     // --- Inner stack: one page per tab.
-    m_repoDetailStack = new CurrentPageStackedWidget;
+    m_repoDetailStack = new CurrentPageStack;
     m_repoDetailStack->addWidget(buildRepoFilesPanel());                 // 0 Code
     // 1 — placeholder. The commits panel lives inside the Code overview (built
     // by buildRepoOverviewPage, under the latest-commit bar); this empty page
