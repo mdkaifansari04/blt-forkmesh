@@ -362,6 +362,11 @@ void MainWindow::refreshSourceControl(bool force)
 {
     if (!m_scmTree)
         return;
+    // A manual refresh should also recheck commits pending sync (the top "Sync"
+    // button's count), not just the working-tree file changes, since staging/
+    // committing/pulling elsewhere can leave that button stale.
+    if (force)
+        updateRepoPushButton();
     const QString dir = repoGitDir();
     const bool canWrite = !dir.isEmpty() && repoHasWorkingTree();
     if (m_scmEmptyNote)

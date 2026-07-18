@@ -9,6 +9,9 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 
+#include <QFutureWatcher>
+#include <QtConcurrent/QtConcurrentRun>
+
 using namespace forkmesh::ui;
 
 // ----------------------------------------------------------- chat persistence
@@ -56,24 +59,54 @@ void MainWindow::loadCachedAvatars()
     QDir d(dir);
     if (!d.exists())
         return;
+    QStringList paths;
     const QFileInfoList files = d.entryInfoList({"*.png"}, QDir::Files);
-    for (const QFileInfo &fi : files) {
-        QFile f(fi.absoluteFilePath());
-        if (!f.open(QIODevice::ReadOnly))
-            continue;
-        const QByteArray data = f.readAll();
-        f.close();
-        // Each cached avatar is "<peerId>\n" followed by the PNG bytes.
-        const int nl = data.indexOf('\n');
-        if (nl <= 0)
-            continue;
-        const QString peerId = QString::fromUtf8(data.left(nl));
-        QPixmap pixmap;
-        if (peerId.isEmpty() || !pixmap.loadFromData(data.mid(nl + 1)))
-            continue;
-        if (!m_avatars.contains(peerId))
-            m_avatars.insert(peerId, pixmap);
-    }
+    for (const QFileInfo &fi : files)
+        paths.append(fi.absoluteFilePath());
+    if (paths.isEmpty())
+        return;
+    // Reading and PNG-decoding the whole cache inline blocked startup for ~1s
+    // once a few dozen avatars accumulated (stall log: loadCachedAvatars ←
+    // startSession). Decode to QImages on the thread pool; only the cheap
+    // QImage→QPixmap hop runs back on the GUI thread.
+    auto *watcher = new QFutureWatcher<QList<QPair<QString, QImage>>>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] {
+        watcher->deleteLater();
+        const QList<QPair<QString, QImage>> decoded = watcher->result();
+        for (const auto &entry : decoded) {
+            // A live broadcast may have landed while we decoded; it is fresher.
+            if (!m_avatars.contains(entry.first))
+                m_avatars.insert(entry.first, QPixmap::fromImage(entry.second));
+        }
+        // Message rows and the users column were likely built avatar-less in the
+        // meantime; hand them their pictures (same update path as onAvatar).
+        for (auto it = m_visibleRows.constBegin(); it != m_visibleRows.constEnd();
+             ++it) {
+            const QPixmap avatar = m_avatars.value(it.value()->senderId());
+            if (!avatar.isNull())
+                it.value()->setAvatar(avatar);
+        }
+        refreshChatMembers();
+    });
+    watcher->setFuture(QtConcurrent::run([paths] {
+        QList<QPair<QString, QImage>> decoded;
+        for (const QString &path : paths) {
+            QFile f(path);
+            if (!f.open(QIODevice::ReadOnly))
+                continue;
+            const QByteArray data = f.readAll();
+            // Each cached avatar is "<peerId>\n" followed by the PNG bytes.
+            const int nl = data.indexOf('\n');
+            if (nl <= 0)
+                continue;
+            const QString peerId = QString::fromUtf8(data.left(nl));
+            QImage image;
+            if (peerId.isEmpty() || !image.loadFromData(data.mid(nl + 1)))
+                continue;
+            decoded.append({peerId, image});
+        }
+        return decoded;
+    }));
 }
 
 void MainWindow::saveChatHistory()

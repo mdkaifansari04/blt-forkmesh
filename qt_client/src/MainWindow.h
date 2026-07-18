@@ -1713,9 +1713,14 @@ private:
     void clearActionRuns();
     void initActions();                  // store/runner/watcher, load history, hooks
     void ensurePushHook(const RepositoryRecord &repo) const;
+    // Working-copy post-commit/post-merge hooks: spool a *.commit event the
+    // instant a commit lands on the source of truth (terminal/IDE/agent), so
+    // scanActionSpool can sync the mirror and signal peers over the websocket
+    // immediately instead of at the next heartbeat.
+    void ensureCommitSignalHook(const RepositoryRecord &repo) const;
     void removePushHook(const RepositoryRecord &repo) const;
     void installAllPushHooks() const;
-    void scanActionSpool();              // read *.push events, enqueue runs
+    void scanActionSpool();              // read *.push/*.commit events, enqueue runs
     void enqueuePushEvent(const QString &owner, const QString &name,
                           const QString &commit, const QString &ref);
     void processActionQueue();
@@ -2284,9 +2289,12 @@ private:
     void updateActionsTabIndicator();
     // Lazily build the floating strip and place it just above the Actions tab.
     void ensureActionStrip();
-    void positionActionStrip();  // grow each bar by its run's elapsed time
+    void positionActionStrip();  // size/pin the strip above the Actions tab
     void positionRepoPushButton(); // float "Sync" just above the Code tab
-    void updateActionStrip();    // build/show/hide the bars for in-flight runs
+    void updateActionStrip();    // build/show/hide the boxes for in-flight runs
+    // Previous finished run's duration for the same workflow, the estimate each
+    // strip box counts down against (0 = no prior run to estimate from).
+    qint64 estimatedRunDurationMs(const ActionRun &run) const;
     // Keep the running-session spinner timer alive/dead for the Agents table
     // (adhoc #178 removed the Agents tab and its floating spinner overlay, but
     // the table's own running-row glyph + elapsed-time cell still animate).
@@ -3578,6 +3586,7 @@ private:
     QButtonGroup *m_issueTabGroup = nullptr; // Issues / Milestones / Labels tabs
     QButtonGroup *m_repoDetailTabs = nullptr;
     QPushButton *m_repoCodeTab = nullptr;
+    QString m_repoCodeSizePath; // mirror the displayed "Code (N MB)" was computed for
     QPushButton *m_repoIssuesTab = nullptr;
     QPushButton *m_repoPullsTab = nullptr;
     QPushButton *m_repoDiscussionsTab = nullptr;

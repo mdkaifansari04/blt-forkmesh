@@ -9,6 +9,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
 
 #include <QSignalBlocker>
@@ -372,7 +373,7 @@ QWidget *MainWindow::buildRepoFilesPanel()
 {
     // Three modes: a GitHub-style overview, the repository explorer/editor, and
     // an account-gated Cove Explorer rooted in .forkmesh/coves.
-    m_filesStack = new QStackedWidget;
+    m_filesStack = new CurrentPageStack;
     m_filesStack->addWidget(buildRepoOverviewPage());      // 0 overview
     m_filesStack->addWidget(buildRepoEditorPage());        // 1 editor
     m_filesStack->addWidget(buildRepoCoveExplorerPage());  // 2 secure cove
@@ -623,7 +624,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     filesBodyLayout->addWidget(m_overviewList, 2);
     filesBodyLayout->addWidget(m_readmeView, 3);
 
-    m_overviewBodyStack = new QStackedWidget;
+    m_overviewBodyStack = new CurrentPageStack;
     m_overviewBodyStack->addWidget(filesBody);             // 0 files + README
     m_overviewBodyStack->addWidget(buildRepoCommitsTab()); // 1 commit history
     m_overviewBodyStack->addWidget(buildBranchesTab());    // 2 branches panel
@@ -1441,11 +1442,13 @@ void MainWindow::updateRepoCodeSize()
         m_repoCodeTab->setText(QStringLiteral("Code (%1)").arg(size)); // Code (N MB)
     };
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        m_repoCodeSizePath.clear();
         showSize(QStringLiteral("0 B"));
         return;
     }
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     if (repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists()) {
+        m_repoCodeSizePath.clear();
         showSize(QStringLiteral("0 B"));
         return;
     }
@@ -1456,12 +1459,22 @@ void MainWindow::updateRepoCodeSize()
     // even under GitKeepAlive, whose polling pump can itself get stuck behind a
     // slow paint. Fetch it fully off the GUI thread instead (see
     // runGitDetached) and only apply the result if still showing this repo.
-    showSize(QStringLiteral("…"));
+    //
+    // The Code tab is the first tab in the strip and the strip is a plain
+    // QHBoxLayout, so any width change here shifts every later tab plus the
+    // header widgets aligned with them. Flashing a "…" placeholder on each
+    // sync/merge refresh made the whole bar jump twice; keep the last computed
+    // size on screen instead and only show the placeholder the first time this
+    // mirror's size is looked up.
+    if (m_repoCodeSizePath != repo.mirrorPath)
+        showSize(QStringLiteral("…"));
     const int forIndex = m_repoDetailIndex;
+    const QString forPath = repo.mirrorPath;
     runGitDetached(repo.mirrorPath, {"count-objects", "-v"},
-                   [this, forIndex, showSize](bool ok, const QByteArray &out) {
+                   [this, forIndex, forPath, showSize](bool ok, const QByteArray &out) {
                        if (forIndex != m_repoDetailIndex || !m_repoCodeTab)
                            return;
+                       m_repoCodeSizePath = forPath;
                        showSize(ok ? formatByteSize(parseCountObjectsSizeBytes(out))
                                    : QStringLiteral("0 B"));
                    });
@@ -7964,7 +7977,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_releaseStrip->hide();
 
     // --- Inner stack: one page per tab.
-    m_repoDetailStack = new QStackedWidget;
+    m_repoDetailStack = new CurrentPageStack;
     m_repoDetailStack->addWidget(buildRepoFilesPanel());                 // 0 Code
     // 1 — placeholder. The commits panel lives inside the Code overview (built
     // by buildRepoOverviewPage, under the latest-commit bar); this empty page
@@ -8087,24 +8100,14 @@ QWidget *MainWindow::buildRepoDetailSection()
     // Land on the Code view; opening a repo refreshes it (see openRepoDetail).
     m_repoDetailStack->setCurrentIndex(0);
 
-    // QStackedWidget sizes itself to the tallest page, even ones that aren't
-    // showing (e.g. Discussions or Settings next to a short Code view). Without
-    // this wrapper that height pushes into the outer app-wide scroll area, which
-    // then scrolls the whole page — header and tab bar included — out of view.
-    // Wrapping just the stack (same trick as contentScroll/settingsScroll) keeps
-    // header + tab bar fixed and scrolls only the active tab's body.
-    auto *repoDetailStackScroll = new QScrollArea;
-    repoDetailStackScroll->setObjectName("repoDetailStackScroll");
-    repoDetailStackScroll->setWidgetResizable(true);
-    repoDetailStackScroll->setFrameShape(QFrame::NoFrame);
-    repoDetailStackScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // Hide the outer vertical scrollbar (the right-most one in the window). Each
-    // repo-detail tab manages its own scrolling, so this outer bar was a
-    // redundant second scrollbar. Wheel/keyboard scrolling still works.
-    repoDetailStackScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    repoDetailStackScroll->setMinimumHeight(0);
-    repoDetailStackScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
-    repoDetailStackScroll->setWidget(m_repoDetailStack);
+    // No QScrollArea around the tab stack any more (adhoc #108). Every
+    // repo-detail tab manages its own scrolling, so the wrapper only layered a
+    // second scroll surface (and its overflow spacing) over the page. The
+    // Ignored vertical policy keeps a tall tab from growing the window's
+    // minimum height (CurrentPageStack already sizes the stack to the current
+    // tab, not the tallest sibling), so header + tab bar stay fixed.
+    m_repoDetailStack->setMinimumHeight(0);
+    m_repoDetailStack->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
 
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -8113,7 +8116,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     layout->addWidget(m_repoDetailNotice);
     layout->addWidget(metaBand);
     layout->addWidget(tabBarScroll);
-    layout->addWidget(repoDetailStackScroll, 1);
+    layout->addWidget(m_repoDetailStack, 1);
     return page;
 }
 

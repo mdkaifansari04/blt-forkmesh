@@ -8,6 +8,7 @@
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
 #include "RepoSecurity.h"
 #include "ScreenCaptureOverlay.h"
@@ -243,7 +244,7 @@ QWidget *MainWindow::buildChatPage()
     // One page per "place": Home holds the repos, quest board and chat all at
     // once (no nav bar — you click a server to see everything). Repo detail and
     // Settings are opened on demand (clicking a repo / the server-rail gear).
-    m_sectionStack = new QStackedWidget;
+    m_sectionStack = new CurrentPageStack;
     // Home now hosts the nodes column, repositories column and the repo detail
     // panel (with Chat as a tab) all at once, so there is no separate repo-detail
     // section any more.
@@ -303,22 +304,14 @@ QWidget *MainWindow::buildChatPage()
     layout->addWidget(buildBreadcrumb());
     layout->addWidget(buildSolanaNotice());
     layout->addWidget(buildWalletVerifyNotice());
-    auto *contentScroll = new QScrollArea;
-    contentScroll->setWidgetResizable(true);
-    contentScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // Each section already scrolls its own content (QScrollArea panels,
-    // tables and lists), so a second, page-wide scrollbar here was redundant
-    // (adhoc #83) — hide it. The QScrollArea itself stays: QStackedWidget
-    // sizes to its tallest page even when a shorter one is showing, and
-    // without this wrapper that height would push into the splitter and grow
-    // the window's minimum size. Wheel/keyboard scrolling still works as a
-    // fallback for the handful of sections with no scroll pane of their own.
-    contentScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    contentScroll->setFrameShape(QFrame::NoFrame);
-    // Tall tab pages should scroll instead of becoming the window's minimum height.
-    contentScroll->setMinimumHeight(0);
-    contentScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
-    contentScroll->setWidget(content);
+    // No page-wide QScrollArea around the sections any more (adhoc #108).
+    // Each section scrolls its own content (QScrollArea panels, tables and
+    // lists), so the outer wrapper only added a second scroll surface plus its
+    // sizeHint-driven overflow spacing. The Ignored vertical policy keeps a
+    // tall page from growing the window's minimum height (CurrentPageStack
+    // already sizes the stack to the current page, not the tallest sibling).
+    content->setMinimumHeight(0);
+    content->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
 
     // The main content and the always-on prompt/log footer sit one above the
     // other with the footer pinned to a fixed height (adhoc #86). Before this,
@@ -333,9 +326,11 @@ QWidget *MainWindow::buildChatPage()
     auto *bodyLayout = new QVBoxLayout;
     bodyLayout->setContentsMargins(0, 0, 0, 0);
     bodyLayout->setSpacing(0);
-    bodyLayout->addWidget(contentScroll, 1); // content absorbs window growth
+    bodyLayout->addWidget(content, 1); // content absorbs window growth
     auto *logDock = buildNetworkLogDock();
-    logDock->setFixedHeight(240); // footer keeps a constant height
+    // buildNetworkLogDock() pins its own fixed height to fit the compact prompt
+    // card (adhoc #107); the footer still keeps a constant height so the toolbar
+    // never reflows, it is just no longer the old oversized 240px.
     bodyLayout->addWidget(logDock, 0);
     layout->addLayout(bodyLayout, 1);
     return page;
@@ -358,15 +353,24 @@ QWidget *MainWindow::buildNetworkLogDock()
     auto *card = new QWidget;
     card->setObjectName("quickAddCard");
 
-    // A two-line wrapping box (adhoc #12), not a single-line edit, so the typed
-    // prompt is actually visible on two lines. Enter sends / Shift+Enter adds a
-    // newline (handled in the event filter); Up/Down still walk prompt history.
+    // A three-line wrapping box (adhoc #12, #107), not a single-line edit, so the
+    // typed prompt is actually visible on three lines. Enter sends / Shift+Enter
+    // adds a newline (handled in the event filter); Up/Down walk prompt history.
     m_issueQuickAdd = new QPlainTextEdit;
     m_issueQuickAdd->setObjectName("issueQuickAdd");
     m_issueQuickAdd->setPlaceholderText("enter prompt");
     m_issueQuickAdd->setLineWrapMode(QPlainTextEdit::WidgetWidth);
     m_issueQuickAdd->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_issueQuickAdd->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Show exactly three lines of prompt and no more (adhoc #107): the field used
+    // to stretch to fill the whole fixed-height footer, leaving a tall, mostly
+    // empty box. Pin it to three text rows so the box is compact and the controls
+    // sit right beneath the text; longer prompts scroll inside these three lines.
+    m_issueQuickAdd->document()->setDocumentMargin(3);
+    // 3 rows + the QSS vertical padding (8px top/bottom) + document margins.
+    const int kQuickAddRowH = m_issueQuickAdd->fontMetrics().lineSpacing();
+    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 3 + 16 + 6);
+    m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
     // field is capped at the same length as the Claude prompt / message input
     // (kMaxTextChars). QPlainTextEdit has no setMaxLength, so the cap is enforced
@@ -822,9 +826,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     auto *promptLayout = new QVBoxLayout(promptWrapper);
     promptLayout->setContentsMargins(0, 0, 0, 0);
     promptLayout->setSpacing(0);
-    // The editor takes all the stretch so it grows/shrinks with the frame; the
-    // bottom bar carries none and keeps its fixed height welded to the foot.
-    promptLayout->addWidget(m_issueQuickAdd, 1);
+    // The editor is a fixed three lines tall and the bottom bar carries its own
+    // fixed height, so the wrapper hugs its content: the border sits right above
+    // the text and the controls weld to the foot with no empty band between.
+    promptLayout->addWidget(m_issueQuickAdd, 0);
     promptLayout->addWidget(bottomBarScroll, 0);
 
     // "Agents:" status strip above the prompt input (adhoc #111): a clickable
@@ -876,10 +881,18 @@ QWidget *MainWindow::buildNetworkLogDock()
     auto *cardLayout = new QVBoxLayout(card);
     cardLayout->setContentsMargins(12, 8, 12, 8);
     cardLayout->setSpacing(4);
+    // A top stretch sinks the compact "Agents:" strip + prompt group to the foot
+    // of the footer dock (adhoc #107): the prompt no longer stretches to fill the
+    // dock, so without this it would float at the top with dead space beneath.
+    // Anchoring it low keeps the whole log/prompt area down near the bottom edge.
+    cardLayout->addStretch(1);
     cardLayout->addWidget(m_agentStatusRow);
-    cardLayout->addWidget(promptWrapper);
+    cardLayout->addWidget(promptWrapper, 0);
     card->setMinimumWidth(0);
-    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // Expanding vertically so the card fills the whole fixed-height footer dock
+    // like the log pane beside it; the top stretch above absorbs the slack so the
+    // prompt group stays flush with the foot of the panel.
+    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     // A scrollable strip below the quick-add bar: the always-on live log. It
     // fills as much height as the dock row allows (matching the prompt card
@@ -922,6 +935,15 @@ QWidget *MainWindow::buildNetworkLogDock()
     dockRow->setSpacing(0);
     dockRow->addWidget(m_footerUpdateLog, 1);
     dockRow->addWidget(card, 1);
+
+    // Pin the footer to just the compact card's height (adhoc #107): margins +
+    // the (hidden-by-default) "Agents:" strip + the three-line prompt + its
+    // controls. Reserving the agents-strip height keeps the footer from reflowing
+    // when the strip toggles, exactly as the old fixed 240px did — only now the
+    // dock is sized to the content instead of stranding blank space above it.
+    dock->setFixedHeight(card->sizeHint().height() +
+                         m_agentStatusRow->sizeHint().height() +
+                         cardLayout->spacing());
 
     // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
     // since QPlainTextEdit has no returnPressed signal.
@@ -2873,7 +2895,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageClose->setToolTip(QStringLiteral("Dismiss"));
     m_topMessageClose->hide();
     connect(m_topMessageClose, &QPushButton::clicked, this,
-            [this] { advanceTopMessageQueue(); }); // skip straight to the next queued error
+            [this] { dismissTopMessage(); }); // always fully close, even if another error is queued
 
     // Shown beside the toast when a message is too long to fit on one line.
     // Clicking it expands the full message in place (wrapped, growing the toast)
