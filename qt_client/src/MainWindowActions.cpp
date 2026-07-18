@@ -1467,9 +1467,14 @@ void MainWindow::ensureActionStrip()
     // adhoc #112) makes several queued/running actions read as a single box
     // holding multiple lines instead of a stack of separate boxes.
     m_actionStrip->setAttribute(Qt::WA_StyledBackground, true);
+    // One thin-bordered "main bar" that holds the stacked run lines; colours
+    // follow the active theme so the strip sits flush with the light UI instead
+    // of showing as a dark box with unreadable white text (adhoc #118).
+    const bool dark = currentThemeIsDark();
     m_actionStrip->setStyleSheet(
-        QStringLiteral("#actionStrip { background-color: #161b22; "
-                        "border: 1px solid #30363d; border-radius: 8px; }"));
+        QStringLiteral("#actionStrip { background-color: %1; "
+                        "border: 1px solid %2; border-radius: 8px; }")
+            .arg(dark ? "#161b22" : "#ffffff", dark ? "#30363d" : "#d0d7de"));
     auto *col = new QVBoxLayout(m_actionStrip);
     col->setContentsMargins(8, 6, 8, 6);
     col->setSpacing(4);
