@@ -1,0 +1,369 @@
+diff --git a/cloudflare_worker/public/dashboard.js b/cloudflare_worker/public/dashboard.js
+index 5ebdd4de..b74a60b2 100644
+--- a/cloudflare_worker/public/dashboard.js
++++ b/cloudflare_worker/public/dashboard.js
+@@ -10306,12 +10306,12 @@
+               <label class="grid gap-1 text-[11px] text-muted-foreground">Logo — square PNG, up to 256 KB (fediverse avatar)
+                 <input data-repo-about-logo type="file" accept="image/png" class="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-secondary file:px-2 file:py-1 file:text-xs file:text-foreground" />
+               </label>
+-              <label class="grid gap-1 text-[11px] text-muted-foreground">Banner — 1500×500 PNG, up to 1 MB (fediverse header)
++              <label class="grid gap-1 text-[11px] text-muted-foreground">Banner override — 1500×500 PNG, up to 1 MB (otherwise a live repository infographic is generated)
+                 <input data-repo-about-banner type="file" accept="image/png" class="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-secondary file:px-2 file:py-1 file:text-xs file:text-foreground" />
+               </label>
+               <span class="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+                 <label class="inline-flex items-center gap-1.5"><input data-repo-about-logo-clear type="checkbox" class="h-3 w-3" />Remove logo</label>
+-                <label class="inline-flex items-center gap-1.5"><input data-repo-about-banner-clear type="checkbox" class="h-3 w-3" />Remove banner</label>
++                <label class="inline-flex items-center gap-1.5"><input data-repo-about-banner-clear type="checkbox" class="h-3 w-3" />Use generated infographic</label>
+               </span>
+               <fieldset class="grid gap-1.5 rounded-md border border-border p-2 text-[11px] text-muted-foreground">
+                 <legend class="px-1 text-[10px] font-semibold uppercase tracking-wide">ActivityPub federation</legend>
+diff --git a/cloudflare_worker/public/dashboard/chat/index.html b/cloudflare_worker/public/dashboard/chat/index.html
+index 4841d4cb..3d4371d9 100644
+--- a/cloudflare_worker/public/dashboard/chat/index.html
++++ b/cloudflare_worker/public/dashboard/chat/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=2bff4e5b8206" defer></script>
++    <script src="/dashboard.js?v=d619bbf25502" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="chat">
+diff --git a/cloudflare_worker/public/dashboard/index.html b/cloudflare_worker/public/dashboard/index.html
+index b85b0f45..545982be 100644
+--- a/cloudflare_worker/public/dashboard/index.html
++++ b/cloudflare_worker/public/dashboard/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=2bff4e5b8206" defer></script>
++    <script src="/dashboard.js?v=d619bbf25502" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="home">
+diff --git a/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js b/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
+index 57b4e6fc..a5fcfc55 100644
+--- a/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
++++ b/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
+@@ -252,12 +252,12 @@
+               <label class="grid gap-1 text-[11px] text-muted-foreground">Logo — square PNG, up to 256 KB (fediverse avatar)
+                 <input data-repo-about-logo type="file" accept="image/png" class="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-secondary file:px-2 file:py-1 file:text-xs file:text-foreground" />
+               </label>
+-              <label class="grid gap-1 text-[11px] text-muted-foreground">Banner — 1500×500 PNG, up to 1 MB (fediverse header)
++              <label class="grid gap-1 text-[11px] text-muted-foreground">Banner override — 1500×500 PNG, up to 1 MB (otherwise a live repository infographic is generated)
+                 <input data-repo-about-banner type="file" accept="image/png" class="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-secondary file:px-2 file:py-1 file:text-xs file:text-foreground" />
+               </label>
+               <span class="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+                 <label class="inline-flex items-center gap-1.5"><input data-repo-about-logo-clear type="checkbox" class="h-3 w-3" />Remove logo</label>
+-                <label class="inline-flex items-center gap-1.5"><input data-repo-about-banner-clear type="checkbox" class="h-3 w-3" />Remove banner</label>
++                <label class="inline-flex items-center gap-1.5"><input data-repo-about-banner-clear type="checkbox" class="h-3 w-3" />Use generated infographic</label>
+               </span>
+               <fieldset class="grid gap-1.5 rounded-md border border-border p-2 text-[11px] text-muted-foreground">
+                 <legend class="px-1 text-[10px] font-semibold uppercase tracking-wide">ActivityPub federation</legend>
+diff --git a/cloudflare_worker/public/dashboard/network/index.html b/cloudflare_worker/public/dashboard/network/index.html
+index 243a4781..791e7f64 100644
+--- a/cloudflare_worker/public/dashboard/network/index.html
++++ b/cloudflare_worker/public/dashboard/network/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=2bff4e5b8206" defer></script>
++    <script src="/dashboard.js?v=d619bbf25502" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="network">
+diff --git a/cloudflare_worker/public/dashboard/profile/index.html b/cloudflare_worker/public/dashboard/profile/index.html
+index 4059216c..3717b0bc 100644
+--- a/cloudflare_worker/public/dashboard/profile/index.html
++++ b/cloudflare_worker/public/dashboard/profile/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=2bff4e5b8206" defer></script>
++    <script src="/dashboard.js?v=d619bbf25502" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="profile">
+diff --git a/cloudflare_worker/public/dashboard/profile/repositories/index.html b/cloudflare_worker/public/dashboard/profile/repositories/index.html
+index ceb29b20..50a4df61 100644
+--- a/cloudflare_worker/public/dashboard/profile/repositories/index.html
++++ b/cloudflare_worker/public/dashboard/profile/repositories/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=2bff4e5b8206" defer></script>
++    <script src="/dashboard.js?v=d619bbf25502" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="profile-repositories">
+diff --git a/cloudflare_worker/public/dashboard/repo.html b/cloudflare_worker/public/dashboard/repo.html
+index 98b5c926..283790a9 100644
+--- a/cloudflare_worker/public/dashboard/repo.html
++++ b/cloudflare_worker/public/dashboard/repo.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=2bff4e5b8206" defer></script>
++    <script src="/dashboard.js?v=d619bbf25502" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="repo">
+diff --git a/cloudflare_worker/public/dashboard/repos/index.html b/cloudflare_worker/public/dashboard/repos/index.html
+index 319d94f9..ccb9f912 100644
+--- a/cloudflare_worker/public/dashboard/repos/index.html
++++ b/cloudflare_worker/public/dashboard/repos/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=2bff4e5b8206" defer></script>
++    <script src="/dashboard.js?v=d619bbf25502" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="repos">
+diff --git a/cloudflare_worker/public/dashboard/settings/index.html b/cloudflare_worker/public/dashboard/settings/index.html
+index 089e173f..e11719d3 100644
+--- a/cloudflare_worker/public/dashboard/settings/index.html
++++ b/cloudflare_worker/public/dashboard/settings/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=2bff4e5b8206" defer></script>
++    <script src="/dashboard.js?v=d619bbf25502" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="settings">
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index cb788dac..ede7e8fc 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -290,6 +290,7 @@ from urls import (  # noqa: E402
+     REPO_AP_PUBLISH_RE,
+     REPO_AP_POSTS_RE,
+     REPO_CARD_RE,
++    REPO_BANNER_RE,
+     REPO_MEDIA_RE,
+     REPO_STAR_RE,
+ )
+@@ -414,6 +415,8 @@ from pull_badge import patch_file_stats, pull_badge_png  # noqa: E402
+ # Social-preview (OpenGraph) info-card renderer — pure-stdlib PNG drawing,
+ # another js-free sibling module the test suite imports directly.
+ import og_card  # noqa: E402
++# Default fediverse repository header: a 1500x500 stats/structure infographic.
++import repo_banner  # noqa: E402
+ 
+ # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
+ # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
+@@ -4274,10 +4277,13 @@ async def catalog_handler(env, request):
+         prior_row = await d1_first(
+             env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
+         exists = prior_row is not None
++        banner_changed = not exists
+         # Reject rollbacks: a replayed older record must not be able to repin an
+         # earlier (validly-signed) repo state and downgrade the served refs.
+         if exists:
+             prior = await decrypt_row(env, prior_row["data"]) or {}
++            banner_changed = (str(prior.get("updatedAt") or "") !=
++                              str(record.get("updatedAt") or ""))
+             try:
+                 if int(record["updatedAt"]) < int(prior.get("updatedAt", 0) or 0):
+                     return json_response({"error": "stale_update"}, status=409)
+@@ -4349,6 +4355,17 @@ async def catalog_handler(env, request):
+                 await _delete_repo_scoped_state(env, stale_key)
+                 await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", stale_key)
+         await purge_catalog_related_caches()
++        if banner_changed and record["visibility"] == "public":
++            # The generated banner URL rotated with this snapshot.  Push an
++            # Update(Group) so follower servers refresh the actor/header now;
++            # the helper is a cheap no-op until the actor has ever been fetched.
++            try:
++                await _ap_broadcast_actor_update(
++                    env, request, AP_ACTOR_REPO,
++                    ap.repo_handle(owner.lower(), record["name"].lower()))
++            except Exception:
++                # Catalog publication is durable; fediverse fan-out is optional.
++                pass
+         payload = {
+             "ok": True,
+             "repository": record,
+@@ -4509,7 +4526,11 @@ async def _repo_about_public(env, request, owner, repo):
+         "logoUrl": logo_url,
+         "bannerUrl": banner_url,
+         "defaultLogoUrl": AP_AVATAR_PATH,
+-        "defaultBannerUrl": AP_BANNER_PATH,
++        "defaultBannerUrl": "/api/repo/%s/%s/banner.png?v=%s" % (
++            quote(owner), quote(repo), quote(str(
++                (rec or {}).get("updatedAt") or
++                (rec or {}).get("stateHash") or
++                (rec or {}).get("commit") or "0"))),
+         "fediverse": {
+             # enabled = "this repo currently federates": the instance switch
+             # AND the owner's per-repo switch.
+@@ -11540,6 +11561,14 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
+         catalog_rec = await decrypt_row(env, repo_row.get("data"))
+         description = clean_string(
+             (catalog_rec or {}).get("description", "") or "", 240).strip()
++        # Repository actors get a live infographic header by default.  Its URL
++        # rotates with the signed catalog snapshot, so Mastodon refetches it
++        # after repo changes; an owner-uploaded banner below remains the override.
++        image_url = "%s/api/repo/%s/%s/banner.png?v=%s" % (
++            origin, owner, repo, str(
++                (catalog_rec or {}).get("updatedAt") or
++                (catalog_rec or {}).get("stateHash") or
++                (catalog_rec or {}).get("commit") or "0"))
+         summary = (ap.note_html_from_text(description) if description
+                    else ("ForkMesh repository %s/%s. Follow for new issues, "
+                          "pull requests, discussions and releases.")
+@@ -12686,6 +12715,97 @@ async def repo_media_handler(env, request, owner, repo, media_kind):
+     return resp
+ 
+ 
++async def repo_banner_handler(env, request, owner, repo):
++    """Serve the generated default fediverse header for a public repository."""
++    if method_name(request) not in ("GET", "HEAD"):
++        return json_response({"error": "method_not_allowed"}, status=405)
++    parts = urlparse(request.url)
++    cache_key = (_ap_origin(env, request) + parts.path
++                 + (("?" + parts.query) if parts.query else ""))
++    cached = await edge_cache_match_media(cache_key, "image/png")
++    if cached is not None:
++        return cached
++    await ensure_schema(env)
++    if await _repo_is_private(env, owner, repo):
++        return json_response({"error": "not_found"}, status=404)
++    repo_bi = await blind_index(env, owner + "/" + repo)
++    row = await d1_first(
++        env, "SELECT data FROM repositories WHERE key_bi=?", repo_bi)
++    if not row:
++        return json_response({"error": "not_found"}, status=404)
++    rec = (await decrypt_row(env, row.get("data"))) or {}
++
++    # Verified contribution snapshots carry exact language byte/file totals.
++    # Existing repos without a snapshot still get the full catalog infographic.
++    language_rows = await d1_all(
++        env,
++        """SELECT languages.language, languages.bytes, languages.files
++             FROM profile_contribution_projects AS projects
++             JOIN profile_contribution_languages AS languages
++               ON languages.source_repo_bi=projects.source_repo_bi
++              AND languages.generation_bi=projects.active_generation_bi
++            WHERE projects.source_repo_bi=? AND projects.is_public=1
++            ORDER BY languages.bytes DESC LIMIT 10""",
++        repo_bi)
++    languages = [{
++        "name": item.get("language") or "Other",
++        "bytes": item.get("bytes") or 0,
++        "files": item.get("files") or 0,
++        "color": contributions.language_color(item.get("language")),
++    } for item in (language_rows or [])]
++
++    stars_row = await d1_first(
++        env, "SELECT COUNT(*) AS n FROM repo_stars WHERE repo_bi=?", repo_bi)
++    followers = 0
++    if await _ap_enabled(env):
++        handle = ap.repo_handle(str(owner).lower(), str(repo).lower())
++        actor_bi = await _ap_actor_bi(env, AP_ACTOR_REPO, handle)
++        follower_row = await d1_first(
++            env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
++            actor_bi)
++        followers = (follower_row or {}).get("c", 0) or 0
++    mirrors = 0
++    try:
++        now_ms = int(time.time() * 1000)
++        for entry in await _decrypted_public_catalog(env, now_ms):
++            if repo_mirror_same_group(rec, entry.get("data")):
++                mirrors += 1
++    except Exception:
++        mirrors = 0
++    info = {
++        "owner": owner,
++        "repo": repo,
++        "description": rec.get("description", ""),
++        "branch": rec.get("branch", ""),
++        "stars": (stars_row or {}).get("n", 0) or 0,
++        "followers": followers,
++        "mirrors": max(1, mirrors),
++        "issues": rec.get("issueCount", ""),
++        "pulls": rec.get("pullCount", ""),
++        "commits": rec.get("commitCount", ""),
++        "branches": rec.get("branchCount", ""),
++        "discussions": rec.get("discussionCount", ""),
++        "artifacts": rec.get("artifactCount", ""),
++        "sizeBytes": rec.get("sizeBytes", 0),
++        "updatedAt": rec.get("updatedAt", ""),
++        "activityWeeks": rec.get("activityWeeks", []),
++        "languages": languages,
++        "files": sum(int(item.get("files") or 0) for item in languages),
++    }
++    png = repo_banner.render_repo_banner(info, time.time())
++    # Versioned actor/about URLs are immutable. Direct diagnostic requests use
++    # the same response but naturally rotate out at the edge after one day.
++    resp = JsResponse.new(_to_js(bytes(png)), to_js({
++        "status": 200,
++        "headers": {
++            "content-type": "image/png",
++            "cache-control": "public, max-age=86400",
++        },
++    }))
++    await edge_cache_put(cache_key, resp)
++    return resp
++
++
+ async def repo_card_handler(env, request, owner, repo):
+     # Social-preview info card (adhoc #46): the repo page's og:image points
+     # here, so a Mastodon/Slack/Twitter unfurl shows the repo's name,
+@@ -18849,6 +18969,15 @@ class Default(WorkerEntrypoint):
+             return await repo_media_handler(
+                 self.env, request, owner, repo, repo_media_match.group(3))
+ 
++        repo_banner_match = REPO_BANNER_RE.match(url.path)
++        if repo_banner_match:
++            owner = safe_segment(repo_banner_match.group(1))
++            repo = safe_segment(repo_banner_match.group(2))
++            if not owner or not repo:
++                return json_response({"error": "not_found"}, status=404)
++            return await repo_banner_handler(
++                self.env, request, owner, repo)
++
+         repo_card_match = REPO_CARD_RE.match(url.path)
+         if repo_card_match:
+             owner = safe_segment(repo_card_match.group(1))
+@@ -19404,9 +19533,14 @@ class Default(WorkerEntrypoint):
+         rec = await decrypt_row(self.env, repo_row.get("data"))
+         description = clean_string(
+             (rec or {}).get("description", "") or "", 240).strip()
+-        # Branding: owner-uploaded logo/banner (repo About tab), else defaults.
++        # Branding: owner-uploaded logo/banner (repo About tab), else the live
++        # repository infographic header (logo keeps the instance default).
+         icon_url = AP_AVATAR_PATH
+-        image_url = AP_BANNER_PATH
++        image_url = "/api/repo/%s/%s/banner.png?v=%s" % (
++            quote(owner), quote(repo), quote(str(
++                (rec or {}).get("updatedAt") or
++                (rec or {}).get("stateHash") or
++                (rec or {}).get("commit") or "0")))
+         media_rows = await d1_all(
+             self.env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?",
+             key_bi)
+diff --git a/cloudflare_worker/src/urls.py b/cloudflare_worker/src/urls.py
+index d48395fa..d3ad4ebe 100644
+--- a/cloudflare_worker/src/urls.py
++++ b/cloudflare_worker/src/urls.py
+@@ -125,6 +125,10 @@ REPO_AP_POSTS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/ap-posts$")
+ # Owner-uploaded repo branding (logo/banner PNG) served publicly — referenced
+ # by the repo's fediverse actor document as its avatar/header.
+ REPO_MEDIA_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/media/(logo|banner)\.png$")
++# Generated default fediverse header.  Its ?v=<catalog updatedAt> cache buster
++# changes whenever the repository snapshot changes; an uploaded banner still
++# overrides it through REPO_MEDIA_RE above.
++REPO_BANNER_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/banner\.png$")
+ # Rendered social-preview info card (repo stats grid): the repo page's
+ # og:image, so Mastodon/Slack/Twitter unfurls show the repo's details.
+ REPO_CARD_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/card\.png$")
