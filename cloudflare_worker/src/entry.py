@@ -7963,6 +7963,42 @@ async def _account_logout(env, request):
     )
 
 
+async def _account_admin_session(env, request):
+    # Re-mint the HttpOnly `forkmesh_admin` page cookie from a still-valid
+    # account session token, so an admin the app already treats as logged in
+    # (localStorage session + 30-day forkmesh_session marker) doesn't have to
+    # retype their password just to open the admin dashboard. The 12h admin
+    # cookie is set only by _account_login and lapses long before the login
+    # session does, which is why the admin page used to bounce a logged-in
+    # admin back to /login (adhoc #163). The session token — issued only to an
+    # already-authenticated caller and refreshed on every account poll — proves
+    # identity here; is_admin gates the grant, so this never escalates.
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    token = clean_string((data or {}).get("sessionToken", ""), 512).strip()
+    if not token:
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = clean_string(auth[7:], 512).strip()
+    name = _account_session_token_name(env, token)
+    if not name or not await _is_admin(env, name):
+        return json_response(
+            {"error": "not_admin"},
+            status=403,
+            extra_headers={"Set-Cookie": _clear_admin_session_cookie()},
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    admin_path = _admin_path(env)
+    admin_url = ("/" + admin_path + "?admin=" + quote(name)) if admin_path else ""
+    return json_response(
+        {"ok": True, "nodeName": name, "adminUrl": admin_url},
+        extra_headers={"Set-Cookie": _admin_session_cookie(env, name)},
+        cache_control="no-store, max-age=0, must-revalidate",
+    )
+
+
 def _random_bytes(n):
     return bytes(js_crypto.getRandomValues(Uint8Array.new(n)).to_py())
 
@@ -11028,6 +11064,8 @@ async def accounts_handler(env, request):
         return await _account_rotate(env, request)
     if url.path == "/api/accounts/logout" and method == "POST":
         return await _account_logout(env, request)
+    if url.path == "/api/accounts/admin-session" and method == "POST":
+        return await _account_admin_session(env, request)
     if url.path == "/api/accounts/rotate" and method == "POST":
         return await _account_rotate(env, request)
     if url.path == "/api/accounts/forgot-password" and method == "POST":
