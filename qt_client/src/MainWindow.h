@@ -1347,12 +1347,20 @@ private:
     // (issue #261). The merge runs first and synchronously; only if it succeeds
     // do we drop the PR record and its branch.
     void mergeAndDeleteCurrentPull();
+    // Bulk-delete every merged PR (and its head branch, where safe) in the
+    // current repo in one confirmed step. Runs the deletions one at a time,
+    // chaining through deletePullAndBranchAsync's onDone callback so a single
+    // PullStore worker is never touched concurrently.
+    void deleteAllMergedPullsAndBranches();
     // Shared worker: delete a PR record and (best-effort) remove its local head
     // branch, reporting through the repo-detail notice. The caller owns the
     // confirmation (and any prior merge); pass propagate=true to push the result
     // to the mirror (the merge-and-delete flow needs the merge to reach peers).
+    // onDone fires after the worker settles (success or failure) so callers can
+    // chain further work, e.g. the next deletion in a bulk run.
     void deletePullAndBranchAsync(int number, const QString &head, bool haveBranch,
-                                  bool rewriteHistory, bool propagate);
+                                  bool rewriteHistory, bool propagate,
+                                  std::function<void()> onDone = {});
     void setPullDeleteButtonsEnabled(bool enabled);
     // Confirm a PR deletion; *rewriteHistory is set from an opt-in checkbox
     // (off by default — a plain delete is fast and leaves history intact).
@@ -4023,6 +4031,7 @@ private:
     QPushButton *m_pullChooseDirButton = nullptr;
     QPushButton *m_pullImportButton = nullptr;
     QPushButton *m_pullSyncButton = nullptr;
+    QPushButton *m_pullDeleteAllMergedButton = nullptr; // bulk-delete merged PRs + branches
     QWidget *m_pullDetail = nullptr;
     QPushButton *m_pullHideDetailButton = nullptr;
     bool m_pullDetailHidden = false;

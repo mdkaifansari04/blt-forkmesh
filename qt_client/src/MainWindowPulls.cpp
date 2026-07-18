@@ -88,8 +88,9 @@ QWidget *MainWindow::buildPullsTab()
     m_pullChooseDirButton = new QPushButton("Choose directory");
     m_pullImportButton = new QPushButton("Import patch");
     m_pullSyncButton = new QPushButton("Sync inbox");
+    m_pullDeleteAllMergedButton = new QPushButton("Delete all merged + branches");
     for (QPushButton *b : {m_pullNewButton, m_pullChooseDirButton, m_pullImportButton,
-                           m_pullSyncButton}) {
+                           m_pullSyncButton, m_pullDeleteAllMergedButton}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -98,9 +99,12 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullChooseDirButton, "file-directory", 16);
     setOcticon(m_pullImportButton, "download", 16);
     setOcticon(m_pullSyncButton, "sync", 16);
+    setOcticon(m_pullDeleteAllMergedButton, "trash", 16);
     m_pullChooseDirButton->setToolTip("Create a pull request from another local checkout of this repository");
     m_pullImportButton->setToolTip("Open a .patch/.diff file (e.g. a downloaded commit) as a pull request");
     m_pullSyncButton->setToolTip("Pull PR submissions filed by other nodes and merge them");
+    m_pullDeleteAllMergedButton->setToolTip(
+        "Delete every merged pull request in this repo and its head branch");
     connect(m_pullImportButton, &QPushButton::clicked, this,
             &MainWindow::importPatchAsPull);
     auto *toolbar = new QHBoxLayout;
@@ -109,6 +113,7 @@ QWidget *MainWindow::buildPullsTab()
     toolbar->addWidget(m_pullChooseDirButton);
     toolbar->addWidget(m_pullImportButton);
     toolbar->addWidget(m_pullSyncButton);
+    toolbar->addWidget(m_pullDeleteAllMergedButton);
     toolbar->addStretch();
 
     m_pullSearch = new QLineEdit;
@@ -995,6 +1000,8 @@ QWidget *MainWindow::buildPullsTab()
     connect(m_pullChooseDirButton, &QPushButton::clicked,
             this, &MainWindow::promptNewPullFromDirectory);
     connect(m_pullSyncButton, &QPushButton::clicked, this, &MainWindow::syncPullsInbox);
+    connect(m_pullDeleteAllMergedButton, &QPushButton::clicked, this,
+            &MainWindow::deleteAllMergedPullsAndBranches);
     connect(m_pullUpdateButton, &QPushButton::clicked,
             this, &MainWindow::updateCurrentPullBranch);
     connect(m_pullMergeButton, &QPushButton::clicked, this, &MainWindow::mergeCurrentPull);
@@ -3649,6 +3656,17 @@ void MainWindow::updatePullActionState()
         m_pullImportButton->setEnabled(writable);
     if (m_pullSyncButton)
         m_pullSyncButton->setEnabled(writable);
+    if (m_pullDeleteAllMergedButton) {
+        bool anyMerged = false;
+        for (const PullRequest &pr : m_currentPulls) {
+            if (pr.status == QLatin1String("merged")) {
+                anyMerged = true;
+                break;
+            }
+        }
+        m_pullDeleteAllMergedButton->setEnabled(writable && anyMerged &&
+                                                !m_pullDeleteInProgress);
+    }
     if (m_pullUpdateButton) {
         m_pullUpdateButton->setVisible(writable && have && open && behind);
         m_pullUpdateButton->setEnabled(writable && have && open && behind);
@@ -6770,6 +6788,8 @@ void MainWindow::setPullDeleteButtonsEnabled(bool enabled)
         m_pullDeleteBranchButton->setEnabled(enabled);
     if (m_pullMergeDeleteButton)
         m_pullMergeDeleteButton->setEnabled(enabled);
+    if (m_pullDeleteAllMergedButton)
+        m_pullDeleteAllMergedButton->setEnabled(enabled);
 }
 
 bool MainWindow::confirmPullDeletion(const QString &prompt, bool *rewriteHistory)
@@ -6904,6 +6924,56 @@ void MainWindow::deleteCurrentPullAndBranch()
                              /*propagate=*/false);
 }
 
+// Bulk-delete every merged PR in the current repo, and its head branch where
+// safe, in one confirmed step. The deletions run one at a time — each chains
+// to the next through deletePullAndBranchAsync's onDone callback — so the
+// PullStore worker thread is never shared across concurrent deletes.
+void MainWindow::deleteAllMergedPullsAndBranches()
+{
+    if (m_pullDeleteInProgress) {
+        setRepoDetailNotice(
+            QStringLiteral("A pull request deletion is already running."));
+        return;
+    }
+    QList<PullRequest> merged;
+    for (const PullRequest &pr : std::as_const(m_currentPulls)) {
+        if (pr.status == QLatin1String("merged"))
+            merged.append(pr);
+    }
+    if (merged.isEmpty()) {
+        setRepoDetailNotice(QStringLiteral("No merged pull requests to delete."));
+        return;
+    }
+
+    const QString prompt =
+        QStringLiteral("Permanently delete %1 merged pull request(s) and their "
+                       "branches? This cannot be undone.")
+            .arg(merged.size());
+    bool rewriteHistory = false;
+    if (!confirmPullDeletion(prompt, &rewriteHistory))
+        return;
+
+    auto queue = std::make_shared<QList<PullRequest>>(std::move(merged));
+    auto deletedCount = std::make_shared<int>(0);
+    auto step = std::make_shared<std::function<void()>>();
+    *step = [this, queue, deletedCount, rewriteHistory, step]() {
+        if (queue->isEmpty()) {
+            setRepoDetailNotice(
+                QStringLiteral("Deleted %1 merged pull request(s).").arg(*deletedCount));
+            return;
+        }
+        const PullRequest pr = queue->takeFirst();
+        // Never touch the base branch (or the branch currently checked out): only
+        // a distinct feature branch is a safe target.
+        const bool haveBranch =
+            !pr.head.isEmpty() && pr.head != pr.base && pr.head != currentRef();
+        ++*deletedCount;
+        deletePullAndBranchAsync(pr.number, pr.head, haveBranch, rewriteHistory,
+                                 /*propagate=*/false, [step] { (*step)(); });
+    };
+    (*step)();
+}
+
 // Merge the pull request, then delete it and its head branch in one confirmed
 // step — the "merge, delete PR + branch" workflow (issue #261). The merge runs
 // first and synchronously; only if it succeeds do we drop the PR record and its
@@ -6988,7 +7058,8 @@ void MainWindow::mergeAndDeleteCurrentPull()
 // way deletePull only touches git (no event signing) so a copied store is safe.
 void MainWindow::deletePullAndBranchAsync(int number, const QString &head,
                                           bool haveBranch, bool rewriteHistory,
-                                          bool propagate)
+                                          bool propagate,
+                                          std::function<void()> onDone)
 {
     const int deleted = number;
     const QString dir = repoGitDir();
@@ -7014,7 +7085,7 @@ void MainWindow::deletePullAndBranchAsync(int number, const QString &head,
         });
     connect(worker, &QThread::finished, this,
             [this, worker, ok, error, deleted, head, haveBranch, dir, haveWorkTree,
-             propagate]() {
+             propagate, onDone]() {
                 m_pullDeleteInProgress = false;
                 QApplication::restoreOverrideCursor();
                 setPullDeleteButtonsEnabled(true);
@@ -7025,6 +7096,8 @@ void MainWindow::deletePullAndBranchAsync(int number, const QString &head,
                             ? QStringLiteral("Could not delete the pull request.")
                             : *error);
                     worker->deleteLater();
+                    if (onDone)
+                        onDone();
                     return;
                 }
                 if (m_currentPullNumber == deleted)
@@ -7059,6 +7132,8 @@ void MainWindow::deletePullAndBranchAsync(int number, const QString &head,
                 if (propagate)
                     propagateRepoUpdate(m_repoDetailIndex);
                 worker->deleteLater();
+                if (onDone)
+                    onDone();
             });
     worker->start();
 }
