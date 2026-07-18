@@ -3393,7 +3393,10 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRowScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     mainRowScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     mainRowScroll->setMinimumWidth(0);
-    mainRowScroll->setFixedHeight(56);
+    // 40 matches the row's tallest element (the 40x40 avatar buttons); this used
+    // to be 56 to fit the online/reward toggle that has since moved into the
+    // node profile panel, leaving a dead strip of empty space below the row.
+    mainRowScroll->setFixedHeight(40);
     layout->addWidget(mainRowScroll);
 
     // Hairline divider separating the relay/node row from the section nav below.
