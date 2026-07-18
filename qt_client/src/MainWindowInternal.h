@@ -221,43 +221,6 @@ protected:
     }
 };
 
-// A QStackedWidget that reports only the *current* page's size hints instead
-// of the element-wise maximum across every page. Plain QStackedWidget sizes
-// itself to its tallest page even when a shorter one is showing, so wrapping
-// one in a QScrollArea made the whole section scroll (a page-wide scrollbar on
-// the right edge) whenever any *other* tab was taller than the viewport — even
-// on tabs like Agents that already scroll their own left/right panels. Sizing
-// to the visible page lets a short, self-scrolling page fit the viewport (its
-// panels do the scrolling), while a genuinely tall page still reports a large
-// hint and gets the outer scroll as a fallback (adhoc #92).
-class CurrentPageStackedWidget : public QStackedWidget
-{
-public:
-    explicit CurrentPageStackedWidget(QWidget *parent = nullptr)
-        : QStackedWidget(parent)
-    {
-        // The reported hint depends on which page is current, so re-run the
-        // parent layout each time the page switches, otherwise the enclosing
-        // scroll area keeps the previous page's (possibly taller) geometry.
-        connect(this, &QStackedWidget::currentChanged, this,
-                [this](int) { updateGeometry(); });
-    }
-
-    QSize sizeHint() const override
-    {
-        if (QWidget *w = currentWidget())
-            return w->sizeHint();
-        return QStackedWidget::sizeHint();
-    }
-
-    QSize minimumSizeHint() const override
-    {
-        if (QWidget *w = currentWidget())
-            return w->minimumSizeHint();
-        return QStackedWidget::minimumSizeHint();
-    }
-};
-
 // Cross-region free helpers shared by several MainWindow feature .cpp files.
 // Defined in MainWindowShared.cpp.
 QString openAiAuthHeader(const QString &apiKey);
