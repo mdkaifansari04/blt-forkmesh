@@ -3586,6 +3586,7 @@ private:
     QButtonGroup *m_issueTabGroup = nullptr; // Issues / Milestones / Labels tabs
     QButtonGroup *m_repoDetailTabs = nullptr;
     QPushButton *m_repoCodeTab = nullptr;
+    QString m_repoCodeSizePath; // mirror the displayed "Code (N MB)" was computed for
     QPushButton *m_repoIssuesTab = nullptr;
     QPushButton *m_repoPullsTab = nullptr;
     QPushButton *m_repoDiscussionsTab = nullptr;
