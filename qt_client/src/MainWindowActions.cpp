@@ -957,9 +957,8 @@ void MainWindow::updateNotificationButton()
     if (!m_notificationButton)
         return;
     const int pending = pendingActionCount();
-    m_notificationButton->setText(pending > 0
-                                      ? QStringLiteral("Notifications •")
-                                      : QStringLiteral("Notifications"));
+    // Icon-only bell (adhoc #137): the pending count rides on the tooltip and the
+    // amber "alert" accent below rather than a "•" appended to a text label.
     m_notificationButton->setToolTip(
         pending > 0
             ? QStringLiteral("%1 action(s) waiting for approval").arg(pending)
