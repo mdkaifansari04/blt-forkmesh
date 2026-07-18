@@ -1189,7 +1189,10 @@ private:
     // Files-changed authorship filter: show only agent- or human-authored files
     // in the current PR, driven by m_pullFileAuthorFilter (issue #365).
     void applyPullFileAuthorFilter();
-    void renderPullReviewSummary(const PullRequest &pr);
+    // Takes the PR by value: runIdsForPull() below pumps the event loop, which
+    // can re-enter reloadPulls() and reassign m_currentPulls — a reference into
+    // it would dangle mid-call (adhoc #119).
+    void renderPullReviewSummary(PullRequest pr);
     // Render every changed file of the current PR into one continuously
     // scrollable diff view (issue #250), so the reviewer can scroll the whole PR
     // and the file list / Prev-Next jump between files.
@@ -1242,17 +1245,21 @@ private:
     void setPullThreadState(const QString &threadId, const QString &state);
     void renderPullThread(const PullRequest &pr);   // review/comment conversation
     void renderPullCommits(const PullRequest &pr);  // commits that make up the PR
-    void renderPullChecks(const PullRequest &pr);   // action runs for the PR's commits
-    void renderPullChecksSummary(const PullRequest &pr); // inline conversation card
+    // The next two and runIdsForPull/updatePullSubTabCounts take the PR by
+    // value on purpose: they pump the event loop (git reads), and callers often
+    // pass references into m_currentPulls, which a nested reloadPulls() can
+    // reassign mid-call (adhoc #119).
+    void renderPullChecks(PullRequest pr);          // action runs for the PR's commits
+    void renderPullChecksSummary(PullRequest pr);   // inline conversation card
     void showPullCheckLog(int runId);               // load a run's log into the panel
     QStringList pullCommitShas(const PullRequest &pr) const; // base..head SHAs
-    QList<int> runIdsForPull(const PullRequest &pr) const;   // matching action runs
+    QList<int> runIdsForPull(PullRequest pr) const; // matching action runs
     void runChecksForCurrentPull();                 // enqueue workflows at PR head
     // Check out the PR's head into a throwaway worktree, build the ForkMesh app
     // from it, and launch the freshly built binary as an isolated preview node so
     // the reviewer can try the change running before merging (issue #214).
     void buildAndPreviewCurrentPull();
-    void updatePullSubTabCounts(const PullRequest &pr);
+    void updatePullSubTabCounts(PullRequest pr);
     void refreshOpenPullChecks();                   // re-render checks for the open PR
     // Which event a workflow run is being queued for: a code push (the default)
     // or a published release. Selects the matching `on:` trigger to enqueue.
@@ -1469,15 +1476,12 @@ private:
     // Issue #291: flag agent sessions whose worktree/PR has landed in the base
     // branch. markAgentSessionsMerged() records it eagerly when ForkMesh merges
     // a PR/worktree; refreshAgentMergeState() is the catch-all run on reload (it
-    // also picks up merges synced from peers or done by hand);
-    // agentSessionLandedInBase() answers the question for one session.
+    // also picks up merges synced from peers or done by hand) — its per-branch
+    // git reads run on a worker thread, and markAgentSessionsLanded() applies
+    // the verdicts (by session id) back on the main thread.
     bool markAgentSessionsMerged(int prNumber, const QString &branch);
     void refreshAgentMergeState();
-    // dir = the repo's git dir, base = its default branch — resolved once by the
-    // caller and passed in so a whole-list refresh doesn't re-shell `git branch`
-    // (etc.) per session.
-    bool agentSessionLandedInBase(const AgentSession &session, const QString &dir,
-                                  const QString &base) const;
+    void markAgentSessionsLanded(const QList<int> &sessionIds, bool refreshUi);
     void assignIssueToAgent(const QString &provider, const QString &model = QString());
     // Core of assignIssueToAgent, factored out so the issue looper can drive it
     // for any issue (not just the selected one). Returns the new session id, or 0
@@ -3477,6 +3481,10 @@ private:
     QPushButton *m_agentStatusLabel = nullptr;
     QWidget *m_agentStatusIconsHost = nullptr;
     QHBoxLayout *m_agentStatusIconsLayout = nullptr;
+    // "N more" button on the right of the strip (adhoc #115): replaces the old
+    // horizontal scrollbar. Shown only when there are more sessions than fit in
+    // the capped icon row; clicking it jumps to the Agents tab.
+    QPushButton *m_agentStatusMoreButton = nullptr;
     // Voice input (whisper.cpp): the mic button is hidden until whisper.cpp is
     // installed. While recording, m_voiceRecordProc captures a temp WAV which
     // m_voiceTranscribeProc transcribes — once when recording stops, and live on
@@ -4813,7 +4821,7 @@ private:
     bool m_nodeSwitching = false;      // a node switch's heavy load is running
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
     bool m_branchesPanelLoading = false; // re-entrancy guard for loadBranchesPanel
-    bool m_agentMergeStateRefreshing = false; // re-entrancy guard, refreshAgentMergeState
+    bool m_agentMergeStateRefreshing = false; // refreshAgentMergeState worker in flight
     // Shared re-entrancy guard for the two heavy periodic refreshes
     // (refreshOpenRepoDetail + refreshRepositoryList): each runs synchronous git
     // reads under a GitKeepAlive that pumps the event loop, so a second one firing

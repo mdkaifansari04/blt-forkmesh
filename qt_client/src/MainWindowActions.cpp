@@ -463,7 +463,11 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
 {
     if (repoIndex < 0 || repoIndex >= m_repositories.size() || !m_actionStore)
         return;
-    const RepositoryRecord &repo = m_repositories.at(repoIndex);
+    // Copy, don't reference: cancelSupersededRuns() below pumps the event loop
+    // (ActionRunner::stop → QProcess::waitForFinished), and a nested refresh can
+    // reassign m_repositories — a reference would dangle for the loop's later
+    // iterations (adhoc #119).
+    const RepositoryRecord repo = m_repositories.at(repoIndex);
 
     // Metadata-only pushes (issues, pull requests, commit comments) shouldn't
     // trigger CI: they carry no code change. List the pushed commit's files and
@@ -828,9 +832,14 @@ void MainWindow::refreshOpenPullChecks()
 {
     if (m_currentPullNumber < 0)
         return;
-    for (const PullRequest &pr : std::as_const(m_currentPulls)) {
-        if (pr.number != m_currentPullNumber)
+    for (const PullRequest &it : std::as_const(m_currentPulls)) {
+        if (it.number != m_currentPullNumber)
             continue;
+        // Snapshot before rendering: each render call pumps the event loop
+        // (runIdsForPull → git reads), which can re-enter reloadPulls() and
+        // reassign m_currentPulls — the loop reference would dangle before the
+        // next call (adhoc #119 SIGSEGV).
+        const PullRequest pr = it;
         renderPullChecks(pr);
         renderPullChecksSummary(pr);
         renderPullReviewSummary(pr);
@@ -1458,9 +1467,14 @@ void MainWindow::ensureActionStrip()
     // adhoc #112) makes several queued/running actions read as a single box
     // holding multiple lines instead of a stack of separate boxes.
     m_actionStrip->setAttribute(Qt::WA_StyledBackground, true);
+    // One thin-bordered "main bar" that holds the stacked run lines; colours
+    // follow the active theme so the strip sits flush with the light UI instead
+    // of showing as a dark box with unreadable white text (adhoc #118).
+    const bool dark = currentThemeIsDark();
     m_actionStrip->setStyleSheet(
-        QStringLiteral("#actionStrip { background-color: #161b22; "
-                        "border: 1px solid #30363d; border-radius: 8px; }"));
+        QStringLiteral("#actionStrip { background-color: %1; "
+                        "border: 1px solid %2; border-radius: 8px; }")
+            .arg(dark ? "#161b22" : "#ffffff", dark ? "#30363d" : "#d0d7de"));
     auto *col = new QVBoxLayout(m_actionStrip);
     col->setContentsMargins(8, 6, 8, 6);
     col->setSpacing(4);

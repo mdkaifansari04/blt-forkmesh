@@ -949,10 +949,17 @@ QWidget *MainWindow::buildPullsTab()
     m_pullTabBadge = qobject_cast<QPushButton *>(m_pullSubTabs->button(4));
     connect(m_pullSubTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_pullSubStack->setCurrentIndex(id);
-        if (id == 2) // refresh the Checks table when it's brought forward
+        if (id == 2) { // refresh the Checks table when it's brought forward
+            // Copy the PR out before rendering: renderPullChecks pumps the
+            // event loop, which can reassign m_currentPulls and invalidate the
+            // loop's iterators mid-iteration (adhoc #119).
+            PullRequest current;
             for (const PullRequest &pr : std::as_const(m_currentPulls))
                 if (pr.number == m_currentPullNumber)
-                    renderPullChecks(pr);
+                    current = pr;
+            if (current.number > 0)
+                renderPullChecks(current);
+        }
         if (id == 3) // Files changed brought forward: show the sticky header now,
             // not only after the first scroll (adhoc #56). Defer so the diff
             // viewport has laid out at its shown size before we measure it.
@@ -1363,7 +1370,7 @@ void MainWindow::refreshPullList()
     }
 }
 
-void MainWindow::renderPullReviewSummary(const PullRequest &pr)
+void MainWindow::renderPullReviewSummary(PullRequest pr)
 {
     if (!m_pullReviewSummary)
         return;
@@ -1471,10 +1478,20 @@ void MainWindow::renderPullReviewSummary(const PullRequest &pr)
 
 void MainWindow::showPull(int number)
 {
-    const PullRequest *found = nullptr;
+    // Snapshot the PR into a local value rather than holding a pointer into
+    // m_currentPulls: rendering below pumps the event loop (diff render, file
+    // list, setCurrentRow), and a deferred agent session finishing in that
+    // window can re-enter reloadPulls(), reassigning m_currentPulls and freeing
+    // the element a raw pointer would dangle into — the copy stays valid across
+    // any such reload (crash: free() invalid pointer via renderPullThread).
+    PullRequest foundPull;
+    bool havePull = false;
     for (const PullRequest &pr : m_currentPulls)
-        if (pr.number == number)
-            found = &pr;
+        if (pr.number == number) {
+            foundPull = pr;
+            havePull = true;
+        }
+    const PullRequest *found = havePull ? &foundPull : nullptr;
     m_currentPullNumber = found ? number : -1;
     m_pullFiles->clear();
     m_pullFileDiffs.clear();
@@ -3068,17 +3085,18 @@ QStringList MainWindow::pullCommitShas(const PullRequest &pr) const
 // Ids of action runs whose pushed commit belongs to this PR (any of its commits
 // or its resolved head tip), scoped to the open repo's owner/name. Newest first,
 // matching m_actionRuns ordering.
-QList<int> MainWindow::runIdsForPull(const PullRequest &pr) const
+QList<int> MainWindow::runIdsForPull(PullRequest pr) const
 {
     QList<int> ids;
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return ids;
-    // Copy the owner/name by value up front: pullCommitShas() and the rev-parse
-    // below both run synchronous git reads that pump the event loop (under a
-    // GitKeepAlive scope), and that pump can re-enter action/refresh paths which
-    // reassign m_repositories. A reference into it would then dangle and this
-    // read would be a use-after-free (adhoc #106) — the same reentrancy the
-    // cancelSupersededRuns/processActionQueue snapshots already guard against.
+    // `pr` is taken by value and owner/name are copied up front: pullCommitShas()
+    // and the rev-parse below both run synchronous git reads that pump the event
+    // loop (under a GitKeepAlive scope), and that pump can re-enter
+    // action/refresh paths which reassign m_repositories and m_currentPulls. A
+    // reference into either would then dangle and the reads after the pump would
+    // be use-after-frees (adhoc #106, adhoc #119 — pr.head below crashed when a
+    // caller's reference into m_currentPulls was freed by a nested reload).
     const QString repoOwner = m_repositories.at(m_repoDetailIndex).owner;
     const QString repoName = m_repositories.at(m_repoDetailIndex).name;
     const QStringList commitShas = pullCommitShas(pr);
@@ -3100,7 +3118,7 @@ QList<int> MainWindow::runIdsForPull(const PullRequest &pr) const
     return ids;
 }
 
-void MainWindow::renderPullChecks(const PullRequest &pr)
+void MainWindow::renderPullChecks(PullRequest pr)
 {
     if (!m_pullChecksTable)
         return;
@@ -3160,7 +3178,7 @@ void MainWindow::renderPullChecks(const PullRequest &pr)
 
 // Compact pass/fail/running line shown inline at the end of the Conversation,
 // with a link that jumps to the Checks tab. Hidden when there are no runs.
-void MainWindow::renderPullChecksSummary(const PullRequest &pr)
+void MainWindow::renderPullChecksSummary(PullRequest pr)
 {
     if (!m_pullChecksSummary)
         return;
@@ -3227,18 +3245,23 @@ void MainWindow::runChecksForCurrentPull()
     if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
         m_repoDetailIndex >= m_repositories.size())
         return;
-    const PullRequest *pr = nullptr;
+    // Copy the PR and repo out of their containers: the rev-parse below pumps
+    // the event loop and queueWorkflowsForCommit can cancel a superseded run
+    // (nested QProcess::waitForFinished pump). Either pump can re-enter reload
+    // paths that reassign m_currentPulls / m_repositories, leaving a pointer or
+    // reference into them dangling (adhoc #119).
+    PullRequest pr;
     for (const PullRequest &p : std::as_const(m_currentPulls))
         if (p.number == m_currentPullNumber)
-            pr = &p;
-    if (!pr || pr->head.isEmpty())
+            pr = p;
+    if (pr.number <= 0 || pr.head.isEmpty())
         return;
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
     // Resolve the PR head to a concrete commit the runner can check out.
     const QString dir = repoGitDir();
     QByteArray tip;
     if (dir.isEmpty() ||
-        !runGitCapture(dir, {"rev-parse", pr->head}, &tip, nullptr) ||
+        !runGitCapture(dir, {"rev-parse", pr.head}, &tip, nullptr) ||
         tip.trimmed().isEmpty()) {
         setRepoDetailNotice(
             "Could not resolve the pull request's head commit to run checks.", true);
@@ -3246,11 +3269,11 @@ void MainWindow::runChecksForCurrentPull()
     }
     queueWorkflowsForCommit(m_repoDetailIndex, repo.owner, repo.name,
                             QString::fromUtf8(tip).trimmed(),
-                            QStringLiteral("refs/heads/") + pr->head);
-    renderPullChecks(*pr);
-    renderPullChecksSummary(*pr);
-    renderPullReviewSummary(*pr);
-    updatePullSubTabCounts(*pr);
+                            QStringLiteral("refs/heads/") + pr.head);
+    renderPullChecks(pr);
+    renderPullChecksSummary(pr);
+    renderPullReviewSummary(pr);
+    updatePullSubTabCounts(pr);
 }
 
 void MainWindow::buildAndPreviewCurrentPull()
@@ -3440,7 +3463,7 @@ void MainWindow::buildAndPreviewCurrentPull()
     (*runNext)(0);
 }
 
-void MainWindow::updatePullSubTabCounts(const PullRequest &pr)
+void MainWindow::updatePullSubTabCounts(PullRequest pr)
 {
     const auto label = [](QPushButton *b, const QString &name, int n) {
         if (b)
