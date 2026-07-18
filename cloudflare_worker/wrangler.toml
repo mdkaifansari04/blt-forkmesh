@@ -203,13 +203,15 @@ deleted_classes = [
 enabled = true
 head_sampling_rate = 1
 
+# Logs stay in the Cloudflare dashboard only. The Sentry destinations added in
+# the 2026-07-18 full-sampling round exported an info event for every D1 call,
+# Durable Object websocket wakeup, and request ("d1_run OK",
+# "hibernatableWebSocket OK", "POST OK", ...), flooding Sentry. Real error
+# reporting is unaffected: it goes through capture_sentry_error in src/entry.py.
 [observability.logs]
 enabled = true
 head_sampling_rate = 1
-invocation_logs = false 
-destinations = [ "sentry-logs" ]
+invocation_logs = false
 
 [observability.traces]
-enabled = true
-head_sampling_rate = 1
-destinations = [ "sentry-traces" ]
+enabled = false
