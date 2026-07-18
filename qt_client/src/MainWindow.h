@@ -3044,9 +3044,10 @@ private:
     QPushButton *m_relayIconButton = nullptr;
     QPushButton *m_relayMenuButton = nullptr;
     QPushButton *m_relayOpenButton = nullptr;
-    // Tiny spinning-radar + latency readout sitting just left of the relay name:
-    // probes the active relay once a minute and shows the round-trip time (e.g.
-    // "33ms"), turning into a red alert when the relay doesn't answer. Held as a
+    // Spinning-radar + latency readout sitting on the window-chrome line just
+    // left of the CPU/MEM/DISK sparklines: probes the active relay once a
+    // minute and shows the round-trip time (e.g. "33ms") centered in the dish,
+    // turning into a red alert when the relay doesn't answer. Held as a
     // QWidget* and poked via static_cast (concrete RelayRadarWidget is private to
     // MainWindow.cpp).
     QWidget *m_relayRadar = nullptr;
