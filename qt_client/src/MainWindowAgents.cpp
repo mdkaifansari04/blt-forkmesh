@@ -6847,6 +6847,13 @@ void MainWindow::updateAgentStatusCell(int sessionId)
         // pill on its stale text until the next full showAgentSession()).
         refreshAgentStatusPill(sessionId);
     }
+    // Stream/codex sessions (Claude Code, Codex) never route through
+    // onAgentStatusChanged/onAgentFinished — those only fire for the legacy
+    // AgentRunner pool. Without this, a rebuild queued behind a stream session
+    // stayed stuck showing "Waiting for running actions to finish" forever once
+    // that session went idle (Success/Failed/Waiting), since nothing ever
+    // re-checked the queue (adhoc #104).
+    maybeStartQueuedRebuild();
 }
 
 // Rebuild the "Connected · working on the task…" pill in the session detail

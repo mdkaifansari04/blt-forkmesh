@@ -1343,14 +1343,12 @@ void MainWindow::reloadIssues()
         return;
     m_issuesLoadedSig = sig;
     // Reading every issue's files is a long synchronous loop on a big repo (~2.5s
-    // for a few hundred issues). When this runs inside an interactive load
-    // (openRepoDetail's GitKeepAlive scope), pump the GUI between reads — same
-    // throttle as waitForGit — so the window keeps breathing and the stall
-    // watchdog doesn't fire. Outside such a scope the tick is a no-op, so a plain
-    // post-push reload behaves exactly as before.
+    // for a few hundred issues). Pump the GUI between reads — same throttle as
+    // waitForGit — so the window keeps breathing and the stall watchdog doesn't
+    // fire. This always runs on the GUI thread (a post-push reload included), so
+    // pump unconditionally, matching waitForGit's every-GUI-thread-wait policy.
     m_currentIssues = store.loadAll(nullptr, [] {
-        if (g_gitKeepAliveDepth > 0 &&
-            keepAliveClock().elapsed() - g_lastKeepAlivePumpMs >= 100)
+        if (keepAliveClock().elapsed() - g_lastKeepAlivePumpMs >= 100)
             pumpKeepAlive();
     });
     m_currentLabels = store.loadLabels();

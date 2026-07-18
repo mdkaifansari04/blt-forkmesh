@@ -2111,6 +2111,94 @@ public:
     }
 };
 
+// One row shown in the floating strip above the Actions tab for each queued or
+// running workflow (adhoc #95, adhoc #105). Each action gets a single coloured
+// line drawn behind its name; the line shrinks from the right as the run advances
+// toward its estimated duration (the previous run of the same workflow), so its
+// remaining length is a rough "time left" gauge. Queued runs (no estimate to
+// count down against, or not started) keep a full line. The strip is sized by the
+// owner to span the Actions tab exactly, so the lines never bleed over the
+// neighbouring Security tab. Pure QWidget (no moc); the owner ticks it via
+// update() and reads the run id back off the "actionRunId" dynamic property in
+// its event filter.
+class ActionEstimateBox : public QWidget
+{
+public:
+    explicit ActionEstimateBox(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        // A single-line row; width is set by the owner to match the tab.
+        setFixedHeight(24);
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    // startedAtMs: when the run's clock began (0 = queued/not started, so the line
+    // stays full). estimateMs: expected duration from the previous run of the same
+    // workflow (0 = unknown, so the line stays full as there's nothing to count
+    // down against).
+    void configure(const QString &name, qint64 startedAtMs, qint64 estimateMs)
+    {
+        m_name = name;
+        m_started = startedAtMs;
+        m_estimate = estimateMs;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+
+        // Fraction of the estimate still remaining (1 = just started/queued, 0 =
+        // at/over estimate). Without a started clock or an estimate we can't count
+        // down, so stay full.
+        double remaining = 1.0;
+        if (m_estimate > 0 && m_started > 0) {
+            const qint64 elapsed =
+                QDateTime::currentMSecsSinceEpoch() - m_started;
+            remaining =
+                qBound(0.0, 1.0 - double(elapsed) / double(m_estimate), 1.0);
+        }
+
+        // One horizontal line, centred behind the name, shrinking from the right
+        // as time elapses. A rainbow gradient keeps the colourful gauge look.
+        const double x0 = box.left() + 4;
+        const double x1 = box.right() - 4;
+        const double y = box.center().y();
+        const double x1lit = x0 + (x1 - x0) * remaining;
+        if (x1lit > x0) {
+            QLinearGradient grad(x0, y, x1, y);
+            const int kStops = 6;
+            for (int i = 0; i <= kStops; ++i)
+                grad.setColorAt(double(i) / kStops,
+                                QColor::fromHsv((i * 300 / kStops) % 360, 200, 235));
+            p.setPen(QPen(QBrush(grad), 4, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(x0, y), QPointF(x1lit, y));
+        }
+
+        // Rounded border over the line.
+        p.setPen(QPen(QColor(0, 0, 0, 160), 1));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(box, 4, 4);
+
+        // Workflow name on top of (in front of) the line, left-aligned.
+        QFont f = font();
+        f.setBold(true);
+        p.setFont(f);
+        p.setPen(QColor(0, 0, 0));
+        const QString elided = p.fontMetrics().elidedText(
+            m_name, Qt::ElideRight, int(box.width()) - 12);
+        p.drawText(box.adjusted(6, 0, -6, 0),
+                   Qt::AlignVCenter | Qt::AlignLeft, elided);
+    }
+
+private:
+    QString m_name;
+    qint64 m_started = 0;
+    qint64 m_estimate = 0;
+};
+
 // A draggable version of the progress bar for the issue detail panel: click or
 // drag anywhere along the track to set the percentage. Pure QWidget (no moc) —
 // the owner wires the result through the onCommitted callback, fired once the
@@ -6535,12 +6623,12 @@ inline QString languageColor(const QString &lang)
     return colors.value(lang, "#8b949e");
 }
 
-// While >0, the git wait below keeps the GUI event loop breathing instead of
-// blocking the main thread outright. A multi-second git read (a big ls-tree,
-// log --numstat, count-objects, …) would otherwise stop the app answering
-// window-manager pings and get flagged "Not Responding". User input is excluded
-// from the pump so a stray click can't re-enter a load mid-flight; openRepoDetail's
-// m_repoDetailLoading guard backstops anything that still slips through.
+// Depth of GitKeepAlive scopes. waitForGit now pumps on every GUI-thread wait
+// regardless (see its comment), so the counter no longer gates anything; the
+// scopes remain because they document interactive multi-read loads and their
+// re-entrancy guards (openRepoDetail's m_repoDetailLoading, the ScopedFlag
+// pattern below). User input is excluded from the pump so a stray click can't
+// re-enter a load mid-flight.
 // inline so the counter is a single shared instance across every TU that
 // includes this header (the per-feature MainWindow*.cpp files all use GitKeepAlive).
 inline int g_gitKeepAliveDepth = 0;
@@ -6588,9 +6676,13 @@ inline QString gitBlockingCrumb(const QProcess &process)
     return cmd;
 }
 
-// Wait up to 8s for a git subprocess. With a keep-alive scope active, poll in
-// short slices and service the GUI between them so the window stays responsive
-// and spinners animate; otherwise block as before.
+// Wait up to 8s for a git subprocess. On the GUI thread, poll in short slices
+// and service the GUI between them so the window stays responsive and spinners
+// animate; off-thread there is no window to keep painted (and pumping would
+// drain the wrong event queue), so block as before. The pump used to be gated
+// on a GitKeepAlive scope, but the stall log kept filling with >500ms freezes
+// from unscoped call paths (agent-table refreshes, publish/mirror counts,
+// branch lists, run-status handlers …), so every GUI-thread wait now pumps.
 inline bool waitForGit(QProcess &process, QString *err)
 {
     // Breadcrumb for the stall watchdog: if this synchronous wait freezes the GUI
@@ -6599,10 +6691,11 @@ inline bool waitForGit(QProcess &process, QString *err)
     // for off-thread reads rather than clobbering what the GUI thread set.
     std::optional<BlockingCallScope> crumb;
     const QCoreApplication *app = QCoreApplication::instance();
-    if (app && QThread::currentThread() == app->thread())
+    const bool onGuiThread = app && QThread::currentThread() == app->thread();
+    if (onGuiThread)
         crumb.emplace(gitBlockingCrumb(process));
 
-    if (g_gitKeepAliveDepth <= 0) {
+    if (!onGuiThread) {
         if (process.waitForFinished(8000))
             return true;
         process.kill();
@@ -6634,8 +6727,10 @@ inline bool waitForGit(QProcess &process, QString *err)
     return true;
 }
 
-// RAII: keep the GUI responsive across the run of synchronous git reads in an
-// interactive load (a node switch or opening a repo). Nestable.
+// RAII: marks the run of synchronous git reads in an interactive load (a node
+// switch or opening a repo). Nestable. waitForGit pumps on the GUI thread with
+// or without this scope now; the marker is kept for the depth counter and as
+// documentation that the enclosing flow expects pumped re-entrancy.
 struct GitKeepAlive {
     GitKeepAlive() { ++g_gitKeepAliveDepth; }
     ~GitKeepAlive() { --g_gitKeepAliveDepth; }
