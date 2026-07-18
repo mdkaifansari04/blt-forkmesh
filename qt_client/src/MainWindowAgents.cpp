@@ -5686,14 +5686,26 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         if (AgentSession *as = findAgentSession(sid)) {
             if (as->status == AgentStatus::Running ||
                 as->status == AgentStatus::Waiting) {
-                const bool launchFailed =
-                    codex && lastCodexThreadId(sid).isEmpty();
+                // Only re-queue a process that actually got somewhere (crash mid-turn);
+                // one that never produced a session id at all (bad install, expired
+                // login) would otherwise cycle Queued -> Running -> exit forever via
+                // processAgentQueue(), each pass reporting "Running" to
+                // anyAgentRunning() and leaving Rebuild & restart stuck on "Waiting
+                // for running actions to finish" with no real work in flight (adhoc
+                // #116). Codex already guarded this; extend the same check to Claude
+                // Code.
+                const bool launchFailed = codex ? lastCodexThreadId(sid).isEmpty()
+                                                 : lastClaudeSessionId(sid).isEmpty();
                 if (launchFailed) {
                     as->status = AgentStatus::Failed;
                     as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
-                    as->lastError = QStringLiteral(
-                        "Codex app-server exited before starting a thread (exit %1).")
-                                        .arg(exitCode);
+                    as->lastError =
+                        codex ? QStringLiteral("Codex app-server exited before "
+                                               "starting a thread (exit %1).")
+                                    .arg(exitCode)
+                              : QStringLiteral("Claude Code exited before starting "
+                                               "a session (exit %1).")
+                                    .arg(exitCode);
                 } else {
                     as->status = AgentStatus::Queued;
                     as->lastError.clear();
@@ -6894,10 +6906,18 @@ void MainWindow::updateAgentStatusCell(int sessionId)
     // push so the browser view picks it up shortly after, without a request
     // per flip (adhoc #182).
     scheduleAgentSessionsPush();
-    if (!m_agentTable)
-        return;
     AgentSession *s = findAgentSession(sessionId);
     if (!s)
+        return;
+    // anyAgentRunning() falls back to this frozen creation-time snapshot for a
+    // stream/codex session that hasn't landed in m_agentSessions yet (see
+    // startCliTranscript). Keep it in step with every real transition here so a
+    // session that finishes its turn before that first reloadAgents() catch-up
+    // can't be read as forever "Running" and block "Rebuild & restart" from
+    // going right away (adhoc #116).
+    if (auto it = m_streamSessionInfo.find(sessionId); it != m_streamSessionInfo.end())
+        it->status = s->status;
+    if (!m_agentTable)
         return;
     for (int r = 0; r < m_agentTable->rowCount(); ++r) {
         QTableWidgetItem *idItem = m_agentTable->item(r, 0);
