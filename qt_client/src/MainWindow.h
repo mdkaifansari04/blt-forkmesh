@@ -2284,9 +2284,12 @@ private:
     void updateActionsTabIndicator();
     // Lazily build the floating strip and place it just above the Actions tab.
     void ensureActionStrip();
-    void positionActionStrip();  // grow each bar by its run's elapsed time
+    void positionActionStrip();  // size/pin the strip above the Actions tab
     void positionRepoPushButton(); // float "Sync" just above the Code tab
-    void updateActionStrip();    // build/show/hide the bars for in-flight runs
+    void updateActionStrip();    // build/show/hide the boxes for in-flight runs
+    // Previous finished run's duration for the same workflow, the estimate each
+    // strip box counts down against (0 = no prior run to estimate from).
+    qint64 estimatedRunDurationMs(const ActionRun &run) const;
     // Keep the running-session spinner timer alive/dead for the Agents table
     // (adhoc #178 removed the Agents tab and its floating spinner overlay, but
     // the table's own running-row glyph + elapsed-time cell still animate).
