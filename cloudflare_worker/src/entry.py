@@ -2335,7 +2335,8 @@ def method_name(request):
     return str(method).upper()
 
 
-async def durable_object_request(request, target_url=None, include_body=False):
+async def durable_object_request(request, target_url=None, include_body=False,
+                                 body=None):
     # DurableObject.fetch may outlive the Python call frame. Passing the Python
     # Request proxy directly across that JS boundary can trip Pyodide's
     # "PyProxy when Python GIL not held" crash under load. Rebuild a JS-owned
@@ -2355,7 +2356,10 @@ async def durable_object_request(request, target_url=None, include_body=False):
             headers[name] = value
     init = {"method": method_name(request), "headers": headers}
     if include_body:
-        init["body"] = Uint8Array.new(_to_js(bytes(await request.bytes())))
+        # A caller that buffered the single-use body stream (to replay the
+        # request on another node) passes the bytes; otherwise read them here.
+        payload = bytes(await request.bytes()) if body is None else bytes(body)
+        init["body"] = Uint8Array.new(_to_js(payload))
     return JsRequest.new(str(target_url or request.url), to_js(init))
 
 
@@ -19783,6 +19787,15 @@ class Default(WorkerEntrypoint):
             return Response("not found", status=404)
         url = urlparse(request.url)
         is_info = url.path.endswith("/info/refs")
+        # Buffer the upload-pack POST body ONCE, up front. The body stream is
+        # single-use, but the POST may hop twice: a pinned mirror that turns out
+        # to be behind the advertisement the client negotiated against answers
+        # 502 ("fatal: git upload-pack: not our ref <oid>"), and the request is
+        # then replayed at the live named source. Only upload-pack negotiation
+        # bodies come through here (receive-pack streams via _git_push), so the
+        # buffered copy is small — the same bytes durable_object_request
+        # buffered per-hop anyway.
+        post_body = None if is_info else bytes(await request.bytes())
         # Private repos clone only with an owner-key-signed view token carried in
         # HTTP Basic auth; public repos stay open. Challenge with 401 Basic so git
         # supplies credentials from the clone URL or a credential helper.
@@ -19825,7 +19838,8 @@ class Default(WorkerEntrypoint):
                         request, url, src_repo, src_owner,
                         "/%s/%s/%s" % (src_owner, src_repo, tail),
                         timeout_ms=GIT_ADVERTISE_ROUTE_TIMEOUT_MS
-                        if is_info else None)
+                        if is_info else None,
+                        body=post_body)
                 except Exception:
                     # Best-effort: fall through to the normal route (which may
                     # still mirror-fallback) rather than take the request down.
@@ -19859,7 +19873,8 @@ class Default(WorkerEntrypoint):
                             request, url, repo, serving,
                             "/%s/%s/%s" % (serving, repo, tail),
                             timeout_ms=GIT_ADVERTISE_ROUTE_TIMEOUT_MS
-                            if is_info else None)
+                            if is_info else None,
+                            body=post_body)
                     except Exception:
                         # Best-effort: fall through to the named owner's route,
                         # which answers with git's clean "no host" advertisement
@@ -19875,17 +19890,32 @@ class Default(WorkerEntrypoint):
                 # clone breaks. Read-only pin lookup; no rotation.
                 serving = await self._fresh_clone_pin(owner, repo)
                 if serving and serving.lower() != owner.lower():
+                    forwarded = None
                     try:
-                        return await self._forward_to_node(
+                        forwarded = await self._forward_to_node(
                             request, url, repo, serving,
-                            "/%s/%s/git-upload-pack" % (serving, repo))
+                            "/%s/%s/git-upload-pack" % (serving, repo),
+                            body=post_body)
+                        fstatus = int(forwarded.status)
                     except Exception:
-                        pass
+                        fstatus = 0
+                    if forwarded is not None and \
+                            fstatus not in (0, 502, 503, 504):
+                        return forwarded
+                    # The pin is a repo-global pick shared by every concurrent
+                    # clone, so THIS clone's advertisement may not have come
+                    # from the pinned mirror at all — and a mirror behind that
+                    # advertisement rejects the negotiated wants with 502
+                    # "fatal: git upload-pack: not our ref <oid>". The named
+                    # source is live and canonical (and allows tip/reachable
+                    # SHA1 wants), so replay the buffered POST there instead
+                    # of failing the clone with the mirror's error.
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
         try:
             host_fetch = host_object.fetch(
-                await durable_object_request(request, include_body=not is_info))
+                await durable_object_request(request, include_body=not is_info,
+                                             body=post_body))
             if is_info:
                 response = await asyncio.wait_for(
                     host_fetch, timeout=GIT_ADVERTISE_ROUTE_TIMEOUT_MS / 1000)
@@ -20028,7 +20058,7 @@ class Default(WorkerEntrypoint):
             return None, None
 
     async def _forward_to_node(self, request, url, repo, node, new_path,
-                               timeout_ms=None):
+                               timeout_ms=None, body=None):
         # Serve THROUGH the original URL: dispatch this request to `node`'s host
         # DO with the path rewritten into its namespace. The client never sees a
         # redirect — the mirror's bytes stream back on the URL that was asked
@@ -20055,7 +20085,9 @@ class Default(WorkerEntrypoint):
                 return await asyncio.wait_for(
                     host_fetch, timeout=timeout_ms / 1000)
             return await host_fetch
-        body = bytes(await request.bytes())
+        # The caller may have buffered the (single-use) body stream already so
+        # a failed hop can be replayed elsewhere; only read it here when not.
+        body = bytes(await request.bytes()) if body is None else bytes(body)
         headers = {}
         for name in ("content-type", "content-encoding"):
             value = request.headers.get(name)
