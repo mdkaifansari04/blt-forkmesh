@@ -2964,6 +2964,9 @@ private:
     void onCoveInvited(const QString &inviteeAccount, const QString &coveId,
                        const QString &coveName, const QString &inviterName, qint64 ts);
     void quickRebuildRestart();
+    // If a rebuild & restart was queued behind running agents, kick it off once
+    // the fleet has gone idle. Called from the agent status/finished handlers.
+    void maybeStartQueuedRebuild();
     void changeMirrorLocation();
     void changePreviewCacheLocation();
     void publishRepositoryAfterMirrorRefresh(int index,
@@ -3178,6 +3181,9 @@ private:
     QPushButton *m_navDrawButton = nullptr; // pencil -> draw freehand on the screen
     QPushButton *m_navResizeButton = nullptr; // snap window to a common minimal size
     QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
+    // A manual rebuild & restart was requested while an agent was still running:
+    // hold it until the fleet goes idle, then fire automatically (adhoc #75).
+    bool m_rebuildRestartQueued = false;
     QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
     QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
     QTableWidget *m_networkReposTable = nullptr;
