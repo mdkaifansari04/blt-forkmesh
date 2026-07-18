@@ -4,7 +4,7 @@ number: 20
 title: Agent: make it so the codex can work in worktrees similar to claude code and not hav…
 base: main
 head: agent/adhoc-65-make-it-so-the-codex-can-work-in-worktrees-simil
-status: open
+status: merged
 ts: 1784333839576
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh
