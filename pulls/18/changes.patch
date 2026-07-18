@@ -1,0 +1,97 @@
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index ba577e0c..f9275410 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -457,6 +457,7 @@ public:
+     }
+     QString testAgentStatusCellText(int sessionId) const;
+     bool testAgentSessionMerged(int sessionId) const;
++    QString testAgentSpeedCellText(const AgentSession &session, qint64 tokens) const;
+ #endif
+ 
+     // --- Headless / CLI support (HeadlessConsole) ------------------------------
+diff --git a/qt_client/src/MainWindowAgents.cpp b/qt_client/src/MainWindowAgents.cpp
+index 995df24b..4779fb1b 100644
+--- a/qt_client/src/MainWindowAgents.cpp
++++ b/qt_client/src/MainWindowAgents.cpp
+@@ -111,23 +111,29 @@ void applyAgentModelCell(QTableWidgetItem *cell, const AgentSession &s)
+                                             .arg(s.model.toHtmlEscaped()));
+ }
+ 
+-// Fill the Speed cell — the throughput at which this agent exchanged tokens with
+-// the service over the task, in tokens/second (total tokens ÷ run time). A rough
+-// gauge of how fast the model and network served the task. Only shown while the
+-// session is running (a live tok/s gauge); finished sessions show "-" since the
+-// figure is no longer ticking. Sorts on the raw rate via kTableSortRole.
++// Fill the Speed cell — the rate at which the model generated output, in
++// tokens/second (output tokens ÷ run time). Claude Code reports output tokens
++// from each assistant event, while Codex also reports prompt tokens in its
++// cumulative total; using completionTokens for Codex keeps the two providers
++// comparable. Only shown while the session is running (a live tok/s gauge);
++// finished sessions show "-" since the figure is no longer ticking. Sorts on
++// the raw rate via kTableSortRole.
+ void applyAgentSpeedCell(QTableWidgetItem *cell, const AgentSession &s, qint64 tokens)
+ {
+     const qint64 durationMs = agentEffectiveDurationMs(s);
+-    const double rate = (s.status == AgentStatus::Running && tokens > 0 && durationMs > 0)
+-                            ? tokens * 1000.0 / static_cast<double>(durationMs)
++    const qint64 outputTokens = agentIsCodexProvider(s.provider)
++                                    ? static_cast<qint64>(s.completionTokens)
++                                    : tokens;
++    const double rate = (s.status == AgentStatus::Running && outputTokens > 0 &&
++                         durationMs > 0)
++                            ? outputTokens * 1000.0 / static_cast<double>(durationMs)
+                             : 0.0;
+     cell->setData(Qt::DisplayRole,
+                   rate > 0 ? QStringLiteral("%1 tok/s").arg(rate, 0, 'f', 1)
+                            : QStringLiteral("-"));
+     cell->setData(kTableSortRole, rate);
+     cell->setToolTip(
+-        QStringLiteral("Communication speed with the service (tokens/second)"));
++        QStringLiteral("Generated output speed (tokens/second)"));
+ }
+ 
+ // Fill the Diff cell (issue #170) — a "very small" at-a-glance summary of what
+@@ -2984,6 +2990,14 @@ bool MainWindow::testAgentSessionMerged(int sessionId) const
+             return s.merged;
+     return false;
+ }
++
++QString MainWindow::testAgentSpeedCellText(const AgentSession &session,
++                                           qint64 tokens) const
++{
++    QTableWidgetItem item;
++    applyAgentSpeedCell(&item, session, tokens);
++    return item.text();
++}
+ #endif
+ 
+ const AgentSession *MainWindow::latestAgentSessionForIssue(int issueNumber) const
+diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
+index 2af02b82..3fda379d 100644
+--- a/qt_client/tests/test_window_resize.cpp
++++ b/qt_client/tests/test_window_resize.cpp
+@@ -384,6 +384,23 @@ int main(int argc, char *argv[])
+     window.testRunDeferredStartupNow();
+     QApplication::processEvents();
+ 
++    // Claude Code's stream events count generated output, while Codex also
++    // reports cumulative prompt tokens. Speed must use output tokens for both,
++    // otherwise Codex's context size makes its tok/s look artificially high.
++    {
++        AgentSession claude;
++        claude.provider = QStringLiteral("claude-code");
++        claude.status = AgentStatus::Running;
++        claude.durationMs = 1000;
++        AgentSession codex = claude;
++        codex.provider = QStringLiteral("codex");
++        codex.completionTokens = 100;
++        codex.totalTokens = 1100;
++        check(window.testAgentSpeedCellText(claude, 100) == QStringLiteral("100.0 tok/s") &&
++                  window.testAgentSpeedCellText(codex, 1100) == QStringLiteral("100.0 tok/s"),
++              QStringLiteral("Claude Code and Codex speed use generated output tokens"));
++    }
++
+     QTemporaryDir primaryBranchRepo;
+     QTemporaryDir primaryMirrorParent;
+     if (initGitRepo(primaryBranchRepo) && primaryMirrorParent.isValid()) {
