@@ -1,0 +1,79 @@
+{
+    "schema": "forkmesh-project-v1",
+    "number": 1,
+    "title": "ForkMesh code roadmap · Jul 18–Aug 1, 2026",
+    "body": "Two-week code-only delivery plan for native planning, Git compatibility and protected writes, deterministic collaboration, repository discovery and availability, offline transfer, and operator readiness.\n\n## Parallel workstreams\n\n- Planning and CI: #433 + #434 → #443\n- Git workflow: #435 → #436 + #437 → #441 → #443\n- Discovery and status: #438 + #439 → #443\n- Collaboration and operations: #440 + #442 → #443\n\n## Delivery rules\n\n- July 18–24: land foundations and daily-workflow surfaces.\n- July 25–29: complete resilience and operator work in parallel.\n- July 30–August 1: freeze feature scope; integrate, fix regressions, and pass #443.\n- Market positioning, funding, and speculative features are out of scope.\n\nDone means every linked issue meets its automated acceptance criteria and the integrated release gate passes by August 1, 2026.",
+    "status": "open",
+    "startDate": 1784347200000,
+    "endDate": 1785556800000,
+    "milestone": "Resilient operation",
+    "issues": [
+        433,
+        434,
+        435,
+        436,
+        437,
+        438,
+        439,
+        440,
+        441,
+        442,
+        443
+    ],
+    "createdAt": 1784402987633,
+    "updatedAt": 1784402987636,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "events": [
+        {
+            "type": "open",
+            "id": "open-1",
+            "title": "ForkMesh code roadmap · Jul 18–Aug 1, 2026",
+            "body": "Two-week code-only delivery plan for native planning, Git compatibility and protected writes, deterministic collaboration, repository discovery and availability, offline transfer, and operator readiness.\n\n## Parallel workstreams\n\n- Planning and CI: #433 + #434 → #443\n- Git workflow: #435 → #436 + #437 → #441 → #443\n- Discovery and status: #438 + #439 → #443\n- Collaboration and operations: #440 + #442 → #443\n\n## Delivery rules\n\n- July 18–24: land foundations and daily-workflow surfaces.\n- July 25–29: complete resilience and operator work in parallel.\n- July 30–August 1: freeze feature scope; integrate, fix regressions, and pass #443.\n- Market positioning, funding, and speculative features are out of scope.\n\nDone means every linked issue meets its automated acceptance criteria and the integrated release gate passes by August 1, 2026.",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987633,
+            "sig": "IQU5_PklnUDqSNtZ_8CS2-Z3_eIm6Tna6ffBiCMV_pnXv7d76vy2ORpGUfmTVmWnsfQIEAz_oj_DVE0LvZV2Bg"
+        },
+        {
+            "type": "dates",
+            "startDate": 1784347200000,
+            "endDate": 1785556800000,
+            "id": "19ed1cb7-3f60-4281-9d51-b2daf859ad8b",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987634,
+            "sig": "OHFcA29lQ_L5EEcG3AHy-gkNUA924ua0C4P9zop7COlQ6PEc41Zfp-_J_SyGOnWXdb6gMa6LMwoiLHzHDAh0Dw"
+        },
+        {
+            "type": "milestone",
+            "milestone": "Resilient operation",
+            "id": "2646f1fb-1473-4b51-af51-0d405b20036a",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987635,
+            "sig": "IaGcNAz_TVJs875aD5j6k_yDrFXoqwXpi9nkf-uTwWGAdJaT3YE2gpgP0QiqodGCQWlbBum4kCLdeDAMN0pVAg"
+        },
+        {
+            "type": "issues",
+            "issues": [
+                433,
+                434,
+                435,
+                436,
+                437,
+                438,
+                439,
+                440,
+                441,
+                442,
+                443
+            ],
+            "id": "a7068aa3-720d-4ce0-b4cc-3fa6c966af50",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987636,
+            "sig": "PLB6kPSqBgxH_drk299_57FjXYbDGHtSZfLc0lFic4fuI6ZRGT_o7ck_dF3NGIQzTG8gqrEUqs8hYPoIt72zAQ"
+        }
+    ]
+}

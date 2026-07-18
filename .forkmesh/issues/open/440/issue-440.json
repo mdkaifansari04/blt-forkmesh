@@ -1,0 +1,47 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 440,
+    "title": "Make collaboration-event folding deterministic",
+    "status": "open",
+    "labels": [
+        "security",
+        "enhancement"
+    ],
+    "milestone": "Resilient operation",
+    "startDate": 1784952000000,
+    "endDate": 1785211200000,
+    "priority": 7,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784402987625,
+    "updatedAt": 1784402987626,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-440",
+            "title": "Make collaboration-event folding deterministic",
+            "body": "## Outcome\n\nEnsure every node computes the same issue, project, review, and thread state from the same signed event set even when events arrive in a different order.\n\n## Implementation\n\n- Specify a total event order using timestamp, event id, and author as deterministic tie-breakers.\n- Define duplicate-id handling, authorized tombstone precedence, edit targeting, status conflict behavior, latest review state, and thread resolve/reopen rules.\n- Apply the same rules in `IssueStore`, `ProjectStore`, `PullStore`, relay validation, and browser rendering.\n- Reject invalid signatures before folding and make replay of an already-seen event idempotent.\n- Add shared shuffled-event fixtures consumed by each implementation.\n\n## Acceptance criteria\n\n- Random permutations of the same fixture always produce identical metadata and rendered state.\n- Duplicate and replayed event ids do not change the result.\n- Unauthorized tombstones never hide an object.\n- Invalid signatures never enter a fold.\n- Desktop, relay, and browser fixture results match.\n\n## Dependencies\n\nDepends on #433 so automation and readers share current native fixtures.\n\n## Verification\n\nAdd property-style shuffle tests for issues, projects, reviews, inline threads, edits, deletes, status conflicts, and equal-timestamp events.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987625,
+            "sig": "pPLlMJZFYTtXSM3r5kYNItmqXRmQsEqBNdpe4kImz_SEwNWvZjSHdF5ugb0UsBetS-k38vgtdOmmul4kZC_lDA"
+        },
+        {
+            "type": "dates",
+            "startDate": 1784952000000,
+            "endDate": 1785211200000,
+            "id": "42ee46da-5e7f-4b4a-a491-bc65e21ac56d",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987626,
+            "sig": "0xDsk2A2kkOb_OlT_e2JoNWZwF2yGH3IuxqwcradpjPmrU8mnvHk1VXVuqGdRcpAeyEiuoEA7G2AcPXISGdaCA"
+        }
+    ]
+}

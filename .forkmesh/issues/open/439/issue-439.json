@@ -1,0 +1,47 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 439,
+    "title": "Surface a compact repository availability assessment",
+    "status": "open",
+    "labels": [
+        "feature",
+        "enhancement"
+    ],
+    "milestone": "Daily Git workflow",
+    "startDate": 1784692800000,
+    "endDate": 1784952000000,
+    "priority": 9,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784402987623,
+    "updatedAt": 1784402987624,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-439",
+            "title": "Surface a compact repository availability assessment",
+            "body": "## Outcome\n\nPresent one measured availability assessment instead of making users interpret several raw mirror and integrity fields.\n\n## Implementation\n\n- Define a versioned availability response derived from the existing mirror payload.\n- Report online versus known nodes, verified cloneable copies, integrity failures, freshest confirmed sync, hosted bytes, artifact coverage, and bounded risk reasons.\n- Model `unknown` separately from `failed`; never convert missing telemetry into a healthy claim.\n- Use the same state names and risk codes in desktop, browser, and mobile repository views.\n- Update the assessment when a source or mirror disconnects, reconnects, falls behind, or repairs its state.\n\n## Acceptance criteria\n\n- The UI makes no claim that is not backed by a response field and timestamp.\n- Healthy, degraded, healing, rejected, offline, and unknown states have contract tests.\n- Clone is disabled only when no verified route is available.\n- Reconnect and integrity repair update the view without an application restart.\n- No geographic or network-diversity claim appears because those measurements are not collected.\n\n## Dependencies\n\nNone.\n\n## Verification\n\nRun response fixtures through each client renderer and exercise live disconnect, stale mirror, mismatched state, repair, and complete outage cases.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987623,
+            "sig": "2NMtWdjvgXqAjHhfZbCASa4yrcMtqgRUMnbWarU8ohBEolVPAJfCDNwSbpwNXV9PQbvJgm63OsW08cz_9Y0qCg"
+        },
+        {
+            "type": "dates",
+            "startDate": 1784692800000,
+            "endDate": 1784952000000,
+            "id": "16e7133d-5b6b-4b27-8147-3aa63f62f566",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987624,
+            "sig": "_69BbI_bg1Q_ZSRz6oePhpjch9hlO1mfqV57imiFKGTdHGpKeVFWkkXUXW1JhDbx1ZCGpYkD6gCtTAumUOy1Ag"
+        }
+    ]
+}

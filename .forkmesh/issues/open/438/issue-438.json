@@ -1,0 +1,46 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 438,
+    "title": "Add ranked public repository discovery views",
+    "status": "open",
+    "labels": [
+        "feature"
+    ],
+    "milestone": "Daily Git workflow",
+    "startDate": 1784520000000,
+    "endDate": 1784779200000,
+    "priority": 10,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784402987621,
+    "updatedAt": 1784402987622,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-438",
+            "title": "Add ranked public repository discovery views",
+            "body": "## Outcome\n\nTurn the existing public catalog, activity, star, and mirror data into useful repository discovery views.\n\n## Implementation\n\n- Add `newest`, `recently-active`, `most-mirrored`, `most-starred`, and alphabetical sort modes to the repository catalog query.\n- Reuse bounded catalog queries and aggregates; do not issue one request per repository.\n- Add online and integrity-verified filters plus a direct clone action.\n- Use owner and repository as a stable tie-break so pagination cannot reorder equal scores.\n- Add keyboard, mobile, empty, loading, and error states to the public repository view.\n\n## Acceptance criteria\n\n- Sort results are deterministic across repeated requests.\n- Private and unlisted records never enter rankings or aggregate counts.\n- Ranking adds no per-repository request fan-out.\n- Filters combine correctly and preserve the selected sort.\n- Clone actions use the stable Git URL already returned by the catalog.\n\n## Dependencies\n\nNone.\n\n## Verification\n\nCover score ties, privacy filtering, pagination, zero-result filters, degraded mirror data, keyboard navigation, and narrow viewports.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987621,
+            "sig": "w_bKQRWvtaqqlqY7T_cqGVySK-Il_Jtg3gOY88QCdxBONxsfXLgAui03exI6xSh-SiVGKi4tOPcvNQRLbvHsDg"
+        },
+        {
+            "type": "dates",
+            "startDate": 1784520000000,
+            "endDate": 1784779200000,
+            "id": "0dd96ba1-70aa-4905-b624-a9a9cfb64677",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987622,
+            "sig": "4XN7CjAa5CVlu8u5LPmIKiSGomtGXadZp9vZl3T-Q13kJDpqmnxydM0XJSNptDKJvSeAJJH_g4He_lduevlCDg"
+        }
+    ]
+}
