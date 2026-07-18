@@ -320,25 +320,24 @@ QWidget *MainWindow::buildChatPage()
     contentScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     contentScroll->setWidget(content);
 
-    // The main content and the always-on prompt/log footer sit in a vertical
-    // splitter (adhoc #19). Before this, the footer was a stretch-0 strip whose
-    // height tracked its own contents, so anything that changed its size — the
-    // "Agents:" status strip appearing, an attachment thumbnail, a growing
-    // prompt — reflowed the strip and dragged the whole toolbar up or down as
-    // the interface "shifted". The splitter gives the footer a definite,
-    // user-draggable height instead: once sized it stays put (stretch goes to
-    // the content pane above), so the interface pieces are locked and only the
-    // prompt's own text area scrolls internally, while the drag handle keeps the
-    // whole band resizable.
-    auto *bodySplitter = new QSplitter(Qt::Vertical);
-    bodySplitter->setObjectName("chatBodySplitter");
-    bodySplitter->setChildrenCollapsible(false);
-    bodySplitter->addWidget(contentScroll);
-    bodySplitter->addWidget(buildNetworkLogDock());
-    bodySplitter->setStretchFactor(0, 1); // content absorbs window growth
-    bodySplitter->setStretchFactor(1, 0); // footer keeps its dragged height
-    bodySplitter->setSizes({600, 240});
-    layout->addWidget(bodySplitter, 1);
+    // The main content and the always-on prompt/log footer sit one above the
+    // other with the footer pinned to a fixed height (adhoc #86). Before this,
+    // the footer was a stretch-0 strip whose height tracked its own contents,
+    // so anything that changed its size — the "Agents:" status strip
+    // appearing, an attachment thumbnail, a growing prompt — reflowed the
+    // strip and dragged the whole toolbar up or down as the interface
+    // "shifted". A user-draggable splitter (adhoc #19) fixed that but its
+    // handle flashed a bright, saturated blue on hover/drag; since the footer
+    // no longer needs to be resizable, a fixed-height widget with the same
+    // subtle divider line gives the definite height without the loud handle.
+    auto *bodyLayout = new QVBoxLayout;
+    bodyLayout->setContentsMargins(0, 0, 0, 0);
+    bodyLayout->setSpacing(0);
+    bodyLayout->addWidget(contentScroll, 1); // content absorbs window growth
+    auto *logDock = buildNetworkLogDock();
+    logDock->setFixedHeight(240); // footer keeps a constant height
+    bodyLayout->addWidget(logDock, 0);
+    layout->addLayout(bodyLayout, 1);
     return page;
 }
 
