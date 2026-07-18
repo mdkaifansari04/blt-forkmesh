@@ -4,7 +4,7 @@ number: 26
 title: Agent: fix this - it was actually not backing off - also for any backoff please make…
 base: main
 head: agent/adhoc-70-fix-this-it-was-actually-not-backing-off-also-fo
-status: open
+status: merged
 ts: 1784335279715
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh
