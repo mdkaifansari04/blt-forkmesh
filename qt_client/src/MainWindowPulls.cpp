@@ -3073,7 +3073,14 @@ QList<int> MainWindow::runIdsForPull(const PullRequest &pr) const
     QList<int> ids;
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return ids;
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    // Copy the owner/name by value up front: pullCommitShas() and the rev-parse
+    // below both run synchronous git reads that pump the event loop (under a
+    // GitKeepAlive scope), and that pump can re-enter action/refresh paths which
+    // reassign m_repositories. A reference into it would then dangle and this
+    // read would be a use-after-free (adhoc #106) — the same reentrancy the
+    // cancelSupersededRuns/processActionQueue snapshots already guard against.
+    const QString repoOwner = m_repositories.at(m_repoDetailIndex).owner;
+    const QString repoName = m_repositories.at(m_repoDetailIndex).name;
     const QStringList commitShas = pullCommitShas(pr);
     QSet<QString> shas(commitShas.cbegin(), commitShas.cend());
     // Also include the head tip in case base..head couldn't be enumerated.
@@ -3086,7 +3093,7 @@ QList<int> MainWindow::runIdsForPull(const PullRequest &pr) const
     if (shas.isEmpty())
         return ids;
     for (const ActionRun &run : std::as_const(m_actionRuns)) {
-        if (run.owner == repo.owner && run.name == repo.name &&
+        if (run.owner == repoOwner && run.name == repoName &&
             shas.contains(run.commit))
             ids.append(run.id);
     }
