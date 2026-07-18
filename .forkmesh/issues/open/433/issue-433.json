@@ -64,6 +64,17 @@
             "sig": "U0tvev3C0oq8hDJzpk_92VhM9D2GKrfaU51A3Pd7_xlnHtlokCCrCDQ6qZRlkbFFq4s7uR0WEMpJd-Ck6q_uAQ",
             "ts": 1784410309920,
             "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-433-migrate-planning-tools-to-the-native-signed-trac\".",
+            "id": "eb2b0e5f-bd84-474b-8a6c-044d627c6c8f",
+            "sig": "KIoPREDJTGdejRRuCE8-MRdvMF2ZqpHRV9puSRg4yFqBsQdNpksCIourDlUNaLh5rZTytpmScV8NDLB2W9ebAw",
+            "ts": 1784412731978,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -78,6 +89,6 @@
     "startDate": 1784347200000,
     "status": "open",
     "title": "Migrate planning tools to the native signed tracker format",
-    "updatedAt": 1784410309920,
+    "updatedAt": 1784412731978,
     "votes": 0
 }
