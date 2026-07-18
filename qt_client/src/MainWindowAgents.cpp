@@ -2574,6 +2574,21 @@ void MainWindow::initAgents()
 
     m_agentSessions = m_agentStore->loadAllSessions();
     for (AgentSession &session : m_agentSessions) {
+        if (session.merged && (session.status == AgentStatus::Running ||
+                               session.status == AgentStatus::Queued)) {
+            // A merged session's work already landed in the base branch, and the
+            // UI presents it as "merged" rather than running. Resuming it here
+            // spawned an invisible CLI process that kept anyAgentRunning() true
+            // and blocked Rebuild & restart while the user saw no running
+            // actions — and every restart resurrected it again (adhoc #143).
+            // Settle it as done instead.
+            session.status = AgentStatus::Success;
+            session.lastError.clear();
+            if (session.finishedAtMs <= 0)
+                session.finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+            m_agentStore->saveSession(session);
+            continue;
+        }
         if (session.status == AgentStatus::Running) {
             // ForkMesh was restarted while this agent was working. The previous
             // run's process is gone (its output pipe died with the old app), so
@@ -4924,34 +4939,61 @@ AgentRunner *MainWindow::runnerForSession(int sessionId) const
     return nullptr;
 }
 
-bool MainWindow::anyAgentRunning() const
+// Everything anyAgentRunning() counts as "in flight", described for the restart
+// log. Every round of "Rebuild & restart stuck waiting" (adhoc #91/#104/#111/
+// #116/#134/#143) came down to guessing which invisible session the gate was
+// counting — log the blockers instead so the next report names them.
+QStringList MainWindow::runningAgentBlockers() const
 {
     // Only a session actively executing a turn (Running) counts as "in flight"
     // here. Waiting means the agent paused for the user's approval/reply — that
     // can sit unanswered indefinitely, so treating it as still-running left a
     // queued rebuild stuck showing "Waiting for running actions" forever even
-    // though nothing was actually working (adhoc #91).
-    auto sessionIsActive = [this](int id) {
+    // though nothing was actually working (adhoc #91). A merged session is
+    // excluded even if its stored status is still Running (stale from an app
+    // kill mid-run): the whole UI — table cell, footer dot, tooltips — presents
+    // it as "merged", so counting it blocked the rebuild while the user
+    // correctly saw no running actions (adhoc #143).
+    auto sessionIsActive = [this](int id, QString *status) {
         for (const AgentSession &session : m_agentSessions) {
-            if (session.id == id)
-                return session.status == AgentStatus::Running;
+            if (session.id == id) {
+                if (status)
+                    *status = session.status;
+                return !session.merged && session.status == AgentStatus::Running;
+            }
         }
         const auto pending = m_streamSessionInfo.constFind(id);
-        return pending != m_streamSessionInfo.constEnd() &&
-               pending->status == AgentStatus::Running;
+        if (pending == m_streamSessionInfo.constEnd())
+            return false;
+        if (status)
+            *status = pending->status + QStringLiteral(" [pre-reload snapshot]");
+        return pending->status == AgentStatus::Running;
     };
+    QStringList blockers;
     for (AgentRunner *runner : m_agentRunners)
         if (runner->busy())
-            return true;
+            blockers << QStringLiteral("session %1 (agent runner busy)")
+                            .arg(runner->currentSessionId());
     for (auto it = m_streamSessions.constBegin(); it != m_streamSessions.constEnd(); ++it) {
-        if (it.value() && it.value()->running() && sessionIsActive(it.key()))
-            return true;
+        QString status;
+        if (it.value() && it.value()->running() && sessionIsActive(it.key(), &status))
+            blockers << QStringLiteral("session %1 (claude process, status %2)")
+                            .arg(it.key())
+                            .arg(status);
     }
     for (auto it = m_codexStreams.constBegin(); it != m_codexStreams.constEnd(); ++it) {
-        if (it.value() && it.value()->running() && sessionIsActive(it.key()))
-            return true;
+        QString status;
+        if (it.value() && it.value()->running() && sessionIsActive(it.key(), &status))
+            blockers << QStringLiteral("session %1 (codex process, status %2)")
+                            .arg(it.key())
+                            .arg(status);
     }
-    return false;
+    return blockers;
+}
+
+bool MainWindow::anyAgentRunning() const
+{
+    return !runningAgentBlockers().isEmpty();
 }
 
 AgentRunner *MainWindow::acquireAgentRunner()
