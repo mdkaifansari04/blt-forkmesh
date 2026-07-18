@@ -2212,14 +2212,22 @@ void MainWindow::updateFooterDiagnostics()
                 : QStringLiteral("Drive space in use"));
     }
 
-    // The footer button keeps only the UI-stall badge now that CPU/MEM live in
-    // the charts; the 🖥 glyph stays as the labelled click target.
-    QString txt = QString::fromUtf8("\xF0\x9F\x96\xA5"); // 🖥
-    if (m_stallCount > 0)
-        txt += QString::fromUtf8("  \xE2\x9A\xA0 %1 stall%2")
-                   .arg(m_stallCount)
-                   .arg(m_stallCount == 1 ? QString() : QStringLiteral("s"));
-    m_footerDiagnostics->setText(txt.trimmed());
+    // The diagnostics indicator rides beside the CPU/MEM/DISK sparklines now
+    // (adhoc #145). Crisp octicons replace the old 🖥/⚠ emoji: a muted monitor
+    // while the UI has stayed smooth, and an amber alert plus the running count
+    // once a stall has been recorded so it reads as a real warning.
+    if (m_stallCount > 0) {
+        m_footerDiagnostics->setIcon(
+            themedOcticon(QStringLiteral("alert"), QColor("#d29922"), 14));
+        m_footerDiagnostics->setIconSize(QSize(14, 14));
+        m_footerDiagnostics->setText(
+            QStringLiteral(" %1 stall%2")
+                .arg(m_stallCount)
+                .arg(m_stallCount == 1 ? QString() : QStringLiteral("s")));
+    } else {
+        setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
+        m_footerDiagnostics->setText(QString());
+    }
 }
 
 // A UI stall ended: record it, surface it in the system log, and reflect the
@@ -2333,9 +2341,9 @@ void MainWindow::clearStallLog()
         QFile::remove(m_stallLogPath);
     if (m_footerDiagnostics)
         m_footerDiagnostics->setToolTip(
-            QStringLiteral("Live CPU and memory use of this app. Click for UI-stall "
-                           "diagnostics (when the UI freezes long enough to trip the "
-                           "Wait/Kill prompt)."));
+            QStringLiteral("UI-stall diagnostics: any freezes long enough to trip the "
+                           "Wait/Kill prompt land here. Click for the recorded stall "
+                           "details."));
     updateFooterDiagnostics();
 }
 
@@ -3253,20 +3261,21 @@ QWidget *MainWindow::buildBreadcrumb()
     socialRow->addWidget(twitterButton);
     socialRow->addWidget(mastodonButton);
 
-    // Live diagnostics, also moved up out of the footer (adhoc #117): CPU / memory
-    // of this process plus a count of detected UI stalls. Click to see the stall
-    // details.
+    // UI-stall indicator (adhoc #117/#145): an octicon that sits beside the
+    // CPU/MEM/DISK sparklines on the window-chrome line and shows the count of
+    // detected UI stalls. Click to see the stall details.
     m_footerDiagnostics = new QPushButton;
     m_footerDiagnostics->setObjectName("footerDiagnostics");
     m_footerDiagnostics->setFlat(true);
     m_footerDiagnostics->setCursor(Qt::PointingHandCursor);
     m_footerDiagnostics->setToolTip(
-        "Live CPU and memory use of this app. Click for UI-stall diagnostics "
-        "(when the UI freezes long enough to trip the Wait/Kill prompt).");
+        "UI-stall diagnostics: any freezes long enough to trip the Wait/Kill "
+        "prompt land here. Click for the recorded stall details.");
     m_footerDiagnostics->setStyleSheet(
-        "QPushButton#footerDiagnostics{color:#8b949e;border:none;background:transparent;"
-        "font-size:11px;padding:2px 6px;}"
+        "QPushButton#footerDiagnostics{color:#d29922;border:none;background:transparent;"
+        "font-size:11px;padding:2px 6px;spacing:4px;}"
         "QPushButton#footerDiagnostics:hover{color:#e6edf3;}");
+    setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
     connect(m_footerDiagnostics, &QPushButton::clicked, this,
             &MainWindow::showDiagnosticsDialog);
 
@@ -3314,6 +3323,9 @@ QWidget *MainWindow::buildBreadcrumb()
     chromeRow->addWidget(cpuChart);
     chromeRow->addWidget(memChart);
     chromeRow->addWidget(diskChart);
+    // UI-stall diagnostics indicator, moved up beside the CPU/MEM/DISK sparklines
+    // (adhoc #145) with a proper octicon in place of the old emoji glyphs.
+    chromeRow->addWidget(m_footerDiagnostics);
     chromeRow->addSpacing(8);
 
     auto makeWindowButton = [this](QStyle::StandardPixmap icon, const QString &tip) {
@@ -3436,9 +3448,8 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_nodesNavButton);
     navRow->addWidget(m_relaysNavButton);
     navRow->addWidget(m_networkNavButton);
-    navRow->addSpacing(16);
-    // Live diagnostics glyph (CPU/MEM/DISK sparklines moved up to mainRow for adhoc #121).
-    navRow->addWidget(m_footerDiagnostics);
+    // The live-diagnostics indicator moved up onto the window-chrome line next to
+    // the CPU/MEM/DISK sparklines (adhoc #145).
     navRow->addStretch();
     auto *navRowHost = new QWidget;
     navRowHost->setLayout(navRow);
