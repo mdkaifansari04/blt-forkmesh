@@ -3091,12 +3091,11 @@ private:
                                            // backs off the confirm re-probe so a
                                            // persistently-slow link isn't polled
                                            // every second forever (adhoc #74)
-    // "User" / "Node" / "Repo" captions before each top-bar dropdown (the relay
+    // "Node" / "Repo" captions before each top-bar dropdown (the relay
     // switcher shows its favicon in the dropdown itself instead of a caption).
-    QLabel *m_userLabel = nullptr;
     QLabel *m_nodeLabel = nullptr;
     QLabel *m_repoLabel = nullptr;
-    QLabel *m_navNodeName = nullptr;     // node name shown above the balance
+    QLabel *m_navNodeName = nullptr;     // "user/node" shown above the balance
     QLabel *m_navSolanaBalance = nullptr;
     // Super-tiny Claude Code and Codex usage charts in the top-right cluster
     // (issue #266): two horizontal bars (5-hour + weekly) sitting beside the
@@ -3183,7 +3182,6 @@ private:
     QLabel *m_encryptionLabel;
     QPushButton *m_inviteButton = nullptr; // "Invite" — shown only in private rooms
     QListWidget *m_channelList;
-    QPushButton *m_userMenuButton = nullptr; // top-bar user/account identity
     QPushButton *m_nodeMenuButton = nullptr; // top-bar node switcher
     QString m_navSolanaBalanceAddress;
     // One row per node, populated by refreshRepositoryList and shown in the
@@ -5223,11 +5221,10 @@ private:
     // and ids still awaiting acknowledgement to the relay on the next beat.
     QSet<QString> m_handledMirrorRequests;
     QStringList m_pendingMirrorRequestAcks;
-    // User/avatar controls in the top-right account cluster. m_avatarNavButton
-    // is the node avatar with the connection dot; m_userAvatarNavButton is the
-    // signed-in/linked user account avatar.
+    // User avatar in the top-right account cluster (opens the signed-in/linked
+    // user account); the connection dot lives on it too now that the separate
+    // node avatar button is gone.
     QPushButton *m_userAvatarNavButton = nullptr;
-    QPushButton *m_avatarNavButton = nullptr;
 #ifdef FORKMESH_WINDOW_TESTS
     bool m_testUseAccountFlowResult = false;
     bool m_testAccountFlowResult = true;

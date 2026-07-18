@@ -2711,16 +2711,8 @@ QWidget *MainWindow::buildBreadcrumb()
     m_nodeMenuButton->setToolTip("Pick a node to view its repositories");
     connect(m_nodeMenuButton, &QPushButton::clicked, this, &MainWindow::showNodeMenu);
 
-    // User/account identity, shown separately from the node selector so linked
-    // nodes can expose both the owner account and the machine identity.
-    m_userMenuButton = new QPushButton;
-    m_userMenuButton->setObjectName("userMenuButton");
-    m_userMenuButton->setCursor(Qt::PointingHandCursor);
-    m_userMenuButton->setToolTip("Open your user account settings");
-    connect(m_userMenuButton, &QPushButton::clicked, this,
-            [this] { showSection(1); });
-
-    // Node name shown above the wallet balance in the top-right cluster.
+    // Node name shown above the wallet balance in the top-right cluster, as
+    // "user/node" (the user account, if any, plus this node's own name).
     m_navNodeName = new QLabel;
     m_navNodeName->setObjectName("navNodeName");
     m_navNodeName->setAlignment(Qt::AlignCenter);
@@ -2970,7 +2962,8 @@ QWidget *MainWindow::buildBreadcrumb()
     overlayLayout->addWidget(m_topMessageOverlayText);
     m_topMessageOverlay->hide();
 
-    // User avatar, next to the node avatar. Clicking it opens account settings.
+    // User avatar, pinned to the top-right-most of the bar. Clicking it opens
+    // account settings.
     m_userAvatarNavButton = new QPushButton;
     m_userAvatarNavButton->setObjectName("serverFooterButton");
     m_userAvatarNavButton->setCursor(Qt::PointingHandCursor);
@@ -2979,41 +2972,25 @@ QWidget *MainWindow::buildBreadcrumb()
     m_userAvatarNavButton->setToolTip("Your user account");
     connect(m_userAvatarNavButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
-
-    // Node avatar, pinned to the top-right-most of the bar. Clicking it opens
-    // the node profile.
-    m_avatarNavButton = new QPushButton;
-    m_avatarNavButton->setObjectName("serverFooterButton");
-    m_avatarNavButton->setCursor(Qt::PointingHandCursor);
-    m_avatarNavButton->setFixedSize(40, 40);
-    m_avatarNavButton->setIconSize(QSize(34, 34));
-    m_avatarNavButton->setToolTip("Your node profile");
-    connect(m_avatarNavButton, &QPushButton::clicked, this, [this] {
-        // Open this node's own profile in the side panel (which carries the
-        // restart options, settings shortcut and logout for self).
-        showSection(0);
-        showNodeProfile(m_profileIdentity.publicKey(), m_userName);
-    });
     updateUserSwitcher();
     updateAvatarButton();
 
-    // Connection status dot, overlaid on the bottom-right of the avatar. It's
-    // purely decorative (clicks fall through to the avatar); the live status
-    // text lives in the avatar's tooltip, set by updateConnectionStatus.
-    m_connectionDot = new QLabel(m_avatarNavButton);
+    // Connection status dot, overlaid on the bottom-right of the (now sole)
+    // avatar. It's purely decorative (clicks fall through to the avatar); the
+    // live status text lives in the dot's tooltip, set by updateConnectionStatus.
+    m_connectionDot = new QLabel(m_userAvatarNavButton);
     m_connectionDot->setObjectName("connectionDot");
     m_connectionDot->setFixedSize(12, 12);
     m_connectionDot->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_connectionDot->move(40 - 12 - 1, 40 - 12 - 1);
     m_connectionDot->raise();
 
-    // Captions for the three top-bar dropdowns.
+    // Captions for the top-bar dropdowns.
     auto makeCaption = [](const QString &t) {
         auto *l = new QLabel(t);
         l->setObjectName("navCaption");
         return l;
     };
-    m_userLabel = makeCaption(QStringLiteral("User"));
     m_nodeLabel = makeCaption(QStringLiteral("Node"));
     m_repoLabel = makeCaption(QStringLiteral("Repo"));
 
@@ -3343,9 +3320,6 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->addWidget(m_relayMenuButton);
     mainRow->addWidget(m_relayOpenButton);
     mainRow->addSpacing(10);
-    mainRow->addWidget(m_userLabel);
-    mainRow->addWidget(m_userMenuButton);
-    mainRow->addSpacing(10);
     mainRow->addWidget(m_nodeLabel);
     mainRow->addWidget(m_nodeMenuButton);
     mainRow->addSpacing(10);
@@ -3377,8 +3351,6 @@ QWidget *MainWindow::buildBreadcrumb()
     // prompt toolbar next to the send buttons (adhoc #47, see buildNetworkLogDock).
     mainRow->addSpacing(4);
     mainRow->addWidget(m_userAvatarNavButton);
-    mainRow->addSpacing(2);
-    mainRow->addWidget(m_avatarNavButton);
     auto *mainRowHost = new QWidget;
     mainRowHost->setLayout(mainRow);
     mainRowHost->setMinimumWidth(0);
@@ -3586,12 +3558,11 @@ void MainWindow::updateConnectionStatus()
         color = "#8b949e"; // grey: offline / not started
         text = QStringLiteral("Offline");
     }
-    // The status text rides on the avatar tooltip; the dot itself just shows the
-    // colour. (The count can change while the colour doesn't, so the tooltip is
-    // always refreshed but the dot stylesheet is only rewritten on colour change.)
-    if (m_avatarNavButton)
-        m_avatarNavButton->setToolTip(
-            QString::fromUtf8("%1 \xC2\xB7 your node profile").arg(text));
+    // The status text rides on the dot's own tooltip; the dot itself just shows
+    // the colour. (The count can change while the colour doesn't, so the tooltip
+    // is always refreshed but the dot stylesheet is only rewritten on colour
+    // change.)
+    m_connectionDot->setToolTip(text);
     if (color == m_connectionStatusColor)
         return;
     m_connectionStatusColor = color;
@@ -4045,14 +4016,6 @@ void MainWindow::updateUserSwitcher()
                                            : QStringLiteral("node"));
     }
     const QString user = topBarUserName();
-    const QString label = user.isEmpty() ? QStringLiteral("User") : user;
-    if (m_userMenuButton) {
-        m_userMenuButton->setText(label);
-        m_userMenuButton->setToolTip(
-            user.isEmpty()
-                ? QStringLiteral("Open your user account settings")
-                : QStringLiteral("User account: %1").arg(user));
-    }
     if (m_userAvatarNavButton) {
         m_userAvatarNavButton->setToolTip(
             user.isEmpty()
@@ -4061,6 +4024,9 @@ void MainWindow::updateUserSwitcher()
     }
     updateUserAvatarButton();
     updateChatIdentity();
+    // The top-right node-name label folds in the user account name
+    // ("user/node"), so keep it in step with the user identity too.
+    updateNavSolanaBalance();
 }
 
 void MainWindow::cycleNavSolanaCurrency()
@@ -4084,7 +4050,16 @@ void MainWindow::cycleNavSolanaCurrency()
 void MainWindow::updateNavSolanaBalance()
 {
     if (m_navNodeName) {
-        const QString name = accountNameFromInput(m_userName, QString());
+        // "user/node" (e.g. "jett/forkmesh") when this node has a distinct
+        // owning user account; just the node name for a solo/unclaimed node,
+        // where topBarUserName() already falls back to the node name itself.
+        const QString nodeName = accountNameFromInput(m_userName, QString());
+        const QString user = topBarUserName().trimmed();
+        const QString name =
+            (!user.isEmpty() && !nodeName.isEmpty() &&
+             user.compare(nodeName, Qt::CaseInsensitive) != 0)
+                ? user + QStringLiteral("/") + nodeName
+                : nodeName;
         // Admins get a little crown next to their name. U+1F451 (👑).
         const QString crown = QString::fromUtf8(" \xF0\x9F\x91\x91");
         m_navNodeName->setText(m_isAdmin && !name.isEmpty() ? name + crown : name);
