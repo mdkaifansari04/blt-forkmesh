@@ -445,6 +445,11 @@ def _load_handler(*, rows, presence=None, first_hosted=None, live_hosts=None):
     namespace = {
         "Date": _Clock,
         "HOST_PRESENCE_STALE_MS": 600_000,
+        "asyncio": asyncio,
+        # Fresh per-load probe memo so tests stay independent of each other.
+        "_LIVE_HOST_PROBE_MEMO": {},
+        "LIVE_HOST_PROBE_MEMO_TTL_MS": 30_000,
+        "HYDRATE_PROBE_MAX": 8,
         "ensure_schema": ensure_schema,
         "d1_all": d1_all,
         "decrypt_row": decrypt_row,
@@ -568,3 +573,67 @@ def test_worker_exposes_repo_mirrors_route_and_uses_payload_builder():
     assert "host_presence" in ENTRY_TEXT
     assert "repo_first_hosted" in ENTRY_TEXT
     assert '"/mirrors"' in ENTRY_TEXT or "mirrors_match" in ENTRY_TEXT
+
+
+def test_hydrate_live_host_probes_capped_concurrent_and_memoized():
+    # adhoc #167: hydrate used to await one DO probe per stale group member
+    # SEQUENTIALLY (up to HOST_COUNT_TIMEOUT_MS each) on every public
+    # info/refs. A group full of dead mirrors (fleet die-off) hung the request
+    # until the Workers runtime canceled it ("Cannot enter into task").
+    # Probes must be capped per request and memoized across calls so repeated
+    # requests walk a large group instead of re-probing all of it every time.
+    probed = []
+
+    async def repo_live_host_count(_env, owner, repo):
+        probed.append(f"{owner}/{repo}")
+        return 1 if owner == "live-node" else 0
+
+    namespace = {
+        "asyncio": asyncio,
+        "_LIVE_HOST_PROBE_MEMO": {},
+        "LIVE_HOST_PROBE_MEMO_TTL_MS": 30_000,
+        "HYDRATE_PROBE_MAX": 8,
+        "repo_live_host_count": repo_live_host_count,
+    }
+    hydrate, _ = _load(
+        "hydrate_repo_group_live_hosts", "repo_mirror_same_group",
+        extra_globals=namespace)
+
+    rows = [
+        {"key_bi": "src",
+         "data": _row("src", "mainnode", "forkmesh", root="abc")["data"]},
+        {"key_bi": "live",
+         "data": _row("live", "live-node", "forkmesh", root="abc",
+                      source="mainnode")["data"]},
+    ] + [
+        {"key_bi": f"dead{i}",
+         "data": _row(f"dead{i}", f"dead-node-{i}", "forkmesh", root="abc",
+                      source="mainnode")["data"]}
+        for i in range(19)
+    ]
+
+    presence = asyncio.run(
+        hydrate(object(), "mainnode", "forkmesh", rows, {}, 1_000_000))
+    # Capped: 21 stale members, only the first 8 probed this request.
+    assert len(probed) == 8
+    # The next two calls (same 30s memo window) continue where the last
+    # stopped instead of re-probing the memoized members.
+    presence = asyncio.run(
+        hydrate(object(), "mainnode", "forkmesh", rows, presence, 1_000_000))
+    presence = asyncio.run(
+        hydrate(object(), "mainnode", "forkmesh", rows, presence, 1_000_000))
+    assert len(probed) == 21
+    assert len(set(probed)) == 21  # no member probed twice within the TTL
+    # A fourth call is fully memoized -- zero new subrequests.
+    presence = asyncio.run(
+        hydrate(object(), "mainnode", "forkmesh", rows, presence, 1_000_000))
+    assert len(probed) == 21
+    # Presence reflects the ground truth gathered across the calls.
+    assert "live" in presence
+    assert not any(key.startswith("dead") for key in presence)
+    # The probes themselves must run concurrently (one timeout for the whole
+    # batch, not one per mirror) -- the sequential await is what hung info/refs.
+    src = _WORKER_SRC[_WORKER_SRC.index(
+        "async def hydrate_repo_group_live_hosts"):]
+    src = src[:src.index("\nasync def ", 10)]
+    assert "asyncio.gather" in src

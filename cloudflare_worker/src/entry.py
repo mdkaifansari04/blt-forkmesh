@@ -878,6 +878,24 @@ async def notify_repo_host(env, owner, repo, topic):
         pass
 
 
+# Per-isolate memo of recent DO live-host probes: key_bi -> {"ts", "hosts"}
+# ("hosts" is None when the probe failed/timed out). hydrate_repo_group_live_
+# hosts used to await one Durable Object probe PER stale group member
+# SEQUENTIALLY (up to HOST_COUNT_TIMEOUT_MS each) on every public info/refs,
+# browse and /mirrors request. A logical repo group with many offline mirrors
+# (a fleet die-off purges their host_presence rows, so every member stays
+# "stale" forever) turned each request into minutes of awaiting dead tunnels —
+# the Workers runtime then canceled the request as hung, surfacing the Pyodide
+# "Cannot enter into task" error on git-upload-pack info/refs (adhoc #167, the
+# same info/refs-hang family as adhoc #144/#153). Probes now run concurrently,
+# are capped per request (also protecting the per-request subrequest budget),
+# and every completed probe — including a failed one — is memoized briefly so
+# a clone burst doesn't re-probe the same dead mirrors on every request.
+_LIVE_HOST_PROBE_MEMO = {}
+LIVE_HOST_PROBE_MEMO_TTL_MS = 30 * 1000
+HYDRATE_PROBE_MAX = 8
+
+
 async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
                                         presence, now):
     # host_presence is an eventually-refreshed D1 cache. For routing and the
@@ -899,6 +917,7 @@ async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
         # Fallback mirrors can still be selected by name when the named source
         # has no catalog row yet.
         target = {"owner": owner, "name": repo, "rootCommit": ""}
+    stale = []
     for row in catalog_rows or []:
         rec = row.get("data") or {}
         key = str(row.get("key_bi") or "")
@@ -910,8 +929,30 @@ async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
         # the N-subrequest fan-out that ran on every /mirrors request.
         if now - int(presence.get(key, 0) or 0) < 30 * 1000:
             continue
-        hosts = await repo_live_host_count(
-            env, rec.get("owner"), rec.get("name"))
+        memo = _LIVE_HOST_PROBE_MEMO.get(key)
+        if memo and now - memo["ts"] < LIVE_HOST_PROBE_MEMO_TTL_MS:
+            hosts = memo["hosts"]
+            if hosts is not None:
+                if hosts > 0:
+                    presence[key] = now
+                else:
+                    presence.pop(key, None)
+            continue
+        stale.append((key, rec))
+    # Probe concurrently (each already bounded by HOST_COUNT_TIMEOUT_MS inside
+    # repo_live_host_count, so the whole batch costs one timeout, not one per
+    # mirror) and capped per request. Members beyond the cap keep their stale
+    # presence this request; because probed members land in the memo, the next
+    # request's stale list starts where this one stopped, so a large group is
+    # covered across a few requests instead of hanging any single one.
+    probes = stale[:HYDRATE_PROBE_MAX]
+    results = await asyncio.gather(*(
+        repo_live_host_count(env, rec.get("owner"), rec.get("name"))
+        for _key, rec in probes), return_exceptions=True)
+    for (key, _rec), hosts in zip(probes, results):
+        if not isinstance(hosts, int):
+            hosts = None  # failed/timed-out probe: memoized, presence untouched
+        _LIVE_HOST_PROBE_MEMO[key] = {"ts": now, "hosts": hosts}
         if hosts is None:
             continue
         if hosts > 0:
