@@ -75,6 +75,15 @@
             "sig": "KIoPREDJTGdejRRuCE8-MRdvMF2ZqpHRV9puSRg4yFqBsQdNpksCIourDlUNaLh5rZTytpmScV8NDLB2W9ebAw",
             "ts": 1784412731978,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "b6ca65bd-d66a-44bf-a299-32431f6c6c20",
+            "sig": "qUo2P5KH1f_kPyPT55VtnzQWbP-rneRjQzy3hiy6vN8oNkA86mdwTqHERKL1EX1HGE_cb77adZYyag75ziF6Bw",
+            "status": "closed",
+            "ts": 1784412732016,
+            "type": "status"
         }
     ],
     "labels": [
@@ -87,8 +96,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 1784347200000,
-    "status": "open",
+    "status": "closed",
     "title": "Migrate planning tools to the native signed tracker format",
-    "updatedAt": 1784412731978,
+    "updatedAt": 1784412732016,
     "votes": 0
 }
