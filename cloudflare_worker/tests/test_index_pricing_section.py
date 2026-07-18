@@ -10,7 +10,7 @@ INDEX_HTML = (PUBLIC / "index.html").read_text(encoding="utf-8")
 
 def _pricing_region() -> str:
     start = INDEX_HTML.index('<div class="pattern-rails relative w-full">')
-    end = INDEX_HTML.index('<section id="faq"', start)
+    end = INDEX_HTML.index('<section id="support-forkmesh"', start)
     return INDEX_HTML[start:end]
 
 
