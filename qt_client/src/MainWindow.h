@@ -1646,6 +1646,12 @@ private:
     // The agent CLI needs the user to act (e.g. a bad API key); surface it.
     void onAgentNeedsAttention(int sessionId, const QString &message);
     void updateAgentActionState();
+    // Restyle the quick-add "new"/"add" send buttons (adhoc #89) so the one Enter
+    // would actually activate — "add" while an agent session is open above (a
+    // follow-up message), otherwise "new" (start a fresh agent) — carries a green
+    // outline and a small Enter badge. Called whenever the selected agent session
+    // changes via updateAgentActionState.
+    void updateQuickAddEnterTarget();
     void updateIssueAgentUi(const Issue &issue);
     // Issue #145: populate the issue detail's "Files changed" tab from a linked
     // pull request's patch or a linked agent session's branch diff, and show or
@@ -3413,6 +3419,15 @@ private:
     // sends the typed prompt as a follow-up message to the currently-selected
     // agent session instead of the quick-add issue/new-agent flow.
     QPushButton *m_quickAddSendToAgentButton = nullptr;
+    // Plain "start a new agent" send button next to it (adhoc #89): tracked as a
+    // member (rather than a local in setupQuickAdd) so updateQuickAddEnterTarget
+    // can restyle it as the two selected/deselected agent detail changes which of
+    // the two buttons Enter actually triggers.
+    QPushButton *m_quickAddSendButton = nullptr;
+    // Small green "Enter" badges (adhoc #89), one per send button above, shown on
+    // whichever button Enter currently activates.
+    QLabel *m_quickAddSendEnterBadge = nullptr;
+    QLabel *m_quickAddSendToAgentEnterBadge = nullptr;
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
     QWidget *m_quickAddAttachStrip = nullptr;   // chips w/ thumbnail + "x" remove
