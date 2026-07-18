@@ -2046,6 +2046,7 @@ private:
                                        const QString &newTag,
                                        const QString &targetRef,
                                        const QString &provider,
+                                       const QString &modelChoice,
                                        QPlainTextEdit *notesEdit,
                                        QPushButton *button);
     void pruneReleaseArtifactsForCurrentRepo(const QString &releaseTag);
