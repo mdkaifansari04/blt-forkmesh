@@ -1347,17 +1347,20 @@ protected:
         // Like a real radar, a blip is dark until the sweep's leading edge
         // crosses it, then flashes bright and fades back to nothing over the
         // next kFadeDeg of rotation before the line comes back around (adhoc
-        // #123). The leading edge sits at screen angle -m_angle (the same angle
-        // the sweep pie/gradient start from), so a blip lights the moment the
-        // sweep passes its own hash-derived angle.
+        // #123, timing fixed in #127). The pie/gradient start at Qt angle
+        // -m_angle, and Qt angles run counter-clockwise on screen while the
+        // blip positions below use (cos, sin) in y-down coordinates — i.e.
+        // clockwise. So in the blips' clockwise convention the leading edge
+        // sits at +m_angle, and a blip lights the moment the sweep passes its
+        // own hash-derived angle.
         p.setPen(Qt::NoPen);
-        const int leadDeg = ((-m_angle) % 360 + 360) % 360;
+        const int leadDeg = m_angle % 360;
         constexpr int kFadeDeg = 150; // how far the sweep travels before a blip goes dark
         for (const Blip &b : m_blips) {
             const uint h = qHash(b.id);
             const int blipDeg = int(h % 360);
             // Degrees the sweep has advanced past this blip since it was hit.
-            const int delta = (blipDeg - leadDeg + 360) % 360;
+            const int delta = (leadDeg - blipDeg + 360) % 360;
             if (delta > kFadeDeg)
                 continue; // hidden until the sweep line reaches it again
             const qreal glow = 1.0 - qreal(delta) / kFadeDeg;
