@@ -2084,13 +2084,9 @@ void MainWindow::pushAccountAvatar()
 
 void MainWindow::updateAvatarButton()
 {
-    if (!m_avatarNavButton)
-        return;
-    const QPixmap pm = roundedAvatar(effectiveAvatar(), 34);
-    if (!pm.isNull())
-        m_avatarNavButton->setIcon(QIcon(pm));
-    m_avatarNavButton->setIconSize(QSize(34, 34));
-    m_avatarNavButton->setText(QString());
+    // The top-bar node avatar button is gone (only the user avatar remains);
+    // this still refreshes the issue composer's avatar/name whenever the
+    // node or user avatar changes.
     refreshIssueComposerAvatar();
 }
 
