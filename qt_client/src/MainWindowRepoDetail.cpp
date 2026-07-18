@@ -4496,7 +4496,7 @@ QWidget *MainWindow::createGlobalSearchBox()
     m_globalSearch = new QLineEdit;
     m_globalSearch->setObjectName("globalSearch");
     m_globalSearch->setClearButtonEnabled(true);
-    m_globalSearch->setPlaceholderText(QString::fromUtf8("Search everything\xE2\x80\xA6"));
+    m_globalSearch->setPlaceholderText(QString::fromUtf8("Search\xE2\x80\xA6"));
     m_globalSearch->setMinimumWidth(150);
     m_globalSearch->setMaximumWidth(360);
     m_globalSearch->addAction(themedOcticon("search", QColor(Theme::kTextTertiary), 14),
