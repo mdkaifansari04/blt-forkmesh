@@ -1377,36 +1377,34 @@ protected:
         p.drawText(dishRect, Qt::AlignCenter, label);
 
         // Mirror nodes echoed as blips on the dish, in the same colours/shapes
-        // as the Mirror-nodes activity strip (adhoc #122). Like a real radar
-        // scope, a blip stays dark until the sweep's leading edge wipes across
-        // it, then flares to full brightness and decays behind the beam as a
-        // phosphor trail before the next revolution lights it again (adhoc
-        // #138) — counter-intuitively, the roster is *not* all visible at once.
-        // Each node owns an evenly-spaced slot around one ring so the blips fan
-        // out cleanly and never overlap. Drawn last, on top of the centre
-        // latency read-out and pushed out near the rim, so every shape reads as
-        // a complete circle (or an integrity-warning triangle) rather than a
-        // slice clipped by the dish edge or the text backing disc (adhoc #138).
+        // as the Mirror-nodes activity strip (adhoc #122). Every blip is always
+        // visible — a solid filled shape with no border and no delay waiting on
+        // the sweep (adhoc #141). The passing beam still adds a soft phosphor
+        // halo flare so the scope keeps its live feel, but the shape underneath
+        // never dims or hides. Each node owns an evenly-spaced slot around one
+        // ring so the blips fan out cleanly and never overlap. Drawn last, on
+        // top of the centre latency read-out and pushed out near the rim, so
+        // every shape reads as a complete circle (or an integrity-warning
+        // triangle) rather than a slice clipped by the dish edge or the text
+        // backing disc.
         //
         // The pie/gradient start at Qt angle -m_angle, and Qt angles run
         // counter-clockwise on screen while the blip positions below use
         // (cos, sin) in y-down coordinates — i.e. clockwise. So in the blips'
-        // clockwise convention the leading edge sits at +m_angle, and a blip
-        // lights the moment the sweep passes its own slot angle.
+        // clockwise convention the leading edge sits at +m_angle, and the beam
+        // flares a blip as the sweep passes its own slot angle.
         const int leadDeg = m_angle % 360;
-        constexpr int kFadeDeg = 130; // phosphor trail: degrees of decay behind the beam
+        constexpr int kFadeDeg = 130; // beam flare: degrees the halo brightens behind the sweep
         const int n = m_blips.size();
         for (int i = 0; i < n; ++i) {
             const Blip &b = m_blips.at(i);
             // Evenly space the blips around the ring by index, so a growing
             // roster fans out cleanly instead of clustering on a hash.
             const int blipDeg = n > 0 ? (i * 360) / n : 0;
-            // Degrees the sweep has advanced past this blip since it lit it.
+            // Degrees the sweep has advanced past this blip; drives the halo
+            // flare only — the blip itself is always drawn at full brightness.
             const int delta = (leadDeg - blipDeg + 360) % 360;
-            // Hidden until the beam wipes over it; then a flare fading to dark.
-            if (delta > kFadeDeg)
-                continue;
-            const qreal glow = 1.0 - qreal(delta) / kFadeDeg;
+            const qreal flare = delta <= kFadeDeg ? 1.0 - qreal(delta) / kFadeDeg : 0.0;
 
             const qreal ang = qDegreesToRadians(qreal(blipDeg));
             const QPointF pos = c + QPointF(qCos(ang), qSin(ang)) * (r * 0.80);
@@ -1415,21 +1413,16 @@ protected:
             if (b.integrityFailing)
                 col = QColor("#d29922"); // amber caution, matching the strip
 
-            // Soft phosphor halo behind the crisp shape as the beam catches it.
+            // Soft phosphor halo, brightest as the beam catches the blip.
             QColor halo = col;
-            halo.setAlphaF(0.35 * glow);
+            halo.setAlphaF(0.35 * flare);
             p.setPen(Qt::NoPen);
             p.setBrush(halo);
-            p.drawEllipse(pos, 2.6 + 2.0 * glow, 2.6 + 2.0 * glow);
+            p.drawEllipse(pos, 2.6 + 2.0 * flare, 2.6 + 2.0 * flare);
 
-            // The solid shape itself, brightest right behind the beam and
-            // fading out along the trail. A thin dark outline keeps it crisp.
-            QColor outline("#1c2128");
-            outline.setAlphaF(glow);
-            QColor fill = col;
-            fill.setAlphaF(glow);
-            p.setPen(QPen(outline, 0.8));
-            p.setBrush(fill);
+            // The solid filled shape itself — always visible, no border.
+            p.setPen(Qt::NoPen);
+            p.setBrush(col);
             if (b.integrityFailing) {
                 // Amber caution triangle, matching MirrorActivityStrip.
                 const qreal s = 3.2;
@@ -1439,7 +1432,6 @@ protected:
             } else {
                 p.drawEllipse(pos, 2.8, 2.8);
             }
-            p.setPen(Qt::NoPen);
         }
     }
 
