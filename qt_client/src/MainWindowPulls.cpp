@@ -2861,10 +2861,16 @@ void MainWindow::renderPullThread(const PullRequest &pr)
     }
 }
 
-void MainWindow::renderPullCommits(const PullRequest &pr)
+void MainWindow::renderPullCommits(PullRequest pr)
 {
     if (!m_pullCommitsList)
         return;
+    // `pr` is taken by value: the runGitCapture() below pumps the event loop
+    // (under a GitKeepAlive scope), and that pump can re-enter reload paths that
+    // reassign m_currentPulls. pr.base/pr.head/pr.commits are read *after* the
+    // pump, so a reference into m_currentPulls would dangle and those reads would
+    // be use-after-frees — the same crash class that took runIdsForPull by value
+    // in adhoc #119. The copy stays valid across any nested reload.
     m_pullCommitsList->clear();
     const QString dir = repoGitDir();
     // PRs are patch-based; list the commits on the head branch since the base

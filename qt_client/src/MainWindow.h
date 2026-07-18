@@ -1244,7 +1244,9 @@ private:
     void submitPullThreadReply(const QString &threadId);
     void setPullThreadState(const QString &threadId, const QString &state);
     void renderPullThread(const PullRequest &pr);   // review/comment conversation
-    void renderPullCommits(const PullRequest &pr);  // commits that make up the PR
+    void renderPullCommits(PullRequest pr);         // commits that make up the PR
+                                                    // (by value: pumps a git read,
+                                                    // see adhoc #119/#124)
     // The next two and runIdsForPull/updatePullSubTabCounts take the PR by
     // value on purpose: they pump the event loop (git reads), and callers often
     // pass references into m_currentPulls, which a nested reloadPulls() can
