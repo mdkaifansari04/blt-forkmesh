@@ -2,27 +2,32 @@ name = "forkmesh-marketing"
 main = "src/entry.js"
 compatibility_date = "2026-06-14"
 
-# This Worker owns EXACTLY forkmesh.com/ — the marketing landing page — and
-# nothing else. Cloudflare route patterns are ranked by specificity and routes
-# take precedence over a Worker Custom Domain, so this exact-match pattern
-# intercepts only the root URL while every other path (/api/*, /dashboard,
-# /login, /owner/repo, /styles.css, ...) keeps hitting the relay Worker
-# (../cloudflare_worker, name "forkmesh-relay") exactly as before. That is the
-# whole split: forkmesh.com/ is this Worker, forkmesh.com/anything is the relay.
+# This Worker owns the marketing pages — forkmesh.com/ (the landing page),
+# /pricing, and the /blog index plus every /blog/<slug> post — and nothing else.
+# Cloudflare route patterns are ranked by specificity and routes take precedence
+# over a Worker Custom Domain, so these patterns intercept exactly those paths
+# while every other path (/api/*, /dashboard, /login, /owner/repo, /styles.css,
+# ...) keeps hitting the relay Worker (../cloudflare_worker, name
+# "forkmesh-relay") exactly as before.
 #
-# The landing page's subresources (/styles.css, /assets/*, /site-header.js,
-# /favicon/*, ...) are therefore still served by the relay Worker's static
-# assets — this Worker only ever serves the root HTML document.
+# The pages' shared subresources (/styles.css, /assets/*, /pricing-theme.css,
+# /assets/blog/*, /site-header.js, /favicon/*, ...) are root-absolute and still
+# served by the relay Worker's static assets — this Worker only ever serves the
+# HTML documents for the routes it owns.
 routes = [
   { pattern = "forkmesh.com/", zone_name = "forkmesh.com" },
+  { pattern = "forkmesh.com/pricing", zone_name = "forkmesh.com" },
+  { pattern = "forkmesh.com/blog", zone_name = "forkmesh.com" },
+  { pattern = "forkmesh.com/blog/*", zone_name = "forkmesh.com" },
 ]
 
-# The landing document stays canonical in ../cloudflare_worker/public/index.html
-# (next to the shared CSS/JS it references, and so the relay's homepage fallback
-# keeps working on workers.dev previews and in local dev). This build step copies
-# it in before every deploy — public/ here is generated, never edited.
+# The marketing documents stay canonical in ../cloudflare_worker/public/ (next to
+# the shared CSS/JS they reference, and so the relay's fallbacks keep working on
+# workers.dev previews and in local dev). This build step copies them in before
+# every deploy — public/ here is generated, never edited. `cp -R blog/.` mirrors
+# every post directory (each is a single index.html).
 [build]
-command = "mkdir -p public && cp ../cloudflare_worker/public/index.html public/index.html"
+command = "mkdir -p public/blog && cp ../cloudflare_worker/public/index.html public/index.html && cp ../cloudflare_worker/public/pricing.html public/pricing.html && cp ../cloudflare_worker/public/blog.html public/blog.html && cp -R ../cloudflare_worker/public/blog/. public/blog/"
 
 [assets]
 directory = "./public"
