@@ -3479,6 +3479,10 @@ private:
     QPushButton *m_agentStatusLabel = nullptr;
     QWidget *m_agentStatusIconsHost = nullptr;
     QHBoxLayout *m_agentStatusIconsLayout = nullptr;
+    // "N more" button on the right of the strip (adhoc #115): replaces the old
+    // horizontal scrollbar. Shown only when there are more sessions than fit in
+    // the capped icon row; clicking it jumps to the Agents tab.
+    QPushButton *m_agentStatusMoreButton = nullptr;
     // Voice input (whisper.cpp): the mic button is hidden until whisper.cpp is
     // installed. While recording, m_voiceRecordProc captures a temp WAV which
     // m_voiceTranscribeProc transcribes — once when recording stops, and live on

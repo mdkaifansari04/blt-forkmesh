@@ -4743,8 +4743,18 @@ void MainWindow::refreshAgentStatusRow()
         delete item;
     }
     m_agentStatusRow->setVisible(!m_agentSessions.isEmpty());
+    // Cap how many dots the strip packs in (adhoc #115): the row no longer
+    // scrolls, so the overflow collapses into the "N more" button on the right
+    // instead of running off the edge behind a horizontal scrollbar.
+    constexpr int kMaxStatusDots = 12;
+    const int totalSessions = m_agentSessions.size();
+    const int shownDots = qMin(totalSessions, kMaxStatusDots);
     bool anyRunning = false;
+    int drawn = 0;
     for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (drawn >= shownDots)
+            break;
+        ++drawn;
         auto *dot = new QPushButton;
         dot->setObjectName("agentStatusDot");
         dot->setFlat(true);
@@ -4770,7 +4780,15 @@ void MainWindow::refreshAgentStatusRow()
                 [this, sessionId] { switchToAgentsTab(sessionId); });
         m_agentStatusIconsLayout->addWidget(dot);
     }
-    m_agentStatusIconsLayout->addStretch(1);
+
+    // Surface the hidden sessions as a "N more" button on the right; clicking it
+    // opens the Agents tab (adhoc #115).
+    if (m_agentStatusMoreButton) {
+        const int hidden = totalSessions - shownDots;
+        m_agentStatusMoreButton->setVisible(hidden > 0);
+        if (hidden > 0)
+            m_agentStatusMoreButton->setText(QStringLiteral("%1 more").arg(hidden));
+    }
 
     if (anyRunning) {
         if (!m_agentStatusSpinTimer) {
