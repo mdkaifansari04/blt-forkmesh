@@ -113,6 +113,15 @@ SCHEMA_STATEMENTS = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
         status INTEGER NOT NULL, method TEXT, path TEXT, message TEXT, ray TEXT)""",
     "CREATE INDEX IF NOT EXISTS idx_error_log_ts ON error_log(ts)",
+    # Inbox drain audit log (adhoc #97): one row each time the owner's node acks
+    # (drains) queued inbox submissions, so a "my web-filed issue disappeared but
+    # never synced" report can be traced to when/what drained it. Content-free —
+    # repo_bi is a blind index and the only payload is a row count.
+    """CREATE TABLE IF NOT EXISTS inbox_drain_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+        repo_bi TEXT NOT NULL, kind TEXT NOT NULL, count INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_inbox_drain_log_ts ON inbox_drain_log(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_inbox_drain_log_repo ON inbox_drain_log(repo_bi)",
     # Anonymous installer diagnostics surfaced on the admin dashboard. One row per
     # reported install step (start/mirror/deps/fetch/build/install/launch/done).
     # `run` is a random id the installer mints per run — it is NOT tied to any

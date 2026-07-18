@@ -7206,8 +7206,16 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
         QString provider;
     };
     QList<CommentAgentRequest> commentAgentRequests;
+    // Inbox row ids of the submissions we actually read here, so the ack below
+    // deletes exactly these instead of the whole repo queue. That keeps an
+    // issue filed from the web while we were mid-drain alive until the next
+    // sync merges it, rather than vanishing undelivered (adhoc #97).
+    QStringList drainedIds;
     for (const QJsonValue &value : pending) {
         const QJsonObject item = value.toObject();
+        const QJsonValue idVal = item.value("id");
+        if (idVal.isDouble())
+            drainedIds << QString::number(static_cast<qint64>(idVal.toDouble()));
         const int number = item.value("number").toInt();
         const QJsonObject eventObj = item.value("event").toObject();
         IssueEvent ev = IssueEvent::fromJson(eventObj);
@@ -7258,11 +7266,18 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
             }
         }
     }
-    // Acknowledge so the inbox clears the merged submissions.
-    QUrl ackUrl = issuesApiUrl(repo);
-    ackUrl.setQuery(
-        signedInboxQuery(repoSegment(repo.owner, QStringLiteral("owner"))));
-    m_networkAccess->deleteResource(QNetworkRequest(ackUrl));
+    // Acknowledge so the inbox clears the merged submissions: ack exactly the
+    // rows we read (?ids=) so anything filed after we read the queue survives to
+    // the next sync (adhoc #97). The relay only drains the named ids, so skip
+    // the ack entirely when none carried an id (nothing to clear).
+    if (!drainedIds.isEmpty()) {
+        QUrl ackUrl = issuesApiUrl(repo);
+        QUrlQuery ackQuery =
+            signedInboxQuery(repoSegment(repo.owner, QStringLiteral("owner")));
+        ackQuery.addQueryItem("ids", drainedIds.join(QStringLiteral(",")));
+        ackUrl.setQuery(ackQuery);
+        m_networkAccess->deleteResource(QNetworkRequest(ackUrl));
+    }
     // Refresh the issue list if this is the repo currently on screen.
     const int curIdx = issuesRepoIndex();
     if (curIdx >= 0 &&
