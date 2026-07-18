@@ -4,7 +4,7 @@ number: 21
 title: Agent: on the agents page please separate the agent sessions scroll from the detail …
 base: main
 head: agent/adhoc-68-on-the-agents-page-please-separate-the-agent-ses
-status: open
+status: merged
 ts: 1784334011212
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh
