@@ -578,6 +578,19 @@ QWidget *MainWindow::buildRepoOverviewPage()
         showOverviewBranches();
         loadBranchesPanel();
     });
+    m_worktreesButton = new QPushButton("Worktrees");
+    m_worktreesButton->setObjectName("ghostButton");
+    m_worktreesButton->setCursor(Qt::PointingHandCursor);
+    m_worktreesButton->setToolTip(
+        "Open the Worktrees panel to view agent checkouts and their changes");
+    setOcticon(m_worktreesButton, "file-directory", 16);
+    connect(m_worktreesButton, &QPushButton::clicked, this, [this] {
+        // Worktrees, like Branches, has no top-level tab anymore (adhoc #170):
+        // its panel lives inside the Code overview beside Branches, toggled by
+        // this button.
+        showOverviewWorktrees();
+        loadWorktreesPanel();
+    });
     m_toolbarCommitsButton = new QPushButton("Commits");
     m_toolbarCommitsButton->setObjectName("ghostButton");
     m_toolbarCommitsButton->setCursor(Qt::PointingHandCursor);
@@ -623,6 +636,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     toolbar->setSpacing(8);
     toolbar->addWidget(m_branchButton);
     toolbar->addWidget(m_branchesButton);
+    toolbar->addWidget(m_worktreesButton);
     toolbar->addWidget(m_toolbarCommitsButton);
     toolbar->addWidget(m_tagsButton);
     toolbar->addWidget(m_fileSearch, 1);
@@ -643,6 +657,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_overviewBodyStack->addWidget(filesBody);             // 0 files + README
     m_overviewBodyStack->addWidget(buildRepoCommitsTab()); // 1 commit history
     m_overviewBodyStack->addWidget(buildBranchesTab());    // 2 branches panel
+    m_overviewBodyStack->addWidget(buildWorktreesTab());   // 3 worktrees panel
 
     // Left column: toolbar, latest commit, then the swappable body.
     auto *leftColumn = new QWidget;
@@ -1461,48 +1476,13 @@ void MainWindow::openRepoDetail(int repoIndex)
 
 void MainWindow::updateRepoCodeSize()
 {
-    if (!m_repoCodeTab)
-        return;
-    auto showSize = [this](const QString &size) {
-        m_repoCodeTab->setText(QStringLiteral("Code (%1)").arg(size)); // Code (N MB)
-    };
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
-        m_repoCodeSizePath.clear();
-        showSize(QStringLiteral("0 B"));
-        return;
-    }
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-    if (repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists()) {
-        m_repoCodeSizePath.clear();
-        showSize(QStringLiteral("0 B"));
-        return;
-    }
-
-    // `git count-objects -v` walks the whole object store; on a large mirror
-    // that single call was the blocking git read StallWatchdog caught freezing
-    // the GUI thread from inside openRepoDetail's eager (non-deferred) load —
-    // even under GitKeepAlive, whose polling pump can itself get stuck behind a
-    // slow paint. Fetch it fully off the GUI thread instead (see
-    // runGitDetached) and only apply the result if still showing this repo.
-    //
-    // The Code tab is the first tab in the strip and the strip is a plain
-    // QHBoxLayout, so any width change here shifts every later tab plus the
-    // header widgets aligned with them. Flashing a "…" placeholder on each
-    // sync/merge refresh made the whole bar jump twice; keep the last computed
-    // size on screen instead and only show the placeholder the first time this
-    // mirror's size is looked up.
-    if (m_repoCodeSizePath != repo.mirrorPath)
-        showSize(QStringLiteral("…"));
-    const int forIndex = m_repoDetailIndex;
-    const QString forPath = repo.mirrorPath;
-    runGitDetached(repo.mirrorPath, {"count-objects", "-v"},
-                   [this, forIndex, forPath, showSize](bool ok, const QByteArray &out) {
-                       if (forIndex != m_repoDetailIndex || !m_repoCodeTab)
-                           return;
-                       m_repoCodeSizePath = forPath;
-                       showSize(ok ? formatByteSize(parseCountObjectsSizeBytes(out))
-                                   : QStringLiteral("0 B"));
-                   });
+    // The Code tab no longer carries the on-disk repo size badge (adhoc #170):
+    // it reads as a plain "Code" tab like the other section tabs. The size is
+    // still surfaced elsewhere (per-entry rows in the file tree / overview), so
+    // there's nothing to compute here.
+    if (m_repoCodeTab)
+        m_repoCodeTab->setText(QStringLiteral("Code"));
+    m_repoCodeSizePath.clear();
 }
 
 void MainWindow::updateRepoCommitCount()
@@ -1553,7 +1533,7 @@ void MainWindow::updateRepoPullCount()
 {
     if (m_repoPullsTab)
         m_repoPullsTab->setText(
-            QStringLiteral("Pull requests (%1)").arg(formatCount(m_currentPulls.size())));
+            QStringLiteral("PRs (%1)").arg(formatCount(m_currentPulls.size())));
 }
 
 void MainWindow::loadRepoFileTree()
@@ -3250,6 +3230,29 @@ void MainWindow::showOverviewBranches()
     if (m_overviewBodyStack)
         m_overviewBodyStack->setCurrentIndex(2);
     // The commits toggle isn't lit when branches show.
+    if (m_historyButton)
+        m_historyButton->setChecked(false);
+}
+
+// Show the worktrees panel in the Code overview, beside the branches panel —
+// same in-page navigation as showOverviewBranches. The caller layers
+// loadWorktreesPanel() on top to (re)build the rows.
+void MainWindow::showOverviewWorktrees()
+{
+    if (m_repoDetailTabs && m_repoDetailTabs->button(0))
+        m_repoDetailTabs->button(0)->setChecked(true);
+    if (m_repoDetailStack)
+        m_repoDetailStack->setCurrentIndex(0);
+    if (m_filesStack)
+        m_filesStack->setCurrentIndex(0);
+    if (m_filesModeOverviewButton)
+        m_filesModeOverviewButton->setChecked(true);
+    if (m_filesModeExplorerButton)
+        m_filesModeExplorerButton->setChecked(false);
+    if (m_filesModeCoveExplorerButton)
+        m_filesModeCoveExplorerButton->setChecked(false);
+    if (m_overviewBodyStack)
+        m_overviewBodyStack->setCurrentIndex(3);
     if (m_historyButton)
         m_historyButton->setChecked(false);
 }
@@ -7689,6 +7692,49 @@ void MainWindow::loadBranchesAndTags()
         m_repoBranchesTab->setText(
             QStringLiteral("Branches (%1)").arg(formatCount(branches.size())));
 
+    // Worktrees count on the "N worktrees" toolbar toggle (adhoc #170), mirroring
+    // the branches button. `git worktree list --porcelain` is a cheap dir read
+    // (unlike count-objects), so it's fine on this ref-change path. Excludes the
+    // reserved forkmesh/pulls storage worktree so the number matches the panel.
+    if (m_worktreesButton) {
+        int worktreeCount = 0;
+        const QString localPath =
+            (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+                ? m_repositories.at(m_repoDetailIndex).localPath
+                : QString();
+        QByteArray wtOut;
+        if (!localPath.isEmpty() &&
+            runGitCapture(localPath, {"worktree", "list", "--porcelain"}, &wtOut,
+                          nullptr)) {
+            QString curBranch;
+            auto flush = [&] {
+                if (curBranch != QLatin1String("forkmesh/pulls"))
+                    ++worktreeCount;
+            };
+            bool inEntry = false;
+            for (const QString &raw : QString::fromUtf8(wtOut).split(QLatin1Char('\n'))) {
+                const QString line = raw.trimmed();
+                if (line.isEmpty()) {
+                    if (inEntry) flush();
+                    inEntry = false;
+                    curBranch.clear();
+                    continue;
+                }
+                if (line.startsWith(QLatin1String("worktree ")))
+                    inEntry = true;
+                else if (line.startsWith(QLatin1String("branch ")))
+                    curBranch = line.mid(7).replace(QLatin1String("refs/heads/"),
+                                                    QString());
+            }
+            if (inEntry) flush();
+        }
+        m_worktreesButton->setText(
+            QStringLiteral("%1 %2")
+                .arg(formatCount(worktreeCount))
+                .arg(worktreeCount == 1 ? QStringLiteral("worktree")
+                                        : QStringLiteral("worktrees")));
+    }
+
     // Branch menu.
     if (m_branchButton) {
         auto *menu = new QMenu(m_branchButton);
@@ -7745,6 +7791,10 @@ void MainWindow::loadBranchesAndTags()
         if (current == 0 && m_overviewBodyStack &&
             m_overviewBodyStack->currentIndex() == 2)
             loadBranchesPanel();
+        // Worktrees panel likewise lives in the Code overview (body page 3).
+        else if (current == 0 && m_overviewBodyStack &&
+                 m_overviewBodyStack->currentIndex() == 3)
+            loadWorktreesPanel();
         else if (current == m_releasesTabIndex)
             loadReleasesPanel();
     }
@@ -7867,7 +7917,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Commits", "git-branch"},
                                 {"Issues", "issue-opened"},
                                 {"Agents", "terminal"},
-                                {"Pull requests", "git-pull-request"},
+                                {"PRs", "git-pull-request"},
                                 {"Discussions", "comment"},
                                 {"Actions", "workflow"},
                                 {"Security", "shield-check"},
@@ -7896,9 +7946,11 @@ QWidget *MainWindow::buildRepoDetailSection()
         // reached via the footer status strip, spinner overlays and issue/PR
         // links instead. Branches (id 10) likewise lost its top-bar tab: its
         // panel now lives inside the Code overview, toggled by the toolbar's
-        // "N branches" button. All three entries stay in the list so every later
-        // tab keeps its positional id.
-        if (i == 1 || i == 3 || i == 10)
+        // "N branches" button. Worktrees (id 11) followed Branches into the Code
+        // overview (adhoc #170), toggled by the toolbar's "N worktrees" button.
+        // All four entries stay in the list so every later tab keeps its
+        // positional id.
+        if (i == 1 || i == 3 || i == 10 || i == 11)
             continue;
         const TabDef tab = tabs.at(i);
         auto *b = new QPushButton(QString::fromLatin1(tab.label));
@@ -7920,8 +7972,8 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_repoDiscussionsTab = b;
         if (i == 6)
             m_repoActionsTab = b; // handle for the Actions (N) badge
-        if (i == 11)
-            m_repoWorktreesTab = b; // handle for the Worktrees (N) badge
+        // Worktrees (i == 11) has no top-bar tab: its "N worktrees" count now
+        // rides the m_worktreesButton toggle in the Code toolbar (adhoc #170).
         if (i == 12)
             m_repoReleasesTab = b; // handle for the Releases (N) badge
         if (i == 13)
@@ -8066,7 +8118,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     // positional ids of every later tab (Worktrees=11 …) unchanged.
     m_repoDetailStack->addWidget(new QWidget);                           // 10 Branches (moved)
     m_worktreesTabIndex = m_repoDetailStack->count();
-    m_repoDetailStack->addWidget(buildWorktreesTab());                   // 11 Worktrees
+    // Worktrees has no top-level tab: its panel lives inside the Code overview
+    // (built above in buildRepoOverviewPage, in the overview body stack). This
+    // placeholder keeps the positional ids of every later tab unchanged.
+    m_repoDetailStack->addWidget(new QWidget);                           // 11 Worktrees (moved)
     m_releasesTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildReleasesTab());                    // 12 Releases
     m_mirrorNodesTabIndex = m_repoDetailStack->count();
