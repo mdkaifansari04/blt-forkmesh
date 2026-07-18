@@ -1339,58 +1339,63 @@ protected:
         p.setBrush(accent);
         p.drawEllipse(c, 1.4, 1.4);
 
-        // Mirror nodes echoed as blips scattered across the dish, in the same
-        // colours/shapes as the Mirror-nodes activity strip (adhoc #122). Each
-        // node's position is derived from a hash of its id so blips stay put
-        // between repaints instead of jittering as the sweep spins.
+        // Mirror nodes echoed as blips on the dish, in the same colours/shapes
+        // as the Mirror-nodes activity strip (adhoc #122). Every node is always
+        // drawn as a crisp, solid shape — not a hash-scattered fuzzy halo that
+        // vanishes between sweeps (adhoc #135). The blips are spaced evenly
+        // around a single ring by their position in the list so no two overlap
+        // and the whole roster is visible at once; the sweep only adds a brief
+        // brighten as its leading edge crosses each one.
         //
-        // Like a real radar, a blip is dark until the sweep's leading edge
-        // crosses it, then flashes bright and fades back to nothing over the
-        // next kFadeDeg of rotation before the line comes back around (adhoc
-        // #123, timing fixed in #127). The pie/gradient start at Qt angle
-        // -m_angle, and Qt angles run counter-clockwise on screen while the
-        // blip positions below use (cos, sin) in y-down coordinates — i.e.
-        // clockwise. So in the blips' clockwise convention the leading edge
-        // sits at +m_angle, and a blip lights the moment the sweep passes its
-        // own hash-derived angle.
+        // The pie/gradient start at Qt angle -m_angle, and Qt angles run
+        // counter-clockwise on screen while the blip positions below use
+        // (cos, sin) in y-down coordinates — i.e. clockwise. So in the blips'
+        // clockwise convention the leading edge sits at +m_angle, and a blip
+        // brightens the moment the sweep passes its own slot angle.
         p.setPen(Qt::NoPen);
         const int leadDeg = m_angle % 360;
-        constexpr int kFadeDeg = 150; // how far the sweep travels before a blip goes dark
-        for (const Blip &b : m_blips) {
-            const uint h = qHash(b.id);
-            const int blipDeg = int(h % 360);
+        constexpr int kFadeDeg = 90; // how far the sweep travels before a blip settles back
+        const int n = m_blips.size();
+        for (int i = 0; i < n; ++i) {
+            const Blip &b = m_blips.at(i);
+            // Evenly space the blips around the ring by index, so a growing
+            // roster fans out cleanly instead of clustering on a hash.
+            const int blipDeg = n > 0 ? (i * 360) / n : 0;
             // Degrees the sweep has advanced past this blip since it was hit.
             const int delta = (leadDeg - blipDeg + 360) % 360;
-            if (delta > kFadeDeg)
-                continue; // hidden until the sweep line reaches it again
-            const qreal glow = 1.0 - qreal(delta) / kFadeDeg;
+            const qreal glow = delta <= kFadeDeg ? 1.0 - qreal(delta) / kFadeDeg
+                                                 : 0.0;
 
             const qreal ang = qDegreesToRadians(qreal(blipDeg));
-            const qreal frac = 0.42 + qreal((h >> 9) % 100) / 100.0 * 0.42;
-            const QPointF pos = c + QPointF(qCos(ang), qSin(ang)) * (r * frac);
-            QColor col = b.online ? QColor(b.behind ? "#d29922" : "#3fb950")
-                                  : QColor("#484f58");
+            const QPointF pos = c + QPointF(qCos(ang), qSin(ang)) * (r * 0.62);
+            const QColor col = b.online ? QColor(b.behind ? "#d29922" : "#3fb950")
+                                        : QColor("#484f58");
 
-            // Soft halo that pulses out brightest right as the line catches it.
-            QColor halo = col;
-            halo.setAlphaF(0.35 * glow);
-            p.setBrush(halo);
-            p.drawEllipse(pos, 3.0 + 4.0 * glow, 3.0 + 4.0 * glow);
+            // Brief soft brighten as the sweep line catches the blip, drawn
+            // behind the solid shape so the shape itself always stays crisp.
+            if (glow > 0.0) {
+                QColor halo = col;
+                halo.setAlphaF(0.4 * glow);
+                p.setBrush(halo);
+                p.drawEllipse(pos, 4.0 + 3.0 * glow, 4.0 + 3.0 * glow);
+            }
 
             if (b.integrityFailing) {
                 // Amber caution triangle, matching MirrorActivityStrip.
-                QColor tri("#d29922");
-                tri.setAlphaF(glow);
-                p.setBrush(tri);
+                p.setPen(QPen(QColor("#1c2128"), 0.8));
+                p.setBrush(QColor("#d29922"));
                 const qreal s = 4.0;
                 p.drawPolygon(QPolygonF({QPointF(pos.x(), pos.y() - s),
                                          QPointF(pos.x() + s, pos.y() + s),
                                          QPointF(pos.x() - s, pos.y() + s)}));
             } else {
-                col.setAlphaF(glow);
+                // A thin dark outline keeps the dot reading as a distinct shape
+                // against the rings and sweep wedge behind it.
+                p.setPen(QPen(QColor("#1c2128"), 0.8));
                 p.setBrush(col);
-                p.drawEllipse(pos, 3.0, 3.0);
+                p.drawEllipse(pos, 3.2, 3.2);
             }
+            p.setPen(Qt::NoPen);
         }
 
         // Latency text / alert, centered in the middle of the dish — mirrors
