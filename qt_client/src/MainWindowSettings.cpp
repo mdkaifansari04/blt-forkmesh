@@ -251,6 +251,19 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kExcludeExternalClaudeSetting, enabled);
     });
 
+    auto *publishAgentsToWebCheck =
+        new QCheckBox("Publish agents started here to the web");
+    publishAgentsToWebCheck->setChecked(
+        QSettings().value(kPublishAgentsToWebSetting, false).toBool());
+    publishAgentsToWebCheck->setToolTip(
+        "When on, agent sessions you start in the desktop are pushed to the web "
+        "catalog so a repo's website page lists them and the owner can steer "
+        "them from the browser. Off by default so locally-started agents stay "
+        "private to this machine.");
+    connect(publishAgentsToWebCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kPublishAgentsToWebSetting, enabled);
+    });
+
     // Screenshot: an inline calibration target for the region screenshot tool. It
     // shows a square with corner brackets and a centre crosshair right here in
     // Settings — grab it with the screenshot button and confirm the captured
@@ -1512,6 +1525,7 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(defaultTabCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(autoSwitchToAgentCheck);
     generalCol->addWidget(excludeExternalClaudeCheck);
+    generalCol->addWidget(publishAgentsToWebCheck);
     generalCol->addSpacing(6);
     generalCol->addWidget(screenshotLabel);
     generalCol->addWidget(screenshotHint);
