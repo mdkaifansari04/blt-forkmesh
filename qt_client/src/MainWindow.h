@@ -1347,12 +1347,20 @@ private:
     // (issue #261). The merge runs first and synchronously; only if it succeeds
     // do we drop the PR record and its branch.
     void mergeAndDeleteCurrentPull();
+    // Bulk-delete every merged PR (and its head branch, where safe) in the
+    // current repo in one confirmed step. Runs the deletions one at a time,
+    // chaining through deletePullAndBranchAsync's onDone callback so a single
+    // PullStore worker is never touched concurrently.
+    void deleteAllMergedPullsAndBranches();
     // Shared worker: delete a PR record and (best-effort) remove its local head
     // branch, reporting through the repo-detail notice. The caller owns the
     // confirmation (and any prior merge); pass propagate=true to push the result
     // to the mirror (the merge-and-delete flow needs the merge to reach peers).
+    // onDone fires after the worker settles (success or failure) so callers can
+    // chain further work, e.g. the next deletion in a bulk run.
     void deletePullAndBranchAsync(int number, const QString &head, bool haveBranch,
-                                  bool rewriteHistory, bool propagate);
+                                  bool rewriteHistory, bool propagate,
+                                  std::function<void()> onDone = {});
     void setPullDeleteButtonsEnabled(bool enabled);
     // Confirm a PR deletion; *rewriteHistory is set from an opt-in checkbox
     // (off by default — a plain delete is fast and leaves history intact).
@@ -1646,6 +1654,12 @@ private:
     // The agent CLI needs the user to act (e.g. a bad API key); surface it.
     void onAgentNeedsAttention(int sessionId, const QString &message);
     void updateAgentActionState();
+    // Restyle the quick-add "new"/"add" send buttons (adhoc #89) so the one Enter
+    // would actually activate — "add" while an agent session is open above (a
+    // follow-up message), otherwise "new" (start a fresh agent) — carries a green
+    // outline and a small Enter badge. Called whenever the selected agent session
+    // changes via updateAgentActionState.
+    void updateQuickAddEnterTarget();
     void updateIssueAgentUi(const Issue &issue);
     // Issue #145: populate the issue detail's "Files changed" tab from a linked
     // pull request's patch or a linked agent session's branch diff, and show or
@@ -2341,6 +2355,10 @@ private:
     // centralised failure handler (runUpdateStep) agnostic to which one it was.
     void startRestartSpin(QPushButton *button);
     void stopRestartSpin();
+    // Flips an in-progress restart spin between the refresh-arrows look (a
+    // rebuild actually running) and a spinning hourglass (queued behind other
+    // agent actions, not doing anything itself yet).
+    void setRestartSpinHourglass(bool hourglass);
     // Busy feedback for switching nodes in the top nav: the node button shows a
     // spinner and the heavy repo load reports each step to the log. nodeSwitchStep
     // logs the step and, mid-switch, yields the event loop so the spinner animates.
@@ -3044,9 +3062,10 @@ private:
     QPushButton *m_relayIconButton = nullptr;
     QPushButton *m_relayMenuButton = nullptr;
     QPushButton *m_relayOpenButton = nullptr;
-    // Tiny spinning-radar + latency readout sitting just left of the relay name:
-    // probes the active relay once a minute and shows the round-trip time (e.g.
-    // "33ms"), turning into a red alert when the relay doesn't answer. Held as a
+    // Spinning-radar + latency readout sitting on the window-chrome line just
+    // left of the CPU/MEM/DISK sparklines: probes the active relay once a
+    // minute and shows the round-trip time (e.g. "33ms") centered in the dish,
+    // turning into a red alert when the relay doesn't answer. Held as a
     // QWidget* and poked via static_cast (concrete RelayRadarWidget is private to
     // MainWindow.cpp).
     QWidget *m_relayRadar = nullptr;
@@ -3412,6 +3431,15 @@ private:
     // sends the typed prompt as a follow-up message to the currently-selected
     // agent session instead of the quick-add issue/new-agent flow.
     QPushButton *m_quickAddSendToAgentButton = nullptr;
+    // Plain "start a new agent" send button next to it (adhoc #89): tracked as a
+    // member (rather than a local in setupQuickAdd) so updateQuickAddEnterTarget
+    // can restyle it as the two selected/deselected agent detail changes which of
+    // the two buttons Enter actually triggers.
+    QPushButton *m_quickAddSendButton = nullptr;
+    // Small green "Enter" badges (adhoc #89), one per send button above, shown on
+    // whichever button Enter currently activates.
+    QLabel *m_quickAddSendEnterBadge = nullptr;
+    QLabel *m_quickAddSendToAgentEnterBadge = nullptr;
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
     QWidget *m_quickAddAttachStrip = nullptr;   // chips w/ thumbnail + "x" remove
@@ -4003,6 +4031,7 @@ private:
     QPushButton *m_pullChooseDirButton = nullptr;
     QPushButton *m_pullImportButton = nullptr;
     QPushButton *m_pullSyncButton = nullptr;
+    QPushButton *m_pullDeleteAllMergedButton = nullptr; // bulk-delete merged PRs + branches
     QWidget *m_pullDetail = nullptr;
     QPushButton *m_pullHideDetailButton = nullptr;
     bool m_pullDetailHidden = false;

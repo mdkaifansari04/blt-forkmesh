@@ -1,5 +1,8 @@
 #include "MarkupCanvas.h"
 
+#include <QFont>
+#include <QInputDialog>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
@@ -11,6 +14,7 @@
 namespace {
 // Not all libm headers define M_PI (it's POSIX, not standard C++).
 constexpr double kPi = 3.14159265358979323846;
+constexpr int kTextPointSize = 18;
 
 bool isDirectional(MarkupTool tool)
 {
@@ -29,6 +33,7 @@ MarkupCanvas::MarkupCanvas(const QImage &base, QWidget *parent)
 void MarkupCanvas::setTool(MarkupTool tool)
 {
     m_tool = tool;
+    setCursor(tool == MarkupTool::Text ? Qt::IBeamCursor : Qt::CrossCursor);
 }
 
 void MarkupCanvas::setColor(const QColor &color)
@@ -70,6 +75,21 @@ void MarkupCanvas::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() != Qt::LeftButton)
         return;
+    if (m_tool == MarkupTool::Text) {
+        bool ok = false;
+        const QString text = QInputDialog::getText(this, tr("Add Text"), tr("Text:"),
+                                                     QLineEdit::Normal, QString(), &ok);
+        if (ok && !text.trimmed().isEmpty()) {
+            MarkupOp op;
+            op.kind = MarkupOp::Kind::Text;
+            op.color = m_color;
+            op.textPos = event->position().toPoint();
+            op.text = text;
+            m_ops.append(op);
+            update();
+        }
+        return;
+    }
     m_drawing = true;
     m_current = MarkupOp{};
     m_current.color = m_color;
@@ -142,6 +162,12 @@ void MarkupCanvas::renderOp(QPainter &painter, const MarkupOp &op)
             painter.drawPoint(op.points.first());
         else if (op.points.size() > 1)
             painter.drawPolyline(op.points.constData(), op.points.size());
+    } else if (op.kind == MarkupOp::Kind::Text) {
+        QFont font = painter.font();
+        font.setPointSize(kTextPointSize);
+        font.setBold(true);
+        painter.setFont(font);
+        painter.drawText(op.textPos, op.text);
     } else if (op.shapeType == MarkupTool::Rect) {
         painter.drawRect(op.rect);
     } else if (op.shapeType == MarkupTool::Ellipse) {
