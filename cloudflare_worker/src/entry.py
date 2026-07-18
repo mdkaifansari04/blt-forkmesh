@@ -15228,6 +15228,62 @@ def _clean_issue_attachment_data(value):
     return cleaned, None
 
 
+async def _log_inbox_drain(env, repo_bi, kind, count):
+    # Audit trail for inbox acks (adhoc #97): one row per non-empty drain so a
+    # "web-filed item vanished but never synced" report is traceable. Content-free
+    # (blind-indexed repo, a count) and best-effort — never fail the ack over it.
+    if count <= 0:
+        return
+    try:
+        await d1_run(
+            env,
+            "INSERT INTO inbox_drain_log (ts, repo_bi, kind, count) VALUES (?,?,?,?)",
+            int(Date.now()), repo_bi, kind, int(count))
+    except Exception:
+        pass
+
+
+def _drain_ids_from_request(request):
+    # ?ids=1,2,3 on an inbox-drain DELETE: the node acks exactly the rows it
+    # merged, so a submission inserted after the node's read survives to the
+    # next sync instead of being swept away undelivered (adhoc #97).
+    params = parse_qs(urlparse(request.url).query)
+    raw = params.get("ids", [""])[0]
+    ids = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+async def _drain_issue_inbox(env, request, repo_bi):
+    """Ack (delete) the exact issue-inbox rows named by ?ids=, returning how many
+    were removed, and record the drain in inbox_drain_log. Rows the node did not
+    ack (including a submission that arrived after it read the queue) are left
+    for the next sync; a request with no ids removes nothing (adhoc #97)."""
+    ids = _drain_ids_from_request(request)
+    if not ids:
+        return 0
+    marks = ",".join("?" for _ in ids)
+    row = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=? "
+        "AND id IN (%s)" % marks,
+        repo_bi, *ids)
+    removed = int(row.get("c", 0)) if row else 0
+    await d1_run(
+        env,
+        "DELETE FROM issue_inbox WHERE repo_bi=? AND id IN (%s)" % marks,
+        repo_bi, *ids)
+    await _log_inbox_drain(env, repo_bi, "issues", removed)
+    return removed
+
+
 async def issues_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
@@ -15366,18 +15422,27 @@ async def issues_handler(env, request, owner, repo):
         if not await _authorize_owner(env, request, owner):
             return json_response({"error": "unauthorized"}, status=401)
         rows = await d1_all(
-            env, "SELECT data FROM issue_inbox WHERE repo_bi=? ORDER BY id ASC",
+            env, "SELECT id, data FROM issue_inbox WHERE repo_bi=? ORDER BY id ASC",
             repo_bi,
         )
-        pending = [rec for rec in
-                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
+        pending = []
+        for r in rows:
+            rec = await decrypt_row(env, r["data"])
+            if rec:
+                # The row id lets the node ack exactly what it merged so a
+                # submission that lands mid-drain isn't swept away undelivered
+                # (adhoc #97) — the "stayed pending, then vanished, never synced"
+                # bug. A DELETE must name the ids to remove; without them the
+                # drain removes nothing.
+                rec["id"] = r.get("id")
+                pending.append(rec)
         return json_response({"ok": True, "pending": pending})
 
     if method == "DELETE":
         if not await _authorize_owner(env, request, owner):
             return json_response({"error": "unauthorized"}, status=401)
-        await d1_run(env, "DELETE FROM issue_inbox WHERE repo_bi=?", repo_bi)
-        return json_response({"ok": True})
+        removed = await _drain_issue_inbox(env, request, repo_bi)
+        return json_response({"ok": True, "drained": removed})
 
     return json_response({"error": "method_not_allowed"}, status=405)
 
@@ -15741,6 +15806,14 @@ async def sync_handler(env, request):
             for r in table_rows or []:
                 item = await decrypt_row(env, r.get("data"))
                 if item:
+                    # Carry the inbox row id so a node draining from /api/sync
+                    # can ack exactly what it merged (DELETE ...?ids=), leaving
+                    # any submission that landed mid-drain for the next sync
+                    # instead of blanket-deleting it undelivered (adhoc #97).
+                    drain_id = r.get("drain_id")
+                    if drain_id is not None and topic in (
+                            "issues", "pulls", "discussions", "commits"):
+                        item["id"] = drain_id
                     by_repo.setdefault(r.get("repo_bi"), {}) \
                         .setdefault(topic, []).append(item)
                 # Track the exact rows READ (even undecryptable ones — they
