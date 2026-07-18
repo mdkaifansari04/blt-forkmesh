@@ -1469,15 +1469,12 @@ private:
     // Issue #291: flag agent sessions whose worktree/PR has landed in the base
     // branch. markAgentSessionsMerged() records it eagerly when ForkMesh merges
     // a PR/worktree; refreshAgentMergeState() is the catch-all run on reload (it
-    // also picks up merges synced from peers or done by hand);
-    // agentSessionLandedInBase() answers the question for one session.
+    // also picks up merges synced from peers or done by hand) — its per-branch
+    // git reads run on a worker thread, and markAgentSessionsLanded() applies
+    // the verdicts (by session id) back on the main thread.
     bool markAgentSessionsMerged(int prNumber, const QString &branch);
     void refreshAgentMergeState();
-    // dir = the repo's git dir, base = its default branch — resolved once by the
-    // caller and passed in so a whole-list refresh doesn't re-shell `git branch`
-    // (etc.) per session.
-    bool agentSessionLandedInBase(const AgentSession &session, const QString &dir,
-                                  const QString &base) const;
+    void markAgentSessionsLanded(const QList<int> &sessionIds, bool refreshUi);
     void assignIssueToAgent(const QString &provider, const QString &model = QString());
     // Core of assignIssueToAgent, factored out so the issue looper can drive it
     // for any issue (not just the selected one). Returns the new session id, or 0
@@ -4813,7 +4810,7 @@ private:
     bool m_nodeSwitching = false;      // a node switch's heavy load is running
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
     bool m_branchesPanelLoading = false; // re-entrancy guard for loadBranchesPanel
-    bool m_agentMergeStateRefreshing = false; // re-entrancy guard, refreshAgentMergeState
+    bool m_agentMergeStateRefreshing = false; // refreshAgentMergeState worker in flight
     // Shared re-entrancy guard for the two heavy periodic refreshes
     // (refreshOpenRepoDetail + refreshRepositoryList): each runs synchronous git
     // reads under a GitKeepAlive that pumps the event loop, so a second one firing

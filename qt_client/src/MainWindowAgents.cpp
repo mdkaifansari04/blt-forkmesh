@@ -3072,34 +3072,20 @@ const AgentSession *MainWindow::agentSessionForPull(int prNumber,
     return nullptr;
 }
 
-// Issue #291: has this session's worktree/PR landed in the repo's base branch?
-// PR-backed sessions defer to the loaded pull's status (so a PR merged here, or
-// synced from a peer as merged, both count). Branch-only sessions check that the
-// branch still exists and that every commit the run added since its fork point
-// is now contained in the base branch — i.e. the work merged, not merely that an
-// empty branch trivially shares history.
-bool MainWindow::agentSessionLandedInBase(const AgentSession &session,
-                                          const QString &dir,
-                                          const QString &base) const
+// Issue #291: has this branch's work landed in the repo's base branch? The
+// branch must still exist locally, and every commit the run added since its
+// fork point must now be contained in the base branch — i.e. the work merged,
+// not merely that an empty branch trivially shares history. Pure git reads over
+// value-captured strings, so refreshAgentMergeState() can run it on a worker
+// thread (off the GUI thread runGitCapture blocks without pumping).
+static bool agentBranchLandedInBase(const QString &dir, const QString &branch,
+                                    const QString &baseRef, const QString &base)
 {
-    if (session.prNumber > 0) {
-        for (const PullRequest &pr : m_currentPulls)
-            if (pr.number == session.prNumber)
-                return pr.status == QLatin1String("merged");
-    }
-    if (dir.isEmpty() || session.branchName.isEmpty())
-        return false;
-    if (base.isEmpty() || session.branchName == base)
-        return false;
     // The branch must still exist locally to reason about it.
     if (!runGitCapture(dir,
                        {"rev-parse", "--verify", "--quiet",
-                        QStringLiteral("refs/heads/%1").arg(session.branchName)},
+                        QStringLiteral("refs/heads/%1").arg(branch)},
                        nullptr, nullptr))
-        return false;
-    // Without a recorded fork point we can't distinguish a merged branch from an
-    // un-started one that shares the base's history, so don't guess.
-    if (session.baseRef.isEmpty())
         return false;
     auto count = [&](const QString &range) -> int {
         QByteArray out;
@@ -3108,10 +3094,10 @@ bool MainWindow::agentSessionLandedInBase(const AgentSession &session,
         return QString::fromUtf8(out).trimmed().toInt();
     };
     // The run must have produced commits since it forked …
-    if (count(QStringLiteral("%1..%2").arg(session.baseRef, session.branchName)) <= 0)
+    if (count(QStringLiteral("%1..%2").arg(baseRef, branch)) <= 0)
         return false;
     // … and all of them must now be reachable from base (nothing left outside).
-    return count(QStringLiteral("%1..%2").arg(base, session.branchName)) == 0;
+    return count(QStringLiteral("%1..%2").arg(base, branch)) == 0;
 }
 
 // Issue #170: the files-changed + branch ahead/behind figures behind a session's
@@ -3215,47 +3201,124 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
 // peer's merge synced in, or a manual git merge) and record it once. The
 // in-app merge flows mark eagerly via markAgentSessionsMerged(); this backs them
 // up and covers everything else.
+//
+// PR-backed sessions are decided here from the loaded pull's status (so a PR
+// merged here, or synced from a peer as merged, both count — no git needed).
+// Branch-only sessions need git (rev-parse + two rev-lists per session), which
+// used to run inline: even with the GitKeepAlive pump the GUI thread still
+// blocked for the length of each subprocess and the stall watchdog kept
+// catching >500ms freezes. Those reads now run on a worker thread over
+// value-captured (id, branch, fork point) snapshots; verdicts come back to the
+// main thread and are applied by id in markAgentSessionsLanded().
 void MainWindow::refreshAgentMergeState()
 {
     if (!m_agentStore)
         return;
-    // Re-entrancy guard: the GitKeepAlive pump below services queued slots, and a
-    // reloadAgents() among them reassigns m_agentSessions — a second pass over the
-    // list mid-iteration would dangle the reference we're walking. (Mirrors the
-    // m_repoDetailLoading guard in openRepoDetail.)
+    // One background sweep at a time: reloadAgents() fires on every agent event,
+    // and stacking workers would just re-run the same git reads concurrently.
+    // Whatever this pass misses, the reload after the worker finishes sweeps up.
     if (m_agentMergeStateRefreshing)
         return;
-    m_agentMergeStateRefreshing = true;
     QString owner, name;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         owner = m_repositories.at(m_repoDetailIndex).owner;
         name = m_repositories.at(m_repoDetailIndex).name;
     }
     // The git dir and default branch are the same for every session of this repo,
-    // so resolve them once instead of re-shelling `git branch` (and a possible
-    // `symbolic-ref`) inside the per-session check — that repeated work was the
-    // bulk of a multi-second GUI stall on repos with many sessions. The remaining
-    // per-session reads run under a GitKeepAlive so the event loop keeps pumping
-    // and the window stays responsive across the batch.
-    GitKeepAlive keepAlive;
+    // so resolve them once (repoBranches() memoises the branch list) instead of
+    // re-shelling `git branch` inside the per-session check.
     const QString dir = repoGitDir();
     const QString base = repoDefaultBranch(repoBranches());
-    for (AgentSession &s : m_agentSessions) {
+    struct Candidate {
+        int id;
+        QString branch;
+        QString baseRef;
+    };
+    QList<Candidate> candidates;
+    QList<int> mergedFromPulls;
+    for (const AgentSession &s : std::as_const(m_agentSessions)) {
         if (s.merged || s.owner != owner || s.name != name)
             continue;
-        // Nothing has landed while a run is still queued or working; skip the git
+        // Nothing has landed while a run is still queued or working; skip the
         // checks until it has produced something.
         if (s.status == AgentStatus::Queued || s.status == AgentStatus::Running)
             continue;
-        if (!agentSessionLandedInBase(s, dir, base))
+        if (s.prNumber > 0) {
+            const PullRequest *pr = nullptr;
+            for (const PullRequest &p : m_currentPulls)
+                if (p.number == s.prNumber) {
+                    pr = &p;
+                    break;
+                }
+            if (pr) {
+                if (pr->status == QLatin1String("merged"))
+                    mergedFromPulls.append(s.id);
+                continue; // an open/closed PR settles it; no git fallback needed
+            }
+        }
+        if (dir.isEmpty() || s.branchName.isEmpty())
             continue;
+        if (base.isEmpty() || s.branchName == base)
+            continue;
+        // Without a recorded fork point we can't distinguish a merged branch
+        // from an un-started one that shares the base's history, so don't guess.
+        if (s.baseRef.isEmpty())
+            continue;
+        candidates.append({s.id, s.branchName, s.baseRef});
+    }
+    // reloadAgents() refreshes the table right after this returns, so the
+    // pull-status verdicts don't need a refresh of their own.
+    markAgentSessionsLanded(mergedFromPulls, /*refreshUi=*/false);
+    if (candidates.isEmpty())
+        return;
+    m_agentMergeStateRefreshing = true;
+    auto landed = std::make_shared<QList<int>>();
+    QThread *worker = QThread::create([dir, base, candidates, landed]() {
+        for (const Candidate &c : candidates)
+            if (agentBranchLandedInBase(dir, c.branch, c.baseRef, base))
+                landed->append(c.id);
+    });
+    connect(worker, &QThread::finished, this, [this, worker, landed]() {
+        m_agentMergeStateRefreshing = false;
+        worker->deleteLater();
+        markAgentSessionsLanded(*landed, /*refreshUi=*/true);
+    });
+    worker->start();
+}
+
+// Apply "landed in base" verdicts by session id (issue #291): records the merge
+// time and notes it in the transcript, mirroring markAgentSessionsMerged(). Ids
+// whose session vanished, was already marked by another path, or was re-run
+// while a background sweep computed the verdict are skipped — the verdict is
+// stale for them. refreshUi redraws the table/detail for verdicts that arrive
+// outside a reload (i.e. from the worker thread's queued finish).
+void MainWindow::markAgentSessionsLanded(const QList<int> &sessionIds, bool refreshUi)
+{
+    if (!m_agentStore || sessionIds.isEmpty())
+        return;
+    bool changed = false;
+    for (AgentSession &s : m_agentSessions) {
+        if (!sessionIds.contains(s.id) || s.merged)
+            continue;
+        if (s.status == AgentStatus::Queued || s.status == AgentStatus::Running)
+            continue; // re-run since the sweep snapshotted it; verdict is stale
         s.merged = true;
         s.mergedAtMs = QDateTime::currentMSecsSinceEpoch();
         m_agentStore->saveSession(s);
         m_agentStore->appendLog(
             s, QStringLiteral("\n==> Worktree/PR merged into %1.").arg(agentMergeBase(s)));
+        changed = true;
     }
-    m_agentMergeStateRefreshing = false;
+    if (changed && refreshUi) {
+        // Merge state feeds the Diff-cell fingerprint; arm the re-validation the
+        // same way reloadAgents() does (skipped mid-refresh — the pump can service
+        // this slot inside refreshAgentTable, whose active pass covers the data).
+        if (!m_agentTableRefreshing)
+            m_agentDiffRefreshPending = true;
+        refreshAgentTable();
+        if (m_selectedAgentSessionId > 0)
+            showAgentSession(m_selectedAgentSessionId);
+    }
 }
 
 // branchLinkHtml() — the clickable branch-name builder used here for the agent
