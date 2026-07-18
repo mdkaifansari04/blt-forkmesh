@@ -356,18 +356,18 @@ QPushButton#windowChromeButton:hover {
 QPushButton#windowChromeCloseButton:hover {
     background-color: #da3633; color: #ffffff; border-color: #da3633;
 }
-/* Top-row switchers (relay / user / node / repo): dropdown (relay's shows its
+/* Top-row switchers (relay / node / repo): dropdown (relay's shows its
    favicon inline) + open-in-browser */
 QPushButton#relayOpenButton {
     background: transparent; border: none; border-radius: 8px; color: #8b949e;
 }
-QPushButton#relayMenuButton, QPushButton#userMenuButton,
+QPushButton#relayMenuButton,
 QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
     background: transparent; border: 1px solid #30363d; border-radius: 8px;
     color: #e6edf3; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
 QPushButton#relayOpenButton:hover,
-QPushButton#relayMenuButton:hover, QPushButton#userMenuButton:hover,
+QPushButton#relayMenuButton:hover,
 QPushButton#nodeMenuButton:hover,
 QPushButton#repoMenuButton:hover {
     background-color: #161b22; color: #e6edf3;
@@ -1557,18 +1557,18 @@ QPushButton#topNavButton[alert="true"] { color: #9a6700; border-color: #d4a72c; 
 QPushButton#topNavButton[alert="true"]:checked {
     background-color: #fff8c5; color: #7d4e00; border-color: #d4a72c;
 }
-/* Top-row switchers (relay / user / node / repo): dropdown (relay's shows its
+/* Top-row switchers (relay / node / repo): dropdown (relay's shows its
    favicon inline) + open-in-browser */
 QPushButton#relayOpenButton {
     background: transparent; border: none; border-radius: 8px; color: #656d76;
 }
-QPushButton#relayMenuButton, QPushButton#userMenuButton,
+QPushButton#relayMenuButton,
 QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
     background: transparent; border: 1px solid #d0d7de; border-radius: 8px;
     color: #1f2328; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
 QPushButton#relayOpenButton:hover,
-QPushButton#relayMenuButton:hover, QPushButton#userMenuButton:hover,
+QPushButton#relayMenuButton:hover,
 QPushButton#nodeMenuButton:hover,
 QPushButton#repoMenuButton:hover {
     background-color: #eaeef2; color: #1f2328;
