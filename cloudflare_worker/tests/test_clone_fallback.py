@@ -533,7 +533,7 @@ def test_clone_falls_back_when_a_live_source_stalls_info_refs():
     # follows the same node.
     src = _worker_method_source("_git_host")
     assert "host_fetch = host_object.fetch(" in src
-    assert "durable_object_request(request, include_body=not is_info)" in src
+    assert "durable_object_request(request, include_body=not is_info" in src
     assert "GIT_ADVERTISE_ROUTE_TIMEOUT_MS" in src
     assert "asyncio.wait_for" in src
     assert "Response('Host timed out.', status=504)" in src
@@ -555,6 +555,48 @@ def test_fresh_clone_pin_is_read_only_and_live_checked():
     assert "_source_has_live_host(pick, repo)" in src
     assert "ON CONFLICT" not in src and "INSERT" not in src  # read-only
     assert "!= owner.lower()" in src or "!= owner" in src
+
+
+def _module_function_source(name):
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    for node in tree.body:
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == name):
+            return ast.unparse(node)
+    raise AssertionError("%s not found in entry.py" % name)
+
+
+def test_upload_pack_post_replays_at_live_source_when_pinned_mirror_fails():
+    # The clone_sticky pin is a repo-global pick shared by every concurrent
+    # clone, so a POST can land on a pinned mirror that is BEHIND the
+    # advertisement THIS clone negotiated against — the mirror's upload-pack
+    # dies with "fatal: git upload-pack: not our ref <oid>" (relayed as 502)
+    # even though the live source could serve those wants. _git_host must
+    # buffer the (single-use) upload-pack POST body once up front, treat a
+    # host-error reply from the pinned mirror as a miss, and replay the
+    # buffered body at the named source instead of failing the clone.
+    src = _worker_method_source("_git_host")
+    assert ("post_body = None if is_info else "
+            "bytes(await request.bytes())") in src
+    pin_leg = src.split("_fresh_clone_pin")[-1]
+    assert "body=post_body" in pin_leg
+    assert "(0, 502, 503, 504)" in pin_leg      # host errors fall through
+    assert "return forwarded" in pin_leg        # healthy mirror reply returned
+    # The fall-through named-source route reuses the buffered bytes — the
+    # request stream was already consumed by the failed mirror hop.
+    assert "body=post_body" in src.split("idFromName")[-1]
+
+
+def test_forward_and_do_request_accept_a_prebuffered_body():
+    # Replaying a POST after a failed hop only works because callers can hand
+    # over the already-read body bytes; both request builders must prefer the
+    # explicit body and consume the request stream only when none is given.
+    fwd = _worker_method_source("_forward_to_node")
+    assert "body=None" in fwd
+    assert "bytes(await request.bytes()) if body is None" in fwd
+    dor = _module_function_source("durable_object_request")
+    assert "body=None" in dor
+    assert "bytes(await request.bytes()) if body is None" in dor
 
 
 def test_sticky_clone_pick_is_pinned_and_live_checked():
