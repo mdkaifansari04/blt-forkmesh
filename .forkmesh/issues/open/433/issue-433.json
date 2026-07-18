@@ -9,12 +9,12 @@
     ],
     "milestone": "Daily Git workflow",
     "startDate": 1784347200000,
-    "endDate": 1784520000000,
+    "endDate": 1784433600000,
     "priority": 3,
     "progress": 0,
     "assignees": [],
     "createdAt": 1784402987611,
-    "updatedAt": 1784402987612,
+    "updatedAt": 1784405500064,
     "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
     "authorName": "forkmesh",
     "bountyUsd": 0.0,
@@ -42,6 +42,16 @@
             "authorName": "forkmesh",
             "ts": 1784402987612,
             "sig": "GF8eANk8vzHBADCDEsYdLC7-bWP9mTprlJcQbJP_SLXjAiADBymI132_wqTUef_tqGoSW4zrQxHIY5gqEZlkDA"
+        },
+        {
+            "type": "dates",
+            "id": "15adaea3-7a73-42eb-a40a-c40c228156af",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500064,
+            "startDate": 1784347200000,
+            "endDate": 1784433600000,
+            "sig": "Vyoy_RxX4qapWsup3u_HdAOIQeADt8BaJoJs261kLljMwRczS2OIrcNWI5l4WxrfV_z-tkeSK-8rYMmnwozoCg"
         }
     ]
 }
