@@ -1,0 +1,56 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 434,
+    "title": "Run the complete test portfolio in continuous integration",
+    "status": "open",
+    "labels": [
+        "infra"
+    ],
+    "milestone": "Daily Git workflow",
+    "startDate": 1784347200000,
+    "endDate": 1784433600000,
+    "priority": 2,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784402987613,
+    "updatedAt": 1784405500065,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-434",
+            "title": "Run the complete test portfolio in continuous integration",
+            "body": "## Outcome\n\nMake the normal repository workflow run every maintained test family with declared dependencies and clear failure ownership.\n\n## Implementation\n\n- Update `.forkmesh/ci.yml` to run the full worker test suite, tools tests, non-GUI desktop tests, window tests in an isolated offscreen job, and performance-budget tests.\n- Declare the tools' cryptography dependency in checked-in development metadata instead of relying on a workstation install.\n- Build test binaries before execution so stale local artifacts cannot produce a false pass.\n- Add per-job timeouts, deterministic temporary directories, and bounded test artifacts for failed jobs.\n- Document the exact local commands represented by each job.\n\n## Acceptance criteria\n\n- A clean environment collects and runs every listed suite without missing-module errors.\n- Changing a maintained test to fail makes the corresponding workflow fail.\n- Window and performance jobs cannot hang the rest of the workflow indefinitely.\n- Local contributor commands and workflow commands match.\n- No job requires a live external service or personal credential.\n\n## Dependencies\n\nNone.\n\n## Verification\n\nRun the workflow commands from a clean dependency environment and compare collected test counts with the repository's discovered test files and desktop test targets.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987613,
+            "sig": "IChOjSvvBq8sWuPl0vTsL0M8W-UNcRfVNRbcVKax4nl8t43_o7c6dNTMUsUC1cLvBnCyG6G7qKsXT2o-R7s9Bg"
+        },
+        {
+            "type": "dates",
+            "startDate": 1784347200000,
+            "endDate": 1784520000000,
+            "id": "dcceb793-c22f-4c9a-97a4-5e48bd15fc7a",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987614,
+            "sig": "0__jZZvViJvC5sGjqjU7ZRhaTdNE6KRyuuO_hjPAny-yn3erM9cbelYAb2hKsDc8qrBbk3SVmb1d2qqA8oEACw"
+        },
+        {
+            "type": "dates",
+            "id": "73cf26f2-31fc-4268-b3d0-e9c990943aff",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500065,
+            "startDate": 1784347200000,
+            "endDate": 1784433600000,
+            "sig": "NFp-rEzq1-7t2JeCG7QIIpjsaG_Eq8gcvn6E274oIqHAtgIUJnt5XxTy_w0mBOu7WR5YFDj35Q62oEAR-WGkDQ"
+        }
+    ]
+}
