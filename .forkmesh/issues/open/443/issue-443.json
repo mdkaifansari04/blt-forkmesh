@@ -7,13 +7,13 @@
         "infra"
     ],
     "milestone": "Resilient operation",
-    "startDate": 1785384000000,
+    "startDate": 1784347200000,
     "endDate": 1785556800000,
     "priority": 1,
     "progress": 0,
     "assignees": [],
     "createdAt": 1784402987631,
-    "updatedAt": 1784402987632,
+    "updatedAt": 1784405500073,
     "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
     "authorName": "forkmesh",
     "bountyUsd": 0.0,
@@ -41,6 +41,27 @@
             "authorName": "forkmesh",
             "ts": 1784402987632,
             "sig": "eCgc0W6lliYa_yguVQ1zbCkc5V8sZDWG5ScR-wCrCG6J9-XJIIPm3XcHRXqzWRpZPDSZGkAThudZhH56m4yrDA"
+        },
+        {
+            "type": "edit",
+            "id": "f1226d8c-d33c-4fc8-af8e-e6398a850670",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500063,
+            "body": "## Outcome\n\nFinish the two-week roadmap with one offline release gate proving every linked issue, generated contract, and integrated workflow for the same commit.\n\n## Implementation\n\n- Build the conformance harness incrementally from July 18 and reserve July 30 through August 1 for integration fixes and final clean-checkout runs.\n- Run native tracker, Git, push and merge policy, collaboration folds, browser identity, recovery, private encryption and rekey, scanning and moderation, sync and transport, availability and receipts, social and review, workflow runner and streams, migration, releases, packaging, self-hosting, and protocol-verifier suites.\n- Extend the mesh flow through discovery, clone, fetch, browser contribution, authenticated push, protected denial, review, required checks, merge queue, post-merge clone, offline export and import, and verified clone from the imported mirror.\n- Require every compatibility and roadmap capability to pass; unsupported, missing evidence, stale generated output, or an unlinked issue blocks the gate.\n- Record the tested commit, all issue numbers, protocol version set, normalized reports, and gate result in signed release metadata.\n\n## Acceptance criteria\n\n- Every issue linked to Project #1 except #443 is closed with its automated acceptance evidence before the passing result is authored.\n- A mismatch names the issue, vector or probe, component, expected value, actual value, and reproducible local command.\n- The integrated flow asserts exact repository and collaboration object identifiers at every boundary.\n- The gate is deterministic, requires no live external service, and leaves no process, socket, credential, or temporary repository behind.\n- The August 1 release candidate passes twice from clean checkouts for the same commit.\n\n## Dependencies\n\nClosure depends on #433 through #442 and #444 through #474. Contract freeze is July 22; no new feature scope enters after July 29.\n\n## Verification\n\nRun the release gate twice from clean temporary roots, compare normalized reports, signed metadata, object ids, resource cleanup, and exit status, then inject one failure from each parallel lane.",
+            "attachments": [],
+            "target": "open-443",
+            "sig": "le0Mv0V5W_ujhluxCNTN4HKQ927arVChuKoTIVLdMETSdJWzsDwCGc3NEBdlpISTBi4UlVO2SFjm6navmHR3AA"
+        },
+        {
+            "type": "dates",
+            "id": "711c3e02-db0c-4e96-8396-1e8d78df8e5c",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500073,
+            "startDate": 1784347200000,
+            "endDate": 1785556800000,
+            "sig": "C2KXT8Xf8jdXnIUlIq0WoWxbG2Fhme8Qi22rorx3OKPk5mrbtvVg4IZXveGrqiwwjTsrbHEVsng4V7NomIGsBQ"
         }
     ]
 }
