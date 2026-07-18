@@ -22,6 +22,12 @@ QString actionRunLogPath(const ActionRun &run)
            QString::number(run.id) + QStringLiteral("/log.txt");
 }
 
+// First line (after the shebang) of the working-copy commit-signal hooks we
+// install; install/remove only ever touch a hook file carrying this marker.
+const char kCommitSignalMarker[] =
+    "# forkmesh-commit-signal: spools a commit event so mirrors are told to "
+    "update instantly";
+
 } // namespace
 
 void MainWindow::initActions()
@@ -149,13 +155,95 @@ void MainWindow::ensurePushHook(const RepositoryRecord &repo) const
                            repo.mirrorPath},
                           nullptr, nullptr);
     }
+
+    ensureCommitSignalHook(repo);
+}
+
+void MainWindow::ensureCommitSignalHook(const RepositoryRecord &repo) const
+{
+    // A commit made straight in the source-of-truth working copy (terminal,
+    // IDE, a coding agent — including linked worktrees, which run the main
+    // checkout's hooks) never touches the served bare mirror, so it only
+    // reached the mirror — and the "mirror-update" broadcast to peers — at the
+    // next periodic auto-sync tick. These hooks spool a ".commit" event the
+    // moment HEAD moves; scanActionSpool turns it into propagateRepoUpdate,
+    // which syncs the bare mirror and pushes the ephemeral "mirror-update"
+    // frame out over the relay websocket so every mirror node fetches
+    // immediately instead of waiting for its next heartbeat.
+    if (repo.previewOnly || !m_actionStore)
+        return;
+    const QString localPath = repo.localPath.trimmed();
+    // Only a normal checkout (.git as a directory) gets the hooks; a gitfile
+    // checkout (linked worktree/submodule) runs its parent's hooks anyway.
+    if (localPath.isEmpty() ||
+        !QFileInfo(localPath + QStringLiteral("/.git")).isDir())
+        return;
+    const QString hooksDir = localPath + QStringLiteral("/.git/hooks");
+    QDir().mkpath(hooksDir);
+
+    const QString spool = m_actionStore->spoolDir();
+    const QString script =
+        QStringLiteral("#!/bin/sh\n"
+                       "%1\n"
+                       "spool='%2'\n"
+                       "mkdir -p \"$spool\"\n"
+                       "f=\"$spool/$(date +%s)-$$.commit\"\n"
+                       "{\n"
+                       "  echo 'owner %3'\n"
+                       "  echo 'name %4'\n"
+                       "} > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"\n")
+            .arg(QLatin1String(kCommitSignalMarker), spool, repo.owner,
+                 repo.name);
+
+    // post-commit covers plain commits; post-merge covers `git pull`/merges,
+    // which do not run post-commit.
+    for (const char *hook : {"post-commit", "post-merge"}) {
+        const QString path = hooksDir + QLatin1Char('/') + QLatin1String(hook);
+        // The working copy is user territory (unlike the app-managed bare
+        // mirror): never clobber a hook we didn't write ourselves.
+        QFile existing(path);
+        if (existing.exists()) {
+            if (!existing.open(QIODevice::ReadOnly | QIODevice::Text))
+                continue;
+            const QString body = QString::fromUtf8(existing.readAll());
+            existing.close();
+            if (!body.contains(QLatin1String(kCommitSignalMarker)))
+                continue;
+            if (body == script)
+                continue; // already current
+        }
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            continue;
+        f.write(script.toUtf8());
+        f.close();
+        f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                         QFileDevice::ExeOwner | QFileDevice::ReadGroup |
+                         QFileDevice::ExeGroup | QFileDevice::ReadOther |
+                         QFileDevice::ExeOther);
+    }
 }
 
 void MainWindow::removePushHook(const RepositoryRecord &repo) const
 {
-    if (repo.mirrorPath.isEmpty())
+    if (!repo.mirrorPath.isEmpty())
+        QFile::remove(repo.mirrorPath + QStringLiteral("/hooks/post-receive"));
+    // Also drop the working-copy commit-signal hooks — but only ours (marker
+    // check), never a hook the user wrote.
+    const QString localPath = repo.localPath.trimmed();
+    if (localPath.isEmpty())
         return;
-    QFile::remove(repo.mirrorPath + QStringLiteral("/hooks/post-receive"));
+    for (const char *hook : {"post-commit", "post-merge"}) {
+        const QString path = localPath + QStringLiteral("/.git/hooks/") +
+                             QLatin1String(hook);
+        QFile f(path);
+        if (!f.exists() || !f.open(QIODevice::ReadOnly | QIODevice::Text))
+            continue;
+        const QString body = QString::fromUtf8(f.readAll());
+        f.close();
+        if (body.contains(QLatin1String(kCommitSignalMarker)))
+            QFile::remove(path);
+    }
 }
 
 void MainWindow::installAllPushHooks() const
@@ -191,6 +279,52 @@ void MainWindow::scanActionSpool()
     if (!m_actionStore)
         return;
     QDir dir(m_actionStore->spoolDir());
+
+    // ".commit" events: the working copy's post-commit/post-merge hook saw HEAD
+    // move (a commit landed on the source of truth outside the app — terminal,
+    // IDE, or an agent worktree). propagateRepoUpdate syncs the served bare
+    // mirror from the working copy and, on a detected change, broadcasts the
+    // ephemeral "mirror-update" websocket frame so every mirror node fetches
+    // right now instead of at its next heartbeat.
+    const QStringList commitFiles =
+        dir.entryList({QStringLiteral("*.commit")}, QDir::Files, QDir::Name);
+    QSet<int> propagated;
+    for (const QString &file : commitFiles) {
+        const QString full = dir.filePath(file);
+        QFile f(full);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            continue;
+        const QString text = QString::fromUtf8(f.readAll());
+        f.close();
+
+        QString owner, name;
+        const QStringList lines =
+            text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        for (const QString &line : lines) {
+            if (line.startsWith(QLatin1String("owner ")))
+                owner = line.mid(6).trimmed();
+            else if (line.startsWith(QLatin1String("name ")))
+                name = line.mid(5).trimmed();
+        }
+        const int idx = repoIndexFor(owner, name);
+        if (idx < 0 ||
+            m_repositories.at(idx).localPath.trimmed().isEmpty()) {
+            QFile::remove(full); // stale event for a repo we no longer hold
+            continue;
+        }
+        // A sync already in flight can't pick up a commit that lands mid-fetch:
+        // leave the event in the spool so the fallback poll retries it once the
+        // repo is released, instead of silently dropping the update until the
+        // next periodic tick.
+        if (m_syncingRepos.contains(idx))
+            continue;
+        QFile::remove(full);
+        if (propagated.contains(idx))
+            continue; // a burst of commits needs only one sync
+        propagated.insert(idx);
+        propagateRepoUpdate(idx);
+    }
+
     const QStringList files =
         dir.entryList({QStringLiteral("*.push")}, QDir::Files, QDir::Name);
     // Re-attest the integrity pin at most once per repo per sweep, even if several
