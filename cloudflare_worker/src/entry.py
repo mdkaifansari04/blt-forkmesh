@@ -2545,25 +2545,47 @@ async def _decrypted_public_catalog(env, now):
     cached = _PUBLIC_CATALOG_MEMO
     if cached["rows"] is not None and now - cached["ts"] < PUBLIC_CATALOG_MEMO_TTL_MS:
         return cached["rows"]
-    rows = await d1_all(
-        env,
-        "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
+    # Single-flight refill: under a clone burst every concurrent request lands
+    # here the moment the TTL lapses, and each used to start its OWN full scan
+    # + sequential decrypt_row() pass — recreating, once per TTL window, the
+    # event-loop congestion this memo exists to prevent ("Cannot enter into
+    # task" on git-upload-pack info/refs). The first caller claims the refresh
+    # slot (no await between check and claim, so the claim is atomic on the
+    # single-threaded loop) and refills; concurrent callers keep the stale
+    # rows, which only feed best-effort mirror selection. Deliberately NOT a
+    # shared future/lock: a request resuming inside I/O another request
+    # started dies with "Cannot perform I/O on behalf of a different request"
+    # (see ensure_schema). A cold isolate (rows is None) still refills from
+    # every caller — there is nothing stale to serve them.
+    if cached["rows"] is not None and \
+            now - cached["refresh_ts"] < PUBLIC_CATALOG_MEMO_TTL_MS:
+        return cached["rows"]
+    cached["refresh_ts"] = now
     try:
-        active_nodes = await active_registered_node_bis(env, now)
-    except Exception:
-        active_nodes = None
-    catalog_rows = []
-    for row in rows:
-        if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-            continue
-        rec = await decrypt_row(env, row.get("data"))
-        if not rec:
-            continue
-        catalog_rows.append({
-            "key_bi": row.get("key_bi"),
-            "is_private": int(row.get("is_private") or 0),
-            "data": rec,
-        })
+        rows = await d1_all(
+            env,
+            "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
+        try:
+            active_nodes = await active_registered_node_bis(env, now)
+        except Exception:
+            active_nodes = None
+        catalog_rows = []
+        for row in rows:
+            if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
+                continue
+            rec = await decrypt_row(env, row.get("data"))
+            if not rec:
+                continue
+            catalog_rows.append({
+                "key_bi": row.get("key_bi"),
+                "is_private": int(row.get("is_private") or 0),
+                "data": rec,
+            })
+    except BaseException:
+        # Release the slot (covers CancelledError from a canceled request) so
+        # the next caller retries instead of waiting out a phantom refresh.
+        cached["refresh_ts"] = 0
+        raise
     cached["rows"] = catalog_rows
     cached["ts"] = now
     return catalog_rows
@@ -2653,7 +2675,7 @@ _SOL_USD_CACHE_TTL_MS = 5 * 60 * 1000
 # task"), same failure mode already fixed elsewhere via per-isolate memoization
 # (see the 2026-07-11 free-plan overload notes). A short TTL is fine: this only
 # feeds best-effort mirror selection, not the integrity-checked ref content.
-_PUBLIC_CATALOG_MEMO = {"ts": 0, "rows": None}
+_PUBLIC_CATALOG_MEMO = {"ts": 0, "rows": None, "refresh_ts": 0}
 PUBLIC_CATALOG_MEMO_TTL_MS = 5000
 DONATION_ADDRESS_TTL_MS = 60 * 60 * 1000
 # After the address expires (hidden, no longer usable) keep it parked for one

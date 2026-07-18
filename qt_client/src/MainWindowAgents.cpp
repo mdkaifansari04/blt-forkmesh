@@ -7837,6 +7837,11 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
         return;
     if (repoIndexFor(s->owner, s->name) < 0)
         return;
+    // Snapshot the session by value before the git subprocesses below: their
+    // waitForFinished() calls pump the GUI thread, and a reloadAgents() fired
+    // during the pump rebuilds m_agentSessions, dangling `s` — dereferencing it
+    // afterward is a SIGSEGV (git-pump UAF family, adhoc #106/#119/#124/#149/#155).
+    const AgentSession session = *s;
     const QString workdir = sessionWorkdir(sessionId); // diff in the worktree
 
     QString patch;
@@ -7844,13 +7849,13 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
         QProcess git;
         git.setWorkingDirectory(workdir);
         git.start(QStringLiteral("git"),
-                  {QStringLiteral("diff"), QStringLiteral("--binary"), s->baseRef});
+                  {QStringLiteral("diff"), QStringLiteral("--binary"), session.baseRef});
         if (git.waitForFinished(8000) && git.exitCode() == 0)
             patch = QString::fromUtf8(git.readAllStandardOutput());
     }
     if (patch.trimmed().isEmpty()) {
         m_agentStore->appendLog(
-            *s, QStringLiteral("==> No code changes; no pull request created.\n"));
+            session, QStringLiteral("==> No code changes; no pull request created.\n"));
         return;
     }
     // The committed series base..HEAD as a format-patch mbox, so a mirror-node
@@ -7862,12 +7867,12 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
         QProcess git;
         git.setWorkingDirectory(workdir);
         git.start(QStringLiteral("git"),
-                  {QStringLiteral("format-patch"), QStringLiteral("--stdout"), s->baseRef});
+                  {QStringLiteral("format-patch"), QStringLiteral("--stdout"), session.baseRef});
         if (git.waitForFinished(8000) && git.exitCode() == 0)
             commits = QString::fromUtf8(git.readAllStandardOutput());
     }
-    m_agentStore->writePatch(*s, patch);
-    landAgentPullForSession(*s, patch, commits);
+    m_agentStore->writePatch(session, patch);
+    landAgentPullForSession(session, patch, commits);
 }
 
 // `session` is taken by value: PullStore::createPull (and submitPullToInbox)
