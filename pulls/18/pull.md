@@ -4,7 +4,7 @@ number: 18
 title: Agent: make sure the token speed is correct for claude code and codex there seems to…
 base: main
 head: agent/adhoc-66-make-sure-the-token-speed-is-correct-for-claude
-status: open
+status: merged
 ts: 1784333400439
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh
