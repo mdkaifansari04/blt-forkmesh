@@ -10,8 +10,9 @@
 class MarkupCanvas;
 
 // A lightweight post-capture annotation window. Shows the freshly-captured
-// screenshot in a scrollable viewport, lets the user scribble freehand ink or
-// drop shape outlines on top, then sends the flattened result to the prompt.
+// screenshot in a scrollable viewport, lets the user scribble freehand ink,
+// drop shape outlines, or add text labels on top, then sends the flattened
+// result to the prompt.
 //
 // Workflow: ScreenCaptureOverlay (or ScreenDrawOverlay) emits captured() →
 // caller constructs a ScreenshotMarkupWindow, connects imageAccepted() to the
