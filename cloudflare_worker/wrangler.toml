@@ -196,15 +196,15 @@ deleted_classes = [
 
 [observability]
 enabled = true
-head_sampling_rate = 0.01
+head_sampling_rate = 1
 
 [observability.logs]
 enabled = true
-head_sampling_rate = 0.01
+head_sampling_rate = 1
 invocation_logs = true
 destinations = [ "sentry-logs" ]
 
 [observability.traces]
 enabled = true
-head_sampling_rate = 0.01
+head_sampling_rate = 1
 destinations = [ "sentry-traces" ]
