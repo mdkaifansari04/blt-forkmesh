@@ -4808,16 +4808,19 @@ AgentRunner *MainWindow::runnerForSession(int sessionId) const
 
 bool MainWindow::anyAgentRunning() const
 {
+    // Only a session actively executing a turn (Running) counts as "in flight"
+    // here. Waiting means the agent paused for the user's approval/reply — that
+    // can sit unanswered indefinitely, so treating it as still-running left a
+    // queued rebuild stuck showing "Waiting for running actions" forever even
+    // though nothing was actually working (adhoc #91).
     auto sessionIsActive = [this](int id) {
         for (const AgentSession &session : m_agentSessions) {
             if (session.id == id)
-                return session.status == AgentStatus::Running ||
-                       session.status == AgentStatus::Waiting;
+                return session.status == AgentStatus::Running;
         }
         const auto pending = m_streamSessionInfo.constFind(id);
         return pending != m_streamSessionInfo.constEnd() &&
-               (pending->status == AgentStatus::Running ||
-                pending->status == AgentStatus::Waiting);
+               pending->status == AgentStatus::Running;
     };
     for (AgentRunner *runner : m_agentRunners)
         if (runner->busy())
