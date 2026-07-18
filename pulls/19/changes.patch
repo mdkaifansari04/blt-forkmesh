@@ -1,0 +1,177 @@
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index cb788dac..dabdfbb9 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -8458,6 +8458,8 @@ def _bounty_public(rec):
+         "confirmed": bool(rec.get("confirmed")),
+         "status": rec.get("status", "open"),
+         "payee": rec.get("payee", ""),
++        "payeeNode": rec.get("payee_node", ""),
++        "treasuryAddress": rec.get("treasury_address", ""),
+         "payoutSig": rec.get("payout_sig", ""),
+         "uri": _solana_pay_uri(
+             rec.get("address", ""), int(rec.get("required_lamports", 0)),
+@@ -8730,7 +8732,8 @@ async def bounties_handler(env, request, owner, repo):
+                 "amount_usd": amount_usd, "required_lamports": required,
+                 "received_lamports": required, "confirmed": True,
+                 "status": "paid", "created_at": int(Date.now()),
+-                "payee": payee, "payee_authorized": True,
++                "payee": payee, "payee_node": payee_node,
++                "payee_authorized": True, "treasury_address": treasury,
+                 "payout_sig": send_sig, "paid_at": int(Date.now()),
+                 "paid_from_wallet": True,
+                 "payout_transfers": [
+@@ -8747,6 +8750,8 @@ async def bounties_handler(env, request, owner, repo):
+                 rec.get("status") not in ("paid", "paying")):
+             rec["amount_usd"] = amount_usd
+             rec["required_lamports"] = required
++            rec["payee_node"] = payee_node
++            rec["treasury_address"] = treasury
+             if payee:
+                 rec["payee"] = payee
+                 rec["payee_authorized"] = True
+@@ -8760,7 +8765,8 @@ async def bounties_handler(env, request, owner, repo):
+                 "amount_usd": amount_usd, "required_lamports": required,
+                 "received_lamports": 0, "confirmed": False, "status": "open",
+                 "created_at": int(Date.now()), "payee": payee,
+-                "payee_authorized": bool(payee), "payout_sig": "",
++                "payee_node": payee_node, "payee_authorized": bool(payee),
++                "treasury_address": treasury, "payout_sig": "",
+             }
+         await _save_bounty(env, bounty_bi, rec)
+         return json_response(_bounty_public(rec))
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index ba577e0c..cc2fae2e 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -2637,6 +2637,9 @@ private:
+     void showBountyQrDialog(const RepositoryRecord &repo, int number,
+                             const QString &uri, const QString &address,
+                             double amountUsd, const QString &amountSol,
++                            const QString &authorName,
++                            const QString &authorAddress,
++                            const QString &treasuryAddress,
+                             const QString &kind = QString());
+     // Issue #347: fetch/mint the owner's inbuilt bounty wallet and show its
+     // deposit address, QR and live balance so the owner can pre-fund it.
+diff --git a/qt_client/src/MainWindowIssues.cpp b/qt_client/src/MainWindowIssues.cpp
+index 2b033d47..07919d77 100644
+--- a/qt_client/src/MainWindowIssues.cpp
++++ b/qt_client/src/MainWindowIssues.cpp
+@@ -6453,6 +6453,9 @@ void MainWindow::refreshRepoCollaborators()
+ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
+                                     const QString &uri, const QString &address,
+                                     double amountUsd, const QString &amountSol,
++                                    const QString &authorName,
++                                    const QString &authorAddress,
++                                    const QString &treasuryAddress,
+                                     const QString &kind)
+ {
+     // "pr" bounties (issue #347) aren't tracked in the issue store, so the paid
+@@ -6481,19 +6484,41 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
+         constexpr int kMargin = 3;
+         constexpr int kMaxQrPx = 300;
+         const int span = static_cast<int>(modules.size()) + 2 * kMargin;
+-        const int scale = qMax(2, kMaxQrPx / span);
++        const int scale = qMax(1, kMaxQrPx / span);
+         const QImage qr = QrCode::encodeToImage(uri, scale, kMargin);
+         auto *qrLabel = new QLabel;
+         qrLabel->setPixmap(QPixmap::fromImage(qr));
+         qrLabel->setAlignment(Qt::AlignCenter);
+         layout->addWidget(qrLabel);
+     }
+-    auto *addr = new QLabel(address);
+-    addr->setObjectName("statusLine");
+-    addr->setTextInteractionFlags(Qt::TextSelectableByMouse);
+-    addr->setAlignment(Qt::AlignCenter);
+-    addr->setWordWrap(true);
+-    layout->addWidget(addr);
++    const auto addAddress = [&layout](const QString &label,
++                                      const QString &value) {
++        if (value.trimmed().isEmpty())
++            return;
++        const QString escaped = value.toHtmlEscaped();
++        auto *line = new QLabel(
++            QStringLiteral("<b>%1:</b> <a href=\"https://explorer.solana.com/address/%2?cluster=mainnet-beta\">%2</a>")
++                .arg(label.toHtmlEscaped(), escaped));
++        line->setObjectName("statusLine");
++        line->setTextFormat(Qt::RichText);
++        line->setTextInteractionFlags(Qt::TextBrowserInteraction);
++        line->setOpenExternalLinks(true);
++        line->setAlignment(Qt::AlignCenter);
++        line->setWordWrap(true);
++        layout->addWidget(line);
++    };
++    addAddress(QStringLiteral("Escrow"), address);
++    if (!authorName.trimmed().isEmpty()) {
++        auto *author = new QLabel(
++            QStringLiteral("<b>Author:</b> %1").arg(authorName.toHtmlEscaped()));
++        author->setObjectName("statusLine");
++        author->setTextFormat(Qt::RichText);
++        author->setAlignment(Qt::AlignCenter);
++        author->setWordWrap(true);
++        layout->addWidget(author);
++    }
++    addAddress(QStringLiteral("Author payout"), authorAddress);
++    addAddress(QStringLiteral("Treasury"), treasuryAddress);
+ 
+     auto *status = new QLabel(QStringLiteral("Waiting for the deposit…"));
+     status->setObjectName("modeHint");
+diff --git a/qt_client/src/MainWindowPulls.cpp b/qt_client/src/MainWindowPulls.cpp
+index 7d429e1f..dcf5b44f 100644
+--- a/qt_client/src/MainWindowPulls.cpp
++++ b/qt_client/src/MainWindowPulls.cpp
+@@ -6427,6 +6427,7 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
+     IssueStore store = issueStoreForCurrentRepo();
+     if (!store.canWrite())
+         return;
++    const QString authorName = pr.authorName;
+ 
+     QHash<int, Issue> byNumber;
+     for (const Issue &issue : store.loadAll())
+@@ -6478,7 +6479,7 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
+         QNetworkReply *reply = m_networkAccess->post(
+             request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+         connect(reply, &QNetworkReply::finished, this,
+-                [this, reply, repo, number, amount] {
++                [this, reply, repo, number, amount, authorName] {
+                     const QByteArray body = reply->readAll();
+                     reply->deleteLater();
+                     const QJsonObject obj = QJsonDocument::fromJson(body).object();
+@@ -6514,7 +6515,9 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
+                     // The dialog shows the QR, polls for the deposit, and on
+                     // confirmation records the paid split; if the funder closes it
+                     // early, a background watcher (and the worker cron) still pay.
+-                    showBountyQrDialog(repo, number, uri, address, amount, amountSol);
++                    showBountyQrDialog(repo, number, uri, address, amount, amountSol,
++                                       authorName, obj.value("payee").toString(),
++                                       obj.value("treasuryAddress").toString());
+                 });
+     }
+ }
+@@ -6536,6 +6539,7 @@ void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
+         !hasOwnerSigningCapability(repo.owner))
+         return;
+     const QString payeeNode = pr.authorName.trimmed().toLower();
++    const QString authorName = pr.authorName;
+     if (payeeNode.isEmpty())
+         return;
+     // The bounty amount reuses the USD-priced issue-bounty pipeline (min $1).
+@@ -6569,7 +6573,7 @@ void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
+     QNetworkReply *reply = m_networkAccess->post(
+         request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+     connect(reply, &QNetworkReply::finished, this,
+-            [this, reply, repo, number, amount, walletMode] {
++            [this, reply, repo, number, amount, walletMode, authorName] {
+         const QByteArray body = reply->readAll();
+         reply->deleteLater();
+         const QJsonObject obj = QJsonDocument::fromJson(body).object();
+@@ -6631,6 +6635,8 @@ void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
+                       .arg(QString::number(amount, 'f', 2))
+                       .arg(amountSol));
+         showBountyQrDialog(repo, number, uri, address, amount, amountSol,
++                           authorName, obj.value("payee").toString(),
++                           obj.value("treasuryAddress").toString(),
+                            QStringLiteral("pr"));
+     });
+ }
