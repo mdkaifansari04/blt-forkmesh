@@ -276,9 +276,11 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #commitsList {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
 }
-#commitsList::item { padding: 8px; color: #e6edf3; border-bottom: 1px solid #21262d; }
-#commitsList::item:hover { background-color: #161b22; padding: 8px; border-bottom: 1px solid #21262d; }
-#commitsList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 8px; border-bottom: 1px solid #21262d; }
+/* No per-row border: separators would slice across the commit-graph lanes;
+   the VS Code-style graph reads as continuous lines on a plain background. */
+#commitsList::item { padding: 8px; color: #e6edf3; }
+#commitsList::item:hover { background-color: #161b22; padding: 8px; }
+#commitsList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 8px; }
 #placeholderPanel { color: #e6edf3; font-size: 16px; }
 #insightsPage QLabel { background: transparent; }
 #insightsCard {
@@ -1436,9 +1438,10 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #commitsList {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
 }
-#commitsList::item { padding: 8px; color: #1f2328; border-bottom: 1px solid #d8dee4; }
-#commitsList::item:hover { background-color: #f6f8fa; padding: 8px; border-bottom: 1px solid #d8dee4; }
-#commitsList::item:selected { background-color: #0969da; color: #ffffff; padding: 8px; border-bottom: 1px solid #d8dee4; }
+/* No per-row border: separators would slice across the commit-graph lanes. */
+#commitsList::item { padding: 8px; color: #1f2328; }
+#commitsList::item:hover { background-color: #f6f8fa; padding: 8px; }
+#commitsList::item:selected { background-color: #0969da; color: #ffffff; padding: 8px; }
 #placeholderPanel { color: #1f2328; font-size: 16px; }
 #insightsPage QLabel { background: transparent; }
 #insightsCard {
