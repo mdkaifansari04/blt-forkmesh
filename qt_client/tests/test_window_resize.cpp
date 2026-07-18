@@ -36,6 +36,8 @@ namespace forkmesh {
 namespace ui {
 QString linkifyIssueRefs(const QString &escaped);
 QString agentModelLabel(const QString &model);
+bool agentModelIsClaudeStyle(const QString &model);
+bool agentModelMatchesProvider(const QString &provider, const QString &model);
 struct MirrorBranchTip {
     QString branch;
     QString commit;
@@ -1394,6 +1396,43 @@ int main(int argc, char *argv[])
         check(forkmesh::ui::agentModelLabel(QStringLiteral("some-future-model-id")) ==
                   QStringLiteral("some-future-model-id"),
               QStringLiteral("agentModelLabel passes an unknown model id through as-is"));
+    }
+
+    // adhoc #76: continuing a session with a different provider must not carry
+    // the previous provider's model across. agentModelMatchesProvider is the
+    // guard that keeps a Claude model off a Codex run (and vice versa), and
+    // treats an empty model as "use the provider default".
+    {
+        using forkmesh::ui::agentModelIsClaudeStyle;
+        using forkmesh::ui::agentModelMatchesProvider;
+        check(agentModelIsClaudeStyle(QStringLiteral("claude-opus-4-8")),
+              QStringLiteral("a claude-* id is Claude-style"));
+        check(agentModelIsClaudeStyle(QStringLiteral("opus")),
+              QStringLiteral("the short opus alias is Claude-style"));
+        check(agentModelIsClaudeStyle(QStringLiteral("auto")),
+              QStringLiteral("the auto router sentinel is Claude-style"));
+        check(!agentModelIsClaudeStyle(QStringLiteral("gpt-5.5")),
+              QStringLiteral("a gpt-* id is not Claude-style"));
+        check(!agentModelIsClaudeStyle(QString()),
+              QStringLiteral("an empty model is not Claude-style"));
+
+        check(agentModelMatchesProvider(QStringLiteral("codex"), QString()),
+              QStringLiteral("an empty model matches any provider (uses its default)"));
+        check(!agentModelMatchesProvider(QStringLiteral("codex"),
+                                         QStringLiteral("claude-opus-4-8")),
+              QStringLiteral("a Claude model does not match the Codex provider"));
+        check(agentModelMatchesProvider(QStringLiteral("codex"),
+                                        QStringLiteral("gpt-5.5")),
+              QStringLiteral("a gpt model matches the Codex provider"));
+        check(agentModelMatchesProvider(QStringLiteral("claude-code"),
+                                        QStringLiteral("claude-opus-4-8")),
+              QStringLiteral("a Claude model matches the Claude Code provider"));
+        check(!agentModelMatchesProvider(QStringLiteral("claude-code"),
+                                         QStringLiteral("gpt-5.5")),
+              QStringLiteral("a gpt model does not match the Claude Code provider"));
+        check(agentModelMatchesProvider(QStringLiteral("claude-api"),
+                                        QStringLiteral("opus")),
+              QStringLiteral("the opus alias matches a Claude API provider"));
     }
 
     // adhoc #191: the issue looper (and per-issue agent assignment) must work on
