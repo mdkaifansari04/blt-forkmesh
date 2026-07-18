@@ -1471,10 +1471,20 @@ void MainWindow::renderPullReviewSummary(const PullRequest &pr)
 
 void MainWindow::showPull(int number)
 {
-    const PullRequest *found = nullptr;
+    // Snapshot the PR into a local value rather than holding a pointer into
+    // m_currentPulls: rendering below pumps the event loop (diff render, file
+    // list, setCurrentRow), and a deferred agent session finishing in that
+    // window can re-enter reloadPulls(), reassigning m_currentPulls and freeing
+    // the element a raw pointer would dangle into — the copy stays valid across
+    // any such reload (crash: free() invalid pointer via renderPullThread).
+    PullRequest foundPull;
+    bool havePull = false;
     for (const PullRequest &pr : m_currentPulls)
-        if (pr.number == number)
-            found = &pr;
+        if (pr.number == number) {
+            foundPull = pr;
+            havePull = true;
+        }
+    const PullRequest *found = havePull ? &foundPull : nullptr;
     m_currentPullNumber = found ? number : -1;
     m_pullFiles->clear();
     m_pullFileDiffs.clear();
