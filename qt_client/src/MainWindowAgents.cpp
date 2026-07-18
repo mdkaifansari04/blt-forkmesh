@@ -1114,10 +1114,12 @@ QWidget *MainWindow::buildAgentsTab()
     // timer (plus a burst of polls on launch) so the top-bar gauge stayed current
     // even with no agent running. That meant a network round trip every minute
     // for the lifetime of the app. Polling is gone, and adhoc #20 removed every
-    // other trigger too: the gauge now renders from the last cached figures on
-    // launch (restored in buildBreadcrumb) and only hits the network when the
+    // other trigger too: the gauge renders from the last cached figures first
+    // (restored in buildBreadcrumb) and otherwise only hits the network when the
     // user hovers the chart to check the current numbers (see the
-    // TokenUsageMiniChart::onHover wiring in buildBreadcrumb).
+    // TokenUsageMiniChart::onHover wiring in buildBreadcrumb) — except adhoc #73
+    // added one more trigger: a single live check right after restart, from
+    // runDeferredStartup().
 
     // adhoc #178 removed the composer frame that used to hold just the
     // Continue button (adhoc #139 had already stripped it down to that) — the
