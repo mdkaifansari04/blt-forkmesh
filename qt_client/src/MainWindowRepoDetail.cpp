@@ -756,6 +756,16 @@ QWidget *MainWindow::buildRepoEditorPage()
     });
     connect(m_repoFileTabs, &QTabWidget::currentChanged, this,
             [this] { updateRepoFileSaveActions(); });
+    // Ctrl+S saves the current tab: commit direct when this node owns a working
+    // tree, otherwise fall back to opening a PR (the only save path on a mirror).
+    auto *saveShortcut = new QShortcut(QKeySequence::Save, m_repoFileTabs);
+    saveShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(saveShortcut, &QShortcut::activated, this, [this] {
+        if (m_repoFileCommitButton && m_repoFileCommitButton->isEnabled())
+            saveCurrentRepoFile(false);
+        else if (m_repoFilePullButton && m_repoFilePullButton->isEnabled())
+            saveCurrentRepoFile(true);
+    });
 
     auto *splitter = new QSplitter(Qt::Horizontal);
     splitter->setObjectName("filesSplitter");
@@ -2047,6 +2057,15 @@ void MainWindow::openRepoFile(const QString &path)
     m_repoFileTabs->setTabToolTip(index, path);
     m_repoFileTabs->setCurrentIndex(index);
     m_openFileTabs.insert(path, editor);
+    // Prefix the tab label with the same "●" marker used for uncommitted files
+    // elsewhere, so unsaved edits are visible before Ctrl+S/commit clears them.
+    connect(editor->document(), &QTextDocument::modificationChanged, this,
+            [this, editor, name](bool modified) {
+                const int idx = m_repoFileTabs ? m_repoFileTabs->indexOf(editor) : -1;
+                if (idx >= 0)
+                    m_repoFileTabs->setTabText(
+                        idx, modified ? QString::fromUtf8("\xE2\x97\x8F ") + name : name);
+            });
     updateRepoFileSaveActions();
 }
 
