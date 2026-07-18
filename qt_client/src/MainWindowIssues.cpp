@@ -4713,6 +4713,39 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         if (handleIssueProgressDrag(static_cast<QMouseEvent *>(event)))
             return true;
     }
+    // Footer live-log strip (adhoc #133): with wrapping off, a long line clips at
+    // the right edge, so hovering a line shows its full untruncated text in a
+    // tooltip and clicking it opens the full Log view scrolled to that entry.
+    // Both resolve the line under the cursor from the block's stored raw text.
+    if (m_footerUpdateLog && obj == m_footerUpdateLog->viewport() &&
+        (event->type() == QEvent::ToolTip ||
+         event->type() == QEvent::MouseButtonRelease)) {
+        auto lineAt = [this](const QPoint &pos) -> QString {
+            const QTextCursor cur = m_footerUpdateLog->cursorForPosition(pos);
+            if (auto *data =
+                    static_cast<FooterLogLineData *>(cur.block().userData()))
+                return data->rawLine;
+            return QString();
+        };
+        if (event->type() == QEvent::ToolTip) {
+            auto *he = static_cast<QHelpEvent *>(event);
+            const QString line = lineAt(he->pos());
+            if (!line.isEmpty()) {
+                QToolTip::showText(he->globalPos(), line,
+                                   m_footerUpdateLog->viewport());
+                return true;
+            }
+        } else { // MouseButtonRelease
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                const QString line = lineAt(me->position().toPoint());
+                if (!line.isEmpty()) {
+                    openFullLogAtFooterLine(line);
+                    return true;
+                }
+            }
+        }
+    }
     // Global search box: drive the floating results dropdown from the keyboard
     // (the dropdown is NoFocus, so it never takes the keyboard itself).
     if (obj == m_globalSearch) {
