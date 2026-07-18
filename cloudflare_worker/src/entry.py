@@ -18206,11 +18206,16 @@ class Default(WorkerEntrypoint):
         # recorded the missing sample as downtime (~5% uptime shown while the
         # site was actually up). The samples also run FIRST, so even a tick
         # that dies in a later job has already landed its data point.
-        cron_expression = _scheduled_cron_expression(controller)
-        cron_check_in_id = _sentry_event_id()
         cron_started_ms = int(Date.now())
         cron_failures = []
         minute = int(cron_started_ms // 60000)
+        # Sentry cron monitor disabled for now (commented out on request).
+        # The opening "in_progress" check-in and the closing ok/error check-in
+        # below are left in place, commented, so the monitor can be re-enabled
+        # by uncommenting both halves.
+        #
+        # cron_expression = _scheduled_cron_expression(controller)
+        # cron_check_in_id = _sentry_event_id()
         # Send the "in_progress" check-in FIRST, before any D1/decrypt work,
         # so Sentry has proof this tick started even if the platform kills
         # the isolate later (cold Pyodide isolate blowing the invocation's
@@ -18220,12 +18225,12 @@ class Default(WorkerEntrypoint):
         # error, which is what actually happened; dropping the closing
         # ok/error check-in on the same check_in_id still only costs one
         # extra Sentry round trip per tick.
-        try:
-            await capture_sentry_cron_check_in(
-                self.env, "in_progress", check_in_id=cron_check_in_id,
-                cron=cron_expression)
-        except BaseException:
-            pass
+        # try:
+        #     await capture_sentry_cron_check_in(
+        #         self.env, "in_progress", check_in_id=cron_check_in_id,
+        #         cron=cron_expression)
+        # except BaseException:
+        #     pass
         # The /status health sample runs FIRST: it is the cheapest job (no
         # row decryption) and the one whose absence shows publicly as fake
         # downtime, so a tick that dies partway (cold Pyodide isolate blowing
@@ -18362,11 +18367,13 @@ class Default(WorkerEntrypoint):
                     error=error, failures=cron_failures)
         # Closing check-in for the same check_in_id sent above, so Sentry
         # resolves the "in_progress" marker to a final ok/error result.
-        final_cron_status = "error" if cron_failures else "ok"
-        await capture_sentry_cron_check_in(
-            self.env, final_cron_status, check_in_id=cron_check_in_id,
-            cron=cron_expression,
-            duration=(int(Date.now()) - cron_started_ms) / 1000)
+        # Sentry cron monitor disabled for now (commented out on request);
+        # re-enable together with the opening check-in above.
+        # final_cron_status = "error" if cron_failures else "ok"
+        # await capture_sentry_cron_check_in(
+        #     self.env, final_cron_status, check_in_id=cron_check_in_id,
+        #     cron=cron_expression,
+        #     duration=(int(Date.now()) - cron_started_ms) / 1000)
 
     async def fetch(self, request):
         url = None
