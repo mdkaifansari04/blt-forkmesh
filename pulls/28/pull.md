@@ -4,7 +4,7 @@ number: 28
 title: Add ForkMesh Patreon support section
 base: main
 head: api-pr/20260718-183139/support-forkmesh-patreon
-status: open
+status: merged
 ts: 1784379828066
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -20,4 +20,3 @@ Verification:
 - cd cloudflare_worker && python3 -m py_compile src/entry.py
 - cd cloudflare_worker && custom Python harness ran 10 static test functions from tests/test_support_forkmesh_section.py, tests/test_feature_pricing_section.py, and tests/test_index_pricing_section.py
 - cd cloudflare_worker && ./deploy.sh dry-run attempted; blocked by missing CLOUDFLARE_ACCOUNT_ID in local environment
-
