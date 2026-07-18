@@ -4985,8 +4985,6 @@ private:
     // user and offers "Log in as a user" to attach it. m_nodeOwnerUser holds the
     // owning user's name (empty = unlinked), learned from account lookups.
     QWidget *m_profileAccountSection = nullptr;
-    QLabel *m_profileUserAvatar = nullptr;
-    QLabel *m_profileUserName = nullptr;
     QLabel *m_profileAccountStatus = nullptr;
     QListWidget *m_profileUserNodesList = nullptr;
     QPushButton *m_profileLinkUserButton = nullptr;

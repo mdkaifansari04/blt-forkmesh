@@ -10606,18 +10606,13 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileMirrors->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
     // --- User profile: this node is key-bound on its own, but a person can own
-    // many nodes. Feature the user account first, then list the nodes attached
-    // to it with machine icons underneath.
+    // many nodes. The node's own avatar/name already headline the left column,
+    // so this card doesn't repeat them — it just states the link status and
+    // lists the sibling nodes attached to the same user account. It lives at the
+    // top of the right column so the nodes read as their own panel.
     m_profileAccountSection = new QWidget;
     m_profileAccountSection->setObjectName("profileUserCard");
     auto *accountLabel = makeProfileSection("USER PROFILE");
-    m_profileUserAvatar = new QLabel;
-    m_profileUserAvatar->setObjectName("profileUserAvatar");
-    m_profileUserAvatar->setFixedSize(54, 54);
-    m_profileUserAvatar->setAlignment(Qt::AlignCenter);
-    m_profileUserName = new QLabel;
-    m_profileUserName->setObjectName("profileUserName");
-    m_profileUserName->setWordWrap(true);
     m_profileAccountStatus = new QLabel;
     m_profileAccountStatus->setObjectName("statusLine");
     m_profileAccountStatus->setWordWrap(true);
@@ -10638,21 +10633,11 @@ QWidget *MainWindow::buildNodeProfilePanel()
         "many nodes.");
     connect(m_profileLinkUserButton, &QPushButton::clicked, this,
             &MainWindow::promptLinkNodeToUser);
-    auto *accountIdentityRow = new QHBoxLayout;
-    accountIdentityRow->setContentsMargins(0, 0, 0, 0);
-    accountIdentityRow->setSpacing(10);
-    accountIdentityRow->addWidget(m_profileUserAvatar, 0, Qt::AlignTop);
-    auto *accountTextColumn = new QVBoxLayout;
-    accountTextColumn->setContentsMargins(0, 0, 0, 0);
-    accountTextColumn->setSpacing(2);
-    accountTextColumn->addWidget(m_profileUserName);
-    accountTextColumn->addWidget(m_profileAccountStatus);
-    accountIdentityRow->addLayout(accountTextColumn, 1);
     auto *accountLayout = new QVBoxLayout(m_profileAccountSection);
     accountLayout->setContentsMargins(10, 10, 10, 10);
     accountLayout->setSpacing(6);
     accountLayout->addWidget(accountLabel);
-    accountLayout->addLayout(accountIdentityRow);
+    accountLayout->addWidget(m_profileAccountStatus);
     accountLayout->addWidget(m_profileUserNodesList);
     accountLayout->addWidget(m_profileLinkUserButton, 0, Qt::AlignLeft);
 
@@ -10782,6 +10767,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     auto *rightColumn = new QVBoxLayout;
     rightColumn->setContentsMargins(0, 0, 0, 0);
     rightColumn->setSpacing(6);
+    rightColumn->addWidget(m_profileAccountSection); // sibling nodes, on the right
     rightColumn->addWidget(m_profileHostingLabel);
     rightColumn->addWidget(m_profileHosting);
     rightColumn->addWidget(nodeKeyLabel);
@@ -10806,7 +10792,6 @@ QWidget *MainWindow::buildNodeProfilePanel()
     layout->setContentsMargins(24, 20, 24, 20);
     layout->setSpacing(6);
     layout->addLayout(topRow);
-    layout->addWidget(m_profileAccountSection);
     layout->addWidget(m_profileSelfActions); // "THIS NODE" actions pinned up top
     layout->addLayout(columnsRow);
 
@@ -11168,21 +11153,6 @@ void MainWindow::renderProfileAccountStatus()
     if (userName.isEmpty() && (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty()))
         userName = accountOwner().trimmed().toLower();
     const bool hasUserProfile = !userName.isEmpty();
-    if (m_profileUserName) {
-        m_profileUserName->setText(
-            hasUserProfile ? userName.toHtmlEscaped()
-                           : QStringLiteral("No user linked yet"));
-    }
-    if (m_profileUserAvatar) {
-        const QByteArray avatarBytes =
-            hasUserProfile ? effectiveUserAvatar()
-                           : forkMeshAvatarPng(accountOwner());
-        const QPixmap pm = roundedAvatar(avatarBytes, 54);
-        if (!pm.isNull())
-            m_profileUserAvatar->setPixmap(pm);
-        else
-            m_profileUserAvatar->clear();
-    }
     if (m_profileUserNodesList) {
         QStringList nodes = m_profileLinkedNodes;
         const QString self = accountOwner();
