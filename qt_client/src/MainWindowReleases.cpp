@@ -1571,8 +1571,9 @@ void MainWindow::loadMirrorNodesPanel()
         if (onlineOnly && !online)
             continue;
         // An online node serving a commit that isn't the source-of-truth's is out
-        // of sync: it catches up at its next heartbeat. Computed here (ahead of the
-        // Node dot) so the dot can go amber; the Synced cell reuses it below.
+        // of sync: the source's instant mirror-update signal normally converges it
+        // in seconds, with its next heartbeat as the fallback. Computed here (ahead
+        // of the Node dot) so the dot can go amber; the Synced cell reuses it below.
         const bool behind = online && advert && !advert->commit.isEmpty() &&
                             !referenceCommit.isEmpty() &&
                             advert->commit != referenceCommit;
@@ -1679,12 +1680,17 @@ void MainWindow::loadMirrorNodesPanel()
         // Behind-but-online node: tag the cell so MirrorSyncDelegate draws a
         // pac-man counting down to its next heartbeat/re-sync. In-sync and
         // offline rows carry no anchor and render as plain text. (`behind` is
-        // computed above so the Node dot can also go amber for it.)
+        // computed above so the Node dot can also go amber for it.) The source
+        // broadcasts an instant mirror-update signal over the websocket when it
+        // advances, so a behind node normally converges in seconds; the
+        // heartbeat re-sync the countdown shows is the fallback for a node that
+        // missed the ephemeral signal.
         if (behind) {
             syncedItem->setData(kPacmanAnchorRole,
                                 static_cast<qlonglong>(advert->updatedMs));
             syncedItem->setToolTip(QString::fromUtf8(
-                "Behind the source \xC2\xB7 catches up at its next heartbeat"));
+                "Behind the source \xC2\xB7 signalled to sync now; its next "
+                "heartbeat is the fallback"));
         }
         // Our own row, when the working copy holds commits the served mirror
         // doesn't yet: surface the pending push count instead of the sync time.
