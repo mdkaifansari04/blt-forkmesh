@@ -3141,6 +3141,11 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     QScrollBar *bar = m_footerUpdateLog->verticalScrollBar();
     const bool wasAtBottom = !bar || bar->value() >= bar->maximum() - 2;
     m_footerUpdateLog->appendHtml(html);
+    // Remember the full, untruncated line on the block just appended so the
+    // no-wrap strip can still show it on hover and open the full Log at it on
+    // click (adhoc #133), even though the visible text is clipped at the edge.
+    if (QTextBlock last = m_footerUpdateLog->document()->lastBlock(); last.isValid())
+        last.setUserData(new FooterLogLineData(clean));
     if (wasAtBottom && bar)
         bar->setValue(bar->maximum());
 }
