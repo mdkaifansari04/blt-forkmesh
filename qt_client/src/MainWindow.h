@@ -2478,6 +2478,9 @@ private:
     // comment composer). `button` is the mic that was pressed, so its icon swaps to
     // red while recording and the transcript lands in `target`.
     void startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *button);
+    // Jump to Settings and land on the Voice tab — used when the mic is
+    // clicked before speech-to-text is set up (adhoc #132).
+    void openVoiceSettings();
     // Build a reusable push-to-talk mic bound to a comment composer; it speaks into
     // the composer's source editor and is registered so updateVoiceInputButton()
     // keeps its visibility/idle look in sync with the voice-engine install state.
@@ -3543,6 +3546,10 @@ private:
     QComboBox *m_parakeetModelCombo = nullptr;
     QProcess *m_parakeetInstallProc = nullptr;
     QComboBox *m_voiceDeviceCombo = nullptr;     // mic to capture from (adhoc #10)
+    // Settings tab widget + the index of its Voice tab, so openVoiceSettings()
+    // can land the mic-not-set-up click directly on that tab (adhoc #132).
+    QTabWidget *m_settingsTabs = nullptr;
+    int m_voiceSettingsTabIndex = -1;
     // Settings "Test mic" (adhoc #14): a self-contained mic check. m_voiceTestProc
     // records the chosen device to m_voiceTestWavPath; m_voiceTestTimer samples its
     // growing tail (from byte offset m_voiceTestPos) to drive m_voiceTestMeter.
