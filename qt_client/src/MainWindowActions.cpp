@@ -22,6 +22,12 @@ QString actionRunLogPath(const ActionRun &run)
            QString::number(run.id) + QStringLiteral("/log.txt");
 }
 
+// First line (after the shebang) of the working-copy commit-signal hooks we
+// install; install/remove only ever touch a hook file carrying this marker.
+const char kCommitSignalMarker[] =
+    "# forkmesh-commit-signal: spools a commit event so mirrors are told to "
+    "update instantly";
+
 } // namespace
 
 void MainWindow::initActions()
@@ -149,13 +155,95 @@ void MainWindow::ensurePushHook(const RepositoryRecord &repo) const
                            repo.mirrorPath},
                           nullptr, nullptr);
     }
+
+    ensureCommitSignalHook(repo);
+}
+
+void MainWindow::ensureCommitSignalHook(const RepositoryRecord &repo) const
+{
+    // A commit made straight in the source-of-truth working copy (terminal,
+    // IDE, a coding agent — including linked worktrees, which run the main
+    // checkout's hooks) never touches the served bare mirror, so it only
+    // reached the mirror — and the "mirror-update" broadcast to peers — at the
+    // next periodic auto-sync tick. These hooks spool a ".commit" event the
+    // moment HEAD moves; scanActionSpool turns it into propagateRepoUpdate,
+    // which syncs the bare mirror and pushes the ephemeral "mirror-update"
+    // frame out over the relay websocket so every mirror node fetches
+    // immediately instead of waiting for its next heartbeat.
+    if (repo.previewOnly || !m_actionStore)
+        return;
+    const QString localPath = repo.localPath.trimmed();
+    // Only a normal checkout (.git as a directory) gets the hooks; a gitfile
+    // checkout (linked worktree/submodule) runs its parent's hooks anyway.
+    if (localPath.isEmpty() ||
+        !QFileInfo(localPath + QStringLiteral("/.git")).isDir())
+        return;
+    const QString hooksDir = localPath + QStringLiteral("/.git/hooks");
+    QDir().mkpath(hooksDir);
+
+    const QString spool = m_actionStore->spoolDir();
+    const QString script =
+        QStringLiteral("#!/bin/sh\n"
+                       "%1\n"
+                       "spool='%2'\n"
+                       "mkdir -p \"$spool\"\n"
+                       "f=\"$spool/$(date +%s)-$$.commit\"\n"
+                       "{\n"
+                       "  echo 'owner %3'\n"
+                       "  echo 'name %4'\n"
+                       "} > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"\n")
+            .arg(QLatin1String(kCommitSignalMarker), spool, repo.owner,
+                 repo.name);
+
+    // post-commit covers plain commits; post-merge covers `git pull`/merges,
+    // which do not run post-commit.
+    for (const char *hook : {"post-commit", "post-merge"}) {
+        const QString path = hooksDir + QLatin1Char('/') + QLatin1String(hook);
+        // The working copy is user territory (unlike the app-managed bare
+        // mirror): never clobber a hook we didn't write ourselves.
+        QFile existing(path);
+        if (existing.exists()) {
+            if (!existing.open(QIODevice::ReadOnly | QIODevice::Text))
+                continue;
+            const QString body = QString::fromUtf8(existing.readAll());
+            existing.close();
+            if (!body.contains(QLatin1String(kCommitSignalMarker)))
+                continue;
+            if (body == script)
+                continue; // already current
+        }
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            continue;
+        f.write(script.toUtf8());
+        f.close();
+        f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                         QFileDevice::ExeOwner | QFileDevice::ReadGroup |
+                         QFileDevice::ExeGroup | QFileDevice::ReadOther |
+                         QFileDevice::ExeOther);
+    }
 }
 
 void MainWindow::removePushHook(const RepositoryRecord &repo) const
 {
-    if (repo.mirrorPath.isEmpty())
+    if (!repo.mirrorPath.isEmpty())
+        QFile::remove(repo.mirrorPath + QStringLiteral("/hooks/post-receive"));
+    // Also drop the working-copy commit-signal hooks — but only ours (marker
+    // check), never a hook the user wrote.
+    const QString localPath = repo.localPath.trimmed();
+    if (localPath.isEmpty())
         return;
-    QFile::remove(repo.mirrorPath + QStringLiteral("/hooks/post-receive"));
+    for (const char *hook : {"post-commit", "post-merge"}) {
+        const QString path = localPath + QStringLiteral("/.git/hooks/") +
+                             QLatin1String(hook);
+        QFile f(path);
+        if (!f.exists() || !f.open(QIODevice::ReadOnly | QIODevice::Text))
+            continue;
+        const QString body = QString::fromUtf8(f.readAll());
+        f.close();
+        if (body.contains(QLatin1String(kCommitSignalMarker)))
+            QFile::remove(path);
+    }
 }
 
 void MainWindow::installAllPushHooks() const
@@ -191,6 +279,52 @@ void MainWindow::scanActionSpool()
     if (!m_actionStore)
         return;
     QDir dir(m_actionStore->spoolDir());
+
+    // ".commit" events: the working copy's post-commit/post-merge hook saw HEAD
+    // move (a commit landed on the source of truth outside the app — terminal,
+    // IDE, or an agent worktree). propagateRepoUpdate syncs the served bare
+    // mirror from the working copy and, on a detected change, broadcasts the
+    // ephemeral "mirror-update" websocket frame so every mirror node fetches
+    // right now instead of at its next heartbeat.
+    const QStringList commitFiles =
+        dir.entryList({QStringLiteral("*.commit")}, QDir::Files, QDir::Name);
+    QSet<int> propagated;
+    for (const QString &file : commitFiles) {
+        const QString full = dir.filePath(file);
+        QFile f(full);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            continue;
+        const QString text = QString::fromUtf8(f.readAll());
+        f.close();
+
+        QString owner, name;
+        const QStringList lines =
+            text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        for (const QString &line : lines) {
+            if (line.startsWith(QLatin1String("owner ")))
+                owner = line.mid(6).trimmed();
+            else if (line.startsWith(QLatin1String("name ")))
+                name = line.mid(5).trimmed();
+        }
+        const int idx = repoIndexFor(owner, name);
+        if (idx < 0 ||
+            m_repositories.at(idx).localPath.trimmed().isEmpty()) {
+            QFile::remove(full); // stale event for a repo we no longer hold
+            continue;
+        }
+        // A sync already in flight can't pick up a commit that lands mid-fetch:
+        // leave the event in the spool so the fallback poll retries it once the
+        // repo is released, instead of silently dropping the update until the
+        // next periodic tick.
+        if (m_syncingRepos.contains(idx))
+            continue;
+        QFile::remove(full);
+        if (propagated.contains(idx))
+            continue; // a burst of commits needs only one sync
+        propagated.insert(idx);
+        propagateRepoUpdate(idx);
+    }
+
     const QStringList files =
         dir.entryList({QStringLiteral("*.push")}, QDir::Files, QDir::Name);
     // Re-attest the integrity pin at most once per repo per sweep, even if several
@@ -329,7 +463,11 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
 {
     if (repoIndex < 0 || repoIndex >= m_repositories.size() || !m_actionStore)
         return;
-    const RepositoryRecord &repo = m_repositories.at(repoIndex);
+    // Copy, don't reference: cancelSupersededRuns() below pumps the event loop
+    // (ActionRunner::stop → QProcess::waitForFinished), and a nested refresh can
+    // reassign m_repositories — a reference would dangle for the loop's later
+    // iterations (adhoc #119).
+    const RepositoryRecord repo = m_repositories.at(repoIndex);
 
     // Metadata-only pushes (issues, pull requests, commit comments) shouldn't
     // trigger CI: they carry no code change. List the pushed commit's files and
@@ -694,9 +832,14 @@ void MainWindow::refreshOpenPullChecks()
 {
     if (m_currentPullNumber < 0)
         return;
-    for (const PullRequest &pr : std::as_const(m_currentPulls)) {
-        if (pr.number != m_currentPullNumber)
+    for (const PullRequest &it : std::as_const(m_currentPulls)) {
+        if (it.number != m_currentPullNumber)
             continue;
+        // Snapshot before rendering: each render call pumps the event loop
+        // (runIdsForPull → git reads), which can re-enter reloadPulls() and
+        // reassign m_currentPulls — the loop reference would dangle before the
+        // next call (adhoc #119 SIGSEGV).
+        const PullRequest pr = it;
         renderPullChecks(pr);
         renderPullChecksSummary(pr);
         renderPullReviewSummary(pr);
@@ -814,9 +957,8 @@ void MainWindow::updateNotificationButton()
     if (!m_notificationButton)
         return;
     const int pending = pendingActionCount();
-    m_notificationButton->setText(pending > 0
-                                      ? QStringLiteral("Notifications •")
-                                      : QStringLiteral("Notifications"));
+    // Icon-only bell (adhoc #137): the pending count rides on the tooltip and the
+    // amber "alert" accent below rather than a "•" appended to a text label.
     m_notificationButton->setToolTip(
         pending > 0
             ? QStringLiteral("%1 action(s) waiting for approval").arg(pending)
@@ -1116,6 +1258,19 @@ void MainWindow::refreshActionsTable()
             when = rel == QStringLiteral("now") ? rel
                                                 : rel + QStringLiteral(" ago");
         }
+        // For a run that's still queued or running, tack on how long the same
+        // workflow took last time it ran, so the "When" column shows the target
+        // the shrinking line above the tab is counting down against (adhoc #105).
+        if (run.status == ActionStatus::Queued ||
+            run.status == ActionStatus::Running) {
+            const qint64 last = estimatedRunDurationMs(run);
+            if (last > 0) {
+                const QString lastStr =
+                    QStringLiteral("last %1").arg(formatDuration(last));
+                when = when.isEmpty() ? lastStr
+                                      : when + QStringLiteral(" \xC2\xB7 ") + lastStr;
+            }
+        }
         auto *whenItem = new QTableWidgetItem(when);
         if (run.createdAtMs > 0)
             whenItem->setToolTip(QDateTime::fromMSecsSinceEpoch(run.createdAtMs)
@@ -1307,10 +1462,20 @@ void MainWindow::ensureActionStrip()
     // The strip and its rows must stay hit-testable: Qt skips a
     // WA_TransparentForMouseEvents widget *and its whole subtree* when picking a
     // click receiver, which would swallow the clicks the per-run boxes rely on
-    // (see updateActionStrip). The strip paints nothing of its own, so an opaque
-    // overlay here looks identical while letting the bars act as live links.
+    // (see updateActionStrip). One border drawn here (rather than one per row,
+    // adhoc #112) makes several queued/running actions read as a single box
+    // holding multiple lines instead of a stack of separate boxes.
+    m_actionStrip->setAttribute(Qt::WA_StyledBackground, true);
+    // One thin-bordered "main bar" that holds the stacked run lines; colours
+    // follow the active theme so the strip sits flush with the light UI instead
+    // of showing as a dark box with unreadable white text (adhoc #118).
+    const bool dark = currentThemeIsDark();
+    m_actionStrip->setStyleSheet(
+        QStringLiteral("#actionStrip { background-color: %1; "
+                        "border: 1px solid %2; border-radius: 8px; }")
+            .arg(dark ? "#161b22" : "#ffffff", dark ? "#30363d" : "#d0d7de"));
     auto *col = new QVBoxLayout(m_actionStrip);
-    col->setContentsMargins(0, 0, 0, 0);
+    col->setContentsMargins(8, 6, 8, 6);
     col->setSpacing(4);
     m_actionStripCol = col;
     m_actionStrip->hide();
@@ -1322,15 +1487,17 @@ void MainWindow::updateActionStrip()
     if (!m_actionStrip || !m_actionStripCol)
         return;
 
-    // This repo's runs that are actually executing (queued ones haven't started
-    // the clock yet, so they don't get a growing bar).
+    // This repo's runs that are queued or running: one line each (adhoc #105).
+    // Queued runs haven't started their clock, so their line stays full until the
+    // runner picks them up and they begin counting down.
     QList<const ActionRun *> live;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         const QString owner = m_repositories.at(m_repoDetailIndex).owner;
         const QString name = m_repositories.at(m_repoDetailIndex).name;
         for (const ActionRun &run : m_actionRuns)
             if (run.owner == owner && run.name == name &&
-                run.status == ActionStatus::Running)
+                (run.status == ActionStatus::Running ||
+                 run.status == ActionStatus::Queued))
                 live.append(&run);
     }
 
@@ -1343,8 +1510,8 @@ void MainWindow::updateActionStrip()
         return;
     }
 
-    // Rebuild the bars only when the set of running runs changes, so an existing
-    // bar keeps growing smoothly instead of snapping back to its base each tick.
+    // Rebuild the boxes only when the set of running runs changes, so an existing
+    // box keeps draining smoothly instead of snapping back to full each tick.
     QList<int> ids;
     for (const ActionRun *r : std::as_const(live))
         ids.append(r->id);
@@ -1356,50 +1523,46 @@ void MainWindow::updateActionStrip()
             delete item;
         }
         for (const ActionRun *r : std::as_const(live)) {
-            // Each run is one row: a bordered name box that grows to the right,
-            // with its elapsed time sitting just outside the box on the right.
-            auto *row = new QWidget;
-            auto *h = new QHBoxLayout(row);
-            h->setContentsMargins(0, 0, 0, 0);
-            h->setSpacing(8);
-
-            auto *box = new QLabel(r->workflowName.trimmed().isEmpty()
-                                       ? QStringLiteral("workflow")
-                                       : r->workflowName.trimmed());
-            box->setObjectName("actionStripBox");
-            // When the box should have started growing from. startedAtMs is set
-            // once the runner picks the run up; fall back to createdAtMs.
-            box->setProperty("startedAtMs",
-                             static_cast<qlonglong>(r->startedAtMs > 0
-                                                        ? r->startedAtMs
-                                                        : r->createdAtMs));
-            box->setFixedHeight(22);
-            box->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
-            box->setStyleSheet(
-                "#actionStripBox{color:#000;background:transparent;"
-                "border:1px solid #000;border-radius:4px;padding:0 9px;"
-                "font-size:12px;font-weight:600;}");
-
-            auto *time = new QLabel;
-            time->setObjectName("actionStripTime");
-            time->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
-            time->setStyleSheet("#actionStripTime{color:#000;background:transparent;"
-                                "font-size:11px;}");
-
-            // The box and its timer are live links: clicking either jumps to
-            // this run's output. They tag themselves with the run id and let
-            // MainWindow's event filter handle the click.
-            for (QLabel *hit : {box, time}) {
-                hit->setProperty("actionRunId", r->id);
-                hit->setCursor(Qt::PointingHandCursor);
-                hit->setToolTip(QStringLiteral("View this run's live output"));
-                hit->installEventFilter(this);
-            }
-
-            h->addWidget(box);
-            h->addWidget(time);
-            h->addStretch();
-            m_actionStripCol->addWidget(row);
+            // Each run is one fixed box whose coloured lines drain down toward the
+            // estimated duration (see ActionEstimateBox). startedAtMs is set once
+            // the runner picks the run up; fall back to createdAtMs.
+            // Only a running run counts down; a queued one keeps a full line.
+            const qint64 started =
+                r->status != ActionStatus::Running ? 0
+                : r->startedAtMs > 0               ? r->startedAtMs
+                                                   : r->createdAtMs;
+            auto *box = new ActionEstimateBox;
+            box->configure(r->workflowName.trimmed().isEmpty()
+                               ? QStringLiteral("workflow")
+                               : r->workflowName.trimmed(),
+                           started, estimatedRunDurationMs(*r));
+            // The box is a live link: clicking it jumps to this run's output. It
+            // tags itself with the run id for MainWindow's event filter.
+            box->setProperty("actionRunId", r->id);
+            box->setToolTip(QStringLiteral("View this run's live output"));
+            box->installEventFilter(this);
+            m_actionStripCol->addWidget(box);
+        }
+    } else {
+        // Same runs: refresh each box's estimate (a run may have just finished
+        // and set a fresh baseline) and repaint the drain level.
+        int i = 0;
+        for (const ActionRun *r : std::as_const(live)) {
+            // Only ActionEstimateBox widgets populate this layout, and the box is
+            // a plain QWidget (no Q_OBJECT), so a static_cast is safe here.
+            auto *box = static_cast<ActionEstimateBox *>(
+                m_actionStripCol->itemAt(i++)->widget());
+            if (!box)
+                continue;
+            // Only a running run counts down; a queued one keeps a full line.
+            const qint64 started =
+                r->status != ActionStatus::Running ? 0
+                : r->startedAtMs > 0               ? r->startedAtMs
+                                                   : r->createdAtMs;
+            box->configure(r->workflowName.trimmed().isEmpty()
+                               ? QStringLiteral("workflow")
+                               : r->workflowName.trimmed(),
+                           started, estimatedRunDurationMs(*r));
         }
     }
 
@@ -1407,15 +1570,37 @@ void MainWindow::updateActionStrip()
     m_actionStrip->show();
     m_actionStrip->raise();
 
-    // A modest tick both grows the bars and keeps the strip pinned above the tab
-    // as the window moves or the tab bar reflows.
+    // A modest tick both drains the boxes (refreshing their estimate and
+    // repainting) and keeps the strip pinned above the tab as the window moves or
+    // the tab bar reflows.
     if (!m_actionStripTimer) {
         m_actionStripTimer = new QTimer(this);
         connect(m_actionStripTimer, &QTimer::timeout, this,
-                &MainWindow::positionActionStrip);
+                &MainWindow::updateActionStrip);
     }
     if (!m_actionStripTimer->isActive())
         m_actionStripTimer->start(250);
+}
+
+// Duration of the previous finished run of the same workflow, used as the
+// estimate the strip box counts down against. 0 when there's no prior run to go
+// on (a fresh workflow, or none has completed yet), which leaves the box full.
+qint64 MainWindow::estimatedRunDurationMs(const ActionRun &run) const
+{
+    qint64 best = 0;
+    qint64 newest = 0;
+    for (const ActionRun &r : m_actionRuns) {
+        if (r.id == run.id || r.owner != run.owner || r.name != run.name ||
+            r.workflowPath != run.workflowPath)
+            continue;
+        if (r.startedAtMs <= 0 || r.finishedAtMs <= r.startedAtMs)
+            continue; // never actually ran to completion
+        if (r.finishedAtMs > newest) {
+            newest = r.finishedAtMs;
+            best = r.finishedAtMs - r.startedAtMs;
+        }
+    }
+    return best;
 }
 
 void MainWindow::positionActionStrip()
@@ -1426,60 +1611,34 @@ void MainWindow::positionActionStrip()
     if (!page)
         return;
 
-    // mm:ss, rolling over to h:mm:ss past the hour.
-    auto fmtElapsed = [](qint64 secs) {
-        const qint64 m = secs / 60, s = secs % 60;
-        if (m >= 60)
-            return QStringLiteral("%1:%2:%3")
-                .arg(m / 60)
-                .arg(m % 60, 2, 10, QLatin1Char('0'))
-                .arg(s, 2, 10, QLatin1Char('0'));
-        return QStringLiteral("%1:%2").arg(m).arg(s, 2, 10, QLatin1Char('0'));
-    };
-
-    // Each box's width tracks how long its run has been going: a couple of pixels
-    // per elapsed second on top of a base that always fits the workflow name. The
-    // elapsed time rides just outside the box on the right.
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // Span the Actions tab exactly so the box never bleeds over the neighbouring
+    // Security tab (adhoc #105): the outer box is fixed to the tab's width, and
+    // each line is inset by the box's own margins (adhoc #112) rather than
+    // stretched edge-to-edge.
+    const int tabWidth = qMax(1, m_repoActionsTab->width());
+    const QMargins cm = m_actionStripCol->contentsMargins();
+    const int rowWidth = qMax(1, tabWidth - cm.left() - cm.right());
     const int rows = m_actionStripCol->count();
-    int widest = 0, h = 0;
+    int h = cm.top() + cm.bottom();
     for (int i = 0; i < rows; ++i) {
-        auto *row = m_actionStripCol->itemAt(i)->widget();
-        if (!row)
+        auto *box = m_actionStripCol->itemAt(i)->widget();
+        if (!box)
             continue;
-        auto *box = row->findChild<QLabel *>(QStringLiteral("actionStripBox"));
-        auto *time = row->findChild<QLabel *>(QStringLiteral("actionStripTime"));
-        if (!box || !time)
-            continue;
-        const qint64 started = box->property("startedAtMs").toLongLong();
-        const qint64 elapsedS =
-            started > 0 ? qMax<qint64>(0, (now - started) / 1000) : 0;
-        // Width that always fits the name: the text advance plus the box chrome
-        // (9px QSS padding + 1px border on each side = 20px) and a few extra
-        // pixels of slack so bold glyphs — which fontMetrics tends to slightly
-        // under-measure — don't get clipped at the edges.
-        const int base = box->fontMetrics().horizontalAdvance(box->text()) + 28;
-        const int boxW = qBound(base, base + static_cast<int>(elapsedS) * 2, 380);
-        box->setFixedWidth(boxW);
-        time->setText(fmtElapsed(elapsedS));
-        row->setFixedHeight(box->height());
-        const int rowW = boxW + m_actionStripCol->spacing() +
-                         time->sizeHint().width() + 8;
-        widest = qMax(widest, rowW);
+        box->setFixedWidth(rowWidth);
         h += box->height() + (i > 0 ? m_actionStripCol->spacing() : 0);
     }
-    if (widest <= 0)
+    if (rows <= 0)
         return;
 
-    m_actionStrip->resize(widest, h);
+    m_actionStrip->resize(tabWidth, h);
 
     const QPoint tl = m_repoActionsTab->mapTo(page, QPoint(0, 0));
     int x = tl.x();
     int y = tl.y() - h - 1;
     if (y < 0)
         y = 0;
-    if (x + widest > page->width())
-        x = qMax(0, page->width() - widest);
+    if (x + tabWidth > page->width())
+        x = qMax(0, page->width() - tabWidth);
     m_actionStrip->move(x, y);
     m_actionStrip->raise();
 }

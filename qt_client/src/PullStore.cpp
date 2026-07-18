@@ -19,6 +19,7 @@
 #include <QRegularExpression>
 #include <QSet>
 #include <QStandardPaths>
+#include <QThread>
 #include <QUuid>
 
 #include <algorithm>
@@ -79,7 +80,14 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
         process.setProcessEnvironment(env);
     }
     process.start("git", QStringList{"-C", dir} + args);
-    if (!process.waitForFinished(timeoutMs)) {
+    // On the GUI thread pump between polls: applying a pulls-inbox payload runs
+    // these commands (materializePullRef's worktree add / am replay in
+    // particular) synchronously on the main thread, and a plain blocking wait
+    // froze the window for 1s+ per PR (stall log: PullStore::materializePullRef,
+    // PullStore::readPull).
+    const QCoreApplication *app = QCoreApplication::instance();
+    const bool onGuiThread = app && QThread::currentThread() == app->thread();
+    if (!waitForFinishedKeepAlive(process, timeoutMs, onGuiThread)) {
         if (errText)
             *errText = QStringLiteral("git timed out");
         return false;

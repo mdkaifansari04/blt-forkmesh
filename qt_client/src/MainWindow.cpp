@@ -565,6 +565,15 @@ void MainWindow::runDeferredStartup()
     // records to the mainnode's triage queue. No-op unless the user enabled it in
     // Settings; fire-and-forget so it never delays the first interactive frame.
     maybeUploadDiagnostics();
+
+    // adhoc #73: adhoc #20 dropped every launch-time trigger for the top-bar
+    // usage charts in favour of hover-only refreshes, so a restart kept showing
+    // whatever percentages were cached before the app closed — stale if usage
+    // moved while it was shut down. Do one live Claude Code check here (Codex
+    // has no equivalent oauth/usage-style endpoint; its chart already
+    // recomputes from the locally tracked window on every launch via
+    // buildBreadcrumb's refreshCodexUsageRemaining() call).
+    refreshClaudeCodeUsage();
 }
 
 void MainWindow::applyTheme()

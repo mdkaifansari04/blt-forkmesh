@@ -4,7 +4,7 @@
   // The only client-routed state left is within-page: repo tabs/tree/blob on
   // the repo page, and the settings sub-tabs below.
 
-  const SETTINGS_SECTIONS = ["public-profile", "account", "appearance", "notifications", "payout", "nodes", "danger"];
+  const SETTINGS_SECTIONS = ["public-profile", "account", "appearance", "notifications", "payout", "nodes", "organizations", "danger"];
 
   function normalizeSettingsSection(section) {
     return SETTINGS_SECTIONS.includes(section) ? section : "public-profile";
@@ -47,6 +47,451 @@
     if (scroll && settingsMain) {
       settingsMain.scrollIntoView({ block: "start", behavior: "smooth" });
     }
+
+    // The Organizations tab is data-driven and only fetched when first opened.
+    if (activeSection === "organizations") initOrgsSection();
+  }
+
+  // ---- Organizations (settings tab) -----------------------------------------
+  // Client for the /api/orgs endpoints (mirrors the Flutter app's org UI):
+  // list/create the orgs you belong to, then a master/detail panel to manage
+  // one org's members, teams, and linked repos. All rendered lazily into
+  // [data-orgs-root] the first time the Organizations settings tab is opened.
+  const ORG_ROLE_OPTIONS = ["owner", "admin", "member"];
+  const ORG_TEAM_PERMISSIONS = ["read", "write", "maintain", "admin"];
+
+  // Worker org-endpoint error codes -> human text. Unknown codes fall through
+  // to a generic message so the UI never shows a raw slug.
+  const ORG_ERROR_TEXT = {
+    invalid_org_name: "Invalid name. Use lowercase letters, numbers and dashes.",
+    invalid_team_name: "Invalid team name. Use lowercase letters, numbers and dashes.",
+    org_name_taken: "That name is already taken.",
+    too_many_orgs: "You have reached the organization limit for this account.",
+    too_many_members: "This organization has reached its member limit.",
+    too_many_teams: "This organization has reached its team limit.",
+    too_many_repos: "This organization has reached its linked-repo limit.",
+    invalid_session: "Sign in to manage organizations.",
+    forbidden: "You do not have permission to do that.",
+    not_found: "Not found.",
+    last_owner: "An organization must keep at least one owner.",
+    unknown_account: "No account exists with that name.",
+    not_a_member: "That account is not a member of this organization.",
+    bad_role: "Invalid role.",
+    bad_permission: "Invalid permission.",
+    member_required: "Enter a member account name.",
+    repo_required: "Enter a repository name.",
+    not_your_node: "You can only link repositories from your own node.",
+    unknown_repo: "That repository is not published on your node.",
+  };
+
+  function orgErrorText(code) {
+    return ORG_ERROR_TEXT[code] || (code ? "Request failed (" + code + ")." : "Request failed.");
+  }
+
+  // fetchJson only does cached GETs; org writes need POST/DELETE with the
+  // session bearer token and must surface the structured {error} body, so they
+  // go through this dedicated helper instead.
+  async function orgApiRequest(method, path, body) {
+    const token = state.session?.sessionToken || "";
+    const headers = { accept: "application/json" };
+    if (body !== undefined) headers["content-type"] = "application/json";
+    if (token) headers.authorization = "Bearer " + token;
+    const response = await fetch(path, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      const error = new Error(orgErrorText(data.error || ""));
+      error.code = data.error || "http_" + response.status;
+      throw error;
+    }
+    return data;
+  }
+
+  function orgsRoot() {
+    return $("[data-orgs-root]");
+  }
+
+  let orgsSectionLoaded = false;
+  function initOrgsSection() {
+    if (orgsSectionLoaded) return;
+    orgsSectionLoaded = true;
+    showOrgsList();
+  }
+
+  function orgSignedIn() {
+    return Boolean(state.session?.nodeName) && state.session?.kind !== "preview";
+  }
+
+  function orgRoleBadge(role) {
+    const clean = String(role || "member").toLowerCase();
+    const tone = clean === "owner"
+      ? "border-[#2f81f7]/40 bg-[#2f81f7]/10 text-[#2f81f7]"
+      : clean === "admin"
+        ? "border-amber-500/40 bg-amber-500/10 text-amber-500"
+        : "border-border bg-secondary text-muted-foreground";
+    return '<span class="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ' +
+      tone + '">' + escapeHtml(clean) + "</span>";
+  }
+
+  function orgOptionTags(options, selected) {
+    return options.map((opt) =>
+      '<option value="' + escapeHtml(opt) + '"' + (opt === selected ? " selected" : "") + ">" +
+      escapeHtml(opt) + "</option>").join("");
+  }
+
+  function orgStatus(root, message, ok) {
+    const status = root.querySelector("[data-org-status]");
+    if (!status) return;
+    status.textContent = message || "";
+    status.className = "min-h-4 text-xs " + (ok ? "text-[#238636]" : "text-red-500");
+  }
+
+  const ORG_INPUT_CLASS = "h-10 rounded-md border border-border bg-card px-3 text-sm font-normal " +
+    "text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]";
+  const ORG_BTN_PRIMARY = "inline-flex h-9 items-center justify-center rounded-md bg-[#238636] px-4 " +
+    "text-sm font-semibold text-white hover:bg-[#2ea043] transition-colors";
+  const ORG_BTN_SECONDARY = "inline-flex h-9 items-center justify-center rounded-md border border-border " +
+    "bg-secondary px-4 text-sm font-semibold text-foreground hover:bg-muted transition-colors";
+
+  async function showOrgsList() {
+    const root = orgsRoot();
+    if (!root) return;
+    if (!orgSignedIn()) {
+      root.innerHTML = '<p class="text-sm text-muted-foreground">Sign in to create and manage organizations.</p>';
+      return;
+    }
+    root.innerHTML = '<p class="text-sm text-muted-foreground">' + loadingHtml("Loading organizations…") + "</p>";
+    let orgs = [];
+    try {
+      const data = await orgApiRequest("GET", "/api/orgs");
+      orgs = Array.isArray(data.orgs) ? data.orgs : [];
+    } catch (error) {
+      root.innerHTML = '<p class="text-sm text-red-500">' + escapeHtml(error.message) + "</p>";
+      return;
+    }
+    const rows = orgs.length
+      ? orgs.map((org) => {
+          const name = escapeHtml(org.name || "");
+          return '<button type="button" data-org-open="' + name + '" ' +
+            'class="flex w-full items-center gap-3 rounded-md border border-border bg-card px-4 py-3 text-left hover:bg-secondary transition-colors">' +
+            '<i data-lucide="building-2" class="h-5 w-5 text-muted-foreground"></i>' +
+            '<span class="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">' + name + "</span>" +
+            orgRoleBadge(org.role) +
+            '<i data-lucide="chevron-right" class="h-4 w-4 text-muted-foreground"></i>' +
+            "</button>";
+        }).join("")
+      : '<p class="text-sm text-muted-foreground">No organizations yet. Create one below.</p>';
+    root.innerHTML =
+      '<div class="grid gap-2">' + rows + "</div>" +
+      '<form data-org-create class="mt-6 grid max-w-md gap-3 border-t border-border pt-6">' +
+        '<h3 class="text-sm font-semibold text-foreground">New organization</h3>' +
+        '<input data-org-name required placeholder="name (lowercase, dashes)" autocomplete="off" class="' + ORG_INPUT_CLASS + '" />' +
+        '<input data-org-display placeholder="Display name (optional)" autocomplete="off" class="' + ORG_INPUT_CLASS + '" />' +
+        '<input data-org-description placeholder="Description (optional)" autocomplete="off" class="' + ORG_INPUT_CLASS + '" />' +
+        '<p data-org-status class="min-h-4 text-xs text-muted-foreground"></p>' +
+        '<button type="submit" class="' + ORG_BTN_PRIMARY + ' w-fit">Create organization</button>' +
+      "</form>";
+    window.lucide?.createIcons();
+    root.querySelector("[data-org-create]")?.addEventListener("submit", onCreateOrgSubmit);
+    root.querySelectorAll("[data-org-open]").forEach((button) => {
+      button.addEventListener("click", () => showOrgDetail(button.dataset.orgOpen));
+    });
+  }
+
+  async function onCreateOrgSubmit(event) {
+    event.preventDefault();
+    const root = orgsRoot();
+    if (!root) return;
+    const name = (root.querySelector("[data-org-name]")?.value || "").trim().toLowerCase();
+    if (!name) {
+      orgStatus(root, "Enter an organization name.", false);
+      return;
+    }
+    const body = { name };
+    const display = (root.querySelector("[data-org-display]")?.value || "").trim();
+    const description = (root.querySelector("[data-org-description]")?.value || "").trim();
+    if (display) body.displayName = display;
+    if (description) body.description = description;
+    orgStatus(root, "Creating…", true);
+    try {
+      const created = await orgApiRequest("POST", "/api/orgs", body);
+      showOrgDetail(created.org || name);
+    } catch (error) {
+      orgStatus(root, error.message, false);
+    }
+  }
+
+  async function showOrgDetail(name) {
+    const root = orgsRoot();
+    if (!root || !name) return;
+    root.innerHTML = '<p class="text-sm text-muted-foreground">' + loadingHtml("Loading organization…") + "</p>";
+    let profile;
+    let members = [];
+    let teams = [];
+    let repos = [];
+    try {
+      const [profileData, membersData, teamsData, reposData] = await Promise.all([
+        orgApiRequest("GET", "/api/orgs/" + encodeURIComponent(name)),
+        orgApiRequest("GET", "/api/orgs/" + encodeURIComponent(name) + "/members"),
+        orgApiRequest("GET", "/api/orgs/" + encodeURIComponent(name) + "/teams").catch(() => ({ teams: [] })),
+        orgApiRequest("GET", "/api/orgs/" + encodeURIComponent(name) + "/repos"),
+      ]);
+      profile = profileData;
+      members = membersData.members || [];
+      teams = teamsData.teams || [];
+      repos = reposData.repos || [];
+    } catch (error) {
+      root.innerHTML =
+        '<button type="button" data-org-back class="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">' +
+        '<i data-lucide="arrow-left" class="h-4 w-4"></i> Back</button>' +
+        '<p class="text-sm text-red-500">' + escapeHtml(error.message) + "</p>";
+      window.lucide?.createIcons();
+      root.querySelector("[data-org-back]")?.addEventListener("click", showOrgsList);
+      return;
+    }
+    renderOrgDetail(root, name, profile, members, teams, repos);
+  }
+
+  function renderOrgDetail(root, name, profile, members, teams, repos) {
+    const canManage = profile.viewerRole === "owner" || profile.viewerRole === "admin";
+    const isOwner = profile.viewerRole === "owner";
+    const title = escapeHtml(profile.displayName || profile.org || name);
+
+    const memberRows = members.map((member) => {
+      const memberName = escapeHtml(member.name || "");
+      const controls = canManage
+        ? '<select data-org-member-role="' + memberName + '" class="' + ORG_INPUT_CLASS + ' h-8 py-0">' +
+            orgOptionTags(ORG_ROLE_OPTIONS, member.role) + "</select>" +
+          '<button type="button" data-org-member-remove="' + memberName + '" title="Remove from org" ' +
+            'class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-red-500 hover:border-red-500/50">' +
+            '<i data-lucide="user-minus" class="h-4 w-4"></i></button>'
+        : orgRoleBadge(member.role);
+      return '<div class="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2">' +
+        '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName + "</span>" +
+        controls + "</div>";
+    }).join("") || '<p class="text-sm text-muted-foreground">No members.</p>';
+
+    const teamRows = teams.map((team) => {
+      const teamName = escapeHtml(team.team || "");
+      const controls = canManage
+        ? '<select data-org-team-perm="' + teamName + '" class="' + ORG_INPUT_CLASS + ' h-8 py-0">' +
+            orgOptionTags(ORG_TEAM_PERMISSIONS, team.permission) + "</select>" +
+          '<button type="button" data-org-team-delete="' + teamName + '" title="Delete team" ' +
+            'class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-red-500 hover:border-red-500/50">' +
+            '<i data-lucide="trash-2" class="h-4 w-4"></i></button>'
+        : '<span class="inline-flex items-center rounded-full border border-border bg-secondary px-2 py-0.5 text-xs font-semibold text-muted-foreground">' +
+            escapeHtml(team.permission || "") + "</span>";
+      return '<div class="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2">' +
+        '<button type="button" data-org-team-open="' + teamName + '" class="min-w-0 flex-1 truncate text-left text-sm font-medium text-foreground hover:underline">' +
+          teamName + ' <span class="text-xs text-muted-foreground">· ' + (team.members || 0) + ' member' + ((team.members === 1) ? "" : "s") + "</span></button>" +
+        controls + "</div>";
+    }).join("") || '<p class="text-sm text-muted-foreground">No teams.</p>';
+
+    const repoRows = repos.map((repo) => {
+      const repoName = escapeHtml(repo.repo || "");
+      const serves = repo.node ? '<span class="text-xs text-muted-foreground">serves ' + escapeHtml(repo.node) + "/" + repoName + "</span>" : "";
+      const control = canManage
+        ? '<button type="button" data-org-repo-unlink="' + repoName + '" title="Unlink repo" ' +
+            'class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-red-500 hover:border-red-500/50">' +
+            '<i data-lucide="unlink" class="h-4 w-4"></i></button>'
+        : "";
+      return '<div class="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2">' +
+        '<div class="min-w-0 flex-1"><div class="truncate text-sm font-medium text-foreground">' + escapeHtml(name) + "/" + repoName + "</div>" + serves + "</div>" +
+        control + "</div>";
+    }).join("") || '<p class="text-sm text-muted-foreground">No repos linked.</p>';
+
+    const memberAdd = canManage
+      ? '<form data-org-member-add class="mt-2 flex flex-wrap items-center gap-2">' +
+          '<input data-member-name placeholder="account name" autocomplete="off" class="' + ORG_INPUT_CLASS + ' flex-1 min-w-[10rem]" />' +
+          '<select data-member-role class="' + ORG_INPUT_CLASS + '">' + orgOptionTags(ORG_ROLE_OPTIONS, "member") + "</select>" +
+          '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Add member</button></form>'
+      : "";
+    const teamAdd = canManage
+      ? '<form data-org-team-add class="mt-2 flex flex-wrap items-center gap-2">' +
+          '<input data-team-name placeholder="team name" autocomplete="off" class="' + ORG_INPUT_CLASS + ' flex-1 min-w-[10rem]" />' +
+          '<select data-team-perm class="' + ORG_INPUT_CLASS + '">' + orgOptionTags(ORG_TEAM_PERMISSIONS, "read") + "</select>" +
+          '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Add team</button></form>'
+      : "";
+    const account = String(state.session?.nodeName || "").toLowerCase();
+    const repoAdd = canManage
+      ? '<form data-org-repo-add class="mt-2 flex flex-wrap items-center gap-2">' +
+          '<input data-repo-name placeholder="repo name" autocomplete="off" class="' + ORG_INPUT_CLASS + ' flex-1 min-w-[10rem]" />' +
+          '<input data-repo-node value="' + escapeHtml(account) + '" placeholder="your node" autocomplete="off" class="' + ORG_INPUT_CLASS + '" />' +
+          '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Link repo</button></form>'
+      : "";
+
+    root.innerHTML =
+      '<div class="flex items-center gap-3">' +
+        '<button type="button" data-org-back class="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">' +
+          '<i data-lucide="arrow-left" class="h-4 w-4"></i> Organizations</button>' +
+        '<span class="flex-1"></span>' +
+        (isOwner ? '<button type="button" data-org-delete class="inline-flex h-8 items-center gap-1 rounded-md border border-red-500/40 px-3 text-xs font-semibold text-red-500 hover:bg-red-500/10"><i data-lucide="trash-2" class="h-4 w-4"></i> Delete org</button>' : "") +
+      "</div>" +
+      '<div class="mt-4 flex items-center gap-3">' +
+        '<h3 class="text-xl font-semibold text-foreground">' + title + "</h3>" +
+        (profile.viewerRole ? orgRoleBadge(profile.viewerRole) : "") +
+      "</div>" +
+      (profile.description ? '<p class="mt-1 text-sm text-muted-foreground">' + escapeHtml(profile.description) + "</p>" : "") +
+      '<p data-org-status class="mt-2 min-h-4 text-xs text-muted-foreground"></p>' +
+      '<section class="mt-5"><h4 class="text-sm font-semibold text-foreground">Members</h4>' +
+        '<div class="mt-2 grid gap-2">' + memberRows + "</div>" + memberAdd + "</section>" +
+      '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Teams</h4>' +
+        '<div class="mt-2 grid gap-2">' + teamRows + "</div>" + teamAdd + "</section>" +
+      '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Linked repos</h4>' +
+        '<div class="mt-2 grid gap-2">' + repoRows + "</div>" + repoAdd + "</section>";
+
+    window.lucide?.createIcons();
+    wireOrgDetail(root, name, members);
+  }
+
+  function wireOrgDetail(root, name, members) {
+    const reload = () => showOrgDetail(name);
+    const guard = async (fn) => {
+      try {
+        await fn();
+        reload();
+      } catch (error) {
+        orgStatus(root, error.message, false);
+      }
+    };
+
+    root.querySelector("[data-org-back]")?.addEventListener("click", showOrgsList);
+
+    root.querySelector("[data-org-delete]")?.addEventListener("click", () => {
+      if (!window.confirm("Delete " + name + "? This dissolves the org, its members, teams, and repo links. Linked repos are not deleted.")) return;
+      guard(() => orgApiRequest("DELETE", "/api/orgs/" + encodeURIComponent(name), {}).then(showOrgsList));
+    });
+
+    root.querySelector("[data-org-member-add]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const member = (root.querySelector("[data-member-name]")?.value || "").trim().toLowerCase();
+      const role = root.querySelector("[data-member-role]")?.value || "member";
+      if (!member) return;
+      guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/members", { member, role }));
+    });
+    root.querySelectorAll("[data-org-member-role]").forEach((select) => {
+      select.addEventListener("change", () => {
+        const member = select.dataset.orgMemberRole;
+        guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/members", { member, role: select.value }));
+      });
+    });
+    root.querySelectorAll("[data-org-member-remove]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const member = button.dataset.orgMemberRemove;
+        if (!window.confirm("Remove " + member + " from " + name + "?")) return;
+        guard(() => orgApiRequest("DELETE", "/api/orgs/" + encodeURIComponent(name) + "/members", { member }));
+      });
+    });
+
+    root.querySelector("[data-org-team-add]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const team = (root.querySelector("[data-team-name]")?.value || "").trim().toLowerCase();
+      const permission = root.querySelector("[data-team-perm]")?.value || "read";
+      if (!team) return;
+      guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/teams", { team, permission }));
+    });
+    root.querySelectorAll("[data-org-team-perm]").forEach((select) => {
+      select.addEventListener("change", () => {
+        const team = select.dataset.orgTeamPerm;
+        guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/teams", { team, permission: select.value }));
+      });
+    });
+    root.querySelectorAll("[data-org-team-delete]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const team = button.dataset.orgTeamDelete;
+        if (!window.confirm("Delete team " + team + "?")) return;
+        guard(() => orgApiRequest("DELETE", "/api/orgs/" + encodeURIComponent(name) + "/teams", { team }));
+      });
+    });
+    root.querySelectorAll("[data-org-team-open]").forEach((button) => {
+      button.addEventListener("click", () => showOrgTeamDetail(name, button.dataset.orgTeamOpen, members));
+    });
+
+    root.querySelector("[data-org-repo-add]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const repo = (root.querySelector("[data-repo-name]")?.value || "").trim().toLowerCase();
+      const node = (root.querySelector("[data-repo-node]")?.value || "").trim().toLowerCase();
+      if (!repo) return;
+      const body = { repo };
+      if (node) body.node = node;
+      guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/repos", body));
+    });
+    root.querySelectorAll("[data-org-repo-unlink]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const repo = button.dataset.orgRepoUnlink;
+        if (!window.confirm("Unlink " + name + "/" + repo + "?")) return;
+        guard(() => orgApiRequest("DELETE", "/api/orgs/" + encodeURIComponent(name) + "/repos", { repo }));
+      });
+    });
+  }
+
+  async function showOrgTeamDetail(name, team, orgMembers) {
+    const root = orgsRoot();
+    if (!root || !team) return;
+    root.innerHTML = '<p class="text-sm text-muted-foreground">' + loadingHtml("Loading team…") + "</p>";
+    let data;
+    try {
+      data = await orgApiRequest("GET", "/api/orgs/" + encodeURIComponent(name) + "/teams/" + encodeURIComponent(team) + "/members");
+    } catch (error) {
+      root.innerHTML =
+        '<button type="button" data-org-team-back class="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">' +
+        '<i data-lucide="arrow-left" class="h-4 w-4"></i> Back</button>' +
+        '<p class="text-sm text-red-500">' + escapeHtml(error.message) + "</p>";
+      window.lucide?.createIcons();
+      root.querySelector("[data-org-team-back]")?.addEventListener("click", () => showOrgDetail(name));
+      return;
+    }
+    const teamMembers = data.members || [];
+    const onTeam = new Set(teamMembers.map((member) => member.name));
+    const candidates = (orgMembers || []).filter((member) => !onTeam.has(member.name));
+    const rows = teamMembers.map((member) => {
+      const memberName = escapeHtml(member.name || "");
+      return '<div class="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2">' +
+        '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName + "</span>" +
+        '<button type="button" data-org-team-member-remove="' + memberName + '" title="Remove from team" ' +
+          'class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-red-500 hover:border-red-500/50">' +
+          '<i data-lucide="x" class="h-4 w-4"></i></button></div>';
+    }).join("") || '<p class="text-sm text-muted-foreground">No members on this team yet.</p>';
+    const addForm = candidates.length
+      ? '<form data-org-team-member-add class="mt-3 flex flex-wrap items-center gap-2">' +
+          '<select data-team-member-name class="' + ORG_INPUT_CLASS + ' flex-1 min-w-[10rem]">' +
+            candidates.map((member) => '<option value="' + escapeHtml(member.name) + '">' + escapeHtml(member.name) + "</option>").join("") +
+          "</select>" +
+          '<button type="submit" class="' + ORG_BTN_SECONDARY + '">Add to team</button></form>'
+      : '<p class="mt-3 text-xs text-muted-foreground">Every org member is already on this team.</p>';
+    root.innerHTML =
+      '<button type="button" data-org-team-back class="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">' +
+        '<i data-lucide="arrow-left" class="h-4 w-4"></i> ' + escapeHtml(name) + "</button>" +
+      '<div class="mt-4 flex items-center gap-3"><h3 class="text-xl font-semibold text-foreground">' + escapeHtml(team) + "</h3>" +
+        '<span class="inline-flex items-center rounded-full border border-border bg-secondary px-2 py-0.5 text-xs font-semibold text-muted-foreground">' + escapeHtml(data.permission || "") + " permission</span></div>" +
+      '<p data-org-status class="mt-2 min-h-4 text-xs text-muted-foreground"></p>' +
+      '<div class="mt-4 grid gap-2">' + rows + "</div>" + addForm;
+    window.lucide?.createIcons();
+
+    const guard = async (fn) => {
+      try {
+        await fn();
+        showOrgTeamDetail(name, team, orgMembers);
+      } catch (error) {
+        orgStatus(root, error.message, false);
+      }
+    };
+    root.querySelector("[data-org-team-back]")?.addEventListener("click", () => showOrgDetail(name));
+    root.querySelector("[data-org-team-member-add]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const member = root.querySelector("[data-team-member-name]")?.value || "";
+      if (!member) return;
+      guard(() => orgApiRequest("POST", "/api/orgs/" + encodeURIComponent(name) + "/teams/" + encodeURIComponent(team) + "/members", { member }));
+    });
+    root.querySelectorAll("[data-org-team-member-remove]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const member = button.dataset.orgTeamMemberRemove;
+        guard(() => orgApiRequest("DELETE", "/api/orgs/" + encodeURIComponent(name) + "/teams/" + encodeURIComponent(team) + "/members", { member }));
+      });
+    });
   }
 
   function setMobileSidebarOpen(open) {
@@ -1278,7 +1723,7 @@
     button.disabled = !(
       state.nodeNameAvailability.available &&
       Boolean(state.session?.emailVerified) &&
-      Boolean(profilePassword("[data-profile-page-password]"))
+      Boolean(profilePassword("[data-profile-rename-password]"))
     );
     button.classList.toggle("opacity-40", button.disabled);
   }
@@ -1443,10 +1888,10 @@
     renderNotificationPreferences(session);
     if (!session?.emailVerified) {
       state.nodeNameAvailability.available = false;
-      setRenameStatus("Verify your email before changing your node name.", "bad");
+      setRenameStatus("Verify your email before changing your username.", "bad");
     } else if (!($("[data-profile-rename-input]")?.value || "").trim()) {
       state.nodeNameAvailability.available = false;
-      setRenameStatus("Enter a new node name to check availability.", "");
+      setRenameStatus("Enter a new username to check availability.", "");
     }
     updateRenameButton();
     renderClaimNodePanel(session);
@@ -1663,7 +2108,7 @@
     state.nodeNameAvailability.available = false;
     if (input && input.value !== candidate) input.value = candidate;
     if (!candidate) {
-      setRenameStatus("Enter a new node name to check availability.", "");
+      setRenameStatus("Enter a new username to check availability.", "");
       updateRenameButton();
       return;
     }
@@ -1673,12 +2118,12 @@
       return;
     }
     if (candidate === String(state.session?.nodeName || "").toLowerCase()) {
-      setRenameStatus("This is already your current node name.", "bad");
+      setRenameStatus("This is already your current username.", "bad");
       updateRenameButton();
       return;
     }
     if (!state.session?.emailVerified) {
-      setRenameStatus("Verify your email before changing your node name.", "bad");
+      setRenameStatus("Verify your email before changing your username.", "bad");
       updateRenameButton();
       return;
     }
@@ -1697,8 +2142,8 @@
       state.nodeNameAvailability.available = Boolean(response.ok && body.available);
       setRenameStatus(
         state.nodeNameAvailability.available
-          ? "Node name is available."
-          : "That node name is already taken.",
+          ? "Username is available."
+          : "That username is already taken.",
         state.nodeNameAvailability.available ? "good" : "bad",
       );
     } catch (_) {
@@ -1715,13 +2160,13 @@
   async function renameNodeName() {
     const input = $("[data-profile-rename-input]");
     const newNodeName = (input?.value || "").trim().toLowerCase();
-    const password = profilePassword("[data-profile-page-password]");
+    const password = profilePassword("[data-profile-rename-password]");
     if (!state.nodeNameAvailability.available || !newNodeName) {
-      setRenameStatus("Choose an available node name first.", "bad");
+      setRenameStatus("Choose an available username first.", "bad");
       return;
     }
     if (!password) {
-      setRenameStatus("Enter your current password to update your node name.", "bad");
+      setRenameStatus("Enter your current password to update your username.", "bad");
       updateRenameButton();
       return;
     }
@@ -1730,22 +2175,22 @@
     try {
       await postProfile({ newNodeName }, password);
       if (input) input.value = "";
-      $("[data-profile-page-password]") && ($("[data-profile-page-password]").value = "");
+      $("[data-profile-rename-password]") && ($("[data-profile-rename-password]").value = "");
       state.nodeNameAvailability.available = false;
-      setRenameStatus("Node name updated. Repositories are refreshing.", "good");
+      setRenameStatus("Username updated. Repositories are refreshing.", "good");
       await refreshRepositories();
       renderProfilePage(state.session);
     } catch (error) {
       const messages = {
-        email_not_verified: "Verify your email before changing your node name.",
-        invalid_node_name: "Enter a valid node name.",
-        node_name_taken: "That node name is already taken.",
-        node_name_unchanged: "Enter a different node name.",
+        email_not_verified: "Verify your email before changing your username.",
+        invalid_node_name: "Enter a valid username.",
+        node_name_taken: "That username is already taken.",
+        node_name_unchanged: "Enter a different username.",
         repo_namespace_conflict: "That namespace already has repository data.",
       };
-      setRenameStatus(messages[error.message] || "Could not update node name. Check your password and try again.", "bad");
+      setRenameStatus(messages[error.message] || "Could not update username. Check your password and try again.", "bad");
     } finally {
-      if (button) { button.disabled = false; button.textContent = "Update node name"; }
+      if (button) { button.disabled = false; button.textContent = "Update username"; }
       updateRenameButton();
     }
   }

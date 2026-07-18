@@ -7,6 +7,7 @@ import '../services/relay_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
 import '../widgets/fm_ui.dart';
+import 'orgs_screen.dart';
 
 /// Profile, relay connection, and import-token settings. Mirrors the Qt client's
 /// Settings section (the subset the Flutter app currently uses).
@@ -105,6 +106,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ],
+          ),
+        ),
+        const SizedBox(height: FmSpace.x5),
+
+        const FmSectionHeader(title: 'Organizations'),
+        const SizedBox(height: FmSpace.x2),
+        FmCard(
+          radius: FmRadius.lg,
+          padding: EdgeInsets.zero,
+          child: _OrganizationsRow(
+            onOpen: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const OrgsScreen()),
+            ),
           ),
         ),
         const SizedBox(height: FmSpace.x5),
@@ -277,6 +291,57 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       );
     }
+  }
+}
+
+class _OrganizationsRow extends StatelessWidget {
+  const _OrganizationsRow({required this.onOpen});
+
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      key: const ValueKey('settings-organizations-row'),
+      onTap: onOpen,
+      borderRadius: BorderRadius.circular(FmRadius.lg),
+      child: Padding(
+        padding: const EdgeInsets.all(FmSpace.x4),
+        child: Row(
+          children: [
+            Icon(
+              Icons.apartment_outlined,
+              color: FmTheme.textSecondary(context),
+            ),
+            const SizedBox(width: FmSpace.x3),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Manage organizations',
+                    style: TextStyle(
+                      color: FmTheme.textPrimary(context),
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: FmSpace.x1),
+                  Text(
+                    'Create orgs, invite members, set up teams, and link repos.',
+                    style: TextStyle(
+                      color: FmTheme.textSecondary(context),
+                      fontSize: 12,
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right, color: FmTheme.textDisabled(context)),
+          ],
+        ),
+      ),
+    );
   }
 }
 

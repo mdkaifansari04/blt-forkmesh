@@ -88,8 +88,9 @@ QWidget *MainWindow::buildPullsTab()
     m_pullChooseDirButton = new QPushButton("Choose directory");
     m_pullImportButton = new QPushButton("Import patch");
     m_pullSyncButton = new QPushButton("Sync inbox");
+    m_pullDeleteAllMergedButton = new QPushButton("Delete all merged + branches");
     for (QPushButton *b : {m_pullNewButton, m_pullChooseDirButton, m_pullImportButton,
-                           m_pullSyncButton}) {
+                           m_pullSyncButton, m_pullDeleteAllMergedButton}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -98,9 +99,12 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullChooseDirButton, "file-directory", 16);
     setOcticon(m_pullImportButton, "download", 16);
     setOcticon(m_pullSyncButton, "sync", 16);
+    setOcticon(m_pullDeleteAllMergedButton, "trash", 16);
     m_pullChooseDirButton->setToolTip("Create a pull request from another local checkout of this repository");
     m_pullImportButton->setToolTip("Open a .patch/.diff file (e.g. a downloaded commit) as a pull request");
     m_pullSyncButton->setToolTip("Pull PR submissions filed by other nodes and merge them");
+    m_pullDeleteAllMergedButton->setToolTip(
+        "Delete every merged pull request in this repo and its head branch");
     connect(m_pullImportButton, &QPushButton::clicked, this,
             &MainWindow::importPatchAsPull);
     auto *toolbar = new QHBoxLayout;
@@ -109,6 +113,7 @@ QWidget *MainWindow::buildPullsTab()
     toolbar->addWidget(m_pullChooseDirButton);
     toolbar->addWidget(m_pullImportButton);
     toolbar->addWidget(m_pullSyncButton);
+    toolbar->addWidget(m_pullDeleteAllMergedButton);
     toolbar->addStretch();
 
     m_pullSearch = new QLineEdit;
@@ -944,10 +949,17 @@ QWidget *MainWindow::buildPullsTab()
     m_pullTabBadge = qobject_cast<QPushButton *>(m_pullSubTabs->button(4));
     connect(m_pullSubTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_pullSubStack->setCurrentIndex(id);
-        if (id == 2) // refresh the Checks table when it's brought forward
+        if (id == 2) { // refresh the Checks table when it's brought forward
+            // Copy the PR out before rendering: renderPullChecks pumps the
+            // event loop, which can reassign m_currentPulls and invalidate the
+            // loop's iterators mid-iteration (adhoc #119).
+            PullRequest current;
             for (const PullRequest &pr : std::as_const(m_currentPulls))
                 if (pr.number == m_currentPullNumber)
-                    renderPullChecks(pr);
+                    current = pr;
+            if (current.number > 0)
+                renderPullChecks(current);
+        }
         if (id == 3) // Files changed brought forward: show the sticky header now,
             // not only after the first scroll (adhoc #56). Defer so the diff
             // viewport has laid out at its shown size before we measure it.
@@ -995,6 +1007,8 @@ QWidget *MainWindow::buildPullsTab()
     connect(m_pullChooseDirButton, &QPushButton::clicked,
             this, &MainWindow::promptNewPullFromDirectory);
     connect(m_pullSyncButton, &QPushButton::clicked, this, &MainWindow::syncPullsInbox);
+    connect(m_pullDeleteAllMergedButton, &QPushButton::clicked, this,
+            &MainWindow::deleteAllMergedPullsAndBranches);
     connect(m_pullUpdateButton, &QPushButton::clicked,
             this, &MainWindow::updateCurrentPullBranch);
     connect(m_pullMergeButton, &QPushButton::clicked, this, &MainWindow::mergeCurrentPull);
@@ -1356,7 +1370,7 @@ void MainWindow::refreshPullList()
     }
 }
 
-void MainWindow::renderPullReviewSummary(const PullRequest &pr)
+void MainWindow::renderPullReviewSummary(PullRequest pr)
 {
     if (!m_pullReviewSummary)
         return;
@@ -1464,10 +1478,20 @@ void MainWindow::renderPullReviewSummary(const PullRequest &pr)
 
 void MainWindow::showPull(int number)
 {
-    const PullRequest *found = nullptr;
+    // Snapshot the PR into a local value rather than holding a pointer into
+    // m_currentPulls: rendering below pumps the event loop (diff render, file
+    // list, setCurrentRow), and a deferred agent session finishing in that
+    // window can re-enter reloadPulls(), reassigning m_currentPulls and freeing
+    // the element a raw pointer would dangle into — the copy stays valid across
+    // any such reload (crash: free() invalid pointer via renderPullThread).
+    PullRequest foundPull;
+    bool havePull = false;
     for (const PullRequest &pr : m_currentPulls)
-        if (pr.number == number)
-            found = &pr;
+        if (pr.number == number) {
+            foundPull = pr;
+            havePull = true;
+        }
+    const PullRequest *found = havePull ? &foundPull : nullptr;
     m_currentPullNumber = found ? number : -1;
     m_pullFiles->clear();
     m_pullFileDiffs.clear();
@@ -1738,7 +1762,12 @@ void MainWindow::switchToPullTab(int pullNumber)
 // re-render it in place at the new size without re-running its renderer (#254).
 static const char *kDiffSourceProp = "fm_diffSource";
 static const char *kLongDiffFullHtmlProp = "fm_longDiffFullHtml";
-constexpr qsizetype kLongDiffAutoRenderHtmlChars = 900'000;
+// Above this many HTML chars the diff renders as a "hidden for speed" notice
+// with a click-through unless the long-diffs pref is on. The stall log showed
+// setHtml's synchronous rich-text layout blocking the GUI >500ms from roughly
+// 300k chars up (repeatedly at 500–900k under the old 900k cap), so the cap
+// sits where rendering still feels instant.
+constexpr qsizetype kLongDiffAutoRenderHtmlChars = 300'000;
 
 QString longDiffNoticeHtml(qsizetype chars)
 {
@@ -2832,10 +2861,16 @@ void MainWindow::renderPullThread(const PullRequest &pr)
     }
 }
 
-void MainWindow::renderPullCommits(const PullRequest &pr)
+void MainWindow::renderPullCommits(PullRequest pr)
 {
     if (!m_pullCommitsList)
         return;
+    // `pr` is taken by value: the runGitCapture() below pumps the event loop
+    // (under a GitKeepAlive scope), and that pump can re-enter reload paths that
+    // reassign m_currentPulls. pr.base/pr.head/pr.commits are read *after* the
+    // pump, so a reference into m_currentPulls would dangle and those reads would
+    // be use-after-frees — the same crash class that took runIdsForPull by value
+    // in adhoc #119. The copy stays valid across any nested reload.
     m_pullCommitsList->clear();
     const QString dir = repoGitDir();
     // PRs are patch-based; list the commits on the head branch since the base
@@ -3056,12 +3091,20 @@ QStringList MainWindow::pullCommitShas(const PullRequest &pr) const
 // Ids of action runs whose pushed commit belongs to this PR (any of its commits
 // or its resolved head tip), scoped to the open repo's owner/name. Newest first,
 // matching m_actionRuns ordering.
-QList<int> MainWindow::runIdsForPull(const PullRequest &pr) const
+QList<int> MainWindow::runIdsForPull(PullRequest pr) const
 {
     QList<int> ids;
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return ids;
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    // `pr` is taken by value and owner/name are copied up front: pullCommitShas()
+    // and the rev-parse below both run synchronous git reads that pump the event
+    // loop (under a GitKeepAlive scope), and that pump can re-enter
+    // action/refresh paths which reassign m_repositories and m_currentPulls. A
+    // reference into either would then dangle and the reads after the pump would
+    // be use-after-frees (adhoc #106, adhoc #119 — pr.head below crashed when a
+    // caller's reference into m_currentPulls was freed by a nested reload).
+    const QString repoOwner = m_repositories.at(m_repoDetailIndex).owner;
+    const QString repoName = m_repositories.at(m_repoDetailIndex).name;
     const QStringList commitShas = pullCommitShas(pr);
     QSet<QString> shas(commitShas.cbegin(), commitShas.cend());
     // Also include the head tip in case base..head couldn't be enumerated.
@@ -3074,14 +3117,14 @@ QList<int> MainWindow::runIdsForPull(const PullRequest &pr) const
     if (shas.isEmpty())
         return ids;
     for (const ActionRun &run : std::as_const(m_actionRuns)) {
-        if (run.owner == repo.owner && run.name == repo.name &&
+        if (run.owner == repoOwner && run.name == repoName &&
             shas.contains(run.commit))
             ids.append(run.id);
     }
     return ids;
 }
 
-void MainWindow::renderPullChecks(const PullRequest &pr)
+void MainWindow::renderPullChecks(PullRequest pr)
 {
     if (!m_pullChecksTable)
         return;
@@ -3141,7 +3184,7 @@ void MainWindow::renderPullChecks(const PullRequest &pr)
 
 // Compact pass/fail/running line shown inline at the end of the Conversation,
 // with a link that jumps to the Checks tab. Hidden when there are no runs.
-void MainWindow::renderPullChecksSummary(const PullRequest &pr)
+void MainWindow::renderPullChecksSummary(PullRequest pr)
 {
     if (!m_pullChecksSummary)
         return;
@@ -3208,18 +3251,23 @@ void MainWindow::runChecksForCurrentPull()
     if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
         m_repoDetailIndex >= m_repositories.size())
         return;
-    const PullRequest *pr = nullptr;
+    // Copy the PR and repo out of their containers: the rev-parse below pumps
+    // the event loop and queueWorkflowsForCommit can cancel a superseded run
+    // (nested QProcess::waitForFinished pump). Either pump can re-enter reload
+    // paths that reassign m_currentPulls / m_repositories, leaving a pointer or
+    // reference into them dangling (adhoc #119).
+    PullRequest pr;
     for (const PullRequest &p : std::as_const(m_currentPulls))
         if (p.number == m_currentPullNumber)
-            pr = &p;
-    if (!pr || pr->head.isEmpty())
+            pr = p;
+    if (pr.number <= 0 || pr.head.isEmpty())
         return;
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
     // Resolve the PR head to a concrete commit the runner can check out.
     const QString dir = repoGitDir();
     QByteArray tip;
     if (dir.isEmpty() ||
-        !runGitCapture(dir, {"rev-parse", pr->head}, &tip, nullptr) ||
+        !runGitCapture(dir, {"rev-parse", pr.head}, &tip, nullptr) ||
         tip.trimmed().isEmpty()) {
         setRepoDetailNotice(
             "Could not resolve the pull request's head commit to run checks.", true);
@@ -3227,11 +3275,11 @@ void MainWindow::runChecksForCurrentPull()
     }
     queueWorkflowsForCommit(m_repoDetailIndex, repo.owner, repo.name,
                             QString::fromUtf8(tip).trimmed(),
-                            QStringLiteral("refs/heads/") + pr->head);
-    renderPullChecks(*pr);
-    renderPullChecksSummary(*pr);
-    renderPullReviewSummary(*pr);
-    updatePullSubTabCounts(*pr);
+                            QStringLiteral("refs/heads/") + pr.head);
+    renderPullChecks(pr);
+    renderPullChecksSummary(pr);
+    renderPullReviewSummary(pr);
+    updatePullSubTabCounts(pr);
 }
 
 void MainWindow::buildAndPreviewCurrentPull()
@@ -3421,7 +3469,7 @@ void MainWindow::buildAndPreviewCurrentPull()
     (*runNext)(0);
 }
 
-void MainWindow::updatePullSubTabCounts(const PullRequest &pr)
+void MainWindow::updatePullSubTabCounts(PullRequest pr)
 {
     const auto label = [](QPushButton *b, const QString &name, int n) {
         if (b)
@@ -3649,6 +3697,17 @@ void MainWindow::updatePullActionState()
         m_pullImportButton->setEnabled(writable);
     if (m_pullSyncButton)
         m_pullSyncButton->setEnabled(writable);
+    if (m_pullDeleteAllMergedButton) {
+        bool anyMerged = false;
+        for (const PullRequest &pr : m_currentPulls) {
+            if (pr.status == QLatin1String("merged")) {
+                anyMerged = true;
+                break;
+            }
+        }
+        m_pullDeleteAllMergedButton->setEnabled(writable && anyMerged &&
+                                                !m_pullDeleteInProgress);
+    }
     if (m_pullUpdateButton) {
         m_pullUpdateButton->setVisible(writable && have && open && behind);
         m_pullUpdateButton->setEnabled(writable && have && open && behind);
@@ -4209,13 +4268,25 @@ void MainWindow::mergeCurrentPull()
     closeIssuesLinkedFromPull(current);
     fundBountiesForMergedPull(current);
     autoBountyForMergedPull(current);
+    // adhoc #100: mergePull just landed a new commit in this checkout, so the top
+    // "Sync" button and the Changes panel would otherwise stay stale (showing 0
+    // pending commits) until a manual refresh — force both to recheck now.
+    refreshSourceControl(true);
     reloadPulls();
     // Issue #291: flag the agent session behind this PR as landed in main (after
     // reloadPulls so the agent table's PR column also reflects the merge).
     markAgentSessionsMerged(current.number, current.head);
-    // Push the merge (closed PR + any linked issue closes) to the mirror and
-    // notify peers.
-    propagateRepoUpdate(m_repoDetailIndex);
+    // Adhoc #110: only push the merge (closed PR + any linked issue closes) to the
+    // mirror and notify peers when the owner has opted into auto-sync-on-merge.
+    // Off by default: the merge stays local, refreshSourceControl above has
+    // already surfaced it on the floating "Sync" button, and nothing reaches main
+    // until the owner clicks it.
+    if (QSettings().value(kAutoSyncOnMergeSetting, false).toBool()) {
+        propagateRepoUpdate(m_repoDetailIndex);
+    } else {
+        logSystem(QStringLiteral("Merge landed locally — click \"Sync\" to publish "
+                                 "it to main (auto-sync-on-merge is off)."));
+    }
 }
 
 // Modal merge-conflict editor shared by the pull-request and branch merge flows.
@@ -6770,6 +6841,8 @@ void MainWindow::setPullDeleteButtonsEnabled(bool enabled)
         m_pullDeleteBranchButton->setEnabled(enabled);
     if (m_pullMergeDeleteButton)
         m_pullMergeDeleteButton->setEnabled(enabled);
+    if (m_pullDeleteAllMergedButton)
+        m_pullDeleteAllMergedButton->setEnabled(enabled);
 }
 
 bool MainWindow::confirmPullDeletion(const QString &prompt, bool *rewriteHistory)
@@ -6904,6 +6977,56 @@ void MainWindow::deleteCurrentPullAndBranch()
                              /*propagate=*/false);
 }
 
+// Bulk-delete every merged PR in the current repo, and its head branch where
+// safe, in one confirmed step. The deletions run one at a time — each chains
+// to the next through deletePullAndBranchAsync's onDone callback — so the
+// PullStore worker thread is never shared across concurrent deletes.
+void MainWindow::deleteAllMergedPullsAndBranches()
+{
+    if (m_pullDeleteInProgress) {
+        setRepoDetailNotice(
+            QStringLiteral("A pull request deletion is already running."));
+        return;
+    }
+    QList<PullRequest> merged;
+    for (const PullRequest &pr : std::as_const(m_currentPulls)) {
+        if (pr.status == QLatin1String("merged"))
+            merged.append(pr);
+    }
+    if (merged.isEmpty()) {
+        setRepoDetailNotice(QStringLiteral("No merged pull requests to delete."));
+        return;
+    }
+
+    const QString prompt =
+        QStringLiteral("Permanently delete %1 merged pull request(s) and their "
+                       "branches? This cannot be undone.")
+            .arg(merged.size());
+    bool rewriteHistory = false;
+    if (!confirmPullDeletion(prompt, &rewriteHistory))
+        return;
+
+    auto queue = std::make_shared<QList<PullRequest>>(std::move(merged));
+    auto deletedCount = std::make_shared<int>(0);
+    auto step = std::make_shared<std::function<void()>>();
+    *step = [this, queue, deletedCount, rewriteHistory, step]() {
+        if (queue->isEmpty()) {
+            setRepoDetailNotice(
+                QStringLiteral("Deleted %1 merged pull request(s).").arg(*deletedCount));
+            return;
+        }
+        const PullRequest pr = queue->takeFirst();
+        // Never touch the base branch (or the branch currently checked out): only
+        // a distinct feature branch is a safe target.
+        const bool haveBranch =
+            !pr.head.isEmpty() && pr.head != pr.base && pr.head != currentRef();
+        ++*deletedCount;
+        deletePullAndBranchAsync(pr.number, pr.head, haveBranch, rewriteHistory,
+                                 /*propagate=*/false, [step] { (*step)(); });
+    };
+    (*step)();
+}
+
 // Merge the pull request, then delete it and its head branch in one confirmed
 // step — the "merge, delete PR + branch" workflow (issue #261). The merge runs
 // first and synchronously; only if it succeeds do we drop the PR record and its
@@ -6970,14 +7093,25 @@ void MainWindow::mergeAndDeleteCurrentPull()
     closeIssuesLinkedFromPull(current);
     fundBountiesForMergedPull(current);
     autoBountyForMergedPull(current);
+    // adhoc #100: mergePull just landed a new commit in this checkout, so the top
+    // "Sync" button and the Changes panel would otherwise stay stale until a
+    // manual refresh — force both to recheck now.
+    refreshSourceControl(true);
     // Issue #291: flag the agent session behind this PR before its branch/record
     // are deleted below (after which it can no longer be detected on reload).
     markAgentSessionsMerged(m_currentPullNumber, head);
 
-    // Now delete the merged PR and its branch. propagate=true so the merge (and
-    // the PR's removal) reaches peers via the mirror.
+    // Now delete the merged PR and its branch. Adhoc #110: only propagate the
+    // merge (and the PR's removal) to peers when auto-sync-on-merge is on;
+    // otherwise it all waits behind the floating "Sync" button, which pushes the
+    // pulls branch and merge commit together on the next click.
+    const bool autoSyncOnMerge =
+        QSettings().value(kAutoSyncOnMergeSetting, false).toBool();
+    if (!autoSyncOnMerge)
+        logSystem(QStringLiteral("Merge landed locally — click \"Sync\" to publish "
+                                 "it to main (auto-sync-on-merge is off)."));
     deletePullAndBranchAsync(m_currentPullNumber, head, haveBranch, rewriteHistory,
-                             /*propagate=*/true);
+                             /*propagate=*/autoSyncOnMerge);
 }
 
 // Shared worker: delete the PR record (optionally scrubbing its diff from
@@ -6988,7 +7122,8 @@ void MainWindow::mergeAndDeleteCurrentPull()
 // way deletePull only touches git (no event signing) so a copied store is safe.
 void MainWindow::deletePullAndBranchAsync(int number, const QString &head,
                                           bool haveBranch, bool rewriteHistory,
-                                          bool propagate)
+                                          bool propagate,
+                                          std::function<void()> onDone)
 {
     const int deleted = number;
     const QString dir = repoGitDir();
@@ -7014,7 +7149,7 @@ void MainWindow::deletePullAndBranchAsync(int number, const QString &head,
         });
     connect(worker, &QThread::finished, this,
             [this, worker, ok, error, deleted, head, haveBranch, dir, haveWorkTree,
-             propagate]() {
+             propagate, onDone]() {
                 m_pullDeleteInProgress = false;
                 QApplication::restoreOverrideCursor();
                 setPullDeleteButtonsEnabled(true);
@@ -7025,6 +7160,8 @@ void MainWindow::deletePullAndBranchAsync(int number, const QString &head,
                             ? QStringLiteral("Could not delete the pull request.")
                             : *error);
                     worker->deleteLater();
+                    if (onDone)
+                        onDone();
                     return;
                 }
                 if (m_currentPullNumber == deleted)
@@ -7059,6 +7196,8 @@ void MainWindow::deletePullAndBranchAsync(int number, const QString &head,
                 if (propagate)
                     propagateRepoUpdate(m_repoDetailIndex);
                 worker->deleteLater();
+                if (onDone)
+                    onDone();
             });
     worker->start();
 }

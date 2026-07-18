@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "7ZMh_2s_IOTPiKoZ6K5eDe4AclTYh_JzqJ7pK2lovT4",
     "authorName": "newnewnode",
@@ -32,6 +33,61 @@
             "target": "open-369",
             "ts": 1784326583515,
             "type": "edit"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 50,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "4cf233e3-fffe-4f4f-95cf-48c8a236853e",
+            "sig": "ADCAI_KoJirTFDFIQYffmLzoqLraBlPvgU406tDT1UbZHCTjqW1GndqaCSUkS3TTC3UcxgfnKwcMWRrNhOI7DQ",
+            "ts": 1784328884515,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "90184b03-8caf-4268-8e07-3630345603b4",
+            "sig": "VIYyYpC8NtDWUYPCV4gnXahWXqTjtqiVn1rmTWaTBpgvw439WXIDrHcovGT0HdRBSwdKZnQMjE7Dysj2JdJlAQ",
+            "ts": 1784328884574,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "we're not using issue bounties anymore ",
+            "id": "5d9a8043-97e0-44fb-8785-66ea2f079f86",
+            "sig": "aUQQDez9rjs80E1-CwHxgL59KePi3g870mRqQyIhCxQrfqbYtgJB7kln39lADfMVfFDtOuMOj5FhFliPLODQCw",
+            "ts": 1784330900958,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "49394493-0ae3-4eb9-abdd-03148699b045",
+            "sig": "no84qIkvEGQ8TU-1RBpMz5xelM56oD1DFgTt_UoHodkkxmRk-UKgpSCBGdxJ662C75QutZ9i1nd4cDEDjsGwAQ",
+            "status": "closed",
+            "ts": 1784330901024,
+            "type": "status"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "",
+            "agentSessionId": 0,
+            "agentStatus": "cleared",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "11e9974e-1863-4e9c-b0a7-f8f63ec2d996",
+            "sig": "1lwCzOPwhdGv_D1YPzUKoCSdRwss7fQct4HEbQMY10MInImfsJpVbMpqJ_JYK2DuLJstOqUgIhNRAGEZsIcrDg",
+            "ts": 1784331028355,
+            "type": "agent"
         }
     ],
     "labels": [
@@ -44,8 +100,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "[code + business: needs legal review] Non-custodial on-chain bounty escrow",
-    "updatedAt": 1784326583515,
+    "updatedAt": 1784331028355,
     "votes": 0
 }

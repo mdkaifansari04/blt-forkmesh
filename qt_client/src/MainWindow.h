@@ -57,6 +57,7 @@ struct AgentDiffStat {
 #include <QMetaType>
 #include <QPixmap>
 #include <QSet>
+#include <QTextBlockUserData>
 #include <QTextCursor>
 #include <QThread>
 #include <QUrl>
@@ -64,6 +65,15 @@ struct AgentDiffStat {
 
 #include <functional>
 #include <limits>
+
+// Attached to each block of the always-on footer log (adhoc #133) so a clipped,
+// no-wrap line still carries its full untruncated text — surfaced on hover and
+// used to open the full Log view at the matching entry on click.
+class FooterLogLineData : public QTextBlockUserData {
+public:
+    explicit FooterLogLineData(QString line) : rawLine(std::move(line)) {}
+    QString rawLine;
+};
 
 class MessageRow;
 class MarkdownEditor;
@@ -711,6 +721,9 @@ private:
     // (Re)apply the always-on footer log line's inline stylesheet for the active
     // theme, tinting the text by the current line's tone. Called on theme switch.
     void styleFooterUpdateLog();
+    // Open the full Log section (section 4) and scroll it to the entry matching a
+    // line clicked in the always-on footer strip (adhoc #133).
+    void openFullLogAtFooterLine(const QString &rawLine);
     void persistProfile();
 
     // Chat page
@@ -1189,7 +1202,10 @@ private:
     // Files-changed authorship filter: show only agent- or human-authored files
     // in the current PR, driven by m_pullFileAuthorFilter (issue #365).
     void applyPullFileAuthorFilter();
-    void renderPullReviewSummary(const PullRequest &pr);
+    // Takes the PR by value: runIdsForPull() below pumps the event loop, which
+    // can re-enter reloadPulls() and reassign m_currentPulls — a reference into
+    // it would dangle mid-call (adhoc #119).
+    void renderPullReviewSummary(PullRequest pr);
     // Render every changed file of the current PR into one continuously
     // scrollable diff view (issue #250), so the reviewer can scroll the whole PR
     // and the file list / Prev-Next jump between files.
@@ -1241,18 +1257,24 @@ private:
     void submitPullThreadReply(const QString &threadId);
     void setPullThreadState(const QString &threadId, const QString &state);
     void renderPullThread(const PullRequest &pr);   // review/comment conversation
-    void renderPullCommits(const PullRequest &pr);  // commits that make up the PR
-    void renderPullChecks(const PullRequest &pr);   // action runs for the PR's commits
-    void renderPullChecksSummary(const PullRequest &pr); // inline conversation card
+    void renderPullCommits(PullRequest pr);         // commits that make up the PR
+                                                    // (by value: pumps a git read,
+                                                    // see adhoc #119/#124)
+    // The next two and runIdsForPull/updatePullSubTabCounts take the PR by
+    // value on purpose: they pump the event loop (git reads), and callers often
+    // pass references into m_currentPulls, which a nested reloadPulls() can
+    // reassign mid-call (adhoc #119).
+    void renderPullChecks(PullRequest pr);          // action runs for the PR's commits
+    void renderPullChecksSummary(PullRequest pr);   // inline conversation card
     void showPullCheckLog(int runId);               // load a run's log into the panel
     QStringList pullCommitShas(const PullRequest &pr) const; // base..head SHAs
-    QList<int> runIdsForPull(const PullRequest &pr) const;   // matching action runs
+    QList<int> runIdsForPull(PullRequest pr) const; // matching action runs
     void runChecksForCurrentPull();                 // enqueue workflows at PR head
     // Check out the PR's head into a throwaway worktree, build the ForkMesh app
     // from it, and launch the freshly built binary as an isolated preview node so
     // the reviewer can try the change running before merging (issue #214).
     void buildAndPreviewCurrentPull();
-    void updatePullSubTabCounts(const PullRequest &pr);
+    void updatePullSubTabCounts(PullRequest pr);
     void refreshOpenPullChecks();                   // re-render checks for the open PR
     // Which event a workflow run is being queued for: a code push (the default)
     // or a published release. Selects the matching `on:` trigger to enqueue.
@@ -1347,12 +1369,20 @@ private:
     // (issue #261). The merge runs first and synchronously; only if it succeeds
     // do we drop the PR record and its branch.
     void mergeAndDeleteCurrentPull();
+    // Bulk-delete every merged PR (and its head branch, where safe) in the
+    // current repo in one confirmed step. Runs the deletions one at a time,
+    // chaining through deletePullAndBranchAsync's onDone callback so a single
+    // PullStore worker is never touched concurrently.
+    void deleteAllMergedPullsAndBranches();
     // Shared worker: delete a PR record and (best-effort) remove its local head
     // branch, reporting through the repo-detail notice. The caller owns the
     // confirmation (and any prior merge); pass propagate=true to push the result
     // to the mirror (the merge-and-delete flow needs the merge to reach peers).
+    // onDone fires after the worker settles (success or failure) so callers can
+    // chain further work, e.g. the next deletion in a bulk run.
     void deletePullAndBranchAsync(int number, const QString &head, bool haveBranch,
-                                  bool rewriteHistory, bool propagate);
+                                  bool rewriteHistory, bool propagate,
+                                  std::function<void()> onDone = {});
     void setPullDeleteButtonsEnabled(bool enabled);
     // Confirm a PR deletion; *rewriteHistory is set from an opt-in checkbox
     // (off by default — a plain delete is fast and leaves history intact).
@@ -1461,15 +1491,12 @@ private:
     // Issue #291: flag agent sessions whose worktree/PR has landed in the base
     // branch. markAgentSessionsMerged() records it eagerly when ForkMesh merges
     // a PR/worktree; refreshAgentMergeState() is the catch-all run on reload (it
-    // also picks up merges synced from peers or done by hand);
-    // agentSessionLandedInBase() answers the question for one session.
+    // also picks up merges synced from peers or done by hand) — its per-branch
+    // git reads run on a worker thread, and markAgentSessionsLanded() applies
+    // the verdicts (by session id) back on the main thread.
     bool markAgentSessionsMerged(int prNumber, const QString &branch);
     void refreshAgentMergeState();
-    // dir = the repo's git dir, base = its default branch — resolved once by the
-    // caller and passed in so a whole-list refresh doesn't re-shell `git branch`
-    // (etc.) per session.
-    bool agentSessionLandedInBase(const AgentSession &session, const QString &dir,
-                                  const QString &base) const;
+    void markAgentSessionsLanded(const QList<int> &sessionIds, bool refreshUi);
     void assignIssueToAgent(const QString &provider, const QString &model = QString());
     // Core of assignIssueToAgent, factored out so the issue looper can drive it
     // for any issue (not just the selected one). Returns the new session id, or 0
@@ -1633,8 +1660,10 @@ private:
     AgentRunner *runnerForSession(int sessionId) const;
     // Returns an idle pooled runner, creating (and wiring) a new one if needed.
     AgentRunner *acquireAgentRunner();
-    // True while any pooled runner is executing a session.
+    // True while any pooled runner or stream/codex process is executing a session.
     bool anyAgentRunning() const;
+    // The sessions anyAgentRunning() is counting, described for the restart log.
+    QStringList runningAgentBlockers() const;
     void onAgentLog(int sessionId, const QString &text);
     // Live-append a line to the raw-output edit, but only while it's the visible
     // surface (the buffer carries it otherwise); avoids per-line text-layout stalls.
@@ -1646,6 +1675,12 @@ private:
     // The agent CLI needs the user to act (e.g. a bad API key); surface it.
     void onAgentNeedsAttention(int sessionId, const QString &message);
     void updateAgentActionState();
+    // Restyle the quick-add "new"/"add" send buttons (adhoc #89) so the one Enter
+    // would actually activate — "add" while an agent session is open above (a
+    // follow-up message), otherwise "new" (start a fresh agent) — carries a green
+    // outline and a small Enter badge. Called whenever the selected agent session
+    // changes via updateAgentActionState.
+    void updateQuickAddEnterTarget();
     void updateIssueAgentUi(const Issue &issue);
     // Issue #145: populate the issue detail's "Files changed" tab from a linked
     // pull request's patch or a linked agent session's branch diff, and show or
@@ -1699,9 +1734,14 @@ private:
     void clearActionRuns();
     void initActions();                  // store/runner/watcher, load history, hooks
     void ensurePushHook(const RepositoryRecord &repo) const;
+    // Working-copy post-commit/post-merge hooks: spool a *.commit event the
+    // instant a commit lands on the source of truth (terminal/IDE/agent), so
+    // scanActionSpool can sync the mirror and signal peers over the websocket
+    // immediately instead of at the next heartbeat.
+    void ensureCommitSignalHook(const RepositoryRecord &repo) const;
     void removePushHook(const RepositoryRecord &repo) const;
     void installAllPushHooks() const;
-    void scanActionSpool();              // read *.push events, enqueue runs
+    void scanActionSpool();              // read *.push/*.commit events, enqueue runs
     void enqueuePushEvent(const QString &owner, const QString &name,
                           const QString &commit, const QString &ref);
     void processActionQueue();
@@ -1729,6 +1769,8 @@ private:
     void updateNotificationButton();
     // Show/hide the small top-bar rebuild+restart button per the opt-in setting.
     void updateNavRebuildButton();
+    // Reposition the floating "Log" button to the live-log strip's corner.
+    void positionFloatingLogButton();
     int pendingActionCount() const;
     void openActionRunFromNotification(int runId);
     // Show a desktop notification with both a title and body, using notify-send
@@ -1996,6 +2038,17 @@ private:
     QWidget *buildReleasesTab();
     void loadReleasesPanel();
     void promptNewRelease();
+    // Ask the chosen agent (Codex / OpenAI API / Claude API / Claude Code) to
+    // write GitHub-style release notes from the commits since `prevTag`, then
+    // drop the result into the draft dialog's Notes box. Async: the reply may
+    // land after the dialog is dismissed, so the widgets are held via QPointer.
+    void generateReleaseNotesWithAgent(const QString &dir, const QString &prevTag,
+                                       const QString &newTag,
+                                       const QString &targetRef,
+                                       const QString &provider,
+                                       const QString &modelChoice,
+                                       QPlainTextEdit *notesEdit,
+                                       QPushButton *button);
     void pruneReleaseArtifactsForCurrentRepo(const QString &releaseTag);
     // Deletes every other release tag in this repo's history, keeping only
     // `keepTag` (the one just published). Best-effort like the artifact prune
@@ -2270,9 +2323,12 @@ private:
     void updateActionsTabIndicator();
     // Lazily build the floating strip and place it just above the Actions tab.
     void ensureActionStrip();
-    void positionActionStrip();  // grow each bar by its run's elapsed time
+    void positionActionStrip();  // size/pin the strip above the Actions tab
     void positionRepoPushButton(); // float "Sync" just above the Code tab
-    void updateActionStrip();    // build/show/hide the bars for in-flight runs
+    void updateActionStrip();    // build/show/hide the boxes for in-flight runs
+    // Previous finished run's duration for the same workflow, the estimate each
+    // strip box counts down against (0 = no prior run to estimate from).
+    qint64 estimatedRunDurationMs(const ActionRun &run) const;
     // Keep the running-session spinner timer alive/dead for the Agents table
     // (adhoc #178 removed the Agents tab and its floating spinner overlay, but
     // the table's own running-row glyph + elapsed-time cell still animate).
@@ -2341,6 +2397,10 @@ private:
     // centralised failure handler (runUpdateStep) agnostic to which one it was.
     void startRestartSpin(QPushButton *button);
     void stopRestartSpin();
+    // Flips an in-progress restart spin between the refresh-arrows look (a
+    // rebuild actually running) and a spinning hourglass (queued behind other
+    // agent actions, not doing anything itself yet).
+    void setRestartSpinHourglass(bool hourglass);
     // Busy feedback for switching nodes in the top nav: the node button shows a
     // spinner and the heavy repo load reports each step to the log. nodeSwitchStep
     // logs the step and, mid-switch, yields the event loop so the spinner animates.
@@ -2446,6 +2506,9 @@ private:
     // comment composer). `button` is the mic that was pressed, so its icon swaps to
     // red while recording and the transcript lands in `target`.
     void startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *button);
+    // Jump to Settings and land on the Voice tab — used when the mic is
+    // clicked before speech-to-text is set up (adhoc #132).
+    void openVoiceSettings();
     // Build a reusable push-to-talk mic bound to a comment composer; it speaks into
     // the composer's source editor and is registered so updateVoiceInputButton()
     // keeps its visibility/idle look in sync with the voice-engine install state.
@@ -2718,6 +2781,10 @@ private:
     // generated identicon when the user hasn't set one.
     QByteArray effectiveAvatar();
     QByteArray effectiveUserAvatar();
+    // Persist the local avatar to the account record (POST /api/accounts/profile)
+    // so the web dashboard shows the same picture. No-op without an authenticated
+    // session token or a local avatar to upload.
+    void pushAccountAvatar();
     void updateAvatarButton();
     void updateUserAvatarButton();
     void refreshIssueComposerAvatar();
@@ -2960,6 +3027,9 @@ private:
     void onCoveInvited(const QString &inviteeAccount, const QString &coveId,
                        const QString &coveName, const QString &inviterName, qint64 ts);
     void quickRebuildRestart();
+    // If a rebuild & restart was queued behind running agents, kick it off once
+    // the fleet has gone idle. Called from the agent status/finished handlers.
+    void maybeStartQueuedRebuild();
     void changeMirrorLocation();
     void changePreviewCacheLocation();
     void publishRepositoryAfterMirrorRefresh(int index,
@@ -3031,15 +3101,14 @@ private:
 
     // Top breadcrumb bar (active server favicon + server > section).
     QLabel *m_breadcrumb = nullptr;
-    // Top-bar relay switcher: a clickable favicon (shows that relay's nodes), a
-    // "domain ▾ count" dropdown button (search/switch/add relays), and an
-    // open-in-browser icon.
-    QPushButton *m_relayIconButton = nullptr;
+    // Top-bar relay switcher: a "favicon  domain ▾ count" dropdown button
+    // (search/switch/add relays), plus a separate open-in-browser icon.
     QPushButton *m_relayMenuButton = nullptr;
     QPushButton *m_relayOpenButton = nullptr;
-    // Tiny spinning-radar + latency readout sitting just left of the relay name:
-    // probes the active relay once a minute and shows the round-trip time (e.g.
-    // "33ms"), turning into a red alert when the relay doesn't answer. Held as a
+    // Spinning-radar + latency readout sitting on the window-chrome line just
+    // left of the CPU/MEM/DISK sparklines: probes the active relay once a
+    // minute and shows the round-trip time (e.g. "33ms") centered in the dish,
+    // turning into a red alert when the relay doesn't answer. Held as a
     // QWidget* and poked via static_cast (concrete RelayRadarWidget is private to
     // MainWindow.cpp).
     QWidget *m_relayRadar = nullptr;
@@ -3053,12 +3122,11 @@ private:
                                            // backs off the confirm re-probe so a
                                            // persistently-slow link isn't polled
                                            // every second forever (adhoc #74)
-    // "Relay" / "User" / "Node" / "Repo" captions before each top-bar dropdown.
-    QLabel *m_relayLabel = nullptr;
-    QLabel *m_userLabel = nullptr;
+    // "Node" / "Repo" captions before each top-bar dropdown (the relay
+    // switcher shows its favicon in the dropdown itself instead of a caption).
     QLabel *m_nodeLabel = nullptr;
     QLabel *m_repoLabel = nullptr;
-    QLabel *m_navNodeName = nullptr;     // node name shown above the balance
+    QLabel *m_navNodeName = nullptr;     // "user/node" shown above the balance
     QLabel *m_navSolanaBalance = nullptr;
     // Super-tiny Claude Code and Codex usage charts in the top-right cluster
     // (issue #266): two horizontal bars (5-hour + weekly) sitting beside the
@@ -3145,7 +3213,6 @@ private:
     QLabel *m_encryptionLabel;
     QPushButton *m_inviteButton = nullptr; // "Invite" — shown only in private rooms
     QListWidget *m_channelList;
-    QPushButton *m_userMenuButton = nullptr; // top-bar user/account identity
     QPushButton *m_nodeMenuButton = nullptr; // top-bar node switcher
     QString m_navSolanaBalanceAddress;
     // One row per node, populated by refreshRepositoryList and shown in the
@@ -3163,7 +3230,8 @@ private:
     QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row
     QPushButton *m_reposNavButton = nullptr; // network-wide "Repos" section
     QPushButton *m_settingsNavButton = nullptr; // Settings button on the repo header row
-    QPushButton *m_logNavButton = nullptr; // "Log" button in the persistent top nav
+    QPushButton *m_logNavButton = nullptr; // retired (adhoc #137): Log now opens via m_floatingLogButton
+    QPushButton *m_floatingLogButton = nullptr; // "Log" button floating over the live-log strip
     QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
     QPushButton *m_nodesNavButton = nullptr;  // "Nodes" top-nav button (adhoc #9)
@@ -3174,6 +3242,13 @@ private:
     QPushButton *m_navDrawButton = nullptr; // pencil -> draw freehand on the screen
     QPushButton *m_navResizeButton = nullptr; // snap window to a common minimal size
     QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
+    // A manual rebuild & restart was requested while an agent was still running:
+    // hold it until the fleet goes idle, then fire automatically (adhoc #75).
+    bool m_rebuildRestartQueued = false;
+    // Rechecks the queued rebuild every few seconds while it waits — a safety net
+    // for agent-completion paths that miss their maybeStartQueuedRebuild() call
+    // (adhoc #104/#111/#116/#134/#143 each found one more).
+    QTimer *m_rebuildQueuePollTimer = nullptr;
     QWidget *m_leaderboardsContent = nullptr; // container repopulated on refresh
     QLabel *m_leaderboardsStatus = nullptr;   // loading / error / empty notice
     QTableWidget *m_networkReposTable = nullptr;
@@ -3402,6 +3477,15 @@ private:
     // sends the typed prompt as a follow-up message to the currently-selected
     // agent session instead of the quick-add issue/new-agent flow.
     QPushButton *m_quickAddSendToAgentButton = nullptr;
+    // Plain "start a new agent" send button next to it (adhoc #89): tracked as a
+    // member (rather than a local in setupQuickAdd) so updateQuickAddEnterTarget
+    // can restyle it as the two selected/deselected agent detail changes which of
+    // the two buttons Enter actually triggers.
+    QPushButton *m_quickAddSendButton = nullptr;
+    // Small green "Enter" badges (adhoc #89), one per send button above, shown on
+    // whichever button Enter currently activates.
+    QLabel *m_quickAddSendEnterBadge = nullptr;
+    QLabel *m_quickAddSendToAgentEnterBadge = nullptr;
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
     QWidget *m_quickAddAttachStrip = nullptr;   // chips w/ thumbnail + "x" remove
@@ -3433,6 +3517,10 @@ private:
     QPushButton *m_agentStatusLabel = nullptr;
     QWidget *m_agentStatusIconsHost = nullptr;
     QHBoxLayout *m_agentStatusIconsLayout = nullptr;
+    // "N more" button on the right of the strip (adhoc #115): replaces the old
+    // horizontal scrollbar. Shown only when there are more sessions than fit in
+    // the capped icon row; clicking it jumps to the Agents tab.
+    QPushButton *m_agentStatusMoreButton = nullptr;
     // Voice input (whisper.cpp): the mic button is hidden until whisper.cpp is
     // installed. While recording, m_voiceRecordProc captures a temp WAV which
     // m_voiceTranscribeProc transcribes — once when recording stops, and live on
@@ -3491,6 +3579,10 @@ private:
     QComboBox *m_parakeetModelCombo = nullptr;
     QProcess *m_parakeetInstallProc = nullptr;
     QComboBox *m_voiceDeviceCombo = nullptr;     // mic to capture from (adhoc #10)
+    // Settings tab widget + the index of its Voice tab, so openVoiceSettings()
+    // can land the mic-not-set-up click directly on that tab (adhoc #132).
+    QTabWidget *m_settingsTabs = nullptr;
+    int m_voiceSettingsTabIndex = -1;
     // Settings "Test mic" (adhoc #14): a self-contained mic check. m_voiceTestProc
     // records the chosen device to m_voiceTestWavPath; m_voiceTestTimer samples its
     // growing tail (from byte offset m_voiceTestPos) to drive m_voiceTestMeter.
@@ -3540,6 +3632,7 @@ private:
     QButtonGroup *m_issueTabGroup = nullptr; // Issues / Milestones / Labels tabs
     QButtonGroup *m_repoDetailTabs = nullptr;
     QPushButton *m_repoCodeTab = nullptr;
+    QString m_repoCodeSizePath; // mirror the displayed "Code (N MB)" was computed for
     QPushButton *m_repoIssuesTab = nullptr;
     QPushButton *m_repoPullsTab = nullptr;
     QPushButton *m_repoDiscussionsTab = nullptr;
@@ -3993,6 +4086,7 @@ private:
     QPushButton *m_pullChooseDirButton = nullptr;
     QPushButton *m_pullImportButton = nullptr;
     QPushButton *m_pullSyncButton = nullptr;
+    QPushButton *m_pullDeleteAllMergedButton = nullptr; // bulk-delete merged PRs + branches
     QWidget *m_pullDetail = nullptr;
     QPushButton *m_pullHideDetailButton = nullptr;
     bool m_pullDetailHidden = false;
@@ -4767,7 +4861,7 @@ private:
     bool m_nodeSwitching = false;      // a node switch's heavy load is running
     bool m_repoDetailLoading = false;  // re-entrancy guard for openRepoDetail
     bool m_branchesPanelLoading = false; // re-entrancy guard for loadBranchesPanel
-    bool m_agentMergeStateRefreshing = false; // re-entrancy guard, refreshAgentMergeState
+    bool m_agentMergeStateRefreshing = false; // refreshAgentMergeState worker in flight
     // Shared re-entrancy guard for the two heavy periodic refreshes
     // (refreshOpenRepoDetail + refreshRepositoryList): each runs synchronous git
     // reads under a GitKeepAlive that pumps the event loop, so a second one firing
@@ -4975,8 +5069,6 @@ private:
     // user and offers "Log in as a user" to attach it. m_nodeOwnerUser holds the
     // owning user's name (empty = unlinked), learned from account lookups.
     QWidget *m_profileAccountSection = nullptr;
-    QLabel *m_profileUserAvatar = nullptr;
-    QLabel *m_profileUserName = nullptr;
     QLabel *m_profileAccountStatus = nullptr;
     QListWidget *m_profileUserNodesList = nullptr;
     QPushButton *m_profileLinkUserButton = nullptr;
@@ -5141,6 +5233,10 @@ private:
     // Registered account/node identity for this session.
     bool m_accountAuthenticated = false;
     QString m_accountName;
+    // Session token minted by /api/accounts/login, used to authenticate
+    // profile writes (e.g. persisting the chosen avatar to the account record
+    // so the web dashboard shows the same picture the desktop app does).
+    QString m_accountSessionToken;
     bool m_accountSolanaVerified = false;
     bool m_accountDesktopCapable = false;
     // "free" = view-only (must mirror >=1 repo) until the user joins by
@@ -5165,11 +5261,10 @@ private:
     // and ids still awaiting acknowledgement to the relay on the next beat.
     QSet<QString> m_handledMirrorRequests;
     QStringList m_pendingMirrorRequestAcks;
-    // User/avatar controls in the top-right account cluster. m_avatarNavButton
-    // is the node avatar with the connection dot; m_userAvatarNavButton is the
-    // signed-in/linked user account avatar.
+    // User avatar in the top-right account cluster (opens the signed-in/linked
+    // user account); the connection dot lives on it too now that the separate
+    // node avatar button is gone.
     QPushButton *m_userAvatarNavButton = nullptr;
-    QPushButton *m_avatarNavButton = nullptr;
 #ifdef FORKMESH_WINDOW_TESTS
     bool m_testUseAccountFlowResult = false;
     bool m_testAccountFlowResult = true;

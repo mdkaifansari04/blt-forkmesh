@@ -1205,6 +1205,27 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoSyncIssuesSetting, enabled);
     });
 
+    // Auto-sync on merge (adhoc #110): several owners were surprised that hitting
+    // "Merge" published the merge commit to main with no confirming click. Off by
+    // default — the merge lands locally and waits behind the floating "Sync"
+    // button. On → merging pushes to the served mirror and notifies peers right
+    // away, the old behaviour.
+    auto *pullsSyncLabel = new QLabel("PULL REQUESTS");
+    pullsSyncLabel->setObjectName("sectionLabel");
+    auto *autoSyncMergeCheck =
+        new QCheckBox("Immediately sync merges to main");
+    autoSyncMergeCheck->setChecked(
+        QSettings().value(kAutoSyncOnMergeSetting, false).toBool());
+    autoSyncMergeCheck->setToolTip(
+        "When on, merging a pull request pushes the new merge commit to main "
+        "(the served mirror) and notifies peers the moment you click \"Merge\". "
+        "When off (the default), the merge lands locally only — the floating "
+        "\"Sync\" button surfaces the pending commit and nothing reaches main "
+        "until you click it.");
+    connect(autoSyncMergeCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kAutoSyncOnMergeSetting, enabled);
+    });
+
     // Start a repository under this node: either spin up a brand-new empty repo
     // (git init) or adopt an existing local Git folder. Both then mirror + publish
     // under the account, exactly like the import flow below.
@@ -1521,6 +1542,9 @@ QWidget *MainWindow::buildSettingsSection()
     reposCol->addSpacing(6);
     reposCol->addWidget(issuesSyncLabel);
     reposCol->addWidget(autoSyncIssuesCheck);
+    reposCol->addSpacing(6);
+    reposCol->addWidget(pullsSyncLabel);
+    reposCol->addWidget(autoSyncMergeCheck);
     reposCol->addStretch();
     addTab(reposTab, "Repositories");
 
@@ -1579,15 +1603,24 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addWidget(ideLabel);
     agentsCol->addWidget(ideIntegrationCheck);
     agentsCol->addWidget(ideStatus);
-    agentsCol->addSpacing(6);
-    agentsCol->addWidget(voiceLabel);
-    agentsCol->addWidget(voiceHint);
-    agentsCol->addLayout(voiceRow);
-    agentsCol->addLayout(voiceDeviceRow);
-    agentsCol->addLayout(voiceTestRow);
-    agentsCol->addWidget(m_whisperStatusLabel);
     agentsCol->addStretch();
     addTab(agentsTab, "Agents & IDE");
+
+    // Voice: local speech-to-text engine setup, mic device and test — its own
+    // tab so it's easy to land on directly (see openVoiceSettings(), adhoc #132).
+    auto *voiceTab = new QWidget;
+    auto *voiceCol = new QVBoxLayout(voiceTab);
+    voiceCol->setContentsMargins(2, 14, 2, 14);
+    voiceCol->setSpacing(10);
+    voiceCol->addWidget(voiceLabel);
+    voiceCol->addWidget(voiceHint);
+    voiceCol->addLayout(voiceRow);
+    voiceCol->addLayout(voiceDeviceRow);
+    voiceCol->addLayout(voiceTestRow);
+    voiceCol->addWidget(m_whisperStatusLabel);
+    voiceCol->addStretch();
+    m_voiceSettingsTabIndex = tabs->count();
+    addTab(voiceTab, "Voice");
 
     // Secrets & Coves: shared action variables and encrypted coves.
     auto *secretsTab = new QWidget;
@@ -1610,6 +1643,7 @@ QWidget *MainWindow::buildSettingsSection()
     // cleanup. Built in its own translation unit (MainWindowData.cpp).
     addTab(buildDataSection(), "Data");
 
+    m_settingsTabs = tabs;
     layout->addWidget(tabs, 1);
     layout->addWidget(m_rebuildStatus);
     layout->addLayout(footerRow);
@@ -2041,15 +2075,28 @@ QByteArray MainWindow::effectiveUserAvatar()
     return forkMeshAvatarPng(seed);
 }
 
+void MainWindow::pushAccountAvatar()
+{
+    // Only persist an avatar the user actually chose — never the generated
+    // identicon effectiveUserAvatar() falls back to. Needs a login session
+    // token to authenticate the write.
+    if (m_accountSessionToken.isEmpty() || m_userAvatar.isEmpty())
+        return;
+    postAccountSync(
+        QStringLiteral("profile"),
+        QJsonObject{
+            {QStringLiteral("sessionToken"), m_accountSessionToken},
+            {QStringLiteral("avatarPng"),
+             QString::fromLatin1(m_userAvatar.toBase64())},
+        },
+        nullptr);
+}
+
 void MainWindow::updateAvatarButton()
 {
-    if (!m_avatarNavButton)
-        return;
-    const QPixmap pm = roundedAvatar(effectiveAvatar(), 34);
-    if (!pm.isNull())
-        m_avatarNavButton->setIcon(QIcon(pm));
-    m_avatarNavButton->setIconSize(QSize(34, 34));
-    m_avatarNavButton->setText(QString());
+    // The top-bar node avatar button is gone (only the user avatar remains);
+    // this still refreshes the issue composer's avatar/name whenever the
+    // node or user avatar changes.
     refreshIssueComposerAvatar();
 }
 
@@ -2179,6 +2226,44 @@ void MainWindow::chooseAvatar()
 
 void MainWindow::quickRebuildRestart()
 {
+    // Queue behind any in-flight agent work: relaunching mid-run would kill a
+    // running agent session, so hold the rebuild until the fleet goes idle and
+    // let maybeStartQueuedRebuild() re-invoke us once it does (adhoc #75). The
+    // click handler already spun the button; switch that spin to a spinning
+    // hourglass while queued so it reads as "waiting", not "building" (adhoc #91).
+    const QStringList blockers = runningAgentBlockers();
+    if (!blockers.isEmpty()) {
+        m_rebuildRestartQueued = true;
+        m_buildButton = m_rebuildButton;
+        m_buildStatusLabel = m_rebuildStatus;
+        beginRestartLog();
+        showUpdateLog();
+        setUpdateStatus(QStringLiteral(
+            "Waiting for running actions to finish before rebuilding\xE2\x80\xA6"));
+        // Name what the gate is actually counting: every past "stuck waiting"
+        // report (adhoc #91/#104/#111/#116/#134/#143) hinged on the user seeing
+        // no running actions while the gate counted something invisible.
+        logRestart(QStringLiteral("waiting on: %1")
+                       .arg(blockers.join(QStringLiteral(", "))));
+        setRestartSpinHourglass(true);
+        // Safety net for that same missed-notification bug family: every agent
+        // completion path is supposed to call maybeStartQueuedRebuild(), but each
+        // adhoc round above found one more path that didn't. While a rebuild is
+        // queued, also recheck on a timer so a missed signal delays the restart
+        // by seconds instead of blocking it forever.
+        if (!m_rebuildQueuePollTimer) {
+            m_rebuildQueuePollTimer = new QTimer(this);
+            m_rebuildQueuePollTimer->setInterval(2000);
+            connect(m_rebuildQueuePollTimer, &QTimer::timeout, this,
+                    &MainWindow::maybeStartQueuedRebuild);
+        }
+        m_rebuildQueuePollTimer->start();
+        return;
+    }
+    m_rebuildRestartQueued = false;
+    if (m_rebuildQueuePollTimer)
+        m_rebuildQueuePollTimer->stop();
+    setRestartSpinHourglass(false);
     // Incremental rebuild + relaunch (no cache wipe) for fast iteration. Reuses
     // the Settings rebuild button/status as the progress target.
     beginRestartLog();
@@ -2204,6 +2289,24 @@ void MainWindow::quickRebuildRestart()
     // Release update reconfigures the shared build dir and forces one full
     // rebuild on the switch.
     buildAndRelaunch(clientDir, QString(), QString(), QStringLiteral("Debug"));
+}
+
+void MainWindow::maybeStartQueuedRebuild()
+{
+    // A manual rebuild & restart is waiting for agents to finish. Once the last
+    // one goes idle, run it — but not while a rebuild is already underway (the
+    // rebuild button is disabled for its duration).
+    if (!m_rebuildRestartQueued) {
+        if (m_rebuildQueuePollTimer)
+            m_rebuildQueuePollTimer->stop();
+        return;
+    }
+    if (anyAgentRunning())
+        return;
+    if (m_rebuildButton && !m_rebuildButton->isEnabled())
+        return;
+    logRestart(QStringLiteral("running actions finished; starting queued rebuild"));
+    quickRebuildRestart();
 }
 
 void MainWindow::rebuildAndRelaunch()
@@ -3518,6 +3621,48 @@ void MainWindow::rebuildNetworkLogView()
     for (const QString &line : std::as_const(segment))
         appendNetworkLogLine(line);
     m_logViewMutating = false;
+}
+
+void MainWindow::openFullLogAtFooterLine(const QString &rawLine)
+{
+    // Drop any active category filter first so the clicked entry is guaranteed to
+    // be in the rendered segment (a filtered view might omit it), and reflect that
+    // in the chips.
+    const bool hadFilter = !m_logFilter.isEmpty();
+    if (hadFilter) {
+        m_logFilter.clear();
+        rebuildLogFilterButtons();
+    }
+    // Open the Log section. On its first visit showSection() renders the deferred
+    // history and clears m_networkLogViewStale; force a rebuild here only when it
+    // didn't (already visited, or we just cleared a filter) so the full tail —
+    // which contains this line — is on screen to scroll to.
+    showSection(4);
+    if (m_logNavButton)
+        m_logNavButton->setChecked(true);
+    if ((hadFilter || m_networkLogViewStale) && m_settingsLog) {
+        m_networkLogViewStale = false;
+        rebuildNetworkLogView();
+    }
+    if (!m_settingsLog)
+        return;
+
+    // The footer stores the full dated line ("yyyy-MM-dd HH:mm:ss  message"); the
+    // Log view renders the timestamp separately, so match on the message body.
+    QString message = rawLine.trimmed();
+    if (message.size() >= 21 && message.at(10) == QLatin1Char(' '))
+        message = message.mid(21);
+    if (message.isEmpty())
+        return;
+
+    // Search backward from the end so the newest occurrence (the one the footer
+    // was showing) wins when a message repeats, then bring it into view. The
+    // match stays selected so the clicked entry is easy to spot.
+    m_settingsLog->moveCursor(QTextCursor::End);
+    if (m_settingsLog->find(message, QTextDocument::FindBackward))
+        m_settingsLog->ensureCursorVisible();
+    else
+        m_settingsLog->moveCursor(QTextCursor::End);
 }
 
 QString MainWindow::networkLogPath() const

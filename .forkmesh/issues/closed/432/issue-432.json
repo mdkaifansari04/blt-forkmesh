@@ -1,0 +1,104 @@
+{
+    "assignees": [
+        "Codex"
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1784332654205,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+                "210c94da.png"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-432",
+            "sig": "svKfGCnFT_u0TDMtC7zCFKShBOOLz7nBWLaQqR4e_QdUoJgLf2pRWnR2hymaVAh6izG1SIqTw0U9-yCKhMJ5Ag",
+            "title": "on this solana bounty popup show more info like who is the auhtor and all addresses involved with links to their explorer",
+            "ts": 1784332654205,
+            "type": "open"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "also fix the qr code to always show fully ",
+            "id": "096e7b4b-3ade-4bc5-bc3c-835010d0800e",
+            "sig": "tB4ZAp-mgdAfYpLxp4B89rv52y1CkOg-l4CMo36mvgBkk0dNqZqrhJ7YXVD8zeyf1sr0XE6XDp0YnnvWz5nkCQ",
+            "ts": 1784332674755,
+            "type": "comment"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "codex",
+            "agentSessionId": 64,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "6bdeb4b6-0a95-4156-bc1c-493b4d116eba",
+            "sig": "hjt1QXj7fi0P1myso73UpdSiyDJd_Efj5DzS1Fmed5S1MasFnISYKVNzl6uWhD6orcODG6qC_iLj1IcfoOzwBQ",
+            "ts": 1784332686245,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Codex"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "4a16a4d0-251c-402f-be32-80c484c4e99d",
+            "sig": "EJWMrgvqENBH9R54zmjGpInPhlbAFletnW1C0FkTa1Xbmo80d0VQBeooSUpTbYwhMtdgL4dT_Zy2lvzmfO7ODQ",
+            "ts": 1784332686306,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Linked pull request #19.",
+            "id": "3f7eab5c-43ea-47f8-b4ec-b4a7c82e0027",
+            "sig": "JhPSCi0wbEXXDEPSOetkHLqf8wgVncBP5ojQ7LVBrJoh_cBMglvkSpOXSGlW8dtP17Ge2FtZ4cEvuFOO7Ny5BQ",
+            "ts": 1784333789886,
+            "type": "comment"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged pull request #19.",
+            "id": "f1cf7018-855f-444e-b27c-2a924084ad17",
+            "sig": "XPJOup8KHnxzhIY15iD6FvnPKDaNO-Z58FM2awaRCY2B2mBDOVKpV5l0Y_RlOCYpFvmaY81PgP2B0UItm4B5Cw",
+            "ts": 1784334139917,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "8cba0436-6f6c-49dc-b33e-0fa5eeeb3b09",
+            "sig": "kmWrVeg8yRp1Ri0Uum2a15I3ePAhSJvhv-Jn_BsAHLVenh1iqR9XNn1WYLP6p2K7_a8uIkCbPfM7YfbtAo-OAA",
+            "status": "closed",
+            "ts": 1784334139965,
+            "type": "status"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 432,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "closed",
+    "title": "on this solana bounty popup show more info like who is the auhtor and all addresses involved with links to their explorer",
+    "updatedAt": 1784334139965,
+    "votes": 0
+}

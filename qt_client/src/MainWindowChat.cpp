@@ -8,6 +8,7 @@
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
 #include "RepoSecurity.h"
 #include "ScreenCaptureOverlay.h"
@@ -243,7 +244,7 @@ QWidget *MainWindow::buildChatPage()
     // One page per "place": Home holds the repos, quest board and chat all at
     // once (no nav bar — you click a server to see everything). Repo detail and
     // Settings are opened on demand (clicking a repo / the server-rail gear).
-    m_sectionStack = new QStackedWidget;
+    m_sectionStack = new CurrentPageStack;
     // Home now hosts the nodes column, repositories column and the repo detail
     // panel (with Chat as a tab) all at once, so there is no separate repo-detail
     // section any more.
@@ -303,34 +304,35 @@ QWidget *MainWindow::buildChatPage()
     layout->addWidget(buildBreadcrumb());
     layout->addWidget(buildSolanaNotice());
     layout->addWidget(buildWalletVerifyNotice());
-    auto *contentScroll = new QScrollArea;
-    contentScroll->setWidgetResizable(true);
-    contentScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    contentScroll->setFrameShape(QFrame::NoFrame);
-    // Tall tab pages should scroll instead of becoming the window's minimum height.
-    contentScroll->setMinimumHeight(0);
-    contentScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
-    contentScroll->setWidget(content);
+    // No page-wide QScrollArea around the sections any more (adhoc #108).
+    // Each section scrolls its own content (QScrollArea panels, tables and
+    // lists), so the outer wrapper only added a second scroll surface plus its
+    // sizeHint-driven overflow spacing. The Ignored vertical policy keeps a
+    // tall page from growing the window's minimum height (CurrentPageStack
+    // already sizes the stack to the current page, not the tallest sibling).
+    content->setMinimumHeight(0);
+    content->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
 
-    // The main content and the always-on prompt/log footer sit in a vertical
-    // splitter (adhoc #19). Before this, the footer was a stretch-0 strip whose
-    // height tracked its own contents, so anything that changed its size — the
-    // "Agents:" status strip appearing, an attachment thumbnail, a growing
-    // prompt — reflowed the strip and dragged the whole toolbar up or down as
-    // the interface "shifted". The splitter gives the footer a definite,
-    // user-draggable height instead: once sized it stays put (stretch goes to
-    // the content pane above), so the interface pieces are locked and only the
-    // prompt's own text area scrolls internally, while the drag handle keeps the
-    // whole band resizable.
-    auto *bodySplitter = new QSplitter(Qt::Vertical);
-    bodySplitter->setObjectName("chatBodySplitter");
-    bodySplitter->setChildrenCollapsible(false);
-    bodySplitter->addWidget(contentScroll);
-    bodySplitter->addWidget(buildNetworkLogDock());
-    bodySplitter->setStretchFactor(0, 1); // content absorbs window growth
-    bodySplitter->setStretchFactor(1, 0); // footer keeps its dragged height
-    bodySplitter->setSizes({600, 240});
-    layout->addWidget(bodySplitter, 1);
+    // The main content and the always-on prompt/log footer sit one above the
+    // other with the footer pinned to a fixed height (adhoc #86). Before this,
+    // the footer was a stretch-0 strip whose height tracked its own contents,
+    // so anything that changed its size — the "Agents:" status strip
+    // appearing, an attachment thumbnail, a growing prompt — reflowed the
+    // strip and dragged the whole toolbar up or down as the interface
+    // "shifted". A user-draggable splitter (adhoc #19) fixed that but its
+    // handle flashed a bright, saturated blue on hover/drag; since the footer
+    // no longer needs to be resizable, a fixed-height widget with the same
+    // subtle divider line gives the definite height without the loud handle.
+    auto *bodyLayout = new QVBoxLayout;
+    bodyLayout->setContentsMargins(0, 0, 0, 0);
+    bodyLayout->setSpacing(0);
+    bodyLayout->addWidget(content, 1); // content absorbs window growth
+    auto *logDock = buildNetworkLogDock();
+    // buildNetworkLogDock() pins its own fixed height to fit the compact prompt
+    // card (adhoc #107); the footer still keeps a constant height so the toolbar
+    // never reflows, it is just no longer the old oversized 240px.
+    bodyLayout->addWidget(logDock, 0);
+    layout->addLayout(bodyLayout, 1);
     return page;
 }
 
@@ -351,15 +353,25 @@ QWidget *MainWindow::buildNetworkLogDock()
     auto *card = new QWidget;
     card->setObjectName("quickAddCard");
 
-    // A two-line wrapping box (adhoc #12), not a single-line edit, so the typed
-    // prompt is actually visible on two lines. Enter sends / Shift+Enter adds a
-    // newline (handled in the event filter); Up/Down still walk prompt history.
+    // A three-line wrapping box (adhoc #12, #107), not a single-line edit, so the
+    // typed prompt is actually visible on three lines. Enter sends / Shift+Enter
+    // adds a newline (handled in the event filter); Up/Down walk prompt history.
     m_issueQuickAdd = new QPlainTextEdit;
     m_issueQuickAdd->setObjectName("issueQuickAdd");
     m_issueQuickAdd->setPlaceholderText("enter prompt");
     m_issueQuickAdd->setLineWrapMode(QPlainTextEdit::WidgetWidth);
     m_issueQuickAdd->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_issueQuickAdd->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Pin the field to a fixed number of prompt lines (adhoc #107) so it stays
+    // compact instead of stretching to fill the whole footer; longer prompts
+    // scroll within it. Moving the send column out to the side (adhoc #115) freed
+    // the vertical space the toolbar used to reserve for the stacked buttons, so
+    // the box now shows four lines rather than three.
+    m_issueQuickAdd->document()->setDocumentMargin(3);
+    // 4 rows + the QSS vertical padding (8px top/bottom) + document margins.
+    const int kQuickAddRowH = m_issueQuickAdd->fontMetrics().lineSpacing();
+    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 4 + 16 + 6);
+    m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
     // field is capped at the same length as the Claude prompt / message input
     // (kMaxTextChars). QPlainTextEdit has no setMaxLength, so the cap is enforced
@@ -636,14 +648,30 @@ QWidget *MainWindow::buildNetworkLogDock()
     // new issue" send path, kept visually distinct from the "add" button that
     // follows up on the agent already open above. A touch bigger than the old
     // icon-only square so the label reads clearly.
-    auto *quickAddSendButton = new QPushButton(QStringLiteral("new"));
-    quickAddSendButton->setObjectName("quickAddSendIcon");
-    quickAddSendButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(quickAddSendButton, "paper-airplane", 17);
-    quickAddSendButton->setFixedSize(58, 28);
-    quickAddSendButton->setToolTip("Send to a new agent (Enter)");
-    connect(quickAddSendButton, &QPushButton::clicked, this,
+    m_quickAddSendButton = new QPushButton(QStringLiteral("new"));
+    m_quickAddSendButton->setObjectName("quickAddSendIcon");
+    m_quickAddSendButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_quickAddSendButton, "paper-airplane", 17);
+    // Fixed width, but stretch vertically (adhoc #115): the two send buttons now
+    // form a full-height column down the right edge of the prompt frame, so the
+    // prompt box is exactly as tall as the stacked add/new buttons.
+    m_quickAddSendButton->setFixedWidth(58);
+    m_quickAddSendButton->setMinimumHeight(28);
+    m_quickAddSendButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    connect(m_quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
+    // Green "Enter" badge (adhoc #89): shown on whichever of the two send
+    // buttons Enter currently activates, kept in sync by
+    // updateQuickAddEnterTarget(). Parented to the button so it rides along
+    // without needing its own layout slot; both buttons are fixed-size so a
+    // one-time corner position is enough.
+    m_quickAddSendEnterBadge = new QLabel(QStringLiteral("⏎"), m_quickAddSendButton);
+    m_quickAddSendEnterBadge->setObjectName("quickAddEnterBadge");
+    m_quickAddSendEnterBadge->setAlignment(Qt::AlignCenter);
+    m_quickAddSendEnterBadge->setFixedSize(14, 14);
+    m_quickAddSendEnterBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_quickAddSendEnterBadge->move(m_quickAddSendButton->width() - 12, -5);
+    m_quickAddSendEnterBadge->hide();
 
     // Second paper airplane, rotated to point straight up, stacked above the
     // regular send icon (adhoc #99): sends the typed prompt as a follow-up
@@ -653,9 +681,19 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendToAgentButton->setObjectName("quickAddSendIcon");
     m_quickAddSendToAgentButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_quickAddSendToAgentButton, "paper-airplane", 17, -45.0);
-    m_quickAddSendToAgentButton->setFixedSize(58, 28);
-    m_quickAddSendToAgentButton->setToolTip(
-        "Send to the agent open above, as a follow-up message");
+    m_quickAddSendToAgentButton->setFixedWidth(58);
+    m_quickAddSendToAgentButton->setMinimumHeight(28);
+    m_quickAddSendToAgentButton->setSizePolicy(QSizePolicy::Fixed,
+                                               QSizePolicy::Expanding);
+    m_quickAddSendToAgentEnterBadge =
+        new QLabel(QStringLiteral("⏎"), m_quickAddSendToAgentButton);
+    m_quickAddSendToAgentEnterBadge->setObjectName("quickAddEnterBadge");
+    m_quickAddSendToAgentEnterBadge->setAlignment(Qt::AlignCenter);
+    m_quickAddSendToAgentEnterBadge->setFixedSize(14, 14);
+    m_quickAddSendToAgentEnterBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_quickAddSendToAgentEnterBadge->move(
+        m_quickAddSendToAgentButton->width() - 12, -5);
+    m_quickAddSendToAgentEnterBadge->hide();
     connect(m_quickAddSendToAgentButton, &QPushButton::clicked, this, [this] {
         if (!m_issueQuickAdd)
             return;
@@ -697,12 +735,17 @@ QWidget *MainWindow::buildNetworkLogDock()
     // the text).
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // Two send icons stacked in a column at the prompt's bottom-right corner.
+    // Two send icons stacked in a full-height column down the prompt's right edge
+    // (adhoc #115): each button stretches to take half the frame height, so the
+    // text area to their left ends flush against them and the whole prompt box is
+    // just as tall as the two add/new buttons.
     auto *sendColumn = new QVBoxLayout;
     sendColumn->setContentsMargins(0, 0, 0, 0);
     sendColumn->setSpacing(2);
-    sendColumn->addWidget(m_quickAddSendToAgentButton);
-    sendColumn->addWidget(quickAddSendButton);
+    sendColumn->addWidget(m_quickAddSendToAgentButton, 1);
+    sendColumn->addWidget(m_quickAddSendButton, 1);
+    // Enter targets "new" until an agent session is opened above.
+    updateQuickAddEnterTarget();
 
     // Agent hand-off controls (adhoc #99): the provider/model/mode dropdowns,
     // grouped as one unit in the middle of the bottom bar. The provider dropdown
@@ -753,7 +796,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     // utilisation is visible right where prompts are launched.
     bottomBar->addWidget(m_navCodexUsage, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_navTokenUsage, 0, Qt::AlignBottom);
-    bottomBar->addLayout(sendColumn);
+    // The send column (add/new) no longer lives in this toolbar (adhoc #115) — it
+    // moved out to a full-height column down the right edge of the prompt frame.
 
     auto *bottomBarHost = new QWidget;
     bottomBarHost->setObjectName("quickAddBottomBarHost");
@@ -792,13 +836,23 @@ QWidget *MainWindow::buildNetworkLogDock()
     // than a separate strip above it.
     auto *promptWrapper = new QFrame;
     promptWrapper->setObjectName("promptWrapper");
-    auto *promptLayout = new QVBoxLayout(promptWrapper);
+    // Horizontal split (adhoc #115): the text area + its bottom toolbar stack in
+    // a left column, and the add/new send buttons form a full-height column down
+    // the right edge. The text entry therefore ends flush against the buttons and
+    // the whole box is exactly as tall as the two stacked buttons.
+    auto *promptLayout = new QHBoxLayout(promptWrapper);
     promptLayout->setContentsMargins(0, 0, 0, 0);
     promptLayout->setSpacing(0);
-    // The editor takes all the stretch so it grows/shrinks with the frame; the
-    // bottom bar carries none and keeps its fixed height welded to the foot.
-    promptLayout->addWidget(m_issueQuickAdd, 1);
-    promptLayout->addWidget(bottomBarScroll, 0);
+    auto *promptLeftCol = new QVBoxLayout;
+    promptLeftCol->setContentsMargins(0, 0, 0, 0);
+    promptLeftCol->setSpacing(0);
+    // The editor stretches to fill the freed vertical space (the send column no
+    // longer sits below it), and the bottom bar carries its own fixed height, so
+    // the border sits right above the text and the controls weld to the foot.
+    promptLeftCol->addWidget(m_issueQuickAdd, 1);
+    promptLeftCol->addWidget(bottomBarScroll, 0);
+    promptLayout->addLayout(promptLeftCol, 1);
+    promptLayout->addLayout(sendColumn, 0);
 
     // "Agents:" status strip above the prompt input (adhoc #111): a clickable
     // label plus one small colored dot per known agent session — a status
@@ -814,20 +868,25 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_agentStatusLabel, &QPushButton::clicked, this,
             &MainWindow::openAgentsOverview);
 
+    // The icon dots live directly in the row now (adhoc #115) — no scroll area.
+    // refreshAgentStatusRow() caps how many dots it packs in and hides the rest
+    // behind the "N more" button, so a horizontal scrollbar can never appear and
+    // steal height the way it used to inside the old fixed-height viewport.
     m_agentStatusIconsHost = new QWidget;
     m_agentStatusIconsLayout = new QHBoxLayout(m_agentStatusIconsHost);
     m_agentStatusIconsLayout->setContentsMargins(0, 0, 0, 0);
     m_agentStatusIconsLayout->setSpacing(4);
-    m_agentStatusIconsLayout->addStretch(1);
 
-    auto *agentStatusScroll = new QScrollArea;
-    agentStatusScroll->setObjectName("agentStatusScroll");
-    agentStatusScroll->setWidget(m_agentStatusIconsHost);
-    agentStatusScroll->setWidgetResizable(true);
-    agentStatusScroll->setFrameShape(QFrame::NoFrame);
-    agentStatusScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    agentStatusScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    agentStatusScroll->setFixedHeight(24);
+    // "N more" button that opens the Agents tab (adhoc #115), shown on the right
+    // only when the session count exceeds what the capped icon row displays.
+    m_agentStatusMoreButton = new QPushButton;
+    m_agentStatusMoreButton->setObjectName("agentStatusMore");
+    m_agentStatusMoreButton->setFlat(true);
+    m_agentStatusMoreButton->setCursor(Qt::PointingHandCursor);
+    m_agentStatusMoreButton->setToolTip("Open the Agents tab");
+    m_agentStatusMoreButton->hide();
+    connect(m_agentStatusMoreButton, &QPushButton::clicked, this,
+            &MainWindow::openAgentsOverview);
 
     m_agentStatusRow = new QWidget;
     m_agentStatusRow->setObjectName("agentStatusRow");
@@ -835,7 +894,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     agentStatusRowLayout->setContentsMargins(2, 0, 2, 6);
     agentStatusRowLayout->setSpacing(6);
     agentStatusRowLayout->addWidget(m_agentStatusLabel);
-    agentStatusRowLayout->addWidget(agentStatusScroll, 1);
+    agentStatusRowLayout->addWidget(m_agentStatusIconsHost, 0);
+    agentStatusRowLayout->addStretch(1);
+    agentStatusRowLayout->addWidget(m_agentStatusMoreButton, 0);
     // Small "fix conflicts with agent" icon button (adhoc #139): built earlier
     // by buildAgentsTab() (called from buildHomeSection(), which runs before
     // this dock in buildChatPage()); it stays hidden until the selected
@@ -849,10 +910,18 @@ QWidget *MainWindow::buildNetworkLogDock()
     auto *cardLayout = new QVBoxLayout(card);
     cardLayout->setContentsMargins(12, 8, 12, 8);
     cardLayout->setSpacing(4);
+    // A top stretch sinks the compact "Agents:" strip + prompt group to the foot
+    // of the footer dock (adhoc #107): the prompt no longer stretches to fill the
+    // dock, so without this it would float at the top with dead space beneath.
+    // Anchoring it low keeps the whole log/prompt area down near the bottom edge.
+    cardLayout->addStretch(1);
     cardLayout->addWidget(m_agentStatusRow);
-    cardLayout->addWidget(promptWrapper);
+    cardLayout->addWidget(promptWrapper, 0);
     card->setMinimumWidth(0);
-    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // Expanding vertically so the card fills the whole fixed-height footer dock
+    // like the log pane beside it; the top stretch above absorbs the slack so the
+    // prompt group stays flush with the foot of the panel.
+    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     // A scrollable strip below the quick-add bar: the always-on live log. It
     // fills as much height as the dock row allows (matching the prompt card
@@ -863,13 +932,25 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerUpdateLog->setObjectName("footerUpdateLog");
     m_footerUpdateLog->setReadOnly(true);
     m_footerUpdateLog->setFrameShape(QFrame::NoFrame);
-    m_footerUpdateLog->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    // Don't wrap (adhoc #133): a long line clips at the right edge instead of
+    // reflowing onto extra rows, so every entry stays one row tall and the strip
+    // reads like a dense log tail. The full text is still reachable — hovering a
+    // line shows it in a tooltip and clicking opens the full Log view at it.
+    m_footerUpdateLog->setLineWrapMode(QPlainTextEdit::NoWrap);
     m_footerUpdateLog->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_footerUpdateLog->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_footerUpdateLog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_footerUpdateLog->setMinimumWidth(0);
     m_footerUpdateLog->setToolTip(
-        "Live log \xE2\x80\x94 scroll up to search back through recent history.");
+        "Live log \xE2\x80\x94 click a line to open the full Log at it; scroll up "
+        "to search back through recent history.");
+    // Per-line hover tooltips (the full, untruncated line) and click-to-open are
+    // driven from MainWindow::eventFilter on the viewport; the hand cursor hints
+    // that the lines are clickable. Mouse tracking is left off deliberately so a
+    // plain hover doesn't fire QPlainTextEdit's own mouse-move handler, which
+    // would otherwise flip the cursor back to an I-beam over the text.
+    m_footerUpdateLog->viewport()->setCursor(Qt::PointingHandCursor);
+    m_footerUpdateLog->viewport()->installEventFilter(this);
     // Bound the live buffer the same way the seed below is bounded, so it can't
     // grow without limit over a long-running session.
     m_footerUpdateLog->setMaximumBlockCount(kFooterLogSeedLines);
@@ -889,12 +970,36 @@ QWidget *MainWindow::buildNetworkLogDock()
         m_footerUpdateLog->setPlainText(QStringLiteral("ForkMesh ready"));
     }
 
+    // Floating "Log" button overlaid on the bottom-right of the live-log strip
+    // (adhoc #137): opens the full network Log section (index 4) without taking a
+    // slot in the crowded section-nav row. Parented to the strip so it floats over
+    // its corner; repositioned as the strip resizes via the eventFilter branch.
+    m_floatingLogButton = new QPushButton(QStringLiteral("Log"), m_footerUpdateLog);
+    m_floatingLogButton->setObjectName("floatingLogButton");
+    m_floatingLogButton->setCursor(Qt::PointingHandCursor);
+    m_floatingLogButton->setToolTip(
+        QString::fromUtf8("Network log \xE2\x80\x94 all activity"));
+    setOcticon(m_floatingLogButton, "list-unordered", 14);
+    connect(m_floatingLogButton, &QPushButton::clicked, this,
+            [this] { showSection(4); });
+    m_footerUpdateLog->installEventFilter(this);
+    positionFloatingLogButton();
+
     // Horizontal split: live-log strip on the left half, prompt card on the right.
     auto *dockRow = new QHBoxLayout(dock);
     dockRow->setContentsMargins(0, 0, 0, 0);
     dockRow->setSpacing(0);
     dockRow->addWidget(m_footerUpdateLog, 1);
     dockRow->addWidget(card, 1);
+
+    // Pin the footer to just the compact card's height (adhoc #107): margins +
+    // the (hidden-by-default) "Agents:" strip + the three-line prompt + its
+    // controls. Reserving the agents-strip height keeps the footer from reflowing
+    // when the strip toggles, exactly as the old fixed 240px did — only now the
+    // dock is sized to the content instead of stranding blank space above it.
+    dock->setFixedHeight(card->sizeHint().height() +
+                         m_agentStatusRow->sizeHint().height() +
+                         cardLayout->spacing());
 
     // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
     // since QPlainTextEdit has no returnPressed signal.
@@ -1409,11 +1514,12 @@ void MainWindow::updateVoiceInputButton()
     if (m_quickAddVoiceAutoSubmit)
         m_quickAddVoiceAutoSubmit->setVisible(ready);
     if (m_quickAddMicButton) {
-        // Keep the mic visible even when speech-to-text isn't set up (adhoc #29):
-        // show it greyed out instead of hiding it, so it's discoverable and its
-        // tooltip can point the user at the Settings download.
+        // Keep the mic visible (and clickable) even when speech-to-text isn't set
+        // up (adhoc #29): rather than disabling it, clicking it while unready jumps
+        // to the Settings > Voice tab (see startVoiceCaptureFor / openVoiceSettings,
+        // adhoc #132) so the mic is a path to setup, not a dead end.
         m_quickAddMicButton->setVisible(true);
-        m_quickAddMicButton->setEnabled(ready);
+        m_quickAddMicButton->setEnabled(true);
         // Leave the mic currently recording on its red broadcast glyph.
         if (!(m_voiceRecording && m_voiceActiveButton == m_quickAddMicButton)) {
             setOcticon(m_quickAddMicButton, "mic", 16);
@@ -1424,8 +1530,8 @@ void MainWindow::updateVoiceInputButton()
                             "to transcribe.\nVoice model: %1")
                             .arg(voiceModelLabel())
                       : QString::fromUtf8(
-                            "Speech-to-text isn't set up yet \xE2\x80\x94 download a "
-                            "voice model in Settings to dictate your prompt."));
+                            "Speech-to-text isn't set up yet \xE2\x80\x94 click to open "
+                            "Settings and set up voice input."));
         }
     }
     for (QPushButton *b : m_voiceButtons) {
@@ -1501,6 +1607,7 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
 
     if (!voiceInputReady()) {
         updateVoiceInputButton();
+        openVoiceSettings();
         return;
     }
     // Don't start a fresh recording while the previous clip is still transcribing
@@ -1664,6 +1771,16 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
     button->setToolTip(
         QStringLiteral("Recording\xE2\x80\xA6 release to stop and transcribe."));
     target->setPlaceholderText("listening\xE2\x80\xA6 release the mic to stop");
+}
+
+// Land on Settings > Voice — called when a mic is clicked before speech-to-text
+// is set up, so the click goes somewhere useful instead of a silent no-op
+// (adhoc #132).
+void MainWindow::openVoiceSettings()
+{
+    showSection(1); // Settings
+    if (m_settingsTabs && m_voiceSettingsTabIndex >= 0)
+        m_settingsTabs->setCurrentIndex(m_voiceSettingsTabIndex);
 }
 
 // Run whisper.cpp over the recorded WAV and drop the transcript into the prompt
@@ -2603,21 +2720,12 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *bar = new QWidget;
     bar->setObjectName("breadcrumbBar");
 
-    // --- Relay switcher: bigger favicon (shows that relay's nodes when
-    // clicked), a "domain ▾ count" dropdown (search / switch / add), and an
-    // open-in-browser icon. ---------------------------------------------------
-    m_relayIconButton = new QPushButton;
-    m_relayIconButton->setObjectName("relayIconButton");
-    m_relayIconButton->setCursor(Qt::PointingHandCursor);
-    m_relayIconButton->setFixedSize(38, 38);
-    m_relayIconButton->setIconSize(QSize(30, 30));
-    m_relayIconButton->setToolTip("Show this relay's nodes");
-    connect(m_relayIconButton, &QPushButton::clicked, this,
-            [this] { showSection(0); });
-
+    // --- Relay switcher: a "favicon  domain ▾ count" dropdown (search / switch
+    // / add) plus a separate open-in-browser icon. ----------------------------
     m_relayMenuButton = new QPushButton;
     m_relayMenuButton->setObjectName("relayMenuButton");
     m_relayMenuButton->setCursor(Qt::PointingHandCursor);
+    m_relayMenuButton->setIconSize(QSize(18, 18));
     m_relayMenuButton->setToolTip("Switch, search, or add relays");
     connect(m_relayMenuButton, &QPushButton::clicked, this,
             &MainWindow::showRelayMenu);
@@ -2642,16 +2750,8 @@ QWidget *MainWindow::buildBreadcrumb()
     m_nodeMenuButton->setToolTip("Pick a node to view its repositories");
     connect(m_nodeMenuButton, &QPushButton::clicked, this, &MainWindow::showNodeMenu);
 
-    // User/account identity, shown separately from the node selector so linked
-    // nodes can expose both the owner account and the machine identity.
-    m_userMenuButton = new QPushButton;
-    m_userMenuButton->setObjectName("userMenuButton");
-    m_userMenuButton->setCursor(Qt::PointingHandCursor);
-    m_userMenuButton->setToolTip("Open your user account settings");
-    connect(m_userMenuButton, &QPushButton::clicked, this,
-            [this] { showSection(1); });
-
-    // Node name shown above the wallet balance in the top-right cluster.
+    // Node name shown above the wallet balance in the top-right cluster, as
+    // "user/node" (the user account, if any, plus this node's own name).
     m_navNodeName = new QLabel;
     m_navNodeName->setObjectName("navNodeName");
     m_navNodeName->setAlignment(Qt::AlignCenter);
@@ -2783,7 +2883,9 @@ QWidget *MainWindow::buildBreadcrumb()
     // The live connection indicator is now a small status dot painted over the
     // top-right avatar (created with the avatar below), not a separate text pill.
 
-    m_notificationButton = new QPushButton(QStringLiteral("Notifications"));
+    // Icon-only bell (adhoc #137): sits beside the user avatar in the top-right
+    // account cluster rather than as a labelled tab in the section nav.
+    m_notificationButton = new QPushButton;
     m_notificationButton->setObjectName("topNavButton");
     m_notificationButton->setCheckable(true);
     m_notificationButton->setCursor(Qt::PointingHandCursor);
@@ -2846,7 +2948,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageClose->setToolTip(QStringLiteral("Dismiss"));
     m_topMessageClose->hide();
     connect(m_topMessageClose, &QPushButton::clicked, this,
-            [this] { advanceTopMessageQueue(); }); // skip straight to the next queued error
+            [this] { dismissTopMessage(); }); // always fully close, even if another error is queued
 
     // Shown beside the toast when a message is too long to fit on one line.
     // Clicking it expands the full message in place (wrapped, growing the toast)
@@ -2901,7 +3003,8 @@ QWidget *MainWindow::buildBreadcrumb()
     overlayLayout->addWidget(m_topMessageOverlayText);
     m_topMessageOverlay->hide();
 
-    // User avatar, next to the node avatar. Clicking it opens account settings.
+    // User avatar, pinned to the top-right-most of the bar. Clicking it opens
+    // account settings.
     m_userAvatarNavButton = new QPushButton;
     m_userAvatarNavButton->setObjectName("serverFooterButton");
     m_userAvatarNavButton->setCursor(Qt::PointingHandCursor);
@@ -2910,42 +3013,25 @@ QWidget *MainWindow::buildBreadcrumb()
     m_userAvatarNavButton->setToolTip("Your user account");
     connect(m_userAvatarNavButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
-
-    // Node avatar, pinned to the top-right-most of the bar. Clicking it opens
-    // the node profile.
-    m_avatarNavButton = new QPushButton;
-    m_avatarNavButton->setObjectName("serverFooterButton");
-    m_avatarNavButton->setCursor(Qt::PointingHandCursor);
-    m_avatarNavButton->setFixedSize(40, 40);
-    m_avatarNavButton->setIconSize(QSize(34, 34));
-    m_avatarNavButton->setToolTip("Your node profile");
-    connect(m_avatarNavButton, &QPushButton::clicked, this, [this] {
-        // Open this node's own profile in the side panel (which carries the
-        // restart options, settings shortcut and logout for self).
-        showSection(0);
-        showNodeProfile(m_profileIdentity.publicKey(), m_userName);
-    });
     updateUserSwitcher();
     updateAvatarButton();
 
-    // Connection status dot, overlaid on the bottom-right of the avatar. It's
-    // purely decorative (clicks fall through to the avatar); the live status
-    // text lives in the avatar's tooltip, set by updateConnectionStatus.
-    m_connectionDot = new QLabel(m_avatarNavButton);
+    // Connection status dot, overlaid on the bottom-right of the (now sole)
+    // avatar. It's purely decorative (clicks fall through to the avatar); the
+    // live status text lives in the dot's tooltip, set by updateConnectionStatus.
+    m_connectionDot = new QLabel(m_userAvatarNavButton);
     m_connectionDot->setObjectName("connectionDot");
     m_connectionDot->setFixedSize(12, 12);
     m_connectionDot->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_connectionDot->move(40 - 12 - 1, 40 - 12 - 1);
     m_connectionDot->raise();
 
-    // Captions for the three top-bar dropdowns.
+    // Captions for the top-bar dropdowns.
     auto makeCaption = [](const QString &t) {
         auto *l = new QLabel(t);
         l->setObjectName("navCaption");
         return l;
     };
-    m_relayLabel = makeCaption(QStringLiteral("Relay"));
-    m_userLabel = makeCaption(QStringLiteral("User"));
     m_nodeLabel = makeCaption(QStringLiteral("Node"));
     m_repoLabel = makeCaption(QStringLiteral("Repo"));
 
@@ -2980,8 +3066,10 @@ QWidget *MainWindow::buildBreadcrumb()
     m_chatUnreadBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_chatUnreadBadge->hide();
 
-    // Settings: its own top-level section (m_sectionStack index 1).
-    m_settingsNavButton = new QPushButton(QStringLiteral("Settings"));
+    // Settings: its own top-level section (m_sectionStack index 1). Icon-only
+    // (adhoc #137): it lives in the right-hand utility cluster next to the
+    // rebuild/restart button rather than as a labelled tab in the section nav.
+    m_settingsNavButton = new QPushButton;
     m_settingsNavButton->setObjectName("topNavButton");
     m_settingsNavButton->setCheckable(true);
     m_settingsNavButton->setCursor(Qt::PointingHandCursor);
@@ -2991,16 +3079,9 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_settingsNavButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
 
-    // Log: the full network log, next to Settings (m_sectionStack index 4).
-    m_logNavButton = new QPushButton(QStringLiteral("Log"));
-    m_logNavButton->setObjectName("topNavButton");
-    m_logNavButton->setCheckable(true);
-    m_logNavButton->setCursor(Qt::PointingHandCursor);
-    m_logNavButton->setToolTip(QString::fromUtf8("Network log \xE2\x80\x94 all activity"));
-    setOcticon(m_logNavButton, "list-unordered", 16);
-    m_navGroup->addButton(m_logNavButton, 4); // section 4: Log
-    connect(m_logNavButton, &QPushButton::clicked, this,
-            [this] { showSection(4); });
+    // Log (m_sectionStack index 4) no longer has a labelled tab in the section
+    // nav (adhoc #137): it's opened via the floating "Log" button overlaid on
+    // the always-on live-log strip, created in buildNetworkLogDock().
 
     // Leaderboards: the public network rankings (issue #11), section index 5.
     m_leaderboardNavButton = new QPushButton(QStringLiteral("Leaderboards"));
@@ -3224,6 +3305,10 @@ QWidget *MainWindow::buildBreadcrumb()
     searchClusterRow->addWidget(createGlobalSearchBox());
     chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
     chromeRow->addStretch();
+    // Relay radar, moved up onto the window-chrome line just left of the
+    // CPU/MEM/DISK sparklines so its latency readout reads the same way as
+    // theirs (adhoc #87).
+    chromeRow->addWidget(m_relayRadar);
     // Live CPU/MEM/DISK sparklines, moved up onto the window-chrome line next
     // to the minimize/maximize/close buttons (adhoc #33).
     chromeRow->addWidget(cpuChart);
@@ -3266,14 +3351,10 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *mainRow = new QHBoxLayout;
     mainRow->setContentsMargins(16, 0, 16, 0);
     mainRow->setSpacing(8);
-    mainRow->addWidget(m_relayIconButton);
-    mainRow->addWidget(m_relayLabel);
-    mainRow->addWidget(m_relayRadar); // radar + latency, left of the relay name
+    // m_relayRadar (radar + latency) now lives on the window-chrome line, just
+    // left of the CPU/MEM/DISK sparklines (adhoc #87).
     mainRow->addWidget(m_relayMenuButton);
     mainRow->addWidget(m_relayOpenButton);
-    mainRow->addSpacing(10);
-    mainRow->addWidget(m_userLabel);
-    mainRow->addWidget(m_userMenuButton);
     mainRow->addSpacing(10);
     mainRow->addWidget(m_nodeLabel);
     mainRow->addWidget(m_nodeMenuButton);
@@ -3305,9 +3386,9 @@ QWidget *MainWindow::buildBreadcrumb()
     // The provider usage gauges used to tuck in here; they now live in the
     // prompt toolbar next to the send buttons (adhoc #47, see buildNetworkLogDock).
     mainRow->addSpacing(4);
+    // Notification bell, tucked just left of the account avatar (adhoc #137).
+    mainRow->addWidget(m_notificationButton);
     mainRow->addWidget(m_userAvatarNavButton);
-    mainRow->addSpacing(2);
-    mainRow->addWidget(m_avatarNavButton);
     auto *mainRowHost = new QWidget;
     mainRowHost->setLayout(mainRow);
     mainRowHost->setMinimumWidth(0);
@@ -3322,7 +3403,10 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRowScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     mainRowScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     mainRowScroll->setMinimumWidth(0);
-    mainRowScroll->setFixedHeight(56);
+    // 40 matches the row's tallest element (the 40x40 avatar buttons); this used
+    // to be 56 to fit the online/reward toggle that has since moved into the
+    // node profile panel, leaving a dead strip of empty space below the row.
+    mainRowScroll->setFixedHeight(40);
     layout->addWidget(mainRowScroll);
 
     // Hairline divider separating the relay/node row from the section nav below.
@@ -3343,9 +3427,10 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_reposNavButton);
     navRow->addWidget(m_agentsNavButton);
     navRow->addWidget(m_chatButton);
-    navRow->addWidget(m_notificationButton);
-    navRow->addWidget(m_settingsNavButton);
-    navRow->addWidget(m_logNavButton);
+    // Notifications (bell) and Settings (gear) moved out of the section nav
+    // (adhoc #137): the bell rides beside the avatar in mainRow, and the gear
+    // sits in the right-hand utility cluster next to the rebuild button. Log is
+    // now a floating button on the live-log strip.
     navRow->addWidget(m_leaderboardNavButton);
     navRow->addWidget(m_hostsNavButton);
     navRow->addWidget(m_nodesNavButton);
@@ -3380,6 +3465,7 @@ QWidget *MainWindow::buildBreadcrumb()
     navUtilityRow->addWidget(m_navDrawButton);
     navUtilityRow->addWidget(m_navScreenshotButton);
     navUtilityRow->addWidget(m_navResizeButton);
+    navUtilityRow->addWidget(m_settingsNavButton); // gear, next to rebuild (adhoc #137)
     navUtilityRow->addWidget(m_navRebuildButton);
     auto *navUtilityHost = new QWidget;
     navUtilityHost->setLayout(navUtilityRow);
@@ -3412,6 +3498,25 @@ void MainWindow::updateNavRebuildButton()
     if (m_navRebuildButton)
         m_navRebuildButton->setVisible(
             QSettings().value(kShowRebuildButtonSetting, false).toBool());
+}
+
+// Pin the floating "Log" button to the bottom-right corner of the live-log
+// strip, clearing the vertical scrollbar when it's showing so the button never
+// overlaps it. Called on creation and on every strip resize (see eventFilter).
+void MainWindow::positionFloatingLogButton()
+{
+    if (!m_floatingLogButton || !m_footerUpdateLog)
+        return;
+    m_floatingLogButton->adjustSize();
+    constexpr int kMargin = 8;
+    const QSize sz = m_floatingLogButton->size();
+    int scrollbarW = 0;
+    if (QScrollBar *sb = m_footerUpdateLog->verticalScrollBar(); sb && sb->isVisible())
+        scrollbarW = sb->width();
+    m_floatingLogButton->move(
+        m_footerUpdateLog->width() - sz.width() - kMargin - scrollbarW,
+        m_footerUpdateLog->height() - sz.height() - kMargin);
+    m_floatingLogButton->raise();
 }
 
 // Screenshot button: drop a transparent overlay (the live desktop stays visible),
@@ -3512,12 +3617,11 @@ void MainWindow::updateConnectionStatus()
         color = "#8b949e"; // grey: offline / not started
         text = QStringLiteral("Offline");
     }
-    // The status text rides on the avatar tooltip; the dot itself just shows the
-    // colour. (The count can change while the colour doesn't, so the tooltip is
-    // always refreshed but the dot stylesheet is only rewritten on colour change.)
-    if (m_avatarNavButton)
-        m_avatarNavButton->setToolTip(
-            QString::fromUtf8("%1 \xC2\xB7 your node profile").arg(text));
+    // The status text rides on the dot's own tooltip; the dot itself just shows
+    // the colour. (The count can change while the colour doesn't, so the tooltip
+    // is always refreshed but the dot stylesheet is only rewritten on colour
+    // change.)
+    m_connectionDot->setToolTip(text);
     if (color == m_connectionStatusColor)
         return;
     m_connectionStatusColor = color;
@@ -3645,13 +3749,11 @@ void MainWindow::updateRelaySwitcher()
     if (m_activeServer >= 0 && m_activeServer < m_servers.size())
         host = serverHost(m_servers.at(m_activeServer).url);
 
-    if (m_relayIconButton) {
-        m_relayIconButton->setIcon(
-            (m_activeServer >= 0 && m_activeServer < m_servers.size())
-                ? QIcon(faviconFor(m_servers.at(m_activeServer)))
-                : QIcon(letterFavicon(host.isEmpty() ? QStringLiteral("ForkMesh")
-                                                     : host)));
-    }
+    m_relayMenuButton->setIcon(
+        (m_activeServer >= 0 && m_activeServer < m_servers.size())
+            ? QIcon(faviconFor(m_servers.at(m_activeServer)))
+            : QIcon(letterFavicon(host.isEmpty() ? QStringLiteral("ForkMesh")
+                                                 : host)));
     if (m_relayOpenButton)
         m_relayOpenButton->setEnabled(!host.isEmpty());
 
@@ -3973,14 +4075,6 @@ void MainWindow::updateUserSwitcher()
                                            : QStringLiteral("node"));
     }
     const QString user = topBarUserName();
-    const QString label = user.isEmpty() ? QStringLiteral("User") : user;
-    if (m_userMenuButton) {
-        m_userMenuButton->setText(label);
-        m_userMenuButton->setToolTip(
-            user.isEmpty()
-                ? QStringLiteral("Open your user account settings")
-                : QStringLiteral("User account: %1").arg(user));
-    }
     if (m_userAvatarNavButton) {
         m_userAvatarNavButton->setToolTip(
             user.isEmpty()
@@ -3989,6 +4083,9 @@ void MainWindow::updateUserSwitcher()
     }
     updateUserAvatarButton();
     updateChatIdentity();
+    // The top-right node-name label folds in the user account name
+    // ("user/node"), so keep it in step with the user identity too.
+    updateNavSolanaBalance();
 }
 
 void MainWindow::cycleNavSolanaCurrency()
@@ -4012,7 +4109,16 @@ void MainWindow::cycleNavSolanaCurrency()
 void MainWindow::updateNavSolanaBalance()
 {
     if (m_navNodeName) {
-        const QString name = accountNameFromInput(m_userName, QString());
+        // "user/node" (e.g. "jett/forkmesh") when this node has a distinct
+        // owning user account; just the node name for a solo/unclaimed node,
+        // where topBarUserName() already falls back to the node name itself.
+        const QString nodeName = accountNameFromInput(m_userName, QString());
+        const QString user = topBarUserName().trimmed();
+        const QString name =
+            (!user.isEmpty() && !nodeName.isEmpty() &&
+             user.compare(nodeName, Qt::CaseInsensitive) != 0)
+                ? user + QStringLiteral("/") + nodeName
+                : nodeName;
         // Admins get a little crown next to their name. U+1F451 (👑).
         const QString crown = QString::fromUtf8(" \xF0\x9F\x91\x91");
         m_navNodeName->setText(m_isAdmin && !name.isEmpty() ? name + crown : name);
@@ -10605,19 +10711,15 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileMirrors->setWordWrap(true);
     m_profileMirrors->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
-    // --- User profile: this node is key-bound on its own, but a person can own
-    // many nodes. Feature the user account first, then list the nodes attached
-    // to it with machine icons underneath.
+    // --- User profile: kept around (unparented, never added to the layout) so
+    // refreshProfileAccountStatus() can still drive the link-state side effects
+    // it shares with other visible widgets (m_profileLinkBrowserButton,
+    // updateUserSwitcher()). The card itself is no longer shown — the node's
+    // own avatar/name already headline the left column, so a second "linked to
+    // user X" card here was redundant.
     m_profileAccountSection = new QWidget;
     m_profileAccountSection->setObjectName("profileUserCard");
     auto *accountLabel = makeProfileSection("USER PROFILE");
-    m_profileUserAvatar = new QLabel;
-    m_profileUserAvatar->setObjectName("profileUserAvatar");
-    m_profileUserAvatar->setFixedSize(54, 54);
-    m_profileUserAvatar->setAlignment(Qt::AlignCenter);
-    m_profileUserName = new QLabel;
-    m_profileUserName->setObjectName("profileUserName");
-    m_profileUserName->setWordWrap(true);
     m_profileAccountStatus = new QLabel;
     m_profileAccountStatus->setObjectName("statusLine");
     m_profileAccountStatus->setWordWrap(true);
@@ -10638,21 +10740,11 @@ QWidget *MainWindow::buildNodeProfilePanel()
         "many nodes.");
     connect(m_profileLinkUserButton, &QPushButton::clicked, this,
             &MainWindow::promptLinkNodeToUser);
-    auto *accountIdentityRow = new QHBoxLayout;
-    accountIdentityRow->setContentsMargins(0, 0, 0, 0);
-    accountIdentityRow->setSpacing(10);
-    accountIdentityRow->addWidget(m_profileUserAvatar, 0, Qt::AlignTop);
-    auto *accountTextColumn = new QVBoxLayout;
-    accountTextColumn->setContentsMargins(0, 0, 0, 0);
-    accountTextColumn->setSpacing(2);
-    accountTextColumn->addWidget(m_profileUserName);
-    accountTextColumn->addWidget(m_profileAccountStatus);
-    accountIdentityRow->addLayout(accountTextColumn, 1);
     auto *accountLayout = new QVBoxLayout(m_profileAccountSection);
     accountLayout->setContentsMargins(10, 10, 10, 10);
     accountLayout->setSpacing(6);
     accountLayout->addWidget(accountLabel);
-    accountLayout->addLayout(accountIdentityRow);
+    accountLayout->addWidget(m_profileAccountStatus);
     accountLayout->addWidget(m_profileUserNodesList);
     accountLayout->addWidget(m_profileLinkUserButton, 0, Qt::AlignLeft);
 
@@ -10806,7 +10898,6 @@ QWidget *MainWindow::buildNodeProfilePanel()
     layout->setContentsMargins(24, 20, 24, 20);
     layout->setSpacing(6);
     layout->addLayout(topRow);
-    layout->addWidget(m_profileAccountSection);
     layout->addWidget(m_profileSelfActions); // "THIS NODE" actions pinned up top
     layout->addLayout(columnsRow);
 
@@ -11010,7 +11101,9 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     if (m_profileLinkBrowserButton)
         m_profileLinkBrowserButton->setVisible(info.self);
     if (m_profileAccountSection) {
-        m_profileAccountSection->setVisible(info.self);
+        // Never shown (see construction comment above); still refreshed for its
+        // side effects on other visible widgets.
+        m_profileAccountSection->setVisible(false);
         if (info.self)
             refreshProfileAccountStatus();
     }
@@ -11168,21 +11261,6 @@ void MainWindow::renderProfileAccountStatus()
     if (userName.isEmpty() && (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty()))
         userName = accountOwner().trimmed().toLower();
     const bool hasUserProfile = !userName.isEmpty();
-    if (m_profileUserName) {
-        m_profileUserName->setText(
-            hasUserProfile ? userName.toHtmlEscaped()
-                           : QStringLiteral("No user linked yet"));
-    }
-    if (m_profileUserAvatar) {
-        const QByteArray avatarBytes =
-            hasUserProfile ? effectiveUserAvatar()
-                           : forkMeshAvatarPng(accountOwner());
-        const QPixmap pm = roundedAvatar(avatarBytes, 54);
-        if (!pm.isNull())
-            m_profileUserAvatar->setPixmap(pm);
-        else
-            m_profileUserAvatar->clear();
-    }
     if (m_profileUserNodesList) {
         QStringList nodes = m_profileLinkedNodes;
         const QString self = accountOwner();

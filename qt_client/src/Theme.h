@@ -276,9 +276,11 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #commitsList {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
 }
-#commitsList::item { padding: 8px; color: #e6edf3; border-bottom: 1px solid #21262d; }
-#commitsList::item:hover { background-color: #161b22; padding: 8px; border-bottom: 1px solid #21262d; }
-#commitsList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 8px; border-bottom: 1px solid #21262d; }
+/* No per-row border: separators would slice across the commit-graph lanes;
+   the VS Code-style graph reads as continuous lines on a plain background. */
+#commitsList::item { padding: 8px; color: #e6edf3; }
+#commitsList::item:hover { background-color: #161b22; padding: 8px; }
+#commitsList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 8px; }
 #placeholderPanel { color: #e6edf3; font-size: 16px; }
 #insightsPage QLabel { background: transparent; }
 #insightsCard {
@@ -344,6 +346,11 @@ QPushButton#topNavButton[alert="true"] { color: #d29922; border-color: #9e6a03; 
 QPushButton#topNavButton[alert="true"]:checked {
     background-color: #1c1908; color: #f0b72f; border-color: #9e6a03;
 }
+QPushButton#floatingLogButton {
+    background-color: #21262d; border: 1px solid #30363d; border-radius: 6px;
+    color: #c9d1d9; font-size: 12px; font-weight: 600; padding: 4px 10px;
+}
+QPushButton#floatingLogButton:hover { background-color: #30363d; color: #e6edf3; }
 QPushButton#windowChromeButton, QPushButton#windowChromeCloseButton {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     color: #8b949e; padding: 0;
@@ -354,17 +361,18 @@ QPushButton#windowChromeButton:hover {
 QPushButton#windowChromeCloseButton:hover {
     background-color: #da3633; color: #ffffff; border-color: #da3633;
 }
-/* Top-row switchers (relay / user / node / repo): favicon + dropdown + open-in-browser */
-QPushButton#relayIconButton, QPushButton#relayOpenButton {
+/* Top-row switchers (relay / node / repo): dropdown (relay's shows its
+   favicon inline) + open-in-browser */
+QPushButton#relayOpenButton {
     background: transparent; border: none; border-radius: 8px; color: #8b949e;
 }
-QPushButton#relayMenuButton, QPushButton#userMenuButton,
+QPushButton#relayMenuButton,
 QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
     background: transparent; border: 1px solid #30363d; border-radius: 8px;
     color: #e6edf3; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
-QPushButton#relayIconButton:hover, QPushButton#relayOpenButton:hover,
-QPushButton#relayMenuButton:hover, QPushButton#userMenuButton:hover,
+QPushButton#relayOpenButton:hover,
+QPushButton#relayMenuButton:hover,
 QPushButton#nodeMenuButton:hover,
 QPushButton#repoMenuButton:hover {
     background-color: #161b22; color: #e6edf3;
@@ -487,6 +495,15 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,0.15); }
+/* Green outline on whichever send button Enter currently activates (adhoc #89),
+   toggled by MainWindow::updateQuickAddEnterTarget(). */
+QPushButton#quickAddSendIcon[enterTarget="true"] {
+    border: 1px solid #3fb950; background: rgba(63,185,80,0.08);
+}
+QLabel#quickAddEnterBadge {
+    background: #3fb950; color: #0d1117; border-radius: 7px;
+    font-size: 9px; font-weight: 600;
+}
 #issueSearch {
     background-color: #0d1117; border: 1px solid #30363d;
     border-radius: 6px; padding: 6px 10px;
@@ -831,6 +848,15 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,0.15); }
+/* Green outline on whichever send button Enter currently activates (adhoc #89),
+   toggled by MainWindow::updateQuickAddEnterTarget(). */
+QPushButton#quickAddSendIcon[enterTarget="true"] {
+    border: 1px solid #3fb950; background: rgba(63,185,80,0.08);
+}
+QLabel#quickAddEnterBadge {
+    background: #3fb950; color: #0d1117; border-radius: 7px;
+    font-size: 9px; font-weight: 600;
+}
 /* Footer prompt bottom bar (adhoc #99): the Auto/Create-issue/Agent toggles get
    a green filled checkmark instead of the generic blue-filled indicator, and the
    Agent controls sit in a thin bordered box centred in the bar. */
@@ -894,8 +920,11 @@ QPushButton#agentStatusDot {
     background: transparent; border: none; padding: 0; border-radius: 3px;
 }
 QPushButton#agentStatusDot:hover { background: rgba(139,148,158,0.2); }
-#agentStatusScroll { background: transparent; border: none; }
-#agentStatusScroll > QWidget > QWidget { background: transparent; }
+QPushButton#agentStatusMore {
+    background: transparent; border: none; color: #8b949e;
+    font-weight: 600; font-size: 12px; padding: 2px 4px; border-radius: 4px;
+}
+QPushButton#agentStatusMore:hover { color: #e6edf3; background: rgba(139,148,158,0.2); }
 /* Small "fix conflicts with agent" button (adhoc #139) at the end of the
    footer's "Agents:" strip; only shown while the selected session conflicts. */
 QPushButton#agentStatusFixButton {
@@ -1016,6 +1045,15 @@ QLineEdit#issueSearch, QComboBox#issueControlSm {
     max-height: 28px;
 }
 QLineEdit#issueSearch:focus, QComboBox#issueControlSm:focus { border-color: #58a6ff; }
+/* The commit-message compose field wears a clearly visible border so it reads
+   as an input box rather than blending into the source-control panel. */
+QLineEdit#messageInput {
+    background-color: #0d1117;
+    border: 1px solid #484f58;
+    border-radius: 8px;
+    padding: 6px 10px;
+}
+QLineEdit#messageInput:focus { border-color: #58a6ff; }
 QPlainTextEdit#issueComposerSm {
     background-color: #161b22;
     color: #e6edf3;
@@ -1427,9 +1465,10 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #commitsList {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
 }
-#commitsList::item { padding: 8px; color: #1f2328; border-bottom: 1px solid #d8dee4; }
-#commitsList::item:hover { background-color: #f6f8fa; padding: 8px; border-bottom: 1px solid #d8dee4; }
-#commitsList::item:selected { background-color: #0969da; color: #ffffff; padding: 8px; border-bottom: 1px solid #d8dee4; }
+/* No per-row border: separators would slice across the commit-graph lanes. */
+#commitsList::item { padding: 8px; color: #1f2328; }
+#commitsList::item:hover { background-color: #f6f8fa; padding: 8px; }
+#commitsList::item:selected { background-color: #0969da; color: #ffffff; padding: 8px; }
 #placeholderPanel { color: #1f2328; font-size: 16px; }
 #insightsPage QLabel { background: transparent; }
 #insightsCard {
@@ -1523,17 +1562,23 @@ QPushButton#topNavButton[alert="true"] { color: #9a6700; border-color: #d4a72c; 
 QPushButton#topNavButton[alert="true"]:checked {
     background-color: #fff8c5; color: #7d4e00; border-color: #d4a72c;
 }
-/* Top-row switchers (relay / user / node / repo): favicon + dropdown + open-in-browser */
-QPushButton#relayIconButton, QPushButton#relayOpenButton {
+QPushButton#floatingLogButton {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
+    color: #24292f; font-size: 12px; font-weight: 600; padding: 4px 10px;
+}
+QPushButton#floatingLogButton:hover { background-color: #f3f4f6; color: #1f2328; }
+/* Top-row switchers (relay / node / repo): dropdown (relay's shows its
+   favicon inline) + open-in-browser */
+QPushButton#relayOpenButton {
     background: transparent; border: none; border-radius: 8px; color: #656d76;
 }
-QPushButton#relayMenuButton, QPushButton#userMenuButton,
+QPushButton#relayMenuButton,
 QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
     background: transparent; border: 1px solid #d0d7de; border-radius: 8px;
     color: #1f2328; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
-QPushButton#relayIconButton:hover, QPushButton#relayOpenButton:hover,
-QPushButton#relayMenuButton:hover, QPushButton#userMenuButton:hover,
+QPushButton#relayOpenButton:hover,
+QPushButton#relayMenuButton:hover,
 QPushButton#nodeMenuButton:hover,
 QPushButton#repoMenuButton:hover {
     background-color: #eaeef2; color: #1f2328;
@@ -1656,6 +1701,15 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #1a7f37; background: rgba(26,127,55,0.12); }
+/* Green outline on whichever send button Enter currently activates (adhoc #89),
+   toggled by MainWindow::updateQuickAddEnterTarget(). */
+QPushButton#quickAddSendIcon[enterTarget="true"] {
+    border: 1px solid #1a7f37; background: rgba(26,127,55,0.08);
+}
+QLabel#quickAddEnterBadge {
+    background: #1a7f37; color: #ffffff; border-radius: 7px;
+    font-size: 9px; font-weight: 600;
+}
 #issueSearch {
     background-color: #ffffff; border: 1px solid #d0d7de;
     border-radius: 6px; padding: 6px 10px;
@@ -1981,6 +2035,15 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #1a7f37; background: rgba(26,127,55,0.12); }
+/* Green outline on whichever send button Enter currently activates (adhoc #89),
+   toggled by MainWindow::updateQuickAddEnterTarget(). */
+QPushButton#quickAddSendIcon[enterTarget="true"] {
+    border: 1px solid #1a7f37; background: rgba(26,127,55,0.08);
+}
+QLabel#quickAddEnterBadge {
+    background: #1a7f37; color: #ffffff; border-radius: 7px;
+    font-size: 9px; font-weight: 600;
+}
 /* Footer prompt bottom bar (adhoc #99): see the dark-theme block above for the
    rationale — green filled checkmark indicators plus a thin bordered Agent box. */
 QCheckBox#quickAddAutoCheck::indicator,
@@ -2042,8 +2105,11 @@ QPushButton#agentStatusDot {
     background: transparent; border: none; padding: 0; border-radius: 3px;
 }
 QPushButton#agentStatusDot:hover { background: rgba(110,119,129,0.2); }
-#agentStatusScroll { background: transparent; border: none; }
-#agentStatusScroll > QWidget > QWidget { background: transparent; }
+QPushButton#agentStatusMore {
+    background: transparent; border: none; color: #6e7781;
+    font-weight: 600; font-size: 12px; padding: 2px 4px; border-radius: 4px;
+}
+QPushButton#agentStatusMore:hover { color: #1f2328; background: rgba(110,119,129,0.2); }
 QPushButton#agentStatusFixButton {
     background: transparent; border: 1px solid #1a7f37; border-radius: 5px; padding: 0;
 }
@@ -2162,6 +2228,14 @@ QLineEdit#issueSearch, QComboBox#issueControlSm {
     max-height: 28px;
 }
 QLineEdit#issueSearch:focus, QComboBox#issueControlSm:focus { border-color: #0969da; }
+/* Clearly-bordered commit-message compose field (see the dark-theme note). */
+QLineEdit#messageInput {
+    background-color: #ffffff;
+    border: 1px solid #afb8c1;
+    border-radius: 8px;
+    padding: 6px 10px;
+}
+QLineEdit#messageInput:focus { border-color: #0969da; }
 QPlainTextEdit#issueComposerSm {
     background-color: #ffffff;
     color: #1f2328;

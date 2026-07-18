@@ -248,6 +248,19 @@ def test_worker_profile_public_edits_and_follows_accept_signed_session_token():
     assert 'data.get("password", "")' not in public_edit_block
 
 
+def test_public_profile_fields_whitelist_allows_the_always_sent_password_key():
+    # The dashboard's profilePayload() always includes a `password` field, even
+    # on pages (like the public-profile editor) that have no password input and
+    # send it empty. If `password` is missing from public_profile_fields the
+    # session-authed save falls through to the credentials branch and 401s with
+    # invalid_credentials no matter how recently the user signed in (adhoc #49).
+    whitelist_block = ENTRY_TEXT[
+        ENTRY_TEXT.index("public_profile_fields = {"):
+        ENTRY_TEXT.index("session_bi, session_rec = await _account_session_record")
+    ]
+    assert '"password"' in whitelist_block
+
+
 def test_worker_public_profile_page_wires_follow_and_public_mode():
     # /@name now serves the FULL dashboard profile document; the follow
     # control and foreign-profile rendering live in the dashboard bundle.
