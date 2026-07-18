@@ -4,7 +4,7 @@ number: 24
 title: Agent: add the ability to generate release notes with an agent here the release note…
 base: main
 head: agent/adhoc-72-add-the-ability-to-generate-release-notes-with-a
-status: open
+status: merged
 ts: 1784335129513
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh
