@@ -844,7 +844,16 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             true);
         return;
     }
-    if (QMessageBox::question(
+    // A merge with no worktree to prune and no agent to tear down (e.g. the
+    // Branches view's "Merge to main") only adds a merge commit to the base branch
+    // — it deletes nothing — so, like the sibling "Update from main" action, it runs
+    // straight from the deliberate button click without a modal dialog popping up
+    // over the view. adhoc #130: "just do the merge in the background, don't jump
+    // around." Destructive merges (that remove a worktree/branch or delete the
+    // agent) still confirm first, since those can discard work.
+    const bool destructive = !worktreePath.isEmpty() || deleteAgent;
+    if (destructive &&
+        QMessageBox::question(
             this, QStringLiteral("Merge into %1").arg(base),
             deleteAgent
                 ? QStringLiteral("Merge branch %1 into %2, then delete its worktree, "
