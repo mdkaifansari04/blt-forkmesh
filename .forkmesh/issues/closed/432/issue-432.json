@@ -78,6 +78,15 @@
             "sig": "XPJOup8KHnxzhIY15iD6FvnPKDaNO-Z58FM2awaRCY2B2mBDOVKpV5l0Y_RlOCYpFvmaY81PgP2B0UItm4B5Cw",
             "ts": 1784334139917,
             "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "8cba0436-6f6c-49dc-b33e-0fa5eeeb3b09",
+            "sig": "kmWrVeg8yRp1Ri0Uum2a15I3ePAhSJvhv-Jn_BsAHLVenh1iqR9XNn1WYLP6p2K7_a8uIkCbPfM7YfbtAo-OAA",
+            "status": "closed",
+            "ts": 1784334139965,
+            "type": "status"
         }
     ],
     "labels": [
@@ -88,8 +97,8 @@
     "progress": 0,
     "schema": "forkmesh-issue-v1",
     "startDate": 0,
-    "status": "open",
+    "status": "closed",
     "title": "on this solana bounty popup show more info like who is the auhtor and all addresses involved with links to their explorer",
-    "updatedAt": 1784334139917,
+    "updatedAt": 1784334139965,
     "votes": 0
 }
