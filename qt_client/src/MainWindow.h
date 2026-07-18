@@ -57,6 +57,7 @@ struct AgentDiffStat {
 #include <QMetaType>
 #include <QPixmap>
 #include <QSet>
+#include <QTextBlockUserData>
 #include <QTextCursor>
 #include <QThread>
 #include <QUrl>
@@ -64,6 +65,15 @@ struct AgentDiffStat {
 
 #include <functional>
 #include <limits>
+
+// Attached to each block of the always-on footer log (adhoc #133) so a clipped,
+// no-wrap line still carries its full untruncated text — surfaced on hover and
+// used to open the full Log view at the matching entry on click.
+class FooterLogLineData : public QTextBlockUserData {
+public:
+    explicit FooterLogLineData(QString line) : rawLine(std::move(line)) {}
+    QString rawLine;
+};
 
 class MessageRow;
 class MarkdownEditor;
@@ -711,6 +721,9 @@ private:
     // (Re)apply the always-on footer log line's inline stylesheet for the active
     // theme, tinting the text by the current line's tone. Called on theme switch.
     void styleFooterUpdateLog();
+    // Open the full Log section (section 4) and scroll it to the entry matching a
+    // line clicked in the always-on footer strip (adhoc #133).
+    void openFullLogAtFooterLine(const QString &rawLine);
     void persistProfile();
 
     // Chat page

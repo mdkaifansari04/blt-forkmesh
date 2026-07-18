@@ -932,13 +932,25 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerUpdateLog->setObjectName("footerUpdateLog");
     m_footerUpdateLog->setReadOnly(true);
     m_footerUpdateLog->setFrameShape(QFrame::NoFrame);
-    m_footerUpdateLog->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    // Don't wrap (adhoc #133): a long line clips at the right edge instead of
+    // reflowing onto extra rows, so every entry stays one row tall and the strip
+    // reads like a dense log tail. The full text is still reachable — hovering a
+    // line shows it in a tooltip and clicking opens the full Log view at it.
+    m_footerUpdateLog->setLineWrapMode(QPlainTextEdit::NoWrap);
     m_footerUpdateLog->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_footerUpdateLog->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_footerUpdateLog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_footerUpdateLog->setMinimumWidth(0);
     m_footerUpdateLog->setToolTip(
-        "Live log \xE2\x80\x94 scroll up to search back through recent history.");
+        "Live log \xE2\x80\x94 click a line to open the full Log at it; scroll up "
+        "to search back through recent history.");
+    // Per-line hover tooltips (the full, untruncated line) and click-to-open are
+    // driven from MainWindow::eventFilter on the viewport; the hand cursor hints
+    // that the lines are clickable. Mouse tracking is left off deliberately so a
+    // plain hover doesn't fire QPlainTextEdit's own mouse-move handler, which
+    // would otherwise flip the cursor back to an I-beam over the text.
+    m_footerUpdateLog->viewport()->setCursor(Qt::PointingHandCursor);
+    m_footerUpdateLog->viewport()->installEventFilter(this);
     // Bound the live buffer the same way the seed below is bounded, so it can't
     // grow without limit over a long-running session.
     m_footerUpdateLog->setMaximumBlockCount(kFooterLogSeedLines);
