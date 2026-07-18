@@ -1,0 +1,56 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 441,
+    "title": "Export and import verified offline repository bundles",
+    "status": "open",
+    "labels": [
+        "feature"
+    ],
+    "milestone": "Resilient operation",
+    "startDate": 1784779200000,
+    "endDate": 1785124800000,
+    "priority": 8,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784402987627,
+    "updatedAt": 1784405500071,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-441",
+            "title": "Export and import verified offline repository bundles",
+            "body": "## Outcome\n\nMove a repository and its in-repo collaboration history between disconnected nodes with integrity checks before any destination changes.\n\n## Implementation\n\n- Add one bundle service used by desktop actions and headless commands.\n- Export selected refs with a sidecar manifest containing repository identity, included refs, object format, byte size, creation time, and sha256.\n- Stream bundle creation and verification off the GUI thread with progress and cancellation.\n- On import, verify checksum, prerequisites, repository identity, and refs before creating or updating a mirror.\n- Make repeated import of the same bundle idempotent and keep partial output outside the destination.\n\n## Acceptance criteria\n\n- A round trip preserves selected code refs and `.forkmesh` collaboration records.\n- Corrupt, truncated, prerequisite-missing, or wrong-repository bundles are rejected without touching the destination.\n- Re-importing the same bundle produces no duplicate refs or records.\n- Large files do not buffer fully in application memory or block the GUI.\n- Desktop and headless paths share verification code.\n\n## Dependencies\n\nDepends on #435 for the Git compatibility harness.\n\n## Verification\n\nTest empty, multi-branch, tagged, collaboration-heavy, incremental, corrupt, wrong-identity, canceled, and large simulated bundle cases.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987627,
+            "sig": "iZNnXU6xBhBFlRRpnxc96P9naD2EW1YVkuYq1f0_J-IeJVDrzCS0sfGejyv4D8GjOHi2kOjVCYlRmefUYNliDA"
+        },
+        {
+            "type": "dates",
+            "startDate": 1784952000000,
+            "endDate": 1785297600000,
+            "id": "91c97514-e4f0-4a81-8313-380aa4816655",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987628,
+            "sig": "wUSULDvqN9r9P0tnzbQYPkzOqKIfHdZ2smKrVx5B7cHRtiB3o_iUEo2zsNR0xcfZvS2xLOnnVlUy6rH8GzwrDg"
+        },
+        {
+            "type": "dates",
+            "id": "455b9b91-a1fd-4e20-b253-ac7395db772b",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500071,
+            "startDate": 1784779200000,
+            "endDate": 1785124800000,
+            "sig": "WjqUlZ5pUwCp8TgAZxdM-BorUiX3HHun_1KsI21VikRysPfoOEqARpjhxeX_JiXLlM_3vA0_Ekw6vLgLpc3KAg"
+        }
+    ]
+}

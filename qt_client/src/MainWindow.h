@@ -1812,6 +1812,9 @@ private:
     void openRepoDetailDeferred(int repoIndex);
     // Blank the repo-detail panel when the selected node has no repositories.
     void clearRepoDetail();
+    // Show/hide the repo header action buttons (Notify/Fork/Mirror/Source/Open)
+    // for the given m_repoDetailStack index; hidden on the Agents tab.
+    void updateRepoActionButtonsVisibility(int stackIndex);
     void openRepositoryWebsite(); // open the current repo's page in the browser
     void forkCurrentRepo();       // clone the open repo into your own node
     void downloadCurrentRepoZip();
@@ -1884,6 +1887,11 @@ private:
     void loadBranchesAndTags();
     QStringList repoBranches() const;
     QString repoDefaultBranch(const QStringList &branches) const;
+    // Cheap default-branch lookup for hot UI paths (e.g. selecting an agent
+    // session) that must NOT pay for repoBranches()'s `--sort=-committerdate`,
+    // which reads every branch tip and can block the UI for hundreds of ms on
+    // repos with many agent branches.
+    QString repoDefaultBranchFast() const;
     QWidget *buildBranchesTab();
     void loadBranchesPanel();
     QWidget *buildWorktreesTab();
@@ -3794,6 +3802,7 @@ private:
     QLabel *m_repoHeaderTitle = nullptr;
     QLabel *m_repoDetailNotice = nullptr;
     QLabel *m_repoDetailStatus = nullptr;
+    QPushButton *m_notifyButton = nullptr;
     QPushButton *m_forkButton = nullptr;
     QPushButton *m_mirrorButton = nullptr;
     QPushButton *m_sourceButton = nullptr;
@@ -4713,7 +4722,9 @@ private:
     // running on a mirror still gets its work to the source of truth. `commits` is
     // the optional format-patch mbox the owner replays to preserve authorship;
     // pass empty when none is available (the owner synthesizes one from the patch).
-    void landAgentPullForSession(AgentSession &session, const QString &patch,
+    // Takes the session by value: creating the PR pumps the GUI event loop, and a
+    // reloadAgents() during the pump would leave a reference dangling (adhoc #149).
+    void landAgentPullForSession(AgentSession session, const QString &patch,
                                  const QString &commits);
     bool isStreamTranscriptSession(int sessionId) const;
     // Lazily restore a session's persisted transcript events from disk (issue

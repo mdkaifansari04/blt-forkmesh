@@ -22,6 +22,11 @@ run_worker_first = [
   "/.well-known/*",
   "/ap/*",
   "/nodeinfo/*",
+  # In production, forkmesh.com/ itself is owned by the separate marketing
+  # Worker (../cloudflare_marketing_worker) via an exact-match route, which
+  # takes precedence over this Worker for the root URL only. This "/" entry
+  # keeps the relay's homepage handler working as the fallback on workers.dev
+  # previews and in local dev, where no route splitting exists.
   "/",
   "/health",
   "/simulate-sentry-error",

@@ -1,0 +1,48 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 470,
+    "title": "Run repository workflows in isolated headless executors",
+    "status": "open",
+    "labels": [
+        "infra",
+        "feature",
+        "security"
+    ],
+    "milestone": "Open operations",
+    "startDate": 1784520000000,
+    "endDate": 1785038400000,
+    "priority": 38,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784405500049,
+    "updatedAt": 1784405500050,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-470",
+            "title": "Run repository workflows in isolated headless executors",
+            "body": "## Outcome\n\nTurn the existing local workflow runner contract into a bounded headless executor that can produce signed checks for an exact commit.\n\n## Implementation\n\n- Define signed run requests bound to repository identity, commit, workflow digest, requested capabilities, and requester role.\n- Execute in an isolated temporary workspace with CPU, memory, process, time, disk, output, and configurable network limits.\n- Support local and remote executor registration through the same protocol without requiring a hosted runner.\n- Stream bounded logs, redact configured secrets, handle cancellation, and sign terminal result metadata.\n- Publish queued, running, passed, failed, canceled, and timed-out checks through #471.\n\n## Acceptance criteria\n\n- A result cannot be applied to a different commit or workflow digest.\n- Host files, processes, credentials, and private network routes are inaccessible unless explicitly granted.\n- Cancellation and timeout leave no process or writable workspace behind.\n- Logs and artifacts remain within configured byte and retention limits.\n- Local and remote fixture executors produce the same normalized check contract.\n\n## Dependencies\n\nUses the repository's existing local action runner as the baseline and feeds #454 and #471.\n\n## Verification\n\nRun success, failure, timeout, fork bomb, memory, disk, output, cancellation, secret, network-denied, artifact, remote-disconnect, replay, and wrong-commit fixtures.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500049,
+            "sig": "WqRiQTrCmMbp9j6K02br0OmvhFhiI-mwp8xMxXMxBjA5y1IQ9grSGnTweUtNxDjtIMi8Meoo9tgmF3zdlSidAg"
+        },
+        {
+            "type": "dates",
+            "id": "90129852-f9f1-411a-8106-f2427e191f73",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500050,
+            "startDate": 1784520000000,
+            "endDate": 1785038400000,
+            "sig": "AF1CLC91-LQFW3Neo5R2KufHrvpJWKIbUUSaDSe7X3uTclodL3gThU07T3FyuzWZizmKW807dQdJnjebqLaVDw"
+        }
+    ]
+}

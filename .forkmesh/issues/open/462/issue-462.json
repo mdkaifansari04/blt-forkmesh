@@ -1,0 +1,46 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 462,
+    "title": "Enforce interaction, accessibility, and performance budgets",
+    "status": "open",
+    "labels": [
+        "enhancement"
+    ],
+    "milestone": "Secure collaboration",
+    "startDate": 1784347200000,
+    "endDate": 1785211200000,
+    "priority": 30,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784405500033,
+    "updatedAt": 1784405500034,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-462",
+            "title": "Enforce interaction, accessibility, and performance budgets",
+            "body": "## Outcome\n\nKeep the expanded product fast, navigable, readable, and predictable through measured budgets rather than subjective polish claims.\n\n## Implementation\n\n- Set checked-in local and remote budgets for startup, repository browse, fuzzy search, diff render, graph render, command actions, and status refresh.\n- Add deterministic fuzzy-search relevance fixtures and commit-graph correctness checks.\n- Cover keyboard navigation, command palette, exact-command copy, dark and light themes, empty/loading/error states, and narrow viewports.\n- Add accessible names, focus order, contrast, reduced motion, and screen-reader snapshots for every new surface.\n- Run visual regression and performance tests for large diffs, long histories, many mirrors, and offline local-first operation.\n\n## Acceptance criteria\n\n- A budget regression fails the owning continuous-integration job with the measured delta.\n- Local cached repository actions remain usable with every network route disabled.\n- Fuzzy-search ordering and graph topology are deterministic.\n- No new surface requires a pointer or color alone.\n- The terminology contract from #460 passes in every snapshot.\n\n## Dependencies\n\nUses the complete test portfolio in #434 and vocabulary contract in #460.\n\n## Verification\n\nRun performance and visual fixtures on fixed data sets twice, compare normalized metrics and images, disable all routes for local flows, and inject keyboard, contrast, focus, and terminology regressions.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500033,
+            "sig": "ki7b4gbfBRY1JIF8qzgDUbSg2NVmi67ai_6PyDy4YY_AbM6tp-4FGqLIPEf-7qoW0Pkws6C_JYbHBX69xhtLBw"
+        },
+        {
+            "type": "dates",
+            "id": "cb9d4d25-653b-4759-9d8e-0a06c9effa01",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500034,
+            "startDate": 1784347200000,
+            "endDate": 1785211200000,
+            "sig": "3P6t9KV7N5Xt162-1PSsf5gIBSsoX5FJbiETYfoTLtM-6gyrWgoD983pH6Vrah24idhlpIsI7DajeDjulRvxBA"
+        }
+    ]
+}
