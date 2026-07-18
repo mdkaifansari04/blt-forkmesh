@@ -1343,25 +1343,50 @@ protected:
         // colours/shapes as the Mirror-nodes activity strip (adhoc #122). Each
         // node's position is derived from a hash of its id so blips stay put
         // between repaints instead of jittering as the sweep spins.
+        //
+        // Like a real radar, a blip is dark until the sweep's leading edge
+        // crosses it, then flashes bright and fades back to nothing over the
+        // next kFadeDeg of rotation before the line comes back around (adhoc
+        // #123). The leading edge sits at screen angle -m_angle (the same angle
+        // the sweep pie/gradient start from), so a blip lights the moment the
+        // sweep passes its own hash-derived angle.
         p.setPen(Qt::NoPen);
+        const int leadDeg = ((-m_angle) % 360 + 360) % 360;
+        constexpr int kFadeDeg = 150; // how far the sweep travels before a blip goes dark
         for (const Blip &b : m_blips) {
             const uint h = qHash(b.id);
-            const qreal ang = qDegreesToRadians(qreal(h % 360));
+            const int blipDeg = int(h % 360);
+            // Degrees the sweep has advanced past this blip since it was hit.
+            const int delta = (blipDeg - leadDeg + 360) % 360;
+            if (delta > kFadeDeg)
+                continue; // hidden until the sweep line reaches it again
+            const qreal glow = 1.0 - qreal(delta) / kFadeDeg;
+
+            const qreal ang = qDegreesToRadians(qreal(blipDeg));
             const qreal frac = 0.42 + qreal((h >> 9) % 100) / 100.0 * 0.42;
             const QPointF pos = c + QPointF(qCos(ang), qSin(ang)) * (r * frac);
-            const QColor col =
-                b.online ? QColor(b.behind ? "#d29922" : "#3fb950")
-                         : QColor("#484f58");
+            QColor col = b.online ? QColor(b.behind ? "#d29922" : "#3fb950")
+                                  : QColor("#484f58");
+
+            // Soft halo that pulses out brightest right as the line catches it.
+            QColor halo = col;
+            halo.setAlphaF(0.35 * glow);
+            p.setBrush(halo);
+            p.drawEllipse(pos, 3.0 + 4.0 * glow, 3.0 + 4.0 * glow);
+
             if (b.integrityFailing) {
                 // Amber caution triangle, matching MirrorActivityStrip.
-                p.setBrush(QColor("#d29922"));
-                const qreal s = 2.4;
+                QColor tri("#d29922");
+                tri.setAlphaF(glow);
+                p.setBrush(tri);
+                const qreal s = 4.0;
                 p.drawPolygon(QPolygonF({QPointF(pos.x(), pos.y() - s),
                                          QPointF(pos.x() + s, pos.y() + s),
                                          QPointF(pos.x() - s, pos.y() + s)}));
             } else {
+                col.setAlphaF(glow);
                 p.setBrush(col);
-                p.drawEllipse(pos, 1.8, 1.8);
+                p.drawEllipse(pos, 3.0, 3.0);
             }
         }
 
