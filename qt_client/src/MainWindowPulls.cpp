@@ -3295,6 +3295,11 @@ void MainWindow::buildAndPreviewCurrentPull()
         setRepoDetailNotice("This pull request has no head branch to build.", true);
         return;
     }
+    // Copy what we need out of the PR now: runGitCapture below pumps the GUI
+    // event loop, and a reloadPulls() serviced during the pump reassigns
+    // m_currentPulls, dangling `pr` (git-pump UAF family, adhoc #149).
+    const QString head = pr->head;
+    const int number = pr->number;
     const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
     const QString gitDir = repoGitDir();
     if (gitDir.isEmpty()) {
@@ -3304,7 +3309,7 @@ void MainWindow::buildAndPreviewCurrentPull()
     // Resolve the PR head to a concrete commit (as runChecksForCurrentPull does)
     // so the worktree is checked out at exactly what the PR proposes.
     QByteArray tip;
-    if (!runGitCapture(gitDir, {QStringLiteral("rev-parse"), pr->head}, &tip,
+    if (!runGitCapture(gitDir, {QStringLiteral("rev-parse"), head}, &tip,
                        nullptr) ||
         tip.trimmed().isEmpty()) {
         setRepoDetailNotice(
@@ -3312,7 +3317,6 @@ void MainWindow::buildAndPreviewCurrentPull()
         return;
     }
     const QString commit = QString::fromUtf8(tip).trimmed();
-    const int number = pr->number;
 
     // A stable per-PR worktree under temp, reused across rebuilds so the CMake
     // build directory (untracked, so a plain checkout never disturbs it) survives
@@ -3538,8 +3542,8 @@ void MainWindow::sendPullRevisionToAgent()
             break;
         }
     const AgentSession *linked = agentSessionForPull(m_currentPullNumber, head);
-    AgentSession *session = linked ? findAgentSession(linked->id) : nullptr;
-    if (!session) {
+    const int linkedId = linked ? linked->id : -1;
+    if (linkedId < 0 || !findAgentSession(linkedId)) {
         flashMessage(QStringLiteral("No agent session found for this pull request."),
                      true);
         return;
@@ -3550,6 +3554,17 @@ void MainWindow::sendPullRevisionToAgent()
     if (store.canWrite()) {
         QString error;
         store.addComment(m_currentPullNumber, feedback, &error);
+    }
+
+    // Re-find the session only now: addComment pumps the GUI event loop while
+    // waiting on git, and a reloadAgents() serviced during the pump rebuilds
+    // m_agentSessions — a pointer taken before it would dangle (git-pump UAF
+    // family, adhoc #149).
+    AgentSession *session = findAgentSession(linkedId);
+    if (!session) {
+        flashMessage(QStringLiteral("No agent session found for this pull request."),
+                     true);
+        return;
     }
 
     // Append the revision note to the agent log and re-queue.
@@ -4021,7 +4036,11 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir,
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
-    RepositoryRecord &currentRepo = m_repositories[m_repoDetailIndex];
+    // A value copy, not a reference: this function pumps the GUI event loop
+    // repeatedly (runGitCapture, dialog.exec()), and m_repositories can be
+    // reallocated while pumped, dangling a held reference (git-pump UAF family,
+    // adhoc #149). The one write-back below goes through the index explicitly.
+    RepositoryRecord currentRepo = m_repositories.at(m_repoDetailIndex);
     const QString dir = sourceDir.trimmed().isEmpty() ? repoGitDir() : sourceDir.trimmed();
     if (dir.isEmpty()) {
         QMessageBox::warning(this, "New pull request",
@@ -4054,6 +4073,8 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir,
         }
         if (currentRepo.localPath.isEmpty() || !QDir(currentRepo.localPath).exists()) {
             currentRepo.localPath = dir;
+            if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
+                m_repositories[m_repoDetailIndex].localPath = dir;
             saveRepositories();
             refreshRepositoryList();
         }
@@ -6816,7 +6837,11 @@ void MainWindow::sendCurrentPullToSource()
             "to the source of truth.");
         return;
     }
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    // Copy before the modal question below: its nested event loop can service a
+    // reloadPulls()/repo reload that reassigns m_currentPulls / m_repositories,
+    // dangling `pr` and a repo reference (git-pump UAF family, adhoc #149).
+    const PullRequest pull = *pr;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
     if (QMessageBox::question(
             this, "Send to source of truth",
             QStringLiteral(
@@ -6827,7 +6852,7 @@ void MainWindow::sendCurrentPullToSource()
                 .arg(repo.owner, repo.name),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
         return;
-    submitPullToInbox(*pr, repo);
+    submitPullToInbox(pull, repo);
 }
 
 // Toggle the pull-delete buttons together so none can launch a second history

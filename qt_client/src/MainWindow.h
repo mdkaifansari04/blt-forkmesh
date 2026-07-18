@@ -4709,7 +4709,9 @@ private:
     // running on a mirror still gets its work to the source of truth. `commits` is
     // the optional format-patch mbox the owner replays to preserve authorship;
     // pass empty when none is available (the owner synthesizes one from the patch).
-    void landAgentPullForSession(AgentSession &session, const QString &patch,
+    // Takes the session by value: creating the PR pumps the GUI event loop, and a
+    // reloadAgents() during the pump would leave a reference dangling (adhoc #149).
+    void landAgentPullForSession(AgentSession session, const QString &patch,
                                  const QString &commits);
     bool isStreamTranscriptSession(int sessionId) const;
     // Lazily restore a session's persisted transcript events from disk (issue
