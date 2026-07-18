@@ -2112,15 +2112,20 @@ public:
 };
 
 // One row shown in the floating strip above the Actions tab for each queued or
-// running workflow (adhoc #95, adhoc #105). Each action gets a single coloured
-// line drawn behind its name; the line shrinks from the right as the run advances
-// toward its estimated duration (the previous run of the same workflow), so its
-// remaining length is a rough "time left" gauge. Queued runs (no estimate to
-// count down against, or not started) keep a full line. The strip is sized by the
-// owner to span the Actions tab exactly, so the lines never bleed over the
-// neighbouring Security tab. Pure QWidget (no moc); the owner ticks it via
-// update() and reads the run id back off the "actionRunId" dynamic property in
-// its event filter.
+// running workflow (adhoc #95, adhoc #105, adhoc #112). Each action gets a single
+// green line whose brightness travels along it like an activity wave, so the
+// strip reads as "busy" even when nothing else about the row is changing. The
+// line shrinks from the right as the run advances toward its estimated duration
+// (the previous run of the same workflow), so its remaining length is a rough
+// "time left" gauge. Queued runs (no estimate to count down against, or not
+// started) keep a full line and skip the name label — with no clock running yet
+// there's nothing to name, so only the wave shows. Rows share one bordered box
+// (owned by the strip itself, see ensureActionStrip) rather than drawing their
+// own border, so several queued/running actions read as one box with multiple
+// lines. The strip is sized by the owner to span the Actions tab exactly, so the
+// lines never bleed over the neighbouring Security tab. Pure QWidget (no moc);
+// the owner ticks it via update() and reads the run id back off the
+// "actionRunId" dynamic property in its event filter.
 class ActionEstimateBox : public QWidget
 {
 public:
@@ -2161,36 +2166,49 @@ protected:
                 qBound(0.0, 1.0 - double(elapsed) / double(m_estimate), 1.0);
         }
 
-        // One horizontal line, centred behind the name, shrinking from the right
-        // as time elapses. A rainbow gradient keeps the colourful gauge look.
+        // One horizontal green line, shrinking from the right as time elapses. A
+        // brighter band travels along it on a loop (independent of the drain) so
+        // the row reads as an active "wave" rather than a static bar; a queued run
+        // (no clock yet) is still full-length but the wave keeps it visibly alive.
         const double x0 = box.left() + 4;
         const double x1 = box.right() - 4;
         const double y = box.center().y();
         const double x1lit = x0 + (x1 - x0) * remaining;
         if (x1lit > x0) {
+            static const QColor kBase(35, 134, 54);    // #238636
+            static const QColor kBright(86, 211, 100); // #56d364
+            const qint64 kPeriodMs = 1400;
+            const double phase =
+                double(QDateTime::currentMSecsSinceEpoch() % kPeriodMs) /
+                double(kPeriodMs);
             QLinearGradient grad(x0, y, x1, y);
-            const int kStops = 6;
-            for (int i = 0; i <= kStops; ++i)
-                grad.setColorAt(double(i) / kStops,
-                                QColor::fromHsv((i * 300 / kStops) % 360, 200, 235));
+            const int kStops = 24;
+            for (int i = 0; i <= kStops; ++i) {
+                const double t = double(i) / kStops;
+                double dist = qAbs(t - phase);
+                dist = qMin(dist, 1.0 - dist); // wrap the wave across the ends
+                const double blend = qMax(0.0, 1.0 - dist / 0.2);
+                grad.setColorAt(t,
+                                QColor(kBase.red() + int((kBright.red() - kBase.red()) * blend),
+                                       kBase.green() + int((kBright.green() - kBase.green()) * blend),
+                                       kBase.blue() + int((kBright.blue() - kBase.blue()) * blend)));
+            }
             p.setPen(QPen(QBrush(grad), 4, Qt::SolidLine, Qt::RoundCap));
             p.drawLine(QPointF(x0, y), QPointF(x1lit, y));
         }
 
-        // Rounded border over the line.
-        p.setPen(QPen(QColor(0, 0, 0, 160), 1));
-        p.setBrush(Qt::NoBrush);
-        p.drawRoundedRect(box, 4, 4);
-
-        // Workflow name on top of (in front of) the line, left-aligned.
-        QFont f = font();
-        f.setBold(true);
-        p.setFont(f);
-        p.setPen(QColor(0, 0, 0));
-        const QString elided = p.fontMetrics().elidedText(
-            m_name, Qt::ElideRight, int(box.width()) - 12);
-        p.drawText(box.adjusted(6, 0, -6, 0),
-                   Qt::AlignVCenter | Qt::AlignLeft, elided);
+        // A queued run has no clock running yet, so there's nothing to name — just
+        // the wave. Once running, the workflow name sits on top of the line.
+        if (m_started > 0) {
+            QFont f = font();
+            f.setBold(true);
+            p.setFont(f);
+            p.setPen(QColor(230, 237, 243));
+            const QString elided = p.fontMetrics().elidedText(
+                m_name, Qt::ElideRight, int(box.width()) - 12);
+            p.drawText(box.adjusted(6, 0, -6, 0),
+                       Qt::AlignVCenter | Qt::AlignLeft, elided);
+        }
     }
 
 private:
