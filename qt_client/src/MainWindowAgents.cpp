@@ -1366,6 +1366,10 @@ void MainWindow::pushAgentSessionsSnapshot()
 {
     if (!m_networkAccess || !m_agentStore || m_repositories.isEmpty())
         return;
+    // Off by default: a session started here in the desktop stays local unless
+    // the user opts into publishing agents to the web catalog in Settings.
+    if (!QSettings().value(kPublishAgentsToWebSetting, false).toBool())
+        return;
     // AgentSession::owner/name are the repo's owner/name (see repoKey()), not
     // this node's own account — group sessions by the repo they belong to.
     QHash<QString, QList<AgentSession>> byRepo;
