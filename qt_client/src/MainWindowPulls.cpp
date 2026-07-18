@@ -4247,9 +4247,17 @@ void MainWindow::mergeCurrentPull()
     // Issue #291: flag the agent session behind this PR as landed in main (after
     // reloadPulls so the agent table's PR column also reflects the merge).
     markAgentSessionsMerged(current.number, current.head);
-    // Push the merge (closed PR + any linked issue closes) to the mirror and
-    // notify peers.
-    propagateRepoUpdate(m_repoDetailIndex);
+    // Adhoc #110: only push the merge (closed PR + any linked issue closes) to the
+    // mirror and notify peers when the owner has opted into auto-sync-on-merge.
+    // Off by default: the merge stays local, refreshSourceControl above has
+    // already surfaced it on the floating "Sync" button, and nothing reaches main
+    // until the owner clicks it.
+    if (QSettings().value(kAutoSyncOnMergeSetting, false).toBool()) {
+        propagateRepoUpdate(m_repoDetailIndex);
+    } else {
+        logSystem(QStringLiteral("Merge landed locally — click \"Sync\" to publish "
+                                 "it to main (auto-sync-on-merge is off)."));
+    }
 }
 
 // Modal merge-conflict editor shared by the pull-request and branch merge flows.
@@ -7064,10 +7072,17 @@ void MainWindow::mergeAndDeleteCurrentPull()
     // are deleted below (after which it can no longer be detected on reload).
     markAgentSessionsMerged(m_currentPullNumber, head);
 
-    // Now delete the merged PR and its branch. propagate=true so the merge (and
-    // the PR's removal) reaches peers via the mirror.
+    // Now delete the merged PR and its branch. Adhoc #110: only propagate the
+    // merge (and the PR's removal) to peers when auto-sync-on-merge is on;
+    // otherwise it all waits behind the floating "Sync" button, which pushes the
+    // pulls branch and merge commit together on the next click.
+    const bool autoSyncOnMerge =
+        QSettings().value(kAutoSyncOnMergeSetting, false).toBool();
+    if (!autoSyncOnMerge)
+        logSystem(QStringLiteral("Merge landed locally — click \"Sync\" to publish "
+                                 "it to main (auto-sync-on-merge is off)."));
     deletePullAndBranchAsync(m_currentPullNumber, head, haveBranch, rewriteHistory,
-                             /*propagate=*/true);
+                             /*propagate=*/autoSyncOnMerge);
 }
 
 // Shared worker: delete the PR record (optionally scrubbing its diff from
