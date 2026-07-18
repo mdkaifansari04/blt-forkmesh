@@ -23,17 +23,19 @@ def test_node_profile_features_user_card_before_node_details():
         "void MainWindow::hideNodeProfile()",
     )
 
-    assert "QLabel *m_profileUserAvatar = nullptr;" in header
-    assert "QLabel *m_profileUserName = nullptr;" in header
     assert "QListWidget *m_profileUserNodesList = nullptr;" in header
+    # The user card no longer repeats the node's own avatar/name (shown in the
+    # left-column header); those widgets are gone.
+    assert "m_profileUserAvatar" not in header
+    assert "m_profileUserName" not in header
     assert 'm_profileAccountSection->setObjectName("profileUserCard");' in build
     assert 'auto *accountLabel = makeProfileSection("USER PROFILE");' in build
-    assert "layout->addWidget(m_profileAccountSection);" in build
-    assert build.index("layout->addWidget(m_profileAccountSection);") < build.index(
-        "layout->addWidget(m_profileSelfActions);"
-    )
-    assert build.index("layout->addWidget(m_profileAccountSection);") < build.index(
-        "layout->addLayout(columnsRow);"
+    # The sibling-nodes card now lives at the top of the right column so the
+    # nodes read as their own panel on the right, not a full-width top banner.
+    assert "rightColumn->addWidget(m_profileAccountSection);" in build
+    assert "layout->addWidget(m_profileAccountSection);" not in build
+    assert build.index("rightColumn->addWidget(m_profileAccountSection);") < build.index(
+        "rightColumn->addWidget(m_profileHostingLabel);"
     )
 
 
