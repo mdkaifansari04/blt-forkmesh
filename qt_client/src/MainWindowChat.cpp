@@ -8,6 +8,7 @@
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
 #include "RepoSecurity.h"
 #include "ScreenCaptureOverlay.h"
@@ -243,7 +244,7 @@ QWidget *MainWindow::buildChatPage()
     // One page per "place": Home holds the repos, quest board and chat all at
     // once (no nav bar — you click a server to see everything). Repo detail and
     // Settings are opened on demand (clicking a repo / the server-rail gear).
-    m_sectionStack = new CurrentPageStackedWidget;
+    m_sectionStack = new CurrentPageStack;
     // Home now hosts the nodes column, repositories column and the repo detail
     // panel (with Chat as a tab) all at once, so there is no separate repo-detail
     // section any more.
@@ -877,9 +878,13 @@ QWidget *MainWindow::buildNetworkLogDock()
     cardLayout->setContentsMargins(12, 8, 12, 8);
     cardLayout->setSpacing(4);
     cardLayout->addWidget(m_agentStatusRow);
-    cardLayout->addWidget(promptWrapper);
+    cardLayout->addWidget(promptWrapper, 1);
     card->setMinimumWidth(0);
-    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // Expanding (not Fixed) vertically so the card fills the whole fixed-height
+    // footer dock like the log pane beside it does; Fixed left the card at its
+    // own sizeHint and stranded blank space below the bottom bar instead of
+    // keeping it flush with the foot of the panel.
+    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     // A scrollable strip below the quick-add bar: the always-on live log. It
     // fills as much height as the dock row allows (matching the prompt card
