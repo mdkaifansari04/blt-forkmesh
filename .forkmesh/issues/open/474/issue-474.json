@@ -1,0 +1,47 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 474,
+    "title": "Publish executable protocol specifications and a threat model",
+    "status": "open",
+    "labels": [
+        "infra",
+        "security"
+    ],
+    "milestone": "Open operations",
+    "startDate": 1784347200000,
+    "endDate": 1785297600000,
+    "priority": 42,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784405500057,
+    "updatedAt": 1784405500058,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-474",
+            "title": "Publish executable protocol specifications and a threat model",
+            "body": "## Outcome\n\nMake the repository protocol independently implementable with versioned schemas, canonical vectors, a threat model, and a small reference verifier.\n\n## Implementation\n\n- Publish normative specifications for identities and rotation, repository identity and manifests, collaboration and social events, receipts, private envelopes, relay and peer streams, migration, releases, and workflow checks.\n- Generate JSON Schemas plus HTTP and WebSocket interface descriptions from one versioned source.\n- Document trust boundaries, assets, adversaries, metadata exposure, replay, rollback, equivocation, denial-of-service, key loss, and recovery assumptions.\n- Provide positive and negative canonical signing, encryption, fold, transport, and migration vectors.\n- Implement a dependency-light reference verifier that validates schemas, signatures, hashes, event folds, manifests, receipts, and stream frames without using production client code.\n\n## Acceptance criteria\n\n- Every sprint object and endpoint has a version, compatibility rule, size bound, and unknown-version behavior.\n- Production implementations and the reference verifier agree on every positive vector and reject every negative vector.\n- Generated schemas and interface descriptions cannot drift from the normative source.\n- The threat model states residual risks and never claims encryption can revoke already decrypted data.\n- A clean independent implementation can verify a repository snapshot using only the published artifacts.\n\n## Dependencies\n\nDeveloped alongside all contract issues; #443 makes the complete specification and verifier a release blocker.\n\n## Verification\n\nGenerate all artifacts twice, compare normalized bytes, run every vector in each production implementation and the reference verifier, mutate every signed field, and verify documented version and size failures.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500057,
+            "sig": "OgO1HXXbaeM4_k5LQQI1lxXnzmOotfUbNrRhoiyhewYJVb_fNG8z8l7iZUwKUmjKyY713nA4UPzkB9cZRsQDBA"
+        },
+        {
+            "type": "dates",
+            "id": "f2c25de1-67b3-444f-9e9e-0ce46b7b0aee",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500058,
+            "startDate": 1784347200000,
+            "endDate": 1785297600000,
+            "sig": "6H302xLRgGmoGlEGCfbH8HJ6H1HfSZcoosKxqQm5grpXogHziHcYGKZFm10HeqehydFzm23NCfqLT3sqawTeCQ"
+        }
+    ]
+}

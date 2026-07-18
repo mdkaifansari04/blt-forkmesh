@@ -92,6 +92,21 @@ void MainWindow::startIssueInIde(int issueNumber, const QString &title,
                          false);
 }
 
+// The repo header's action buttons (Notify/Fork/Mirror/Source/Open) operate on
+// the repository as a whole. On the Agents tab (m_repoDetailStack index 3) they
+// have no bearing and just crowd the tab bar, so hide them there and show them
+// on every other tab. Wired to m_repoDetailStack::currentChanged so it tracks
+// tab switches however they happen (click, programmatic jump, Back/Forward).
+void MainWindow::updateRepoActionButtonsVisibility(int stackIndex)
+{
+    const bool onAgentsTab = stackIndex == 3;
+    for (QPushButton *b : {m_notifyButton, m_forkButton, m_mirrorButton,
+                           m_sourceButton, m_repoOpenButton}) {
+        if (b)
+            b->setVisible(!onAgentsTab);
+    }
+}
+
 // Show/hide the issue-detail "run in IDE" buttons based on the toggle + whether
 // a live extension is detected. Called whenever an issue is rendered.
 void MainWindow::updateIssueIdeButtons()
@@ -7616,6 +7631,34 @@ QString MainWindow::repoDefaultBranch(const QStringList &branches) const
     return branches.isEmpty() ? QString() : branches.first();
 }
 
+QString MainWindow::repoDefaultBranchFast() const
+{
+    // An explicitly configured default is authoritative and needs no git call.
+    const QString configured = m_repoInfo.defaultBranch.trimmed();
+    if (!configured.isEmpty())
+        return configured;
+    // Otherwise fall back to repoDefaultBranch(), but feed it an *unsorted* ref
+    // listing. `git branch --sort=-committerdate` (what repoBranches() runs)
+    // reads every branch's tip commit and can stall the UI thread for hundreds
+    // of ms on repos with many agent branches; for-each-ref without a sort just
+    // enumerates ref names and is effectively free.
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return QString();
+    QStringList branches;
+    QByteArray out;
+    if (runGitCapture(dir,
+                      {"for-each-ref", "--format=%(refname:short)", "refs/heads/"},
+                      &out, nullptr)) {
+        for (const QString &line : QString::fromUtf8(out).split('\n')) {
+            const QString branch = line.trimmed();
+            if (!branch.isEmpty() && !branches.contains(branch))
+                branches.append(branch);
+        }
+    }
+    return repoDefaultBranch(branches);
+}
+
 void MainWindow::loadBranchesAndTags()
 {
     const QString dir = repoGitDir();
@@ -7736,6 +7779,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoHeaderTitle->hide();
 
     auto *notifyButton = new QPushButton("Notify");
+    m_notifyButton = notifyButton;
     notifyButton->setObjectName("repoAction");
     notifyButton->setToolTip("Notifications");
     setOcticon(notifyButton, "bell", 16);
@@ -8043,7 +8087,13 @@ QWidget *MainWindow::buildRepoDetailSection()
     // every such move is a step the arrows can return to. Debounced and guarded
     // against replays, so it coalesces a repo-open's tab churn into one entry.
     connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
-            [this](int) { scheduleNavRecord(); });
+            [this](int index) {
+                scheduleNavRecord();
+                // The repo action buttons (Notify/Fork/Mirror/Source/Open) act on
+                // the repository itself and are irrelevant on the Agents tab
+                // (index 3), where they crowd the tab bar — hide them there.
+                updateRepoActionButtonsVisibility(index);
+            });
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_repoDetailStack->setCurrentIndex(id);
         // Update the Agents nav button state to show when the Agents tab is active (adhoc #201).

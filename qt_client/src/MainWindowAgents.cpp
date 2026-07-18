@@ -7776,7 +7776,12 @@ void MainWindow::updateAgentFilesTabState(int sessionId)
                 wt = cachedSessionWorktree(sessionId, repoLocal, branch);
         }
     }
-    const QString base = repoDefaultBranch(repoBranches());
+    // Runs on every agent-session selection, so avoid repoBranches()'s
+    // `git branch --sort=-committerdate` — its per-branch commit reads have
+    // stalled the UI for ~500 ms on repos with many agent branches (adhoc #150).
+    // We only need the base branch name to tell whether the session sits on a
+    // feature branch, which the cheap unsorted lookup answers just as well.
+    const QString base = repoDefaultBranchFast();
     const bool onDisk = !wt.isEmpty() && QDir(wt).exists();
     const bool isMain = !wt.isEmpty() && !repoLocal.isEmpty() &&
                         QDir(wt).absolutePath() == QDir(repoLocal).absolutePath();
@@ -7833,7 +7838,11 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
     landAgentPullForSession(*s, patch, commits);
 }
 
-void MainWindow::landAgentPullForSession(AgentSession &session, const QString &patch,
+// `session` is taken by value: PullStore::createPull (and submitPullToInbox)
+// pump the GUI event loop while waiting on git, and a reloadAgents() fired
+// during the pump rebuilds m_agentSessions — a reference into it would dangle
+// (git-pump UAF family, adhoc #106/#119/#124/#149).
+void MainWindow::landAgentPullForSession(AgentSession session, const QString &patch,
                                          const QString &commits)
 {
     if (!m_agentStore || patch.trimmed().isEmpty())
@@ -7864,6 +7873,11 @@ void MainWindow::landAgentPullForSession(AgentSession &session, const QString &p
                                         commits, /*branchBacked=*/true, &error);
         if (pr > 0) {
             session.prNumber = pr;
+            // Stamp the live entry too (re-found by id — the pump may have moved
+            // it) so a re-fired finished/status pass sees prNumber > 0 and doesn't
+            // open a duplicate PR before the next reloadAgents().
+            if (AgentSession *live = findAgentSession(session.id))
+                live->prNumber = pr;
             m_agentStore->saveSession(session);
             m_agentStore->appendLog(
                 session, QStringLiteral("==> Created pull request #%1.\n").arg(pr));
