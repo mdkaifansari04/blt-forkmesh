@@ -17553,8 +17553,11 @@ ADMIN_STYLE = """
         border:1px solid var(--ab-border-2);border-radius:6px;padding:8px;
         font:13px ui-monospace,monospace}
  .ab-root .tools .navlink{padding:8px 4px}
- .ab-root .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:nowrap}
+ .ab-root .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
  .ab-root .account-kind button{padding:3px 8px;font-size:12px}
+ /* The migration cell holds pills + buttons that must all stay visible, so it
+    opts out of the compact table's single-line clip/ellipsis + 240px cap. */
+ .ab-root table.compact td.account-cell{max-width:none;overflow:visible;white-space:normal}
  .ab-root .kindpill{border:1px solid var(--ab-border-2);border-radius:999px;padding:2px 8px;
         color:var(--ab-fg);background:var(--ab-card);font:600 12px system-ui,sans-serif}
  .ab-root .inpill{border:1px solid #1a7f37;border-radius:999px;padding:1px 7px;
@@ -17677,7 +17680,8 @@ async def _admin_account_migration_cell(env, row, rec, admin_query=""):
                table, label, indicator)
         )
     return (
-        '<td><div class="account-kind"><span class="kindpill">%s</span>%s</div></td>'
+        '<td class="account-cell"><div class="account-kind">'
+        '<span class="kindpill">%s</span>%s</div></td>'
         % (_html_escape(kind), "".join(buttons))
     )
 
@@ -18120,6 +18124,22 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
         "<meta name=\"color-scheme\" content=\"light dark\">"
         "<title>forkmesh · admin</title>"
+        # site-header.js is deferred (it also injects the header markup), so on
+        # its own it would only stamp html.light/html.dark AFTER first paint —
+        # a visible dark→light flash. This blocking pre-paint snippet mirrors
+        # its resolveTheme() (same localStorage keys, then OS preference) and
+        # stamps the class before any CSS paints, killing the flash. The
+        # deferred script re-applies the same value and owns the toggle.
+        "<script>(function(){try{"
+        "var k=['forkmesh.dashboard.theme','forkmesh.theme'],t='';"
+        "for(var i=0;i<k.length;i++){var v=localStorage.getItem(k[i]);"
+        "if(v==='light'||v==='dark'){t=v;break;}}"
+        "if(!t)t=(window.matchMedia&&window.matchMedia("
+        "'(prefers-color-scheme: light)').matches)?'light':'dark';"
+        "var r=document.documentElement,l=t==='light';"
+        "r.classList.toggle('light',l);r.classList.toggle('dark',!l);"
+        "r.style.colorScheme=l?'light':'dark';"
+        "}catch(e){}})();</script>"
         # The universal site header (brand, nav, account chip) + the theme
         # engine it carries: site-header.js stamps html.light/html.dark from
         # the visitor's saved choice or OS preference, which ADMIN_STYLE's
