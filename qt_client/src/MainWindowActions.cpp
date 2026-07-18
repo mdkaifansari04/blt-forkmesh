@@ -1295,9 +1295,18 @@ void MainWindow::refreshActionsTable()
             whenItem->setToolTip(QDateTime::fromMSecsSinceEpoch(run.createdAtMs)
                                      .toString(QStringLiteral("MMM d  hh:mm")));
 
+        // How long the run took, wall-clock from when it actually started to when
+        // it finished. Only finished runs have both timestamps; queued/running
+        // rows leave this blank (the "When" column already shows their progress).
+        QString durationText;
+        if (run.startedAtMs > 0 && run.finishedAtMs >= run.startedAtMs)
+            durationText = formatDuration(run.finishedAtMs - run.startedAtMs);
+        auto *durationItem = new QTableWidgetItem(durationText);
+
         m_actionsTable->setItem(row, 0, wfItem);
         m_actionsTable->setItem(row, 1, statusItem);
         m_actionsTable->setItem(row, 2, whenItem);
+        m_actionsTable->setItem(row, 3, durationItem);
         if (run.id == m_selectedRunId)
             m_actionsTable->selectRow(row);
     }
@@ -2574,10 +2583,11 @@ QWidget *MainWindow::buildRepoActionsTab()
     subtitle->setObjectName("statusLine");
     subtitle->setWordWrap(true);
 
-    m_actionsTable = new QTableWidget(0, 3);
+    m_actionsTable = new QTableWidget(0, 4);
     installColumnHeaderMenu(m_actionsTable); // 3-dots per-column menu (issue #318)
     m_actionsTable->setObjectName("issueTable");
-    m_actionsTable->setHorizontalHeaderLabels({"Workflow", "Status", "When"});
+    m_actionsTable->setHorizontalHeaderLabels(
+        {"Workflow", "Status", "When", "Duration"});
     m_actionsTable->horizontalHeader()->setStretchLastSection(true);
     m_actionsTable->horizontalHeader()->setHighlightSections(false);
     // Give the Workflow column twice the default width so names like
