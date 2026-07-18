@@ -1454,10 +1454,15 @@ void MainWindow::ensureActionStrip()
     // The strip and its rows must stay hit-testable: Qt skips a
     // WA_TransparentForMouseEvents widget *and its whole subtree* when picking a
     // click receiver, which would swallow the clicks the per-run boxes rely on
-    // (see updateActionStrip). The strip paints nothing of its own, so an opaque
-    // overlay here looks identical while letting the bars act as live links.
+    // (see updateActionStrip). One border drawn here (rather than one per row,
+    // adhoc #112) makes several queued/running actions read as a single box
+    // holding multiple lines instead of a stack of separate boxes.
+    m_actionStrip->setAttribute(Qt::WA_StyledBackground, true);
+    m_actionStrip->setStyleSheet(
+        QStringLiteral("#actionStrip { background-color: #161b22; "
+                        "border: 1px solid #30363d; border-radius: 8px; }"));
     auto *col = new QVBoxLayout(m_actionStrip);
-    col->setContentsMargins(0, 0, 0, 0);
+    col->setContentsMargins(8, 6, 8, 6);
     col->setSpacing(4);
     m_actionStripCol = col;
     m_actionStrip->hide();
@@ -1593,16 +1598,20 @@ void MainWindow::positionActionStrip()
     if (!page)
         return;
 
-    // Span the Actions tab exactly so the lines never bleed over the neighbouring
-    // Security tab (adhoc #105): every box is stretched to the tab's width.
+    // Span the Actions tab exactly so the box never bleeds over the neighbouring
+    // Security tab (adhoc #105): the outer box is fixed to the tab's width, and
+    // each line is inset by the box's own margins (adhoc #112) rather than
+    // stretched edge-to-edge.
     const int tabWidth = qMax(1, m_repoActionsTab->width());
+    const QMargins cm = m_actionStripCol->contentsMargins();
+    const int rowWidth = qMax(1, tabWidth - cm.left() - cm.right());
     const int rows = m_actionStripCol->count();
-    int h = 0;
+    int h = cm.top() + cm.bottom();
     for (int i = 0; i < rows; ++i) {
         auto *box = m_actionStripCol->itemAt(i)->widget();
         if (!box)
             continue;
-        box->setFixedWidth(tabWidth);
+        box->setFixedWidth(rowWidth);
         h += box->height() + (i > 0 ? m_actionStripCol->spacing() : 0);
     }
     if (rows <= 0)
