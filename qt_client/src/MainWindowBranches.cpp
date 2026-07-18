@@ -1019,6 +1019,11 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                 .arg(branch, base),
             true);
     }
+    // adhoc #100: the merge just landed a new commit (or, on a failed merge, an
+    // aborted one) directly in this checkout, so the top "Sync" button and the
+    // Changes panel would otherwise stay stale — showing 0 pending commits — until
+    // the user manually refreshes. Force both to recheck now.
+    refreshSourceControl(true);
     loadWorktreesPanel();
     // Issue #211: refresh the cheap branch tip/count, but don't eagerly rebuild
     // the Branches panel — it runs a git command per branch (probing each for
