@@ -372,9 +372,15 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
 
 
 def test_worker_observability_is_enabled_at_full_sampling_in_wrangler():
-    # Observability is enabled and captures every invocation (full sampling).
+    # Observability is enabled and captures every invocation (full sampling),
+    # but only into the Cloudflare dashboard: the Sentry log/trace exports are
+    # off because they emitted an info event per D1 call, websocket wakeup, and
+    # request ("d1_run OK", "hibernatableWebSocket OK", ...) — adhoc #169.
     observability = WRANGLER_DATA["observability"]
     assert observability["enabled"] is True
     assert observability["head_sampling_rate"] == 1
     assert observability["logs"]["head_sampling_rate"] == 1
-    assert observability["traces"]["head_sampling_rate"] == 1
+    assert "destinations" not in observability["logs"]
+    assert observability["logs"]["invocation_logs"] is False
+    assert observability["traces"]["enabled"] is False
+    assert "destinations" not in observability["traces"]
