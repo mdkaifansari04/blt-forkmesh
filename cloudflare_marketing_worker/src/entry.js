@@ -1,9 +1,11 @@
-// ForkMesh marketing Worker: serves forkmesh.com/ (the landing page) and
-// nothing else. Every other path is routed to the relay Worker
+// ForkMesh marketing Worker: serves the public marketing pages —
+// forkmesh.com/ (the landing page), /pricing, and the /blog index plus every
+// blog post — and nothing else. Every other path is routed to the relay Worker
 // (../cloudflare_worker) by Cloudflare route precedence — see wrangler.toml.
 //
 // The / semantics deliberately mirror the relay Worker's homepage handler
-// (entry.py _route "/" branch + _serve_homepage), which stays in place as the
+// (entry.py _route "/" branch + _serve_homepage), and /pricing + /blog mirror
+// its static-asset serving; the relay keeps all of them in place as the
 // fallback for workers.dev previews and local dev. Keep the two in sync;
 // cloudflare_worker/tests/test_marketing_worker.py pins the contract.
 
@@ -31,17 +33,48 @@ const PAGE_HEADERS = {
   "x-forkmesh-worker": "marketing",
 };
 
+// /pricing and /blog are plain public pages (no session redirect). They vary on
+// nothing, but still revalidate so a rebuilt page can't stay stale, and stamp
+// the same attribution header the deploy check and relay contract look for.
+const STATIC_PAGE_HEADERS = {
+  "content-type": "text/html; charset=utf-8",
+  "cache-control": "no-cache",
+  "x-forkmesh-worker": "marketing",
+};
+
+// Map a clean marketing URL to the asset document that backs it. Returns null
+// for anything this Worker does not own. Mirrors the relay's _redirects rules:
+// /pricing -> /pricing.html, /blog -> /blog.html, and each blog post directory
+// index /blog/<slug>/ -> /blog/<slug>/index.html (html_handling is "none", so
+// the index.html must be named explicitly). Slugs are a single [a-z0-9-] segment
+// exactly as the published posts are, which also blocks any path traversal.
+function marketingAssetPath(pathname) {
+  if (pathname === "/pricing") return "/pricing.html";
+  if (pathname === "/blog" || pathname === "/blog/") return "/blog.html";
+  if (pathname.startsWith("/blog/")) {
+    const slug = pathname.slice("/blog/".length).replace(/\/$/, "");
+    if (/^[a-z0-9-]+$/.test(slug)) return `/blog/${slug}/index.html`;
+  }
+  return null;
+}
+
+function bounceToRelay(url) {
+  // workers.dev / wrangler-dev has no route splitting, and the relay still
+  // holds the canonical copy of every page — send unmatched paths there.
+  return Response.redirect(
+    "https://forkmesh.com" + url.pathname + url.search, 302);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const path = url.pathname;
 
-    // Only forkmesh.com/ is routed here in production; any other path means a
-    // workers.dev / wrangler-dev hit, where no route splitting exists. Bounce
-    // it to the public origin so the relay Worker (which owns every non-root
-    // path, including this page's own CSS/JS subresources) can serve it.
-    if (url.pathname !== "/") {
-      return Response.redirect(
-        "https://forkmesh.com" + url.pathname + url.search, 302);
+    const assetPath = path === "/" ? null : marketingAssetPath(path);
+    // Not a page this Worker owns: bounce to the relay (only reachable off the
+    // production routes, e.g. on a workers.dev preview).
+    if (path !== "/" && assetPath === null) {
+      return bounceToRelay(url);
     }
 
     if (request.method !== "GET" && request.method !== "HEAD") {
@@ -51,6 +84,24 @@ export default {
       });
     }
 
+    // /pricing and the blog: stream the backing document straight through.
+    if (assetPath !== null) {
+      let asset = null;
+      try {
+        asset = await env.ASSETS.fetch(new URL(assetPath, url.origin));
+      } catch (_err) {
+        asset = null;
+      }
+      if (!asset || !asset.ok) {
+        return bounceToRelay(url);
+      }
+      return new Response(asset.body, {
+        status: 200,
+        headers: STATIC_PAGE_HEADERS,
+      });
+    }
+
+    // Root landing page below (path === "/").
     // Logged-in visitors go straight to the dashboard: a server-side 302 keyed
     // off the forkmesh_session presence cookie. no-store so a logout never
     // replays a cached redirect.

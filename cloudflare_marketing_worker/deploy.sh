@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Deploy the ForkMesh marketing Worker (the forkmesh.com/ landing page) to
-# Cloudflare.
+# Deploy the ForkMesh marketing Worker (the forkmesh.com/ landing page, /pricing,
+# and the /blog index plus posts) to Cloudflare.
 #
-# This Worker owns ONLY the exact route forkmesh.com/ — every other path stays
-# on the relay Worker in ../cloudflare_worker (deployed by its own deploy.sh).
-# The landing document is copied from ../cloudflare_worker/public/index.html by
-# the wrangler [build] step, so there is a single source of truth for the page.
+# This Worker owns the marketing routes forkmesh.com/, /pricing, /blog, and
+# /blog/* — every other path stays on the relay Worker in ../cloudflare_worker
+# (deployed by its own deploy.sh). The documents are copied from
+# ../cloudflare_worker/public/ by the wrangler [build] step, so there is a single
+# source of truth for each page.
 #
 #   ./deploy.sh          deploy to production
 #   ./deploy.sh dev      run the Worker locally instead of deploying
