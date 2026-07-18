@@ -1189,7 +1189,10 @@ private:
     // Files-changed authorship filter: show only agent- or human-authored files
     // in the current PR, driven by m_pullFileAuthorFilter (issue #365).
     void applyPullFileAuthorFilter();
-    void renderPullReviewSummary(const PullRequest &pr);
+    // Takes the PR by value: runIdsForPull() below pumps the event loop, which
+    // can re-enter reloadPulls() and reassign m_currentPulls — a reference into
+    // it would dangle mid-call (adhoc #119).
+    void renderPullReviewSummary(PullRequest pr);
     // Render every changed file of the current PR into one continuously
     // scrollable diff view (issue #250), so the reviewer can scroll the whole PR
     // and the file list / Prev-Next jump between files.
@@ -1242,17 +1245,21 @@ private:
     void setPullThreadState(const QString &threadId, const QString &state);
     void renderPullThread(const PullRequest &pr);   // review/comment conversation
     void renderPullCommits(const PullRequest &pr);  // commits that make up the PR
-    void renderPullChecks(const PullRequest &pr);   // action runs for the PR's commits
-    void renderPullChecksSummary(const PullRequest &pr); // inline conversation card
+    // The next two and runIdsForPull/updatePullSubTabCounts take the PR by
+    // value on purpose: they pump the event loop (git reads), and callers often
+    // pass references into m_currentPulls, which a nested reloadPulls() can
+    // reassign mid-call (adhoc #119).
+    void renderPullChecks(PullRequest pr);          // action runs for the PR's commits
+    void renderPullChecksSummary(PullRequest pr);   // inline conversation card
     void showPullCheckLog(int runId);               // load a run's log into the panel
     QStringList pullCommitShas(const PullRequest &pr) const; // base..head SHAs
-    QList<int> runIdsForPull(const PullRequest &pr) const;   // matching action runs
+    QList<int> runIdsForPull(PullRequest pr) const; // matching action runs
     void runChecksForCurrentPull();                 // enqueue workflows at PR head
     // Check out the PR's head into a throwaway worktree, build the ForkMesh app
     // from it, and launch the freshly built binary as an isolated preview node so
     // the reviewer can try the change running before merging (issue #214).
     void buildAndPreviewCurrentPull();
-    void updatePullSubTabCounts(const PullRequest &pr);
+    void updatePullSubTabCounts(PullRequest pr);
     void refreshOpenPullChecks();                   // re-render checks for the open PR
     // Which event a workflow run is being queued for: a code push (the default)
     // or a published release. Selects the matching `on:` trigger to enqueue.
