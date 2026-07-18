@@ -1745,7 +1745,12 @@ void MainWindow::switchToPullTab(int pullNumber)
 // re-render it in place at the new size without re-running its renderer (#254).
 static const char *kDiffSourceProp = "fm_diffSource";
 static const char *kLongDiffFullHtmlProp = "fm_longDiffFullHtml";
-constexpr qsizetype kLongDiffAutoRenderHtmlChars = 900'000;
+// Above this many HTML chars the diff renders as a "hidden for speed" notice
+// with a click-through unless the long-diffs pref is on. The stall log showed
+// setHtml's synchronous rich-text layout blocking the GUI >500ms from roughly
+// 300k chars up (repeatedly at 500–900k under the old 900k cap), so the cap
+// sits where rendering still feels instant.
+constexpr qsizetype kLongDiffAutoRenderHtmlChars = 300'000;
 
 QString longDiffNoticeHtml(qsizetype chars)
 {
@@ -3068,7 +3073,14 @@ QList<int> MainWindow::runIdsForPull(const PullRequest &pr) const
     QList<int> ids;
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return ids;
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    // Copy the owner/name by value up front: pullCommitShas() and the rev-parse
+    // below both run synchronous git reads that pump the event loop (under a
+    // GitKeepAlive scope), and that pump can re-enter action/refresh paths which
+    // reassign m_repositories. A reference into it would then dangle and this
+    // read would be a use-after-free (adhoc #106) — the same reentrancy the
+    // cancelSupersededRuns/processActionQueue snapshots already guard against.
+    const QString repoOwner = m_repositories.at(m_repoDetailIndex).owner;
+    const QString repoName = m_repositories.at(m_repoDetailIndex).name;
     const QStringList commitShas = pullCommitShas(pr);
     QSet<QString> shas(commitShas.cbegin(), commitShas.cend());
     // Also include the head tip in case base..head couldn't be enumerated.
@@ -3081,7 +3093,7 @@ QList<int> MainWindow::runIdsForPull(const PullRequest &pr) const
     if (shas.isEmpty())
         return ids;
     for (const ActionRun &run : std::as_const(m_actionRuns)) {
-        if (run.owner == repo.owner && run.name == repo.name &&
+        if (run.owner == repoOwner && run.name == repoName &&
             shas.contains(run.commit))
             ids.append(run.id);
     }
