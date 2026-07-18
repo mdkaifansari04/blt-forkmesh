@@ -3081,7 +3081,7 @@
     button.disabled = !(
       state.nodeNameAvailability.available &&
       Boolean(state.session?.emailVerified) &&
-      Boolean(profilePassword("[data-profile-page-password]"))
+      Boolean(profilePassword("[data-profile-rename-password]"))
     );
     button.classList.toggle("opacity-40", button.disabled);
   }
@@ -3246,10 +3246,10 @@
     renderNotificationPreferences(session);
     if (!session?.emailVerified) {
       state.nodeNameAvailability.available = false;
-      setRenameStatus("Verify your email before changing your node name.", "bad");
+      setRenameStatus("Verify your email before changing your username.", "bad");
     } else if (!($("[data-profile-rename-input]")?.value || "").trim()) {
       state.nodeNameAvailability.available = false;
-      setRenameStatus("Enter a new node name to check availability.", "");
+      setRenameStatus("Enter a new username to check availability.", "");
     }
     updateRenameButton();
     renderClaimNodePanel(session);
@@ -3466,7 +3466,7 @@
     state.nodeNameAvailability.available = false;
     if (input && input.value !== candidate) input.value = candidate;
     if (!candidate) {
-      setRenameStatus("Enter a new node name to check availability.", "");
+      setRenameStatus("Enter a new username to check availability.", "");
       updateRenameButton();
       return;
     }
@@ -3476,12 +3476,12 @@
       return;
     }
     if (candidate === String(state.session?.nodeName || "").toLowerCase()) {
-      setRenameStatus("This is already your current node name.", "bad");
+      setRenameStatus("This is already your current username.", "bad");
       updateRenameButton();
       return;
     }
     if (!state.session?.emailVerified) {
-      setRenameStatus("Verify your email before changing your node name.", "bad");
+      setRenameStatus("Verify your email before changing your username.", "bad");
       updateRenameButton();
       return;
     }
@@ -3500,8 +3500,8 @@
       state.nodeNameAvailability.available = Boolean(response.ok && body.available);
       setRenameStatus(
         state.nodeNameAvailability.available
-          ? "Node name is available."
-          : "That node name is already taken.",
+          ? "Username is available."
+          : "That username is already taken.",
         state.nodeNameAvailability.available ? "good" : "bad",
       );
     } catch (_) {
@@ -3518,13 +3518,13 @@
   async function renameNodeName() {
     const input = $("[data-profile-rename-input]");
     const newNodeName = (input?.value || "").trim().toLowerCase();
-    const password = profilePassword("[data-profile-page-password]");
+    const password = profilePassword("[data-profile-rename-password]");
     if (!state.nodeNameAvailability.available || !newNodeName) {
-      setRenameStatus("Choose an available node name first.", "bad");
+      setRenameStatus("Choose an available username first.", "bad");
       return;
     }
     if (!password) {
-      setRenameStatus("Enter your current password to update your node name.", "bad");
+      setRenameStatus("Enter your current password to update your username.", "bad");
       updateRenameButton();
       return;
     }
@@ -3533,22 +3533,22 @@
     try {
       await postProfile({ newNodeName }, password);
       if (input) input.value = "";
-      $("[data-profile-page-password]") && ($("[data-profile-page-password]").value = "");
+      $("[data-profile-rename-password]") && ($("[data-profile-rename-password]").value = "");
       state.nodeNameAvailability.available = false;
-      setRenameStatus("Node name updated. Repositories are refreshing.", "good");
+      setRenameStatus("Username updated. Repositories are refreshing.", "good");
       await refreshRepositories();
       renderProfilePage(state.session);
     } catch (error) {
       const messages = {
-        email_not_verified: "Verify your email before changing your node name.",
-        invalid_node_name: "Enter a valid node name.",
-        node_name_taken: "That node name is already taken.",
-        node_name_unchanged: "Enter a different node name.",
+        email_not_verified: "Verify your email before changing your username.",
+        invalid_node_name: "Enter a valid username.",
+        node_name_taken: "That username is already taken.",
+        node_name_unchanged: "Enter a different username.",
         repo_namespace_conflict: "That namespace already has repository data.",
       };
-      setRenameStatus(messages[error.message] || "Could not update node name. Check your password and try again.", "bad");
+      setRenameStatus(messages[error.message] || "Could not update username. Check your password and try again.", "bad");
     } finally {
-      if (button) { button.disabled = false; button.textContent = "Update node name"; }
+      if (button) { button.disabled = false; button.textContent = "Update username"; }
       updateRenameButton();
     }
   }
@@ -12092,7 +12092,7 @@
     window.clearTimeout(state.nodeNameAvailability.timer);
     state.nodeNameAvailability.timer = window.setTimeout(checkNodeNameAvailability, 250);
   });
-  $("[data-profile-page-password]")?.addEventListener("input", updateRenameButton);
+  $("[data-profile-rename-password]")?.addEventListener("input", updateRenameButton);
   $("[data-profile-delete-confirm]")?.addEventListener("input", () => {
     const button = $("[data-profile-delete-account]");
     if (!button) return;

@@ -57,6 +57,7 @@ struct AgentDiffStat {
 #include <QMetaType>
 #include <QPixmap>
 #include <QSet>
+#include <QTextBlockUserData>
 #include <QTextCursor>
 #include <QThread>
 #include <QUrl>
@@ -64,6 +65,15 @@ struct AgentDiffStat {
 
 #include <functional>
 #include <limits>
+
+// Attached to each block of the always-on footer log (adhoc #133) so a clipped,
+// no-wrap line still carries its full untruncated text — surfaced on hover and
+// used to open the full Log view at the matching entry on click.
+class FooterLogLineData : public QTextBlockUserData {
+public:
+    explicit FooterLogLineData(QString line) : rawLine(std::move(line)) {}
+    QString rawLine;
+};
 
 class MessageRow;
 class MarkdownEditor;
@@ -711,6 +721,9 @@ private:
     // (Re)apply the always-on footer log line's inline stylesheet for the active
     // theme, tinting the text by the current line's tone. Called on theme switch.
     void styleFooterUpdateLog();
+    // Open the full Log section (section 4) and scroll it to the entry matching a
+    // line clicked in the always-on footer strip (adhoc #133).
+    void openFullLogAtFooterLine(const QString &rawLine);
     void persistProfile();
 
     // Chat page
@@ -2480,6 +2493,9 @@ private:
     // comment composer). `button` is the mic that was pressed, so its icon swaps to
     // red while recording and the transcript lands in `target`.
     void startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *button);
+    // Jump to Settings and land on the Voice tab — used when the mic is
+    // clicked before speech-to-text is set up (adhoc #132).
+    void openVoiceSettings();
     // Build a reusable push-to-talk mic bound to a comment composer; it speaks into
     // the composer's source editor and is registered so updateVoiceInputButton()
     // keeps its visibility/idle look in sync with the voice-engine install state.
@@ -3546,6 +3562,10 @@ private:
     QComboBox *m_parakeetModelCombo = nullptr;
     QProcess *m_parakeetInstallProc = nullptr;
     QComboBox *m_voiceDeviceCombo = nullptr;     // mic to capture from (adhoc #10)
+    // Settings tab widget + the index of its Voice tab, so openVoiceSettings()
+    // can land the mic-not-set-up click directly on that tab (adhoc #132).
+    QTabWidget *m_settingsTabs = nullptr;
+    int m_voiceSettingsTabIndex = -1;
     // Settings "Test mic" (adhoc #14): a self-contained mic check. m_voiceTestProc
     // records the chosen device to m_voiceTestWavPath; m_voiceTestTimer samples its
     // growing tail (from byte offset m_voiceTestPos) to drive m_voiceTestMeter.
