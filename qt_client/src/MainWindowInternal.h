@@ -4126,6 +4126,33 @@ inline QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
     return pm;
 }
 
+// An hourglass, used in place of the spinning-arrows icon when a button's
+// action is queued behind other work rather than actively running.
+inline QPixmap hourglassPixmap(const QColor &color, double angleDeg, int size)
+{
+    QPixmap pm(size, size);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.translate(size / 2.0, size / 2.0);
+    p.rotate(angleDeg);
+    const double w = size * 0.34;
+    const double h = size * 0.34;
+    QPen pen(color, std::max(1.4, size * 0.09));
+    pen.setJoinStyle(Qt::RoundJoin);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    QPainterPath glass;
+    glass.moveTo(-w, -h);
+    glass.lineTo(w, -h);
+    glass.lineTo(-w, h);
+    glass.lineTo(w, h);
+    glass.closeSubpath();
+    p.drawPath(glass);
+    return pm;
+}
+
 // A deterministic procedural *face* avatar. Each seed maps, via SHA-256 + a
 // splitmix64 PRNG, to a unique cartoon face — backdrop, skin tone, hairstyle &
 // colour, brows, eyes, nose, mouth and the odd extra (glasses, beard, blush,
