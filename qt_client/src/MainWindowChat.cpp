@@ -306,6 +306,14 @@ QWidget *MainWindow::buildChatPage()
     auto *contentScroll = new QScrollArea;
     contentScroll->setWidgetResizable(true);
     contentScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Each section already scrolls its own content (QScrollArea panels,
+    // tables and lists), so a second, page-wide scrollbar here was redundant
+    // (adhoc #83) — hide it. The QScrollArea itself stays: QStackedWidget
+    // sizes to its tallest page even when a shorter one is showing, and
+    // without this wrapper that height would push into the splitter and grow
+    // the window's minimum size. Wheel/keyboard scrolling still works as a
+    // fallback for the handful of sections with no scroll pane of their own.
+    contentScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     contentScroll->setFrameShape(QFrame::NoFrame);
     // Tall tab pages should scroll instead of becoming the window's minimum height.
     contentScroll->setMinimumHeight(0);
