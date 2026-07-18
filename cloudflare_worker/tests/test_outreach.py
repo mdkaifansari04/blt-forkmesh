@@ -51,6 +51,29 @@ def test_schema_has_outreach_tables():
     assert "idx_outreach_log_sender_ts" in SCHEMA_TEXT
 
 
+def test_schema_has_enable_outreach_column():
+    # Fresh databases get the per-user access flag from ensure_schema; existing
+    # ones get it from the ALTER statements (migration 0040).
+    assert "enable_outreach INTEGER NOT NULL DEFAULT 0" in SCHEMA_TEXT
+    assert (
+        "ALTER TABLE accounts ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0"
+        in ENTRY_TEXT)
+    assert (
+        "ALTER TABLE users ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0"
+        in ENTRY_TEXT)
+
+
+def test_outreach_handler_honors_enable_outreach_flag():
+    handler = _async_func("outreach_handler")
+    calls = _calls(handler)
+    # The per-user enable_outreach column grants access alongside admin/roster.
+    assert "_outreach_enabled" in calls
+    reader = _async_func("_outreach_enabled")
+    text = ast.get_source_segment(ENTRY_TEXT, reader)
+    assert "SELECT enable_outreach FROM accounts WHERE name_bi=?" in text
+    assert "SELECT enable_outreach FROM users WHERE user_bi=?" in text
+
+
 def test_outreach_routes_are_wired():
     assert 'url.path == "/api/outreach" or url.path.startswith("/api/outreach/")' in ENTRY_TEXT
     assert "await outreach_handler(self.env, request)" in ENTRY_TEXT

@@ -26,7 +26,7 @@ ENTRY_TEXT = (
 
 
 def test_accounts_table_has_ip_blind_index_column_and_index():
-    assert "is_admin INTEGER NOT NULL DEFAULT 0, ip_bi TEXT)" in ENTRY_TEXT
+    assert "is_admin INTEGER NOT NULL DEFAULT 0, ip_bi TEXT" in ENTRY_TEXT
     assert "CREATE INDEX IF NOT EXISTS idx_accounts_ip ON accounts(ip_bi)" in ENTRY_TEXT
 
 
