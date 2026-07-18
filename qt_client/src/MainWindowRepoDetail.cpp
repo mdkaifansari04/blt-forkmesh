@@ -1442,11 +1442,13 @@ void MainWindow::updateRepoCodeSize()
         m_repoCodeTab->setText(QStringLiteral("Code (%1)").arg(size)); // Code (N MB)
     };
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        m_repoCodeSizePath.clear();
         showSize(QStringLiteral("0 B"));
         return;
     }
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     if (repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists()) {
+        m_repoCodeSizePath.clear();
         showSize(QStringLiteral("0 B"));
         return;
     }
@@ -1457,12 +1459,22 @@ void MainWindow::updateRepoCodeSize()
     // even under GitKeepAlive, whose polling pump can itself get stuck behind a
     // slow paint. Fetch it fully off the GUI thread instead (see
     // runGitDetached) and only apply the result if still showing this repo.
-    showSize(QStringLiteral("…"));
+    //
+    // The Code tab is the first tab in the strip and the strip is a plain
+    // QHBoxLayout, so any width change here shifts every later tab plus the
+    // header widgets aligned with them. Flashing a "…" placeholder on each
+    // sync/merge refresh made the whole bar jump twice; keep the last computed
+    // size on screen instead and only show the placeholder the first time this
+    // mirror's size is looked up.
+    if (m_repoCodeSizePath != repo.mirrorPath)
+        showSize(QStringLiteral("…"));
     const int forIndex = m_repoDetailIndex;
+    const QString forPath = repo.mirrorPath;
     runGitDetached(repo.mirrorPath, {"count-objects", "-v"},
-                   [this, forIndex, showSize](bool ok, const QByteArray &out) {
+                   [this, forIndex, forPath, showSize](bool ok, const QByteArray &out) {
                        if (forIndex != m_repoDetailIndex || !m_repoCodeTab)
                            return;
+                       m_repoCodeSizePath = forPath;
                        showSize(ok ? formatByteSize(parseCountObjectsSizeBytes(out))
                                    : QStringLiteral("0 B"));
                    });
