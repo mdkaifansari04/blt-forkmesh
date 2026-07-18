@@ -3252,6 +3252,10 @@ QWidget *MainWindow::buildBreadcrumb()
     searchClusterRow->addWidget(createGlobalSearchBox());
     chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
     chromeRow->addStretch();
+    // Relay radar, moved up onto the window-chrome line just left of the
+    // CPU/MEM/DISK sparklines so its latency readout reads the same way as
+    // theirs (adhoc #87).
+    chromeRow->addWidget(m_relayRadar);
     // Live CPU/MEM/DISK sparklines, moved up onto the window-chrome line next
     // to the minimize/maximize/close buttons (adhoc #33).
     chromeRow->addWidget(cpuChart);
@@ -3296,7 +3300,8 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->setSpacing(8);
     mainRow->addWidget(m_relayIconButton);
     mainRow->addWidget(m_relayLabel);
-    mainRow->addWidget(m_relayRadar); // radar + latency, left of the relay name
+    // m_relayRadar (radar + latency) now lives on the window-chrome line, just
+    // left of the CPU/MEM/DISK sparklines (adhoc #87).
     mainRow->addWidget(m_relayMenuButton);
     mainRow->addWidget(m_relayOpenButton);
     mainRow->addSpacing(10);
