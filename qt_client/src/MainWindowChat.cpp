@@ -245,6 +245,11 @@ QWidget *MainWindow::buildChatPage()
     // once (no nav bar — you click a server to see everything). Repo detail and
     // Settings are opened on demand (clicking a repo / the server-rail gear).
     m_sectionStack = new CurrentPageStack;
+    // The quick-add Enter target depends on the Agents tab being on screen
+    // (quickAddShouldFollowUpAgent), which includes being on the Home section
+    // at all — refresh the "new"/"add" styling when the section changes too.
+    connect(m_sectionStack, &QStackedWidget::currentChanged, this,
+            [this](int) { updateQuickAddEnterTarget(); });
     // Home now hosts the nodes column, repositories column and the repo detail
     // panel (with Chat as a tab) all at once, so there is no separate repo-detail
     // section any more.
@@ -685,15 +690,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendToAgentButton->setMinimumHeight(28);
     m_quickAddSendToAgentButton->setSizePolicy(QSizePolicy::Fixed,
                                                QSizePolicy::Expanding);
-    m_quickAddSendToAgentEnterBadge =
-        new QLabel(QStringLiteral("⏎"), m_quickAddSendToAgentButton);
-    m_quickAddSendToAgentEnterBadge->setObjectName("quickAddEnterBadge");
-    m_quickAddSendToAgentEnterBadge->setAlignment(Qt::AlignCenter);
-    m_quickAddSendToAgentEnterBadge->setFixedSize(14, 14);
-    m_quickAddSendToAgentEnterBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_quickAddSendToAgentEnterBadge->move(
-        m_quickAddSendToAgentButton->width() - 12, -5);
-    m_quickAddSendToAgentEnterBadge->hide();
     connect(m_quickAddSendToAgentButton, &QPushButton::clicked, this, [this] {
         if (!m_issueQuickAdd)
             return;

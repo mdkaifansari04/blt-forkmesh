@@ -7997,6 +7997,11 @@ QWidget *MainWindow::buildRepoDetailSection()
 
     // --- Inner stack: one page per tab.
     m_repoDetailStack = new CurrentPageStack;
+    // The quick-add Enter target now depends on whether the Agents tab is the
+    // one on screen (quickAddShouldFollowUpAgent), so re-style the "new"/"add"
+    // buttons on every tab switch, not just on agent selection changes.
+    connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
+            [this](int) { updateQuickAddEnterTarget(); });
     m_repoDetailStack->addWidget(buildRepoFilesPanel());                 // 0 Code
     // 1 — placeholder. The commits panel lives inside the Code overview (built
     // by buildRepoOverviewPage, under the latest-commit bar); this empty page
