@@ -1019,6 +1019,11 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                 .arg(branch, base),
             true);
     }
+    // adhoc #100: the merge just landed a new commit (or, on a failed merge, an
+    // aborted one) directly in this checkout, so the top "Sync" button and the
+    // Changes panel would otherwise stay stale — showing 0 pending commits — until
+    // the user manually refreshes. Force both to recheck now.
+    refreshSourceControl(true);
     loadWorktreesPanel();
     // Issue #211: refresh the cheap branch tip/count, but don't eagerly rebuild
     // the Branches panel — it runs a git command per branch (probing each for
@@ -1950,9 +1955,9 @@ void MainWindow::loadBranchesPanel()
     QScopedValueRollback<bool> loadingGuard(m_branchesPanelLoading, true);
     // Each row's ahead/behind count and in-memory merge-conflict probe shells out
     // to git serially below; on a repo with many branches that blocked the GUI
-    // thread for ~2s and tripped the stall watchdog (adhoc #222). Keep the event
-    // loop pumping across the batch so the window stays responsive (waitForGit
-    // polls in short slices while g_gitKeepAliveDepth > 0) instead of freezing.
+    // thread for ~2s and tripped the stall watchdog (adhoc #222). waitForGit
+    // pumps the event loop in short slices on the GUI thread, so the window
+    // stays responsive across the batch instead of freezing.
     GitKeepAlive keepAlive;
     // Remember which branch's diff is on screen so we can re-render it at the end
     // (now reflecting any merge we just performed).
