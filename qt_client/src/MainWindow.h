@@ -2034,6 +2034,16 @@ private:
     QWidget *buildReleasesTab();
     void loadReleasesPanel();
     void promptNewRelease();
+    // Ask the chosen agent (Codex / OpenAI API / Claude API / Claude Code) to
+    // write GitHub-style release notes from the commits since `prevTag`, then
+    // drop the result into the draft dialog's Notes box. Async: the reply may
+    // land after the dialog is dismissed, so the widgets are held via QPointer.
+    void generateReleaseNotesWithAgent(const QString &dir, const QString &prevTag,
+                                       const QString &newTag,
+                                       const QString &targetRef,
+                                       const QString &provider,
+                                       QPlainTextEdit *notesEdit,
+                                       QPushButton *button);
     void pruneReleaseArtifactsForCurrentRepo(const QString &releaseTag);
     // Deletes every other release tag in this repo's history, keeping only
     // `keepTag` (the one just published). Best-effort like the artifact prune
