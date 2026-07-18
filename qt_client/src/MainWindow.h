@@ -1805,6 +1805,9 @@ private:
     void openRepoDetailDeferred(int repoIndex);
     // Blank the repo-detail panel when the selected node has no repositories.
     void clearRepoDetail();
+    // Show/hide the repo header action buttons (Notify/Fork/Mirror/Source/Open)
+    // for the given m_repoDetailStack index; hidden on the Agents tab.
+    void updateRepoActionButtonsVisibility(int stackIndex);
     void openRepositoryWebsite(); // open the current repo's page in the browser
     void forkCurrentRepo();       // clone the open repo into your own node
     void downloadCurrentRepoZip();
@@ -3786,6 +3789,7 @@ private:
     QLabel *m_repoHeaderTitle = nullptr;
     QLabel *m_repoDetailNotice = nullptr;
     QLabel *m_repoDetailStatus = nullptr;
+    QPushButton *m_notifyButton = nullptr;
     QPushButton *m_forkButton = nullptr;
     QPushButton *m_mirrorButton = nullptr;
     QPushButton *m_sourceButton = nullptr;
