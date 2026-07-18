@@ -15,22 +15,22 @@ def _body(source: str, start: str, end: str) -> str:
     return source[i:j]
 
 
-def test_top_bar_has_separate_user_name_and_avatar_controls():
+def test_top_bar_merges_user_identity_into_node_name_and_avatar():
     header = HEADER.read_text(encoding="utf-8")
     chat = CHAT.read_text(encoding="utf-8")
 
-    assert "QLabel *m_userLabel = nullptr;" in header
-    assert "QPushButton *m_userMenuButton = nullptr;" in header
+    # The top bar no longer has a separate "User" caption/dropdown or a
+    # second (node) avatar button — the user account name is folded into
+    # the node-name label and the node avatar button was dropped, leaving
+    # a single user avatar that also carries the connection status dot.
+    assert "QLabel *m_userLabel = nullptr;" not in header
+    assert "QPushButton *m_userMenuButton = nullptr;" not in header
+    assert "QPushButton *m_avatarNavButton = nullptr;" not in header
     assert "QPushButton *m_userAvatarNavButton = nullptr;" in header
-    assert 'm_userMenuButton->setObjectName("userMenuButton");' in chat
-    assert "m_userLabel = makeCaption(QStringLiteral(\"User\"));" in chat
-    assert "mainRow->addWidget(m_userLabel);" in chat
-    assert "mainRow->addWidget(m_userMenuButton);" in chat
+    assert "QLabel *m_navNodeName = nullptr;" in header
+
     assert "mainRow->addWidget(m_userAvatarNavButton);" in chat
-    assert "mainRow->addWidget(m_avatarNavButton);" in chat
-    assert chat.index("mainRow->addWidget(m_userAvatarNavButton);") < chat.index(
-        "mainRow->addWidget(m_avatarNavButton);"
-    )
+    assert "m_connectionDot = new QLabel(m_userAvatarNavButton);" in chat
 
 
 def test_top_bar_user_identity_prefers_linked_owner_over_node_name():
