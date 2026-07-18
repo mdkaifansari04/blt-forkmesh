@@ -276,9 +276,11 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #commitsList {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
 }
-#commitsList::item { padding: 8px; color: #e6edf3; border-bottom: 1px solid #21262d; }
-#commitsList::item:hover { background-color: #161b22; padding: 8px; border-bottom: 1px solid #21262d; }
-#commitsList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 8px; border-bottom: 1px solid #21262d; }
+/* No per-row border: separators would slice across the commit-graph lanes;
+   the VS Code-style graph reads as continuous lines on a plain background. */
+#commitsList::item { padding: 8px; color: #e6edf3; }
+#commitsList::item:hover { background-color: #161b22; padding: 8px; }
+#commitsList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 8px; }
 #placeholderPanel { color: #e6edf3; font-size: 16px; }
 #insightsPage QLabel { background: transparent; }
 #insightsCard {
@@ -487,6 +489,15 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,0.15); }
+/* Green outline on whichever send button Enter currently activates (adhoc #89),
+   toggled by MainWindow::updateQuickAddEnterTarget(). */
+QPushButton#quickAddSendIcon[enterTarget="true"] {
+    border: 1px solid #3fb950; background: rgba(63,185,80,0.08);
+}
+QLabel#quickAddEnterBadge {
+    background: #3fb950; color: #0d1117; border-radius: 7px;
+    font-size: 9px; font-weight: 600;
+}
 #issueSearch {
     background-color: #0d1117; border: 1px solid #30363d;
     border-radius: 6px; padding: 6px 10px;
@@ -831,6 +842,15 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,0.15); }
+/* Green outline on whichever send button Enter currently activates (adhoc #89),
+   toggled by MainWindow::updateQuickAddEnterTarget(). */
+QPushButton#quickAddSendIcon[enterTarget="true"] {
+    border: 1px solid #3fb950; background: rgba(63,185,80,0.08);
+}
+QLabel#quickAddEnterBadge {
+    background: #3fb950; color: #0d1117; border-radius: 7px;
+    font-size: 9px; font-weight: 600;
+}
 /* Footer prompt bottom bar (adhoc #99): the Auto/Create-issue/Agent toggles get
    a green filled checkmark instead of the generic blue-filled indicator, and the
    Agent controls sit in a thin bordered box centred in the bar. */
@@ -1436,9 +1456,10 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #commitsList {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
 }
-#commitsList::item { padding: 8px; color: #1f2328; border-bottom: 1px solid #d8dee4; }
-#commitsList::item:hover { background-color: #f6f8fa; padding: 8px; border-bottom: 1px solid #d8dee4; }
-#commitsList::item:selected { background-color: #0969da; color: #ffffff; padding: 8px; border-bottom: 1px solid #d8dee4; }
+/* No per-row border: separators would slice across the commit-graph lanes. */
+#commitsList::item { padding: 8px; color: #1f2328; }
+#commitsList::item:hover { background-color: #f6f8fa; padding: 8px; }
+#commitsList::item:selected { background-color: #0969da; color: #ffffff; padding: 8px; }
 #placeholderPanel { color: #1f2328; font-size: 16px; }
 #insightsPage QLabel { background: transparent; }
 #insightsCard {
@@ -1665,6 +1686,15 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #1a7f37; background: rgba(26,127,55,0.12); }
+/* Green outline on whichever send button Enter currently activates (adhoc #89),
+   toggled by MainWindow::updateQuickAddEnterTarget(). */
+QPushButton#quickAddSendIcon[enterTarget="true"] {
+    border: 1px solid #1a7f37; background: rgba(26,127,55,0.08);
+}
+QLabel#quickAddEnterBadge {
+    background: #1a7f37; color: #ffffff; border-radius: 7px;
+    font-size: 9px; font-weight: 600;
+}
 #issueSearch {
     background-color: #ffffff; border: 1px solid #d0d7de;
     border-radius: 6px; padding: 6px 10px;
@@ -1990,6 +2020,15 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #1a7f37; background: rgba(26,127,55,0.12); }
+/* Green outline on whichever send button Enter currently activates (adhoc #89),
+   toggled by MainWindow::updateQuickAddEnterTarget(). */
+QPushButton#quickAddSendIcon[enterTarget="true"] {
+    border: 1px solid #1a7f37; background: rgba(26,127,55,0.08);
+}
+QLabel#quickAddEnterBadge {
+    background: #1a7f37; color: #ffffff; border-radius: 7px;
+    font-size: 9px; font-weight: 600;
+}
 /* Footer prompt bottom bar (adhoc #99): see the dark-theme block above for the
    rationale — green filled checkmark indicators plus a thin bordered Agent box. */
 QCheckBox#quickAddAutoCheck::indicator,

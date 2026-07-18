@@ -1661,6 +1661,137 @@
         right: max(1rem, calc(50% - 31rem));
       }
 
+      #support-forkmesh {
+        position: relative;
+        scroll-margin-top: 6rem;
+        padding: 1rem 1rem 4rem;
+      }
+
+      #support-forkmesh .support-mission-shell {
+        width: min(100%, 72rem);
+        margin-inline: auto;
+      }
+
+      #support-forkmesh .support-mission-card {
+        position: relative;
+        isolation: isolate;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        overflow: hidden;
+        border: 1px solid rgba(134, 239, 172, 0.28);
+        border-radius: 1.5rem;
+        padding: clamp(1.5rem, 4vw, 3.25rem);
+        background: #0b110d;
+        background-image: radial-gradient(circle at 0% 12%, rgba(34, 197, 94, 0.22), transparent 38%);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.15),
+          inset 0 1.5rem 3rem rgba(134, 239, 172, 0.025),
+          0 1.25rem 3rem rgba(0, 0, 0, 0.52);
+      }
+
+      #support-forkmesh .support-mission-card::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+        background: url("/noisy-background.avif");
+        background-size: 270px 270px;
+        opacity: 0.1;
+        mix-blend-mode: soft-light;
+      }
+
+      #support-forkmesh .support-mission-copy {
+        position: relative;
+        z-index: 1;
+        min-width: 0;
+      }
+
+      #support-forkmesh .support-mission-kicker {
+        margin: 0;
+        color: #c9f7d8;
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      #support-forkmesh h2 {
+        margin: 0.8rem 0 0;
+        max-width: 38rem;
+        color: #fff;
+        font-family: var(--landing-hero-font);
+        font-size: clamp(2rem, 4vw, 3.2rem);
+        font-synthesis: none;
+        letter-spacing: -0.045em;
+        line-height: 1.03;
+      }
+
+      #support-forkmesh .support-mission-story {
+        color: rgba(238, 236, 247, 0.78);
+        font-family: var(--landing-body-font);
+        font-size: 0.95rem;
+        line-height: 1.6;
+      }
+
+      #support-forkmesh .support-mission-story {
+        max-width: 38rem;
+        margin: 1.1rem 0 0;
+      }
+
+      #support-forkmesh .support-mission-story + .support-mission-story {
+        margin-top: 0.75rem;
+      }
+
+      #support-forkmesh .support-mission-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-top: 1.5rem;
+      }
+
+      #support-forkmesh .support-mission-cta {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 2.75rem;
+        border-radius: 0.7rem;
+        padding: 0.7rem 1rem;
+        background: #fff;
+        color: #161020;
+        font-family: var(--landing-heading-font);
+        font-size: 0.84rem;
+        font-weight: 700;
+        text-decoration: none;
+        transition: transform 160ms ease, background-color 160ms ease;
+      }
+
+      #support-forkmesh .support-mission-cta:hover {
+        transform: translateY(-1px);
+        background: #f4fff7;
+      }
+
+      #support-forkmesh .support-mission-secondary {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 2.75rem;
+        border: 1px solid rgba(255, 255, 255, 0.24);
+        border-radius: 0.7rem;
+        padding: 0.7rem 1rem;
+        color: rgba(255, 255, 255, 0.9);
+        font-family: var(--landing-heading-font);
+        font-size: 0.84rem;
+        font-weight: 700;
+        text-decoration: none;
+        transition: border-color 160ms ease, background-color 160ms ease;
+      }
+
+      #support-forkmesh .support-mission-secondary:hover {
+        border-color: rgba(255, 255, 255, 0.48);
+        background: rgba(255, 255, 255, 0.08);
+      }
+
       @media (max-width: 768px) {
         #faq .faq-title {
           font-size: 3rem;
@@ -1803,6 +1934,25 @@
           justify-content: center;
           gap: 0.35rem 0;
         }
+
+        #support-forkmesh {
+          padding: 0 1.25rem 4rem;
+        }
+
+        #support-forkmesh .support-mission-card {
+          border-radius: 1.25rem;
+          padding: 1.5rem;
+        }
+
+        #support-forkmesh h2 {
+          font-size: clamp(2rem, 10vw, 2.7rem);
+        }
+
+        #support-forkmesh .support-mission-story {
+          font-size: 0.94rem;
+          line-height: 1.58;
+        }
+
       }
 
       @media (max-width: 420px) {
@@ -2921,6 +3071,34 @@
           </div>
         </section>
       </div>
+
+      <section id="support-forkmesh" aria-labelledby="support-forkmesh-title">
+        <div class="support-mission-shell">
+          <div class="support-mission-card">
+            <div class="support-mission-copy">
+              <p class="support-mission-kicker">Support ForkMesh</p>
+              <h2 id="support-forkmesh-title">
+                Help us keep source code alive across machines people control.
+              </h2>
+              <p class="support-mission-story">
+                ForkMesh started after Kaif had 65+ merged open-source contributions become hard to access when a long-running organization was flagged and became unavailable almost overnight.
+              </p>
+              <p class="support-mission-story">
+                Kaif and Jett started ForkMesh so source-code history, repo mirrors, and collaboration records do not have to depend on one fragile place.
+              </p>
+              <div class="support-mission-actions">
+                <a
+                  class="support-mission-cta"
+                  href="https://www.patreon.com/16434219/join"
+                  target="_blank"
+                  rel="noreferrer"
+                >Support ForkMesh on Patreon</a>
+                <a class="support-mission-secondary" href="/dashboard">Browse Instance</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
       <section id="faq" class="py-16 md:py-24">
         <div class="mx-auto w-full px-4 md:px-6">

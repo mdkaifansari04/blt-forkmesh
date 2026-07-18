@@ -511,16 +511,19 @@ constexpr int kGraphMargin = 8;
 // deep merge history can't shove the messages off-screen.
 constexpr int kGraphMaxTextIndent = 160;
 // Commit node is drawn as a "bullseye": a hollow ring with a filled centre,
-// matching the VS Code git-graph look. Kept compact so the rows read tight.
-constexpr qreal kGraphNodeOuter = 3.8; // outer ring radius
-constexpr qreal kGraphNodeInner = 1.6; // centre-dot radius
+// matching the VS Code git-graph look. Slightly larger than before so the
+// nodes read as clear anchors; lane lines stop at the ring's edge on merge
+// rows so the background shows through the ring/centre-dot gap.
+constexpr qreal kGraphNodeOuter = 4.5; // outer ring radius
+constexpr qreal kGraphNodeInner = 2.0; // centre-dot radius
 
 // Stable per-lane colour so a branch keeps its hue down the whole graph.
+// Blue leads so the trunk lane (main) draws blue, like the VS Code graph.
 inline QColor commitGraphLaneColor(int lane)
 {
     static const QColor palette[] = {
-        QColor("#3fb950"), QColor("#58a6ff"), QColor("#d29922"),
-        QColor("#bc8cff"), QColor("#f85149"), QColor("#39c5cf"),
+        QColor("#58a6ff"), QColor("#d29922"), QColor("#db61a2"),
+        QColor("#bc8cff"), QColor("#39c5cf"), QColor("#3fb950"),
     };
     constexpr int n = int(sizeof(palette) / sizeof(palette[0]));
     return palette[((lane % n) + n) % n];
@@ -574,11 +577,15 @@ inline void paintCommitGraphGutter(QPainter *painter, const QRect &r,
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
 
+    // On merge rows the lines stop short of the node by the ring radius, so
+    // the hollow ring keeps a clean background gap around its centre dot
+    // instead of lane strokes cutting through it.
+    const qreal trim = (isMerge && nodeLane >= 0) ? kGraphNodeOuter : 0.0;
+
     // Round caps/joins keep the lanes and their loops smooth where they meet
-    // nodes and each other; a slightly thinner stroke reads cleaner at the
-    // compact row height.
+    // nodes and each other.
     auto strokePath = [&](const QPainterPath &path, const QColor &c) {
-        QPen pen(c, 1.8);
+        QPen pen(c, 2.0);
         pen.setCapStyle(Qt::RoundCap);
         pen.setJoinStyle(Qt::RoundJoin);
         painter->setPen(pen);
@@ -596,12 +603,12 @@ inline void paintCommitGraphGutter(QPainter *painter, const QRect &r,
     auto loopIn = [&](int lane, const QColor &c) {
         const qreal x0 = laneX(lane);
         const qreal x1 = laneX(nodeLane);
-        const qreal rad = qMin(qAbs(x1 - x0), yMid - yTop);
+        const qreal rad = qMax(0.0, qMin(qAbs(x1 - x0) - trim, yMid - yTop));
         const qreal sx = (x1 > x0) ? 1.0 : -1.0;
         QPainterPath path(QPointF(x0, yTop));
         path.lineTo(QPointF(x0, yMid - rad));
         path.quadTo(QPointF(x0, yMid), QPointF(x0 + sx * rad, yMid));
-        path.lineTo(QPointF(x1, yMid));
+        path.lineTo(QPointF(x1 - sx * trim, yMid));
         strokePath(path, c);
     };
     // A lane looping out of the node towards the row's bottom edge: horizontal
@@ -609,9 +616,9 @@ inline void paintCommitGraphGutter(QPainter *painter, const QRect &r,
     auto loopOut = [&](int lane, const QColor &c) {
         const qreal x0 = laneX(nodeLane);
         const qreal x1 = laneX(lane);
-        const qreal rad = qMin(qAbs(x1 - x0), yBot - yMid);
+        const qreal rad = qMax(0.0, qMin(qAbs(x1 - x0) - trim, yBot - yMid));
         const qreal sx = (x1 > x0) ? 1.0 : -1.0;
-        QPainterPath path(QPointF(x0, yMid));
+        QPainterPath path(QPointF(x0 + sx * trim, yMid));
         path.lineTo(QPointF(x1 - sx * rad, yMid));
         path.quadTo(QPointF(x1, yMid), QPointF(x1, yMid + rad));
         path.lineTo(QPointF(x1, yBot));
@@ -640,15 +647,16 @@ inline void paintCommitGraphGutter(QPainter *painter, const QRect &r,
         const QColor c = commitGraphLaneColor(nodeLane);
         const qreal nx = laneX(nodeLane);
         // The node's own lane: a straight stub above (it was reached from a
-        // child) and below (its first parent continues here).
+        // child) and below (its first parent continues here), trimmed at the
+        // ring's edge on merge rows so the ring interior stays clear.
         if (topSet.contains(nodeLane))
-            straight(nx, yTop, yMid, c);
+            straight(nx, yTop, yMid - trim, c);
         if (botSet.contains(nodeLane))
-            straight(nx, yMid, yBot, c);
+            straight(nx, yMid + trim, yBot, c);
         if (isMerge) {
-            // Merge node: hollow ring + filled centre, drawn over the lines.
+            // Merge node: hollow ring + filled centre.
             painter->setBrush(Qt::NoBrush);
-            painter->setPen(QPen(c, 1.6));
+            painter->setPen(QPen(c, 2.0));
             painter->drawEllipse(QPointF(nx, yMid), kGraphNodeOuter, kGraphNodeOuter);
             painter->setPen(Qt::NoPen);
             painter->setBrush(c);
@@ -758,15 +766,11 @@ public:
             return;
         }
 
-        // Commit row: chevron (expand affordance) + checks icon + summary,
-        // author (and the amber unsynced marker) right-aligned.
-        const bool expanded = index.data(kCommitExpandedRole).toBool();
-        painter->setPen(dim);
-        painter->drawText(QRect(r.left(), r.top(), 12, r.height()),
-                          Qt::AlignVCenter | Qt::AlignLeft,
-                          expanded ? QString::fromUtf8("\xE2\x96\xBE")
-                                   : QString::fromUtf8("\xE2\x96\xB8"));
-        int x = r.left() + 16;
+        // Commit row: checks icon + summary, author (and the amber unsynced
+        // marker) right-aligned. No disclosure chevron — the VS Code graph
+        // keeps rows plain; clicking a row still expands it into its files,
+        // so the text starts right beside the commit's own node.
+        int x = r.left();
         const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
         if (!icon.isNull()) {
             const QRect ir(x, r.center().y() - 7, 14, 14);
@@ -784,9 +788,13 @@ public:
                     break; // keep room for the summary itself
                 const QRect br(x, r.center().y() - fm.height() / 2 - 1, rw,
                                fm.height() + 2);
-                painter->setPen(QPen(QColor("#58a6ff"), 1));
-                painter->setBrush(QColor(88, 166, 255, 26));
-                painter->drawRoundedRect(br, 6, 6);
+                // Solid pill with white text, like the VS Code graph's ref
+                // badges, rounded to a full capsule.
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(QColor("#1f6feb"));
+                painter->drawRoundedRect(br, br.height() / 2.0,
+                                         br.height() / 2.0);
+                painter->setPen(Qt::white);
                 painter->drawText(br, Qt::AlignCenter, ref);
                 x += rw + 5;
             }
@@ -1227,19 +1235,21 @@ private:
     QVector<double> m_history;
 };
 
-// Tiny spinning-radar dish + latency readout shown just left of the relay name.
-// The dish always sweeps (a continuously rotating wedge) so the relay looks
+// Spinning-radar dish with a latency readout centered inside it, shown on the
+// window-chrome line just left of the CPU/MEM/DISK sparklines (adhoc #87). The
+// dish always sweeps (a continuously rotating wedge) so the relay looks
 // "alive"; a one-minute probe feeds in the round-trip time, which renders as
-// "33ms" beside it. When the relay stops answering the whole control flips to a
-// red alert (red dish + "offline"). Colour-grades the latency green/amber so a
-// degrading link is visible at a glance.
+// "33ms" over the middle of the dish — mirroring how ResourceSparkline centers
+// its label/value over the chart. When the relay stops answering the whole
+// control flips to a red alert (red dish + "offline"). Colour-grades the
+// latency green/amber so a degrading link is visible at a glance.
 class RelayRadarWidget : public QWidget
 {
 public:
     explicit RelayRadarWidget(QWidget *parent = nullptr) : QWidget(parent)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedSize(58, 24);
+        setFixedSize(kSide, kSide); // same button-sized square as the resource sparklines
         refreshTooltip();
         // Drive the sweep: a slow, steady rotation independent of probe timing.
         m_sweep = new QTimer(this);
@@ -1276,8 +1286,11 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
 
-        const int dish = qMin(height() - 4, 18);
-        const QRectF dishRect(2, (height() - dish) / 2.0, dish, dish);
+        // The dish fills almost the whole square, same footprint as the
+        // resource sparklines' card.
+        const qreal dish = width() - 4.0;
+        const QRectF dishRect((width() - dish) / 2.0, (height() - dish) / 2.0,
+                              dish, dish);
         const QPointF c = dishRect.center();
         const qreal r = dish / 2.0;
         const QColor accent = m_unreachable ? QColor("#f85149")  // red alert
@@ -1307,12 +1320,10 @@ protected:
         p.setBrush(accent);
         p.drawEllipse(c, 1.4, 1.4);
 
-        // Latency text / alert to the right of the dish.
+        // Latency text / alert, centered in the middle of the dish — mirrors
+        // how ResourceSparkline overlays its value on top of its chart.
         QFont f = font();
-        f.setPointSizeF(qMax(6.5, f.pointSizeF() - 2.0));
-        p.setFont(f);
-        const QRectF textRect(dishRect.right() + 4, 0,
-                              width() - dishRect.right() - 4, height());
+        double pt = f.pointSizeF() > 0 ? qMin(8.0, f.pointSizeF()) : 7.0;
         QString label;
         QColor textCol;
         if (m_unreachable) {
@@ -1326,8 +1337,25 @@ protected:
             label = QStringLiteral("%1ms").arg(m_latencyMs);
             textCol = statusColor();
         }
+        const double avail = dish - 4.0;
+        for (; pt > 5.5; pt -= 0.5) {
+            f.setPointSizeF(pt);
+            if (QFontMetrics(f).horizontalAdvance(label) <= avail)
+                break;
+        }
+        f.setPointSizeF(pt);
+        p.setFont(f);
+        // A soft backing disc behind the text keeps it legible as the sweep
+        // wedge rotates underneath.
+        QColor backing = palette().color(QPalette::Window);
+        backing.setAlpha(190);
+        p.setPen(Qt::NoPen);
+        p.setBrush(backing);
+        const QFontMetrics fm(f);
+        const qreal textR = qMax(fm.horizontalAdvance(label), fm.height()) / 2.0 + 2.0;
+        p.drawEllipse(c, textR, textR);
         p.setPen(textCol);
-        p.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, label);
+        p.drawText(dishRect, Qt::AlignCenter, label);
     }
 
 private:
@@ -1356,6 +1384,7 @@ private:
         }
     }
 
+    static constexpr int kSide = 40; // matches ResourceSparkline's button-sized square
     int m_latencyMs = -1;       // last measured round-trip; -1 = unknown/probing
     bool m_unreachable = false; // relay failed to answer the last probe
     int m_angle = 0;            // sweep rotation (degrees)
@@ -4115,6 +4144,33 @@ inline QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
     tri.lineTo(a * 1.2, -r);
     tri.closeSubpath();
     p.drawPath(tri);
+    return pm;
+}
+
+// An hourglass, used in place of the spinning-arrows icon when a button's
+// action is queued behind other work rather than actively running.
+inline QPixmap hourglassPixmap(const QColor &color, double angleDeg, int size)
+{
+    QPixmap pm(size, size);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.translate(size / 2.0, size / 2.0);
+    p.rotate(angleDeg);
+    const double w = size * 0.34;
+    const double h = size * 0.34;
+    QPen pen(color, std::max(1.4, size * 0.09));
+    pen.setJoinStyle(Qt::RoundJoin);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    QPainterPath glass;
+    glass.moveTo(-w, -h);
+    glass.lineTo(w, -h);
+    glass.lineTo(-w, h);
+    glass.lineTo(w, h);
+    glass.closeSubpath();
+    p.drawPath(glass);
     return pm;
 }
 
