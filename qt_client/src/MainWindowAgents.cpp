@@ -7776,7 +7776,12 @@ void MainWindow::updateAgentFilesTabState(int sessionId)
                 wt = cachedSessionWorktree(sessionId, repoLocal, branch);
         }
     }
-    const QString base = repoDefaultBranch(repoBranches());
+    // Runs on every agent-session selection, so avoid repoBranches()'s
+    // `git branch --sort=-committerdate` — its per-branch commit reads have
+    // stalled the UI for ~500 ms on repos with many agent branches (adhoc #150).
+    // We only need the base branch name to tell whether the session sits on a
+    // feature branch, which the cheap unsorted lookup answers just as well.
+    const QString base = repoDefaultBranchFast();
     const bool onDisk = !wt.isEmpty() && QDir(wt).exists();
     const bool isMain = !wt.isEmpty() && !repoLocal.isEmpty() &&
                         QDir(wt).absolutePath() == QDir(repoLocal).absolutePath();

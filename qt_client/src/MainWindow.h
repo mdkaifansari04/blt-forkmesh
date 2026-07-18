@@ -1880,6 +1880,11 @@ private:
     void loadBranchesAndTags();
     QStringList repoBranches() const;
     QString repoDefaultBranch(const QStringList &branches) const;
+    // Cheap default-branch lookup for hot UI paths (e.g. selecting an agent
+    // session) that must NOT pay for repoBranches()'s `--sort=-committerdate`,
+    // which reads every branch tip and can block the UI for hundreds of ms on
+    // repos with many agent branches.
+    QString repoDefaultBranchFast() const;
     QWidget *buildBranchesTab();
     void loadBranchesPanel();
     QWidget *buildWorktreesTab();
