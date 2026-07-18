@@ -8100,24 +8100,14 @@ QWidget *MainWindow::buildRepoDetailSection()
     // Land on the Code view; opening a repo refreshes it (see openRepoDetail).
     m_repoDetailStack->setCurrentIndex(0);
 
-    // QStackedWidget sizes itself to the tallest page, even ones that aren't
-    // showing (e.g. Discussions or Settings next to a short Code view). Without
-    // this wrapper that height pushes into the outer app-wide scroll area, which
-    // then scrolls the whole page — header and tab bar included — out of view.
-    // Wrapping just the stack (same trick as contentScroll/settingsScroll) keeps
-    // header + tab bar fixed and scrolls only the active tab's body.
-    auto *repoDetailStackScroll = new QScrollArea;
-    repoDetailStackScroll->setObjectName("repoDetailStackScroll");
-    repoDetailStackScroll->setWidgetResizable(true);
-    repoDetailStackScroll->setFrameShape(QFrame::NoFrame);
-    repoDetailStackScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // Hide the outer vertical scrollbar (the right-most one in the window). Each
-    // repo-detail tab manages its own scrolling, so this outer bar was a
-    // redundant second scrollbar. Wheel/keyboard scrolling still works.
-    repoDetailStackScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    repoDetailStackScroll->setMinimumHeight(0);
-    repoDetailStackScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
-    repoDetailStackScroll->setWidget(m_repoDetailStack);
+    // No QScrollArea around the tab stack any more (adhoc #108). Every
+    // repo-detail tab manages its own scrolling, so the wrapper only layered a
+    // second scroll surface (and its overflow spacing) over the page. The
+    // Ignored vertical policy keeps a tall tab from growing the window's
+    // minimum height (CurrentPageStack already sizes the stack to the current
+    // tab, not the tallest sibling), so header + tab bar stay fixed.
+    m_repoDetailStack->setMinimumHeight(0);
+    m_repoDetailStack->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
 
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -8126,7 +8116,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     layout->addWidget(m_repoDetailNotice);
     layout->addWidget(metaBand);
     layout->addWidget(tabBarScroll);
-    layout->addWidget(repoDetailStackScroll, 1);
+    layout->addWidget(m_repoDetailStack, 1);
     return page;
 }
 
