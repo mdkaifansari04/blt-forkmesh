@@ -16,5 +16,17 @@
         "due": 0,
         "status": "open",
         "title": "Phase 2"
+    },
+    {
+        "title": "Daily Git workflow",
+        "due": 1784952000000,
+        "status": "open",
+        "description": "Native planning, complete tests, verified Git operations, protected writes, discovery, and availability."
+    },
+    {
+        "title": "Resilient operation",
+        "due": 1785556800000,
+        "status": "open",
+        "description": "Deterministic collaboration, offline transfer, headless operations, conformance, and the release gate."
     }
 ]
