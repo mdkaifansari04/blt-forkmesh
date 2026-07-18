@@ -3588,6 +3588,48 @@ void MainWindow::rebuildNetworkLogView()
     m_logViewMutating = false;
 }
 
+void MainWindow::openFullLogAtFooterLine(const QString &rawLine)
+{
+    // Drop any active category filter first so the clicked entry is guaranteed to
+    // be in the rendered segment (a filtered view might omit it), and reflect that
+    // in the chips.
+    const bool hadFilter = !m_logFilter.isEmpty();
+    if (hadFilter) {
+        m_logFilter.clear();
+        rebuildLogFilterButtons();
+    }
+    // Open the Log section. On its first visit showSection() renders the deferred
+    // history and clears m_networkLogViewStale; force a rebuild here only when it
+    // didn't (already visited, or we just cleared a filter) so the full tail —
+    // which contains this line — is on screen to scroll to.
+    showSection(4);
+    if (m_logNavButton)
+        m_logNavButton->setChecked(true);
+    if ((hadFilter || m_networkLogViewStale) && m_settingsLog) {
+        m_networkLogViewStale = false;
+        rebuildNetworkLogView();
+    }
+    if (!m_settingsLog)
+        return;
+
+    // The footer stores the full dated line ("yyyy-MM-dd HH:mm:ss  message"); the
+    // Log view renders the timestamp separately, so match on the message body.
+    QString message = rawLine.trimmed();
+    if (message.size() >= 21 && message.at(10) == QLatin1Char(' '))
+        message = message.mid(21);
+    if (message.isEmpty())
+        return;
+
+    // Search backward from the end so the newest occurrence (the one the footer
+    // was showing) wins when a message repeats, then bring it into view. The
+    // match stays selected so the clicked entry is easy to spot.
+    m_settingsLog->moveCursor(QTextCursor::End);
+    if (m_settingsLog->find(message, QTextDocument::FindBackward))
+        m_settingsLog->ensureCursorVisible();
+    else
+        m_settingsLog->moveCursor(QTextCursor::End);
+}
+
 QString MainWindow::networkLogPath() const
 {
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
