@@ -7964,7 +7964,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_releaseStrip->hide();
 
     // --- Inner stack: one page per tab.
-    m_repoDetailStack = new QStackedWidget;
+    m_repoDetailStack = new CurrentPageStackedWidget;
     m_repoDetailStack->addWidget(buildRepoFilesPanel());                 // 0 Code
     // 1 — placeholder. The commits panel lives inside the Code overview (built
     // by buildRepoOverviewPage, under the latest-commit bar); this empty page

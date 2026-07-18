@@ -243,7 +243,7 @@ QWidget *MainWindow::buildChatPage()
     // One page per "place": Home holds the repos, quest board and chat all at
     // once (no nav bar — you click a server to see everything). Repo detail and
     // Settings are opened on demand (clicking a repo / the server-rail gear).
-    m_sectionStack = new QStackedWidget;
+    m_sectionStack = new CurrentPageStackedWidget;
     // Home now hosts the nodes column, repositories column and the repo detail
     // panel (with Chat as a tab) all at once, so there is no separate repo-detail
     // section any more.
