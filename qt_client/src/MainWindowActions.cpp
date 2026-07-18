@@ -463,7 +463,11 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
 {
     if (repoIndex < 0 || repoIndex >= m_repositories.size() || !m_actionStore)
         return;
-    const RepositoryRecord &repo = m_repositories.at(repoIndex);
+    // Copy, don't reference: cancelSupersededRuns() below pumps the event loop
+    // (ActionRunner::stop → QProcess::waitForFinished), and a nested refresh can
+    // reassign m_repositories — a reference would dangle for the loop's later
+    // iterations (adhoc #119).
+    const RepositoryRecord repo = m_repositories.at(repoIndex);
 
     // Metadata-only pushes (issues, pull requests, commit comments) shouldn't
     // trigger CI: they carry no code change. List the pushed commit's files and
@@ -828,9 +832,14 @@ void MainWindow::refreshOpenPullChecks()
 {
     if (m_currentPullNumber < 0)
         return;
-    for (const PullRequest &pr : std::as_const(m_currentPulls)) {
-        if (pr.number != m_currentPullNumber)
+    for (const PullRequest &it : std::as_const(m_currentPulls)) {
+        if (it.number != m_currentPullNumber)
             continue;
+        // Snapshot before rendering: each render call pumps the event loop
+        // (runIdsForPull → git reads), which can re-enter reloadPulls() and
+        // reassign m_currentPulls — the loop reference would dangle before the
+        // next call (adhoc #119 SIGSEGV).
+        const PullRequest pr = it;
         renderPullChecks(pr);
         renderPullChecksSummary(pr);
         renderPullReviewSummary(pr);
