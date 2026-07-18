@@ -2646,6 +2646,13 @@ inline QStringList requestFirewallWhitelistWithDefaults()
 // progress (issue #193). Off → incoming issues wait in the inbox for a manual
 // "Sync inbox" click. The manual button is never gated by this.
 const QString kAutoSyncIssuesSetting = QStringLiteral("repos/autoSyncIssues");
+// When on, merging a pull request immediately syncs the new merge commit to the
+// served mirror (and notifies peers) the moment you hit "Merge". Off (the
+// default) → the merge lands locally only; the floating "Sync" button surfaces
+// the pending commit and nothing reaches main until you click it. Adhoc #110:
+// several owners were surprised that Merge published to main with no confirming
+// click, so this stays opt-in.
+const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // When on, MainWindow::maybeAutoUpdate() periodically checks the update remote
 // and, on finding a new tagged release (not just any commit on main), runs the
 // same update/rebuild/relaunch flow as the manual "Update, rebuild & restart"
