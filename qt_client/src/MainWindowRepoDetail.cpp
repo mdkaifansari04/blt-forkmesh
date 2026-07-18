@@ -8699,8 +8699,13 @@ void MainWindow::startButtonSpin(QPushButton *button)
     auto angle = std::make_shared<int>(0);
     connect(timer, &QTimer::timeout, button, [button, angle, size] {
         *angle = (*angle + 30) % 360;
-        button->setIcon(
-            QIcon(refreshPixmap(QColor(Theme::kTextTertiary), *angle, size)));
+        // Re-read the hourglass flag every tick so a caller can flip a spin
+        // already in progress between the refresh-arrows and hourglass looks
+        // (see setRestartSpinHourglass) without restarting the timer.
+        const QPixmap frame = button->property("fmSpinHourglass").toBool()
+                                   ? hourglassPixmap(QColor(Theme::kTextTertiary), *angle, size)
+                                   : refreshPixmap(QColor(Theme::kTextTertiary), *angle, size);
+        button->setIcon(QIcon(frame));
     });
     timer->start(60);
 }
@@ -8715,6 +8720,7 @@ void MainWindow::stopButtonSpin(QPushButton *button)
     }
     button->setIcon(button->property("fmSpinIcon").value<QIcon>());
     button->setProperty("fmSpinning", false);
+    button->setProperty("fmSpinHourglass", false);
 }
 
 void MainWindow::startRestartSpin(QPushButton *button)
@@ -8732,6 +8738,15 @@ void MainWindow::stopRestartSpin()
         return;
     stopButtonSpin(m_restartSpinButton);
     m_restartSpinButton = nullptr;
+}
+
+// Switches the in-progress restart spin (if any) between the refresh-arrows
+// look (an actual rebuild running) and a spinning hourglass (queued, waiting
+// on other agent actions to finish first) without interrupting the spin.
+void MainWindow::setRestartSpinHourglass(bool hourglass)
+{
+    if (m_restartSpinButton)
+        m_restartSpinButton->setProperty("fmSpinHourglass", hourglass);
 }
 
 void MainWindow::startRefreshSpin()
