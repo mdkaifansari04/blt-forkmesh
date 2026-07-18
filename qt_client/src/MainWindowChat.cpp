@@ -10605,11 +10605,12 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileMirrors->setWordWrap(true);
     m_profileMirrors->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
-    // --- User profile: this node is key-bound on its own, but a person can own
-    // many nodes. The node's own avatar/name already headline the left column,
-    // so this card doesn't repeat them — it just states the link status and
-    // lists the sibling nodes attached to the same user account. It lives at the
-    // top of the right column so the nodes read as their own panel.
+    // --- User profile: kept around (unparented, never added to the layout) so
+    // refreshProfileAccountStatus() can still drive the link-state side effects
+    // it shares with other visible widgets (m_profileLinkBrowserButton,
+    // updateUserSwitcher()). The card itself is no longer shown — the node's
+    // own avatar/name already headline the left column, so a second "linked to
+    // user X" card here was redundant.
     m_profileAccountSection = new QWidget;
     m_profileAccountSection->setObjectName("profileUserCard");
     auto *accountLabel = makeProfileSection("USER PROFILE");
@@ -10767,7 +10768,6 @@ QWidget *MainWindow::buildNodeProfilePanel()
     auto *rightColumn = new QVBoxLayout;
     rightColumn->setContentsMargins(0, 0, 0, 0);
     rightColumn->setSpacing(6);
-    rightColumn->addWidget(m_profileAccountSection); // sibling nodes, on the right
     rightColumn->addWidget(m_profileHostingLabel);
     rightColumn->addWidget(m_profileHosting);
     rightColumn->addWidget(nodeKeyLabel);
@@ -10995,7 +10995,9 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     if (m_profileLinkBrowserButton)
         m_profileLinkBrowserButton->setVisible(info.self);
     if (m_profileAccountSection) {
-        m_profileAccountSection->setVisible(info.self);
+        // Never shown (see construction comment above); still refreshed for its
+        // side effects on other visible widgets.
+        m_profileAccountSection->setVisible(false);
         if (info.self)
             refreshProfileAccountStatus();
     }
