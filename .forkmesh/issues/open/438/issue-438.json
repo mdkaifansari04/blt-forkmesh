@@ -8,12 +8,12 @@
     ],
     "milestone": "Daily Git workflow",
     "startDate": 1784520000000,
-    "endDate": 1784779200000,
+    "endDate": 1784692800000,
     "priority": 10,
     "progress": 0,
     "assignees": [],
     "createdAt": 1784402987621,
-    "updatedAt": 1784402987622,
+    "updatedAt": 1784405500068,
     "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
     "authorName": "forkmesh",
     "bountyUsd": 0.0,
@@ -41,6 +41,27 @@
             "authorName": "forkmesh",
             "ts": 1784402987622,
             "sig": "4XN7CjAa5CVlu8u5LPmIKiSGomtGXadZp9vZl3T-Q13kJDpqmnxydM0XJSNptDKJvSeAJJH_g4He_lduevlCDg"
+        },
+        {
+            "type": "edit",
+            "id": "3b421443-1cbf-4605-8bed-e54be2adc881",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500060,
+            "body": "## Outcome\n\nMake global public repository discovery searchable, useful, and directly cloneable from the default public entry point.\n\n## Implementation\n\n- Add bounded full-text search plus newest, newly mirrored, time-window trending, recently collaboration-active, most mirrored, most starred, and alphabetical views.\n- Add verified-maintainer, online, integrity-verified, and minimum-copy filters.\n- Use bounded catalog queries and aggregates with no per-repository request fan-out.\n- Use owner and repository identity as stable score tie-breakers so pagination cannot reorder equal results.\n- Add the discovery view to the default public route with direct clone actions, keyboard navigation, mobile layout, and complete empty, loading, degraded, and error states.\n\n## Acceptance criteria\n\n- Search and rank results are deterministic across repeated requests and pagination.\n- Private and unlisted repositories and social records never enter results or aggregates.\n- Trending is time-bounded, documented, and resistant to duplicate events.\n- Verified-maintainer state comes from scoped identity proofs rather than a display-name claim.\n- Every clone action uses a stable Git URL and reports route availability before starting.\n\n## Dependencies\n\nUses scoped identities from #447 and availability state from #439 as those contracts land.\n\n## Verification\n\nCover text relevance, every ranking, score ties, duplicate activity, privacy filtering, proof expiry, combined filters, pagination, zero results, degraded routes, keyboard navigation, and narrow viewports.",
+            "attachments": [],
+            "target": "open-438",
+            "sig": "MvgoRC43idQGCJzjfOhWPg57aK7td3xXsh7W3vDgP0Vmpi7hl6L19sWmjwtXGlzo_Fnhc9hk_saDw_SPNZLdBA"
+        },
+        {
+            "type": "dates",
+            "id": "110b18ac-d525-4950-8e56-13d534134d99",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500068,
+            "startDate": 1784520000000,
+            "endDate": 1784692800000,
+            "sig": "DKU3_N6MFHNn29NdZ38P15woVK8jkthQT0VnB6NXednqqFlSKeBIvjN0r7Iw_t8no89WQ3iL7yuFsMMax511BQ"
         }
     ]
 }
