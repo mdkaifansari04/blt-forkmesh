@@ -5991,6 +5991,19 @@ QWidget *MainWindow::buildNetworkReposSection()
     m_networkReposStatus->setObjectName("mutedLabel");
     header->addWidget(m_networkReposStatus);
 
+    // Create a brand-new repository right from the Repos tab. Reuses the shared
+    // New repository dialog (name/description/first prompt/README/location), so
+    // the "info needed to create a repo" is shown inline instead of buried in
+    // Settings.
+    auto *newRepoButton = new QPushButton(QStringLiteral("New repository\xE2\x80\xA6"));
+    newRepoButton->setObjectName("primaryButton");
+    newRepoButton->setCursor(Qt::PointingHandCursor);
+    newRepoButton->setToolTip(QStringLiteral("Create a brand-new repository"));
+    setOcticon(newRepoButton, "repo", 14);
+    connect(newRepoButton, &QPushButton::clicked, this,
+            &MainWindow::createNewRepository);
+    header->addWidget(newRepoButton);
+
     m_networkReposRefreshButton = new QPushButton(QStringLiteral("Refresh"));
     m_networkReposRefreshButton->setObjectName("ghostButton");
     m_networkReposRefreshButton->setCursor(Qt::PointingHandCursor);

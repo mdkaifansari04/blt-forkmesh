@@ -17989,7 +17989,7 @@ def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=
         tables = sorted(tables, key=lambda t: counts.get(t, 0), reverse=True)
     toggle_label = "A–Z" if sort_records else "Sort by records"
     toggle_href = _admin_href(admin_query, table=active,
-                              sort=("" if sort_records else "records"))
+                              sort=("name" if sort_records else "records"))
     links = ['<div class="sec">Tables <a class="navsort" href="%s">%s</a></div>'
              % (toggle_href, toggle_label)]
     for t in tables:
@@ -17998,10 +17998,11 @@ def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=
         n = counts.get(t)
         suffix = (' <span class="navcount">%d</span>' % n) if n is not None else ""
         # Carry the active sort along: sort state lives only in the URL, so a
-        # table link that dropped it would silently reset the nav to A–Z.
+        # table link that dropped it would silently reset the nav to the
+        # most-records-first default.
         links.append('<a href="%s"%s>%s%s</a>'
                      % (_admin_href(admin_query, table=t,
-                                    sort=("records" if sort_records else "")),
+                                    sort=("records" if sort_records else "name")),
                         cls, _html_escape(label), suffix))
     return "<nav>" + "".join(links) + "</nav>"
 
@@ -18604,7 +18605,9 @@ class Default(WorkerEntrypoint):
             except Exception:
                 counts[t] = 0
         stats = await admin_stats(self.env)
-        sort_records = params.get("sort", [""])[0] == "records"
+        # Default the table browser to most-records-first; ?sort=name opts back
+        # into the A–Z ordering.
+        sort_records = params.get("sort", [""])[0] != "name"
         return Response(
             render_admin_html(stats, tables, active, table_html, banner, counts,
                               csrf_field=csrf_field, admin_query=admin_query,
