@@ -761,6 +761,14 @@ void MainWindow::testClickRepoDetailTab(int id)
             m_historyButton->click();
         return;
     }
+    if (id == m_worktreesTabIndex) {
+        // Worktrees has no top-bar tab anymore (adhoc #170): drive the Code
+        // toolbar's "N worktrees" toggle path a real click now takes.
+        showOverviewWorktrees();
+        loadWorktreesPanel();
+        focusRepoDetailTable(id);
+        return;
+    }
     if (!m_repoDetailTabs)
         return;
     if (QAbstractButton *b = m_repoDetailTabs->button(id))
