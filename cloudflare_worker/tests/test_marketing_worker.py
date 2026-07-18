@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""The marketing Worker owns exactly forkmesh.com/ — the relay owns the rest.
+"""The marketing Worker owns the marketing pages — the relay owns the rest.
 
-The landing page is split into its own Worker (cloudflare_marketing_worker):
-an exact-match Cloudflare route on forkmesh.com/ sends only the root URL there,
-while every other path — including the landing page's own CSS/JS subresources —
-keeps hitting this relay Worker. These tests pin the deployment contract
-(route shape, single source of truth for index.html) and that the marketing
-Worker mirrors the relay's / semantics: the forkmesh_session 302 with no-store,
-and the no-cache + Vary: cookie landing serve (see test_home_session_redirect).
+The public marketing pages are split into their own Worker
+(cloudflare_marketing_worker): Cloudflare routes on forkmesh.com/, /pricing,
+/blog, and /blog/* send exactly those paths there, while every other path —
+including the pages' own CSS/JS/image subresources — keeps hitting this relay
+Worker. These tests pin the deployment contract (route shape, single source of
+truth for each document) and that the marketing Worker mirrors the relay's
+semantics: the forkmesh_session 302 with no-store and the no-cache + Vary:
+cookie landing serve (see test_home_session_redirect), plus the /pricing and
+/blog clean-URL mapping.
 """
 
 import tomllib
@@ -23,28 +25,56 @@ MARKETING_ENTRY = (MARKETING / "src" / "entry.js").read_text(encoding="utf-8")
 MARKETING_DEPLOY = (MARKETING / "deploy.sh").read_text(encoding="utf-8")
 
 
-def test_marketing_worker_routes_only_the_exact_root():
-    # Route patterns rank by specificity and beat Custom Domains, so a single
-    # exact-match "forkmesh.com/" pattern is what makes / this Worker's and
-    # /anything the relay's. Any wildcard here would steal relay traffic.
-    routes = MARKETING_WRANGLER["routes"]
-    assert len(routes) == 1
-    assert routes[0]["pattern"] == "forkmesh.com/"
-    assert routes[0]["zone_name"] == "forkmesh.com"
+def test_marketing_worker_routes_only_the_marketing_pages():
+    # Route patterns rank by specificity and beat Custom Domains, so these
+    # patterns are what make /, /pricing, and /blog(/*) this Worker's while
+    # /anything-else stays the relay's. /blog/* is the only wildcard and it
+    # matches only the post directory indexes (blog images live under
+    # /assets/blog/*, which the relay still owns).
+    patterns = {r["pattern"] for r in MARKETING_WRANGLER["routes"]}
+    assert patterns == {
+        "forkmesh.com/",
+        "forkmesh.com/pricing",
+        "forkmesh.com/blog",
+        "forkmesh.com/blog/*",
+    }
+    for route in MARKETING_WRANGLER["routes"]:
+        assert route["zone_name"] == "forkmesh.com"
     assert MARKETING_WRANGLER["name"] == "forkmesh-marketing"
     # The relay must NOT declare competing routes in its committed config.
     assert "routes" not in RELAY_WRANGLER
 
 
-def test_landing_document_has_a_single_source_of_truth():
-    # index.html stays canonical in the relay's public/; the marketing build
-    # copies it in, so the page can never drift between the two Workers.
+def test_marketing_documents_have_a_single_source_of_truth():
+    # The documents stay canonical in the relay's public/; the marketing build
+    # copies them in, so no page can drift between the two Workers.
     build = MARKETING_WRANGLER["build"]["command"]
-    assert "../cloudflare_worker/public/index.html" in build
-    assert (ROOT / "public" / "index.html").is_file()
+    for src in (
+        "../cloudflare_worker/public/index.html",
+        "../cloudflare_worker/public/pricing.html",
+        "../cloudflare_worker/public/blog.html",
+        "../cloudflare_worker/public/blog/.",
+    ):
+        assert src in build
+    for canonical in ("index.html", "pricing.html", "blog.html"):
+        assert (ROOT / "public" / canonical).is_file()
+    assert (ROOT / "public" / "blog").is_dir()
     # public/ in the marketing Worker is generated output, never committed.
     gitignore = (MARKETING / ".gitignore").read_text(encoding="utf-8")
     assert "public/" in gitignore
+
+
+def test_marketing_worker_maps_pricing_and_blog_clean_urls():
+    # Clean-URL mapping mirrors the relay's _redirects: /pricing -> pricing.html,
+    # /blog -> blog.html, and each post index /blog/<slug>/ -> the explicit
+    # index.html (html_handling is "none"). Slugs are one [a-z0-9-] segment,
+    # which also blocks path traversal.
+    assert 'pathname === "/pricing"' in MARKETING_ENTRY
+    assert '"/pricing.html"' in MARKETING_ENTRY
+    assert 'pathname === "/blog"' in MARKETING_ENTRY
+    assert '"/blog.html"' in MARKETING_ENTRY
+    assert "/blog/${slug}/index.html" in MARKETING_ENTRY
+    assert "/^[a-z0-9-]+$/" in MARKETING_ENTRY
 
 
 def test_marketing_worker_sees_requests_before_the_asset_store():
