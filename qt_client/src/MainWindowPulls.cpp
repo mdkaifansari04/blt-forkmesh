@@ -4227,6 +4227,10 @@ void MainWindow::mergeCurrentPull()
     closeIssuesLinkedFromPull(current);
     fundBountiesForMergedPull(current);
     autoBountyForMergedPull(current);
+    // adhoc #100: mergePull just landed a new commit in this checkout, so the top
+    // "Sync" button and the Changes panel would otherwise stay stale (showing 0
+    // pending commits) until a manual refresh — force both to recheck now.
+    refreshSourceControl(true);
     reloadPulls();
     // Issue #291: flag the agent session behind this PR as landed in main (after
     // reloadPulls so the agent table's PR column also reflects the merge).
@@ -7040,6 +7044,10 @@ void MainWindow::mergeAndDeleteCurrentPull()
     closeIssuesLinkedFromPull(current);
     fundBountiesForMergedPull(current);
     autoBountyForMergedPull(current);
+    // adhoc #100: mergePull just landed a new commit in this checkout, so the top
+    // "Sync" button and the Changes panel would otherwise stay stale until a
+    // manual refresh — force both to recheck now.
+    refreshSourceControl(true);
     // Issue #291: flag the agent session behind this PR before its branch/record
     // are deleted below (after which it can no longer be detected on reload).
     markAgentSessionsMerged(m_currentPullNumber, head);
