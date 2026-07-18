@@ -365,8 +365,8 @@ void MainWindow::loadWorktreesPanel()
     if (repoPath.isEmpty() || !QDir(repoPath).exists(QStringLiteral(".git"))) {
         if (m_worktreesSummary)
             m_worktreesSummary->setText(QStringLiteral("· no local checkout"));
-        if (m_repoWorktreesTab)
-            m_repoWorktreesTab->setText(QStringLiteral("Worktrees"));
+        if (m_worktreesButton)
+            m_worktreesButton->setText(QStringLiteral("Worktrees"));
         return;
     }
 
@@ -618,10 +618,12 @@ void MainWindow::loadWorktreesPanel()
     if (m_worktreesSummary)
         m_worktreesSummary->setText(
             QString::fromUtf8("\xC2\xB7 %1 worktree(s)").arg(wts.size()));
-    if (m_repoWorktreesTab)
-        m_repoWorktreesTab->setText(wts.size() > 1
-                                        ? QStringLiteral("Worktrees (%1)").arg(wts.size())
-                                        : QStringLiteral("Worktrees"));
+    if (m_worktreesButton)
+        m_worktreesButton->setText(
+            QStringLiteral("%1 %2")
+                .arg(formatCount(wts.size()))
+                .arg(wts.size() == 1 ? QStringLiteral("worktree")
+                                     : QStringLiteral("worktrees")));
 
     // Re-select the worktree that was selected before the rebuild so its diff and
     // the detail buttons stay visible (e.g. right after "Update from main"). If it
@@ -642,10 +644,9 @@ void MainWindow::loadWorktreesPanel()
 // branch in the agent session header lands on that worktree's changes (#265).
 void MainWindow::switchToWorktree(const QString &branch)
 {
-    if (m_repoDetailTabs && m_repoDetailTabs->button(m_worktreesTabIndex))
-        m_repoDetailTabs->button(m_worktreesTabIndex)->setChecked(true);
-    if (m_repoDetailStack && m_worktreesTabIndex >= 0)
-        m_repoDetailStack->setCurrentIndex(m_worktreesTabIndex);
+    // The worktrees panel lives inside the Code overview now (no top-level tab),
+    // beside the branches panel (adhoc #170).
+    showOverviewWorktrees();
     loadWorktreesPanel();
     selectWorktreeRow(branch);
 }
