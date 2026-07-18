@@ -1983,7 +1983,7 @@
     window.clearTimeout(state.nodeNameAvailability.timer);
     state.nodeNameAvailability.timer = window.setTimeout(checkNodeNameAvailability, 250);
   });
-  $("[data-profile-page-password]")?.addEventListener("input", updateRenameButton);
+  $("[data-profile-rename-password]")?.addEventListener("input", updateRenameButton);
   $("[data-profile-delete-confirm]")?.addEventListener("input", () => {
     const button = $("[data-profile-delete-account]");
     if (!button) return;

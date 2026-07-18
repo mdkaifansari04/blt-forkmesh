@@ -1028,6 +1028,22 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                 .arg(branch, base),
             true);
     }
+    // adhoc #139: a clean "Merge to main" from the Branches view (no worktree or
+    // agent to tear down) leaves the merged branch in the list, so re-selecting it
+    // would just re-render the now-empty diff. Instead advance the selection to the
+    // next branch in the list so the user can keep merging down the list without the
+    // page snapping back to the branch they just finished. Steer loadBranchesPanel()'s
+    // "re-select the previously-viewed branch" logic (which reads m_branchDiffBranch)
+    // at the neighbour, exactly like the post-delete flow does (adhoc #256). Compute
+    // the neighbour now, while the table still holds the pre-refresh row order. Only
+    // for the non-destructive Branches-view button — the Worktrees/Agents merge flows
+    // delete the branch and keep their own selection handling.
+    if (merged && !hasConflicts && branchInBase && worktreePath.isEmpty()
+        && !deleteAgent) {
+        const QString next = neighbourBranchInList(branch);
+        if (!next.isEmpty())
+            m_branchDiffBranch = next;
+    }
     // adhoc #100: the merge just landed a new commit (or, on a failed merge, an
     // aborted one) directly in this checkout, so the top "Sync" button and the
     // Changes panel would otherwise stay stale — showing 0 pending commits — until
