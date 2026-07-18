@@ -304,22 +304,14 @@ QWidget *MainWindow::buildChatPage()
     layout->addWidget(buildBreadcrumb());
     layout->addWidget(buildSolanaNotice());
     layout->addWidget(buildWalletVerifyNotice());
-    auto *contentScroll = new QScrollArea;
-    contentScroll->setWidgetResizable(true);
-    contentScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // Each section already scrolls its own content (QScrollArea panels,
-    // tables and lists), so a second, page-wide scrollbar here was redundant
-    // (adhoc #83) — hide it. The QScrollArea itself stays: QStackedWidget
-    // sizes to its tallest page even when a shorter one is showing, and
-    // without this wrapper that height would push into the splitter and grow
-    // the window's minimum size. Wheel/keyboard scrolling still works as a
-    // fallback for the handful of sections with no scroll pane of their own.
-    contentScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    contentScroll->setFrameShape(QFrame::NoFrame);
-    // Tall tab pages should scroll instead of becoming the window's minimum height.
-    contentScroll->setMinimumHeight(0);
-    contentScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
-    contentScroll->setWidget(content);
+    // No page-wide QScrollArea around the sections any more (adhoc #108).
+    // Each section scrolls its own content (QScrollArea panels, tables and
+    // lists), so the outer wrapper only added a second scroll surface plus its
+    // sizeHint-driven overflow spacing. The Ignored vertical policy keeps a
+    // tall page from growing the window's minimum height (CurrentPageStack
+    // already sizes the stack to the current page, not the tallest sibling).
+    content->setMinimumHeight(0);
+    content->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
 
     // The main content and the always-on prompt/log footer sit one above the
     // other with the footer pinned to a fixed height (adhoc #86). Before this,
@@ -334,7 +326,7 @@ QWidget *MainWindow::buildChatPage()
     auto *bodyLayout = new QVBoxLayout;
     bodyLayout->setContentsMargins(0, 0, 0, 0);
     bodyLayout->setSpacing(0);
-    bodyLayout->addWidget(contentScroll, 1); // content absorbs window growth
+    bodyLayout->addWidget(content, 1); // content absorbs window growth
     auto *logDock = buildNetworkLogDock();
     logDock->setFixedHeight(240); // footer keeps a constant height
     bodyLayout->addWidget(logDock, 0);
