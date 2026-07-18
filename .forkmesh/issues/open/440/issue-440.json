@@ -8,13 +8,13 @@
         "enhancement"
     ],
     "milestone": "Resilient operation",
-    "startDate": 1784952000000,
-    "endDate": 1785211200000,
+    "startDate": 1784520000000,
+    "endDate": 1784692800000,
     "priority": 7,
     "progress": 0,
     "assignees": [],
     "createdAt": 1784402987625,
-    "updatedAt": 1784402987626,
+    "updatedAt": 1784405500070,
     "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
     "authorName": "forkmesh",
     "bountyUsd": 0.0,
@@ -42,6 +42,27 @@
             "authorName": "forkmesh",
             "ts": 1784402987626,
             "sig": "0xDsk2A2kkOb_OlT_e2JoNWZwF2yGH3IuxqwcradpjPmrU8mnvHk1VXVuqGdRcpAeyEiuoEA7G2AcPXISGdaCA"
+        },
+        {
+            "type": "edit",
+            "id": "43fbfda7-a65d-47e1-9ee0-03df95839b92",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500062,
+            "body": "## Outcome\n\nEnsure every node computes the same collaboration state from the same signed event set, even under concurrent or reordered delivery.\n\n## Implementation\n\n- Specify a total event order using timestamp, event id, and author tie-breakers plus duplicate-id and replay handling.\n- Define conflict and tombstone rules for issues, pull requests, comments, labels, reactions, reviews, patchsets, projects, boards, milestones, social objects, moderation actions, and notification cursors.\n- Represent concurrent merge, reject, requested-change, waiting, resolve, reopen, and status decisions without discarding independent state.\n- Apply the same rules in native stores, relay validation, browser rendering, receipts, and imports.\n- Reject invalid signatures before folding and publish shuffled positive and negative fixtures for every object family.\n\n## Acceptance criteria\n\n- Random permutations of the same event set always produce identical metadata and rendered state.\n- Duplicate and replayed ids do not change results; conflicting distinct events remain auditable.\n- Unauthorized tombstones and moderation actions never hide an object.\n- Derived notifications and counts can be rebuilt from the event log and user cursor.\n- Desktop, relay, browser, reference verifier, and import folds match.\n\n## Dependencies\n\nDepends on #433 so automation and readers share the native signed format.\n\n## Verification\n\nRun property-style shuffled, duplicated, concurrent, unauthorized, invalid-signature, edit, delete, review, reaction, project, social, moderation, and notification fixtures through every implementation.",
+            "attachments": [],
+            "target": "open-440",
+            "sig": "t-HtPuwPuhw1pAbFEFhGASOhmmmKxxJAmOj1Z3Ao8vwMauE230UeEI-xHw-R-El5phu7JTM8yZJIx-LdQ7hsBg"
+        },
+        {
+            "type": "dates",
+            "id": "4ff90cde-f060-463d-a951-7134e502addc",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500070,
+            "startDate": 1784520000000,
+            "endDate": 1784692800000,
+            "sig": "o_XeP0HDs0__NXCmIKbjishOnDtPdDqpGP98u47m8rFMD0IVSC3iV_d7Y0FlJjrWUuqLI68Z82iM2kAd8PUZDg"
         }
     ]
 }
