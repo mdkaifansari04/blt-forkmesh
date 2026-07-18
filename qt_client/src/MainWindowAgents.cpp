@@ -4969,6 +4969,33 @@ QStringList MainWindow::runningAgentBlockers() const
             *status = pending->status + QStringLiteral(" [pre-reload snapshot]");
         return pending->status == AgentStatus::Running;
     };
+    // The stored status can get stuck at "Running" while nothing is actually
+    // executing — a clarifying question the transcript heuristic failed to
+    // classify as a wait (so notifyAgentWaiting never flipped it off Running), a
+    // resume that produced no turn, or a turn whose terminal `result` never
+    // landed on the session (findAgentSession missed it before the first
+    // reloadAgents catch-up). The persistent CLI/app-server process stays alive
+    // between turns, so running() is true regardless, which left Rebuild &
+    // restart stuck on "Waiting for running actions" with no real work in flight
+    // (adhoc #157, after #91/#104/#111/#116/#134/#143). Back the status up with a
+    // liveness check: a genuinely working agent streams output continuously
+    // (partial-message deltas, tool calls), so a "Running" session that has been
+    // completely silent well past the threshold is stuck, not busy — don't let it
+    // block the rebuild forever. A freshly (re)launched session that hasn't
+    // produced output yet is covered by its startedAtMs, and a session that gets
+    // yanked here is re-queued and resumed on the next start (initAgents), so this
+    // never abandons real work.
+    constexpr qint64 kBlockerStaleMs = 90'000;
+    auto recentlyLive = [this](int id) {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        qint64 liveAt = m_scannerStates.value(id).lastActivityMs;
+        for (const AgentSession &session : m_agentSessions)
+            if (session.id == id) {
+                liveAt = qMax(liveAt, session.startedAtMs);
+                break;
+            }
+        return liveAt > 0 && (now - liveAt) < kBlockerStaleMs;
+    };
     QStringList blockers;
     for (AgentRunner *runner : m_agentRunners)
         if (runner->busy())
@@ -4976,14 +5003,19 @@ QStringList MainWindow::runningAgentBlockers() const
                             .arg(runner->currentSessionId());
     for (auto it = m_streamSessions.constBegin(); it != m_streamSessions.constEnd(); ++it) {
         QString status;
-        if (it.value() && it.value()->running() && sessionIsActive(it.key(), &status))
+        if (it.value() && it.value()->running() && sessionIsActive(it.key(), &status)
+            && recentlyLive(it.key()))
             blockers << QStringLiteral("session %1 (claude process, status %2)")
                             .arg(it.key())
                             .arg(status);
     }
     for (auto it = m_codexStreams.constBegin(); it != m_codexStreams.constEnd(); ++it) {
         QString status;
-        if (it.value() && it.value()->running() && sessionIsActive(it.key(), &status))
+        // Codex tracks turn boundaries precisely (turnActive), so a live but idle
+        // app-server between turns can't be mistaken for in-flight work; the
+        // liveness backstop covers the case where the status itself went stale.
+        if (it.value() && it.value()->running() && it.value()->turnActive()
+            && sessionIsActive(it.key(), &status) && recentlyLive(it.key()))
             blockers << QStringLiteral("session %1 (codex process, status %2)")
                             .arg(it.key())
                             .arg(status);
