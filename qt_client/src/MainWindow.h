@@ -3064,10 +3064,8 @@ private:
 
     // Top breadcrumb bar (active server favicon + server > section).
     QLabel *m_breadcrumb = nullptr;
-    // Top-bar relay switcher: a clickable favicon (shows that relay's nodes), a
-    // "domain ▾ count" dropdown button (search/switch/add relays), and an
-    // open-in-browser icon.
-    QPushButton *m_relayIconButton = nullptr;
+    // Top-bar relay switcher: a "favicon  domain ▾ count" dropdown button
+    // (search/switch/add relays), plus a separate open-in-browser icon.
     QPushButton *m_relayMenuButton = nullptr;
     QPushButton *m_relayOpenButton = nullptr;
     // Spinning-radar + latency readout sitting on the window-chrome line just
@@ -3087,8 +3085,8 @@ private:
                                            // backs off the confirm re-probe so a
                                            // persistently-slow link isn't polled
                                            // every second forever (adhoc #74)
-    // "Relay" / "User" / "Node" / "Repo" captions before each top-bar dropdown.
-    QLabel *m_relayLabel = nullptr;
+    // "User" / "Node" / "Repo" captions before each top-bar dropdown (the relay
+    // switcher shows its favicon in the dropdown itself instead of a caption).
     QLabel *m_userLabel = nullptr;
     QLabel *m_nodeLabel = nullptr;
     QLabel *m_repoLabel = nullptr;
