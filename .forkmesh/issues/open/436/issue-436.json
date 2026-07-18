@@ -1,0 +1,47 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 436,
+    "title": "Make authenticated relay pushes usable from desktop and headless flows",
+    "status": "open",
+    "labels": [
+        "feature",
+        "security"
+    ],
+    "milestone": "Daily Git workflow",
+    "startDate": 1784692800000,
+    "endDate": 1784952000000,
+    "priority": 6,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784402987617,
+    "updatedAt": 1784402987618,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-436",
+            "title": "Make authenticated relay pushes usable from desktop and headless flows",
+            "body": "## Outcome\n\nTurn the existing signed receive-pack path into a normal user workflow without persisting short-lived credentials in repository configuration.\n\n## Implementation\n\n- Add one shared helper that creates the correct owner or delegated-write canonical, timestamp, signature, and authenticated push URL.\n- Expose a desktop action that either performs the push or copies an exact one-shot command, with a separate headless command using the same helper.\n- Never write the signed password into `.git/config`, shell history instructions, logs, crash reports, or diagnostics.\n- Refresh an expired credential once after a clear authentication challenge; do not retry authorization failures indefinitely.\n- Distinguish offline source, invalid identity, insufficient role, expired signature, ref-policy denial, and receive-pack failure.\n- Remove stale user-facing copy and comments that still say relay push is unavailable.\n\n## Acceptance criteria\n\n- Owner and delegated writers can push from desktop and headless flows.\n- Read-only users receive a clear denial before any ref changes.\n- Secret-bearing URLs are redacted everywhere and are not persisted.\n- Expiry refresh is bounded and never changes the intended remote or refspec.\n- Successful pushes trigger the existing integrity re-attestation path.\n\n## Dependencies\n\nDepends on #435.\n\n## Verification\n\nAdd helper, UI, redaction, expiry, role, offline-source, and successful-push tests using the receive-pack scenarios from #435.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987617,
+            "sig": "qx_uLmudORIHARoeSJfKh0oLvWV3hzMK_3XIpVaX-faMG6mVxr-fLx7YNPriVN3esmfGmZJZdEiIm0vEtLD6CA"
+        },
+        {
+            "type": "dates",
+            "startDate": 1784692800000,
+            "endDate": 1784952000000,
+            "id": "96726093-0993-4bdc-a2be-c2c10cf81da5",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987618,
+            "sig": "KxVabnOnxH72XwuKTlSPb_k7ZRqrdFE4yaGXXudPJQB-cns4G7sdKyD622DnPMJQVsQ7wK35RiQ8G3Gml9IeDw"
+        }
+    ]
+}
