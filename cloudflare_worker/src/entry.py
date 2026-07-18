@@ -20028,16 +20028,22 @@ class Default(WorkerEntrypoint):
             # truth, so serve it directly (no catalog scan, no self-redirect).
             if str(target.get("source") or "local-node") == "local-node":
                 return None, None
-            # Find the freshest-synced source-of-truth record in the same group.
-            rows = await d1_all(
-                self.env, "SELECT data FROM repositories WHERE is_private = 0")
+            # Find the freshest-synced source-of-truth record in the same group,
+            # from the shared per-isolate catalog memo. This runs on EVERY
+            # public clone of a mirror namespace (info/refs AND the upload-pack
+            # POST); a raw scan + sequential decrypt_row() per request here was
+            # the one such pass left on the clone path after the 2026-07-12
+            # fix, and under a clone burst it congested the single Worker event
+            # loop until the runtime canceled requests as hung ("Cannot enter
+            # into task" on git-upload-pack info/refs). The memo's active-node
+            # filter is harmless: a source must pass _source_has_live_host
+            # below anyway, and a node with a connected host is active.
             best_owner = None
             best_repo = None
             best_sync = -1
-            for r in rows:
-                rec = await decrypt_row(self.env, r.get("data"))
-                if not rec:
-                    continue
+            for row in await _decrypted_public_catalog(
+                    self.env, int(Date.now())):
+                rec = row["data"]
                 if str(rec.get("source") or "local-node") != "local-node":
                     continue
                 if not repo_mirror_same_group(target, rec):
