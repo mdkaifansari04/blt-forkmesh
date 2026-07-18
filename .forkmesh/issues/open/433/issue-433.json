@@ -1,5 +1,6 @@
 {
     "assignees": [
+        "Claude Code"
     ],
     "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
     "authorName": "forkmesh",
@@ -52,6 +53,17 @@
             "sig": "Ew6kpkj3NqFXdxRNANhMSVcJdHCKi0PzBuNI50RT5sJZfk7YtzMYWsolUop4fU2GTB4P3L_eLG0HXBmm9eJxCw",
             "ts": 1784410309843,
             "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "ed56b040-b0fc-465a-a5db-81de3bc7e3f6",
+            "sig": "U0tvev3C0oq8hDJzpk_92VhM9D2GKrfaU51A3Pd7_xlnHtlokCCrCDQ6qZRlkbFFq4s7uR0WEMpJd-Ck6q_uAQ",
+            "ts": 1784410309920,
+            "type": "assignees"
         }
     ],
     "labels": [
@@ -66,6 +78,6 @@
     "startDate": 1784347200000,
     "status": "open",
     "title": "Migrate planning tools to the native signed tracker format",
-    "updatedAt": 1784410309843,
+    "updatedAt": 1784410309920,
     "votes": 0
 }
