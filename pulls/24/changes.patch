@@ -1,0 +1,158 @@
+diff --git a/cloudflare_worker/tests/test_qt_release_artifact_sync.py b/cloudflare_worker/tests/test_qt_release_artifact_sync.py
+index 72ab6dc8..f7b03f4b 100644
+--- a/cloudflare_worker/tests/test_qt_release_artifact_sync.py
++++ b/cloudflare_worker/tests/test_qt_release_artifact_sync.py
+@@ -54,3 +54,19 @@ def test_release_dialog_can_prune_previous_artifacts_after_publish():
+     assert "candidate.name == repo.name" in prune
+     assert "candidate.mirrorPath == mirrorPath" in prune
+     assert "publishRepository(i, false);" in prune
++
++
++def test_release_notes_agent_writes_a_short_mastodon_toot():
++    source = RELEASES.read_text(encoding="utf-8")
++    prompt = source[
++        source.index("void MainWindow::promptNewRelease()")
++        : source.index("void MainWindow::showReleaseDetail")
++    ]
++
++    assert "release-notes agent" in prompt
++    assert "Mastodon toot" in prompt
++    assert "clearly cover every distinct change" in prompt
++    assert "at most 499 characters" in prompt
++    assert "Changes since the previous release" in prompt
++    assert "toot.left(499)" in prompt
++    assert 'notesEdit->setPlainText(toot);' in prompt
+diff --git a/qt_client/src/MainWindowReleases.cpp b/qt_client/src/MainWindowReleases.cpp
+index b3653817..1a3c00df 100644
+--- a/qt_client/src/MainWindowReleases.cpp
++++ b/qt_client/src/MainWindowReleases.cpp
+@@ -2479,13 +2479,17 @@ void MainWindow::promptNewRelease()
+     genNotesButton->setObjectName("ghostButton");
+     genNotesButton->setCursor(Qt::PointingHandCursor);
+     setOcticon(genNotesButton, "list-unordered", 14);
+-    // GitHub-style auto-generated notes: every non-merge commit since the
+-    // previous release (or, for the very first release, a capped recent window),
+-    // as a "What's Changed" list, plus a compare link at the bottom. Replaces
+-    // whatever is currently typed in Notes so it can be regenerated after
+-    // switching Target.
++    genNotesButton->setToolTip(
++        "Ask the release-notes agent for a Mastodon-ready summary of the changes");
++    auto *genNotesStatus = new QLabel;
++    genNotesStatus->setObjectName("statusLine");
++    // Feed every non-merge commit since the previous release (or, for the very
++    // first release, a capped recent window) to the release-notes agent. Its
++    // response replaces the Notes field so it can be regenerated after changing
++    // Target or Tag.
+     connect(genNotesButton, &QPushButton::clicked, &dialog,
+-            [dir, prevTag, tagEdit, targetEdit, notesEdit] {
++            [this, dir, prevTag, tagEdit, targetEdit, notesEdit, genNotesButton,
++             genNotesStatus, &dialog] {
+                 const QString targetRef = targetEdit->currentText().trimmed();
+                 if (targetRef.isEmpty())
+                     return;
+@@ -2500,8 +2504,7 @@ void MainWindow::promptNewRelease()
+                 QByteArray log;
+                 runGitCapture(dir, args, &log, nullptr);
+ 
+-                QString text = QStringLiteral("## What's Changed\n");
+-                int shown = 0;
++                QStringList changes;
+                 for (const QByteArray &line : log.split('\n')) {
+                     const QString entry = QString::fromUtf8(line).trimmed();
+                     if (entry.isEmpty())
+@@ -2512,28 +2515,81 @@ void MainWindow::promptNewRelease()
+                     const QString author = f.value(2).trimmed();
+                     if (subject.isEmpty())
+                         continue;
+-                    text += QStringLiteral("* %1 (`%2`)").arg(subject, sha);
++                    QString change = QStringLiteral("%1 (%2)").arg(subject, sha);
+                     if (!author.isEmpty())
+-                        text += QStringLiteral(" by %1").arg(author);
+-                    text += QLatin1Char('\n');
+-                    ++shown;
++                        change += QStringLiteral(" by %1").arg(author);
++                    changes << change;
+                 }
+-                if (shown == 0)
+-                    text += prevTag.isEmpty()
+-                                ? QStringLiteral("* No commits yet.\n")
+-                                : QStringLiteral("* No changes since %1.\n")
+-                                      .arg(prevTag);
+-                if (!prevTag.isEmpty()) {
+-                    const QString newTag = tagEdit->text().trimmed();
+-                    text += QStringLiteral("\n**Full Changelog**: %1...%2")
+-                                .arg(prevTag, newTag.isEmpty() ? targetRef : newTag);
++                const QString apiKey =
++                    QSettings().value(kCodexApiKeySetting).toString().trimmed();
++                if (!m_networkAccess || apiKey.isEmpty()) {
++                    genNotesStatus->setText(
++                        "Add an OpenAI API key in Settings to use the release-notes agent.");
++                    return;
+                 }
+-                notesEdit->setPlainText(text);
++
++                const QString newTag = tagEdit->text().trimmed();
++                const QString prompt = QStringLiteral(
++                    "Write a polished Mastodon toot announcing this release. It must "
++                    "clearly cover every distinct change below, grouping related changes "
++                    "when needed. Return only the toot: no heading, markdown, commentary, "
++                    "or character count. It must be at most 499 characters, accurate, and "
++                    "read naturally to project followers.\n\nPrevious release: %1\n"
++                    "New release: %2\nTarget: %3\n\nChanges since the previous release:\n%4")
++                    .arg(prevTag.isEmpty() ? QStringLiteral("first release") : prevTag,
++                         newTag.isEmpty() ? targetRef : newTag, targetRef,
++                         changes.isEmpty() ? QStringLiteral("No commits.")
++                                           : changes.join(QLatin1Char('\n')));
++                QJsonObject payload;
++                payload.insert(QStringLiteral("model"), kIssueAskAiModel);
++                payload.insert(QStringLiteral("instructions"),
++                               QStringLiteral("You are ForkMesh's release-notes agent."));
++                payload.insert(QStringLiteral("input"), prompt);
++                payload.insert(QStringLiteral("max_output_tokens"), 180);
++                QNetworkRequest request = openAiRequest(
++                    QUrl(QStringLiteral("https://api.openai.com/v1/responses")), apiKey);
++                request.setHeader(QNetworkRequest::ContentTypeHeader,
++                                  QStringLiteral("application/json"));
++                QNetworkReply *reply = m_networkAccess->post(
++                    request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
++                genNotesButton->setEnabled(false);
++                genNotesButton->setText(QString::fromUtf8("Generating\xE2\x80\xA6"));
++                genNotesStatus->setText("Asking the release-notes agent...");
++                connect(&dialog, &QObject::destroyed, reply, &QNetworkReply::abort);
++                connect(reply, &QNetworkReply::finished, &dialog,
++                        [reply, notesEdit, genNotesButton, genNotesStatus] {
++                            const QByteArray body = reply->readAll();
++                            const bool failed =
++                                reply->error() != QNetworkReply::NoError;
++                            const QString failure =
++                                failed ? apiErrorSummary(reply, body) : QString();
++                            reply->deleteLater();
++                            genNotesButton->setEnabled(true);
++                            genNotesButton->setText("Generate release notes");
++                            if (failed) {
++                                genNotesStatus->setText(
++                                    "Release-notes agent failed: " + failure);
++                                return;
++                            }
++                            QString toot = openAiResponseText(
++                                QJsonDocument::fromJson(body).object());
++                            toot.replace(QRegularExpression(QStringLiteral("\\s+")),
++                                         QStringLiteral(" "));
++                            toot = toot.left(499).trimmed();
++                            if (toot.isEmpty()) {
++                                genNotesStatus->setText("Release-notes agent returned no text.");
++                                return;
++                            }
++                            notesEdit->setPlainText(toot);
++                            genNotesStatus->setText(
++                                QStringLiteral("Generated %1/499 characters.").arg(toot.size()));
++                        });
+             });
+     form->addRow("Tag", tagEdit);
+     form->addRow("Target", targetEdit);
+     form->addRow("Title", titleEdit);
+     form->addRow(QString(), genNotesButton);
++    form->addRow(QString(), genNotesStatus);
+     form->addRow("Notes", notesEdit);
+     form->addRow(QString(), pruneArtifactsCheck);
+     form->addRow(QString(), pruneTagsCheck);
