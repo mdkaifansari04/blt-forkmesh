@@ -2347,6 +2347,10 @@ private:
     // centralised failure handler (runUpdateStep) agnostic to which one it was.
     void startRestartSpin(QPushButton *button);
     void stopRestartSpin();
+    // Flips an in-progress restart spin between the refresh-arrows look (a
+    // rebuild actually running) and a spinning hourglass (queued behind other
+    // agent actions, not doing anything itself yet).
+    void setRestartSpinHourglass(bool hourglass);
     // Busy feedback for switching nodes in the top nav: the node button shows a
     // spinner and the heavy repo load reports each step to the log. nodeSwitchStep
     // logs the step and, mid-switch, yields the event loop so the spinner animates.
