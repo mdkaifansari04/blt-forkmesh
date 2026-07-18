@@ -34,7 +34,7 @@ class _VisibleMediaParser(HTMLParser):
 
 def _pricing_section():
     start = INDEX_HTML.index('<section id="pricing"')
-    end = INDEX_HTML.index('<section id="faq"', start)
+    end = INDEX_HTML.index('<section id="support-forkmesh"', start)
     return INDEX_HTML[start:end]
 
 
