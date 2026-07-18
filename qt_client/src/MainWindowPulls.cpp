@@ -1745,7 +1745,12 @@ void MainWindow::switchToPullTab(int pullNumber)
 // re-render it in place at the new size without re-running its renderer (#254).
 static const char *kDiffSourceProp = "fm_diffSource";
 static const char *kLongDiffFullHtmlProp = "fm_longDiffFullHtml";
-constexpr qsizetype kLongDiffAutoRenderHtmlChars = 900'000;
+// Above this many HTML chars the diff renders as a "hidden for speed" notice
+// with a click-through unless the long-diffs pref is on. The stall log showed
+// setHtml's synchronous rich-text layout blocking the GUI >500ms from roughly
+// 300k chars up (repeatedly at 500–900k under the old 900k cap), so the cap
+// sits where rendering still feels instant.
+constexpr qsizetype kLongDiffAutoRenderHtmlChars = 300'000;
 
 QString longDiffNoticeHtml(qsizetype chars)
 {

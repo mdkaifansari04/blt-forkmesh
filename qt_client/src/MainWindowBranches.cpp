@@ -1955,9 +1955,9 @@ void MainWindow::loadBranchesPanel()
     QScopedValueRollback<bool> loadingGuard(m_branchesPanelLoading, true);
     // Each row's ahead/behind count and in-memory merge-conflict probe shells out
     // to git serially below; on a repo with many branches that blocked the GUI
-    // thread for ~2s and tripped the stall watchdog (adhoc #222). Keep the event
-    // loop pumping across the batch so the window stays responsive (waitForGit
-    // polls in short slices while g_gitKeepAliveDepth > 0) instead of freezing.
+    // thread for ~2s and tripped the stall watchdog (adhoc #222). waitForGit
+    // pumps the event loop in short slices on the GUI thread, so the window
+    // stays responsive across the batch instead of freezing.
     GitKeepAlive keepAlive;
     // Remember which branch's diff is on screen so we can re-render it at the end
     // (now reflecting any merge we just performed).
