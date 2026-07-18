@@ -454,6 +454,8 @@ constexpr int kCommitFileAddsRole = Qt::UserRole + 27; // file row: added lines
 constexpr int kCommitFileDelsRole = Qt::UserRole + 28; // file row: deleted lines
 constexpr int kCommitFilePathRole = Qt::UserRole + 29; // file row: repo-relative path
 constexpr int kCommitRefsRole = Qt::UserRole + 30;     // branch/tag badges (QStringList)
+constexpr int kCommitBodyRole = Qt::UserRole + 31;     // full message body (fed to the hover box)
+constexpr int kGraphIsMergeRole = Qt::UserRole + 32;   // graph cell: commit has >1 parent
 
 // URL scheme for the clickable worktree-location link in the agent session
 // header; the percent-encoded branch name follows. Clicking it opens that
@@ -505,6 +507,9 @@ const QLatin1String kAgentLinkScheme("forkmesh-agent:");
 // dots line up with the section width.
 constexpr int kGraphLaneWidth = 12;
 constexpr int kGraphMargin = 8;
+// Cap on how far a row's text can be pushed right by a very wide graph, so a
+// deep merge history can't shove the messages off-screen.
+constexpr int kGraphMaxTextIndent = 160;
 // Commit node is drawn as a "bullseye": a hollow ring with a filled centre,
 // matching the VS Code git-graph look. Kept compact so the rows read tight.
 constexpr qreal kGraphNodeOuter = 3.8; // outer ring radius
@@ -528,123 +533,136 @@ inline void paintRowSelectionBorder(QPainter *painter,
 
 // Paints the git-graph gutter the way the VS Code git-graph view does: lanes
 // that pass straight through a row are drawn as vertical lines, while a lane
-// that merges into the commit (or branches out of it) is a smooth bezier curve
-// into/out of the node. The node itself is a bullseye (a hollow ring with a
-// filled centre). Each row carries the lanes present at its top and bottom
-// edges; comparing the two boundaries tells us which lanes pass through, merge
-// in, or branch out. Topology is meaningful only while the list is in git-log
-// order (the default Date-descending sort), which is why that ordering is
-// pinned when the list loads.
-class CommitGraphDelegate : public QStyledItemDelegate
+// that merges into the commit (or branches out of it) loops through a rounded
+// quarter-circle corner — a horizontal run along the node's centreline joined
+// to a vertical run in its own lane. Merge commits draw as a bullseye (hollow
+// ring with a filled centre), regular commits as a solid dot. Each row carries
+// the lanes present at its top and bottom edges; comparing the two boundaries
+// tells us which lanes pass through, merge in, or branch out. Topology is
+// meaningful only while the list is in git-log order, which is why that
+// ordering is pinned when the list loads. Called by CommitSummaryDelegate
+// inside the summary cell (the standalone gutter column is hidden) so each
+// row's text can start right beside its own rightmost lane.
+inline void paintCommitGraphGutter(QPainter *painter, const QRect &r,
+                                   const QVariantList &topLanes,
+                                   const QVariantList &botLanes, int nodeLane,
+                                   bool isMerge)
 {
-public:
-    using QStyledItemDelegate::QStyledItemDelegate;
+    if (topLanes.isEmpty() && botLanes.isEmpty() && nodeLane < 0)
+        return;
+    const qreal yTop = r.top();
+    const qreal yBot = r.top() + r.height(); // meets the next row's top edge
+    const qreal yMid = r.center().y() + 0.5;
+    auto laneX = [&](int lane) -> qreal {
+        return r.left() + kGraphMargin + lane * kGraphLaneWidth;
+    };
+    // Which lane columns are occupied at each edge of the row.
+    QSet<int> topSet;
+    QSet<int> botSet;
+    int maxLane = nodeLane;
+    for (const QVariant &v : topLanes) {
+        const int l = v.toInt();
+        topSet.insert(l);
+        maxLane = std::max(maxLane, l);
+    }
+    for (const QVariant &v : botLanes) {
+        const int l = v.toInt();
+        botSet.insert(l);
+        maxLane = std::max(maxLane, l);
+    }
 
-    void paint(QPainter *painter, const QStyleOptionViewItem &option,
-               const QModelIndex &index) const override
-    {
-        // Strip the selection flag so the solid green band isn't filled, then
-        // draw the row's green outline (issue #252). The item has no text.
-        QStyleOptionViewItem opt(option);
-        opt.state &= ~QStyle::State_Selected;
-        QStyledItemDelegate::paint(painter, opt, index);
-        paintRowSelectionBorder(painter, option, index);
-        const QVariantList topLanes = index.data(kGraphLanesRole).toList();
-        const QVariantList botLanes = index.data(kGraphBottomLanesRole).toList();
-        const int nodeLane = index.data(kGraphNodeLaneRole).toInt();
-        if (topLanes.isEmpty() && botLanes.isEmpty() && nodeLane < 0)
-            return;
-        const QRect r = option.rect;
-        const qreal yTop = r.top();
-        const qreal yBot = r.top() + r.height(); // meets the next row's top edge
-        const qreal yMid = r.center().y() + 0.5;
-        auto laneX = [&](int lane) -> qreal {
-            return r.left() + kGraphMargin + lane * kGraphLaneWidth;
-        };
-        // Which lane columns are occupied at each edge of the row.
-        QSet<int> topSet;
-        QSet<int> botSet;
-        int maxLane = nodeLane;
-        for (const QVariant &v : topLanes) {
-            const int l = v.toInt();
-            topSet.insert(l);
-            maxLane = std::max(maxLane, l);
-        }
-        for (const QVariant &v : botLanes) {
-            const int l = v.toInt();
-            botSet.insert(l);
-            maxLane = std::max(maxLane, l);
-        }
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
 
-        painter->save();
-        painter->setRenderHint(QPainter::Antialiasing, true);
+    // Round caps/joins keep the lanes and their loops smooth where they meet
+    // nodes and each other; a slightly thinner stroke reads cleaner at the
+    // compact row height.
+    auto strokePath = [&](const QPainterPath &path, const QColor &c) {
+        QPen pen(c, 1.8);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        painter->setPen(pen);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawPath(path);
+    };
+    auto straight = [&](qreal x, qreal y0, qreal y1, const QColor &c) {
+        QPainterPath path(QPointF(x, y0));
+        path.lineTo(QPointF(x, y1));
+        strokePath(path, c);
+    };
+    // A lane looping into the node from the row's top edge: vertical in its
+    // own lane, then a rounded quarter-circle corner onto the node's
+    // centreline — the smooth "loop" the VS Code graph draws for merges.
+    auto loopIn = [&](int lane, const QColor &c) {
+        const qreal x0 = laneX(lane);
+        const qreal x1 = laneX(nodeLane);
+        const qreal rad = qMin(qAbs(x1 - x0), yMid - yTop);
+        const qreal sx = (x1 > x0) ? 1.0 : -1.0;
+        QPainterPath path(QPointF(x0, yTop));
+        path.lineTo(QPointF(x0, yMid - rad));
+        path.quadTo(QPointF(x0, yMid), QPointF(x0 + sx * rad, yMid));
+        path.lineTo(QPointF(x1, yMid));
+        strokePath(path, c);
+    };
+    // A lane looping out of the node towards the row's bottom edge: horizontal
+    // along the centreline, then the rounded corner down into its own lane.
+    auto loopOut = [&](int lane, const QColor &c) {
+        const qreal x0 = laneX(nodeLane);
+        const qreal x1 = laneX(lane);
+        const qreal rad = qMin(qAbs(x1 - x0), yBot - yMid);
+        const qreal sx = (x1 > x0) ? 1.0 : -1.0;
+        QPainterPath path(QPointF(x0, yMid));
+        path.lineTo(QPointF(x1 - sx * rad, yMid));
+        path.quadTo(QPointF(x1, yMid), QPointF(x1, yMid + rad));
+        path.lineTo(QPointF(x1, yBot));
+        strokePath(path, c);
+    };
 
-        // A smooth connector between two points that leaves and arrives
-        // vertically — a straight line when the columns match, otherwise an
-        // S-curve that bends across the middle (the git-graph house style).
-        auto connect = [&](qreal x0, qreal y0, qreal x1, qreal y1,
-                           const QColor &c) {
-            // Round caps/joins keep the lanes and their curves smooth where they
-            // meet nodes and each other; a slightly thinner stroke reads cleaner
-            // at the compact row height.
-            QPen pen(c, 1.8);
-            pen.setCapStyle(Qt::RoundCap);
-            pen.setJoinStyle(Qt::RoundJoin);
-            painter->setPen(pen);
-            painter->setBrush(Qt::NoBrush);
-            if (qFuzzyCompare(x0, x1)) {
-                painter->drawLine(QPointF(x0, y0), QPointF(x1, y1));
-                return;
-            }
-            // A rounded elbow: run vertically out of each endpoint, then turn
-            // through a tight corner near the row's midline instead of a lazy
-            // full-height S — the GitLens/VS Code graph look. Control points sit
-            // close to the mid-row so the bend is rounder and more compact.
-            QPainterPath path(QPointF(x0, y0));
-            const qreal dir = (y1 > y0) ? 1.0 : -1.0;
-            const qreal bend = qMin(qAbs(y1 - y0) / 2.0, qreal(kGraphLaneWidth));
-            path.cubicTo(QPointF(x0, y0 + dir * bend),
-                         QPointF(x1, y1 - dir * bend), QPointF(x1, y1));
-            painter->drawPath(path);
-        };
+    // Every lane other than the node's: straight through if present at both
+    // edges, a merge loop if it only enters from the top, a branch loop if it
+    // only leaves at the bottom. Rows without a node (expanded file rows) only
+    // carry pass-through lanes; anything else degrades to a straight stub.
+    for (int lane = 0; lane <= maxLane; ++lane) {
+        if (lane == nodeLane)
+            continue;
+        const bool inTop = topSet.contains(lane);
+        const bool inBot = botSet.contains(lane);
+        const QColor c = commitGraphLaneColor(lane);
+        if (inTop && inBot)
+            straight(laneX(lane), yTop, yBot, c);
+        else if (inTop)
+            nodeLane >= 0 ? loopIn(lane, c) : straight(laneX(lane), yTop, yMid, c);
+        else if (inBot)
+            nodeLane >= 0 ? loopOut(lane, c) : straight(laneX(lane), yMid, yBot, c);
+    }
 
-        // Every lane other than the node's: straight through if present at both
-        // edges, a merge curve if it only enters from the top, a branch curve if
-        // it only leaves at the bottom.
-        for (int lane = 0; lane <= maxLane; ++lane) {
-            if (lane == nodeLane)
-                continue;
-            const bool inTop = topSet.contains(lane);
-            const bool inBot = botSet.contains(lane);
-            const QColor c = commitGraphLaneColor(lane);
-            if (inTop && inBot)
-                connect(laneX(lane), yTop, laneX(lane), yBot, c);
-            else if (inTop)
-                connect(laneX(lane), yTop, laneX(nodeLane), yMid, c);
-            else if (inBot)
-                connect(laneX(nodeLane), yMid, laneX(lane), yBot, c);
-        }
-
-        if (nodeLane >= 0) {
-            const QColor c = commitGraphLaneColor(nodeLane);
-            const qreal nx = laneX(nodeLane);
-            // The node's own lane: a straight stub above (it was reached from a
-            // child) and below (its first parent continues here).
-            if (topSet.contains(nodeLane))
-                connect(nx, yTop, nx, yMid, c);
-            if (botSet.contains(nodeLane))
-                connect(nx, yMid, nx, yBot, c);
-            // Bullseye node: hollow ring + filled centre, drawn over the lines.
+    if (nodeLane >= 0) {
+        const QColor c = commitGraphLaneColor(nodeLane);
+        const qreal nx = laneX(nodeLane);
+        // The node's own lane: a straight stub above (it was reached from a
+        // child) and below (its first parent continues here).
+        if (topSet.contains(nodeLane))
+            straight(nx, yTop, yMid, c);
+        if (botSet.contains(nodeLane))
+            straight(nx, yMid, yBot, c);
+        if (isMerge) {
+            // Merge node: hollow ring + filled centre, drawn over the lines.
             painter->setBrush(Qt::NoBrush);
             painter->setPen(QPen(c, 1.6));
             painter->drawEllipse(QPointF(nx, yMid), kGraphNodeOuter, kGraphNodeOuter);
             painter->setPen(Qt::NoPen);
             painter->setBrush(c);
             painter->drawEllipse(QPointF(nx, yMid), kGraphNodeInner, kGraphNodeInner);
+        } else {
+            // Regular commit: a solid dot.
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(c);
+            painter->drawEllipse(QPointF(nx, yMid), kGraphNodeOuter - 0.7,
+                                 kGraphNodeOuter - 0.7);
         }
-        painter->restore();
     }
-};
+    painter->restore();
+}
 
 // Paints the commits list's Summary column the way VS Code's source-control
 // graph does: the text starts right beside the commit's own lane (so it shifts
@@ -675,13 +693,34 @@ public:
 
         const bool fileRow = index.data(kCommitRowKindRole).toInt() == 1;
 
+        // The graph is painted here, inside the summary cell (its standalone
+        // gutter column is hidden): that lets each row's text start right
+        // beside its own rightmost lane — the VS Code graph look — instead of
+        // after a shared fixed-width gutter (adhoc #74).
+        const QModelIndex graphIdx =
+            index.model()->index(index.row(), kCommitGraphCol);
+        const QVariantList topLanes = graphIdx.data(kGraphLanesRole).toList();
+        const QVariantList botLanes =
+            graphIdx.data(kGraphBottomLanesRole).toList();
+        const QVariant nodeLaneVar = graphIdx.data(kGraphNodeLaneRole);
+        const int nodeLane = nodeLaneVar.isValid() ? nodeLaneVar.toInt() : -1;
+        paintCommitGraphGutter(painter, option.rect, topLanes, botLanes,
+                               nodeLane,
+                               graphIdx.data(kGraphIsMergeRole).toBool());
+        int rowMaxLane = std::max(nodeLane, 0);
+        for (const QVariant &v : topLanes)
+            rowMaxLane = std::max(rowMaxLane, v.toInt());
+        for (const QVariant &v : botLanes)
+            rowMaxLane = std::max(rowMaxLane, v.toInt());
+        if (fileRow) // nested one step under its commit's lane
+            rowMaxLane =
+                std::max(rowMaxLane, index.data(kGraphNodeLaneRole).toInt());
+        const int indent =
+            std::min(kGraphMargin + (rowMaxLane + 1) * kGraphLaneWidth,
+                     kGraphMaxTextIndent);
+
         const QFontMetrics fm(option.font);
-        // Messages align at a fixed left edge (flush with the grid) rather than
-        // tracking the commit's coloured lane, so every row's text lines up no
-        // matter how deep its branch sits in the graph. A small left gap keeps the
-        // text clearly to the right of the graph gutter's lanes instead of sitting
-        // right up against them (adhoc #59).
-        QRect r = option.rect.adjusted(6, 0, -8, 0);
+        QRect r = option.rect.adjusted(indent, 0, -8, 0);
         const QColor dim("#8b949e");
 
         painter->save();
@@ -701,10 +740,17 @@ public:
             painter->drawText(
                 QRect(r.right() - delsW - 6 - addsW, r.top(), addsW, r.height()),
                 Qt::AlignVCenter | Qt::AlignRight, addsTxt);
-            const int textW = r.width() - delsW - addsW - 20;
+            // File-type icon leading the name, like the VS Code graph's rows.
+            int fx = r.left();
+            const QIcon fic = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+            if (!fic.isNull()) {
+                fic.paint(painter, QRect(fx, r.center().y() - 7, 14, 14));
+                fx += 18;
+            }
+            const int textW = r.right() - fx - delsW - addsW - 20;
             painter->setPen(dim);
             painter->drawText(
-                QRect(r.left(), r.top(), std::max(0, textW), r.height()),
+                QRect(fx, r.top(), std::max(0, textW), r.height()),
                 Qt::AlignVCenter | Qt::AlignLeft,
                 fm.elidedText(index.data(Qt::DisplayRole).toString(),
                               Qt::ElideMiddle, std::max(0, textW)));
