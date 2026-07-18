@@ -362,14 +362,15 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_issueQuickAdd->setLineWrapMode(QPlainTextEdit::WidgetWidth);
     m_issueQuickAdd->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_issueQuickAdd->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // Show exactly three lines of prompt and no more (adhoc #107): the field used
-    // to stretch to fill the whole fixed-height footer, leaving a tall, mostly
-    // empty box. Pin it to three text rows so the box is compact and the controls
-    // sit right beneath the text; longer prompts scroll inside these three lines.
+    // Pin the field to a fixed number of prompt lines (adhoc #107) so it stays
+    // compact instead of stretching to fill the whole footer; longer prompts
+    // scroll within it. Moving the send column out to the side (adhoc #115) freed
+    // the vertical space the toolbar used to reserve for the stacked buttons, so
+    // the box now shows four lines rather than three.
     m_issueQuickAdd->document()->setDocumentMargin(3);
-    // 3 rows + the QSS vertical padding (8px top/bottom) + document margins.
+    // 4 rows + the QSS vertical padding (8px top/bottom) + document margins.
     const int kQuickAddRowH = m_issueQuickAdd->fontMetrics().lineSpacing();
-    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 3 + 16 + 6);
+    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 4 + 16 + 6);
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
     // field is capped at the same length as the Claude prompt / message input
@@ -651,7 +652,12 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendButton->setObjectName("quickAddSendIcon");
     m_quickAddSendButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_quickAddSendButton, "paper-airplane", 17);
-    m_quickAddSendButton->setFixedSize(58, 28);
+    // Fixed width, but stretch vertically (adhoc #115): the two send buttons now
+    // form a full-height column down the right edge of the prompt frame, so the
+    // prompt box is exactly as tall as the stacked add/new buttons.
+    m_quickAddSendButton->setFixedWidth(58);
+    m_quickAddSendButton->setMinimumHeight(28);
+    m_quickAddSendButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     connect(m_quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
     // Green "Enter" badge (adhoc #89): shown on whichever of the two send
@@ -675,7 +681,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendToAgentButton->setObjectName("quickAddSendIcon");
     m_quickAddSendToAgentButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_quickAddSendToAgentButton, "paper-airplane", 17, -45.0);
-    m_quickAddSendToAgentButton->setFixedSize(58, 28);
+    m_quickAddSendToAgentButton->setFixedWidth(58);
+    m_quickAddSendToAgentButton->setMinimumHeight(28);
+    m_quickAddSendToAgentButton->setSizePolicy(QSizePolicy::Fixed,
+                                               QSizePolicy::Expanding);
     m_quickAddSendToAgentEnterBadge =
         new QLabel(QStringLiteral("⏎"), m_quickAddSendToAgentButton);
     m_quickAddSendToAgentEnterBadge->setObjectName("quickAddEnterBadge");
@@ -726,12 +735,15 @@ QWidget *MainWindow::buildNetworkLogDock()
     // the text).
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // Two send icons stacked in a column at the prompt's bottom-right corner.
+    // Two send icons stacked in a full-height column down the prompt's right edge
+    // (adhoc #115): each button stretches to take half the frame height, so the
+    // text area to their left ends flush against them and the whole prompt box is
+    // just as tall as the two add/new buttons.
     auto *sendColumn = new QVBoxLayout;
     sendColumn->setContentsMargins(0, 0, 0, 0);
     sendColumn->setSpacing(2);
-    sendColumn->addWidget(m_quickAddSendToAgentButton);
-    sendColumn->addWidget(m_quickAddSendButton);
+    sendColumn->addWidget(m_quickAddSendToAgentButton, 1);
+    sendColumn->addWidget(m_quickAddSendButton, 1);
     // Enter targets "new" until an agent session is opened above.
     updateQuickAddEnterTarget();
 
@@ -784,7 +796,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     // utilisation is visible right where prompts are launched.
     bottomBar->addWidget(m_navCodexUsage, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_navTokenUsage, 0, Qt::AlignBottom);
-    bottomBar->addLayout(sendColumn);
+    // The send column (add/new) no longer lives in this toolbar (adhoc #115) — it
+    // moved out to a full-height column down the right edge of the prompt frame.
 
     auto *bottomBarHost = new QWidget;
     bottomBarHost->setObjectName("quickAddBottomBarHost");
@@ -823,14 +836,23 @@ QWidget *MainWindow::buildNetworkLogDock()
     // than a separate strip above it.
     auto *promptWrapper = new QFrame;
     promptWrapper->setObjectName("promptWrapper");
-    auto *promptLayout = new QVBoxLayout(promptWrapper);
+    // Horizontal split (adhoc #115): the text area + its bottom toolbar stack in
+    // a left column, and the add/new send buttons form a full-height column down
+    // the right edge. The text entry therefore ends flush against the buttons and
+    // the whole box is exactly as tall as the two stacked buttons.
+    auto *promptLayout = new QHBoxLayout(promptWrapper);
     promptLayout->setContentsMargins(0, 0, 0, 0);
     promptLayout->setSpacing(0);
-    // The editor is a fixed three lines tall and the bottom bar carries its own
-    // fixed height, so the wrapper hugs its content: the border sits right above
-    // the text and the controls weld to the foot with no empty band between.
-    promptLayout->addWidget(m_issueQuickAdd, 0);
-    promptLayout->addWidget(bottomBarScroll, 0);
+    auto *promptLeftCol = new QVBoxLayout;
+    promptLeftCol->setContentsMargins(0, 0, 0, 0);
+    promptLeftCol->setSpacing(0);
+    // The editor stretches to fill the freed vertical space (the send column no
+    // longer sits below it), and the bottom bar carries its own fixed height, so
+    // the border sits right above the text and the controls weld to the foot.
+    promptLeftCol->addWidget(m_issueQuickAdd, 1);
+    promptLeftCol->addWidget(bottomBarScroll, 0);
+    promptLayout->addLayout(promptLeftCol, 1);
+    promptLayout->addLayout(sendColumn, 0);
 
     // "Agents:" status strip above the prompt input (adhoc #111): a clickable
     // label plus one small colored dot per known agent session — a status
@@ -846,20 +868,25 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_agentStatusLabel, &QPushButton::clicked, this,
             &MainWindow::openAgentsOverview);
 
+    // The icon dots live directly in the row now (adhoc #115) — no scroll area.
+    // refreshAgentStatusRow() caps how many dots it packs in and hides the rest
+    // behind the "N more" button, so a horizontal scrollbar can never appear and
+    // steal height the way it used to inside the old fixed-height viewport.
     m_agentStatusIconsHost = new QWidget;
     m_agentStatusIconsLayout = new QHBoxLayout(m_agentStatusIconsHost);
     m_agentStatusIconsLayout->setContentsMargins(0, 0, 0, 0);
     m_agentStatusIconsLayout->setSpacing(4);
-    m_agentStatusIconsLayout->addStretch(1);
 
-    auto *agentStatusScroll = new QScrollArea;
-    agentStatusScroll->setObjectName("agentStatusScroll");
-    agentStatusScroll->setWidget(m_agentStatusIconsHost);
-    agentStatusScroll->setWidgetResizable(true);
-    agentStatusScroll->setFrameShape(QFrame::NoFrame);
-    agentStatusScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    agentStatusScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    agentStatusScroll->setFixedHeight(24);
+    // "N more" button that opens the Agents tab (adhoc #115), shown on the right
+    // only when the session count exceeds what the capped icon row displays.
+    m_agentStatusMoreButton = new QPushButton;
+    m_agentStatusMoreButton->setObjectName("agentStatusMore");
+    m_agentStatusMoreButton->setFlat(true);
+    m_agentStatusMoreButton->setCursor(Qt::PointingHandCursor);
+    m_agentStatusMoreButton->setToolTip("Open the Agents tab");
+    m_agentStatusMoreButton->hide();
+    connect(m_agentStatusMoreButton, &QPushButton::clicked, this,
+            &MainWindow::openAgentsOverview);
 
     m_agentStatusRow = new QWidget;
     m_agentStatusRow->setObjectName("agentStatusRow");
@@ -867,7 +894,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     agentStatusRowLayout->setContentsMargins(2, 0, 2, 6);
     agentStatusRowLayout->setSpacing(6);
     agentStatusRowLayout->addWidget(m_agentStatusLabel);
-    agentStatusRowLayout->addWidget(agentStatusScroll, 1);
+    agentStatusRowLayout->addWidget(m_agentStatusIconsHost, 0);
+    agentStatusRowLayout->addStretch(1);
+    agentStatusRowLayout->addWidget(m_agentStatusMoreButton, 0);
     // Small "fix conflicts with agent" icon button (adhoc #139): built earlier
     // by buildAgentsTab() (called from buildHomeSection(), which runs before
     // this dock in buildChatPage()); it stays hidden until the selected
