@@ -88,6 +88,32 @@ def test_admin_session_reissued_from_session_token():
     assert "_account_session_token" not in calls
 
 
+def test_admin_page_auth_derives_admin_from_cookie():
+    # The signed cookie is the source of truth for who the admin is; auth must
+    # not require the ?admin= query param. Requiring it made a bare admin-path
+    # visit always fail, and /login's silent admin-session resume then
+    # redirect-looped between /login and the admin page forever (adhoc #168).
+    module = ast.parse(ENTRY_TEXT)
+    auth = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_check_admin_page_auth"
+    )
+    calls = {
+        node.func.id
+        for node in ast.walk(auth)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_admin_cookie_name" in calls
+    assert "parse_qs" not in calls
+
+    # The login page never auto-resumes into a redirect loop: a resume attempt
+    # seconds ago that bounced back must fall through to the password form.
+    login_js = (Path(__file__).resolve().parents[1]
+                / "public" / "login.js").read_text()
+    assert "forkmesh.adminResumeAt" in login_js
+
+
 def test_admin_accounts_table_can_migrate_account_kind():
     assert "def _admin_account_migration_cell" in ENTRY_TEXT
     assert 'name="account_migration"' in ENTRY_TEXT
