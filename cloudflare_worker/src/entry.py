@@ -5313,27 +5313,41 @@ async def _save_account(env, name_bi, rec, email_bi=None, ip_bi=None):
     # `name` column mirrors the (public) node name so an operator can grant admin
     # in the DB by name; is_admin is never written here, so a value set directly in
     # the DB survives ordinary account updates.
-    enc = await encrypt_row(env, rec)
-    name = rec.get("name", "")
-    # Column names here are fixed literals (never user input), so building the
-    # statement by name is safe.
-    cols = ["data", "name"]
-    vals = [enc, name]
-    if email_bi is not None:
-        cols.append("email_bi")
-        vals.append(email_bi)
-    if ip_bi is not None:
-        cols.append("ip_bi")
-        vals.append(ip_bi)
-    insert_cols = ", ".join(["name_bi"] + cols)
-    placeholders = ", ".join(["?"] * (1 + len(vals)))
-    set_clause = ", ".join(c + "=excluded." + c for c in cols)
-    await d1_run(
-        env,
-        "INSERT INTO accounts (" + insert_cols + ") VALUES (" + placeholders + ") "
-        "ON CONFLICT(name_bi) DO UPDATE SET " + set_clause,
-        name_bi, *vals,
-    )
+    #
+    # New users are born straight into the physical users table and never touch the
+    # legacy accounts store (issue #172): when the record is user-kind and no
+    # accounts row already exists for it, skip the accounts INSERT and rely solely
+    # on the users/nodes mirror below (reads fall back to users when the accounts
+    # row is absent). Legacy accounts rows that still exist keep getting updated in
+    # place — reads prefer accounts, so leaving one stale would shadow the fresh
+    # users record — until an explicit drain removes them.
+    write_accounts = True
+    if _account_kind(rec) == "user":
+        existing = await d1_first(
+            env, "SELECT name_bi FROM accounts WHERE name_bi=?", name_bi)
+        write_accounts = existing is not None
+    if write_accounts:
+        enc = await encrypt_row(env, rec)
+        name = rec.get("name", "")
+        # Column names here are fixed literals (never user input), so building the
+        # statement by name is safe.
+        cols = ["data", "name"]
+        vals = [enc, name]
+        if email_bi is not None:
+            cols.append("email_bi")
+            vals.append(email_bi)
+        if ip_bi is not None:
+            cols.append("ip_bi")
+            vals.append(ip_bi)
+        insert_cols = ", ".join(["name_bi"] + cols)
+        placeholders = ", ".join(["?"] * (1 + len(vals)))
+        set_clause = ", ".join(c + "=excluded." + c for c in cols)
+        await d1_run(
+            env,
+            "INSERT INTO accounts (" + insert_cols + ") VALUES (" + placeholders + ") "
+            "ON CONFLICT(name_bi) DO UPDATE SET " + set_clause,
+            name_bi, *vals,
+        )
     await _mirror_account_identity_tables(
         env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
 
@@ -17551,8 +17565,11 @@ ADMIN_STYLE = """
         border:1px solid var(--ab-border-2);border-radius:6px;padding:8px;
         font:13px ui-monospace,monospace}
  .ab-root .tools .navlink{padding:8px 4px}
- .ab-root .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:nowrap}
+ .ab-root .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
  .ab-root .account-kind button{padding:3px 8px;font-size:12px}
+ /* The migration cell holds pills + buttons that must all stay visible, so it
+    opts out of the compact table's single-line clip/ellipsis + 240px cap. */
+ .ab-root table.compact td.account-cell{max-width:none;overflow:visible;white-space:normal}
  .ab-root .kindpill{border:1px solid var(--ab-border-2);border-radius:999px;padding:2px 8px;
         color:var(--ab-fg);background:var(--ab-card);font:600 12px system-ui,sans-serif}
  .ab-root .inpill{border:1px solid #1a7f37;border-radius:999px;padding:1px 7px;
@@ -17675,7 +17692,8 @@ async def _admin_account_migration_cell(env, row, rec, admin_query=""):
                table, label, indicator)
         )
     return (
-        '<td><div class="account-kind"><span class="kindpill">%s</span>%s</div></td>'
+        '<td class="account-cell"><div class="account-kind">'
+        '<span class="kindpill">%s</span>%s</div></td>'
         % (_html_escape(kind), "".join(buttons))
     )
 
@@ -18112,6 +18130,22 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
         "<meta name=\"color-scheme\" content=\"light dark\">"
         "<title>forkmesh · admin</title>"
+        # site-header.js is deferred (it also injects the header markup), so on
+        # its own it would only stamp html.light/html.dark AFTER first paint —
+        # a visible dark→light flash. This blocking pre-paint snippet mirrors
+        # its resolveTheme() (same localStorage keys, then OS preference) and
+        # stamps the class before any CSS paints, killing the flash. The
+        # deferred script re-applies the same value and owns the toggle.
+        "<script>(function(){try{"
+        "var k=['forkmesh.dashboard.theme','forkmesh.theme'],t='';"
+        "for(var i=0;i<k.length;i++){var v=localStorage.getItem(k[i]);"
+        "if(v==='light'||v==='dark'){t=v;break;}}"
+        "if(!t)t=(window.matchMedia&&window.matchMedia("
+        "'(prefers-color-scheme: light)').matches)?'light':'dark';"
+        "var r=document.documentElement,l=t==='light';"
+        "r.classList.toggle('light',l);r.classList.toggle('dark',!l);"
+        "r.style.colorScheme=l?'light':'dark';"
+        "}catch(e){}})();</script>"
         # The universal site header (brand, nav, account chip) + the theme
         # engine it carries: site-header.js stamps html.light/html.dark from
         # the visitor's saved choice or OS preference, which ADMIN_STYLE's
