@@ -7,13 +7,13 @@
         "infra"
     ],
     "milestone": "Resilient operation",
-    "startDate": 1785124800000,
-    "endDate": 1785384000000,
+    "startDate": 1784347200000,
+    "endDate": 1784606400000,
     "priority": 11,
     "progress": 0,
     "assignees": [],
     "createdAt": 1784402987629,
-    "updatedAt": 1784402987630,
+    "updatedAt": 1784405500072,
     "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
     "authorName": "forkmesh",
     "bountyUsd": 0.0,
@@ -41,6 +41,16 @@
             "authorName": "forkmesh",
             "ts": 1784402987630,
             "sig": "k0YFaOzuFUHuN9Wql3fLqz0tgiP8z-UhG6GQpT9G2776ngwF23i0Y3GPyO_vYPXs4jmETEd7ayWxo31evrAJAw"
+        },
+        {
+            "type": "dates",
+            "id": "cc2304b6-0c7c-45d5-b12a-2c71898a0155",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500072,
+            "startDate": 1784347200000,
+            "endDate": 1784606400000,
+            "sig": "KsiZkvLQEN4xgoS70mmTGvWxFoJAoeICcArz2rLfQ9Ou44maSRtrHSKhVgQKHE40ERKIhMUJhzt50C4ljz8XDQ"
         }
     ]
 }
