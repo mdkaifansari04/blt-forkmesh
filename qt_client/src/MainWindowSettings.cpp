@@ -2231,7 +2231,8 @@ void MainWindow::quickRebuildRestart()
     // let maybeStartQueuedRebuild() re-invoke us once it does (adhoc #75). The
     // click handler already spun the button; switch that spin to a spinning
     // hourglass while queued so it reads as "waiting", not "building" (adhoc #91).
-    if (anyAgentRunning()) {
+    const QStringList blockers = runningAgentBlockers();
+    if (!blockers.isEmpty()) {
         m_rebuildRestartQueued = true;
         m_buildButton = m_rebuildButton;
         m_buildStatusLabel = m_rebuildStatus;
@@ -2239,10 +2240,29 @@ void MainWindow::quickRebuildRestart()
         showUpdateLog();
         setUpdateStatus(QStringLiteral(
             "Waiting for running actions to finish before rebuilding\xE2\x80\xA6"));
+        // Name what the gate is actually counting: every past "stuck waiting"
+        // report (adhoc #91/#104/#111/#116/#134/#143) hinged on the user seeing
+        // no running actions while the gate counted something invisible.
+        logRestart(QStringLiteral("waiting on: %1")
+                       .arg(blockers.join(QStringLiteral(", "))));
         setRestartSpinHourglass(true);
+        // Safety net for that same missed-notification bug family: every agent
+        // completion path is supposed to call maybeStartQueuedRebuild(), but each
+        // adhoc round above found one more path that didn't. While a rebuild is
+        // queued, also recheck on a timer so a missed signal delays the restart
+        // by seconds instead of blocking it forever.
+        if (!m_rebuildQueuePollTimer) {
+            m_rebuildQueuePollTimer = new QTimer(this);
+            m_rebuildQueuePollTimer->setInterval(2000);
+            connect(m_rebuildQueuePollTimer, &QTimer::timeout, this,
+                    &MainWindow::maybeStartQueuedRebuild);
+        }
+        m_rebuildQueuePollTimer->start();
         return;
     }
     m_rebuildRestartQueued = false;
+    if (m_rebuildQueuePollTimer)
+        m_rebuildQueuePollTimer->stop();
     setRestartSpinHourglass(false);
     // Incremental rebuild + relaunch (no cache wipe) for fast iteration. Reuses
     // the Settings rebuild button/status as the progress target.
@@ -2276,7 +2296,12 @@ void MainWindow::maybeStartQueuedRebuild()
     // A manual rebuild & restart is waiting for agents to finish. Once the last
     // one goes idle, run it — but not while a rebuild is already underway (the
     // rebuild button is disabled for its duration).
-    if (!m_rebuildRestartQueued || anyAgentRunning())
+    if (!m_rebuildRestartQueued) {
+        if (m_rebuildQueuePollTimer)
+            m_rebuildQueuePollTimer->stop();
+        return;
+    }
+    if (anyAgentRunning())
         return;
     if (m_rebuildButton && !m_rebuildButton->isEnabled())
         return;
