@@ -22,7 +22,11 @@ SCHEMA_STATEMENTS = [
     "CREATE TABLE IF NOT EXISTS accounts (name_bi TEXT PRIMARY KEY, data TEXT NOT NULL, "
     "email_bi TEXT, name TEXT, is_admin INTEGER NOT NULL DEFAULT 0, ip_bi TEXT, "
     "enable_outreach INTEGER NOT NULL DEFAULT 0)",
-    "CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email_bi)",
+    # Partial UNIQUE index: one account per email (keyless nodes have no email,
+    # so NULL/'' rows are excluded and unconstrained). Enforced for existing DBs
+    # by migration 0041, which also removes any pre-existing duplicate emails.
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email_bi) "
+    "WHERE email_bi IS NOT NULL AND email_bi <> ''",
     "CREATE INDEX IF NOT EXISTS idx_accounts_ip ON accounts(ip_bi)",
     """CREATE TABLE IF NOT EXISTS users (
         user_bi TEXT PRIMARY KEY,
@@ -32,7 +36,8 @@ SCHEMA_STATEMENTS = [
         is_admin INTEGER NOT NULL DEFAULT 0,
         ip_bi TEXT,
         enable_outreach INTEGER NOT NULL DEFAULT 0)""",
-    "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email_bi)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email_bi) "
+    "WHERE email_bi IS NOT NULL AND email_bi <> ''",
     "CREATE INDEX IF NOT EXISTS idx_users_ip ON users(ip_bi)",
     """CREATE TABLE IF NOT EXISTS nodes (
         node_bi TEXT PRIMARY KEY,
