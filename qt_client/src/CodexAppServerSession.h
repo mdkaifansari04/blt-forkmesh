@@ -35,6 +35,11 @@ public:
     void interrupt();
     void stop();
     bool running() const;
+    // Whether a turn is actively executing right now. The app-server process
+    // stays alive between turns, so running() alone can't tell "busy" from
+    // "idle waiting for the next turn" — this flips true on turn/started and
+    // false on turn/completed (adhoc #157).
+    bool turnActive() const { return m_turnActive; }
     QString threadId() const;
 
     // Primarily useful for deterministic protocol tests and packaged Codex
