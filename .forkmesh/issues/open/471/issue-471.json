@@ -1,0 +1,48 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 471,
+    "title": "Accept signed checks and expose replayable event streams",
+    "status": "open",
+    "labels": [
+        "infra",
+        "feature",
+        "security"
+    ],
+    "milestone": "Open operations",
+    "startDate": 1784779200000,
+    "endDate": 1785211200000,
+    "priority": 39,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784405500051,
+    "updatedAt": 1784405500052,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-471",
+            "title": "Accept signed checks and expose replayable event streams",
+            "body": "## Outcome\n\nAccept verifiable workflow results and expose cursor-based repository events to generic automation and deployment consumers.\n\n## Implementation\n\n- Add an authenticated signed-check API bound to repository, commit, workflow digest, executor identity, state, timestamps, summary, and artifact digests.\n- Expose versioned HTTP polling and WebSocket streams for push, collaboration, check, release, and availability events.\n- Support cursor replay, reconnect, heartbeats, backpressure, bounded retention, and explicit cursor expiry.\n- Filter private payloads and authorize repository and event scopes before serialization.\n- Provide a generic deployment-consumer fixture that reconciles only after required signed checks pass for the selected commit.\n\n## Acceptance criteria\n\n- Invalid, revoked, replayed, wrong-commit, and wrong-workflow results never satisfy a gate.\n- Reconnect from a valid cursor produces every event exactly once at the consumer.\n- Slow consumers cannot exhaust server memory or block repository work.\n- Private event fields never cross an unauthorized stream.\n- Polling and WebSocket consumers derive the same ordered event sequence.\n\n## Dependencies\n\nConsumes executor results from #470 and deterministic event ordering from #440; feeds #454, #464, and #469.\n\n## Verification\n\nRun signed-check state transitions, bad signatures, revocation, stale commit, cursor replay and expiry, reconnect, duplicate delivery, slow consumer, backpressure, private filtering, and deployment reconciliation fixtures.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500051,
+            "sig": "A8Qzu1GRfbPITmUDfPYNF28J78cUsFK5D5yguL-D3T-HRrP6Fx7JuUOFvG3ib5isBVT9OqaZC79QV0lcE8LdBQ"
+        },
+        {
+            "type": "dates",
+            "id": "0e7e8ae4-06ab-4a11-ba6e-a424c80bfe9f",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500052,
+            "startDate": 1784779200000,
+            "endDate": 1785211200000,
+            "sig": "q7TTYjF5EjXeW2xjsT7vLfDc6l1yKfEwOaMFYIRIQXV4OLuXqVrIvDd-6JkgNxpN_Ymi1KkfNnfafN7GPxtuAA"
+        }
+    ]
+}
