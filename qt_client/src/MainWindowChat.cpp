@@ -932,13 +932,25 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerUpdateLog->setObjectName("footerUpdateLog");
     m_footerUpdateLog->setReadOnly(true);
     m_footerUpdateLog->setFrameShape(QFrame::NoFrame);
-    m_footerUpdateLog->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    // Don't wrap (adhoc #133): a long line clips at the right edge instead of
+    // reflowing onto extra rows, so every entry stays one row tall and the strip
+    // reads like a dense log tail. The full text is still reachable — hovering a
+    // line shows it in a tooltip and clicking opens the full Log view at it.
+    m_footerUpdateLog->setLineWrapMode(QPlainTextEdit::NoWrap);
     m_footerUpdateLog->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_footerUpdateLog->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_footerUpdateLog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_footerUpdateLog->setMinimumWidth(0);
     m_footerUpdateLog->setToolTip(
-        "Live log \xE2\x80\x94 scroll up to search back through recent history.");
+        "Live log \xE2\x80\x94 click a line to open the full Log at it; scroll up "
+        "to search back through recent history.");
+    // Per-line hover tooltips (the full, untruncated line) and click-to-open are
+    // driven from MainWindow::eventFilter on the viewport; the hand cursor hints
+    // that the lines are clickable. Mouse tracking is left off deliberately so a
+    // plain hover doesn't fire QPlainTextEdit's own mouse-move handler, which
+    // would otherwise flip the cursor back to an I-beam over the text.
+    m_footerUpdateLog->viewport()->setCursor(Qt::PointingHandCursor);
+    m_footerUpdateLog->viewport()->installEventFilter(this);
     // Bound the live buffer the same way the seed below is bounded, so it can't
     // grow without limit over a long-running session.
     m_footerUpdateLog->setMaximumBlockCount(kFooterLogSeedLines);
@@ -1487,11 +1499,12 @@ void MainWindow::updateVoiceInputButton()
     if (m_quickAddVoiceAutoSubmit)
         m_quickAddVoiceAutoSubmit->setVisible(ready);
     if (m_quickAddMicButton) {
-        // Keep the mic visible even when speech-to-text isn't set up (adhoc #29):
-        // show it greyed out instead of hiding it, so it's discoverable and its
-        // tooltip can point the user at the Settings download.
+        // Keep the mic visible (and clickable) even when speech-to-text isn't set
+        // up (adhoc #29): rather than disabling it, clicking it while unready jumps
+        // to the Settings > Voice tab (see startVoiceCaptureFor / openVoiceSettings,
+        // adhoc #132) so the mic is a path to setup, not a dead end.
         m_quickAddMicButton->setVisible(true);
-        m_quickAddMicButton->setEnabled(ready);
+        m_quickAddMicButton->setEnabled(true);
         // Leave the mic currently recording on its red broadcast glyph.
         if (!(m_voiceRecording && m_voiceActiveButton == m_quickAddMicButton)) {
             setOcticon(m_quickAddMicButton, "mic", 16);
@@ -1502,8 +1515,8 @@ void MainWindow::updateVoiceInputButton()
                             "to transcribe.\nVoice model: %1")
                             .arg(voiceModelLabel())
                       : QString::fromUtf8(
-                            "Speech-to-text isn't set up yet \xE2\x80\x94 download a "
-                            "voice model in Settings to dictate your prompt."));
+                            "Speech-to-text isn't set up yet \xE2\x80\x94 click to open "
+                            "Settings and set up voice input."));
         }
     }
     for (QPushButton *b : m_voiceButtons) {
@@ -1579,6 +1592,7 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
 
     if (!voiceInputReady()) {
         updateVoiceInputButton();
+        openVoiceSettings();
         return;
     }
     // Don't start a fresh recording while the previous clip is still transcribing
@@ -1742,6 +1756,16 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
     button->setToolTip(
         QStringLiteral("Recording\xE2\x80\xA6 release to stop and transcribe."));
     target->setPlaceholderText("listening\xE2\x80\xA6 release the mic to stop");
+}
+
+// Land on Settings > Voice — called when a mic is clicked before speech-to-text
+// is set up, so the click goes somewhere useful instead of a silent no-op
+// (adhoc #132).
+void MainWindow::openVoiceSettings()
+{
+    showSection(1); // Settings
+    if (m_settingsTabs && m_voiceSettingsTabIndex >= 0)
+        m_settingsTabs->setCurrentIndex(m_voiceSettingsTabIndex);
 }
 
 // Run whisper.cpp over the recorded WAV and drop the transcript into the prompt
