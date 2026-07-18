@@ -1227,19 +1227,21 @@ private:
     QVector<double> m_history;
 };
 
-// Tiny spinning-radar dish + latency readout shown just left of the relay name.
-// The dish always sweeps (a continuously rotating wedge) so the relay looks
+// Spinning-radar dish with a latency readout centered inside it, shown on the
+// window-chrome line just left of the CPU/MEM/DISK sparklines (adhoc #87). The
+// dish always sweeps (a continuously rotating wedge) so the relay looks
 // "alive"; a one-minute probe feeds in the round-trip time, which renders as
-// "33ms" beside it. When the relay stops answering the whole control flips to a
-// red alert (red dish + "offline"). Colour-grades the latency green/amber so a
-// degrading link is visible at a glance.
+// "33ms" over the middle of the dish — mirroring how ResourceSparkline centers
+// its label/value over the chart. When the relay stops answering the whole
+// control flips to a red alert (red dish + "offline"). Colour-grades the
+// latency green/amber so a degrading link is visible at a glance.
 class RelayRadarWidget : public QWidget
 {
 public:
     explicit RelayRadarWidget(QWidget *parent = nullptr) : QWidget(parent)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedSize(58, 24);
+        setFixedSize(kSide, kSide); // same button-sized square as the resource sparklines
         refreshTooltip();
         // Drive the sweep: a slow, steady rotation independent of probe timing.
         m_sweep = new QTimer(this);
@@ -1276,8 +1278,11 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
 
-        const int dish = qMin(height() - 4, 18);
-        const QRectF dishRect(2, (height() - dish) / 2.0, dish, dish);
+        // The dish fills almost the whole square, same footprint as the
+        // resource sparklines' card.
+        const qreal dish = width() - 4.0;
+        const QRectF dishRect((width() - dish) / 2.0, (height() - dish) / 2.0,
+                              dish, dish);
         const QPointF c = dishRect.center();
         const qreal r = dish / 2.0;
         const QColor accent = m_unreachable ? QColor("#f85149")  // red alert
@@ -1307,12 +1312,10 @@ protected:
         p.setBrush(accent);
         p.drawEllipse(c, 1.4, 1.4);
 
-        // Latency text / alert to the right of the dish.
+        // Latency text / alert, centered in the middle of the dish — mirrors
+        // how ResourceSparkline overlays its value on top of its chart.
         QFont f = font();
-        f.setPointSizeF(qMax(6.5, f.pointSizeF() - 2.0));
-        p.setFont(f);
-        const QRectF textRect(dishRect.right() + 4, 0,
-                              width() - dishRect.right() - 4, height());
+        double pt = f.pointSizeF() > 0 ? qMin(8.0, f.pointSizeF()) : 7.0;
         QString label;
         QColor textCol;
         if (m_unreachable) {
@@ -1326,8 +1329,25 @@ protected:
             label = QStringLiteral("%1ms").arg(m_latencyMs);
             textCol = statusColor();
         }
+        const double avail = dish - 4.0;
+        for (; pt > 5.5; pt -= 0.5) {
+            f.setPointSizeF(pt);
+            if (QFontMetrics(f).horizontalAdvance(label) <= avail)
+                break;
+        }
+        f.setPointSizeF(pt);
+        p.setFont(f);
+        // A soft backing disc behind the text keeps it legible as the sweep
+        // wedge rotates underneath.
+        QColor backing = palette().color(QPalette::Window);
+        backing.setAlpha(190);
+        p.setPen(Qt::NoPen);
+        p.setBrush(backing);
+        const QFontMetrics fm(f);
+        const qreal textR = qMax(fm.horizontalAdvance(label), fm.height()) / 2.0 + 2.0;
+        p.drawEllipse(c, textR, textR);
         p.setPen(textCol);
-        p.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, label);
+        p.drawText(dishRect, Qt::AlignCenter, label);
     }
 
 private:
@@ -1356,6 +1376,7 @@ private:
         }
     }
 
+    static constexpr int kSide = 40; // matches ResourceSparkline's button-sized square
     int m_latencyMs = -1;       // last measured round-trip; -1 = unknown/probing
     bool m_unreachable = false; // relay failed to answer the last probe
     int m_angle = 0;            // sweep rotation (degrees)
