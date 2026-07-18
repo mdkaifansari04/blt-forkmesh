@@ -2741,6 +2741,10 @@ SCHEMA_ALTER_STATEMENTS = [
     "ALTER TABLE accounts ADD COLUMN ip_bi TEXT",
     # Raw User-Agent of each release download, shown in the admin list (migration 0034).
     "ALTER TABLE release_downloads ADD COLUMN ua TEXT",
+    # Operator-settable flag granting a user access to the /outreach console
+    # without a roster row (migration 0040). Mirrors is_admin on both tables.
+    "ALTER TABLE accounts ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -10034,6 +10038,26 @@ async def _outreach_member(env, name):
     return bool(row)
 
 
+async def _outreach_enabled(env, name):
+    # Per-user access flag (accounts/users.enable_outreach), the operator-settable
+    # sibling of is_admin. Grant it directly in the DB to give a user the /outreach
+    # console without a roster row: UPDATE accounts SET enable_outreach=1 WHERE
+    # name='<node>' (or the same on users once the account has migrated).
+    name = (name or "").strip().lower()
+    if not name:
+        return False
+    name_bi = await blind_index(env, name)
+    try:
+        row = await d1_first(
+            env, "SELECT enable_outreach FROM accounts WHERE name_bi=?", name_bi)
+        if not row:
+            row = await d1_first(
+                env, "SELECT enable_outreach FROM users WHERE user_bi=?", name_bi)
+    except Exception:
+        return False  # column may predate migration 0040
+    return bool(row and int(row.get("enable_outreach", 0) or 0))
+
+
 async def _outreach_team_list(env):
     rows = await d1_all(
         env, "SELECT name, added_by, added_at FROM outreach_team ORDER BY added_at")
@@ -10162,7 +10186,8 @@ async def outreach_handler(env, request):
         return json_response({"error": "unauthorized"}, status=401)
     name = (rec.get("name", "") or "").strip().lower()
     is_admin = await _is_admin(env, name)
-    allowed = is_admin or await _outreach_member(env, name)
+    allowed = (is_admin or await _outreach_member(env, name)
+               or await _outreach_enabled(env, name))
     if path == "/api/outreach" and method in ("GET", "POST"):
         return await _outreach_access(env, name, is_admin, allowed)
     if path == "/api/outreach/send" and method == "POST":
