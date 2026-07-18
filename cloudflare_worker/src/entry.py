@@ -9987,6 +9987,25 @@ OUTREACH_TEMPLATES = [
         ),
     },
     {
+        "key": "investor",
+        "label": "Investor outreach",
+        "subject": "ForkMesh — decentralized code hosting (investor intro)",
+        "body": (
+            "Hi [name],\n\n"
+            "I'm [your name], one of the founders of ForkMesh "
+            "(https://forkmesh.com) — an open-source, peer-to-peer network for "
+            "hosting and mirroring Git repositories, where independent "
+            "operators run nodes and earn a share of the network's funding for "
+            "keeping projects online.\n\n"
+            "We're raising [round] to grow the relay infrastructure and node "
+            "payout network, and I'm reaching out because [why this investor]. "
+            "[Traction so far — nodes online, repos mirrored, revenue, etc.]\n\n"
+            "Could I send over our deck, or grab 20 minutes in the next week "
+            "or two to walk you through where the network is heading?\n\n"
+            "Best,\n[your name]\nForkMesh — founders@forkmesh.com"
+        ),
+    },
+    {
         "key": "partnership",
         "label": "Partnership / integration",
         "subject": "Partnering with ForkMesh",
