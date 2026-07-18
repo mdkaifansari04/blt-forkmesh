@@ -17274,6 +17274,7 @@ async def admin_stats(env):
     err_row = await d1_first(
         env, "SELECT COUNT(*) AS n FROM error_log WHERE ts >= ?", day_ago,
     )
+    err_total_row = await d1_first(env, "SELECT COUNT(*) AS n FROM error_log")
     # Installs started in the last 24h = distinct anonymous runs that reported the
     # opening "start" step. Best-effort; the table may not exist on a fresh DB.
     try:
@@ -17291,6 +17292,7 @@ async def admin_stats(env):
         "clients": await _flagship_client_count(env),
         "installs_24h": int((inst_row or {}).get("n", 0) or 0),
         "errors_24h": int((err_row or {}).get("n", 0) or 0),
+        "errors_total": int((err_total_row or {}).get("n", 0) or 0),
     }
 
 
@@ -17871,7 +17873,12 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
     # caller against the live table list, so it is safe to interpolate.
     # rowid lets the admin select + bulk-delete any row regardless of the table's
     # declared primary key (all these tables are rowid tables).
-    rows = await d1_all(env, "SELECT rowid AS _rowid_, * FROM " + table + " LIMIT 500")
+    # Newest-first by default: rowid ascends with insertion, so ORDER BY rowid DESC
+    # surfaces the most recent rows (and, with LIMIT, keeps the newest 500) for
+    # every table — including the error log, which reads from these rows.
+    rows = await d1_all(
+        env, "SELECT rowid AS _rowid_, * FROM " + table
+        + " ORDER BY rowid DESC LIMIT 500")
     count_row = await d1_first(env, "SELECT COUNT(*) AS n FROM " + table)
     total = int((count_row or {}).get("n", 0) or 0)
 
@@ -18087,6 +18094,7 @@ def _render_admin_stats(stats):
         ("clients", "chat clients", False),
         ("repos", "catalog repos", False),
         ("installs_24h", "installs (24h)", False),
+        ("errors_total", "errors (all time)", True),
         ("errors_24h", "errors (24h)", True),
     ]
     out = []
