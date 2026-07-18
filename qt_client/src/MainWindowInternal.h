@@ -2203,7 +2203,9 @@ protected:
             QFont f = font();
             f.setBold(true);
             p.setFont(f);
-            p.setPen(QColor(230, 237, 243));
+            // Black on the light "main bar", light on the dark one (adhoc #118).
+            p.setPen(currentThemeIsDark() ? QColor(230, 237, 243)
+                                          : QColor(0, 0, 0));
             const QString elided = p.fontMetrics().elidedText(
                 m_name, Qt::ElideRight, int(box.width()) - 12);
             p.drawText(box.adjusted(6, 0, -6, 0),
