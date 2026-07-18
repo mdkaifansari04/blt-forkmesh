@@ -844,7 +844,16 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             true);
         return;
     }
-    if (QMessageBox::question(
+    // A merge with no worktree to prune and no agent to tear down (e.g. the
+    // Branches view's "Merge to main") only adds a merge commit to the base branch
+    // — it deletes nothing — so, like the sibling "Update from main" action, it runs
+    // straight from the deliberate button click without a modal dialog popping up
+    // over the view. adhoc #130: "just do the merge in the background, don't jump
+    // around." Destructive merges (that remove a worktree/branch or delete the
+    // agent) still confirm first, since those can discard work.
+    const bool destructive = !worktreePath.isEmpty() || deleteAgent;
+    if (destructive &&
+        QMessageBox::question(
             this, QStringLiteral("Merge into %1").arg(base),
             deleteAgent
                 ? QStringLiteral("Merge branch %1 into %2, then delete its worktree, "
@@ -1019,6 +1028,27 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                 .arg(branch, base),
             true);
     }
+    // adhoc #139: a clean "Merge to main" from the Branches view (no worktree or
+    // agent to tear down) leaves the merged branch in the list, so re-selecting it
+    // would just re-render the now-empty diff. Instead advance the selection to the
+    // next branch in the list so the user can keep merging down the list without the
+    // page snapping back to the branch they just finished. Steer loadBranchesPanel()'s
+    // "re-select the previously-viewed branch" logic (which reads m_branchDiffBranch)
+    // at the neighbour, exactly like the post-delete flow does (adhoc #256). Compute
+    // the neighbour now, while the table still holds the pre-refresh row order. Only
+    // for the non-destructive Branches-view button — the Worktrees/Agents merge flows
+    // delete the branch and keep their own selection handling.
+    if (merged && !hasConflicts && branchInBase && worktreePath.isEmpty()
+        && !deleteAgent) {
+        const QString next = neighbourBranchInList(branch);
+        if (!next.isEmpty())
+            m_branchDiffBranch = next;
+    }
+    // adhoc #100: the merge just landed a new commit (or, on a failed merge, an
+    // aborted one) directly in this checkout, so the top "Sync" button and the
+    // Changes panel would otherwise stay stale — showing 0 pending commits — until
+    // the user manually refreshes. Force both to recheck now.
+    refreshSourceControl(true);
     loadWorktreesPanel();
     // Issue #211: refresh the cheap branch tip/count, but don't eagerly rebuild
     // the Branches panel — it runs a git command per branch (probing each for
@@ -1950,9 +1980,9 @@ void MainWindow::loadBranchesPanel()
     QScopedValueRollback<bool> loadingGuard(m_branchesPanelLoading, true);
     // Each row's ahead/behind count and in-memory merge-conflict probe shells out
     // to git serially below; on a repo with many branches that blocked the GUI
-    // thread for ~2s and tripped the stall watchdog (adhoc #222). Keep the event
-    // loop pumping across the batch so the window stays responsive (waitForGit
-    // polls in short slices while g_gitKeepAliveDepth > 0) instead of freezing.
+    // thread for ~2s and tripped the stall watchdog (adhoc #222). waitForGit
+    // pumps the event loop in short slices on the GUI thread, so the window
+    // stays responsive across the batch instead of freezing.
     GitKeepAlive keepAlive;
     // Remember which branch's diff is on screen so we can re-render it at the end
     // (now reflecting any merge we just performed).

@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""The dashboard's Organizations settings tab.
+
+The /api/orgs endpoints (create/list orgs, members, teams, team members,
+linked repos) previously had no web client. The Settings page now carries an
+"Organizations" sub-tab whose JS (in dashboard/js/04-account.js, bundled into
+dashboard.js) drives a master/detail panel over those endpoints. These are
+static contracts: the markup hooks the JS binds to must exist, and the JS must
+call each endpoint with the right method/path.
+"""
+
+from pathlib import Path
+
+from _dashboard_bundle import assembled_dashboard_js
+
+ROOT = Path(__file__).resolve().parents[1]
+SETTINGS_VIEW = (
+    ROOT / "public" / "dashboard" / "partials" / "views" / "settings.html"
+).read_text(encoding="utf-8")
+DASHBOARD_JS = assembled_dashboard_js()
+
+
+def test_settings_view_has_organizations_tab_and_root():
+    # The sub-tab nav button and its panel, plus the container the JS renders
+    # into. setSettingsSection toggles panels by data-settings-section.
+    assert 'data-settings-section-link="organizations"' in SETTINGS_VIEW
+    assert 'data-settings-section="organizations"' in SETTINGS_VIEW
+    assert "data-orgs-root" in SETTINGS_VIEW
+
+
+def test_bundle_registers_organizations_section():
+    # The tab is a no-op unless it is a recognised settings section and the
+    # lazy loader is wired from setSettingsSection.
+    assert '"nodes", "organizations", "danger"' in DASHBOARD_JS
+    assert 'if (activeSection === "organizations") initOrgsSection();' in DASHBOARD_JS
+
+
+def test_bundle_defines_the_org_client_functions():
+    for symbol in (
+        "async function orgApiRequest(",
+        "function initOrgsSection(",
+        "async function showOrgsList(",
+        "async function onCreateOrgSubmit(",
+        "async function showOrgDetail(",
+        "function wireOrgDetail(",
+        "async function showOrgTeamDetail(",
+    ):
+        assert symbol in DASHBOARD_JS, symbol
+
+
+def test_bundle_calls_every_org_endpoint_shape():
+    # GET list + POST create.
+    assert 'orgApiRequest("GET", "/api/orgs")' in DASHBOARD_JS
+    assert 'orgApiRequest("POST", "/api/orgs", body)' in DASHBOARD_JS
+    # Detail collections.
+    assert '"/api/orgs/" + encodeURIComponent(name) + "/members"' in DASHBOARD_JS
+    assert '"/api/orgs/" + encodeURIComponent(name) + "/teams"' in DASHBOARD_JS
+    assert '"/api/orgs/" + encodeURIComponent(name) + "/repos"' in DASHBOARD_JS
+    # Team-member sub-view and org deletion.
+    assert '/teams/" + encodeURIComponent(team) + "/members"' in DASHBOARD_JS
+    assert 'orgApiRequest("DELETE", "/api/orgs/" + encodeURIComponent(name), {})' in DASHBOARD_JS
+
+
+def test_org_error_codes_map_to_human_text():
+    # A representative slug from every org handler must have a message so the
+    # UI never shows a raw error code.
+    for code in (
+        "org_name_taken",
+        "last_owner",
+        "not_your_node",
+        "unknown_repo",
+        "too_many_members",
+        "forbidden",
+    ):
+        assert code + ":" in DASHBOARD_JS, code

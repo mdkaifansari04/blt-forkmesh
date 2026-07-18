@@ -9,6 +9,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
 
 #include <QSignalBlocker>
@@ -372,7 +373,7 @@ QWidget *MainWindow::buildRepoFilesPanel()
 {
     // Three modes: a GitHub-style overview, the repository explorer/editor, and
     // an account-gated Cove Explorer rooted in .forkmesh/coves.
-    m_filesStack = new QStackedWidget;
+    m_filesStack = new CurrentPageStack;
     m_filesStack->addWidget(buildRepoOverviewPage());      // 0 overview
     m_filesStack->addWidget(buildRepoEditorPage());        // 1 editor
     m_filesStack->addWidget(buildRepoCoveExplorerPage());  // 2 secure cove
@@ -623,7 +624,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     filesBodyLayout->addWidget(m_overviewList, 2);
     filesBodyLayout->addWidget(m_readmeView, 3);
 
-    m_overviewBodyStack = new QStackedWidget;
+    m_overviewBodyStack = new CurrentPageStack;
     m_overviewBodyStack->addWidget(filesBody);             // 0 files + README
     m_overviewBodyStack->addWidget(buildRepoCommitsTab()); // 1 commit history
     m_overviewBodyStack->addWidget(buildBranchesTab());    // 2 branches panel
@@ -755,6 +756,16 @@ QWidget *MainWindow::buildRepoEditorPage()
     });
     connect(m_repoFileTabs, &QTabWidget::currentChanged, this,
             [this] { updateRepoFileSaveActions(); });
+    // Ctrl+S saves the current tab: commit direct when this node owns a working
+    // tree, otherwise fall back to opening a PR (the only save path on a mirror).
+    auto *saveShortcut = new QShortcut(QKeySequence::Save, m_repoFileTabs);
+    saveShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(saveShortcut, &QShortcut::activated, this, [this] {
+        if (m_repoFileCommitButton && m_repoFileCommitButton->isEnabled())
+            saveCurrentRepoFile(false);
+        else if (m_repoFilePullButton && m_repoFilePullButton->isEnabled())
+            saveCurrentRepoFile(true);
+    });
 
     auto *splitter = new QSplitter(Qt::Horizontal);
     splitter->setObjectName("filesSplitter");
@@ -1441,11 +1452,13 @@ void MainWindow::updateRepoCodeSize()
         m_repoCodeTab->setText(QStringLiteral("Code (%1)").arg(size)); // Code (N MB)
     };
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        m_repoCodeSizePath.clear();
         showSize(QStringLiteral("0 B"));
         return;
     }
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     if (repo.mirrorPath.isEmpty() || !QDir(repo.mirrorPath).exists()) {
+        m_repoCodeSizePath.clear();
         showSize(QStringLiteral("0 B"));
         return;
     }
@@ -1456,12 +1469,22 @@ void MainWindow::updateRepoCodeSize()
     // even under GitKeepAlive, whose polling pump can itself get stuck behind a
     // slow paint. Fetch it fully off the GUI thread instead (see
     // runGitDetached) and only apply the result if still showing this repo.
-    showSize(QStringLiteral("…"));
+    //
+    // The Code tab is the first tab in the strip and the strip is a plain
+    // QHBoxLayout, so any width change here shifts every later tab plus the
+    // header widgets aligned with them. Flashing a "…" placeholder on each
+    // sync/merge refresh made the whole bar jump twice; keep the last computed
+    // size on screen instead and only show the placeholder the first time this
+    // mirror's size is looked up.
+    if (m_repoCodeSizePath != repo.mirrorPath)
+        showSize(QStringLiteral("…"));
     const int forIndex = m_repoDetailIndex;
+    const QString forPath = repo.mirrorPath;
     runGitDetached(repo.mirrorPath, {"count-objects", "-v"},
-                   [this, forIndex, showSize](bool ok, const QByteArray &out) {
+                   [this, forIndex, forPath, showSize](bool ok, const QByteArray &out) {
                        if (forIndex != m_repoDetailIndex || !m_repoCodeTab)
                            return;
+                       m_repoCodeSizePath = forPath;
                        showSize(ok ? formatByteSize(parseCountObjectsSizeBytes(out))
                                    : QStringLiteral("0 B"));
                    });
@@ -2034,6 +2057,15 @@ void MainWindow::openRepoFile(const QString &path)
     m_repoFileTabs->setTabToolTip(index, path);
     m_repoFileTabs->setCurrentIndex(index);
     m_openFileTabs.insert(path, editor);
+    // Prefix the tab label with the same "●" marker used for uncommitted files
+    // elsewhere, so unsaved edits are visible before Ctrl+S/commit clears them.
+    connect(editor->document(), &QTextDocument::modificationChanged, this,
+            [this, editor, name](bool modified) {
+                const int idx = m_repoFileTabs ? m_repoFileTabs->indexOf(editor) : -1;
+                if (idx >= 0)
+                    m_repoFileTabs->setTabText(
+                        idx, modified ? QString::fromUtf8("\xE2\x97\x8F ") + name : name);
+            });
     updateRepoFileSaveActions();
 }
 
@@ -3769,7 +3801,7 @@ void MainWindow::loadCommits()
     const int rowLimit = m_commitsShowingAll ? kCommitSearchDepth : m_commitsLimit;
     QStringList logArgs{
         "log",
-        "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P%x1f%D"};
+        "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P%x1f%D%x1f%b"};
     logArgs << "-n" << QString::number(rowLimit + 1);
     logArgs << currentRef();
     if (!runGitCapture(dir, logArgs, &out, nullptr))
@@ -3783,9 +3815,8 @@ void MainWindow::loadCommits()
     QString loadedTip;
     // Commit-graph lane state, walked newest-first alongside the rows. Each entry
     // is the hash the lane is currently waiting to reach; an empty entry is a free
-    // slot a new branch can reuse. maxGraphLane sizes the gutter column afterwards.
+    // slot a new branch can reuse.
     QList<QString> activeLanes;
-    int maxGraphLane = 0;
     // Repaints stay suspended by the TableRepaintGuard above while up to 300 rows
     // (each with a cell-widget button) are built: otherwise the table repaints on
     // every insertRow/setItem, which is what made a refresh feel sluggish.
@@ -3799,11 +3830,11 @@ void MainWindow::loadCommits()
             m_commitsHasMore = true;
             break;
         }
-        const QStringList lines =
-            QString::fromUtf8(record).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-        if (lines.isEmpty())
-            continue;
-        const QStringList f = lines.first().split(QLatin1Char('\x1f'));
+        // Split the record on the field separator directly (not per line): the
+        // trailing %b body field is multi-line, so the record can no longer be
+        // read as just its first line.
+        const QStringList f =
+            QString::fromUtf8(record).split(QLatin1Char('\x1f'));
         if (f.size() < 6)
             continue;
         if (loadedTip.isEmpty())
@@ -3829,10 +3860,8 @@ void MainWindow::loadCommits()
         // Snapshot the lanes drawn through this row before advancing them.
         QVariantList laneCols;
         for (int i = 0; i < activeLanes.size(); ++i) {
-            if (!activeLanes.at(i).isEmpty()) {
+            if (!activeLanes.at(i).isEmpty())
                 laneCols.append(i);
-                maxGraphLane = std::max(maxGraphLane, i);
-            }
         }
         // Close any other lane also waiting for this commit (it merges in here).
         for (int i = 0; i < activeLanes.size(); ++i)
@@ -3861,10 +3890,8 @@ void MainWindow::loadCommits()
         // merge/branch curves into and out of the node.
         QVariantList botLaneCols;
         for (int i = 0; i < activeLanes.size(); ++i) {
-            if (!activeLanes.at(i).isEmpty()) {
+            if (!activeLanes.at(i).isEmpty())
                 botLaneCols.append(i);
-                maxGraphLane = std::max(maxGraphLane, i);
-            }
         }
 
         const int row = m_commitsTable->rowCount();
@@ -3875,6 +3902,8 @@ void MainWindow::loadCommits()
         graphItem->setData(kGraphLanesRole, laneCols);
         graphItem->setData(kGraphNodeLaneRole, nodeLane);
         graphItem->setData(kGraphBottomLanesRole, botLaneCols);
+        // Merges draw as a bullseye ring, regular commits as a solid dot.
+        graphItem->setData(kGraphIsMergeRole, parents.size() > 1);
         m_commitsTable->setItem(row, kCommitGraphCol, graphItem);
         auto *summary = new SortTableWidgetItem(f.at(5));
         summary->setData(Qt::UserRole, f.at(0));
@@ -3885,6 +3914,11 @@ void MainWindow::loadCommits()
         summary->setData(kCommitExpandedRole, false);
         summary->setData(kCommitAuthorRole, f.at(2));
         summary->setData(kCommitUnsyncedRole, isUnpushed);
+        // Full message body: the row shows only the subject, the hover box
+        // (updateCommitRowHover) carries the whole commit message.
+        const QString msgBody = f.value(8).trimmed();
+        if (!msgBody.isEmpty())
+            summary->setData(kCommitBodyRole, msgBody);
         // Branch / tag pills (git log %D), drawn ahead of the summary text like
         // the VS Code graph. Capped: a tip carrying many refs would otherwise
         // crowd out the message.
@@ -3966,14 +4000,9 @@ void MainWindow::loadCommits()
         // commit's detail page (double-click / Enter), next to Restore.
         updateCommitRowHover(row);
     }
-    // Size the graph gutter to the widest the lanes ever got, then re-assert the
-    // Date-descending sort so rows stay in git-log order (the order the lanes were
-    // computed in) after sorting is re-enabled.
-    {
-        const int laneSpan = 2 * kGraphMargin + maxGraphLane * kGraphLaneWidth;
-        m_commitsTable->horizontalHeader()->resizeSection(
-            kCommitGraphCol, std::clamp(laneSpan, 22, 140));
-    }
+    // The graph gutter needs no sizing pass: it is painted inside the summary
+    // cell and each row's text indents to its own rightmost lane (capped by
+    // kGraphMaxTextIndent in CommitSummaryDelegate).
     // Repaints stay suspended (TableRepaintGuard) through the banner update and
     // filter re-apply below, so the whole reload lands in a single repaint when
     // the guard unwinds at function scope. The rows stay in git-log order (no
@@ -4197,6 +4226,7 @@ void MainWindow::toggleCommitFilesRows(int row)
         graph->setData(kGraphNodeLaneRole, -1); // no dot: lanes pass through
         m_commitsTable->setItem(at, kCommitGraphCol, graph);
         auto *item = new QTableWidgetItem(f.path);
+        item->setIcon(iconForFile(f.path.section(QLatin1Char('/'), -1)));
         item->setData(kCommitRowKindRole, 1);
         item->setData(Qt::UserRole, hash);
         item->setData(kCommitFilePathRole, f.path);
@@ -4250,6 +4280,18 @@ void MainWindow::updateCommitRowHover(int row)
     // The date cell keeps the full "x ago" form on its own tooltip.
     const QString when = date ? date->toolTip() : QString();
     QString html = QStringLiteral("<b>%1</b>").arg(sum->text().toHtmlEscaped());
+    // The full commit message rides the hover box (the row shows only the
+    // subject line). Very long bodies are capped so the tooltip stays usable.
+    QString msgBody = sum->data(kCommitBodyRole).toString();
+    if (!msgBody.isEmpty()) {
+        if (msgBody.size() > 1500) {
+            msgBody.truncate(1500);
+            msgBody += QChar(0x2026);
+        }
+        html += QStringLiteral("<br><span style='color:#8b949e; "
+                               "white-space:pre-wrap'>%1</span>")
+                    .arg(msgBody.toHtmlEscaped());
+    }
     html += QStringLiteral("<br>%1 committed %2")
                 .arg((author ? author->text() : QString()).toHtmlEscaped(),
                      when.toHtmlEscaped());
@@ -4492,7 +4534,7 @@ QWidget *MainWindow::createGlobalSearchBox()
     m_globalSearch = new QLineEdit;
     m_globalSearch->setObjectName("globalSearch");
     m_globalSearch->setClearButtonEnabled(true);
-    m_globalSearch->setPlaceholderText(QString::fromUtf8("Search everything\xE2\x80\xA6"));
+    m_globalSearch->setPlaceholderText(QString::fromUtf8("Search\xE2\x80\xA6"));
     m_globalSearch->setMinimumWidth(150);
     m_globalSearch->setMaximumWidth(360);
     m_globalSearch->addAction(themedOcticon("search", QColor(Theme::kTextTertiary), 14),
@@ -6115,8 +6157,12 @@ void MainWindow::showCommit(const QString &hash)
         m_commitNextButton->setEnabled(m_commitsTable &&
                                        m_currentCommitRow >= 0 &&
                                        m_currentCommitRow < m_commitsTable->rowCount() - 1);
-    // Keep the table highlight in sync so the selected row follows Prev/Next.
-    if (m_commitsTable && m_currentCommitRow >= 0) {
+    // Keep the table highlight in sync so the selected row follows Prev/Next —
+    // unless this open came from a click on an expanded file row: that row
+    // keeps the selection, so its green border marks the file whose diff is
+    // being shown.
+    if (m_commitsTable && m_currentCommitRow >= 0 &&
+        m_pendingCommitFileScroll.isEmpty()) {
         QSignalBlocker blk(m_commitsTable);
         m_commitsTable->selectRow(m_currentCommitRow);
     }
@@ -6198,6 +6244,31 @@ void MainWindow::showCommit(const QString &hash)
         });
 }
 
+// Renders the commit-detail message label from the subject/body/expanded
+// properties stashed on it: the body stays collapsed behind a ▸ arrow until
+// toggled (the label's linkActivated handler flips "expanded" and re-renders),
+// and the full message always rides the label's hover tooltip.
+static void refreshCommitMessageLabel(QLabel *label)
+{
+    if (!label)
+        return;
+    const QString subject = label->property("subjectHtml").toString();
+    const QString body = label->property("bodyHtml").toString();
+    const bool expanded = label->property("expanded").toBool();
+    QString msg;
+    if (!body.isEmpty())
+        msg += QStringLiteral("<a href='toggle-msg' "
+                              "style='color:#8b949e;text-decoration:none'>%1</a> ")
+                   .arg(expanded ? QString::fromUtf8("\xE2\x96\xBE")
+                                 : QString::fromUtf8("\xE2\x96\xB8"));
+    msg += QStringLiteral("<b>%1</b>").arg(subject);
+    if (expanded && !body.isEmpty())
+        msg += QStringLiteral(
+                   "<br><span style='color:#8b949e; white-space:pre-wrap'>%1</span>")
+                   .arg(body);
+    label->setText(msg);
+}
+
 // The synchronous tail of showCommit(): all git output is in hand (metaFields
 // from `show -s`, patchRaw from `diff -M`), so this is pure widget population.
 void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
@@ -6230,13 +6301,17 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
             QStringLiteral("Commit <code>%1</code>").arg(breakableHash));
     }
     if (m_commitMessage) {
-        QString msg =
-            QStringLiteral("<b>%1</b>").arg(linkifyIssueRefs(subject.toHtmlEscaped()));
-        if (!body.isEmpty())
-            msg += QStringLiteral(
-                       "<br><span style='color:#8b949e; white-space:pre-wrap'>%1</span>")
-                       .arg(linkifyIssueRefs(body.toHtmlEscaped()));
-        m_commitMessage->setText(msg);
+        // Collapsed by default: just the subject, with a ▸ arrow to expand the
+        // body in place. The hover tooltip always shows the whole message.
+        m_commitMessage->setProperty("subjectHtml",
+                                     linkifyIssueRefs(subject.toHtmlEscaped()));
+        m_commitMessage->setProperty("bodyHtml",
+                                     linkifyIssueRefs(body.toHtmlEscaped()));
+        m_commitMessage->setProperty("expanded", false);
+        m_commitMessage->setToolTip(
+            body.isEmpty() ? subject
+                           : subject + QStringLiteral("\n\n") + body);
+        refreshCommitMessageLabel(m_commitMessage);
     }
 
     // --- Render the diff and collect per-file stats.
@@ -6267,49 +6342,6 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
                 .arg(files.size())
                 .arg(files.size() == 1 ? "" : "s"));
 
-    // --- Left file list (click scrolls the diff to that file).
-    if (m_commitFileList) {
-        QSignalBlocker block(m_commitFileList);
-        m_commitFileList->clear();
-        for (const DiffFileEntry &f : files) {
-            // Show the basename prominently with the +/- counts; full path on
-            // hover. A status-coloured octicon leads each row.
-            const QString name = f.path.section(QLatin1Char('/'), -1);
-            auto *item = new QListWidgetItem(
-                QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
-                    .arg(name, QString::number(f.adds), QString::number(f.dels)));
-            QString icon = "file-diff";
-            QColor tint("#d29922"); // modified
-            if (f.status == QLatin1String("added")) {
-                icon = "diff";
-                tint = QColor("#3fb950");
-            } else if (f.status == QLatin1String("deleted")) {
-                icon = "trash";
-                tint = QColor("#f85149");
-            } else if (f.status == QLatin1String("renamed")) {
-                icon = "file-diff";
-                tint = QColor("#58a6ff");
-            }
-            item->setIcon(themedOcticon(icon, tint, 14));
-            item->setData(Qt::UserRole, f.anchor);
-            item->setToolTip(QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
-            m_commitFileList->addItem(item);
-        }
-        fitFileListToWidestEntry(m_commitFileList);
-    }
-    // A click on an expanded file row (or a pending-sync file) asked for this
-    // specific file: select it now the list exists — outside the blocker, so the
-    // selection scrolls the diff to that file's anchor.
-    if (m_commitFileList && !m_pendingCommitFileScroll.isEmpty()) {
-        for (int i = 0; i < files.size(); ++i) {
-            if (files.at(i).path == m_pendingCommitFileScroll) {
-                m_commitFileList->setCurrentRow(i);
-                break;
-            }
-        }
-        m_pendingCommitFileScroll.clear();
-    }
-
     // --- Theme-aware diff styling, then the rendered HTML.
     if (m_commitDiffView) {
         setDiffHtml(m_commitDiffView,
@@ -6317,6 +6349,19 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
                         ? QStringLiteral("<p style='color:#8b949e'>"
                                          "No changes in this commit.</p>")
                         : diffHtml);
+    }
+    // A click on an expanded file row in the graph (or a pending-sync file) asked
+    // for one specific file: scroll the diff straight to that file's anchor now
+    // the HTML exists. The file list that used to drive this lives inline in the
+    // graph now, so we scroll the diff directly (adhoc #59).
+    if (m_commitDiffView && !m_pendingCommitFileScroll.isEmpty()) {
+        for (const DiffFileEntry &f : files) {
+            if (f.path == m_pendingCommitFileScroll) {
+                m_commitDiffView->scrollToAnchor(f.anchor);
+                break;
+            }
+        }
+        m_pendingCommitFileScroll.clear();
     }
 
     renderCommitThread(m_currentCommitHash);
@@ -7951,7 +7996,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_releaseStrip->hide();
 
     // --- Inner stack: one page per tab.
-    m_repoDetailStack = new QStackedWidget;
+    m_repoDetailStack = new CurrentPageStack;
     m_repoDetailStack->addWidget(buildRepoFilesPanel());                 // 0 Code
     // 1 — placeholder. The commits panel lives inside the Code overview (built
     // by buildRepoOverviewPage, under the latest-commit bar); this empty page
@@ -8074,20 +8119,14 @@ QWidget *MainWindow::buildRepoDetailSection()
     // Land on the Code view; opening a repo refreshes it (see openRepoDetail).
     m_repoDetailStack->setCurrentIndex(0);
 
-    // QStackedWidget sizes itself to the tallest page, even ones that aren't
-    // showing (e.g. Discussions or Settings next to a short Code view). Without
-    // this wrapper that height pushes into the outer app-wide scroll area, which
-    // then scrolls the whole page — header and tab bar included — out of view.
-    // Wrapping just the stack (same trick as contentScroll/settingsScroll) keeps
-    // header + tab bar fixed and scrolls only the active tab's body.
-    auto *repoDetailStackScroll = new QScrollArea;
-    repoDetailStackScroll->setObjectName("repoDetailStackScroll");
-    repoDetailStackScroll->setWidgetResizable(true);
-    repoDetailStackScroll->setFrameShape(QFrame::NoFrame);
-    repoDetailStackScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    repoDetailStackScroll->setMinimumHeight(0);
-    repoDetailStackScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
-    repoDetailStackScroll->setWidget(m_repoDetailStack);
+    // No QScrollArea around the tab stack any more (adhoc #108). Every
+    // repo-detail tab manages its own scrolling, so the wrapper only layered a
+    // second scroll surface (and its overflow spacing) over the page. The
+    // Ignored vertical policy keeps a tall tab from growing the window's
+    // minimum height (CurrentPageStack already sizes the stack to the current
+    // tab, not the tallest sibling), so header + tab bar stay fixed.
+    m_repoDetailStack->setMinimumHeight(0);
+    m_repoDetailStack->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
 
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -8096,7 +8135,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     layout->addWidget(m_repoDetailNotice);
     layout->addWidget(metaBand);
     layout->addWidget(tabBarScroll);
-    layout->addWidget(repoDetailStackScroll, 1);
+    layout->addWidget(m_repoDetailStack, 1);
     return page;
 }
 
@@ -8117,6 +8156,10 @@ QWidget *MainWindow::buildRepoCommitsTab()
     enableHoverRowHighlight(m_commitsTable); // green outline selection (issue #252)
     m_commitsTable->horizontalHeader()->setVisible(false);
     m_commitsTable->verticalHeader()->setVisible(false);
+    // Tight, fixed row height so the graph reads compact like the VS Code / GitLens
+    // commit graph rather than the roomier default table rows (adhoc #59).
+    m_commitsTable->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_commitsTable->verticalHeader()->setDefaultSectionSize(24);
     m_commitsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_commitsTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_commitsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -8132,14 +8175,11 @@ QWidget *MainWindow::buildRepoCommitsTab()
         m_commitsTable->setColumnHidden(i, true);
     m_commitsTable->setColumnHidden(kCommitActionCol, true);
     commitHeader->setSectionResizeMode(kCommitSummaryCol, QHeaderView::Stretch);
-    // Git-graph gutter: a fixed, narrow column drawn by CommitGraphDelegate and
-    // moved to the far left so it reads like a git log graph. Its width is
-    // recomputed per load once the lane count is known (see loadCommits).
-    commitHeader->setSectionResizeMode(kCommitGraphCol, QHeaderView::Fixed);
-    commitHeader->resizeSection(kCommitGraphCol, 24);
-    commitHeader->moveSection(commitHeader->visualIndex(kCommitGraphCol), 0);
-    m_commitsTable->setItemDelegateForColumn(kCommitGraphCol,
-                                             new CommitGraphDelegate(m_commitsTable));
+    // Git-graph gutter: its lane data rides a hidden column that
+    // CommitSummaryDelegate reads via the row's sibling cell and paints inside
+    // the summary cell itself, so each row's message starts right beside its
+    // own rightmost lane instead of after a shared fixed-width gutter.
+    m_commitsTable->setColumnHidden(kCommitGraphCol, true);
     m_commitsTable->setItemDelegateForColumn(
         kCommitSummaryCol, new CommitSummaryDelegate(m_commitsTable));
     // Single click: expand/collapse the commit's files in place (VS-Code style).
@@ -8451,7 +8491,13 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // Markdown reference links.
     connect(m_commitMessage, &QLabel::linkActivated, this,
             [this](const QString &href) {
-                if (href.startsWith(QStringLiteral("ref:")))
+                if (href == QLatin1String("toggle-msg")) {
+                    // The ▸/▾ arrow: expand or collapse the message body.
+                    m_commitMessage->setProperty(
+                        "expanded",
+                        !m_commitMessage->property("expanded").toBool());
+                    refreshCommitMessageLabel(m_commitMessage);
+                } else if (href.startsWith(QStringLiteral("ref:")))
                     openCommitReference(href.mid(4).toInt());
                 else if (href.startsWith(QStringLiteral("commit:")))
                     openCommitHashReference(href.mid(7));
@@ -8466,49 +8512,35 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // the file names on its own, so the standalone count label is redundant.
     m_commitFilesSummary = nullptr;
 
-    // Left: changed-files list (click to scroll the diff to that file). The
-    // selected file gets the same green outline the other file trees use, so the
-    // active file is obvious at a glance (issue: border the selected file).
-    auto *filesPane = new QWidget;
-    filesPane->setMinimumWidth(200);
-    filesPane->setMaximumWidth(300);
-    m_commitFileList = new QListWidget;
-    m_commitFileList->setObjectName("commitFileList");
-    enableHoverRowHighlight(m_commitFileList); // green outline on the selected file
-    connect(m_commitFileList, &QListWidget::currentItemChanged, this,
-            [this](QListWidgetItem *item, QListWidgetItem *) {
-                if (item && m_commitDiffView)
-                    m_commitDiffView->scrollToAnchor(
-                        item->data(Qt::UserRole).toString());
-            });
-    // Small spinner that shows load progress while showCommit reads + renders
-    // the diff, so a slow commit shows progress here instead of freezing.
-    m_commitDiffSpinner = new BusySpinner(filesPane);
-    m_commitDiffSpinner->setToolTip(QString::fromUtf8("Loading diff\xE2\x80\xA6"));
-    m_commitDiffSpinner->hide();
-    auto *filesSummaryRow = new QHBoxLayout;
-    filesSummaryRow->setContentsMargins(0, 0, 0, 0);
-    filesSummaryRow->setSpacing(6);
-    filesSummaryRow->addWidget(m_commitDiffSpinner);
-    filesSummaryRow->addStretch();
+    // The commit's touched files are shown inline in the graph list (click a
+    // commit to expand its files, then click a file to open it) and the selected
+    // file is bordered there, so the detail view no longer carries its own
+    // changed-files pane — it's just the diff (adhoc #59).
+    m_commitFileList = nullptr;
 
-    auto *filesLayout = new QVBoxLayout(filesPane);
-    filesLayout->setContentsMargins(0, 0, 8, 0);
-    filesLayout->setSpacing(6);
-    filesLayout->addLayout(filesSummaryRow);
-    filesLayout->addWidget(m_commitFileList, 1);
-
-    // Right: the unified diff for the whole commit.
+    // The unified diff for the whole commit, full width.
     m_commitDiffView = new QTextBrowser;
     m_commitDiffView->setObjectName("commitDiffView");
     m_commitDiffView->setOpenExternalLinks(false);
     registerDiffView(m_commitDiffView);
 
-    auto *split = new QSplitter(Qt::Horizontal);
-    split->addWidget(filesPane);
-    split->addWidget(m_commitDiffView);
-    split->setStretchFactor(0, 0);
-    split->setStretchFactor(1, 1);
+    // Small spinner that shows load progress while showCommit reads + renders the
+    // diff, tucked into a thin strip above it so a slow commit shows progress
+    // instead of freezing.
+    m_commitDiffSpinner = new BusySpinner;
+    m_commitDiffSpinner->setToolTip(QString::fromUtf8("Loading diff\xE2\x80\xA6"));
+    m_commitDiffSpinner->hide();
+    auto *diffSpinRow = new QHBoxLayout;
+    diffSpinRow->setContentsMargins(0, 0, 0, 0);
+    diffSpinRow->addStretch();
+    diffSpinRow->addWidget(m_commitDiffSpinner);
+
+    auto *split = new QWidget;
+    auto *splitLayout = new QVBoxLayout(split);
+    splitLayout->setContentsMargins(0, 0, 0, 0);
+    splitLayout->setSpacing(4);
+    splitLayout->addLayout(diffSpinRow);
+    splitLayout->addWidget(m_commitDiffView, 1);
 
     // --- Per-commit conversation: comment thread + composer.
     m_commitThreadContainer = new QWidget;
@@ -8689,8 +8721,13 @@ void MainWindow::startButtonSpin(QPushButton *button)
     auto angle = std::make_shared<int>(0);
     connect(timer, &QTimer::timeout, button, [button, angle, size] {
         *angle = (*angle + 30) % 360;
-        button->setIcon(
-            QIcon(refreshPixmap(QColor(Theme::kTextTertiary), *angle, size)));
+        // Re-read the hourglass flag every tick so a caller can flip a spin
+        // already in progress between the refresh-arrows and hourglass looks
+        // (see setRestartSpinHourglass) without restarting the timer.
+        const QPixmap frame = button->property("fmSpinHourglass").toBool()
+                                   ? hourglassPixmap(QColor(Theme::kTextTertiary), *angle, size)
+                                   : refreshPixmap(QColor(Theme::kTextTertiary), *angle, size);
+        button->setIcon(QIcon(frame));
     });
     timer->start(60);
 }
@@ -8705,6 +8742,7 @@ void MainWindow::stopButtonSpin(QPushButton *button)
     }
     button->setIcon(button->property("fmSpinIcon").value<QIcon>());
     button->setProperty("fmSpinning", false);
+    button->setProperty("fmSpinHourglass", false);
 }
 
 void MainWindow::startRestartSpin(QPushButton *button)
@@ -8722,6 +8760,15 @@ void MainWindow::stopRestartSpin()
         return;
     stopButtonSpin(m_restartSpinButton);
     m_restartSpinButton = nullptr;
+}
+
+// Switches the in-progress restart spin (if any) between the refresh-arrows
+// look (an actual rebuild running) and a spinning hourglass (queued, waiting
+// on other agent actions to finish first) without interrupting the spin.
+void MainWindow::setRestartSpinHourglass(bool hourglass)
+{
+    if (m_restartSpinButton)
+        m_restartSpinButton->setProperty("fmSpinHourglass", hourglass);
 }
 
 void MainWindow::startRefreshSpin()

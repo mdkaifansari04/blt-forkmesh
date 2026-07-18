@@ -110,8 +110,7 @@ def test_dashboard_get_paid_button_uses_small_sol_logo():
     assert 'href="/mirror-payouts"' in dashboard
     assert 'src="/assets/sol.png"' in dashboard
     assert 'alt="" aria-hidden="true"' in dashboard
-    assert 'class="h-3.5 w-3.5 shrink-0 rounded-full object-contain"' in dashboard
-    assert '<span class="hidden sm:inline">Get paid to mirror</span>' in dashboard
+    assert 'class="h-4 w-4 shrink-0 rounded-full object-contain"' in dashboard
 
 
 def test_dashboard_home_hides_unready_sponsorship_target_list():
@@ -1190,7 +1189,7 @@ def test_dashboard_repository_tabs_read_public_mirror_data_not_owner_inbox():
         "loadRepoCollection(state.selectedRepo, tab,",
         'dir: ".forkmesh/issues", file: (number) => `issue-${Number(number)}.json`',
         'dir: "pulls", file: "pull.md"',
-        'dir: "discussions", file: "discussion.md"',
+        'dir: ".forkmesh/discussions", file: "discussion.md"',
         "fetchRepoJson(repoLiveUrl(repo, \"tree\", { path: config.dir, ...refParams }))",
         "fetchRepoBlobs(repo, dirs.map(recordPath), refParams)",
         "Create from desktop client for signed submissions",
@@ -2034,7 +2033,10 @@ def test_dashboard_restores_feature_tab_on_hard_refresh():
     # the account that can see it, so tab-route membership goes through
     # repoTabRoutesFor(repo) (REPO_TAB_ROUTES + "agents" when owner/admin)
     # instead of the bare REPO_TAB_ROUTES constant.
-    assert 'setRepoTab(repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code");' in render_body
+    # adhoc #61: the restored tab is computed once (initialTab) so the Code
+    # tree warm-up below it can be gated to background mode when it isn't Code.
+    assert 'const initialTab = repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code";' in render_body
+    assert "setRepoTab(initialTab);" in render_body
 
 
 def test_dashboard_hard_refresh_preserves_tab_through_404_bounce():

@@ -370,10 +370,10 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "case 1: // Commits list\n        loadCommits();" not in MAIN_WINDOW_ACTIONS_CPP_TEXT
 
 
-def test_worker_observability_is_enabled_at_low_sampling_in_wrangler():
-    # Observability is enabled but heavily sampled to control cost/volume.
+def test_worker_observability_is_enabled_at_full_sampling_in_wrangler():
+    # Observability is enabled and captures every invocation (full sampling).
     observability = WRANGLER_DATA["observability"]
     assert observability["enabled"] is True
-    assert observability["head_sampling_rate"] == 0.01
-    assert observability["logs"]["head_sampling_rate"] == 0.01
-    assert observability["traces"]["head_sampling_rate"] == 0.01
+    assert observability["head_sampling_rate"] == 1
+    assert observability["logs"]["head_sampling_rate"] == 1
+    assert observability["traces"]["head_sampling_rate"] == 1

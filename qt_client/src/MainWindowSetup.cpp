@@ -9,6 +9,9 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 
+#include <QFutureWatcher>
+#include <QtConcurrent/QtConcurrentRun>
+
 using namespace forkmesh::ui;
 
 // ----------------------------------------------------------- chat persistence
@@ -56,24 +59,54 @@ void MainWindow::loadCachedAvatars()
     QDir d(dir);
     if (!d.exists())
         return;
+    QStringList paths;
     const QFileInfoList files = d.entryInfoList({"*.png"}, QDir::Files);
-    for (const QFileInfo &fi : files) {
-        QFile f(fi.absoluteFilePath());
-        if (!f.open(QIODevice::ReadOnly))
-            continue;
-        const QByteArray data = f.readAll();
-        f.close();
-        // Each cached avatar is "<peerId>\n" followed by the PNG bytes.
-        const int nl = data.indexOf('\n');
-        if (nl <= 0)
-            continue;
-        const QString peerId = QString::fromUtf8(data.left(nl));
-        QPixmap pixmap;
-        if (peerId.isEmpty() || !pixmap.loadFromData(data.mid(nl + 1)))
-            continue;
-        if (!m_avatars.contains(peerId))
-            m_avatars.insert(peerId, pixmap);
-    }
+    for (const QFileInfo &fi : files)
+        paths.append(fi.absoluteFilePath());
+    if (paths.isEmpty())
+        return;
+    // Reading and PNG-decoding the whole cache inline blocked startup for ~1s
+    // once a few dozen avatars accumulated (stall log: loadCachedAvatars ←
+    // startSession). Decode to QImages on the thread pool; only the cheap
+    // QImage→QPixmap hop runs back on the GUI thread.
+    auto *watcher = new QFutureWatcher<QList<QPair<QString, QImage>>>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] {
+        watcher->deleteLater();
+        const QList<QPair<QString, QImage>> decoded = watcher->result();
+        for (const auto &entry : decoded) {
+            // A live broadcast may have landed while we decoded; it is fresher.
+            if (!m_avatars.contains(entry.first))
+                m_avatars.insert(entry.first, QPixmap::fromImage(entry.second));
+        }
+        // Message rows and the users column were likely built avatar-less in the
+        // meantime; hand them their pictures (same update path as onAvatar).
+        for (auto it = m_visibleRows.constBegin(); it != m_visibleRows.constEnd();
+             ++it) {
+            const QPixmap avatar = m_avatars.value(it.value()->senderId());
+            if (!avatar.isNull())
+                it.value()->setAvatar(avatar);
+        }
+        refreshChatMembers();
+    });
+    watcher->setFuture(QtConcurrent::run([paths] {
+        QList<QPair<QString, QImage>> decoded;
+        for (const QString &path : paths) {
+            QFile f(path);
+            if (!f.open(QIODevice::ReadOnly))
+                continue;
+            const QByteArray data = f.readAll();
+            // Each cached avatar is "<peerId>\n" followed by the PNG bytes.
+            const int nl = data.indexOf('\n');
+            if (nl <= 0)
+                continue;
+            const QString peerId = QString::fromUtf8(data.left(nl));
+            QImage image;
+            if (peerId.isEmpty() || !image.loadFromData(data.mid(nl + 1)))
+                continue;
+            decoded.append({peerId, image});
+        }
+        return decoded;
+    }));
 }
 
 void MainWindow::saveChatHistory()
@@ -2635,6 +2668,24 @@ bool MainWindow::verifyTotpLogin(const QString &email,
         QSettings().setValue(kAuthedAccountSetting, m_accountName);
         applyAccountEmailVerified(m_accountName,
                                   payload.value("emailVerified").toBool());
+        // Keep the account's avatar in sync with this desktop so both the app
+        // and the web dashboard show the same picture. Adopt a picture already
+        // set on the account; otherwise upload the one chosen locally.
+        m_accountSessionToken = payload.value("sessionToken").toString();
+        const QString serverAvatar = payload.value("avatarPng").toString();
+        if (!serverAvatar.isEmpty()) {
+            const QByteArray png =
+                QByteArray::fromBase64(serverAvatar.toLatin1());
+            if (!png.isEmpty() && png != m_userAvatar) {
+                m_userAvatar = png;
+                QSettings().setValue(kAvatarSetting, png);
+                updateAvatarButton();
+                updateUserAvatarButton();
+                updateChatIdentity();
+            }
+        } else {
+            pushAccountAvatar();
+        }
     };
 
     if (status == 200 && resp.value("ok").toBool()) {
@@ -3090,6 +3141,11 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     QScrollBar *bar = m_footerUpdateLog->verticalScrollBar();
     const bool wasAtBottom = !bar || bar->value() >= bar->maximum() - 2;
     m_footerUpdateLog->appendHtml(html);
+    // Remember the full, untruncated line on the block just appended so the
+    // no-wrap strip can still show it on hover and open the full Log at it on
+    // click (adhoc #133), even though the visible text is clipped at the edge.
+    if (QTextBlock last = m_footerUpdateLog->document()->lastBlock(); last.isValid())
+        last.setUserData(new FooterLogLineData(clean));
     if (wasAtBottom && bar)
         bar->setValue(bar->maximum());
 }

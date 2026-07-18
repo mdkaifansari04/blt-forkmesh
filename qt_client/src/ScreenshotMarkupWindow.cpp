@@ -93,7 +93,8 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     auto *btnArrow   = new QToolButton(this);
     auto *btnRect    = new QToolButton(this);
     auto *btnEllipse = new QToolButton(this);
-    for (auto *b : {btnPencil, btnLine, btnArrow, btnRect, btnEllipse}) {
+    auto *btnText    = new QToolButton(this);
+    for (auto *b : {btnPencil, btnLine, btnArrow, btnRect, btnEllipse, btnText}) {
         b->setCheckable(true);
         b->setObjectName("topNavButton");
     }
@@ -102,6 +103,7 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     btnArrow->setText(QStringLiteral("Arrow"));
     btnRect->setText(QStringLiteral("Rectangle"));
     btnEllipse->setText(QStringLiteral("Ellipse"));
+    btnText->setText(QStringLiteral("Text"));
     btnPencil->setChecked(true);
 
     auto *toolGroup = new QButtonGroup(this);
@@ -110,6 +112,7 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     toolGroup->addButton(btnArrow);
     toolGroup->addButton(btnRect);
     toolGroup->addButton(btnEllipse);
+    toolGroup->addButton(btnText);
 
     connect(btnPencil,  &QToolButton::clicked, this,
             [this] { m_canvas->setTool(MarkupTool::Pencil); });
@@ -121,12 +124,15 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
             [this] { m_canvas->setTool(MarkupTool::Rect); });
     connect(btnEllipse, &QToolButton::clicked, this,
             [this] { m_canvas->setTool(MarkupTool::Ellipse); });
+    connect(btnText,    &QToolButton::clicked, this,
+            [this] { m_canvas->setTool(MarkupTool::Text); });
 
     toolbarLayout->addWidget(btnPencil);
     toolbarLayout->addWidget(btnLine);
     toolbarLayout->addWidget(btnArrow);
     toolbarLayout->addWidget(btnRect);
     toolbarLayout->addWidget(btnEllipse);
+    toolbarLayout->addWidget(btnText);
 
     auto *sep = new QFrame(this);
     sep->setFrameShape(QFrame::VLine);

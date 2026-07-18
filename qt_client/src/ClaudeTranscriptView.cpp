@@ -11,6 +11,7 @@
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
 #include <QGuiApplication>
+#include <QHash>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QPainter>
@@ -215,10 +216,14 @@ private:
 // that O(rows) text relayout froze the GUI thread for seconds (issue #234).
 //
 // The height of a word-wrapped label only changes when its width, font, or text
-// changes. We key the cache on (width, text length): any content change a user
-// can see (a streamed delta, a search-highlight span) shifts the text length, so
-// a stale height can't survive a real reflow; font/style changes invalidate it
-// explicitly. Unchanged rows then answer in O(1) instead of re-laying-out.
+// changes. The cache maps width → height, keyed alongside the text length: any
+// content change a user can see (a streamed delta, a search-highlight span)
+// shifts the text length and drops every entry, so a stale height can't survive
+// a real reflow; font/style changes invalidate explicitly. Multiple widths are
+// kept because a single layout pass interleaves queries at different widths
+// (minimumHeightForWidth probes the minimum width, heightForWidth the real one)
+// — a one-slot cache thrashed between them and re-laid-out the document on
+// every call, which the stall watchdog caught as >500ms layout storms.
 class CacheLabel : public QLabel
 {
 public:
@@ -227,13 +232,20 @@ public:
     int heightForWidth(int w) const override
     {
         const int len = text().size();
-        if (m_valid && w == m_w && len == m_len)
-            return m_h;
-        m_w = w;
-        m_len = len;
-        m_h = QLabel::heightForWidth(w);
-        m_valid = true;
-        return m_h;
+        if (len != m_len) {
+            m_len = len;
+            m_heights.clear();
+        }
+        const auto it = m_heights.constFind(w);
+        if (it != m_heights.constEnd())
+            return it.value();
+        const int h = QLabel::heightForWidth(w);
+        // A continuous resize streams new widths; keep the map from growing
+        // without bound (a handful of live widths is the steady state).
+        if (m_heights.size() >= 32)
+            m_heights.clear();
+        m_heights.insert(w, h);
+        return h;
     }
 
 protected:
@@ -243,7 +255,7 @@ protected:
         case QEvent::FontChange:
         case QEvent::ApplicationFontChange:
         case QEvent::StyleChange:
-            m_valid = false; // metrics may have shifted; recompute on next query
+            m_heights.clear(); // metrics may have shifted; recompute on next query
             break;
         default:
             break;
@@ -252,10 +264,8 @@ protected:
     }
 
 private:
-    mutable int m_w = -1;
     mutable int m_len = -1;
-    mutable int m_h = 0;
-    mutable bool m_valid = false;
+    mutable QHash<int, int> m_heights; // width → cached heightForWidth
 };
 
 // Defined further down; used by the peek block below to bound a pathological

@@ -1343,14 +1343,12 @@ void MainWindow::reloadIssues()
         return;
     m_issuesLoadedSig = sig;
     // Reading every issue's files is a long synchronous loop on a big repo (~2.5s
-    // for a few hundred issues). When this runs inside an interactive load
-    // (openRepoDetail's GitKeepAlive scope), pump the GUI between reads — same
-    // throttle as waitForGit — so the window keeps breathing and the stall
-    // watchdog doesn't fire. Outside such a scope the tick is a no-op, so a plain
-    // post-push reload behaves exactly as before.
+    // for a few hundred issues). Pump the GUI between reads — same throttle as
+    // waitForGit — so the window keeps breathing and the stall watchdog doesn't
+    // fire. This always runs on the GUI thread (a post-push reload included), so
+    // pump unconditionally, matching waitForGit's every-GUI-thread-wait policy.
     m_currentIssues = store.loadAll(nullptr, [] {
-        if (g_gitKeepAliveDepth > 0 &&
-            keepAliveClock().elapsed() - g_lastKeepAlivePumpMs >= 100)
+        if (keepAliveClock().elapsed() - g_lastKeepAlivePumpMs >= 100)
             pumpKeepAlive();
     });
     m_currentLabels = store.loadLabels();
@@ -4612,6 +4610,11 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (event->type() == QEvent::Resize && m_pullDiff &&
         obj == m_pullDiff->viewport())
         layoutPullStickyHeader();
+    // Keep the floating "Log" button pinned to the live-log strip's bottom-right
+    // corner as the strip resizes (adhoc #137). Don't consume — the strip still
+    // needs the resize.
+    if (event->type() == QEvent::Resize && obj == m_footerUpdateLog)
+        positionFloatingLogButton();
     // Right-click on selected text anywhere in the app: offer "Send to
     // Prompt" alongside the widget's normal Copy/Select-All menu (adhoc #126).
     if (event->type() == QEvent::ContextMenu) {
@@ -4714,6 +4717,39 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
          event->type() == QEvent::MouseButtonRelease)) {
         if (handleIssueProgressDrag(static_cast<QMouseEvent *>(event)))
             return true;
+    }
+    // Footer live-log strip (adhoc #133): with wrapping off, a long line clips at
+    // the right edge, so hovering a line shows its full untruncated text in a
+    // tooltip and clicking it opens the full Log view scrolled to that entry.
+    // Both resolve the line under the cursor from the block's stored raw text.
+    if (m_footerUpdateLog && obj == m_footerUpdateLog->viewport() &&
+        (event->type() == QEvent::ToolTip ||
+         event->type() == QEvent::MouseButtonRelease)) {
+        auto lineAt = [this](const QPoint &pos) -> QString {
+            const QTextCursor cur = m_footerUpdateLog->cursorForPosition(pos);
+            if (auto *data =
+                    static_cast<FooterLogLineData *>(cur.block().userData()))
+                return data->rawLine;
+            return QString();
+        };
+        if (event->type() == QEvent::ToolTip) {
+            auto *he = static_cast<QHelpEvent *>(event);
+            const QString line = lineAt(he->pos());
+            if (!line.isEmpty()) {
+                QToolTip::showText(he->globalPos(), line,
+                                   m_footerUpdateLog->viewport());
+                return true;
+            }
+        } else { // MouseButtonRelease
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                const QString line = lineAt(me->position().toPoint());
+                if (!line.isEmpty()) {
+                    openFullLogAtFooterLine(line);
+                    return true;
+                }
+            }
+        }
     }
     // Global search box: drive the floating results dropdown from the keyboard
     // (the dropdown is NoFocus, so it never takes the keyboard itself).
@@ -7208,8 +7244,16 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
         QString provider;
     };
     QList<CommentAgentRequest> commentAgentRequests;
+    // Inbox row ids of the submissions we actually read here, so the ack below
+    // deletes exactly these instead of the whole repo queue. That keeps an
+    // issue filed from the web while we were mid-drain alive until the next
+    // sync merges it, rather than vanishing undelivered (adhoc #97).
+    QStringList drainedIds;
     for (const QJsonValue &value : pending) {
         const QJsonObject item = value.toObject();
+        const QJsonValue idVal = item.value("id");
+        if (idVal.isDouble())
+            drainedIds << QString::number(static_cast<qint64>(idVal.toDouble()));
         const int number = item.value("number").toInt();
         const QJsonObject eventObj = item.value("event").toObject();
         IssueEvent ev = IssueEvent::fromJson(eventObj);
@@ -7260,11 +7304,18 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
             }
         }
     }
-    // Acknowledge so the inbox clears the merged submissions.
-    QUrl ackUrl = issuesApiUrl(repo);
-    ackUrl.setQuery(
-        signedInboxQuery(repoSegment(repo.owner, QStringLiteral("owner"))));
-    m_networkAccess->deleteResource(QNetworkRequest(ackUrl));
+    // Acknowledge so the inbox clears the merged submissions: ack exactly the
+    // rows we read (?ids=) so anything filed after we read the queue survives to
+    // the next sync (adhoc #97). The relay only drains the named ids, so skip
+    // the ack entirely when none carried an id (nothing to clear).
+    if (!drainedIds.isEmpty()) {
+        QUrl ackUrl = issuesApiUrl(repo);
+        QUrlQuery ackQuery =
+            signedInboxQuery(repoSegment(repo.owner, QStringLiteral("owner")));
+        ackQuery.addQueryItem("ids", drainedIds.join(QStringLiteral(",")));
+        ackUrl.setQuery(ackQuery);
+        m_networkAccess->deleteResource(QNetworkRequest(ackUrl));
+    }
     // Refresh the issue list if this is the repo currently on screen.
     const int curIdx = issuesRepoIndex();
     if (curIdx >= 0 &&

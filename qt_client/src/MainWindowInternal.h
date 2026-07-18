@@ -454,6 +454,8 @@ constexpr int kCommitFileAddsRole = Qt::UserRole + 27; // file row: added lines
 constexpr int kCommitFileDelsRole = Qt::UserRole + 28; // file row: deleted lines
 constexpr int kCommitFilePathRole = Qt::UserRole + 29; // file row: repo-relative path
 constexpr int kCommitRefsRole = Qt::UserRole + 30;     // branch/tag badges (QStringList)
+constexpr int kCommitBodyRole = Qt::UserRole + 31;     // full message body (fed to the hover box)
+constexpr int kGraphIsMergeRole = Qt::UserRole + 32;   // graph cell: commit has >1 parent
 
 // URL scheme for the clickable worktree-location link in the agent session
 // header; the percent-encoded branch name follows. Clicking it opens that
@@ -503,19 +505,25 @@ const QLatin1String kAgentLinkScheme("forkmesh-agent:");
 
 // Lane geometry, shared between the column-width calc and the delegate so the
 // dots line up with the section width.
-constexpr int kGraphLaneWidth = 14;
-constexpr int kGraphMargin = 9;
+constexpr int kGraphLaneWidth = 12;
+constexpr int kGraphMargin = 8;
+// Cap on how far a row's text can be pushed right by a very wide graph, so a
+// deep merge history can't shove the messages off-screen.
+constexpr int kGraphMaxTextIndent = 160;
 // Commit node is drawn as a "bullseye": a hollow ring with a filled centre,
-// matching the VS Code git-graph look.
+// matching the VS Code git-graph look. Slightly larger than before so the
+// nodes read as clear anchors; lane lines stop at the ring's edge on merge
+// rows so the background shows through the ring/centre-dot gap.
 constexpr qreal kGraphNodeOuter = 4.5; // outer ring radius
-constexpr qreal kGraphNodeInner = 1.8; // centre-dot radius
+constexpr qreal kGraphNodeInner = 2.0; // centre-dot radius
 
 // Stable per-lane colour so a branch keeps its hue down the whole graph.
+// Blue leads so the trunk lane (main) draws blue, like the VS Code graph.
 inline QColor commitGraphLaneColor(int lane)
 {
     static const QColor palette[] = {
-        QColor("#3fb950"), QColor("#58a6ff"), QColor("#d29922"),
-        QColor("#bc8cff"), QColor("#f85149"), QColor("#39c5cf"),
+        QColor("#58a6ff"), QColor("#d29922"), QColor("#db61a2"),
+        QColor("#bc8cff"), QColor("#39c5cf"), QColor("#3fb950"),
     };
     constexpr int n = int(sizeof(palette) / sizeof(palette[0]));
     return palette[((lane % n) + n) % n];
@@ -528,112 +536,141 @@ inline void paintRowSelectionBorder(QPainter *painter,
 
 // Paints the git-graph gutter the way the VS Code git-graph view does: lanes
 // that pass straight through a row are drawn as vertical lines, while a lane
-// that merges into the commit (or branches out of it) is a smooth bezier curve
-// into/out of the node. The node itself is a bullseye (a hollow ring with a
-// filled centre). Each row carries the lanes present at its top and bottom
-// edges; comparing the two boundaries tells us which lanes pass through, merge
-// in, or branch out. Topology is meaningful only while the list is in git-log
-// order (the default Date-descending sort), which is why that ordering is
-// pinned when the list loads.
-class CommitGraphDelegate : public QStyledItemDelegate
+// that merges into the commit (or branches out of it) loops through a rounded
+// quarter-circle corner — a horizontal run along the node's centreline joined
+// to a vertical run in its own lane. Merge commits draw as a bullseye (hollow
+// ring with a filled centre), regular commits as a solid dot. Each row carries
+// the lanes present at its top and bottom edges; comparing the two boundaries
+// tells us which lanes pass through, merge in, or branch out. Topology is
+// meaningful only while the list is in git-log order, which is why that
+// ordering is pinned when the list loads. Called by CommitSummaryDelegate
+// inside the summary cell (the standalone gutter column is hidden) so each
+// row's text can start right beside its own rightmost lane.
+inline void paintCommitGraphGutter(QPainter *painter, const QRect &r,
+                                   const QVariantList &topLanes,
+                                   const QVariantList &botLanes, int nodeLane,
+                                   bool isMerge)
 {
-public:
-    using QStyledItemDelegate::QStyledItemDelegate;
+    if (topLanes.isEmpty() && botLanes.isEmpty() && nodeLane < 0)
+        return;
+    const qreal yTop = r.top();
+    const qreal yBot = r.top() + r.height(); // meets the next row's top edge
+    const qreal yMid = r.center().y() + 0.5;
+    auto laneX = [&](int lane) -> qreal {
+        return r.left() + kGraphMargin + lane * kGraphLaneWidth;
+    };
+    // Which lane columns are occupied at each edge of the row.
+    QSet<int> topSet;
+    QSet<int> botSet;
+    int maxLane = nodeLane;
+    for (const QVariant &v : topLanes) {
+        const int l = v.toInt();
+        topSet.insert(l);
+        maxLane = std::max(maxLane, l);
+    }
+    for (const QVariant &v : botLanes) {
+        const int l = v.toInt();
+        botSet.insert(l);
+        maxLane = std::max(maxLane, l);
+    }
 
-    void paint(QPainter *painter, const QStyleOptionViewItem &option,
-               const QModelIndex &index) const override
-    {
-        // Strip the selection flag so the solid green band isn't filled, then
-        // draw the row's green outline (issue #252). The item has no text.
-        QStyleOptionViewItem opt(option);
-        opt.state &= ~QStyle::State_Selected;
-        QStyledItemDelegate::paint(painter, opt, index);
-        paintRowSelectionBorder(painter, option, index);
-        const QVariantList topLanes = index.data(kGraphLanesRole).toList();
-        const QVariantList botLanes = index.data(kGraphBottomLanesRole).toList();
-        const int nodeLane = index.data(kGraphNodeLaneRole).toInt();
-        if (topLanes.isEmpty() && botLanes.isEmpty() && nodeLane < 0)
-            return;
-        const QRect r = option.rect;
-        const qreal yTop = r.top();
-        const qreal yBot = r.top() + r.height(); // meets the next row's top edge
-        const qreal yMid = r.center().y() + 0.5;
-        auto laneX = [&](int lane) -> qreal {
-            return r.left() + kGraphMargin + lane * kGraphLaneWidth;
-        };
-        // Which lane columns are occupied at each edge of the row.
-        QSet<int> topSet;
-        QSet<int> botSet;
-        int maxLane = nodeLane;
-        for (const QVariant &v : topLanes) {
-            const int l = v.toInt();
-            topSet.insert(l);
-            maxLane = std::max(maxLane, l);
-        }
-        for (const QVariant &v : botLanes) {
-            const int l = v.toInt();
-            botSet.insert(l);
-            maxLane = std::max(maxLane, l);
-        }
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
 
-        painter->save();
-        painter->setRenderHint(QPainter::Antialiasing, true);
+    // On merge rows the lines stop short of the node by the ring radius, so
+    // the hollow ring keeps a clean background gap around its centre dot
+    // instead of lane strokes cutting through it.
+    const qreal trim = (isMerge && nodeLane >= 0) ? kGraphNodeOuter : 0.0;
 
-        // A smooth connector between two points that leaves and arrives
-        // vertically — a straight line when the columns match, otherwise an
-        // S-curve that bends across the middle (the git-graph house style).
-        auto connect = [&](qreal x0, qreal y0, qreal x1, qreal y1,
-                           const QColor &c) {
-            painter->setPen(QPen(c, 2));
-            if (qFuzzyCompare(x0, x1)) {
-                painter->setBrush(Qt::NoBrush);
-                painter->drawLine(QPointF(x0, y0), QPointF(x1, y1));
-                return;
-            }
-            QPainterPath path(QPointF(x0, y0));
-            const qreal cy = (y0 + y1) / 2.0;
-            path.cubicTo(QPointF(x0, cy), QPointF(x1, cy), QPointF(x1, y1));
+    // Round caps/joins keep the lanes and their loops smooth where they meet
+    // nodes and each other.
+    auto strokePath = [&](const QPainterPath &path, const QColor &c) {
+        QPen pen(c, 2.0);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        painter->setPen(pen);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawPath(path);
+    };
+    auto straight = [&](qreal x, qreal y0, qreal y1, const QColor &c) {
+        QPainterPath path(QPointF(x, y0));
+        path.lineTo(QPointF(x, y1));
+        strokePath(path, c);
+    };
+    // A lane looping into the node from the row's top edge: vertical in its
+    // own lane, then a rounded quarter-circle corner onto the node's
+    // centreline — the smooth "loop" the VS Code graph draws for merges.
+    auto loopIn = [&](int lane, const QColor &c) {
+        const qreal x0 = laneX(lane);
+        const qreal x1 = laneX(nodeLane);
+        const qreal rad = qMax(0.0, qMin(qAbs(x1 - x0) - trim, yMid - yTop));
+        const qreal sx = (x1 > x0) ? 1.0 : -1.0;
+        QPainterPath path(QPointF(x0, yTop));
+        path.lineTo(QPointF(x0, yMid - rad));
+        path.quadTo(QPointF(x0, yMid), QPointF(x0 + sx * rad, yMid));
+        path.lineTo(QPointF(x1 - sx * trim, yMid));
+        strokePath(path, c);
+    };
+    // A lane looping out of the node towards the row's bottom edge: horizontal
+    // along the centreline, then the rounded corner down into its own lane.
+    auto loopOut = [&](int lane, const QColor &c) {
+        const qreal x0 = laneX(nodeLane);
+        const qreal x1 = laneX(lane);
+        const qreal rad = qMax(0.0, qMin(qAbs(x1 - x0) - trim, yBot - yMid));
+        const qreal sx = (x1 > x0) ? 1.0 : -1.0;
+        QPainterPath path(QPointF(x0 + sx * trim, yMid));
+        path.lineTo(QPointF(x1 - sx * rad, yMid));
+        path.quadTo(QPointF(x1, yMid), QPointF(x1, yMid + rad));
+        path.lineTo(QPointF(x1, yBot));
+        strokePath(path, c);
+    };
+
+    // Every lane other than the node's: straight through if present at both
+    // edges, a merge loop if it only enters from the top, a branch loop if it
+    // only leaves at the bottom. Rows without a node (expanded file rows) only
+    // carry pass-through lanes; anything else degrades to a straight stub.
+    for (int lane = 0; lane <= maxLane; ++lane) {
+        if (lane == nodeLane)
+            continue;
+        const bool inTop = topSet.contains(lane);
+        const bool inBot = botSet.contains(lane);
+        const QColor c = commitGraphLaneColor(lane);
+        if (inTop && inBot)
+            straight(laneX(lane), yTop, yBot, c);
+        else if (inTop)
+            nodeLane >= 0 ? loopIn(lane, c) : straight(laneX(lane), yTop, yMid, c);
+        else if (inBot)
+            nodeLane >= 0 ? loopOut(lane, c) : straight(laneX(lane), yMid, yBot, c);
+    }
+
+    if (nodeLane >= 0) {
+        const QColor c = commitGraphLaneColor(nodeLane);
+        const qreal nx = laneX(nodeLane);
+        // The node's own lane: a straight stub above (it was reached from a
+        // child) and below (its first parent continues here), trimmed at the
+        // ring's edge on merge rows so the ring interior stays clear.
+        if (topSet.contains(nodeLane))
+            straight(nx, yTop, yMid - trim, c);
+        if (botSet.contains(nodeLane))
+            straight(nx, yMid + trim, yBot, c);
+        if (isMerge) {
+            // Merge node: hollow ring + filled centre.
             painter->setBrush(Qt::NoBrush);
-            painter->drawPath(path);
-        };
-
-        // Every lane other than the node's: straight through if present at both
-        // edges, a merge curve if it only enters from the top, a branch curve if
-        // it only leaves at the bottom.
-        for (int lane = 0; lane <= maxLane; ++lane) {
-            if (lane == nodeLane)
-                continue;
-            const bool inTop = topSet.contains(lane);
-            const bool inBot = botSet.contains(lane);
-            const QColor c = commitGraphLaneColor(lane);
-            if (inTop && inBot)
-                connect(laneX(lane), yTop, laneX(lane), yBot, c);
-            else if (inTop)
-                connect(laneX(lane), yTop, laneX(nodeLane), yMid, c);
-            else if (inBot)
-                connect(laneX(nodeLane), yMid, laneX(lane), yBot, c);
-        }
-
-        if (nodeLane >= 0) {
-            const QColor c = commitGraphLaneColor(nodeLane);
-            const qreal nx = laneX(nodeLane);
-            // The node's own lane: a straight stub above (it was reached from a
-            // child) and below (its first parent continues here).
-            if (topSet.contains(nodeLane))
-                connect(nx, yTop, nx, yMid, c);
-            if (botSet.contains(nodeLane))
-                connect(nx, yMid, nx, yBot, c);
-            // Bullseye node: hollow ring + filled centre, drawn over the lines.
-            painter->setBrush(Qt::NoBrush);
-            painter->setPen(QPen(c, 1.6));
+            painter->setPen(QPen(c, 2.0));
             painter->drawEllipse(QPointF(nx, yMid), kGraphNodeOuter, kGraphNodeOuter);
             painter->setPen(Qt::NoPen);
             painter->setBrush(c);
             painter->drawEllipse(QPointF(nx, yMid), kGraphNodeInner, kGraphNodeInner);
+        } else {
+            // Regular commit: a solid dot.
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(c);
+            painter->drawEllipse(QPointF(nx, yMid), kGraphNodeOuter - 0.7,
+                                 kGraphNodeOuter - 0.7);
         }
-        painter->restore();
     }
-};
+    painter->restore();
+}
 
 // Paints the commits list's Summary column the way VS Code's source-control
 // graph does: the text starts right beside the commit's own lane (so it shifts
@@ -664,11 +701,34 @@ public:
 
         const bool fileRow = index.data(kCommitRowKindRole).toInt() == 1;
 
+        // The graph is painted here, inside the summary cell (its standalone
+        // gutter column is hidden): that lets each row's text start right
+        // beside its own rightmost lane — the VS Code graph look — instead of
+        // after a shared fixed-width gutter (adhoc #74).
+        const QModelIndex graphIdx =
+            index.model()->index(index.row(), kCommitGraphCol);
+        const QVariantList topLanes = graphIdx.data(kGraphLanesRole).toList();
+        const QVariantList botLanes =
+            graphIdx.data(kGraphBottomLanesRole).toList();
+        const QVariant nodeLaneVar = graphIdx.data(kGraphNodeLaneRole);
+        const int nodeLane = nodeLaneVar.isValid() ? nodeLaneVar.toInt() : -1;
+        paintCommitGraphGutter(painter, option.rect, topLanes, botLanes,
+                               nodeLane,
+                               graphIdx.data(kGraphIsMergeRole).toBool());
+        int rowMaxLane = std::max(nodeLane, 0);
+        for (const QVariant &v : topLanes)
+            rowMaxLane = std::max(rowMaxLane, v.toInt());
+        for (const QVariant &v : botLanes)
+            rowMaxLane = std::max(rowMaxLane, v.toInt());
+        if (fileRow) // nested one step under its commit's lane
+            rowMaxLane =
+                std::max(rowMaxLane, index.data(kGraphNodeLaneRole).toInt());
+        const int indent =
+            std::min(kGraphMargin + (rowMaxLane + 1) * kGraphLaneWidth,
+                     kGraphMaxTextIndent);
+
         const QFontMetrics fm(option.font);
-        // Messages align at a fixed left edge (flush with the grid) rather than
-        // tracking the commit's coloured lane, so every row's text lines up no
-        // matter how deep its branch sits in the graph.
-        QRect r = option.rect.adjusted(6, 0, -8, 0);
+        QRect r = option.rect.adjusted(indent, 0, -8, 0);
         const QColor dim("#8b949e");
 
         painter->save();
@@ -688,10 +748,17 @@ public:
             painter->drawText(
                 QRect(r.right() - delsW - 6 - addsW, r.top(), addsW, r.height()),
                 Qt::AlignVCenter | Qt::AlignRight, addsTxt);
-            const int textW = r.width() - delsW - addsW - 20;
+            // File-type icon leading the name, like the VS Code graph's rows.
+            int fx = r.left();
+            const QIcon fic = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+            if (!fic.isNull()) {
+                fic.paint(painter, QRect(fx, r.center().y() - 7, 14, 14));
+                fx += 18;
+            }
+            const int textW = r.right() - fx - delsW - addsW - 20;
             painter->setPen(dim);
             painter->drawText(
-                QRect(r.left(), r.top(), std::max(0, textW), r.height()),
+                QRect(fx, r.top(), std::max(0, textW), r.height()),
                 Qt::AlignVCenter | Qt::AlignLeft,
                 fm.elidedText(index.data(Qt::DisplayRole).toString(),
                               Qt::ElideMiddle, std::max(0, textW)));
@@ -699,15 +766,11 @@ public:
             return;
         }
 
-        // Commit row: chevron (expand affordance) + checks icon + summary,
-        // author (and the amber unsynced marker) right-aligned.
-        const bool expanded = index.data(kCommitExpandedRole).toBool();
-        painter->setPen(dim);
-        painter->drawText(QRect(r.left(), r.top(), 12, r.height()),
-                          Qt::AlignVCenter | Qt::AlignLeft,
-                          expanded ? QString::fromUtf8("\xE2\x96\xBE")
-                                   : QString::fromUtf8("\xE2\x96\xB8"));
-        int x = r.left() + 16;
+        // Commit row: checks icon + summary, author (and the amber unsynced
+        // marker) right-aligned. No disclosure chevron — the VS Code graph
+        // keeps rows plain; clicking a row still expands it into its files,
+        // so the text starts right beside the commit's own node.
+        int x = r.left();
         const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
         if (!icon.isNull()) {
             const QRect ir(x, r.center().y() - 7, 14, 14);
@@ -725,9 +788,13 @@ public:
                     break; // keep room for the summary itself
                 const QRect br(x, r.center().y() - fm.height() / 2 - 1, rw,
                                fm.height() + 2);
-                painter->setPen(QPen(QColor("#58a6ff"), 1));
-                painter->setBrush(QColor(88, 166, 255, 26));
-                painter->drawRoundedRect(br, 6, 6);
+                // Solid pill with white text, like the VS Code graph's ref
+                // badges, rounded to a full capsule.
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(QColor("#1f6feb"));
+                painter->drawRoundedRect(br, br.height() / 2.0,
+                                         br.height() / 2.0);
+                painter->setPen(Qt::white);
                 painter->drawText(br, Qt::AlignCenter, ref);
                 x += rw + 5;
             }
@@ -743,7 +810,10 @@ public:
         }
         // Draw the subject flush-left, then append the author dimmed at its tail
         // so the row reads "<subject> · <author>" instead of a separate
-        // right-aligned author column.
+        // right-aligned author column. The full commit message gets the width
+        // first; the username only takes whatever room is left after it, so a
+        // long subject is never truncated just to reserve space for the author
+        // (issue #52).
         const QVariant fgVar = index.data(Qt::ForegroundRole);
         const QColor fg = fgVar.isValid()
                               ? qvariant_cast<QBrush>(fgVar).color()
@@ -754,9 +824,8 @@ public:
         const QString suffix =
             author.isEmpty() ? QString()
                              : QString::fromUtf8("  \xC2\xB7  ") + author;
-        const int suffixW = fm.horizontalAdvance(suffix);
         const QString elidedSubject =
-            fm.elidedText(subject, Qt::ElideRight, std::max(0, textW - suffixW));
+            fm.elidedText(subject, Qt::ElideRight, textW);
         const int subjectW = fm.horizontalAdvance(elidedSubject);
         painter->setPen(fg);
         painter->drawText(QRect(x, r.top(), subjectW, r.height()),
@@ -1166,19 +1235,21 @@ private:
     QVector<double> m_history;
 };
 
-// Tiny spinning-radar dish + latency readout shown just left of the relay name.
-// The dish always sweeps (a continuously rotating wedge) so the relay looks
+// Spinning-radar dish with a latency readout centered inside it, shown on the
+// window-chrome line just left of the CPU/MEM/DISK sparklines (adhoc #87). The
+// dish always sweeps (a continuously rotating wedge) so the relay looks
 // "alive"; a one-minute probe feeds in the round-trip time, which renders as
-// "33ms" beside it. When the relay stops answering the whole control flips to a
-// red alert (red dish + "offline"). Colour-grades the latency green/amber so a
-// degrading link is visible at a glance.
+// "33ms" over the middle of the dish — mirroring how ResourceSparkline centers
+// its label/value over the chart. When the relay stops answering the whole
+// control flips to a red alert (red dish + "offline"). Colour-grades the
+// latency green/amber so a degrading link is visible at a glance.
 class RelayRadarWidget : public QWidget
 {
 public:
     explicit RelayRadarWidget(QWidget *parent = nullptr) : QWidget(parent)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedSize(58, 24);
+        setFixedSize(kSide, kSide); // same button-sized square as the resource sparklines
         refreshTooltip();
         // Drive the sweep: a slow, steady rotation independent of probe timing.
         m_sweep = new QTimer(this);
@@ -1209,14 +1280,36 @@ public:
         update();
     }
 
+    // A mirror node echoed inside the dish as a radar blip, reusing the exact
+    // colours and shapes of the Mirror-nodes activity strip so the two read as
+    // the same thing (adhoc #122): online nodes are green (amber when out of
+    // sync), offline nodes grey, and a node failing the relay's integrity pin
+    // draws as an amber triangle rather than a dot.
+    struct Blip
+    {
+        QString id;
+        bool online = false;
+        bool behind = false;
+        bool integrityFailing = false;
+    };
+
+    void setBlips(const QVector<Blip> &blips)
+    {
+        m_blips = blips;
+        update();
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
 
-        const int dish = qMin(height() - 4, 18);
-        const QRectF dishRect(2, (height() - dish) / 2.0, dish, dish);
+        // The dish fills almost the whole square, same footprint as the
+        // resource sparklines' card.
+        const qreal dish = width() - 4.0;
+        const QRectF dishRect((width() - dish) / 2.0, (height() - dish) / 2.0,
+                              dish, dish);
         const QPointF c = dishRect.center();
         const qreal r = dish / 2.0;
         const QColor accent = m_unreachable ? QColor("#f85149")  // red alert
@@ -1246,12 +1339,10 @@ protected:
         p.setBrush(accent);
         p.drawEllipse(c, 1.4, 1.4);
 
-        // Latency text / alert to the right of the dish.
+        // Latency text / alert, centered in the middle of the dish — mirrors
+        // how ResourceSparkline overlays its value on top of its chart.
         QFont f = font();
-        f.setPointSizeF(qMax(6.5, f.pointSizeF() - 2.0));
-        p.setFont(f);
-        const QRectF textRect(dishRect.right() + 4, 0,
-                              width() - dishRect.right() - 4, height());
+        double pt = f.pointSizeF() > 0 ? qMin(8.0, f.pointSizeF()) : 7.0;
         QString label;
         QColor textCol;
         if (m_unreachable) {
@@ -1265,8 +1356,83 @@ protected:
             label = QStringLiteral("%1ms").arg(m_latencyMs);
             textCol = statusColor();
         }
+        const double avail = dish - 4.0;
+        for (; pt > 5.5; pt -= 0.5) {
+            f.setPointSizeF(pt);
+            if (QFontMetrics(f).horizontalAdvance(label) <= avail)
+                break;
+        }
+        f.setPointSizeF(pt);
+        p.setFont(f);
+        // A soft backing disc behind the text keeps it legible as the sweep
+        // wedge rotates underneath.
+        QColor backing = palette().color(QPalette::Window);
+        backing.setAlpha(190);
+        p.setPen(Qt::NoPen);
+        p.setBrush(backing);
+        const QFontMetrics fm(f);
+        const qreal textR = qMax(fm.horizontalAdvance(label), fm.height()) / 2.0 + 2.0;
+        p.drawEllipse(c, textR, textR);
         p.setPen(textCol);
-        p.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, label);
+        p.drawText(dishRect, Qt::AlignCenter, label);
+
+        // Mirror nodes echoed as blips on the dish, in the same colours/shapes
+        // as the Mirror-nodes activity strip (adhoc #122). Every blip is always
+        // visible — a solid filled shape with no border and no delay waiting on
+        // the sweep (adhoc #141). The passing beam still adds a soft phosphor
+        // halo flare so the scope keeps its live feel, but the shape underneath
+        // never dims or hides. Each node owns an evenly-spaced slot around one
+        // ring so the blips fan out cleanly and never overlap. Drawn last, on
+        // top of the centre latency read-out and pushed out near the rim, so
+        // every shape reads as a complete circle (or an integrity-warning
+        // triangle) rather than a slice clipped by the dish edge or the text
+        // backing disc.
+        //
+        // The pie/gradient start at Qt angle -m_angle, and Qt angles run
+        // counter-clockwise on screen while the blip positions below use
+        // (cos, sin) in y-down coordinates — i.e. clockwise. So in the blips'
+        // clockwise convention the leading edge sits at +m_angle, and the beam
+        // flares a blip as the sweep passes its own slot angle.
+        const int leadDeg = m_angle % 360;
+        constexpr int kFadeDeg = 130; // beam flare: degrees the halo brightens behind the sweep
+        const int n = m_blips.size();
+        for (int i = 0; i < n; ++i) {
+            const Blip &b = m_blips.at(i);
+            // Evenly space the blips around the ring by index, so a growing
+            // roster fans out cleanly instead of clustering on a hash.
+            const int blipDeg = n > 0 ? (i * 360) / n : 0;
+            // Degrees the sweep has advanced past this blip; drives the halo
+            // flare only — the blip itself is always drawn at full brightness.
+            const int delta = (leadDeg - blipDeg + 360) % 360;
+            const qreal flare = delta <= kFadeDeg ? 1.0 - qreal(delta) / kFadeDeg : 0.0;
+
+            const qreal ang = qDegreesToRadians(qreal(blipDeg));
+            const QPointF pos = c + QPointF(qCos(ang), qSin(ang)) * (r * 0.80);
+            QColor col = b.online ? QColor(b.behind ? "#d29922" : "#3fb950")
+                                  : QColor("#484f58");
+            if (b.integrityFailing)
+                col = QColor("#d29922"); // amber caution, matching the strip
+
+            // Soft phosphor halo, brightest as the beam catches the blip.
+            QColor halo = col;
+            halo.setAlphaF(0.35 * flare);
+            p.setPen(Qt::NoPen);
+            p.setBrush(halo);
+            p.drawEllipse(pos, 2.6 + 2.0 * flare, 2.6 + 2.0 * flare);
+
+            // The solid filled shape itself — always visible, no border.
+            p.setPen(Qt::NoPen);
+            p.setBrush(col);
+            if (b.integrityFailing) {
+                // Amber caution triangle, matching MirrorActivityStrip.
+                const qreal s = 3.2;
+                p.drawPolygon(QPolygonF({QPointF(pos.x(), pos.y() - s),
+                                         QPointF(pos.x() + s, pos.y() + s),
+                                         QPointF(pos.x() - s, pos.y() + s)}));
+            } else {
+                p.drawEllipse(pos, 2.8, 2.8);
+            }
+        }
     }
 
 private:
@@ -1295,10 +1461,12 @@ private:
         }
     }
 
+    static constexpr int kSide = 40; // matches ResourceSparkline's button-sized square
     int m_latencyMs = -1;       // last measured round-trip; -1 = unknown/probing
     bool m_unreachable = false; // relay failed to answer the last probe
     int m_angle = 0;            // sweep rotation (degrees)
     QTimer *m_sweep = nullptr;  // drives the spin
+    QVector<Blip> m_blips;      // mirror nodes echoed as blips inside the dish
 };
 
 // A plain track-and-knob on/off switch, used for controls where the state is a
@@ -2021,6 +2189,114 @@ public:
     }
 };
 
+// One row shown in the floating strip above the Actions tab for each queued or
+// running workflow (adhoc #95, adhoc #105, adhoc #112). Each action gets a single
+// green line whose brightness travels along it like an activity wave, so the
+// strip reads as "busy" even when nothing else about the row is changing. The
+// line shrinks from the right as the run advances toward its estimated duration
+// (the previous run of the same workflow), so its remaining length is a rough
+// "time left" gauge. Queued runs (no estimate to count down against, or not
+// started) keep a full line and skip the name label — with no clock running yet
+// there's nothing to name, so only the wave shows. Rows share one bordered box
+// (owned by the strip itself, see ensureActionStrip) rather than drawing their
+// own border, so several queued/running actions read as one box with multiple
+// lines. The strip is sized by the owner to span the Actions tab exactly, so the
+// lines never bleed over the neighbouring Security tab. Pure QWidget (no moc);
+// the owner ticks it via update() and reads the run id back off the
+// "actionRunId" dynamic property in its event filter.
+class ActionEstimateBox : public QWidget
+{
+public:
+    explicit ActionEstimateBox(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        // A single-line row; width is set by the owner to match the tab.
+        setFixedHeight(24);
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    // startedAtMs: when the run's clock began (0 = queued/not started, so the line
+    // stays full). estimateMs: expected duration from the previous run of the same
+    // workflow (0 = unknown, so the line stays full as there's nothing to count
+    // down against).
+    void configure(const QString &name, qint64 startedAtMs, qint64 estimateMs)
+    {
+        m_name = name;
+        m_started = startedAtMs;
+        m_estimate = estimateMs;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+
+        // Fraction of the estimate still remaining (1 = just started/queued, 0 =
+        // at/over estimate). Without a started clock or an estimate we can't count
+        // down, so stay full.
+        double remaining = 1.0;
+        if (m_estimate > 0 && m_started > 0) {
+            const qint64 elapsed =
+                QDateTime::currentMSecsSinceEpoch() - m_started;
+            remaining =
+                qBound(0.0, 1.0 - double(elapsed) / double(m_estimate), 1.0);
+        }
+
+        // One horizontal green line, shrinking from the right as time elapses. A
+        // brighter band travels along it on a loop (independent of the drain) so
+        // the row reads as an active "wave" rather than a static bar; a queued run
+        // (no clock yet) is still full-length but the wave keeps it visibly alive.
+        const double x0 = box.left() + 4;
+        const double x1 = box.right() - 4;
+        const double y = box.center().y();
+        const double x1lit = x0 + (x1 - x0) * remaining;
+        if (x1lit > x0) {
+            static const QColor kBase(35, 134, 54);    // #238636
+            static const QColor kBright(86, 211, 100); // #56d364
+            const qint64 kPeriodMs = 1400;
+            const double phase =
+                double(QDateTime::currentMSecsSinceEpoch() % kPeriodMs) /
+                double(kPeriodMs);
+            QLinearGradient grad(x0, y, x1, y);
+            const int kStops = 24;
+            for (int i = 0; i <= kStops; ++i) {
+                const double t = double(i) / kStops;
+                double dist = qAbs(t - phase);
+                dist = qMin(dist, 1.0 - dist); // wrap the wave across the ends
+                const double blend = qMax(0.0, 1.0 - dist / 0.2);
+                grad.setColorAt(t,
+                                QColor(kBase.red() + int((kBright.red() - kBase.red()) * blend),
+                                       kBase.green() + int((kBright.green() - kBase.green()) * blend),
+                                       kBase.blue() + int((kBright.blue() - kBase.blue()) * blend)));
+            }
+            p.setPen(QPen(QBrush(grad), 4, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(x0, y), QPointF(x1lit, y));
+        }
+
+        // A queued run has no clock running yet, so there's nothing to name — just
+        // the wave. Once running, the workflow name sits on top of the line.
+        if (m_started > 0) {
+            QFont f = font();
+            f.setBold(true);
+            p.setFont(f);
+            // Black on the light "main bar", light on the dark one (adhoc #118).
+            p.setPen(currentThemeIsDark() ? QColor(230, 237, 243)
+                                          : QColor(0, 0, 0));
+            const QString elided = p.fontMetrics().elidedText(
+                m_name, Qt::ElideRight, int(box.width()) - 12);
+            p.drawText(box.adjusted(6, 0, -6, 0),
+                       Qt::AlignVCenter | Qt::AlignLeft, elided);
+        }
+    }
+
+private:
+    QString m_name;
+    qint64 m_started = 0;
+    qint64 m_estimate = 0;
+};
+
 // A draggable version of the progress bar for the issue detail panel: click or
 // drag anywhere along the track to set the percentage. Pure QWidget (no moc) —
 // the owner wires the result through the onCommitted callback, fired once the
@@ -2468,6 +2744,13 @@ inline QStringList requestFirewallWhitelistWithDefaults()
 // progress (issue #193). Off → incoming issues wait in the inbox for a manual
 // "Sync inbox" click. The manual button is never gated by this.
 const QString kAutoSyncIssuesSetting = QStringLiteral("repos/autoSyncIssues");
+// When on, merging a pull request immediately syncs the new merge commit to the
+// served mirror (and notifies peers) the moment you hit "Merge". Off (the
+// default) → the merge lands locally only; the floating "Sync" button surfaces
+// the pending commit and nothing reaches main until you click it. Adhoc #110:
+// several owners were surprised that Merge published to main with no confirming
+// click, so this stays opt-in.
+const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // When on, MainWindow::maybeAutoUpdate() periodically checks the update remote
 // and, on finding a new tagged release (not just any commit on main), runs the
 // same update/rebuild/relaunch flow as the manual "Update, rebuild & restart"
@@ -2917,6 +3200,40 @@ inline const QList<ClaudeAutoRung> &claudeAutoLadder()
          QStringLiteral("Fable 5")},
     };
     return kLadder;
+}
+
+// Whether a model id/alias belongs to the Claude family (Claude Code or Claude
+// API): a "claude-*" id, one of the short CLI aliases (opus/sonnet/haiku/fable),
+// or the "auto" router sentinel. Used to keep a model captured under one
+// provider from being handed to another when a session is continued by a
+// different agent (adhoc #76) — passing a Claude model to Codex, or a Codex
+// model to Claude, makes the CLI reject the turn.
+inline bool agentModelIsClaudeStyle(const QString &model)
+{
+    const QString m = model.trimmed().toLower();
+    if (m.isEmpty())
+        return false;
+    if (m == kClaudeAutoModelId || m.startsWith(QLatin1String("claude")))
+        return true;
+    for (const ClaudeAutoRung &r : claudeAutoLadder())
+        if (m == r.alias)
+            return true;
+    return false;
+}
+
+// Whether `model` is compatible with `provider`. An empty model always matches
+// (the provider falls back to its own default). Claude providers need a
+// Claude-style model; the Codex/OpenAI CLIs need a non-Claude one. This lets a
+// session be continued by a different provider without the leftover model from
+// the previous provider breaking the run (adhoc #76).
+inline bool agentModelMatchesProvider(const QString &provider, const QString &model)
+{
+    if (model.trimmed().isEmpty())
+        return true;
+    if (provider == QLatin1String("claude-code") ||
+        provider.startsWith(QLatin1String("claude")))
+        return agentModelIsClaudeStyle(model);
+    return !agentModelIsClaudeStyle(model);
 }
 
 // Pre-model router for auto mode: a self-hosted, zero-cost heuristic pass over
@@ -4020,6 +4337,33 @@ inline QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
     tri.lineTo(a * 1.2, -r);
     tri.closeSubpath();
     p.drawPath(tri);
+    return pm;
+}
+
+// An hourglass, used in place of the spinning-arrows icon when a button's
+// action is queued behind other work rather than actively running.
+inline QPixmap hourglassPixmap(const QColor &color, double angleDeg, int size)
+{
+    QPixmap pm(size, size);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.translate(size / 2.0, size / 2.0);
+    p.rotate(angleDeg);
+    const double w = size * 0.34;
+    const double h = size * 0.34;
+    QPen pen(color, std::max(1.4, size * 0.09));
+    pen.setJoinStyle(Qt::RoundJoin);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    QPainterPath glass;
+    glass.moveTo(-w, -h);
+    glass.lineTo(w, -h);
+    glass.lineTo(-w, h);
+    glass.lineTo(w, h);
+    glass.closeSubpath();
+    p.drawPath(glass);
     return pm;
 }
 
@@ -6384,12 +6728,12 @@ inline QString languageColor(const QString &lang)
     return colors.value(lang, "#8b949e");
 }
 
-// While >0, the git wait below keeps the GUI event loop breathing instead of
-// blocking the main thread outright. A multi-second git read (a big ls-tree,
-// log --numstat, count-objects, …) would otherwise stop the app answering
-// window-manager pings and get flagged "Not Responding". User input is excluded
-// from the pump so a stray click can't re-enter a load mid-flight; openRepoDetail's
-// m_repoDetailLoading guard backstops anything that still slips through.
+// Depth of GitKeepAlive scopes. waitForGit now pumps on every GUI-thread wait
+// regardless (see its comment), so the counter no longer gates anything; the
+// scopes remain because they document interactive multi-read loads and their
+// re-entrancy guards (openRepoDetail's m_repoDetailLoading, the ScopedFlag
+// pattern below). User input is excluded from the pump so a stray click can't
+// re-enter a load mid-flight.
 // inline so the counter is a single shared instance across every TU that
 // includes this header (the per-feature MainWindow*.cpp files all use GitKeepAlive).
 inline int g_gitKeepAliveDepth = 0;
@@ -6437,9 +6781,13 @@ inline QString gitBlockingCrumb(const QProcess &process)
     return cmd;
 }
 
-// Wait up to 8s for a git subprocess. With a keep-alive scope active, poll in
-// short slices and service the GUI between them so the window stays responsive
-// and spinners animate; otherwise block as before.
+// Wait up to 8s for a git subprocess. On the GUI thread, poll in short slices
+// and service the GUI between them so the window stays responsive and spinners
+// animate; off-thread there is no window to keep painted (and pumping would
+// drain the wrong event queue), so block as before. The pump used to be gated
+// on a GitKeepAlive scope, but the stall log kept filling with >500ms freezes
+// from unscoped call paths (agent-table refreshes, publish/mirror counts,
+// branch lists, run-status handlers …), so every GUI-thread wait now pumps.
 inline bool waitForGit(QProcess &process, QString *err)
 {
     // Breadcrumb for the stall watchdog: if this synchronous wait freezes the GUI
@@ -6448,10 +6796,11 @@ inline bool waitForGit(QProcess &process, QString *err)
     // for off-thread reads rather than clobbering what the GUI thread set.
     std::optional<BlockingCallScope> crumb;
     const QCoreApplication *app = QCoreApplication::instance();
-    if (app && QThread::currentThread() == app->thread())
+    const bool onGuiThread = app && QThread::currentThread() == app->thread();
+    if (onGuiThread)
         crumb.emplace(gitBlockingCrumb(process));
 
-    if (g_gitKeepAliveDepth <= 0) {
+    if (!onGuiThread) {
         if (process.waitForFinished(8000))
             return true;
         process.kill();
@@ -6483,8 +6832,10 @@ inline bool waitForGit(QProcess &process, QString *err)
     return true;
 }
 
-// RAII: keep the GUI responsive across the run of synchronous git reads in an
-// interactive load (a node switch or opening a repo). Nestable.
+// RAII: marks the run of synchronous git reads in an interactive load (a node
+// switch or opening a repo). Nestable. waitForGit pumps on the GUI thread with
+// or without this scope now; the marker is kept for the depth counter and as
+// documentation that the enclosing flow expects pumped re-entrancy.
 struct GitKeepAlive {
     GitKeepAlive() { ++g_gitKeepAliveDepth; }
     ~GitKeepAlive() { --g_gitKeepAliveDepth; }

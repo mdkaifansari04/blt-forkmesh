@@ -2335,7 +2335,8 @@ def method_name(request):
     return str(method).upper()
 
 
-async def durable_object_request(request, target_url=None, include_body=False):
+async def durable_object_request(request, target_url=None, include_body=False,
+                                 body=None):
     # DurableObject.fetch may outlive the Python call frame. Passing the Python
     # Request proxy directly across that JS boundary can trip Pyodide's
     # "PyProxy when Python GIL not held" crash under load. Rebuild a JS-owned
@@ -2355,7 +2356,10 @@ async def durable_object_request(request, target_url=None, include_body=False):
             headers[name] = value
     init = {"method": method_name(request), "headers": headers}
     if include_body:
-        init["body"] = Uint8Array.new(_to_js(bytes(await request.bytes())))
+        # A caller that buffered the single-use body stream (to replay the
+        # request on another node) passes the bytes; otherwise read them here.
+        payload = bytes(await request.bytes()) if body is None else bytes(body)
+        init["body"] = Uint8Array.new(_to_js(payload))
     return JsRequest.new(str(target_url or request.url), to_js(init))
 
 
@@ -6811,6 +6815,13 @@ async def _account_profile(env, request):
         "profileLocation", "profileTimezone", "profilePrivate",
         "followersPublic", "mastodon",
         "profileLinks", "nodeName", "email", "identifier", "sessionToken",
+        # The dashboard always sends a (usually empty) `password` field even on
+        # pages with no password input. Whitelist it so a session-authed
+        # public-profile save doesn't get shunted into the credentials branch
+        # and rejected with invalid_credentials. Privileged writes still carry
+        # a non-whitelisted key (solana, deleteAccount, …) and stay on the
+        # password-verified path.
+        "password",
     }
     session_bi, session_rec = await _account_session_record(env, request, data)
     if session_rec and not (set(data.keys()) - public_profile_fields):
@@ -8116,9 +8127,10 @@ async def _account_heartbeat(env, request):
         if remaining != rec.get("mirror_requests"):
             rec["mirror_requests"] = remaining
             await _save_account(env, name_bi, rec)
-    pending_mirrors = accepted_mirror_requests(rec.get("mirror_requests"))
-    if pending_mirrors:
-        response["mirrorRequests"] = pending_mirrors
+    if rec.get("mirror_requests"):
+        pending_mirrors = accepted_mirror_requests(rec.get("mirror_requests"))
+        if pending_mirrors:
+            response["mirrorRequests"] = pending_mirrors
     return json_response(response)
 
 
@@ -15220,6 +15232,62 @@ def _clean_issue_attachment_data(value):
     return cleaned, None
 
 
+async def _log_inbox_drain(env, repo_bi, kind, count):
+    # Audit trail for inbox acks (adhoc #97): one row per non-empty drain so a
+    # "web-filed item vanished but never synced" report is traceable. Content-free
+    # (blind-indexed repo, a count) and best-effort — never fail the ack over it.
+    if count <= 0:
+        return
+    try:
+        await d1_run(
+            env,
+            "INSERT INTO inbox_drain_log (ts, repo_bi, kind, count) VALUES (?,?,?,?)",
+            int(Date.now()), repo_bi, kind, int(count))
+    except Exception:
+        pass
+
+
+def _drain_ids_from_request(request):
+    # ?ids=1,2,3 on an inbox-drain DELETE: the node acks exactly the rows it
+    # merged, so a submission inserted after the node's read survives to the
+    # next sync instead of being swept away undelivered (adhoc #97).
+    params = parse_qs(urlparse(request.url).query)
+    raw = params.get("ids", [""])[0]
+    ids = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+async def _drain_issue_inbox(env, request, repo_bi):
+    """Ack (delete) the exact issue-inbox rows named by ?ids=, returning how many
+    were removed, and record the drain in inbox_drain_log. Rows the node did not
+    ack (including a submission that arrived after it read the queue) are left
+    for the next sync; a request with no ids removes nothing (adhoc #97)."""
+    ids = _drain_ids_from_request(request)
+    if not ids:
+        return 0
+    marks = ",".join("?" for _ in ids)
+    row = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=? "
+        "AND id IN (%s)" % marks,
+        repo_bi, *ids)
+    removed = int(row.get("c", 0)) if row else 0
+    await d1_run(
+        env,
+        "DELETE FROM issue_inbox WHERE repo_bi=? AND id IN (%s)" % marks,
+        repo_bi, *ids)
+    await _log_inbox_drain(env, repo_bi, "issues", removed)
+    return removed
+
+
 async def issues_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
@@ -15358,18 +15426,27 @@ async def issues_handler(env, request, owner, repo):
         if not await _authorize_owner(env, request, owner):
             return json_response({"error": "unauthorized"}, status=401)
         rows = await d1_all(
-            env, "SELECT data FROM issue_inbox WHERE repo_bi=? ORDER BY id ASC",
+            env, "SELECT id, data FROM issue_inbox WHERE repo_bi=? ORDER BY id ASC",
             repo_bi,
         )
-        pending = [rec for rec in
-                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
+        pending = []
+        for r in rows:
+            rec = await decrypt_row(env, r["data"])
+            if rec:
+                # The row id lets the node ack exactly what it merged so a
+                # submission that lands mid-drain isn't swept away undelivered
+                # (adhoc #97) — the "stayed pending, then vanished, never synced"
+                # bug. A DELETE must name the ids to remove; without them the
+                # drain removes nothing.
+                rec["id"] = r.get("id")
+                pending.append(rec)
         return json_response({"ok": True, "pending": pending})
 
     if method == "DELETE":
         if not await _authorize_owner(env, request, owner):
             return json_response({"error": "unauthorized"}, status=401)
-        await d1_run(env, "DELETE FROM issue_inbox WHERE repo_bi=?", repo_bi)
-        return json_response({"ok": True})
+        removed = await _drain_issue_inbox(env, request, repo_bi)
+        return json_response({"ok": True, "drained": removed})
 
     return json_response({"error": "method_not_allowed"}, status=405)
 
@@ -15733,6 +15810,14 @@ async def sync_handler(env, request):
             for r in table_rows or []:
                 item = await decrypt_row(env, r.get("data"))
                 if item:
+                    # Carry the inbox row id so a node draining from /api/sync
+                    # can ack exactly what it merged (DELETE ...?ids=), leaving
+                    # any submission that landed mid-drain for the next sync
+                    # instead of blanket-deleting it undelivered (adhoc #97).
+                    drain_id = r.get("drain_id")
+                    if drain_id is not None and topic in (
+                            "issues", "pulls", "discussions", "commits"):
+                        item["id"] = drain_id
                     by_repo.setdefault(r.get("repo_bi"), {}) \
                         .setdefault(topic, []).append(item)
                 # Track the exact rows READ (even undecryptable ones — they
@@ -16586,15 +16671,20 @@ async def log_durable_object_abort(env, request, path, error):
 
     On the free tier Cloudflare aborts long-running Durable Object requests
     with AbortError("Exceeded allowed duration in Durable Objects free
-    tier."). Keeping the raw error text in the message lets the /status page
-    count these plan-limit aborts separately from real bugs (see the
-    doDurationAborts24h snapshot in status_history). Best-effort: log_error
-    never raises.
+    tier."); a co-located DO blowing the isolate's limits surfaces instead as
+    a generic AbortError("internal error; reference = …"). Both are transient
+    and already handled by the caller (503 + fail over to a live mirror), so
+    only the D1 error_log row is kept — its raw error text lets the /status
+    page count plan-limit aborts separately from real bugs (see the
+    doDurationAborts24h snapshot in status_history). We deliberately do NOT
+    raise a Sentry event here: a stack-traced ERROR for every expected,
+    already-degraded platform abort just buried real bugs in noise.
+    Best-effort: _write_error_log never raises.
     """
-    await log_error(
+    await _write_error_log(
         env, 503, method_name(request), path,
         "durable object aborted: " + _safe_error_text(error)[:400],
-        request.headers.get("cf-ray") or "", request=request, error=error)
+        request.headers.get("cf-ray") or "")
 
 
 async def log_cron_error(env, path, message, error=None, failures=None):
@@ -19697,6 +19787,15 @@ class Default(WorkerEntrypoint):
             return Response("not found", status=404)
         url = urlparse(request.url)
         is_info = url.path.endswith("/info/refs")
+        # Buffer the upload-pack POST body ONCE, up front. The body stream is
+        # single-use, but the POST may hop twice: a pinned mirror that turns out
+        # to be behind the advertisement the client negotiated against answers
+        # 502 ("fatal: git upload-pack: not our ref <oid>"), and the request is
+        # then replayed at the live named source. Only upload-pack negotiation
+        # bodies come through here (receive-pack streams via _git_push), so the
+        # buffered copy is small — the same bytes durable_object_request
+        # buffered per-hop anyway.
+        post_body = None if is_info else bytes(await request.bytes())
         # Private repos clone only with an owner-key-signed view token carried in
         # HTTP Basic auth; public repos stay open. Challenge with 401 Basic so git
         # supplies credentials from the clone URL or a credential helper.
@@ -19739,7 +19838,8 @@ class Default(WorkerEntrypoint):
                         request, url, src_repo, src_owner,
                         "/%s/%s/%s" % (src_owner, src_repo, tail),
                         timeout_ms=GIT_ADVERTISE_ROUTE_TIMEOUT_MS
-                        if is_info else None)
+                        if is_info else None,
+                        body=post_body)
                 except Exception:
                     # Best-effort: fall through to the normal route (which may
                     # still mirror-fallback) rather than take the request down.
@@ -19773,7 +19873,8 @@ class Default(WorkerEntrypoint):
                             request, url, repo, serving,
                             "/%s/%s/%s" % (serving, repo, tail),
                             timeout_ms=GIT_ADVERTISE_ROUTE_TIMEOUT_MS
-                            if is_info else None)
+                            if is_info else None,
+                            body=post_body)
                     except Exception:
                         # Best-effort: fall through to the named owner's route,
                         # which answers with git's clean "no host" advertisement
@@ -19789,17 +19890,32 @@ class Default(WorkerEntrypoint):
                 # clone breaks. Read-only pin lookup; no rotation.
                 serving = await self._fresh_clone_pin(owner, repo)
                 if serving and serving.lower() != owner.lower():
+                    forwarded = None
                     try:
-                        return await self._forward_to_node(
+                        forwarded = await self._forward_to_node(
                             request, url, repo, serving,
-                            "/%s/%s/git-upload-pack" % (serving, repo))
+                            "/%s/%s/git-upload-pack" % (serving, repo),
+                            body=post_body)
+                        fstatus = int(forwarded.status)
                     except Exception:
-                        pass
+                        fstatus = 0
+                    if forwarded is not None and \
+                            fstatus not in (0, 502, 503, 504):
+                        return forwarded
+                    # The pin is a repo-global pick shared by every concurrent
+                    # clone, so THIS clone's advertisement may not have come
+                    # from the pinned mirror at all — and a mirror behind that
+                    # advertisement rejects the negotiated wants with 502
+                    # "fatal: git upload-pack: not our ref <oid>". The named
+                    # source is live and canonical (and allows tip/reachable
+                    # SHA1 wants), so replay the buffered POST there instead
+                    # of failing the clone with the mirror's error.
         host_id = self.env.FORKMESH_HOST.idFromName(f"host:{owner}/{repo}")
         host_object = self.env.FORKMESH_HOST.get(host_id)
         try:
             host_fetch = host_object.fetch(
-                await durable_object_request(request, include_body=not is_info))
+                await durable_object_request(request, include_body=not is_info,
+                                             body=post_body))
             if is_info:
                 response = await asyncio.wait_for(
                     host_fetch, timeout=GIT_ADVERTISE_ROUTE_TIMEOUT_MS / 1000)
@@ -19912,16 +20028,22 @@ class Default(WorkerEntrypoint):
             # truth, so serve it directly (no catalog scan, no self-redirect).
             if str(target.get("source") or "local-node") == "local-node":
                 return None, None
-            # Find the freshest-synced source-of-truth record in the same group.
-            rows = await d1_all(
-                self.env, "SELECT data FROM repositories WHERE is_private = 0")
+            # Find the freshest-synced source-of-truth record in the same group,
+            # from the shared per-isolate catalog memo. This runs on EVERY
+            # public clone of a mirror namespace (info/refs AND the upload-pack
+            # POST); a raw scan + sequential decrypt_row() per request here was
+            # the one such pass left on the clone path after the 2026-07-12
+            # fix, and under a clone burst it congested the single Worker event
+            # loop until the runtime canceled requests as hung ("Cannot enter
+            # into task" on git-upload-pack info/refs). The memo's active-node
+            # filter is harmless: a source must pass _source_has_live_host
+            # below anyway, and a node with a connected host is active.
             best_owner = None
             best_repo = None
             best_sync = -1
-            for r in rows:
-                rec = await decrypt_row(self.env, r.get("data"))
-                if not rec:
-                    continue
+            for row in await _decrypted_public_catalog(
+                    self.env, int(Date.now())):
+                rec = row["data"]
                 if str(rec.get("source") or "local-node") != "local-node":
                     continue
                 if not repo_mirror_same_group(target, rec):
@@ -19942,7 +20064,7 @@ class Default(WorkerEntrypoint):
             return None, None
 
     async def _forward_to_node(self, request, url, repo, node, new_path,
-                               timeout_ms=None):
+                               timeout_ms=None, body=None):
         # Serve THROUGH the original URL: dispatch this request to `node`'s host
         # DO with the path rewritten into its namespace. The client never sees a
         # redirect — the mirror's bytes stream back on the URL that was asked
@@ -19969,7 +20091,9 @@ class Default(WorkerEntrypoint):
                 return await asyncio.wait_for(
                     host_fetch, timeout=timeout_ms / 1000)
             return await host_fetch
-        body = bytes(await request.bytes())
+        # The caller may have buffered the (single-use) body stream already so
+        # a failed hop can be replayed elsewhere; only read it here when not.
+        body = bytes(await request.bytes()) if body is None else bytes(body)
         headers = {}
         for name in ("content-type", "content-encoding"):
             value = request.headers.get(name)
