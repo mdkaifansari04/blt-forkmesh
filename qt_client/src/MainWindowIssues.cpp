@@ -4665,13 +4665,15 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             return true;
         // Enter sends the prompt; Shift+Enter inserts a newline (the box is now a
         // two-line QPlainTextEdit, which would otherwise just add a newline).
-        // With an agent session already open above, Enter follows up on that
-        // agent instead of starting a brand-new one — the same routing the
-        // up-arrow "send to agent" button next to it already does, just bound
-        // to the more natural key.
+        // With an agent session already open above on the Agents tab, Enter
+        // follows up on that agent instead of starting a brand-new one — the
+        // same routing the up-arrow "send to agent" button next to it already
+        // does, just bound to the more natural key. Anywhere else, Enter always
+        // starts a new agent (quickAddShouldFollowUpAgent requires the Agents
+        // tab to actually be on screen).
         if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) &&
             !(ke->modifiers() & Qt::ShiftModifier)) {
-            if (m_selectedAgentSessionId >= 0 && m_quickAddSendToAgentButton)
+            if (quickAddShouldFollowUpAgent() && m_quickAddSendToAgentButton)
                 m_quickAddSendToAgentButton->click();
             else
                 quickAddIssue();
