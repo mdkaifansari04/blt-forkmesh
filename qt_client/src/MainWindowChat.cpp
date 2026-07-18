@@ -1499,11 +1499,12 @@ void MainWindow::updateVoiceInputButton()
     if (m_quickAddVoiceAutoSubmit)
         m_quickAddVoiceAutoSubmit->setVisible(ready);
     if (m_quickAddMicButton) {
-        // Keep the mic visible even when speech-to-text isn't set up (adhoc #29):
-        // show it greyed out instead of hiding it, so it's discoverable and its
-        // tooltip can point the user at the Settings download.
+        // Keep the mic visible (and clickable) even when speech-to-text isn't set
+        // up (adhoc #29): rather than disabling it, clicking it while unready jumps
+        // to the Settings > Voice tab (see startVoiceCaptureFor / openVoiceSettings,
+        // adhoc #132) so the mic is a path to setup, not a dead end.
         m_quickAddMicButton->setVisible(true);
-        m_quickAddMicButton->setEnabled(ready);
+        m_quickAddMicButton->setEnabled(true);
         // Leave the mic currently recording on its red broadcast glyph.
         if (!(m_voiceRecording && m_voiceActiveButton == m_quickAddMicButton)) {
             setOcticon(m_quickAddMicButton, "mic", 16);
@@ -1514,8 +1515,8 @@ void MainWindow::updateVoiceInputButton()
                             "to transcribe.\nVoice model: %1")
                             .arg(voiceModelLabel())
                       : QString::fromUtf8(
-                            "Speech-to-text isn't set up yet \xE2\x80\x94 download a "
-                            "voice model in Settings to dictate your prompt."));
+                            "Speech-to-text isn't set up yet \xE2\x80\x94 click to open "
+                            "Settings and set up voice input."));
         }
     }
     for (QPushButton *b : m_voiceButtons) {
@@ -1591,6 +1592,7 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
 
     if (!voiceInputReady()) {
         updateVoiceInputButton();
+        openVoiceSettings();
         return;
     }
     // Don't start a fresh recording while the previous clip is still transcribing
@@ -1754,6 +1756,16 @@ void MainWindow::startVoiceCaptureFor(QPlainTextEdit *target, QPushButton *butto
     button->setToolTip(
         QStringLiteral("Recording\xE2\x80\xA6 release to stop and transcribe."));
     target->setPlaceholderText("listening\xE2\x80\xA6 release the mic to stop");
+}
+
+// Land on Settings > Voice — called when a mic is clicked before speech-to-text
+// is set up, so the click goes somewhere useful instead of a silent no-op
+// (adhoc #132).
+void MainWindow::openVoiceSettings()
+{
+    showSection(1); // Settings
+    if (m_settingsTabs && m_voiceSettingsTabIndex >= 0)
+        m_settingsTabs->setCurrentIndex(m_voiceSettingsTabIndex);
 }
 
 // Run whisper.cpp over the recorded WAV and drop the transcript into the prompt

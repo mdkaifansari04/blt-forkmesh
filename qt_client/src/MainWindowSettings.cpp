@@ -1603,15 +1603,24 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addWidget(ideLabel);
     agentsCol->addWidget(ideIntegrationCheck);
     agentsCol->addWidget(ideStatus);
-    agentsCol->addSpacing(6);
-    agentsCol->addWidget(voiceLabel);
-    agentsCol->addWidget(voiceHint);
-    agentsCol->addLayout(voiceRow);
-    agentsCol->addLayout(voiceDeviceRow);
-    agentsCol->addLayout(voiceTestRow);
-    agentsCol->addWidget(m_whisperStatusLabel);
     agentsCol->addStretch();
     addTab(agentsTab, "Agents & IDE");
+
+    // Voice: local speech-to-text engine setup, mic device and test — its own
+    // tab so it's easy to land on directly (see openVoiceSettings(), adhoc #132).
+    auto *voiceTab = new QWidget;
+    auto *voiceCol = new QVBoxLayout(voiceTab);
+    voiceCol->setContentsMargins(2, 14, 2, 14);
+    voiceCol->setSpacing(10);
+    voiceCol->addWidget(voiceLabel);
+    voiceCol->addWidget(voiceHint);
+    voiceCol->addLayout(voiceRow);
+    voiceCol->addLayout(voiceDeviceRow);
+    voiceCol->addLayout(voiceTestRow);
+    voiceCol->addWidget(m_whisperStatusLabel);
+    voiceCol->addStretch();
+    m_voiceSettingsTabIndex = tabs->count();
+    addTab(voiceTab, "Voice");
 
     // Secrets & Coves: shared action variables and encrypted coves.
     auto *secretsTab = new QWidget;
@@ -1634,6 +1643,7 @@ QWidget *MainWindow::buildSettingsSection()
     // cleanup. Built in its own translation unit (MainWindowData.cpp).
     addTab(buildDataSection(), "Data");
 
+    m_settingsTabs = tabs;
     layout->addWidget(tabs, 1);
     layout->addWidget(m_rebuildStatus);
     layout->addLayout(footerRow);
