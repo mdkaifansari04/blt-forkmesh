@@ -154,6 +154,75 @@
     }
   }
 
+  // Status pipeline: for each template type, how far the sends got —
+  // contacted (attempted), sent (delivered ok) and failed. Counts are derived
+  // from the same recent-sends log the left-hand list renders.
+  function renderPipeline() {
+    const wrap = $("#or-pipeline");
+    if (!wrap || !access) return;
+    wrap.innerHTML = "";
+    const recent = access.recent || [];
+    const order = [];
+    const stats = new Map();
+    const ensure = (key, label) => {
+      if (!stats.has(key)) { stats.set(key, { label, ok: 0, fail: 0 }); order.push(key); }
+      return stats.get(key);
+    };
+    for (const t of templates) {
+      if (t.key === "blank") continue;
+      ensure(t.key, t.label);
+    }
+    for (const entry of recent) {
+      const key = entry.template || "blank";
+      const known = templates.find((t) => t.key === key);
+      const label = known ? known.label : (key === "blank" ? "Blank / custom" : key);
+      const s = ensure(key, label);
+      if (entry.ok) s.ok += 1; else s.fail += 1;
+    }
+    if (!order.length) {
+      const empty = document.createElement("div");
+      empty.className = "pipe-empty";
+      empty.textContent = "No templates to track yet.";
+      wrap.appendChild(empty);
+      return;
+    }
+    const stage = (cls, n, lbl) => {
+      const st = document.createElement("div");
+      st.className = "pipe-stage" + (cls ? " " + cls : "");
+      const num = document.createElement("span");
+      num.className = "n";
+      num.textContent = String(n);
+      const cap = document.createElement("span");
+      cap.textContent = lbl;
+      st.appendChild(num);
+      st.appendChild(cap);
+      return st;
+    };
+    for (const key of order) {
+      const s = stats.get(key);
+      const total = s.ok + s.fail;
+      const row = document.createElement("div");
+      row.className = "pipe-row";
+      const name = document.createElement("div");
+      name.className = "pipe-name";
+      const label = document.createElement("span");
+      label.textContent = s.label;
+      const count = document.createElement("span");
+      count.className = "count";
+      count.textContent = total ? total + " sent" : "none yet";
+      name.appendChild(label);
+      name.appendChild(count);
+      const stages = document.createElement("div");
+      stages.className = "pipe-stages";
+      stages.appendChild(stage("", total, "Contacted"));
+      stages.appendChild(stage("ok", s.ok, "Sent"));
+      stages.appendChild(stage("fail", s.fail, "Failed"));
+      row.appendChild(name);
+      row.appendChild(stages);
+      wrap.appendChild(row);
+    }
+  }
+
   async function send(event) {
     event.preventDefault();
     const button = $("#or-send");
@@ -245,6 +314,7 @@
     }
     renderTeam();
     renderLog();
+    renderPipeline();
   }
 
   document.addEventListener("DOMContentLoaded", () => {

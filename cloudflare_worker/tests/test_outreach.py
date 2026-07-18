@@ -122,6 +122,7 @@ def test_outreach_templates_cover_sponsorship():
     assert ns["OUTREACH_DAILY_LIMIT"] > 0
     keys = [t["key"] for t in ns["OUTREACH_TEMPLATES"]]
     assert "sponsorship" in keys
+    assert "investor" in keys
     assert "blank" in keys
     for template in ns["OUTREACH_TEMPLATES"]:
         assert set(template) == {"key", "label", "subject", "body"}
@@ -132,8 +133,13 @@ def test_outreach_page_exists_and_is_routed():
     assert "/outreach.js" in html
     assert 'id="or-compose"' in html
     assert 'id="or-team"' in html
+    # Outreach tracker: a list of sent emails on the left, a status pipeline
+    # keyed by template type on the right.
+    assert 'id="or-log-list"' in html
+    assert 'id="or-pipeline"' in html
     js = (ROOT / "public" / "outreach.js").read_text(encoding="utf-8")
     assert "/api/outreach" in js
     assert "forkmesh.session" in js
+    assert "renderPipeline" in js
     redirects = (ROOT / "public" / "_redirects").read_text(encoding="utf-8")
     assert "/outreach /outreach.html 200" in redirects
