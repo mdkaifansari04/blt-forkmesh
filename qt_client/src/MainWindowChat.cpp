@@ -2873,7 +2873,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageClose->setToolTip(QStringLiteral("Dismiss"));
     m_topMessageClose->hide();
     connect(m_topMessageClose, &QPushButton::clicked, this,
-            [this] { advanceTopMessageQueue(); }); // skip straight to the next queued error
+            [this] { dismissTopMessage(); }); // always fully close, even if another error is queued
 
     // Shown beside the toast when a message is too long to fit on one line.
     // Clicking it expands the full message in place (wrapped, growing the toast)
