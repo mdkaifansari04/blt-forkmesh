@@ -1,0 +1,46 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 451,
+    "title": "Scan commits, publications, and mirrors for secrets and malware",
+    "status": "open",
+    "labels": [
+        "security"
+    ],
+    "milestone": "Secure collaboration",
+    "startDate": 1784692800000,
+    "endDate": 1785038400000,
+    "priority": 19,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784405500011,
+    "updatedAt": 1784405500012,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-451",
+            "title": "Scan commits, publications, and mirrors for secrets and malware",
+            "body": "## Outcome\n\nUse one bounded scanner across local hooks, publication, and mirror intake so risky content is caught before replication whenever possible.\n\n## Implementation\n\n- Create a shared scanner interface for secret fingerprints, private-key formats, malware rules, and operator-supplied detectors.\n- Provide opt-in pre-commit hook installation plus mandatory configurable pre-push or pre-publish evaluation.\n- Scan newly fetched public objects before a mirror advertises them and quarantine failures through #450.\n- Log only rule identifiers, fingerprints, paths, and locations; never log matching secret bytes.\n- Require an explicit signed local override and show that redaction cannot be guaranteed after data has replicated.\n\n## Acceptance criteria\n\n- The same fixture produces the same decision in hook, publish, and mirror paths.\n- Private ciphertext is not mis-scanned before authorized decryption.\n- A clean replacement clears quarantine only after a complete rescan.\n- Overrides are scoped, expiring, auditable, and cannot silently disable other rules.\n- Scanner time, memory, file count, and object size are bounded for hostile input.\n\n## Dependencies\n\nIntegrates with the node-local policy engine in #450.\n\n## Verification\n\nSeed secret, malware, binary, oversized, renamed, deleted, encrypted, overridden, and cleaned fixtures through each entry point and scan all diagnostics for the original match bytes.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500011,
+            "sig": "oQhe5U_4IWdZtoEjRMJfEHECINSfzjNVtbEa_3SVeKeZk7mgM5vWaPE4Ya0x89lLwZKmney0c8rySq8alT4SDg"
+        },
+        {
+            "type": "dates",
+            "id": "a32be6ba-cd17-460c-9439-3798e0099b92",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500012,
+            "startDate": 1784692800000,
+            "endDate": 1785038400000,
+            "sig": "fQ_WbyAy6sW8Z08OtH1699BuSs7zYd5TQ6fyIFf4oETKUBxqNnaK6fhCBsH8AelCX1Vv4jToWEWheu_6bngFCg"
+        }
+    ]
+}
