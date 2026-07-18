@@ -4,7 +4,7 @@ number: 23
 title: Agent: the token speed seems way too high now for codex lets fix it please so the to…
 base: main
 head: agent/adhoc-71-the-token-speed-seems-way-too-high-now-for-codex
-status: open
+status: merged
 ts: 1784334757564
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh
