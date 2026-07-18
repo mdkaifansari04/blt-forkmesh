@@ -1,0 +1,68 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 439,
+    "title": "Surface a compact repository availability assessment",
+    "status": "open",
+    "labels": [
+        "feature",
+        "enhancement"
+    ],
+    "milestone": "Daily Git workflow",
+    "startDate": 1784520000000,
+    "endDate": 1784692800000,
+    "priority": 9,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784402987623,
+    "updatedAt": 1784405500069,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-439",
+            "title": "Surface a compact repository availability assessment",
+            "body": "## Outcome\n\nPresent one measured availability assessment instead of making users interpret several raw mirror and integrity fields.\n\n## Implementation\n\n- Define a versioned availability response derived from the existing mirror payload.\n- Report online versus known nodes, verified cloneable copies, integrity failures, freshest confirmed sync, hosted bytes, artifact coverage, and bounded risk reasons.\n- Model `unknown` separately from `failed`; never convert missing telemetry into a healthy claim.\n- Use the same state names and risk codes in desktop, browser, and mobile repository views.\n- Update the assessment when a source or mirror disconnects, reconnects, falls behind, or repairs its state.\n\n## Acceptance criteria\n\n- The UI makes no claim that is not backed by a response field and timestamp.\n- Healthy, degraded, healing, rejected, offline, and unknown states have contract tests.\n- Clone is disabled only when no verified route is available.\n- Reconnect and integrity repair update the view without an application restart.\n- No geographic or network-diversity claim appears because those measurements are not collected.\n\n## Dependencies\n\nNone.\n\n## Verification\n\nRun response fixtures through each client renderer and exercise live disconnect, stale mirror, mismatched state, repair, and complete outage cases.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987623,
+            "sig": "2NMtWdjvgXqAjHhfZbCASa4yrcMtqgRUMnbWarU8ohBEolVPAJfCDNwSbpwNXV9PQbvJgm63OsW08cz_9Y0qCg"
+        },
+        {
+            "type": "dates",
+            "startDate": 1784692800000,
+            "endDate": 1784952000000,
+            "id": "16e7133d-5b6b-4b27-8147-3aa63f62f566",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987624,
+            "sig": "_69BbI_bg1Q_ZSRz6oePhpjch9hlO1mfqV57imiFKGTdHGpKeVFWkkXUXW1JhDbx1ZCGpYkD6gCtTAumUOy1Ag"
+        },
+        {
+            "type": "edit",
+            "id": "d76e6575-65b3-4f56-90a9-94691ca2ea42",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500061,
+            "body": "## Outcome\n\nPresent one evidence-backed repository availability assessment while retaining exact per-object and preservation details.\n\n## Implementation\n\n- Define a versioned assessment derived from known nodes, signed receipts, clone challenges, coverage manifests, route health, and offline recovery state.\n- Report online versus known nodes, verified cloneable copies, pinned and trusted counts, freshest confirmation, hosted bytes, branch and tag coverage, large objects, release artifacts, collaboration records, and current offline bundle.\n- Model unknown separately from failed and never convert missing telemetry into a healthy claim.\n- Use the same state names and risk codes in desktop, browser, mobile, and headless output.\n- Link the compact assessment to per-object receipts from #465 and privacy-preserving diversity and coverage evidence from #466.\n\n## Acceptance criteria\n\n- Every claim is backed by a response field, evidence time, and revision identifier.\n- Healthy, degraded, healing, rejected, offline, unknown, partial, and stale states have contract tests.\n- Clone is disabled only when no verified route is available.\n- Disconnect, lag, corruption, repair, repin, route change, and new evidence update without restart.\n- Diversity is shown only from the privacy-preserving measurements implemented in #466.\n\n## Dependencies\n\nConsumes #453, #461, #465, #466, and #467; its base response can land before those extensions.\n\n## Verification\n\nRun shared fixtures through every renderer and exercise live disconnect, stale mirror, mismatched revision, partial coverage, receipt quorum, route loss, correlated mirrors, repair, and complete outage.",
+            "attachments": [],
+            "target": "open-439",
+            "sig": "yrMBL066_SZxBiiI_CxVvLyA883Lmh9zZdu1SXZsGwwVXdrlXVuwYYZvvjXUd9QTWUQgAgBYmPMMLlCnpe4BCw"
+        },
+        {
+            "type": "dates",
+            "id": "60e08994-c957-4d30-9594-bf233efd78e8",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500069,
+            "startDate": 1784520000000,
+            "endDate": 1784692800000,
+            "sig": "bBG0Y7OgHDsSSUJ1iWRE_GuDv3-P1o9-VXOGUg1N7A93JR6K69lxAoLD10xcMF5Iagf1gMW9bOeecELxqrmCDQ"
+        }
+    ]
+}
