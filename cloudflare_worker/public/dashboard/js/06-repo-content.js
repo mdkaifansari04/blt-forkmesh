@@ -1665,9 +1665,62 @@
       ["issues", "pulls", "discussions", "commits"].forEach((tab) => {
         setRepoTabPending(tab, pending[tab]);
       });
+      // Remember the server-side issue tally so the Issues list can show the
+      // pending submissions as rows (adhoc #97), not just as a tab badge - the
+      // count is the only thing we can surface publicly, since the items
+      // themselves stay encrypted and owner-gated in the relay's inbox.
+      state.pendingIssueCounts = state.pendingIssueCounts || {};
+      state.pendingIssueCounts[pendingIssuesRepoKey(repo)] =
+        Number(pending.issues) || 0;
+      applyRemotePendingIssueCount(repo);
     } catch (_) {
       /* offline relay — badges stay hidden */
     }
+  }
+
+  // The relay only reports a COUNT of issue submissions still waiting in the
+  // owner's inbox (their contents are encrypted). Surface that count in the
+  // Issues list as "syncing..." placeholder rows so a submission stays visible
+  // on any browser - not only the one that filed it, whose optimistic copy
+  // lives in localStorage - until the owner node drains and mirrors it.
+  function remotePendingIssuePlaceholders(count) {
+    const list = [];
+    for (let i = 0; i < count; i += 1) {
+      list.push({
+        number: null,
+        localId: `pending-remote-${i}`,
+        title: "Pending issue submission",
+        status: "open",
+        author: "a contributor",
+        date: "waiting to sync",
+        meta: "",
+        body: "Submitted to the maintainer's inbox. It will appear in full once the owner's source-of-truth node comes online and syncs it.",
+        pending: true,
+        remotePlaceholder: true,
+      });
+    }
+    return list;
+  }
+
+  function applyRemotePendingIssueCount(repo) {
+    const view = state.issuesView;
+    if (!view || !view.repo) return;
+    if (pendingIssuesRepoKey(view.repo) !== pendingIssuesRepoKey(repo)) return;
+    const count = Number(state.pendingIssueCounts?.[pendingIssuesRepoKey(repo)]) || 0;
+    const items = view.items.filter((item) => !item.remotePlaceholder);
+    // Items already shown as pending (this session's optimistic add and the
+    // issue #379 localStorage copies) cover part of the server tally; only pad
+    // the remainder so we never double-count a submission we can already show.
+    const pendingReals = items.filter((item) => item.pending);
+    const rest = items.filter((item) => !item.pending);
+    const need = Math.max(0, count - pendingReals.length);
+    const next = [...pendingReals, ...remotePendingIssuePlaceholders(need), ...rest];
+    // Skip the re-render when nothing changed (placeholders already correct).
+    if (next.length === view.items.length &&
+        view.items.filter((item) => item.remotePlaceholder).length === need)
+      return;
+    view.items = next;
+    renderRepoIssues();
   }
 
   // Refreshes the "N Open" / "N Closed" counts shown in an issues/pulls panel
@@ -1830,6 +1883,7 @@
           state.issuesView.closedLoaded = true;
           state.issuesView.closedLoading = false;
           renderRepoIssues();
+          applyRemotePendingIssueCount(repo);
           return;
         }
         throw error;
@@ -1909,6 +1963,7 @@
       setRepoTabCount("issues", openIssues);
       setRepoCollectionCounts("issues", openIssues, closedIssues);
       renderRepoIssues();
+      applyRemotePendingIssueCount(repo);
     } catch (_) {
       container.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">Issues are unavailable until a live desktop host serves the .forkmesh/issues/ folder.</div>';
     }
