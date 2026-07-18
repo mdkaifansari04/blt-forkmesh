@@ -1767,6 +1767,8 @@ private:
     void updateNotificationButton();
     // Show/hide the small top-bar rebuild+restart button per the opt-in setting.
     void updateNavRebuildButton();
+    // Reposition the floating "Log" button to the live-log strip's corner.
+    void positionFloatingLogButton();
     int pendingActionCount() const;
     void openActionRunFromNotification(int runId);
     // Show a desktop notification with both a title and body, using notify-send
@@ -3225,7 +3227,8 @@ private:
     QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row
     QPushButton *m_reposNavButton = nullptr; // network-wide "Repos" section
     QPushButton *m_settingsNavButton = nullptr; // Settings button on the repo header row
-    QPushButton *m_logNavButton = nullptr; // "Log" button in the persistent top nav
+    QPushButton *m_logNavButton = nullptr; // retired (adhoc #137): Log now opens via m_floatingLogButton
+    QPushButton *m_floatingLogButton = nullptr; // "Log" button floating over the live-log strip
     QPushButton *m_leaderboardNavButton = nullptr; // "Leaderboards" top-nav button
     QPushButton *m_hostsNavButton = nullptr;  // "Hosts" top-nav button (adhoc #263)
     QPushButton *m_nodesNavButton = nullptr;  // "Nodes" top-nav button (adhoc #9)

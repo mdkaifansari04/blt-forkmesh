@@ -970,6 +970,21 @@ QWidget *MainWindow::buildNetworkLogDock()
         m_footerUpdateLog->setPlainText(QStringLiteral("ForkMesh ready"));
     }
 
+    // Floating "Log" button overlaid on the bottom-right of the live-log strip
+    // (adhoc #137): opens the full network Log section (index 4) without taking a
+    // slot in the crowded section-nav row. Parented to the strip so it floats over
+    // its corner; repositioned as the strip resizes via the eventFilter branch.
+    m_floatingLogButton = new QPushButton(QStringLiteral("Log"), m_footerUpdateLog);
+    m_floatingLogButton->setObjectName("floatingLogButton");
+    m_floatingLogButton->setCursor(Qt::PointingHandCursor);
+    m_floatingLogButton->setToolTip(
+        QString::fromUtf8("Network log \xE2\x80\x94 all activity"));
+    setOcticon(m_floatingLogButton, "list-unordered", 14);
+    connect(m_floatingLogButton, &QPushButton::clicked, this,
+            [this] { showSection(4); });
+    m_footerUpdateLog->installEventFilter(this);
+    positionFloatingLogButton();
+
     // Horizontal split: live-log strip on the left half, prompt card on the right.
     auto *dockRow = new QHBoxLayout(dock);
     dockRow->setContentsMargins(0, 0, 0, 0);
@@ -2868,7 +2883,9 @@ QWidget *MainWindow::buildBreadcrumb()
     // The live connection indicator is now a small status dot painted over the
     // top-right avatar (created with the avatar below), not a separate text pill.
 
-    m_notificationButton = new QPushButton(QStringLiteral("Notifications"));
+    // Icon-only bell (adhoc #137): sits beside the user avatar in the top-right
+    // account cluster rather than as a labelled tab in the section nav.
+    m_notificationButton = new QPushButton;
     m_notificationButton->setObjectName("topNavButton");
     m_notificationButton->setCheckable(true);
     m_notificationButton->setCursor(Qt::PointingHandCursor);
@@ -3049,8 +3066,10 @@ QWidget *MainWindow::buildBreadcrumb()
     m_chatUnreadBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
     m_chatUnreadBadge->hide();
 
-    // Settings: its own top-level section (m_sectionStack index 1).
-    m_settingsNavButton = new QPushButton(QStringLiteral("Settings"));
+    // Settings: its own top-level section (m_sectionStack index 1). Icon-only
+    // (adhoc #137): it lives in the right-hand utility cluster next to the
+    // rebuild/restart button rather than as a labelled tab in the section nav.
+    m_settingsNavButton = new QPushButton;
     m_settingsNavButton->setObjectName("topNavButton");
     m_settingsNavButton->setCheckable(true);
     m_settingsNavButton->setCursor(Qt::PointingHandCursor);
@@ -3060,16 +3079,9 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_settingsNavButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
 
-    // Log: the full network log, next to Settings (m_sectionStack index 4).
-    m_logNavButton = new QPushButton(QStringLiteral("Log"));
-    m_logNavButton->setObjectName("topNavButton");
-    m_logNavButton->setCheckable(true);
-    m_logNavButton->setCursor(Qt::PointingHandCursor);
-    m_logNavButton->setToolTip(QString::fromUtf8("Network log \xE2\x80\x94 all activity"));
-    setOcticon(m_logNavButton, "list-unordered", 16);
-    m_navGroup->addButton(m_logNavButton, 4); // section 4: Log
-    connect(m_logNavButton, &QPushButton::clicked, this,
-            [this] { showSection(4); });
+    // Log (m_sectionStack index 4) no longer has a labelled tab in the section
+    // nav (adhoc #137): it's opened via the floating "Log" button overlaid on
+    // the always-on live-log strip, created in buildNetworkLogDock().
 
     // Leaderboards: the public network rankings (issue #11), section index 5.
     m_leaderboardNavButton = new QPushButton(QStringLiteral("Leaderboards"));
@@ -3374,6 +3386,8 @@ QWidget *MainWindow::buildBreadcrumb()
     // The provider usage gauges used to tuck in here; they now live in the
     // prompt toolbar next to the send buttons (adhoc #47, see buildNetworkLogDock).
     mainRow->addSpacing(4);
+    // Notification bell, tucked just left of the account avatar (adhoc #137).
+    mainRow->addWidget(m_notificationButton);
     mainRow->addWidget(m_userAvatarNavButton);
     auto *mainRowHost = new QWidget;
     mainRowHost->setLayout(mainRow);
@@ -3413,9 +3427,10 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_reposNavButton);
     navRow->addWidget(m_agentsNavButton);
     navRow->addWidget(m_chatButton);
-    navRow->addWidget(m_notificationButton);
-    navRow->addWidget(m_settingsNavButton);
-    navRow->addWidget(m_logNavButton);
+    // Notifications (bell) and Settings (gear) moved out of the section nav
+    // (adhoc #137): the bell rides beside the avatar in mainRow, and the gear
+    // sits in the right-hand utility cluster next to the rebuild button. Log is
+    // now a floating button on the live-log strip.
     navRow->addWidget(m_leaderboardNavButton);
     navRow->addWidget(m_hostsNavButton);
     navRow->addWidget(m_nodesNavButton);
@@ -3450,6 +3465,7 @@ QWidget *MainWindow::buildBreadcrumb()
     navUtilityRow->addWidget(m_navDrawButton);
     navUtilityRow->addWidget(m_navScreenshotButton);
     navUtilityRow->addWidget(m_navResizeButton);
+    navUtilityRow->addWidget(m_settingsNavButton); // gear, next to rebuild (adhoc #137)
     navUtilityRow->addWidget(m_navRebuildButton);
     auto *navUtilityHost = new QWidget;
     navUtilityHost->setLayout(navUtilityRow);
@@ -3482,6 +3498,25 @@ void MainWindow::updateNavRebuildButton()
     if (m_navRebuildButton)
         m_navRebuildButton->setVisible(
             QSettings().value(kShowRebuildButtonSetting, false).toBool());
+}
+
+// Pin the floating "Log" button to the bottom-right corner of the live-log
+// strip, clearing the vertical scrollbar when it's showing so the button never
+// overlaps it. Called on creation and on every strip resize (see eventFilter).
+void MainWindow::positionFloatingLogButton()
+{
+    if (!m_floatingLogButton || !m_footerUpdateLog)
+        return;
+    m_floatingLogButton->adjustSize();
+    constexpr int kMargin = 8;
+    const QSize sz = m_floatingLogButton->size();
+    int scrollbarW = 0;
+    if (QScrollBar *sb = m_footerUpdateLog->verticalScrollBar(); sb && sb->isVisible())
+        scrollbarW = sb->width();
+    m_floatingLogButton->move(
+        m_footerUpdateLog->width() - sz.width() - kMargin - scrollbarW,
+        m_footerUpdateLog->height() - sz.height() - kMargin);
+    m_floatingLogButton->raise();
 }
 
 // Screenshot button: drop a transparent overlay (the live desktop stays visible),
