@@ -7804,6 +7804,9 @@ void MainWindow::onAgentStatusChanged(int sessionId, const QString &)
         m_repoDetailStack->currentIndex() == 0 && m_overviewBodyStack &&
         m_overviewBodyStack->currentIndex() == 2)
         loadBranchesPanel();
+    // A live stream session going idle may not fire onAgentFinished, so also
+    // release any queued rebuild here once the fleet is idle (adhoc #75).
+    maybeStartQueuedRebuild();
 }
 
 void MainWindow::onAgentNeedsAttention(int sessionId, const QString &message)
@@ -7846,6 +7849,7 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
     }
     processAgentQueue();
     looperOnSessionFinished(sessionId); // adhoc #92: chain to the next open issue
+    maybeStartQueuedRebuild(); // adhoc #75: a rebuild may be waiting on this run
 }
 
 void MainWindow::updateAgentActionState()
