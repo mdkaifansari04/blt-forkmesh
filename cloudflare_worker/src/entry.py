@@ -16667,15 +16667,20 @@ async def log_durable_object_abort(env, request, path, error):
 
     On the free tier Cloudflare aborts long-running Durable Object requests
     with AbortError("Exceeded allowed duration in Durable Objects free
-    tier."). Keeping the raw error text in the message lets the /status page
-    count these plan-limit aborts separately from real bugs (see the
-    doDurationAborts24h snapshot in status_history). Best-effort: log_error
-    never raises.
+    tier."); a co-located DO blowing the isolate's limits surfaces instead as
+    a generic AbortError("internal error; reference = …"). Both are transient
+    and already handled by the caller (503 + fail over to a live mirror), so
+    only the D1 error_log row is kept — its raw error text lets the /status
+    page count plan-limit aborts separately from real bugs (see the
+    doDurationAborts24h snapshot in status_history). We deliberately do NOT
+    raise a Sentry event here: a stack-traced ERROR for every expected,
+    already-degraded platform abort just buried real bugs in noise.
+    Best-effort: _write_error_log never raises.
     """
-    await log_error(
+    await _write_error_log(
         env, 503, method_name(request), path,
         "durable object aborted: " + _safe_error_text(error)[:400],
-        request.headers.get("cf-ray") or "", request=request, error=error)
+        request.headers.get("cf-ray") or "")
 
 
 async def log_cron_error(env, path, message, error=None, failures=None):
