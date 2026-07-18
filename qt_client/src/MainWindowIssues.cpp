@@ -4610,6 +4610,11 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (event->type() == QEvent::Resize && m_pullDiff &&
         obj == m_pullDiff->viewport())
         layoutPullStickyHeader();
+    // Keep the floating "Log" button pinned to the live-log strip's bottom-right
+    // corner as the strip resizes (adhoc #137). Don't consume — the strip still
+    // needs the resize.
+    if (event->type() == QEvent::Resize && obj == m_footerUpdateLog)
+        positionFloatingLogButton();
     // Right-click on selected text anywhere in the app: offer "Send to
     // Prompt" alongside the widget's normal Copy/Select-All menu (adhoc #126).
     if (event->type() == QEvent::ContextMenu) {
