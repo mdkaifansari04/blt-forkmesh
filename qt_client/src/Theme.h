@@ -346,6 +346,11 @@ QPushButton#topNavButton[alert="true"] { color: #d29922; border-color: #9e6a03; 
 QPushButton#topNavButton[alert="true"]:checked {
     background-color: #1c1908; color: #f0b72f; border-color: #9e6a03;
 }
+QPushButton#floatingLogButton {
+    background-color: #21262d; border: 1px solid #30363d; border-radius: 6px;
+    color: #c9d1d9; font-size: 12px; font-weight: 600; padding: 4px 10px;
+}
+QPushButton#floatingLogButton:hover { background-color: #30363d; color: #e6edf3; }
 QPushButton#windowChromeButton, QPushButton#windowChromeCloseButton {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
     color: #8b949e; padding: 0;
@@ -1557,6 +1562,11 @@ QPushButton#topNavButton[alert="true"] { color: #9a6700; border-color: #d4a72c; 
 QPushButton#topNavButton[alert="true"]:checked {
     background-color: #fff8c5; color: #7d4e00; border-color: #d4a72c;
 }
+QPushButton#floatingLogButton {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
+    color: #24292f; font-size: 12px; font-weight: 600; padding: 4px 10px;
+}
+QPushButton#floatingLogButton:hover { background-color: #f3f4f6; color: #1f2328; }
 /* Top-row switchers (relay / node / repo): dropdown (relay's shows its
    favicon inline) + open-in-browser */
 QPushButton#relayOpenButton {
