@@ -1,17 +1,16 @@
 #pragma once
 
 // A QStackedWidget that reports the size of only its *current* page instead of
-// the tallest page across the whole stack (QStackedWidget's default). When such
-// a stack is wrapped in a QScrollArea -- as the repo-detail body
-// (repoDetailStackScroll) and the top-level section area (contentScroll) both
-// are -- the default "size to the tallest page" behaviour makes a short page,
-// e.g. the Code overview, inherit a taller sibling tab's height and scroll as a
-// whole inside the hidden-scrollbar wrapper. That produced a page-wide scroll on
-// the middle window even though every visible pane already had its own scroll
-// (adhoc #96). Sizing to the current page keeps each page fitted to the viewport
-// so only its inner scroll areas (lists, tables, the README view) scroll, not
-// the whole middle window. A genuinely tall page with no inner scroll of its own
-// still overflows and falls back to wheel scrolling, exactly as before.
+// the tallest page across the whole stack (QStackedWidget's default). The
+// default "size to the tallest page" behaviour makes a short page, e.g. the
+// Code overview, inherit a taller sibling tab's height, so the visible page
+// scrolled (or overflowed) as a whole even though every visible pane already
+// had its own scroll (adhoc #96). Sizing to the current page keeps each page
+// fitted to the viewport so only its inner scroll areas (lists, tables, the
+// README view) scroll, not the whole middle window. Used for the top-level
+// section stack, the repo-detail tab stack and the nested overview stacks,
+// which sit directly in their layouts since the outer page-wide QScrollAreas
+// were removed (adhoc #108).
 
 #include <QSize>
 #include <QStackedWidget>
