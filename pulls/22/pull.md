@@ -4,7 +4,7 @@ number: 22
 title: Agent: lets make the nodes update faster for instance if I create an issue on the qt…
 base: main
 head: agent/adhoc-67-lets-make-the-nodes-update-faster-for-instance-i
-status: open
+status: merged
 ts: 1784334481827
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh
