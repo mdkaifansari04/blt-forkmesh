@@ -2626,6 +2626,12 @@ void MainWindow::reloadAgents()
     updateAgentsTabIndicator();
     refreshAgentStatusRow();
     updateAgentsNavBadge();
+    // Every agent-completion path reaches this reload (adhoc #111: the process-exit
+    // handler for stream/codex sessions, and the embedded-terminal path, both call
+    // reloadAgents() without going through updateAgentStatusCell()'s queued-rebuild
+    // recheck). Re-check here too so a rebuild queued behind a run doesn't stay
+    // stuck on "Waiting for running actions to finish" once it actually goes idle.
+    maybeStartQueuedRebuild();
 }
 
 // Count badge on the top-bar Agents nav button (adhoc #194), same look as the
