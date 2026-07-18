@@ -3316,6 +3316,31 @@ static QString issueLinkHtml(int issueNumber, const QString &title)
     return chipLinkHtml(href, label);
 }
 
+// Renders the agent-detail meta fields as a mini table — one header row of
+// muted field labels, one data row of values below it — instead of a single
+// "Label: value | Label: value | ..." line that ran long and was hard to scan
+// (adhoc #90). Values are pre-built HTML (links/spans already escaped by the
+// caller); labels are escaped here.
+static QString agentDetailTableHtml(const QStringList &headers, const QStringList &values)
+{
+    Q_ASSERT(headers.size() == values.size());
+    QString html = QStringLiteral(
+        "<table style='border-collapse:collapse;' cellspacing='0' cellpadding='0'><tr>");
+    for (const QString &header : headers) {
+        html += QStringLiteral(
+                    "<th style='text-align:left; font-weight:normal; color:#8b949e; "
+                    "padding:0 16px 2px 0;'>%1</th>")
+                    .arg(header.toHtmlEscaped());
+    }
+    html += QStringLiteral("</tr><tr>");
+    for (const QString &value : values) {
+        html += QStringLiteral("<td style='text-align:left; padding:0 16px 0 0;'>%1</td>")
+                    .arg(value);
+    }
+    html += QStringLiteral("</tr></table>");
+    return html;
+}
+
 // Point the detail header's mode selector at the shown session (adhoc #26).
 // Only Claude Code and Codex carry a permission mode, so the selector hides for
 // API-key agents and watch-only rows. An unset mode falls back to the composer's
@@ -3416,23 +3441,31 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
     if (isExternalSession(sessionId)) {
         // Rich text so the branch name links to its Branches-tab row and the
         // worktree location links to its Worktrees-tab row (issue #265, adhoc
-        // #123); every other part is HTML-escaped to stay literal. Parts flow
-        // horizontally, wrapping as needed, split by a muted pipe (adhoc #57).
-        const QString sep =
-            QStringLiteral(" <span style='color:#30363d'>|</span> ");
-        QString meta = QStringLiteral("External Claude Code") + sep +
-                       QStringLiteral("%1/%2")
-                           .arg(session->owner.toHtmlEscaped(),
-                                session->name.toHtmlEscaped()) +
-                       sep + agentStatusText(session->status).toHtmlEscaped();
+        // #123); every other part is HTML-escaped to stay literal. Rendered as
+        // a mini table — header labels on top, values below (adhoc #90) —
+        // rather than one long "Label: value | Label: value" line.
+        QStringList headers;
+        QStringList values;
+        headers << QStringLiteral("Agent");
+        values << QStringLiteral("External Claude Code");
+        headers << QStringLiteral("Repo");
+        values << QStringLiteral("%1/%2").arg(session->owner.toHtmlEscaped(),
+                                              session->name.toHtmlEscaped());
+        headers << QStringLiteral("Status");
+        values << agentStatusText(session->status).toHtmlEscaped();
         if (!session->branchName.isEmpty()) {
-            meta += sep + chipBranchLinkHtml(session->branchName);
-            if (!worktreePath.isEmpty())
-                meta += sep + worktreeLinkHtml(session->branchName, worktreePath);
+            headers << QStringLiteral("Branch");
+            values << chipBranchLinkHtml(session->branchName);
+            if (!worktreePath.isEmpty()) {
+                headers << QStringLiteral("Worktree");
+                values << worktreeLinkHtml(session->branchName, worktreePath);
+            }
         }
-        meta += sep + QStringLiteral("watch-only");
+        headers << QStringLiteral("Mode");
+        values << QStringLiteral("watch-only");
+        QString meta = agentDetailTableHtml(headers, values);
         if (!mergedMeta.isEmpty())
-            meta += sep + mergedMeta;
+            meta += QStringLiteral("<br>") + mergedMeta;
         m_agentMeta->setText(meta);
         return;
     }
@@ -3446,16 +3479,9 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
                   .toHtmlEscaped();
     // Rich text so the branch name, worktree location, PR and issue are links
     // (issues #265, adhoc #53, adhoc #123, adhoc #138); every other part is
-    // HTML-escaped to stay literal. Each part is captioned with a muted
-    // "Field:" label so the header reads as a key/value list (adhoc #189), and
-    // the parts flow horizontally, wrapping as needed, split by a muted pipe
-    // rather than stacked one-per-line (adhoc #57).
-    const QString sep =
-        QStringLiteral(" <span style='color:#30363d'>|</span> ");
-    auto labeled = [](const QString &label, const QString &valueHtml) {
-        return QStringLiteral("<span style='color:#8b949e'>%1:</span> %2")
-            .arg(label.toHtmlEscaped(), valueHtml);
-    };
+    // HTML-escaped to stay literal. Rendered as a mini table — header labels
+    // on top, values below (adhoc #90) — rather than one long
+    // "Label: value | Label: value" line (adhoc #189, adhoc #57).
     // Linked issue line — always shown so the tracking state is explicit: a
     // link to the issue when one exists, otherwise a hint pointing at the
     // "Create linked issue" button in the header above (adhoc #189).
@@ -3463,9 +3489,10 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         session->issueNumber > 0
             ? issueLinkHtml(session->issueNumber, session->issueTitle)
             : QStringLiteral("<span style='color:#8b949e'>none yet</span>");
+    QStringList headers;
     QStringList lines;
-    lines << labeled(QStringLiteral("Agent"),
-                     agentProviderName(session->provider).toHtmlEscaped());
+    headers << QStringLiteral("Agent");
+    lines << agentProviderName(session->provider).toHtmlEscaped();
     // Which LLM actually did the work. If the session was launched without an
     // explicit model preference, fall back to the actual model reported by the
     // CLI's system:init event (first event in the stream), so the header never
@@ -3481,8 +3508,8 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
             }
         }
     }
-    lines << labeled(QStringLiteral("Model"),
-                     agentModelLabel(displayModel).toHtmlEscaped());
+    headers << QStringLiteral("Model");
+    lines << agentModelLabel(displayModel).toHtmlEscaped();
     // Permission mode this Claude Code session runs under (the composer's
     // mode selector, captured on the last follow-up). Older sessions have no
     // stored mode, so show the current composer default they'd resume with.
@@ -3497,25 +3524,29 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
                                  : QStringLiteral("Ask before edits"))
                       .toString()
                 : session->mode;
-        lines << labeled(QStringLiteral("Mode"), modeLabel.toHtmlEscaped());
+        headers << QStringLiteral("Mode");
+        lines << modeLabel.toHtmlEscaped();
     }
-    lines << labeled(QStringLiteral("Repo"),
-                     QStringLiteral("%1/%2").arg(session->owner.toHtmlEscaped(),
-                                                 session->name.toHtmlEscaped()));
-    lines << labeled(QStringLiteral("Status"),
-                     agentStatusText(session->status).toHtmlEscaped());
-    lines << labeled(QStringLiteral("Issue"), issueValue);
-    lines << labeled(QStringLiteral("Branch"),
-                     session->branchName.isEmpty()
-                         ? QStringLiteral("(no branch)")
-                         : chipBranchLinkHtml(session->branchName));
-    if (!worktreePath.isEmpty())
-        lines << labeled(QStringLiteral("Worktree"),
-                         worktreeLinkHtml(session->branchName, worktreePath));
-    lines << labeled(QStringLiteral("PR"), pr);
+    headers << QStringLiteral("Repo");
+    lines << QStringLiteral("%1/%2").arg(session->owner.toHtmlEscaped(),
+                                         session->name.toHtmlEscaped());
+    headers << QStringLiteral("Status");
+    lines << agentStatusText(session->status).toHtmlEscaped();
+    headers << QStringLiteral("Issue");
+    lines << issueValue;
+    headers << QStringLiteral("Branch");
+    lines << (session->branchName.isEmpty()
+                  ? QStringLiteral("(no branch)")
+                  : chipBranchLinkHtml(session->branchName));
+    if (!worktreePath.isEmpty()) {
+        headers << QStringLiteral("Worktree");
+        lines << worktreeLinkHtml(session->branchName, worktreePath);
+    }
+    headers << QStringLiteral("PR");
+    lines << pr;
     // Run stats — turns/time/cost/tokens, moved off the sessions table into
     // the detail header so all of a session's figures read together in one
-    // place (adhoc #42). Rendered as a single muted, dot-separated row.
+    // place (adhoc #42). Rendered as a single muted, dot-separated value.
     const qint64 dur = agentEffectiveDurationMs(*session);
     QStringList stats;
     if (session->numTurns > 0)
@@ -3526,12 +3557,12 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
     const qint64 toks = sessionTokenTotal(*session);
     if (toks > 0)
         stats << QStringLiteral("%1 tokens").arg(formatCount(toks));
-    lines << labeled(QStringLiteral("Stats"),
-                     QStringLiteral("<span style='color:#8b949e'>%1</span>")
-                         .arg(stats.join(QStringLiteral(" &middot; "))));
+    headers << QStringLiteral("Stats");
+    lines << stats.join(QStringLiteral(" &middot; "));
+    QString meta = agentDetailTableHtml(headers, lines);
     if (!mergedMeta.isEmpty())
-        lines << mergedMeta;
-    m_agentMeta->setText(lines.join(sep));
+        meta += QStringLiteral("<br>") + mergedMeta;
+    m_agentMeta->setText(meta);
 }
 
 void MainWindow::showAgentSession(int sessionId)
@@ -7921,4 +7952,36 @@ void MainWindow::updateAgentActionState()
         m_agentDeleteAllButton->setEnabled(
             selected && !aiFixBusy && session && !session->branchName.isEmpty()
             && !isExternalSession(m_selectedAgentSessionId));
+    updateQuickAddEnterTarget();
+}
+
+// Restyle the quick-add "new"/"add" send buttons (adhoc #89) so the one Enter
+// currently activates — see the eventFilter Key_Return branch in
+// MainWindowIssues.cpp — carries a green outline and a small Enter badge.
+// Enter follows up on the agent open above ("add") once one is selected,
+// otherwise it starts a fresh agent ("new"); that's the same
+// m_selectedAgentSessionId check the key handler itself uses, so the
+// indicator can never drift from the actual routing.
+void MainWindow::updateQuickAddEnterTarget()
+{
+    const bool toAgent = m_selectedAgentSessionId >= 0 && m_quickAddSendToAgentButton;
+    auto apply = [](QPushButton *button, QLabel *badge, bool isTarget,
+                     const QString &baseTooltip) {
+        if (!button)
+            return;
+        button->setProperty("enterTarget", isTarget);
+        button->setToolTip(isTarget ? baseTooltip + QStringLiteral(" (Enter)")
+                                     : baseTooltip);
+        if (button->style()) {
+            button->style()->unpolish(button);
+            button->style()->polish(button);
+        }
+        button->update();
+        if (badge)
+            badge->setVisible(isTarget);
+    };
+    apply(m_quickAddSendToAgentButton, m_quickAddSendToAgentEnterBadge, toAgent,
+          QStringLiteral("Send to the agent open above, as a follow-up message"));
+    apply(m_quickAddSendButton, m_quickAddSendEnterBadge, !toAgent,
+          QStringLiteral("Send to a new agent"));
 }
