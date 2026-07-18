@@ -17406,9 +17406,21 @@ def _admin_session_valid(env, request, admin):
     return hmac.compare_digest(sig, expected)
 
 
+def _admin_cookie_name(request):
+    # The signed admin cookie embeds the admin name as its first segment;
+    # _admin_session_valid verifies the HMAC actually binds that name.
+    return clean_string(
+        _cookie_value(request, ADMIN_SESSION_COOKIE).split(".")[0],
+        MAX_NODE_NAME).lower()
+
+
 async def _check_admin_page_auth(env, request):
-    params = parse_qs(urlparse(request.url).query)
-    admin = clean_string(params.get("admin", [""])[0], MAX_NODE_NAME).lower()
+    # Auth rides entirely on the signed HttpOnly cookie. The ?admin= query
+    # param is link-continuity state only: requiring it meant an admin who
+    # opened the bare admin path (or landed on it after login) always failed
+    # auth, and /login's silent admin-session resume then redirect-looped
+    # between the two pages forever (adhoc #168).
+    admin = _admin_cookie_name(request)
     return bool(admin and await _is_admin(env, admin) and
                 _admin_session_valid(env, request, admin))
 
@@ -18523,7 +18535,10 @@ class Default(WorkerEntrypoint):
                 },
             )
         params = parse_qs(urlparse(request.url).query)
-        admin_query = _admin_query(params.get("admin", [""])[0])
+        # Nav links carry ?admin= for continuity; fall back to the cookie's
+        # name when the page was opened without the param (adhoc #168).
+        admin_query = _admin_query(params.get("admin", [""])[0]
+                                   or _admin_cookie_name(request))
 
         # POST actions: ?action=disburse retries join-deposit sweeps;
         # ?action=set_password resets a user account's login password. Every
