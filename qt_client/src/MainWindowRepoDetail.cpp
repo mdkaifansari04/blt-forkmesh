@@ -7631,6 +7631,34 @@ QString MainWindow::repoDefaultBranch(const QStringList &branches) const
     return branches.isEmpty() ? QString() : branches.first();
 }
 
+QString MainWindow::repoDefaultBranchFast() const
+{
+    // An explicitly configured default is authoritative and needs no git call.
+    const QString configured = m_repoInfo.defaultBranch.trimmed();
+    if (!configured.isEmpty())
+        return configured;
+    // Otherwise fall back to repoDefaultBranch(), but feed it an *unsorted* ref
+    // listing. `git branch --sort=-committerdate` (what repoBranches() runs)
+    // reads every branch's tip commit and can stall the UI thread for hundreds
+    // of ms on repos with many agent branches; for-each-ref without a sort just
+    // enumerates ref names and is effectively free.
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return QString();
+    QStringList branches;
+    QByteArray out;
+    if (runGitCapture(dir,
+                      {"for-each-ref", "--format=%(refname:short)", "refs/heads/"},
+                      &out, nullptr)) {
+        for (const QString &line : QString::fromUtf8(out).split('\n')) {
+            const QString branch = line.trimmed();
+            if (!branch.isEmpty() && !branches.contains(branch))
+                branches.append(branch);
+        }
+    }
+    return repoDefaultBranch(branches);
+}
+
 void MainWindow::loadBranchesAndTags()
 {
     const QString dir = repoGitDir();
