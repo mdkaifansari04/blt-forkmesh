@@ -6656,12 +6656,12 @@ inline QString languageColor(const QString &lang)
     return colors.value(lang, "#8b949e");
 }
 
-// While >0, the git wait below keeps the GUI event loop breathing instead of
-// blocking the main thread outright. A multi-second git read (a big ls-tree,
-// log --numstat, count-objects, …) would otherwise stop the app answering
-// window-manager pings and get flagged "Not Responding". User input is excluded
-// from the pump so a stray click can't re-enter a load mid-flight; openRepoDetail's
-// m_repoDetailLoading guard backstops anything that still slips through.
+// Depth of GitKeepAlive scopes. waitForGit now pumps on every GUI-thread wait
+// regardless (see its comment), so the counter no longer gates anything; the
+// scopes remain because they document interactive multi-read loads and their
+// re-entrancy guards (openRepoDetail's m_repoDetailLoading, the ScopedFlag
+// pattern below). User input is excluded from the pump so a stray click can't
+// re-enter a load mid-flight.
 // inline so the counter is a single shared instance across every TU that
 // includes this header (the per-feature MainWindow*.cpp files all use GitKeepAlive).
 inline int g_gitKeepAliveDepth = 0;
@@ -6709,9 +6709,13 @@ inline QString gitBlockingCrumb(const QProcess &process)
     return cmd;
 }
 
-// Wait up to 8s for a git subprocess. With a keep-alive scope active, poll in
-// short slices and service the GUI between them so the window stays responsive
-// and spinners animate; otherwise block as before.
+// Wait up to 8s for a git subprocess. On the GUI thread, poll in short slices
+// and service the GUI between them so the window stays responsive and spinners
+// animate; off-thread there is no window to keep painted (and pumping would
+// drain the wrong event queue), so block as before. The pump used to be gated
+// on a GitKeepAlive scope, but the stall log kept filling with >500ms freezes
+// from unscoped call paths (agent-table refreshes, publish/mirror counts,
+// branch lists, run-status handlers …), so every GUI-thread wait now pumps.
 inline bool waitForGit(QProcess &process, QString *err)
 {
     // Breadcrumb for the stall watchdog: if this synchronous wait freezes the GUI
@@ -6720,10 +6724,11 @@ inline bool waitForGit(QProcess &process, QString *err)
     // for off-thread reads rather than clobbering what the GUI thread set.
     std::optional<BlockingCallScope> crumb;
     const QCoreApplication *app = QCoreApplication::instance();
-    if (app && QThread::currentThread() == app->thread())
+    const bool onGuiThread = app && QThread::currentThread() == app->thread();
+    if (onGuiThread)
         crumb.emplace(gitBlockingCrumb(process));
 
-    if (g_gitKeepAliveDepth <= 0) {
+    if (!onGuiThread) {
         if (process.waitForFinished(8000))
             return true;
         process.kill();
@@ -6755,8 +6760,10 @@ inline bool waitForGit(QProcess &process, QString *err)
     return true;
 }
 
-// RAII: keep the GUI responsive across the run of synchronous git reads in an
-// interactive load (a node switch or opening a repo). Nestable.
+// RAII: marks the run of synchronous git reads in an interactive load (a node
+// switch or opening a repo). Nestable. waitForGit pumps on the GUI thread with
+// or without this scope now; the marker is kept for the depth counter and as
+// documentation that the enclosing flow expects pumped re-entrancy.
 struct GitKeepAlive {
     GitKeepAlive() { ++g_gitKeepAliveDepth; }
     ~GitKeepAlive() { --g_gitKeepAliveDepth; }
