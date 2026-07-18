@@ -2966,6 +2966,12 @@ const QString kClaudeFallbackModelSetting =
 // Agents tab and select the new session so the user can watch it run.
 // Default on; can be disabled in Settings.
 const QString kAutoSwitchToAgentSetting = QStringLiteral("agents/autoSwitchToAgent");
+// When on, agent sessions started here in the desktop are published to the web
+// catalog so a repo's website page shows them (and the owner can steer them).
+// Off by default so a locally-started agent stays private to this machine
+// unless the user opts in.
+const QString kPublishAgentsToWebSetting =
+    QStringLiteral("agents/publishToWeb");
 // When an idle agent session's branch would conflict with base (the same
 // condition that shows the "Fix conflicts with agent" button), automatically
 // ask the agent to merge base and resolve the conflicts instead of waiting for
