@@ -1234,6 +1234,8 @@ void MainWindow::loadMirrorNodesPanel()
             static_cast<MirrorActivityStrip *>(m_mirrorActivityStrip)->setNodes({});
             positionMirrorActivityStrip(); // hides the now-empty strip
         }
+        if (m_relayRadar)
+            static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips({});
         m_mirrorNodesTable->setSortingEnabled(true);
         return;
     }
@@ -2057,6 +2059,17 @@ void MainWindow::loadMirrorNodesPanel()
             ->setNodes(activityDots);
         // Re-anchor over the Mirror nodes tab and (re)size to the new dot count.
         positionMirrorActivityStrip();
+    }
+
+    // Echo the same mirror-node dots as blips inside the relay radar, reusing
+    // their colours/shapes so the two read as one thing (adhoc #122).
+    if (m_relayRadar) {
+        QVector<RelayRadarWidget::Blip> blips;
+        blips.reserve(activityDots.size());
+        for (const MirrorActivityStrip::Dot &d : activityDots)
+            blips.append(RelayRadarWidget::Blip{d.id, d.online, d.behind,
+                                                d.integrityFailing});
+        static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips(blips);
     }
 
     if (m_mirrorNodesSummary) {

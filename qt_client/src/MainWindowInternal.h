@@ -1280,6 +1280,25 @@ public:
         update();
     }
 
+    // A mirror node echoed inside the dish as a radar blip, reusing the exact
+    // colours and shapes of the Mirror-nodes activity strip so the two read as
+    // the same thing (adhoc #122): online nodes are green (amber when out of
+    // sync), offline nodes grey, and a node failing the relay's integrity pin
+    // draws as an amber triangle rather than a dot.
+    struct Blip
+    {
+        QString id;
+        bool online = false;
+        bool behind = false;
+        bool integrityFailing = false;
+    };
+
+    void setBlips(const QVector<Blip> &blips)
+    {
+        m_blips = blips;
+        update();
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -1319,6 +1338,32 @@ protected:
         // Centre blip.
         p.setBrush(accent);
         p.drawEllipse(c, 1.4, 1.4);
+
+        // Mirror nodes echoed as blips scattered across the dish, in the same
+        // colours/shapes as the Mirror-nodes activity strip (adhoc #122). Each
+        // node's position is derived from a hash of its id so blips stay put
+        // between repaints instead of jittering as the sweep spins.
+        p.setPen(Qt::NoPen);
+        for (const Blip &b : m_blips) {
+            const uint h = qHash(b.id);
+            const qreal ang = qDegreesToRadians(qreal(h % 360));
+            const qreal frac = 0.42 + qreal((h >> 9) % 100) / 100.0 * 0.42;
+            const QPointF pos = c + QPointF(qCos(ang), qSin(ang)) * (r * frac);
+            const QColor col =
+                b.online ? QColor(b.behind ? "#d29922" : "#3fb950")
+                         : QColor("#484f58");
+            if (b.integrityFailing) {
+                // Amber caution triangle, matching MirrorActivityStrip.
+                p.setBrush(QColor("#d29922"));
+                const qreal s = 2.4;
+                p.drawPolygon(QPolygonF({QPointF(pos.x(), pos.y() - s),
+                                         QPointF(pos.x() + s, pos.y() + s),
+                                         QPointF(pos.x() - s, pos.y() + s)}));
+            } else {
+                p.setBrush(col);
+                p.drawEllipse(pos, 1.8, 1.8);
+            }
+        }
 
         // Latency text / alert, centered in the middle of the dish — mirrors
         // how ResourceSparkline overlays its value on top of its chart.
@@ -1389,6 +1434,7 @@ private:
     bool m_unreachable = false; // relay failed to answer the last probe
     int m_angle = 0;            // sweep rotation (degrees)
     QTimer *m_sweep = nullptr;  // drives the spin
+    QVector<Blip> m_blips;      // mirror nodes echoed as blips inside the dish
 };
 
 // A plain track-and-knob on/off switch, used for controls where the state is a
