@@ -88,11 +88,18 @@
                     <h2 class="text-2xl font-semibold tracking-normal text-foreground">Public profile</h2>
                     <div class="mt-5 grid gap-10 xl:grid-cols-[minmax(0,42rem)_20rem]">
                       <div class="grid min-w-0 content-start gap-5">
-                        <label class="grid gap-2 text-sm font-semibold text-foreground">
-                          Name
-                          <span data-profile-page-node-name class="flex h-10 items-center rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground">My Profile</span>
-                          <span class="text-sm font-normal leading-5 text-muted-foreground">Your node name appears around ForkMesh where you contribute or are mentioned.</span>
-                        </label>
+                        <div class="grid gap-2">
+                          <label class="grid gap-2 text-sm font-semibold text-foreground">
+                            Username
+                            <input data-profile-rename-input type="text" inputmode="latin" autocomplete="off" placeholder="new-username" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                          </label>
+                          <span class="text-sm font-normal leading-5 text-muted-foreground">Your username is your node name and repository namespace. It appears around ForkMesh where you contribute or are mentioned; renaming moves owned repository URLs to the new namespace.</span>
+                          <input data-profile-rename-password type="password" autocomplete="current-password" placeholder="Current password" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
+                          <p data-profile-rename-status class="min-h-4 text-xs text-muted-foreground">Enter a new username to check availability.</p>
+                          <button data-profile-rename-save type="button" disabled class="inline-flex h-9 w-fit items-center justify-center rounded-md border border-border bg-secondary px-4 text-sm font-semibold text-foreground opacity-40 hover:bg-muted transition-colors">
+                            Update username
+                          </button>
+                        </div>
 
                         <label id="settings-email" class="grid gap-2 text-sm font-semibold text-foreground">
                           Public email
@@ -324,17 +331,7 @@
 
                   <section id="settings-account" data-settings-section="account" class="hidden pb-8">
                     <h2 class="text-2xl font-semibold tracking-normal text-foreground">Account</h2>
-                    <p class="mt-1 text-sm leading-6 text-muted-foreground">Your node name is your public account and repository namespace. Renaming it moves owned repository URLs to the new namespace.</p>
-                    <div class="mt-5 grid max-w-2xl gap-4">
-                      <label class="grid gap-2 text-sm font-semibold text-foreground">
-                        New node name
-                        <input data-profile-rename-input type="text" inputmode="latin" autocomplete="off" placeholder="new-node-name" class="h-10 rounded-md border border-border bg-card px-3 text-sm font-normal text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-[#2f81f7]" />
-                      </label>
-                      <p data-profile-rename-status class="min-h-4 text-xs text-muted-foreground">Enter a new node name to check availability.</p>
-                      <button data-profile-rename-save type="button" disabled class="inline-flex h-9 w-fit items-center justify-center rounded-md border border-border bg-secondary px-4 text-sm font-semibold text-foreground opacity-40 hover:bg-muted transition-colors">
-                        Update node name
-                      </button>
-                    </div>
+                    <p class="mt-1 text-sm leading-6 text-muted-foreground">Your node name is your public account and repository namespace. Change your username from the <button data-settings-section-link="public-profile" type="button" class="font-semibold text-[#2f81f7] hover:underline">Public profile</button> settings — renaming it moves owned repository URLs to the new namespace.</p>
                   </section>
 
                   <section id="settings-nodes" data-settings-section="nodes" class="hidden pb-8">
