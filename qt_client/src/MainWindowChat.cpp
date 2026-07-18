@@ -644,14 +644,25 @@ QWidget *MainWindow::buildNetworkLogDock()
     // new issue" send path, kept visually distinct from the "add" button that
     // follows up on the agent already open above. A touch bigger than the old
     // icon-only square so the label reads clearly.
-    auto *quickAddSendButton = new QPushButton(QStringLiteral("new"));
-    quickAddSendButton->setObjectName("quickAddSendIcon");
-    quickAddSendButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(quickAddSendButton, "paper-airplane", 17);
-    quickAddSendButton->setFixedSize(58, 28);
-    quickAddSendButton->setToolTip("Send to a new agent (Enter)");
-    connect(quickAddSendButton, &QPushButton::clicked, this,
+    m_quickAddSendButton = new QPushButton(QStringLiteral("new"));
+    m_quickAddSendButton->setObjectName("quickAddSendIcon");
+    m_quickAddSendButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_quickAddSendButton, "paper-airplane", 17);
+    m_quickAddSendButton->setFixedSize(58, 28);
+    connect(m_quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
+    // Green "Enter" badge (adhoc #89): shown on whichever of the two send
+    // buttons Enter currently activates, kept in sync by
+    // updateQuickAddEnterTarget(). Parented to the button so it rides along
+    // without needing its own layout slot; both buttons are fixed-size so a
+    // one-time corner position is enough.
+    m_quickAddSendEnterBadge = new QLabel(QStringLiteral("⏎"), m_quickAddSendButton);
+    m_quickAddSendEnterBadge->setObjectName("quickAddEnterBadge");
+    m_quickAddSendEnterBadge->setAlignment(Qt::AlignCenter);
+    m_quickAddSendEnterBadge->setFixedSize(14, 14);
+    m_quickAddSendEnterBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_quickAddSendEnterBadge->move(m_quickAddSendButton->width() - 12, -5);
+    m_quickAddSendEnterBadge->hide();
 
     // Second paper airplane, rotated to point straight up, stacked above the
     // regular send icon (adhoc #99): sends the typed prompt as a follow-up
@@ -662,8 +673,15 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendToAgentButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_quickAddSendToAgentButton, "paper-airplane", 17, -45.0);
     m_quickAddSendToAgentButton->setFixedSize(58, 28);
-    m_quickAddSendToAgentButton->setToolTip(
-        "Send to the agent open above, as a follow-up message");
+    m_quickAddSendToAgentEnterBadge =
+        new QLabel(QStringLiteral("⏎"), m_quickAddSendToAgentButton);
+    m_quickAddSendToAgentEnterBadge->setObjectName("quickAddEnterBadge");
+    m_quickAddSendToAgentEnterBadge->setAlignment(Qt::AlignCenter);
+    m_quickAddSendToAgentEnterBadge->setFixedSize(14, 14);
+    m_quickAddSendToAgentEnterBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_quickAddSendToAgentEnterBadge->move(
+        m_quickAddSendToAgentButton->width() - 12, -5);
+    m_quickAddSendToAgentEnterBadge->hide();
     connect(m_quickAddSendToAgentButton, &QPushButton::clicked, this, [this] {
         if (!m_issueQuickAdd)
             return;
@@ -710,7 +728,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     sendColumn->setContentsMargins(0, 0, 0, 0);
     sendColumn->setSpacing(2);
     sendColumn->addWidget(m_quickAddSendToAgentButton);
-    sendColumn->addWidget(quickAddSendButton);
+    sendColumn->addWidget(m_quickAddSendButton);
+    // Enter targets "new" until an agent session is opened above.
+    updateQuickAddEnterTarget();
 
     // Agent hand-off controls (adhoc #99): the provider/model/mode dropdowns,
     // grouped as one unit in the middle of the bottom bar. The provider dropdown
@@ -3232,6 +3252,10 @@ QWidget *MainWindow::buildBreadcrumb()
     searchClusterRow->addWidget(createGlobalSearchBox());
     chromeRow->addWidget(searchCluster, 0, Qt::AlignCenter);
     chromeRow->addStretch();
+    // Relay radar, moved up onto the window-chrome line just left of the
+    // CPU/MEM/DISK sparklines so its latency readout reads the same way as
+    // theirs (adhoc #87).
+    chromeRow->addWidget(m_relayRadar);
     // Live CPU/MEM/DISK sparklines, moved up onto the window-chrome line next
     // to the minimize/maximize/close buttons (adhoc #33).
     chromeRow->addWidget(cpuChart);
@@ -3276,7 +3300,8 @@ QWidget *MainWindow::buildBreadcrumb()
     mainRow->setSpacing(8);
     mainRow->addWidget(m_relayIconButton);
     mainRow->addWidget(m_relayLabel);
-    mainRow->addWidget(m_relayRadar); // radar + latency, left of the relay name
+    // m_relayRadar (radar + latency) now lives on the window-chrome line, just
+    // left of the CPU/MEM/DISK sparklines (adhoc #87).
     mainRow->addWidget(m_relayMenuButton);
     mainRow->addWidget(m_relayOpenButton);
     mainRow->addSpacing(10);

@@ -7949,4 +7949,36 @@ void MainWindow::updateAgentActionState()
         m_agentDeleteAllButton->setEnabled(
             selected && !aiFixBusy && session && !session->branchName.isEmpty()
             && !isExternalSession(m_selectedAgentSessionId));
+    updateQuickAddEnterTarget();
+}
+
+// Restyle the quick-add "new"/"add" send buttons (adhoc #89) so the one Enter
+// currently activates — see the eventFilter Key_Return branch in
+// MainWindowIssues.cpp — carries a green outline and a small Enter badge.
+// Enter follows up on the agent open above ("add") once one is selected,
+// otherwise it starts a fresh agent ("new"); that's the same
+// m_selectedAgentSessionId check the key handler itself uses, so the
+// indicator can never drift from the actual routing.
+void MainWindow::updateQuickAddEnterTarget()
+{
+    const bool toAgent = m_selectedAgentSessionId >= 0 && m_quickAddSendToAgentButton;
+    auto apply = [](QPushButton *button, QLabel *badge, bool isTarget,
+                     const QString &baseTooltip) {
+        if (!button)
+            return;
+        button->setProperty("enterTarget", isTarget);
+        button->setToolTip(isTarget ? baseTooltip + QStringLiteral(" (Enter)")
+                                     : baseTooltip);
+        if (button->style()) {
+            button->style()->unpolish(button);
+            button->style()->polish(button);
+        }
+        button->update();
+        if (badge)
+            badge->setVisible(isTarget);
+    };
+    apply(m_quickAddSendToAgentButton, m_quickAddSendToAgentEnterBadge, toAgent,
+          QStringLiteral("Send to the agent open above, as a follow-up message"));
+    apply(m_quickAddSendButton, m_quickAddSendEnterBadge, !toAgent,
+          QStringLiteral("Send to a new agent"));
 }
