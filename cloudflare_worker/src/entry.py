@@ -2741,6 +2741,10 @@ SCHEMA_ALTER_STATEMENTS = [
     "ALTER TABLE accounts ADD COLUMN ip_bi TEXT",
     # Raw User-Agent of each release download, shown in the admin list (migration 0034).
     "ALTER TABLE release_downloads ADD COLUMN ua TEXT",
+    # Operator-settable flag granting a user access to the /outreach console
+    # without a roster row (migration 0040). Mirrors is_admin on both tables.
+    "ALTER TABLE accounts ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -7959,6 +7963,42 @@ async def _account_logout(env, request):
     )
 
 
+async def _account_admin_session(env, request):
+    # Re-mint the HttpOnly `forkmesh_admin` page cookie from a still-valid
+    # account session token, so an admin the app already treats as logged in
+    # (localStorage session + 30-day forkmesh_session marker) doesn't have to
+    # retype their password just to open the admin dashboard. The 12h admin
+    # cookie is set only by _account_login and lapses long before the login
+    # session does, which is why the admin page used to bounce a logged-in
+    # admin back to /login (adhoc #163). The session token — issued only to an
+    # already-authenticated caller and refreshed on every account poll — proves
+    # identity here; is_admin gates the grant, so this never escalates.
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    token = clean_string((data or {}).get("sessionToken", ""), 512).strip()
+    if not token:
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = clean_string(auth[7:], 512).strip()
+    name = _account_session_token_name(env, token)
+    if not name or not await _is_admin(env, name):
+        return json_response(
+            {"error": "not_admin"},
+            status=403,
+            extra_headers={"Set-Cookie": _clear_admin_session_cookie()},
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    admin_path = _admin_path(env)
+    admin_url = ("/" + admin_path + "?admin=" + quote(name)) if admin_path else ""
+    return json_response(
+        {"ok": True, "nodeName": name, "adminUrl": admin_url},
+        extra_headers={"Set-Cookie": _admin_session_cookie(env, name)},
+        cache_control="no-store, max-age=0, must-revalidate",
+    )
+
+
 def _random_bytes(n):
     return bytes(js_crypto.getRandomValues(Uint8Array.new(n)).to_py())
 
@@ -9987,6 +10027,25 @@ OUTREACH_TEMPLATES = [
         ),
     },
     {
+        "key": "investor",
+        "label": "Investor outreach",
+        "subject": "ForkMesh — decentralized code hosting (investor intro)",
+        "body": (
+            "Hi [name],\n\n"
+            "I'm [your name], one of the founders of ForkMesh "
+            "(https://forkmesh.com) — an open-source, peer-to-peer network for "
+            "hosting and mirroring Git repositories, where independent "
+            "operators run nodes and earn a share of the network's funding for "
+            "keeping projects online.\n\n"
+            "We're raising [round] to grow the relay infrastructure and node "
+            "payout network, and I'm reaching out because [why this investor]. "
+            "[Traction so far — nodes online, repos mirrored, revenue, etc.]\n\n"
+            "Could I send over our deck, or grab 20 minutes in the next week "
+            "or two to walk you through where the network is heading?\n\n"
+            "Best,\n[your name]\nForkMesh — founders@forkmesh.com"
+        ),
+    },
+    {
         "key": "partnership",
         "label": "Partnership / integration",
         "subject": "Partnering with ForkMesh",
@@ -10032,6 +10091,26 @@ async def _outreach_member(env, name):
     row = await d1_first(
         env, "SELECT name FROM outreach_team WHERE name_bi=?", name_bi)
     return bool(row)
+
+
+async def _outreach_enabled(env, name):
+    # Per-user access flag (accounts/users.enable_outreach), the operator-settable
+    # sibling of is_admin. Grant it directly in the DB to give a user the /outreach
+    # console without a roster row: UPDATE accounts SET enable_outreach=1 WHERE
+    # name='<node>' (or the same on users once the account has migrated).
+    name = (name or "").strip().lower()
+    if not name:
+        return False
+    name_bi = await blind_index(env, name)
+    try:
+        row = await d1_first(
+            env, "SELECT enable_outreach FROM accounts WHERE name_bi=?", name_bi)
+        if not row:
+            row = await d1_first(
+                env, "SELECT enable_outreach FROM users WHERE user_bi=?", name_bi)
+    except Exception:
+        return False  # column may predate migration 0040
+    return bool(row and int(row.get("enable_outreach", 0) or 0))
 
 
 async def _outreach_team_list(env):
@@ -10162,7 +10241,8 @@ async def outreach_handler(env, request):
         return json_response({"error": "unauthorized"}, status=401)
     name = (rec.get("name", "") or "").strip().lower()
     is_admin = await _is_admin(env, name)
-    allowed = is_admin or await _outreach_member(env, name)
+    allowed = (is_admin or await _outreach_member(env, name)
+               or await _outreach_enabled(env, name))
     if path == "/api/outreach" and method in ("GET", "POST"):
         return await _outreach_access(env, name, is_admin, allowed)
     if path == "/api/outreach/send" and method == "POST":
@@ -11003,6 +11083,8 @@ async def accounts_handler(env, request):
         return await _account_rotate(env, request)
     if url.path == "/api/accounts/logout" and method == "POST":
         return await _account_logout(env, request)
+    if url.path == "/api/accounts/admin-session" and method == "POST":
+        return await _account_admin_session(env, request)
     if url.path == "/api/accounts/rotate" and method == "POST":
         return await _account_rotate(env, request)
     if url.path == "/api/accounts/forgot-password" and method == "POST":
@@ -17951,7 +18033,7 @@ def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=
         tables = sorted(tables, key=lambda t: counts.get(t, 0), reverse=True)
     toggle_label = "A–Z" if sort_records else "Sort by records"
     toggle_href = _admin_href(admin_query, table=active,
-                              sort=("" if sort_records else "records"))
+                              sort=("name" if sort_records else "records"))
     links = ['<div class="sec">Tables <a class="navsort" href="%s">%s</a></div>'
              % (toggle_href, toggle_label)]
     for t in tables:
@@ -17960,10 +18042,11 @@ def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=
         n = counts.get(t)
         suffix = (' <span class="navcount">%d</span>' % n) if n is not None else ""
         # Carry the active sort along: sort state lives only in the URL, so a
-        # table link that dropped it would silently reset the nav to A–Z.
+        # table link that dropped it would silently reset the nav to the
+        # most-records-first default.
         links.append('<a href="%s"%s>%s%s</a>'
                      % (_admin_href(admin_query, table=t,
-                                    sort=("records" if sort_records else "")),
+                                    sort=("records" if sort_records else "name")),
                         cls, _html_escape(label), suffix))
     return "<nav>" + "".join(links) + "</nav>"
 
@@ -18566,7 +18649,9 @@ class Default(WorkerEntrypoint):
             except Exception:
                 counts[t] = 0
         stats = await admin_stats(self.env)
-        sort_records = params.get("sort", [""])[0] == "records"
+        # Default the table browser to most-records-first; ?sort=name opts back
+        # into the A–Z ordering.
+        sort_records = params.get("sort", [""])[0] != "name"
         return Response(
             render_admin_html(stats, tables, active, table_html, banner, counts,
                               csrf_field=csrf_field, admin_query=admin_query,

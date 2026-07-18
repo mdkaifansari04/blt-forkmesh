@@ -15,8 +15,13 @@ SCHEMA_STATEMENTS = [
     # which lives only inside the encrypted `data` blob. It lets anti-abuse count
     # how many accounts share a source IP for uniqueness without storing or
     # exposing a reversible address (migration 0015).
+    # enable_outreach is an operator-settable flag, like is_admin, that grants a
+    # user access to the founders /outreach console without adding them to the
+    # outreach_team roster: UPDATE accounts SET enable_outreach=1 WHERE name='alice'
+    # (migration 0040).
     "CREATE TABLE IF NOT EXISTS accounts (name_bi TEXT PRIMARY KEY, data TEXT NOT NULL, "
-    "email_bi TEXT, name TEXT, is_admin INTEGER NOT NULL DEFAULT 0, ip_bi TEXT)",
+    "email_bi TEXT, name TEXT, is_admin INTEGER NOT NULL DEFAULT 0, ip_bi TEXT, "
+    "enable_outreach INTEGER NOT NULL DEFAULT 0)",
     "CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email_bi)",
     "CREATE INDEX IF NOT EXISTS idx_accounts_ip ON accounts(ip_bi)",
     """CREATE TABLE IF NOT EXISTS users (
@@ -25,7 +30,8 @@ SCHEMA_STATEMENTS = [
         email_bi TEXT,
         username TEXT,
         is_admin INTEGER NOT NULL DEFAULT 0,
-        ip_bi TEXT)""",
+        ip_bi TEXT,
+        enable_outreach INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email_bi)",
     "CREATE INDEX IF NOT EXISTS idx_users_ip ON users(ip_bi)",
     """CREATE TABLE IF NOT EXISTS nodes (
