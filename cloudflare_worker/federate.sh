@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fediverse (ActivityPub) go-live helper for the ForkMesh relay.
+# Fediverse (ActivityPub) go-live helper for the ForkMesh relay
 #
 # "Connecting to the fediverse" needs no registration anywhere: once the
 # Worker with the /ap/* layer is deployed, being reachable at the well-known
