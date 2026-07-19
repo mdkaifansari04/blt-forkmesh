@@ -901,7 +901,13 @@ private:
     void persistEditsToActiveServer();
     void loadCachedFavicons();
     void fetchFavicon(int index);
+    void fetchFaviconForHost(const QString &host);
+    void fetchFaviconFromUrl(const QString &host, const QUrl &url);
     QPixmap faviconFor(const ServerConfig &server) const;
+    // Network-log favicons (adhoc #190): show each request's site icon inline.
+    QString logFaviconTag(const QString &message);
+    void registerLogFaviconResource(const QString &host);
+    void refreshLogFavicon(const QString &host);
     QWidget *buildHomeSection();
     // Node profile: full-page centered section (index 10 in m_sectionStack).
     QWidget *buildNodeProfileSection();
@@ -3110,6 +3116,7 @@ private:
     QList<ServerConfig> m_servers;
     int m_activeServer = 0;
     QHash<QString, QPixmap> m_faviconCache; // host -> favicon
+    QSet<QString> m_faviconFetching;        // hosts with an in-flight favicon GET
 
     // Donation nudge banner (no Solana address yet).
     QWidget *m_solanaBanner = nullptr;
