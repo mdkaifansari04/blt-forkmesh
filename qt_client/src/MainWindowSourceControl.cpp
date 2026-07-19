@@ -10,8 +10,10 @@
 #include "KebabHeaderView.h"
 
 #include <QLayout>
+#include <QFutureWatcher>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
 
@@ -2436,6 +2438,150 @@ void MainWindow::refreshRepoQuality()
                           QStringLiteral("No quality findings at this ref."));
 
     m_qualityFindingsTable->setSortingEnabled(true);
+}
+
+namespace {
+// Working-tree scan for the Size map tab (adhoc #189): raw on-disk bytes,
+// .git excluded, symlinks skipped so link cycles can't loop or inflate the
+// totals. Depth is capped — deeper directories still count toward every
+// ancestor's size, they just stop producing children of their own. Runs on a
+// QtConcurrent thread, so nothing here may touch widgets or MainWindow state.
+constexpr int kSizeMapMaxDepth = 8;
+
+SunburstNode scanDirectorySizes(const QString &path, int depth)
+{
+    SunburstNode node;
+    node.name = QFileInfo(path).fileName();
+    const QFileInfoList entries = QDir(path).entryInfoList(
+        QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden |
+        QDir::System | QDir::NoSymLinks);
+    for (const QFileInfo &info : entries) {
+        if (info.isDir()) {
+            if (info.fileName() == QLatin1String(".git"))
+                continue;
+            SunburstNode child =
+                scanDirectorySizes(info.absoluteFilePath(), depth + 1);
+            node.size += child.size;
+            node.fileCount += child.fileCount;
+            if (depth < kSizeMapMaxDepth && child.size > 0)
+                node.children.append(std::move(child));
+        } else {
+            node.size += info.size();
+            node.fileCount += 1;
+        }
+    }
+    std::sort(node.children.begin(), node.children.end(),
+              [](const SunburstNode &a, const SunburstNode &b) {
+                  return a.size > b.size;
+              });
+    return node;
+}
+} // namespace
+
+QWidget *MainWindow::buildSizeMapTab()
+{
+    auto *page = new QWidget;
+    page->setObjectName("mainContent");
+
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(18, 18, 18, 18);
+    layout->setSpacing(10);
+
+    auto *heading = new QLabel("Size map");
+    heading->setObjectName("channelTitle");
+    auto *subtitle = new QLabel(
+        "How the working tree's bytes spread across directories (.git "
+        "excluded). Click a directory to zoom in, the centre to zoom back out; "
+        "a ring's unfilled span is the files sitting directly in that "
+        "directory.");
+    subtitle->setObjectName("statusLine");
+    subtitle->setWordWrap(true);
+
+    auto *refresh = new QPushButton("Rescan");
+    refresh->setObjectName("ghostButton");
+    refresh->setProperty("buttonSize", "sm");
+    refresh->setCursor(Qt::PointingHandCursor);
+    setOcticon(refresh, "sync", 16);
+    connect(refresh, &QPushButton::clicked, this,
+            [this] { refreshSizeMapTab(true); });
+    addRefreshSpin(refresh);
+
+    auto *headingCol = new QVBoxLayout;
+    headingCol->setContentsMargins(0, 0, 0, 0);
+    headingCol->setSpacing(3);
+    headingCol->addWidget(heading);
+    headingCol->addWidget(subtitle);
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    headerRow->setSpacing(8);
+    headerRow->addLayout(headingCol, 1);
+    headerRow->addWidget(refresh, 0, Qt::AlignTop);
+    layout->addLayout(headerRow);
+
+    m_sizeMapStatus = new QLabel;
+    m_sizeMapStatus->setObjectName("statusLine");
+    m_sizeMapStatus->setWordWrap(true);
+    layout->addWidget(m_sizeMapStatus);
+
+    auto *chart = new RepoSunburstChart;
+    m_sizeMapChart = chart;
+    layout->addWidget(chart, 1);
+    return page;
+}
+
+void MainWindow::refreshSizeMapTab(bool force)
+{
+    auto *chart = static_cast<RepoSunburstChart *>(m_sizeMapChart);
+    if (!chart || !m_sizeMapStatus)
+        return;
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QString path =
+        writableRecordFor(m_repositories.at(m_repoDetailIndex)).localPath;
+    if (path.isEmpty() || !QDir(path).exists()) {
+        chart->clear();
+        m_sizeMapScannedPath.clear();
+        m_sizeMapStatus->setText(
+            "No local working copy to scan for this repository.");
+        return;
+    }
+    if (!force && m_sizeMapScannedPath == path)
+        return; // the chart already shows this working copy
+    if (m_sizeMapScanning)
+        return;
+    m_sizeMapScanning = true;
+    const int epoch = ++m_sizeMapScanEpoch;
+    m_sizeMapStatus->setText(
+        QStringLiteral("Scanning %1 …").arg(QDir::toNativeSeparators(path)));
+    auto *watcher = new QFutureWatcher<SunburstNode>(this);
+    connect(watcher, &QFutureWatcher<SunburstNode>::finished, this,
+            [this, watcher, path, epoch] {
+                watcher->deleteLater();
+                m_sizeMapScanning = false;
+                if (epoch != m_sizeMapScanEpoch)
+                    return; // a newer scan superseded this one
+                SunburstNode root = watcher->result();
+                // The user may have opened another repo while the scan ran —
+                // a stale tree would mislabel the chart, so rescan instead.
+                if (m_repoDetailIndex >= 0 &&
+                    m_repoDetailIndex < m_repositories.size() &&
+                    writableRecordFor(m_repositories.at(m_repoDetailIndex))
+                            .localPath != path) {
+                    refreshSizeMapTab(false);
+                    return;
+                }
+                m_sizeMapScannedPath = path;
+                m_sizeMapStatus->setText(
+                    QStringLiteral("%1 files · %2 on disk (.git excluded)")
+                        .arg(QLocale().toString(root.fileCount),
+                             QLocale().formattedDataSize(root.size)));
+                if (auto *liveChart =
+                        static_cast<RepoSunburstChart *>(m_sizeMapChart))
+                    liveChart->setRoot(std::move(root));
+            });
+    watcher->setFuture(
+        QtConcurrent::run([path] { return scanDirectorySizes(path, 0); }));
 }
 
 QWidget *MainWindow::buildInsightsTab()

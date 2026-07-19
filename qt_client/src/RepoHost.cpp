@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMap>
 #include <QPointer>
 #include <QProcess>
 #include <QRegularExpression>
@@ -17,6 +18,9 @@
 #include <QThread>
 #include <QTimer>
 #include <QVector>
+
+#include <algorithm>
+#include <functional>
 
 #include <utility>
 
@@ -760,6 +764,104 @@ QJsonObject statsReplyFor(const QString &mirrorPath, const QString &branch)
                        {"contributorCount", contributors.size()}};
 }
 
+// Directory-size tree for the website's size-map sunburst (adhoc #189). One
+// `ls-tree -r -l` pass yields every blob's path and byte size; folding those
+// into a nested directory tree here spares the site fetching per-blob sizes.
+// Children are subdirectories only, largest first — the gap between a
+// directory's total and the sum of its children is the bytes held in files
+// directly inside it, which the chart renders as unfilled span (HDGraph
+// style). Depth is capped (deeper trees collapse into their depth-8 ancestor)
+// and each directory serialises at most its 40 largest children, folding the
+// rest into a single "…" entry, so the reply stays bounded on huge repos.
+QJsonObject sizesReplyFor(const QString &mirrorPath, const QString &branch)
+{
+    const QString ref = refForRepoPath(mirrorPath, QString(), branch);
+    if (ref.isEmpty())
+        return {{"ok", false}, {"error", "empty_repo"}};
+
+    QByteArray treeOut;
+    QString gitErr;
+    if (!runGit(mirrorPath, {"ls-tree", "-r", "-l", "-z", ref}, treeOut, &gitErr))
+        return {{"ok", false},
+                {"error", gitErr.isEmpty() ? QStringLiteral("ls_tree_failed") : gitErr}};
+
+    constexpr int kMaxDepth = 8;
+    constexpr int kMaxChildren = 40;
+    struct DirNode {
+        QString name;
+        qint64 size = 0;
+        QMap<QString, int> children; // child dir name -> index into nodes
+    };
+    QVector<DirNode> nodes;
+    nodes.append(DirNode()); // 0 = repo root
+    int fileCount = 0;
+    for (const QByteArray &record : treeOut.split('\0')) {
+        if (record.isEmpty())
+            continue;
+        const int tab = record.indexOf('\t');
+        if (tab < 0)
+            continue;
+        const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
+        if (meta.size() < 4 || meta.at(1) != "blob")
+            continue;
+        bool ok = false;
+        const qlonglong size = meta.at(3).toLongLong(&ok);
+        if (!ok || size < 0)
+            continue;
+        fileCount += 1;
+        const QStringList parts =
+            QString::fromUtf8(record.mid(tab + 1)).split('/');
+        int at = 0;
+        nodes[0].size += size;
+        for (int depth = 0; depth + 1 < parts.size() && depth < kMaxDepth;
+             ++depth) {
+            const QString &dir = parts.at(depth);
+            int child = nodes.at(at).children.value(dir, -1);
+            if (child < 0) {
+                child = nodes.size();
+                DirNode node;
+                node.name = dir;
+                nodes.append(node);
+                nodes[at].children.insert(dir, child);
+            }
+            nodes[child].size += size;
+            at = child;
+        }
+    }
+
+    std::function<QJsonArray(int)> childrenJson = [&](int at) {
+        QList<int> kids = nodes.at(at).children.values();
+        std::sort(kids.begin(), kids.end(), [&](int a, int b) {
+            return nodes.at(a).size > nodes.at(b).size;
+        });
+        QJsonArray out;
+        qint64 folded = 0;
+        for (int i = 0; i < kids.size(); ++i) {
+            if (out.size() >= kMaxChildren) {
+                folded += nodes.at(kids.at(i)).size;
+                continue;
+            }
+            const int kid = kids.at(i);
+            QJsonObject entry{{"name", nodes.at(kid).name},
+                              {"size", double(nodes.at(kid).size)}};
+            const QJsonArray sub = childrenJson(kid);
+            if (!sub.isEmpty())
+                entry.insert("children", sub);
+            out.append(entry);
+        }
+        if (folded > 0)
+            out.append(QJsonObject{{"name", QStringLiteral("…")},
+                                   {"size", double(folded)}});
+        return out;
+    };
+
+    return QJsonObject{{"ok", true},
+                       {"name", QString()},
+                       {"size", double(nodes.at(0).size)},
+                       {"fileCount", fileCount},
+                       {"children", childrenJson(0)}};
+}
+
 QString imageMimeForPath(const QString &path)
 {
     const QString lower = path.toLower();
@@ -1215,6 +1317,8 @@ void RepoHost::handleRequest(const QJsonObject &request)
         action = QStringLiteral("list branches");
     else if (op == "search")
         action = QStringLiteral("search '%1'").arg(path);
+    else if (op == "sizes")
+        action = QStringLiteral("size map (directory sizes)");
     else if (op == "release-blob")
         action = QStringLiteral("download release asset %1").arg(path);
     else
@@ -1355,6 +1459,24 @@ void RepoHost::handleRequest(const QJsonObject &request)
         const QString repoBranch = branch;
         runOffThread(
             [mirrorPath, repoBranch] { return statsReplyFor(mirrorPath, repoBranch); },
+            [this, reqId, op](QJsonObject reply) {
+                reply.insert("type", "response");
+                reply.insert("reqId", reqId);
+                reply.insert("op", op);
+                reply.insert("path", QString());
+                sendText(QJsonDocument(reply).toJson(QJsonDocument::Compact));
+            });
+        return;
+    }
+
+    // Size-map sunburst data (adhoc #189): like "stats", a full ls-tree pass,
+    // so it runs off the GUI thread. Carries no repo path, so it bypasses the
+    // isSafeRepoPath gate.
+    if (op == "sizes") {
+        const QString mirrorPath = m_mirrorPath;
+        const QString repoBranch = branch;
+        runOffThread(
+            [mirrorPath, repoBranch] { return sizesReplyFor(mirrorPath, repoBranch); },
             [this, reqId, op](QJsonObject reply) {
                 reply.insert("type", "response");
                 reply.insert("reqId", reqId);
