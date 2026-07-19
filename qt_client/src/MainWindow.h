@@ -3715,6 +3715,8 @@ private:
     // lands after the user switched repos.
     QWidget *m_sizeMapChart = nullptr;
     QLabel *m_sizeMapStatus = nullptr;
+    // Checkbox that drops .gitignored paths from the scan (adhoc #197).
+    QCheckBox *m_sizeMapHideIgnored = nullptr;
     QString m_sizeMapScannedPath;
     bool m_sizeMapScanning = false;
     int m_sizeMapScanEpoch = 0;
