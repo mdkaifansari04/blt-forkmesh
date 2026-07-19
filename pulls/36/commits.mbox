@@ -1,0 +1,30 @@
+From 0fb36550fdd3cab843bda504fd0a7814fac35b07 Mon Sep 17 00:00:00 2001
+From: forkmesh <forkmesh@users.forkmesh.local>
+Date: Sun, 19 Jul 2026 16:39:41 -0400
+Subject: [PATCH] Fix stale test assertion after g_surviveTerminationSignals
+ became a ref count
+
+Commit 670db583 changed g_surviveTerminationSignals from std::atomic_bool to
+std::atomic_int so multiple parallel action runs can each hold termination-
+signal survival without one finishing early and dropping protection for the
+others, but left this test still asserting the old atomic_bool declaration.
+---
+ cloudflare_worker/tests/test_sentry_worker.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/cloudflare_worker/tests/test_sentry_worker.py b/cloudflare_worker/tests/test_sentry_worker.py
+index a23390f4..16ffc83c 100644
+--- a/cloudflare_worker/tests/test_sentry_worker.py
++++ b/cloudflare_worker/tests/test_sentry_worker.py
+@@ -319,7 +319,7 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
+     assert "SIGXFSZ (file size limit exceeded)" in CRASH_HANDLER_CPP_TEXT
+     assert "SIGTERM, SIGINT" in CRASH_HANDLER_CPP_TEXT
+     assert "SIGKILL or SIGSTOP" in CRASH_HANDLER_CPP_TEXT
+-    assert "std::atomic_bool g_surviveTerminationSignals" in CRASH_HANDLER_CPP_TEXT
++    assert "std::atomic_int g_surviveTerminationSignals" in CRASH_HANDLER_CPP_TEXT
+     assert "bool isTerminationSignal(int sig)" in CRASH_HANDLER_CPP_TEXT
+     assert "g_surviveTerminationSignals.load(std::memory_order_relaxed)" in CRASH_HANDLER_CPP_TEXT
+     assert "termination signal survived" in CRASH_HANDLER_CPP_TEXT
+-- 
+2.47.3
+
