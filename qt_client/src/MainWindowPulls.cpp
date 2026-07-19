@@ -1407,7 +1407,8 @@ void MainWindow::renderPullReviewSummary(PullRequest pr)
             ++passed;
         else if (run->status == ActionStatus::Failed ||
                  run->status == ActionStatus::Rejected ||
-                 run->status == ActionStatus::Cancelled)
+                 run->status == ActionStatus::Cancelled ||
+                 run->status == ActionStatus::Skipped)
             ++failed;
         else if (run->status == ActionStatus::Running)
             ++running;
@@ -2891,7 +2892,7 @@ void MainWindow::renderPullCommits(PullRequest pr)
             return QString();
         const auto rank = [](const QString &s) {
             if (s == ActionStatus::Failed || s == ActionStatus::Rejected ||
-                s == ActionStatus::Cancelled)
+                s == ActionStatus::Cancelled || s == ActionStatus::Skipped)
                 return 4;
             if (s == ActionStatus::Running)
                 return 3;
@@ -2918,7 +2919,7 @@ void MainWindow::renderPullCommits(PullRequest pr)
         if (status == ActionStatus::Success)
             return QString::fromUtf8("\xE2\x9C\x93 "); // check mark
         if (status == ActionStatus::Failed || status == ActionStatus::Rejected ||
-            status == ActionStatus::Cancelled)
+            status == ActionStatus::Cancelled || status == ActionStatus::Skipped)
             return QString::fromUtf8("\xE2\x9C\x97 "); // ballot X
         if (status == ActionStatus::Running)
             return QString::fromUtf8("\xE2\x97\x8F "); // filled circle
@@ -3201,7 +3202,8 @@ void MainWindow::renderPullChecksSummary(PullRequest pr)
             ++passed;
         else if (run->status == ActionStatus::Failed ||
                  run->status == ActionStatus::Rejected ||
-                 run->status == ActionStatus::Cancelled)
+                 run->status == ActionStatus::Cancelled ||
+                 run->status == ActionStatus::Skipped)
             ++failed;
         else if (run->status == ActionStatus::Running)
             ++running;
