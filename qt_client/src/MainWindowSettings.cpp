@@ -13,6 +13,8 @@
 
 #include <QClipboard>
 #include <QColor>
+#include <QPixmap>
+#include <QTextDocument>
 #include <QDialog>
 #include <QInputDialog>
 #include "KebabHeaderView.h"
@@ -249,6 +251,19 @@ QWidget *MainWindow::buildSettingsSection()
         "default so another process's transcripts aren't surfaced unprompted.");
     connect(excludeExternalClaudeCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kExcludeExternalClaudeSetting, enabled);
+    });
+
+    auto *publishAgentsToWebCheck =
+        new QCheckBox("Publish agents started here to the web");
+    publishAgentsToWebCheck->setChecked(
+        QSettings().value(kPublishAgentsToWebSetting, false).toBool());
+    publishAgentsToWebCheck->setToolTip(
+        "When on, agent sessions you start in the desktop are pushed to the web "
+        "catalog so a repo's website page lists them and the owner can steer "
+        "them from the browser. Off by default so locally-started agents stay "
+        "private to this machine.");
+    connect(publishAgentsToWebCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kPublishAgentsToWebSetting, enabled);
     });
 
     // Screenshot: an inline calibration target for the region screenshot tool. It
@@ -1512,6 +1527,7 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(defaultTabCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(autoSwitchToAgentCheck);
     generalCol->addWidget(excludeExternalClaudeCheck);
+    generalCol->addWidget(publishAgentsToWebCheck);
     generalCol->addSpacing(6);
     generalCol->addWidget(screenshotLabel);
     generalCol->addWidget(screenshotHint);
@@ -2226,40 +2242,11 @@ void MainWindow::chooseAvatar()
 
 void MainWindow::quickRebuildRestart()
 {
-    // Queue behind any in-flight agent work: relaunching mid-run would kill a
-    // running agent session, so hold the rebuild until the fleet goes idle and
-    // let maybeStartQueuedRebuild() re-invoke us once it does (adhoc #75). The
-    // click handler already spun the button; switch that spin to a spinning
-    // hourglass while queued so it reads as "waiting", not "building" (adhoc #91).
-    const QStringList blockers = runningAgentBlockers();
-    if (!blockers.isEmpty()) {
-        m_rebuildRestartQueued = true;
-        m_buildButton = m_rebuildButton;
-        m_buildStatusLabel = m_rebuildStatus;
-        beginRestartLog();
-        showUpdateLog();
-        setUpdateStatus(QStringLiteral(
-            "Waiting for running actions to finish before rebuilding\xE2\x80\xA6"));
-        // Name what the gate is actually counting: every past "stuck waiting"
-        // report (adhoc #91/#104/#111/#116/#134/#143) hinged on the user seeing
-        // no running actions while the gate counted something invisible.
-        logRestart(QStringLiteral("waiting on: %1")
-                       .arg(blockers.join(QStringLiteral(", "))));
-        setRestartSpinHourglass(true);
-        // Safety net for that same missed-notification bug family: every agent
-        // completion path is supposed to call maybeStartQueuedRebuild(), but each
-        // adhoc round above found one more path that didn't. While a rebuild is
-        // queued, also recheck on a timer so a missed signal delays the restart
-        // by seconds instead of blocking it forever.
-        if (!m_rebuildQueuePollTimer) {
-            m_rebuildQueuePollTimer = new QTimer(this);
-            m_rebuildQueuePollTimer->setInterval(2000);
-            connect(m_rebuildQueuePollTimer, &QTimer::timeout, this,
-                    &MainWindow::maybeStartQueuedRebuild);
-        }
-        m_rebuildQueuePollTimer->start();
-        return;
-    }
+    // Restart immediately even with agents in progress: agent sessions are
+    // resumable (the `claude` process is relaunched and re-attached on startup),
+    // so a mid-run restart no longer loses work and there's no reason to make the
+    // user wait for the fleet to go idle (adhoc #176). This supersedes the old
+    // queue-behind-agents gate (adhoc #75/#91/#104/#111/#116/#134/#143).
     m_rebuildRestartQueued = false;
     if (m_rebuildQueuePollTimer)
         m_rebuildQueuePollTimer->stop();
@@ -3309,8 +3296,27 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
         lower.contains("blocks ") || lower.contains("unable")) {
         return {QStringLiteral("#f85149"), QStringLiteral("ERROR")};
     }
+    // Category should reflect *what drove the request*, not the payload the
+    // server happened to return. The verbose "net" log line embeds a peeked
+    // response snippet as "[body: …]", and a repository object always carries
+    // fields like "solana" and "lastSync" — so matching the rules against the
+    // body mis-badged a catalog publish as WALLET (from the "solana" JSON key)
+    // or SYNC (from "lastSync"). Drop the bracketed body before classifying so
+    // the badge comes from the verb/URL/event instead (adhoc #182). The error
+    // precedence check above still runs on the full message, because a failure
+    // reply's explanation is often only in that server-sent body.
+    QString forRules = lower;
+    const int bodyStart = forRules.indexOf(QLatin1String("[body:"));
+    if (bodyStart >= 0) {
+        // The body snippet can itself contain ']' (JSON arrays), so cut to the
+        // last ']' — the closing bracket we appended, since the trailing URL
+        // and event text don't contain one.
+        const int bodyEnd = forRules.lastIndexOf(QLatin1Char(']'));
+        if (bodyEnd > bodyStart)
+            forRules.remove(bodyStart, bodyEnd - bodyStart + 1);
+    }
     for (const Rule &r : kNetworkLogRules) {
-        if (lower.contains(QLatin1String(r.needle)))
+        if (forRules.contains(QLatin1String(r.needle)))
             return {QString::fromLatin1(r.accent), QString::fromLatin1(r.badge)};
     }
     return {QStringLiteral("#6e7681"), QStringLiteral("INFO")};
@@ -3395,14 +3401,28 @@ QString linkifyEscapedMessage(const QString &escaped)
     return html;
 }
 
-QString formatLogLineHtml(const QString &time, const QString &message, bool dark)
+// The host of the first http(s) URL in a (raw, unescaped) log message, or an
+// empty string when the entry references no network source. Used to fetch and
+// show that site's favicon at the front of the entry.
+QString firstUrlHost(const QString &message)
+{
+    static const QRegularExpression hostRe(
+        QStringLiteral("https?://([^/\\s:?#]+)"));
+    const QRegularExpressionMatch m = hostRe.match(message);
+    return m.hasMatch() ? m.captured(1) : QString();
+}
+
+QString formatLogLineHtml(const QString &time, const QString &message, bool dark,
+                          const QString &iconHtml = QString())
 {
     const QString messageColor =
         dark ? QStringLiteral("#adbac7") : QStringLiteral("#1f2328");
     const QString timeColor =
         dark ? QStringLiteral("#6e7681") : QStringLiteral("#656d76");
     const NetworkLogStyle style = networkLogStyleFor(message);
-    QString html;
+    // The site favicon (when the entry hit a network source) leads the line so
+    // requests read at a glance as "who they went to".
+    QString html = iconHtml;
     if (!time.isEmpty())
         html += QStringLiteral("<span style='color:%1'>%2</span>&nbsp;&nbsp;")
                     .arg(timeColor, time);
@@ -3414,6 +3434,54 @@ QString formatLogLineHtml(const QString &time, const QString &message, bool dark
     return html;
 }
 } // namespace
+
+// Register (or refresh) the document image resource behind a "favicon://<host>"
+// reference so the log's <img> tags resolve. Uses the cached site favicon when
+// available, otherwise a transparent placeholder that keeps the 14px box laid
+// out until fetchFaviconForHost() fills it in.
+void MainWindow::registerLogFaviconResource(const QString &host)
+{
+    if (!m_settingsLog || host.isEmpty())
+        return;
+    QPixmap pix;
+    if (m_faviconCache.contains(host)) {
+        pix = m_faviconCache.value(host)
+                  .scaled(16, 16, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    } else {
+        pix = QPixmap(16, 16);
+        pix.fill(Qt::transparent);
+    }
+    m_settingsLog->document()->addResource(
+        QTextDocument::ImageResource,
+        QUrl(QStringLiteral("favicon://") + host), pix);
+}
+
+// Called when a favicon finishes downloading: swap the real icon in for the
+// placeholder and mark the log dirty so already-rendered entries repaint with
+// it.
+void MainWindow::refreshLogFavicon(const QString &host)
+{
+    if (!m_settingsLog || host.isEmpty() || !m_faviconCache.contains(host))
+        return;
+    registerLogFaviconResource(host);
+    QTextDocument *doc = m_settingsLog->document();
+    doc->markContentsDirty(0, doc->characterCount());
+}
+
+// The leading <img> for a log entry that hit a network source (empty for lines
+// with no URL). Ensures the favicon resource is registered and kicks off a
+// fetch on first sighting of a host.
+QString MainWindow::logFaviconTag(const QString &message)
+{
+    const QString host = firstUrlHost(message);
+    if (host.isEmpty())
+        return QString();
+    registerLogFaviconResource(host); // placeholder now, real icon once fetched
+    fetchFaviconForHost(host);        // no-op if already cached / in flight
+    return QStringLiteral("<img src='favicon://%1' width='14' height='14' "
+                          "style='vertical-align:middle'>&nbsp;")
+        .arg(host);
+}
 
 void MainWindow::appendNetworkLogLine(const QString &storedLine)
 {
@@ -3435,7 +3503,7 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
         m_settingsLog->append(formatDayDividerHtml(date, dark));
     }
 
-    m_settingsLog->append(formatLogLineHtml(time, message, dark));
+    m_settingsLog->append(formatLogLineHtml(time, message, dark, logFaviconTag(message)));
 }
 
 // Loads the next older page of matching lines when the user scrolls to the
@@ -3476,7 +3544,8 @@ void MainWindow::loadOlderNetworkLogSegment()
             runningDate = date;
             html += QStringLiteral("<div>%1</div>").arg(formatDayDividerHtml(date, dark));
         }
-        html += QStringLiteral("<div>%1</div>").arg(formatLogLineHtml(time, message, dark));
+        html += QStringLiteral("<div>%1</div>")
+                    .arg(formatLogLineHtml(time, message, dark, logFaviconTag(message)));
     }
 
     QScrollBar *sb = m_settingsLog->verticalScrollBar();

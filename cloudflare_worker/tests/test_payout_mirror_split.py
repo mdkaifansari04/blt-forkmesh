@@ -132,7 +132,7 @@ def _payout_globals(repos, accounts, presence, balances=None):
         return []
 
     async def d1_first(_env, sql, *args):
-        if "FROM accounts" in sql:
+        if "FROM nodes" in sql:
             rec = accounts.get(args[0])
             return {"name": rec.get("name"), "data": rec} if rec else None
         return None

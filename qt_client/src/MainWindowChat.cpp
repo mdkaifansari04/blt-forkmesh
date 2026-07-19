@@ -211,16 +211,48 @@ void MainWindow::fetchFavicon(int index)
 {
     if (index < 0 || index >= m_servers.size())
         return;
-    const QString host = serverHost(m_servers.at(index).url);
-    if (host.isEmpty() || m_faviconCache.contains(host))
-        return;
-    const QUrl url = faviconUrl(m_servers.at(index).url);
-    if (!url.isValid())
+    fetchFaviconFromUrl(serverHost(m_servers.at(index).url),
+                        faviconUrl(m_servers.at(index).url));
+}
+
+// Fetch the favicon for a bare host (as it appears in a network-log URL), so
+// the log can lead each request line with the site's icon (adhoc #190).
+void MainWindow::fetchFaviconForHost(const QString &host)
+{
+    QUrl url;
+    url.setScheme(QStringLiteral("https"));
+    url.setHost(host);
+    url.setPath(QStringLiteral("/favicon.ico"));
+    fetchFaviconFromUrl(host, url);
+}
+
+// Shared favicon download: caches to memory + disk keyed by host, de-duplicates
+// concurrent fetches via m_faviconFetching, and notifies the breadcrumb rail
+// and the network log once the icon lands.
+void MainWindow::fetchFaviconFromUrl(const QString &host, const QUrl &url)
+{
+    if (host.isEmpty() || m_faviconCache.contains(host) ||
+        m_faviconFetching.contains(host))
         return;
 
+    // Reuse a previously downloaded icon on disk before hitting the network,
+    // so a host seen in a past session doesn't re-fetch on every launch.
+    QPixmap disk;
+    const QString cached = faviconCachePath(host);
+    if (QFileInfo::exists(cached) && disk.load(cached) && !disk.isNull()) {
+        m_faviconCache.insert(host, disk);
+        refreshLogFavicon(host);
+        return;
+    }
+
+    if (!url.isValid() || !m_networkAccess)
+        return;
+
+    m_faviconFetching.insert(host);
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this, [this, reply, host] {
         reply->deleteLater();
+        m_faviconFetching.remove(host);
         if (reply->error() != QNetworkReply::NoError)
             return;
         QPixmap pix;
@@ -232,6 +264,7 @@ void MainWindow::fetchFavicon(int index)
         QDir().mkpath(faviconCacheDir());
         pix.save(faviconCachePath(host), "PNG");
         updateBreadcrumb();
+        refreshLogFavicon(host);
     });
 }
 
@@ -245,6 +278,11 @@ QWidget *MainWindow::buildChatPage()
     // once (no nav bar — you click a server to see everything). Repo detail and
     // Settings are opened on demand (clicking a repo / the server-rail gear).
     m_sectionStack = new CurrentPageStack;
+    // The quick-add Enter target depends on the Agents tab being on screen
+    // (quickAddShouldFollowUpAgent), which includes being on the Home section
+    // at all — refresh the "new"/"add" styling when the section changes too.
+    connect(m_sectionStack, &QStackedWidget::currentChanged, this,
+            [this](int) { updateQuickAddEnterTarget(); });
     // Home now hosts the nodes column, repositories column and the repo detail
     // panel (with Chat as a tab) all at once, so there is no separate repo-detail
     // section any more.
@@ -685,15 +723,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendToAgentButton->setMinimumHeight(28);
     m_quickAddSendToAgentButton->setSizePolicy(QSizePolicy::Fixed,
                                                QSizePolicy::Expanding);
-    m_quickAddSendToAgentEnterBadge =
-        new QLabel(QStringLiteral("⏎"), m_quickAddSendToAgentButton);
-    m_quickAddSendToAgentEnterBadge->setObjectName("quickAddEnterBadge");
-    m_quickAddSendToAgentEnterBadge->setAlignment(Qt::AlignCenter);
-    m_quickAddSendToAgentEnterBadge->setFixedSize(14, 14);
-    m_quickAddSendToAgentEnterBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_quickAddSendToAgentEnterBadge->move(
-        m_quickAddSendToAgentButton->width() - 12, -5);
-    m_quickAddSendToAgentEnterBadge->hide();
     connect(m_quickAddSendToAgentButton, &QPushButton::clicked, this, [this] {
         if (!m_issueQuickAdd)
             return;
@@ -2212,14 +2241,22 @@ void MainWindow::updateFooterDiagnostics()
                 : QStringLiteral("Drive space in use"));
     }
 
-    // The footer button keeps only the UI-stall badge now that CPU/MEM live in
-    // the charts; the 🖥 glyph stays as the labelled click target.
-    QString txt = QString::fromUtf8("\xF0\x9F\x96\xA5"); // 🖥
-    if (m_stallCount > 0)
-        txt += QString::fromUtf8("  \xE2\x9A\xA0 %1 stall%2")
-                   .arg(m_stallCount)
-                   .arg(m_stallCount == 1 ? QString() : QStringLiteral("s"));
-    m_footerDiagnostics->setText(txt.trimmed());
+    // The diagnostics indicator rides beside the CPU/MEM/DISK sparklines now
+    // (adhoc #145). Crisp octicons replace the old 🖥/⚠ emoji: a muted monitor
+    // while the UI has stayed smooth, and an amber alert plus the running count
+    // once a stall has been recorded so it reads as a real warning.
+    if (m_stallCount > 0) {
+        m_footerDiagnostics->setIcon(
+            themedOcticon(QStringLiteral("alert"), QColor("#d29922"), 14));
+        m_footerDiagnostics->setIconSize(QSize(14, 14));
+        m_footerDiagnostics->setText(
+            QStringLiteral(" %1 stall%2")
+                .arg(m_stallCount)
+                .arg(m_stallCount == 1 ? QString() : QStringLiteral("s")));
+    } else {
+        setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
+        m_footerDiagnostics->setText(QString());
+    }
 }
 
 // A UI stall ended: record it, surface it in the system log, and reflect the
@@ -2333,9 +2370,9 @@ void MainWindow::clearStallLog()
         QFile::remove(m_stallLogPath);
     if (m_footerDiagnostics)
         m_footerDiagnostics->setToolTip(
-            QStringLiteral("Live CPU and memory use of this app. Click for UI-stall "
-                           "diagnostics (when the UI freezes long enough to trip the "
-                           "Wait/Kill prompt)."));
+            QStringLiteral("UI-stall diagnostics: any freezes long enough to trip the "
+                           "Wait/Kill prompt land here. Click for the recorded stall "
+                           "details."));
     updateFooterDiagnostics();
 }
 
@@ -3004,15 +3041,25 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageOverlay->hide();
 
     // User avatar, pinned to the top-right-most of the bar. Clicking it opens
-    // account settings.
+    // your own profile page (Settings stays reachable from the nav rail).
     m_userAvatarNavButton = new QPushButton;
     m_userAvatarNavButton->setObjectName("serverFooterButton");
     m_userAvatarNavButton->setCursor(Qt::PointingHandCursor);
     m_userAvatarNavButton->setFixedSize(40, 40);
     m_userAvatarNavButton->setIconSize(QSize(34, 34));
-    m_userAvatarNavButton->setToolTip("Your user account");
-    connect(m_userAvatarNavButton, &QPushButton::clicked, this,
-            [this] { showSection(1); });
+    m_userAvatarNavButton->setToolTip("Your profile");
+    connect(m_userAvatarNavButton, &QPushButton::clicked, this, [this] {
+        // Prefer the live roster's self entry (it carries the node id + display
+        // name the profile page resolves by); fall back to our own identity key
+        // so the page still recognises "you" while offline.
+        for (const MemberInfo &m : std::as_const(m_homeRoster)) {
+            if (m.self) {
+                showNodeProfile(m.id, m.name);
+                return;
+            }
+        }
+        showNodeProfile(m_profileIdentity.publicKey(), chatDisplayName());
+    });
     updateUserSwitcher();
     updateAvatarButton();
 
@@ -3253,20 +3300,21 @@ QWidget *MainWindow::buildBreadcrumb()
     socialRow->addWidget(twitterButton);
     socialRow->addWidget(mastodonButton);
 
-    // Live diagnostics, also moved up out of the footer (adhoc #117): CPU / memory
-    // of this process plus a count of detected UI stalls. Click to see the stall
-    // details.
+    // UI-stall indicator (adhoc #117/#145): an octicon that sits beside the
+    // CPU/MEM/DISK sparklines on the window-chrome line and shows the count of
+    // detected UI stalls. Click to see the stall details.
     m_footerDiagnostics = new QPushButton;
     m_footerDiagnostics->setObjectName("footerDiagnostics");
     m_footerDiagnostics->setFlat(true);
     m_footerDiagnostics->setCursor(Qt::PointingHandCursor);
     m_footerDiagnostics->setToolTip(
-        "Live CPU and memory use of this app. Click for UI-stall diagnostics "
-        "(when the UI freezes long enough to trip the Wait/Kill prompt).");
+        "UI-stall diagnostics: any freezes long enough to trip the Wait/Kill "
+        "prompt land here. Click for the recorded stall details.");
     m_footerDiagnostics->setStyleSheet(
-        "QPushButton#footerDiagnostics{color:#8b949e;border:none;background:transparent;"
-        "font-size:11px;padding:2px 6px;}"
+        "QPushButton#footerDiagnostics{color:#d29922;border:none;background:transparent;"
+        "font-size:11px;padding:2px 6px;spacing:4px;}"
         "QPushButton#footerDiagnostics:hover{color:#e6edf3;}");
+    setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
     connect(m_footerDiagnostics, &QPushButton::clicked, this,
             &MainWindow::showDiagnosticsDialog);
 
@@ -3314,6 +3362,9 @@ QWidget *MainWindow::buildBreadcrumb()
     chromeRow->addWidget(cpuChart);
     chromeRow->addWidget(memChart);
     chromeRow->addWidget(diskChart);
+    // UI-stall diagnostics indicator, moved up beside the CPU/MEM/DISK sparklines
+    // (adhoc #145) with a proper octicon in place of the old emoji glyphs.
+    chromeRow->addWidget(m_footerDiagnostics);
     chromeRow->addSpacing(8);
 
     auto makeWindowButton = [this](QStyle::StandardPixmap icon, const QString &tip) {
@@ -3436,9 +3487,8 @@ QWidget *MainWindow::buildBreadcrumb()
     navRow->addWidget(m_nodesNavButton);
     navRow->addWidget(m_relaysNavButton);
     navRow->addWidget(m_networkNavButton);
-    navRow->addSpacing(16);
-    // Live diagnostics glyph (CPU/MEM/DISK sparklines moved up to mainRow for adhoc #121).
-    navRow->addWidget(m_footerDiagnostics);
+    // The live-diagnostics indicator moved up onto the window-chrome line next to
+    // the CPU/MEM/DISK sparklines (adhoc #145).
     navRow->addStretch();
     auto *navRowHost = new QWidget;
     navRowHost->setLayout(navRow);
@@ -5973,6 +6023,19 @@ QWidget *MainWindow::buildNetworkReposSection()
     m_networkReposStatus = new QLabel(QStringLiteral("Not loaded"));
     m_networkReposStatus->setObjectName("mutedLabel");
     header->addWidget(m_networkReposStatus);
+
+    // Create a brand-new repository right from the Repos tab. Reuses the shared
+    // New repository dialog (name/description/first prompt/README/location), so
+    // the "info needed to create a repo" is shown inline instead of buried in
+    // Settings.
+    auto *newRepoButton = new QPushButton(QStringLiteral("New repository\xE2\x80\xA6"));
+    newRepoButton->setObjectName("primaryButton");
+    newRepoButton->setCursor(Qt::PointingHandCursor);
+    newRepoButton->setToolTip(QStringLiteral("Create a brand-new repository"));
+    setOcticon(newRepoButton, "repo", 14);
+    connect(newRepoButton, &QPushButton::clicked, this,
+            &MainWindow::createNewRepository);
+    header->addWidget(newRepoButton);
 
     m_networkReposRefreshButton = new QPushButton(QStringLiteral("Refresh"));
     m_networkReposRefreshButton->setObjectName("ghostButton");
@@ -10527,7 +10590,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     closeButton->setToolTip("Close");
     setOcticon(closeButton, "x", 16);
     connect(closeButton, &QPushButton::clicked, this, &MainWindow::hideNodeProfile);
-    auto *titleLabel = new QLabel("Node profile");
+    auto *titleLabel = new QLabel("User profile");
     titleLabel->setObjectName("sectionLabel");
     auto *topRow = new QHBoxLayout;
     topRow->setContentsMargins(0, 0, 0, 0);
@@ -10711,12 +10774,11 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileMirrors->setWordWrap(true);
     m_profileMirrors->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
-    // --- User profile: kept around (unparented, never added to the layout) so
-    // refreshProfileAccountStatus() can still drive the link-state side effects
-    // it shares with other visible widgets (m_profileLinkBrowserButton,
-    // updateUserSwitcher()). The card itself is no longer shown — the node's
-    // own avatar/name already headline the left column, so a second "linked to
-    // user X" card here was redundant.
+    // --- User profile: shows this node's user account and every node linked to
+    // it (adhoc #177). refreshProfileAccountStatus() populates m_profileUserNodesList
+    // and drives the shared link-state side effects (m_profileLinkBrowserButton,
+    // updateUserSwitcher()). Added to the right column below and shown on your own
+    // profile only.
     m_profileAccountSection = new QWidget;
     m_profileAccountSection->setObjectName("profileUserCard");
     auto *accountLabel = makeProfileSection("USER PROFILE");
@@ -10885,6 +10947,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     nodeKeyActions->addWidget(m_profileLinkBrowserButton);
     nodeKeyActions->addStretch();
     rightColumn->addLayout(nodeKeyActions);
+    rightColumn->addWidget(m_profileAccountSection);
     rightColumn->addWidget(m_profileSolanaSection);
     rightColumn->addStretch();
 
@@ -11101,9 +11164,10 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     if (m_profileLinkBrowserButton)
         m_profileLinkBrowserButton->setVisible(info.self);
     if (m_profileAccountSection) {
-        // Never shown (see construction comment above); still refreshed for its
-        // side effects on other visible widgets.
-        m_profileAccountSection->setVisible(false);
+        // Self only: the "USER PROFILE" card lists this node's user account and
+        // every node linked to it (adhoc #177). refreshProfileAccountStatus()
+        // populates the list and drives its side effects on other widgets.
+        m_profileAccountSection->setVisible(info.self);
         if (info.self)
             refreshProfileAccountStatus();
     }

@@ -104,22 +104,18 @@ def test_worker_profile_contract_includes_avatar_updates():
     assert '"avatarPng": rec.get("avatar_png", "")' in public_lookup_body
 
 
-def test_public_lookup_reads_users_nodes_first_not_accounts_table():
-    # Users and nodes are now separate authoritative tables, so the public
-    # /api/accounts/<name> profile lookup resolves from them first and only
-    # falls back to the legacy accounts table for records that predate the
-    # split (e.g. a reserved name with no pubkey). This keeps the endpoint
-    # working for every client without treating accounts as the primary store.
+def test_public_lookup_reads_only_users_nodes_tables():
+    # Users and nodes are the authoritative tables (the legacy accounts table
+    # was dropped by migration 0042), so the public /api/accounts/<name>
+    # profile lookup resolves solely from them — keyless reservations live in
+    # nodes, so availability checks still see a reserved name as taken.
     public_lookup_start = ENTRY_TEXT.index("match = ACCOUNTS_RE.match(url.path)")
     public_lookup_body = ENTRY_TEXT[
         public_lookup_start:
         ENTRY_TEXT.index('return json_response({"error": "not_found"}', public_lookup_start)
     ]
-    primary = public_lookup_body.index("_account_identity_rec_by_bi(env, name_bi)")
-    fallback = public_lookup_body.index("_account_row(env, name)")
-    # users/nodes read comes first; accounts (_account_row) is the fallback.
-    assert primary < fallback
-    assert "if rec is None:" in public_lookup_body
+    assert "_account_identity_rec_by_bi(env, name_bi)" in public_lookup_body
+    assert "FROM accounts" not in public_lookup_body
 
 
 def test_worker_profile_contract_includes_bio_links_mastodon_and_privacy():
@@ -326,7 +322,7 @@ def test_worker_exposes_public_user_directory_for_chat_without_private_fields():
     ]
 
     assert '"SELECT data FROM users ORDER BY username COLLATE NOCASE LIMIT ?"' in body
-    assert '"SELECT data FROM accounts"' in body
+    assert "FROM accounts" not in body
     assert '_account_kind(rec) != "user"' in body
     assert 'rec.get("status") != "active"' in body
     assert '"avatarPng": rec.get("avatar_png", "")' in body
@@ -415,7 +411,8 @@ def test_hard_delete_removes_account_identity_and_owned_namespace_state():
         "DELETE FROM pending_verifications WHERE name_bi=?",
         "DELETE FROM notifications WHERE recipient_bi=?",
         "DELETE FROM login_attempts WHERE id_bi=?",
-        "DELETE FROM accounts WHERE name_bi=?",
+        "DELETE FROM users WHERE user_bi=?",
+        "DELETE FROM nodes WHERE node_bi=?",
         "purge_catalog_related_caches()",
     ):
         assert required in delete_body
@@ -430,7 +427,7 @@ def test_namespace_rename_moves_account_repo_and_repo_scoped_state():
         ENTRY_TEXT.index("async def _save_account_full"):
         ENTRY_TEXT.index("async def _move_repo_shares")
     ]
-    assert "INSERT INTO accounts" in save_full_body
+    assert "_mirror_account_identity_tables" in save_full_body
     shares_body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _move_repo_shares"):
         ENTRY_TEXT.index("async def _move_bounties_namespace")
@@ -453,8 +450,8 @@ def test_namespace_rename_moves_account_repo_and_repo_scoped_state():
     ]
 
     for required in (
-        "SELECT data, email_bi, ip_bi, is_admin FROM accounts WHERE name_bi=?",
-        "DELETE FROM accounts WHERE name_bi=?",
+        "SELECT data, email_bi, ip_bi, is_admin FROM users WHERE user_bi=?",
+        "DELETE FROM users WHERE user_bi=?",
         "UPDATE account_presence SET name_bi=? WHERE name_bi=?",
         "UPDATE pending_verifications SET name_bi=? WHERE name_bi=?",
         "UPDATE notifications SET recipient_bi=? WHERE recipient_bi=?",

@@ -132,7 +132,11 @@ def test_worker_error_log_reports_to_sentry_and_preserves_d1_log():
     assert '"cloudflare": cf_context' in ENTRY_TEXT
 
 
-def test_cron_failures_emit_sentry_cron_monitor_checkins():
+def test_sentry_cron_monitor_checkins_are_disabled():
+    # The Sentry cron monitor check-ins are commented out for now (adhoc #158).
+    # The helper machinery is left intact so the monitor can be re-enabled by
+    # uncommenting the two call sites in scheduled(), but no check-in is
+    # actually sent on a cron tick.
     assert 'SENTRY_CRON_MONITOR_SLUG = "forkmesh-relay"' in ENTRY_TEXT
     assert "async def capture_sentry_cron_check_in" in ENTRY_TEXT
     assert '"type": "check_in"' in ENTRY_TEXT
@@ -145,18 +149,15 @@ def test_cron_failures_emit_sentry_cron_monitor_checkins():
 
     scheduled = ENTRY_TEXT.split("async def scheduled", 1)[1] \
         .split("async def fetch", 1)[0]
-    assert 'await capture_sentry_cron_check_in(' in scheduled
-    # Two check-ins per tick, same check_in_id: an opening "in_progress" sent
-    # before any D1/decrypt work, and a closing ok/error. The opening
-    # check-in guarantees Sentry sees this tick even if the isolate is later
-    # killed by the platform's resource limits — without it, a killed tick
-    # sends nothing at all and shows up as a "missed check-in" instead of a
-    # runtime error.
-    assert '"in_progress"' in scheduled
-    assert scheduled.count("await capture_sentry_cron_check_in(") == 2
-    assert scheduled.count("check_in_id=cron_check_in_id") == 2
-    assert 'final_cron_status = "error" if cron_failures else "ok"' in scheduled
-    assert "duration=(int(Date.now()) - cron_started_ms) / 1000" in scheduled
+    # No live (uncommented) check-in call remains in the scheduled handler.
+    for line in scheduled.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        assert "capture_sentry_cron_check_in(" not in stripped
+    # The commented-out call sites are still present for easy re-enabling.
+    assert "# await capture_sentry_cron_check_in(" in scheduled
+    # The failure-logging path (independent of the Sentry monitor) still runs.
     assert "await log_cron_error(" in scheduled
     assert "error=error, failures=cron_failures" in scheduled
 
@@ -318,7 +319,7 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "SIGXFSZ (file size limit exceeded)" in CRASH_HANDLER_CPP_TEXT
     assert "SIGTERM, SIGINT" in CRASH_HANDLER_CPP_TEXT
     assert "SIGKILL or SIGSTOP" in CRASH_HANDLER_CPP_TEXT
-    assert "std::atomic_bool g_surviveTerminationSignals" in CRASH_HANDLER_CPP_TEXT
+    assert "std::atomic_int g_surviveTerminationSignals" in CRASH_HANDLER_CPP_TEXT
     assert "bool isTerminationSignal(int sig)" in CRASH_HANDLER_CPP_TEXT
     assert "g_surviveTerminationSignals.load(std::memory_order_relaxed)" in CRASH_HANDLER_CPP_TEXT
     assert "termination signal survived" in CRASH_HANDLER_CPP_TEXT
@@ -371,9 +372,15 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
 
 
 def test_worker_observability_is_enabled_at_full_sampling_in_wrangler():
-    # Observability is enabled and captures every invocation (full sampling).
+    # Observability is enabled and captures every invocation (full sampling),
+    # but only into the Cloudflare dashboard: the Sentry log/trace exports are
+    # off because they emitted an info event per D1 call, websocket wakeup, and
+    # request ("d1_run OK", "hibernatableWebSocket OK", ...) — adhoc #169.
     observability = WRANGLER_DATA["observability"]
     assert observability["enabled"] is True
     assert observability["head_sampling_rate"] == 1
     assert observability["logs"]["head_sampling_rate"] == 1
-    assert observability["traces"]["head_sampling_rate"] == 1
+    assert "destinations" not in observability["logs"]
+    assert observability["logs"]["invocation_logs"] is False
+    assert observability["traces"]["enabled"] is False
+    assert "destinations" not in observability["traces"]

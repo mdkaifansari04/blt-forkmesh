@@ -1,0 +1,56 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 442,
+    "title": "Package the headless node as an installable system service",
+    "status": "open",
+    "labels": [
+        "infra"
+    ],
+    "milestone": "Resilient operation",
+    "startDate": 1784347200000,
+    "endDate": 1784606400000,
+    "priority": 11,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784402987629,
+    "updatedAt": 1784405500072,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-442",
+            "title": "Package the headless node as an installable system service",
+            "body": "## Outcome\n\nProvide a reproducible, non-interactive service install that can be monitored, stopped cleanly, backed up, restored, and verified before use.\n\n## Implementation\n\n- Add a checked-in service-manager unit template plus install, uninstall, start, stop, and status commands around existing headless mode.\n- Run as an unprivileged account with explicit configuration, identity, mirror, and log directories.\n- Add a health command that verifies process state, relay connectivity, and readability of configured mirrors.\n- Implement graceful shutdown with a bounded timeout and clear recovery after an unclean stop.\n- Add a cold-backup manifest with relative paths, sizes, and checksums plus restore validation into an empty target directory.\n\n## Acceptance criteria\n\n- Runtime requires no display server and does not run as root.\n- Mutable data lives only in documented directories.\n- Backup output never prints key material and detects checksum mismatch.\n- Restore rejects unsafe permissions, corrupt manifests, and non-empty targets.\n- CI installs the service in a temporary root, starts a fixture node, checks health, stops it, restores a backup, and reads the restored mirror.\n\n## Dependencies\n\nNone.\n\n## Verification\n\nRun install/uninstall idempotency, unprivileged execution, health, graceful and forced stop, backup consistency, corrupt restore, and restored-mirror tests.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987629,
+            "sig": "LhvF-ztNwSWuGqh4wBDE_OW1IQf3ielt4uSba6iZA8kiHgLfxL2wnYJrBYovT6RpFxfpksm-nG1wJn9UxZRVDQ"
+        },
+        {
+            "type": "dates",
+            "startDate": 1785124800000,
+            "endDate": 1785384000000,
+            "id": "d6f83731-5115-42cc-9955-48f975cbbfd5",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784402987630,
+            "sig": "k0YFaOzuFUHuN9Wql3fLqz0tgiP8z-UhG6GQpT9G2776ngwF23i0Y3GPyO_vYPXs4jmETEd7ayWxo31evrAJAw"
+        },
+        {
+            "type": "dates",
+            "id": "cc2304b6-0c7c-45d5-b12a-2c71898a0155",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500072,
+            "startDate": 1784347200000,
+            "endDate": 1784606400000,
+            "sig": "KsiZkvLQEN4xgoS70mmTGvWxFoJAoeICcArz2rLfQ9Ou44maSRtrHSKhVgQKHE40ERKIhMUJhzt50C4ljz8XDQ"
+        }
+    ]
+}

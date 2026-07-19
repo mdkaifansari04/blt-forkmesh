@@ -1366,6 +1366,10 @@ void MainWindow::pushAgentSessionsSnapshot()
 {
     if (!m_networkAccess || !m_agentStore || m_repositories.isEmpty())
         return;
+    // Off by default: a session started here in the desktop stays local unless
+    // the user opts into publishing agents to the web catalog in Settings.
+    if (!QSettings().value(kPublishAgentsToWebSetting, false).toBool())
+        return;
     // AgentSession::owner/name are the repo's owner/name (see repoKey()), not
     // this node's own account — group sessions by the repo they belong to.
     QHash<QString, QList<AgentSession>> byRepo;
@@ -2106,19 +2110,38 @@ void MainWindow::refreshCodexUsageRemaining()
     auto update = [&](bool weekly, const QString &key, qint64 windowMs,
                       const QString &pctKey, const QString &resetKey) {
         const qint64 providerReset = settings.value(resetKey).toLongLong();
-        if (providerReset > now && settings.contains(pctKey)) {
-            const int used = qBound(0, settings.value(pctKey).toInt(), 100);
-            chart->setRemaining(
-                weekly, 100 - used,
-                QStringLiteral("resets in %1")
-                    .arg(humanizeRemaining(providerReset - now)));
-            return;
-        }
-        if (providerReset > 0 && providerReset <= now) {
+        const qint64 start = settings.value(key).toLongLong();
+        // Has the current window rolled over? Prefer the provider's own reset
+        // instant; when it sent none, fall back to the local rolling-window
+        // anchor so a stale reading still ages out.
+        const bool windowElapsed =
+            providerReset > 0 ? providerReset <= now
+                              : (start > 0 && now - start >= windowMs);
+        if (windowElapsed) {
+            // The window cleared: the cached utilization is stale, so drop it
+            // and let the "ready"/estimate path below take over.
             settings.remove(pctKey);
             settings.remove(resetKey);
+        } else if (settings.contains(pctKey)) {
+            // Live account utilization from the app-server. Show it whenever we
+            // have it — including for a window that carried usedPercent but no
+            // resetsAt (adhoc #192): the used% is the real figure, so hovering
+            // must surface it rather than falling through to the time estimate.
+            // The countdown is best-effort: the provider's reset when known,
+            // else the local rolling-window estimate.
+            const int used = qBound(0, settings.value(pctKey).toInt(), 100);
+            QString note;
+            if (providerReset > now)
+                note = QStringLiteral("resets in %1")
+                           .arg(humanizeRemaining(providerReset - now));
+            else if (start > 0)
+                note = QStringLiteral("resets in %1")
+                           .arg(humanizeRemaining(windowMs - (now - start)));
+            chart->setRemaining(weekly, 100 - used, note);
+            return;
         }
-        const qint64 start = settings.value(key).toLongLong();
+        // No live utilization to show: fall back to the rolling-window time
+        // estimate ForkMesh tracks locally when Codex sessions run.
         if (start <= 0) {
             chart->setRemaining(weekly, 100, QStringLiteral("ready"));
             return;
@@ -4969,6 +4992,33 @@ QStringList MainWindow::runningAgentBlockers() const
             *status = pending->status + QStringLiteral(" [pre-reload snapshot]");
         return pending->status == AgentStatus::Running;
     };
+    // The stored status can get stuck at "Running" while nothing is actually
+    // executing — a clarifying question the transcript heuristic failed to
+    // classify as a wait (so notifyAgentWaiting never flipped it off Running), a
+    // resume that produced no turn, or a turn whose terminal `result` never
+    // landed on the session (findAgentSession missed it before the first
+    // reloadAgents catch-up). The persistent CLI/app-server process stays alive
+    // between turns, so running() is true regardless, which left Rebuild &
+    // restart stuck on "Waiting for running actions" with no real work in flight
+    // (adhoc #157, after #91/#104/#111/#116/#134/#143). Back the status up with a
+    // liveness check: a genuinely working agent streams output continuously
+    // (partial-message deltas, tool calls), so a "Running" session that has been
+    // completely silent well past the threshold is stuck, not busy — don't let it
+    // block the rebuild forever. A freshly (re)launched session that hasn't
+    // produced output yet is covered by its startedAtMs, and a session that gets
+    // yanked here is re-queued and resumed on the next start (initAgents), so this
+    // never abandons real work.
+    constexpr qint64 kBlockerStaleMs = 90'000;
+    auto recentlyLive = [this](int id) {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        qint64 liveAt = m_scannerStates.value(id).lastActivityMs;
+        for (const AgentSession &session : m_agentSessions)
+            if (session.id == id) {
+                liveAt = qMax(liveAt, session.startedAtMs);
+                break;
+            }
+        return liveAt > 0 && (now - liveAt) < kBlockerStaleMs;
+    };
     QStringList blockers;
     for (AgentRunner *runner : m_agentRunners)
         if (runner->busy())
@@ -4976,14 +5026,19 @@ QStringList MainWindow::runningAgentBlockers() const
                             .arg(runner->currentSessionId());
     for (auto it = m_streamSessions.constBegin(); it != m_streamSessions.constEnd(); ++it) {
         QString status;
-        if (it.value() && it.value()->running() && sessionIsActive(it.key(), &status))
+        if (it.value() && it.value()->running() && sessionIsActive(it.key(), &status)
+            && recentlyLive(it.key()))
             blockers << QStringLiteral("session %1 (claude process, status %2)")
                             .arg(it.key())
                             .arg(status);
     }
     for (auto it = m_codexStreams.constBegin(); it != m_codexStreams.constEnd(); ++it) {
         QString status;
-        if (it.value() && it.value()->running() && sessionIsActive(it.key(), &status))
+        // Codex tracks turn boundaries precisely (turnActive), so a live but idle
+        // app-server between turns can't be mistaken for in-flight work; the
+        // liveness backstop covers the case where the status itself went stale.
+        if (it.value() && it.value()->running() && it.value()->turnActive()
+            && sessionIsActive(it.key(), &status) && recentlyLive(it.key()))
             blockers << QStringLiteral("session %1 (codex process, status %2)")
                             .arg(it.key())
                             .arg(status);
@@ -7776,7 +7831,12 @@ void MainWindow::updateAgentFilesTabState(int sessionId)
                 wt = cachedSessionWorktree(sessionId, repoLocal, branch);
         }
     }
-    const QString base = repoDefaultBranch(repoBranches());
+    // Runs on every agent-session selection, so avoid repoBranches()'s
+    // `git branch --sort=-committerdate` — its per-branch commit reads have
+    // stalled the UI for ~500 ms on repos with many agent branches (adhoc #150).
+    // We only need the base branch name to tell whether the session sits on a
+    // feature branch, which the cheap unsorted lookup answers just as well.
+    const QString base = repoDefaultBranchFast();
     const bool onDisk = !wt.isEmpty() && QDir(wt).exists();
     const bool isMain = !wt.isEmpty() && !repoLocal.isEmpty() &&
                         QDir(wt).absolutePath() == QDir(repoLocal).absolutePath();
@@ -7800,6 +7860,11 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
         return;
     if (repoIndexFor(s->owner, s->name) < 0)
         return;
+    // Snapshot the session by value before the git subprocesses below: their
+    // waitForFinished() calls pump the GUI thread, and a reloadAgents() fired
+    // during the pump rebuilds m_agentSessions, dangling `s` — dereferencing it
+    // afterward is a SIGSEGV (git-pump UAF family, adhoc #106/#119/#124/#149/#155).
+    const AgentSession session = *s;
     const QString workdir = sessionWorkdir(sessionId); // diff in the worktree
 
     QString patch;
@@ -7807,13 +7872,13 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
         QProcess git;
         git.setWorkingDirectory(workdir);
         git.start(QStringLiteral("git"),
-                  {QStringLiteral("diff"), QStringLiteral("--binary"), s->baseRef});
+                  {QStringLiteral("diff"), QStringLiteral("--binary"), session.baseRef});
         if (git.waitForFinished(8000) && git.exitCode() == 0)
             patch = QString::fromUtf8(git.readAllStandardOutput());
     }
     if (patch.trimmed().isEmpty()) {
         m_agentStore->appendLog(
-            *s, QStringLiteral("==> No code changes; no pull request created.\n"));
+            session, QStringLiteral("==> No code changes; no pull request created.\n"));
         return;
     }
     // The committed series base..HEAD as a format-patch mbox, so a mirror-node
@@ -7825,15 +7890,19 @@ void MainWindow::maybeCreatePullForStreamSession(int sessionId)
         QProcess git;
         git.setWorkingDirectory(workdir);
         git.start(QStringLiteral("git"),
-                  {QStringLiteral("format-patch"), QStringLiteral("--stdout"), s->baseRef});
+                  {QStringLiteral("format-patch"), QStringLiteral("--stdout"), session.baseRef});
         if (git.waitForFinished(8000) && git.exitCode() == 0)
             commits = QString::fromUtf8(git.readAllStandardOutput());
     }
-    m_agentStore->writePatch(*s, patch);
-    landAgentPullForSession(*s, patch, commits);
+    m_agentStore->writePatch(session, patch);
+    landAgentPullForSession(session, patch, commits);
 }
 
-void MainWindow::landAgentPullForSession(AgentSession &session, const QString &patch,
+// `session` is taken by value: PullStore::createPull (and submitPullToInbox)
+// pump the GUI event loop while waiting on git, and a reloadAgents() fired
+// during the pump rebuilds m_agentSessions — a reference into it would dangle
+// (git-pump UAF family, adhoc #106/#119/#124/#149).
+void MainWindow::landAgentPullForSession(AgentSession session, const QString &patch,
                                          const QString &commits)
 {
     if (!m_agentStore || patch.trimmed().isEmpty())
@@ -7864,6 +7933,11 @@ void MainWindow::landAgentPullForSession(AgentSession &session, const QString &p
                                         commits, /*branchBacked=*/true, &error);
         if (pr > 0) {
             session.prNumber = pr;
+            // Stamp the live entry too (re-found by id — the pump may have moved
+            // it) so a re-fired finished/status pass sees prNumber > 0 and doesn't
+            // open a duplicate PR before the next reloadAgents().
+            if (AgentSession *live = findAgentSession(session.id))
+                live->prNumber = pr;
             m_agentStore->saveSession(session);
             m_agentStore->appendLog(
                 session, QStringLiteral("==> Created pull request #%1.\n").arg(pr));
@@ -8119,16 +8193,26 @@ void MainWindow::updateAgentActionState()
     updateQuickAddEnterTarget();
 }
 
+// Whether Enter in the quick-add composer should follow up on the agent
+// session open above ("add") rather than start a fresh one ("new"). Requires
+// both a selected session AND the Agents tab itself to be the one currently
+// on screen — otherwise a session selected on an earlier visit to that tab
+// would keep stealing Enter from Chat, Issues, or any other section.
+bool MainWindow::quickAddShouldFollowUpAgent() const
+{
+    const bool onAgentsTab = m_sectionStack && m_sectionStack->currentIndex() == 0 &&
+                             m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
+    return onAgentsTab && m_selectedAgentSessionId >= 0;
+}
+
 // Restyle the quick-add "new"/"add" send buttons (adhoc #89) so the one Enter
 // currently activates — see the eventFilter Key_Return branch in
-// MainWindowIssues.cpp — carries a green outline and a small Enter badge.
-// Enter follows up on the agent open above ("add") once one is selected,
-// otherwise it starts a fresh agent ("new"); that's the same
-// m_selectedAgentSessionId check the key handler itself uses, so the
-// indicator can never drift from the actual routing.
+// MainWindowIssues.cpp — carries a green outline. Both call sites share
+// quickAddShouldFollowUpAgent() so the indicator can never drift from the
+// actual routing.
 void MainWindow::updateQuickAddEnterTarget()
 {
-    const bool toAgent = m_selectedAgentSessionId >= 0 && m_quickAddSendToAgentButton;
+    const bool toAgent = quickAddShouldFollowUpAgent() && m_quickAddSendToAgentButton;
     auto apply = [](QPushButton *button, QLabel *badge, bool isTarget,
                      const QString &baseTooltip) {
         if (!button)
@@ -8144,7 +8228,7 @@ void MainWindow::updateQuickAddEnterTarget()
         if (badge)
             badge->setVisible(isTarget);
     };
-    apply(m_quickAddSendToAgentButton, m_quickAddSendToAgentEnterBadge, toAgent,
+    apply(m_quickAddSendToAgentButton, nullptr, toAgent,
           QStringLiteral("Send to the agent open above, as a follow-up message"));
     apply(m_quickAddSendButton, m_quickAddSendEnterBadge, !toAgent,
           QStringLiteral("Send to a new agent"));

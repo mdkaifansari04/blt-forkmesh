@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Legacy accounts table is drained into users/nodes (adhoc #20).
+"""Identity lookups resolve via the users/nodes tables (adhoc #20).
 
-Making a user/node and the verified-email migration delete a record's accounts
-row after mirroring it into the authoritative users/nodes tables. These tests
-pin the read-side safety net: name and email lookups must fall back to
-users/nodes so a drained account still resolves (login, profile, admin status).
+The legacy accounts table was dropped by migration 0042: the users/nodes
+tables are the only store for account records. These tests pin the read side:
+name lookups must resolve users first, then nodes (login, profile, admin
+status), and return None when the record exists in neither.
 """
 
 import ast
@@ -31,8 +31,7 @@ def _load(extra):
     return ns
 
 
-def _harness(accounts=None, users=None, nodes=None):
-    accounts = accounts or {}   # name_bi -> {data, email_bi, ip_bi, is_admin}
+def _harness(users=None, nodes=None):
     users = users or {}         # user_bi -> {data, email_bi, is_admin}
     nodes = nodes or {}         # node_bi -> {data, name}
 
@@ -45,13 +44,8 @@ def _harness(accounts=None, users=None, nodes=None):
     async def encrypt_row(_env, obj):
         return dict(obj)
 
-    async def _mirror_account_identity_tables(*_a, **_k):
-        return None
-
     async def d1_first(_env, sql, *args):
         key = args[0] if args else None
-        if "FROM accounts WHERE name_bi" in sql:
-            return accounts.get(key)
         if "FROM users WHERE user_bi" in sql:
             return users.get(key)
         if "FROM nodes WHERE node_bi" in sql:
@@ -63,30 +57,29 @@ def _harness(accounts=None, users=None, nodes=None):
         "decrypt_row": decrypt_row,
         "encrypt_row": encrypt_row,
         "d1_first": d1_first,
-        "_mirror_account_identity_tables": _mirror_account_identity_tables,
     })
 
 
-def test_account_row_falls_back_to_users_when_accounts_row_is_gone():
+def test_account_row_resolves_users_table():
     ns = _harness(users={"bi:alice": {"data": {"name": "alice", "kind": "user"}}})
     name_bi, rec = asyncio.run(ns["_account_row"](object(), "alice"))
     assert name_bi == "bi:alice"
     assert rec == {"name": "alice", "kind": "user"}
 
 
-def test_account_row_falls_back_to_nodes_when_accounts_row_is_gone():
+def test_account_row_resolves_nodes_table():
     ns = _harness(nodes={"bi:mirror1": {"data": {"name": "mirror1", "kind": "node"}}})
     _, rec = asyncio.run(ns["_account_row"](object(), "mirror1"))
     assert rec == {"name": "mirror1", "kind": "node"}
 
 
-def test_account_row_prefers_accounts_when_present():
+def test_account_row_prefers_users_over_nodes():
     ns = _harness(
-        accounts={"bi:alice": {"data": {"name": "alice", "src": "accounts"}}},
         users={"bi:alice": {"data": {"name": "alice", "src": "users"}}},
+        nodes={"bi:alice": {"data": {"name": "alice", "src": "nodes"}}},
     )
     _, rec = asyncio.run(ns["_account_row"](object(), "alice"))
-    assert rec["src"] == "accounts"
+    assert rec["src"] == "users"
 
 
 def test_account_row_returns_none_when_nowhere():
@@ -95,7 +88,7 @@ def test_account_row_returns_none_when_nowhere():
     assert name_bi == "bi:ghost" and rec is None
 
 
-def test_is_admin_falls_back_to_users_table():
+def test_is_admin_reads_users_table():
     ns = _harness(users={"bi:alice": {"is_admin": 1}})
     assert asyncio.run(ns["_is_admin"](object(), "alice")) is True
     assert asyncio.run(ns["_is_admin"](object(), "nobody")) is False

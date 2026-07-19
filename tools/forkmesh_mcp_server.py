@@ -9,12 +9,17 @@ stdin/stdout, diagnostics on stderr). stdio is fine for local-first: Claude Code
 launches it as a subprocess and auto-discovers it from a `.mcp.json` entry.
 
 Read tools:  list_repos, read_file, search_issues, get_pr_diff
-Write tools: create_issue, comment_on_issue, open_pr_from_branch
+Write tools: create_issue, comment_on_issue, create_milestone, update_milestone,
+             create_project, update_project, open_pr_from_branch
 
 Write tools sign with the node identity key and write the exact same native
-ForkMesh entries the Qt client's IssueStore / PullStore write — no privileged
-side door. The signing is reproduced byte-for-byte from:
+ForkMesh entries the Qt client's IssueStore / ProjectStore / PullStore write —
+no privileged side door. Issues are signed-event JSON records at
+.forkmesh/issues/{open,closed}/<n>/issue-<n>.json, projects at
+.forkmesh/projects/<n>/project-<n>.json, milestone definitions at
+.forkmesh/issues/milestones.json. The signing is reproduced byte-for-byte from:
     qt_client/src/IssueStore.cpp::canonicalString / contentForSigning
+    qt_client/src/ProjectStore.cpp::canonicalString / contentForSigning
     qt_client/src/PullStore.cpp    (see tools/branch_pr_review.py)
 
 Identity key (Ed25519 PEM):
@@ -29,10 +34,12 @@ Which repo the tools act on:
 """
 
 import base64
+import datetime
 import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -145,45 +152,45 @@ def strip_edge_newlines(text):
     return text.strip("\r\n")
 
 
-def serialize_list(items):
-    return "[" + ", ".join(items) + "]"
+def now_ms():
+    return int(time.time() * 1000)
 
 
-# -------------------------------------------------------- issue signing/writing
-# Mirrors qt_client/src/IssueStore.cpp exactly.
-def issue_content_for_signing(ev):
-    t = ev["type"]
-    nul = "\x00"
-    atts = ",".join(ev.get("attachments", []))
-    if t == "open":
-        return ev.get("title", "") + nul + ev.get("body", "") + nul + atts
-    if t in ("comment", "edit"):
-        return ev.get("body", "") + nul + atts
-    return ""
+def parse_date_ms(value, field):
+    """Parse a start/end/due date to epoch milliseconds.
+
+    Accepts an epoch-ms integer or a YYYY-MM-DD string (local midnight, like
+    the desktop's date pickers). None/""/0 mean unset (0).
+    """
+    if value is None or value == "" or value == 0:
+        return 0
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be YYYY-MM-DD or epoch milliseconds")
+    if isinstance(value, (int, float)):
+        ms = int(value)
+        if ms != value or ms < 0:
+            raise ValueError(
+                f"{field} must be a non-negative epoch-milliseconds integer, "
+                f"got {value!r}")
+        return ms
+    text = str(value).strip()
+    if text.isdigit():
+        return int(text)
+    try:
+        day = datetime.date.fromisoformat(text)
+    except ValueError:
+        raise ValueError(
+            f"{field} must be YYYY-MM-DD or epoch milliseconds, got {value!r}")
+    return int(time.mktime(day.timetuple()) * 1000)
 
 
-def sign_issue_event(number, ev):
-    content_hash = hashlib.sha256(
-        issue_content_for_signing(ev).encode()).hexdigest()
-    canonical = (
-        "forkmesh-issue-event-v1\n"
-        f"{ev['type']}\n{number}\n{ev['author']}\n{ev['ts']}\n{content_hash}"
-    ).encode()
-    return b64url(load_identity()[0].sign(canonical))
-
-
-def issues_dir(repo):
-    return Path(repo) / "issues"
-
-
-def next_issue_number(repo):
-    d = issues_dir(repo)
-    mx = 0
-    if d.exists():
-        for entry in d.iterdir():
-            if entry.is_dir() and entry.name.isdigit():
-                mx = max(mx, int(entry.name))
-    return mx + 1
+def parse_date_range(start_date, end_date, start_field="start_date",
+                     end_field="end_date"):
+    start_ms = parse_date_ms(start_date, start_field)
+    end_ms = parse_date_ms(end_date, end_field)
+    if start_ms and end_ms and end_ms < start_ms:
+        raise ValueError(f"{end_field} is before {start_field}")
+    return start_ms, end_ms
 
 
 def read_frontmatter(path):
@@ -199,109 +206,515 @@ def read_frontmatter(path):
     return fields, m.group(2).lstrip("\n")
 
 
-def create_issue(repo, title, body, labels, milestone, priority, assignees):
+# -------------------------------------------------------- issue signing/writing
+# Native signed-event tracker records, mirroring qt_client/src/IssueStore.cpp
+# byte-for-byte (contentForSigning / canonicalString; the relay Worker's
+# issue_event_content is the same spine).
+ISSUES_REL = ".forkmesh/issues"
+
+
+def issue_content_for_signing(ev):
+    t = ev.get("type", "")
+    nul = "\x00"
+    atts = ",".join(ev.get("attachments") or [])
+    if t == "open":
+        return ev.get("title", "") + nul + ev.get("body", "") + nul + atts
+    if t in ("comment", "edit"):
+        return ev.get("body", "") + nul + atts
+    if t == "title":
+        return ev.get("title", "")
+    if t == "status":
+        return ev.get("status", "")
+    if t == "labels":
+        return ",".join(ev.get("labels") or [])
+    if t == "milestone":
+        return ev.get("milestone", "")
+    if t == "dates":
+        return str(int(ev.get("startDate", 0))) + nul + str(int(ev.get("endDate", 0)))
+    if t == "priority":
+        return str(int(ev.get("priority", 0)))
+    if t == "progress":
+        return str(int(ev.get("progress", 0)))
+    if t == "bounty":
+        return ("%.2f" % float(ev.get("bountyUsd", 0)) + nul +
+                (ev.get("bountyAddress") or "") + nul +
+                (ev.get("bountyStatus") or ""))
+    if t == "assignees":
+        return ",".join(ev.get("assignees") or [])
+    if t == "agent":
+        return ((ev.get("agentProvider") or "") + nul +
+                str(int(ev.get("agentSessionId", 0))) + nul +
+                (ev.get("agentStatus") or "") + nul +
+                ("pr" if ev.get("agentCreatePr") else "no-pr"))
+    if t == "delete":
+        return ev.get("target", "")
+    return ""
+
+
+def sign_issue_event(number, ev):
+    content_hash = hashlib.sha256(
+        issue_content_for_signing(ev).encode()).hexdigest()
+    canonical = (
+        "forkmesh-issue-event-v1\n"
+        f"{ev['type']}\n{number}\n{ev['author']}\n{ev['ts']}\n{content_hash}"
+    ).encode()
+    return b64url(load_identity()[0].sign(canonical))
+
+
+def issues_root(repo):
+    return Path(repo) / ISSUES_REL
+
+
+def issue_dir_candidates(repo, number):
+    """Repo folders for issue <n>, in the order readers probe them:
+    open/<n>, closed/<n>, then the pre-split legacy <n>."""
+    root = issues_root(repo)
+    return [root / "open" / str(number), root / "closed" / str(number),
+            root / str(number)]
+
+
+def _numeric_dir_numbers(d):
+    if not d.is_dir():
+        return []
+    return [int(e.name) for e in d.iterdir() if e.is_dir() and e.name.isdigit()]
+
+
+def next_issue_number(repo):
+    """Closed and legacy (pre-split) issues still occupy their numbers, so the
+    max spans open/, closed/, and the legacy root."""
+    root = issues_root(repo)
+    mx = 0
+    for d in (root / "open", root / "closed", root):
+        for n in _numeric_dir_numbers(d):
+            mx = max(mx, n)
+    return mx + 1
+
+
+def dump_record(record):
+    return json.dumps(record, indent=4, sort_keys=True) + "\n"
+
+
+def read_issue_record(repo, number):
+    for d in issue_dir_candidates(repo, number):
+        f = d / f"issue-{number}.json"
+        if f.is_file():
+            return json.loads(f.read_text(errors="replace")), f
+    raise ValueError(f"issue #{number} not found")
+
+
+def _commit_or_rollback(repo, pathspec, message, created_dir):
+    """Commit, or remove the just-created record so no partial state remains."""
+    try:
+        _commit(repo, pathspec, message)
+    except Exception:
+        shutil.rmtree(created_dir, ignore_errors=True)
+        git(repo, "add", "-A", "--", pathspec)  # drop it from the index too
+        raise
+
+
+def _rewrite_and_commit(repo, path, payload, pathspec, message):
+    """Overwrite an existing record and commit; restore the old bytes if the
+    commit fails so a broken commit never leaves a half-updated record."""
+    old = path.read_bytes()
+    path.write_text(payload)
+    try:
+        _commit(repo, pathspec, message)
+    except Exception:
+        path.write_bytes(old)
+        git(repo, "add", "-A", "--", pathspec)
+        raise
+
+
+def create_issue(repo, title, body, labels, milestone, priority, assignees,
+                 start_date=None, end_date=None):
     _, pub = load_identity()
-    ts = int(time.time() * 1000)
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("title must not be empty")
+    start_ms, end_ms = parse_date_range(start_date, end_date)
     body = strip_edge_newlines(body or "")
-    number = next_issue_number(repo)
-    ev = {
-        "type": "open", "id": f"open-{number}", "title": title, "body": body,
-        "attachments": [], "author": pub, "ts": ts,
-    }
-    ev["sig"] = sign_issue_event(number, ev)
+    name = author_name(repo)
 
-    lines = [
-        "---",
-        "schema: forkmesh-issue-v1",
-        f"number: {number}",
-        f"title: {title}",
-        "status: open",
-        f"labels: {serialize_list(labels)}",
-        f"milestone: {milestone}",
-        f"priority: {max(0, min(99, priority))}",
-        "progress: 0",
-        f"assignees: {serialize_list(assignees)}",
-        f"createdAt: {ts}",
-        f"author: {pub}",
-        f"authorName: {author_name(repo)}",
-        "bountyUsd: 0.00",
-        "bountyAddress: ",
-        "bountyStatus: ",
-        "type: open",
-        f"id: {ev['id']}",
-        f"ts: {ts}",
-        "attachments: []",
-        f"sig: {ev['sig']}",
-        "---",
-        "",
-    ]
-    idir = issues_dir(repo) / str(number)
-    idir.mkdir(parents=True, exist_ok=True)
-    (idir / "issue.md").write_text("\n".join(lines) + "\n" + body + "\n")
-
-    _commit(repo, "issues", f"issue #{number}: {title}")
-    return number
+    for _attempt in range(3):
+        number = next_issue_number(repo)
+        if any(d.exists() for d in issue_dir_candidates(repo, number)):
+            continue  # a concurrent writer claimed the number; re-read
+        ts = now_ms()
+        open_ev = {
+            "type": "open", "id": f"open-{number}", "author": pub,
+            "authorName": name, "ts": ts, "title": title, "body": body,
+            "attachments": [],
+        }
+        open_ev["sig"] = sign_issue_event(number, open_ev)
+        events = [open_ev]
+        if start_ms or end_ms:
+            dates_ev = {
+                "type": "dates", "id": str(uuid.uuid4()), "author": pub,
+                "authorName": name, "ts": now_ms(),
+                "startDate": start_ms, "endDate": end_ms,
+            }
+            dates_ev["sig"] = sign_issue_event(number, dates_ev)
+            events.append(dates_ev)
+        record = {
+            "schema": "forkmesh-issue-v1", "number": number, "title": title,
+            "status": "open", "labels": list(labels or []),
+            "milestone": milestone or "",
+            "startDate": start_ms, "endDate": end_ms,
+            "priority": max(0, min(99, int(priority or 0))), "progress": 0,
+            "assignees": list(assignees or []),
+            "createdAt": ts, "updatedAt": events[-1]["ts"],
+            "author": pub, "authorName": name,
+            "bountyUsd": 0, "bountyAddress": "", "bountyStatus": "",
+            "votes": 0, "events": events,
+        }
+        idir = issues_root(repo) / "open" / str(number)
+        idir.mkdir(parents=True, exist_ok=True)
+        payload = dump_record(record)
+        path = idir / f"issue-{number}.json"
+        path.write_text(payload)
+        # Re-read before committing: a concurrent writer may have taken the
+        # same number (its folder appeared elsewhere, or it overwrote ours).
+        if any(d.exists() for d in issue_dir_candidates(repo, number)[1:]):
+            shutil.rmtree(idir, ignore_errors=True)
+            continue
+        if path.read_text() != payload:
+            continue  # the competing record won this path; pick a fresh number
+        _commit_or_rollback(repo, ISSUES_REL, f"issue #{number}: {title}", idir)
+        return number
+    raise ValueError(
+        "could not allocate a unique issue number (concurrent writers kept "
+        "taking it); retry")
 
 
 def comment_on_issue(repo, number, body):
-    idir = issues_dir(repo) / str(number)
-    if not (idir / "issue.md").exists():
-        raise ValueError(f"issue #{number} not found")
+    record, path = read_issue_record(repo, number)
     _, pub = load_identity()
-    ts = int(time.time() * 1000)
+    ts = now_ms()
     body = strip_edge_newlines(body or "")
     ev = {
         "type": "comment", "id": str(uuid.uuid4()), "author": pub,
-        "authorName": author_name(repo), "ts": ts, "attachments": [], "body": body,
+        "authorName": author_name(repo), "ts": ts, "attachments": [],
+        "body": body,
     }
     ev["sig"] = sign_issue_event(number, ev)
-
-    # Event files are named NNNN-<type>.md where NNNN is the 1-based event
-    # index (issue.md is the open event at index 1). Append after existing ones.
-    existing = sum(1 for f in idir.iterdir()
-                   if re.match(r"^\d{4}-.+\.md$", f.name))
-    nnnn = existing + 2
-    lines = [
-        "---",
-        "type: comment",
-        f"id: {ev['id']}",
-        f"author: {pub}",
-        f"authorName: {ev['authorName']}",
-        f"ts: {ts}",
-        "attachments: []",
-        f"sig: {ev['sig']}",
-        "---",
-        "",
-    ]
-    (idir / f"{nnnn:04d}-comment.md").write_text("\n".join(lines) + "\n" + body + "\n")
-    _commit(repo, "issues", f"issue #{number}: comment")
-    return nnnn
+    record.setdefault("events", []).append(ev)
+    record["updatedAt"] = max(int(record.get("updatedAt") or 0), ts)
+    _rewrite_and_commit(repo, path, dump_record(record), ISSUES_REL,
+                        f"issue #{number}: comment")
+    return len(record["events"])
 
 
 def search_issues(repo, query, status=None):
-    d = issues_dir(repo)
-    out = []
-    if not d.exists():
-        return out
+    root = issues_root(repo)
     q = (query or "").lower()
-    for idir in sorted(d.iterdir(),
-                       key=lambda p: int(p.name) if p.name.isdigit() else 0):
-        md = idir / "issue.md"
-        if not (idir.is_dir() and idir.name.isdigit() and md.exists()):
+    out = []
+    seen = set()
+    # The status folder is authoritative for open/closed (the layout encodes
+    # each issue's state); the legacy pre-split root falls back to the record.
+    for sub, folder in (("open", "open"), ("closed", "closed"), ("", "")):
+        d = root / sub if sub else root
+        if not d.is_dir():
             continue
-        fields, body = read_frontmatter(md)
-        st = fields.get("status", "open")
-        if status and st != status:
-            continue
-        title = fields.get("title", "")
-        if q and q not in title.lower() and q not in body.lower():
-            continue
-        out.append({
-            "number": int(idir.name), "title": title, "status": st,
-            "labels": fields.get("labels", "[]"),
-            "author": fields.get("authorName", fields.get("author", "")),
-        })
+        for entry in d.iterdir():
+            if not (entry.is_dir() and entry.name.isdigit()):
+                continue
+            number = int(entry.name)
+            if number in seen:
+                continue
+            f = entry / f"issue-{number}.json"
+            if not f.is_file():
+                continue
+            try:
+                record = json.loads(f.read_text(errors="replace"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            seen.add(number)
+            st = folder or record.get("status", "open")
+            if status and st != status:
+                continue
+            title = record.get("title", "")
+            body = "\n".join(e.get("body", "")
+                             for e in record.get("events", [])
+                             if isinstance(e, dict))
+            if q and q not in title.lower() and q not in body.lower():
+                continue
+            out.append({
+                "number": number, "title": title, "status": st,
+                "labels": record.get("labels", []),
+                "author": record.get("authorName") or record.get("author", ""),
+            })
+    out.sort(key=lambda r: r["number"])
     return out
+
+
+# ------------------------------------------------------- milestone definitions
+# .forkmesh/issues/milestones.json — a plain list of {title, due, status,
+# description}, the same file IssueStore::saveMilestones writes.
+def milestones_path(repo):
+    return issues_root(repo) / "milestones.json"
+
+
+def load_milestones(repo):
+    p = milestones_path(repo)
+    if not p.is_file():
+        return []
+    try:
+        data = json.loads(p.read_text(errors="replace"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{p} is not valid JSON: {exc}")
+    return data if isinstance(data, list) else []
+
+
+def save_milestones(repo, milestones):
+    p = milestones_path(repo)
+    old = p.read_bytes() if p.exists() else None
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(milestones, indent=4, sort_keys=True) + "\n")
+    try:
+        _commit(repo, ISSUES_REL, "issues: update milestones")
+    except Exception:
+        if old is None:
+            p.unlink(missing_ok=True)
+        else:
+            p.write_bytes(old)
+        git(repo, "add", "-A", "--", ISSUES_REL)
+        raise
+
+
+def milestone_titles(repo):
+    return [m.get("title", "") for m in load_milestones(repo)
+            if isinstance(m, dict)]
+
+
+def create_milestone(repo, title, due=None, description=""):
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("milestone title must not be empty")
+    due_ms = parse_date_ms(due, "due")
+    milestones = load_milestones(repo)
+    if title in milestone_titles(repo):
+        raise ValueError(
+            f"milestone {title!r} already exists (use update_milestone to "
+            "change it)")
+    milestones.append({"title": title, "due": due_ms, "status": "open",
+                       "description": description or ""})
+    save_milestones(repo, milestones)
+
+
+def update_milestone(repo, title, due=None, status=None, description=None):
+    milestones = load_milestones(repo)
+    target = next((m for m in milestones
+                   if isinstance(m, dict) and m.get("title") == title), None)
+    if target is None:
+        known = ", ".join(repr(t) for t in milestone_titles(repo)) or "none"
+        raise ValueError(f"unknown milestone {title!r} (existing: {known})")
+    if due is None and status is None and description is None:
+        raise ValueError("nothing to update: pass due, status, or description")
+    if status is not None and status not in ("open", "closed"):
+        raise ValueError(f"status must be 'open' or 'closed', got {status!r}")
+    if due is not None:
+        target["due"] = parse_date_ms(due, "due")
+    if status is not None:
+        target["status"] = status
+    if description is not None:
+        target["description"] = description
+    save_milestones(repo, milestones)
+
+
+# ------------------------------------------------------ project signing/writing
+# Mirrors qt_client/src/ProjectStore.cpp byte-for-byte.
+PROJECTS_REL = ".forkmesh/projects"
+
+
+def projects_root(repo):
+    return Path(repo) / PROJECTS_REL
+
+
+def sorted_issue_numbers(issues):
+    return sorted({int(n) for n in issues})
+
+
+def project_content_for_signing(ev):
+    t = ev.get("type", "")
+    nul = "\x00"
+    if t == "open":
+        return ev.get("title", "") + nul + ev.get("body", "")
+    if t == "title":
+        return ev.get("title", "")
+    if t == "edit":
+        return ev.get("body", "")
+    if t == "status":
+        return ev.get("status", "")
+    if t == "dates":
+        return str(int(ev.get("startDate", 0))) + nul + str(int(ev.get("endDate", 0)))
+    if t == "milestone":
+        return ev.get("milestone", "")
+    if t == "issues":
+        # Comma-joined, ascending, no spaces (e.g. "384,385") so every port
+        # hashes identical bytes regardless of stored order.
+        return ",".join(str(n) for n in sorted_issue_numbers(ev.get("issues") or []))
+    if t == "delete":
+        return ev.get("target", "")
+    return ""
+
+
+def sign_project_event(number, ev):
+    content_hash = hashlib.sha256(
+        project_content_for_signing(ev).encode()).hexdigest()
+    canonical = (
+        "forkmesh-project-event-v1\n"
+        f"{ev['type']}\n{number}\n{ev['author']}\n{ev['ts']}\n{content_hash}"
+    ).encode()
+    return b64url(load_identity()[0].sign(canonical))
+
+
+def next_project_number(repo):
+    return max(_numeric_dir_numbers(projects_root(repo)), default=0) + 1
+
+
+def read_project_record(repo, number):
+    f = projects_root(repo) / str(number) / f"project-{number}.json"
+    if not f.is_file():
+        raise ValueError(f"project #{number} not found")
+    return json.loads(f.read_text(errors="replace")), f
+
+
+def validate_issue_links(repo, issues):
+    numbers = sorted_issue_numbers(issues or [])
+    missing = [n for n in numbers
+               if not any((d / f"issue-{n}.json").is_file()
+                          for d in issue_dir_candidates(repo, n))]
+    if missing:
+        raise ValueError(
+            "unknown issue number(s): "
+            + ", ".join(f"#{n}" for n in missing)
+            + " — link only issues that exist in this repository")
+    return numbers
+
+
+def validate_milestone_exists(repo, milestone):
+    titles = milestone_titles(repo)
+    if milestone not in titles:
+        known = ", ".join(repr(t) for t in titles) or "none"
+        raise ValueError(
+            f"unknown milestone {milestone!r}; create it first with "
+            f"create_milestone (existing: {known})")
+
+
+def create_project(repo, title, body, start_date=None, end_date=None,
+                   milestone="", issues=None):
+    _, pub = load_identity()
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("title must not be empty")
+    start_ms, end_ms = parse_date_range(start_date, end_date)
+    milestone = milestone or ""
+    if milestone:
+        validate_milestone_exists(repo, milestone)
+    linked = validate_issue_links(repo, issues)
+    body = body or ""
+    name = author_name(repo)
+
+    for _attempt in range(3):
+        number = next_project_number(repo)
+        pdir = projects_root(repo) / str(number)
+        if pdir.exists():
+            continue  # a concurrent writer claimed the number; re-read
+        ts = now_ms()
+        open_ev = {
+            "type": "open", "id": f"open-{number}", "author": pub,
+            "authorName": name, "ts": ts, "title": title, "body": body,
+        }
+        open_ev["sig"] = sign_project_event(number, open_ev)
+        events = [open_ev]
+        if start_ms or end_ms:
+            ev = {"type": "dates", "id": str(uuid.uuid4()), "author": pub,
+                  "authorName": name, "ts": now_ms(),
+                  "startDate": start_ms, "endDate": end_ms}
+            ev["sig"] = sign_project_event(number, ev)
+            events.append(ev)
+        if milestone:
+            ev = {"type": "milestone", "id": str(uuid.uuid4()), "author": pub,
+                  "authorName": name, "ts": now_ms(), "milestone": milestone}
+            ev["sig"] = sign_project_event(number, ev)
+            events.append(ev)
+        if linked:
+            ev = {"type": "issues", "id": str(uuid.uuid4()), "author": pub,
+                  "authorName": name, "ts": now_ms(), "issues": linked}
+            ev["sig"] = sign_project_event(number, ev)
+            events.append(ev)
+        record = {
+            "schema": "forkmesh-project-v1", "number": number, "title": title,
+            "body": body, "status": "open",
+            "startDate": start_ms, "endDate": end_ms,
+            "milestone": milestone, "issues": linked,
+            "createdAt": ts, "updatedAt": events[-1]["ts"],
+            "author": pub, "authorName": name, "events": events,
+        }
+        pdir.mkdir(parents=True, exist_ok=True)
+        payload = dump_record(record)
+        path = pdir / f"project-{number}.json"
+        path.write_text(payload)
+        # Re-read before committing: retry if a concurrent writer overwrote us.
+        if path.read_text() != payload:
+            continue
+        _commit_or_rollback(repo, PROJECTS_REL,
+                            f"projects: #{number} {title}", pdir)
+        return number
+    raise ValueError(
+        "could not allocate a unique project number (concurrent writers kept "
+        "taking it); retry")
+
+
+def _append_project_event(repo, number, ev_fields, commit_suffix):
+    """Append one signed event to a project record, fold it into the
+    top-level metadata (like ProjectStore::recomputeMetadata), and commit."""
+    record, path = read_project_record(repo, number)
+    _, pub = load_identity()
+    ev = {"id": str(uuid.uuid4()), "author": pub,
+          "authorName": author_name(repo), "ts": now_ms(), **ev_fields}
+    ev["sig"] = sign_project_event(number, ev)
+    record.setdefault("events", []).append(ev)
+    if ev["type"] == "dates":
+        record["startDate"] = ev["startDate"]
+        record["endDate"] = ev["endDate"]
+    elif ev["type"] == "milestone":
+        record["milestone"] = ev["milestone"]
+    elif ev["type"] == "issues":
+        record["issues"] = ev["issues"]
+    record["updatedAt"] = max(int(record.get("updatedAt") or 0), ev["ts"])
+    _rewrite_and_commit(repo, path, dump_record(record), PROJECTS_REL,
+                        f"projects: #{number} {commit_suffix}")
+
+
+def update_project(repo, number, start_date=None, end_date=None,
+                   milestone=None, issues=None):
+    read_project_record(repo, number)  # actionable "not found" before anything
+    set_dates = start_date is not None or end_date is not None
+    if not (set_dates or milestone is not None or issues is not None):
+        raise ValueError(
+            "nothing to update: pass start_date/end_date, milestone, or issues")
+    # Validate everything up front so a bad field never leaves a partial update.
+    if set_dates:
+        start_ms, end_ms = parse_date_range(start_date, end_date)
+    if milestone:
+        validate_milestone_exists(repo, milestone)
+    if issues is not None:
+        linked = validate_issue_links(repo, issues)
+    # One signed event + native commit per field, like the desktop's set* calls.
+    if set_dates:
+        _append_project_event(repo, number,
+                              {"type": "dates", "startDate": start_ms,
+                               "endDate": end_ms}, "dates")
+    if milestone is not None:
+        _append_project_event(repo, number,
+                              {"type": "milestone", "milestone": milestone},
+                              "milestone")
+    if issues is not None:
+        _append_project_event(repo, number,
+                              {"type": "issues", "issues": linked}, "issues")
 
 
 # ---------------------------------------------------------- pull signing/writing
@@ -391,7 +804,7 @@ def get_pr_diff(repo, number):
 
 
 def _commit(repo, pathspec, message):
-    add = git(repo, "add", pathspec)
+    add = git(repo, "add", "-A", "--", pathspec)
     if add.returncode != 0:
         raise ValueError(f"git add failed: {add.stderr.strip()}")
     commit = git(repo, "commit", "-m", message, "--", pathspec)
@@ -452,8 +865,40 @@ def tool_create_issue(args):
     number = create_issue(
         repo, args["title"], args.get("body", ""),
         args.get("labels", []), args.get("milestone", ""),
-        int(args.get("priority", 0)), args.get("assignees", []))
+        int(args.get("priority", 0)), args.get("assignees", []),
+        args.get("start_date"), args.get("end_date"))
     return f"Created issue #{number} in {Path(repo).name}"
+
+
+def tool_create_milestone(args):
+    repo = resolve_repo(args.get("repo"))
+    create_milestone(repo, args["title"], args.get("due"),
+                     args.get("description", ""))
+    return f"Created milestone {args['title']!r} in {Path(repo).name}"
+
+
+def tool_update_milestone(args):
+    repo = resolve_repo(args.get("repo"))
+    update_milestone(repo, args["title"], args.get("due"),
+                     args.get("status"), args.get("description"))
+    return f"Updated milestone {args['title']!r}"
+
+
+def tool_create_project(args):
+    repo = resolve_repo(args.get("repo"))
+    number = create_project(
+        repo, args["title"], args.get("body", ""),
+        args.get("start_date"), args.get("end_date"),
+        args.get("milestone", ""), args.get("issues"))
+    return f"Created project #{number} in {Path(repo).name}"
+
+
+def tool_update_project(args):
+    repo = resolve_repo(args.get("repo"))
+    update_project(repo, int(args["number"]), args.get("start_date"),
+                   args.get("end_date"), args.get("milestone"),
+                   args.get("issues"))
+    return f"Updated project #{args['number']}"
 
 
 def tool_comment_on_issue(args):
@@ -478,6 +923,9 @@ def tool_get_pr_diff(args):
 
 REPO_ARG = {"repo": {"type": "string",
                      "description": "repo name (from list_repos); omit for the default"}}
+
+DATE_ARG = {"type": ["string", "integer"],
+            "description": "YYYY-MM-DD or epoch milliseconds"}
 
 TOOLS = [
     {
@@ -525,11 +973,82 @@ TOOLS = [
                 "milestone": {"type": "string"},
                 "priority": {"type": "integer"},
                 "assignees": {"type": "array", "items": {"type": "string"}},
+                "start_date": DATE_ARG,
+                "end_date": DATE_ARG,
                 **REPO_ARG,
             },
             "required": ["title"],
         },
         "handler": tool_create_issue,
+    },
+    {
+        "name": "create_milestone",
+        "description": "Add a milestone definition to .forkmesh/issues/milestones.json.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "due": DATE_ARG,
+                "description": {"type": "string"},
+                **REPO_ARG,
+            },
+            "required": ["title"],
+        },
+        "handler": tool_create_milestone,
+    },
+    {
+        "name": "update_milestone",
+        "description": "Update an existing milestone's due date, status, or description.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "due": DATE_ARG,
+                "status": {"type": "string", "description": "open or closed"},
+                "description": {"type": "string"},
+                **REPO_ARG,
+            },
+            "required": ["title"],
+        },
+        "handler": tool_update_milestone,
+    },
+    {
+        "name": "create_project",
+        "description": "Create a signed project with optional dates, milestone, "
+                       "and linked issue numbers.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "start_date": DATE_ARG,
+                "end_date": DATE_ARG,
+                "milestone": {"type": "string"},
+                "issues": {"type": "array", "items": {"type": "integer"},
+                           "description": "issue numbers to link"},
+                **REPO_ARG,
+            },
+            "required": ["title"],
+        },
+        "handler": tool_create_project,
+    },
+    {
+        "name": "update_project",
+        "description": "Append signed events to a project: set dates, milestone, "
+                       "or the linked issue numbers.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "number": {"type": "integer"},
+                "start_date": DATE_ARG,
+                "end_date": DATE_ARG,
+                "milestone": {"type": "string"},
+                "issues": {"type": "array", "items": {"type": "integer"}},
+                **REPO_ARG,
+            },
+            "required": ["number"],
+        },
+        "handler": tool_update_project,
     },
     {
         "name": "comment_on_issue",

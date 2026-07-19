@@ -138,6 +138,49 @@
         : "Could not log in. Please try again.", "bad");
   }
 
+  // If we were bounced here from a gated page (e.g. the admin dashboard, whose
+  // short-lived HttpOnly cookie lapses well before the 30-day login session
+  // does) and we still hold a valid account session, re-establish the admin
+  // page cookie from that session token instead of forcing a password re-entry
+  // (adhoc #163). On any failure we silently fall back to the normal form.
+  const ADMIN_RESUME_KEY = "forkmesh.adminResumeAt";
+
+  async function resumeAdminSession() {
+    const next = nextPath();
+    if (!next) return;
+    let session = null;
+    try {
+      session = JSON.parse(localStorage.getItem("forkmesh.session") || "null");
+    } catch (_) {}
+    if (!session || !session.isAdmin || !session.sessionToken) return;
+    // If we resumed seconds ago and got bounced straight back here, the gated
+    // page is rejecting the freshly minted cookie — fall through to the
+    // password form instead of redirect-looping forever (adhoc #168). A
+    // resume from hours ago (cookie lapsed again) still retries silently.
+    try {
+      if (Date.now() - Number(sessionStorage.getItem(ADMIN_RESUME_KEY) || 0) < 15000) return;
+    } catch (_) {}
+    setHint("Resuming your session…", "");
+    try {
+      const res = await fetch("/api/accounts/admin-session", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+          authorization: "Bearer " + session.sessionToken,
+        },
+        body: JSON.stringify({ sessionToken: session.sessionToken }),
+      });
+      if (res.ok) {
+        try { sessionStorage.setItem(ADMIN_RESUME_KEY, String(Date.now())); } catch (_) {}
+        location.href = next;
+        return;
+      }
+    } catch (_) {}
+    setHint("", "");
+  }
+  resumeAdminSession();
+
   btn.addEventListener("click", login);
   if (demoLoginAllowed()) {
     const demoBox = $("#demo-credentials");
