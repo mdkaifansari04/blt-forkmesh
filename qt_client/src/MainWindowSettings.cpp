@@ -13,6 +13,8 @@
 
 #include <QClipboard>
 #include <QColor>
+#include <QPixmap>
+#include <QTextDocument>
 #include <QDialog>
 #include <QInputDialog>
 #include "KebabHeaderView.h"
@@ -3399,14 +3401,28 @@ QString linkifyEscapedMessage(const QString &escaped)
     return html;
 }
 
-QString formatLogLineHtml(const QString &time, const QString &message, bool dark)
+// The host of the first http(s) URL in a (raw, unescaped) log message, or an
+// empty string when the entry references no network source. Used to fetch and
+// show that site's favicon at the front of the entry.
+QString firstUrlHost(const QString &message)
+{
+    static const QRegularExpression hostRe(
+        QStringLiteral("https?://([^/\\s:?#]+)"));
+    const QRegularExpressionMatch m = hostRe.match(message);
+    return m.hasMatch() ? m.captured(1) : QString();
+}
+
+QString formatLogLineHtml(const QString &time, const QString &message, bool dark,
+                          const QString &iconHtml = QString())
 {
     const QString messageColor =
         dark ? QStringLiteral("#adbac7") : QStringLiteral("#1f2328");
     const QString timeColor =
         dark ? QStringLiteral("#6e7681") : QStringLiteral("#656d76");
     const NetworkLogStyle style = networkLogStyleFor(message);
-    QString html;
+    // The site favicon (when the entry hit a network source) leads the line so
+    // requests read at a glance as "who they went to".
+    QString html = iconHtml;
     if (!time.isEmpty())
         html += QStringLiteral("<span style='color:%1'>%2</span>&nbsp;&nbsp;")
                     .arg(timeColor, time);
@@ -3418,6 +3434,54 @@ QString formatLogLineHtml(const QString &time, const QString &message, bool dark
     return html;
 }
 } // namespace
+
+// Register (or refresh) the document image resource behind a "favicon://<host>"
+// reference so the log's <img> tags resolve. Uses the cached site favicon when
+// available, otherwise a transparent placeholder that keeps the 14px box laid
+// out until fetchFaviconForHost() fills it in.
+void MainWindow::registerLogFaviconResource(const QString &host)
+{
+    if (!m_settingsLog || host.isEmpty())
+        return;
+    QPixmap pix;
+    if (m_faviconCache.contains(host)) {
+        pix = m_faviconCache.value(host)
+                  .scaled(16, 16, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    } else {
+        pix = QPixmap(16, 16);
+        pix.fill(Qt::transparent);
+    }
+    m_settingsLog->document()->addResource(
+        QTextDocument::ImageResource,
+        QUrl(QStringLiteral("favicon://") + host), pix);
+}
+
+// Called when a favicon finishes downloading: swap the real icon in for the
+// placeholder and mark the log dirty so already-rendered entries repaint with
+// it.
+void MainWindow::refreshLogFavicon(const QString &host)
+{
+    if (!m_settingsLog || host.isEmpty() || !m_faviconCache.contains(host))
+        return;
+    registerLogFaviconResource(host);
+    QTextDocument *doc = m_settingsLog->document();
+    doc->markContentsDirty(0, doc->characterCount());
+}
+
+// The leading <img> for a log entry that hit a network source (empty for lines
+// with no URL). Ensures the favicon resource is registered and kicks off a
+// fetch on first sighting of a host.
+QString MainWindow::logFaviconTag(const QString &message)
+{
+    const QString host = firstUrlHost(message);
+    if (host.isEmpty())
+        return QString();
+    registerLogFaviconResource(host); // placeholder now, real icon once fetched
+    fetchFaviconForHost(host);        // no-op if already cached / in flight
+    return QStringLiteral("<img src='favicon://%1' width='14' height='14' "
+                          "style='vertical-align:middle'>&nbsp;")
+        .arg(host);
+}
 
 void MainWindow::appendNetworkLogLine(const QString &storedLine)
 {
@@ -3439,7 +3503,7 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
         m_settingsLog->append(formatDayDividerHtml(date, dark));
     }
 
-    m_settingsLog->append(formatLogLineHtml(time, message, dark));
+    m_settingsLog->append(formatLogLineHtml(time, message, dark, logFaviconTag(message)));
 }
 
 // Loads the next older page of matching lines when the user scrolls to the
@@ -3480,7 +3544,8 @@ void MainWindow::loadOlderNetworkLogSegment()
             runningDate = date;
             html += QStringLiteral("<div>%1</div>").arg(formatDayDividerHtml(date, dark));
         }
-        html += QStringLiteral("<div>%1</div>").arg(formatLogLineHtml(time, message, dark));
+        html += QStringLiteral("<div>%1</div>")
+                    .arg(formatLogLineHtml(time, message, dark, logFaviconTag(message)));
     }
 
     QScrollBar *sb = m_settingsLog->verticalScrollBar();
