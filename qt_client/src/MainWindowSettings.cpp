@@ -2240,40 +2240,11 @@ void MainWindow::chooseAvatar()
 
 void MainWindow::quickRebuildRestart()
 {
-    // Queue behind any in-flight agent work: relaunching mid-run would kill a
-    // running agent session, so hold the rebuild until the fleet goes idle and
-    // let maybeStartQueuedRebuild() re-invoke us once it does (adhoc #75). The
-    // click handler already spun the button; switch that spin to a spinning
-    // hourglass while queued so it reads as "waiting", not "building" (adhoc #91).
-    const QStringList blockers = runningAgentBlockers();
-    if (!blockers.isEmpty()) {
-        m_rebuildRestartQueued = true;
-        m_buildButton = m_rebuildButton;
-        m_buildStatusLabel = m_rebuildStatus;
-        beginRestartLog();
-        showUpdateLog();
-        setUpdateStatus(QStringLiteral(
-            "Waiting for running actions to finish before rebuilding\xE2\x80\xA6"));
-        // Name what the gate is actually counting: every past "stuck waiting"
-        // report (adhoc #91/#104/#111/#116/#134/#143) hinged on the user seeing
-        // no running actions while the gate counted something invisible.
-        logRestart(QStringLiteral("waiting on: %1")
-                       .arg(blockers.join(QStringLiteral(", "))));
-        setRestartSpinHourglass(true);
-        // Safety net for that same missed-notification bug family: every agent
-        // completion path is supposed to call maybeStartQueuedRebuild(), but each
-        // adhoc round above found one more path that didn't. While a rebuild is
-        // queued, also recheck on a timer so a missed signal delays the restart
-        // by seconds instead of blocking it forever.
-        if (!m_rebuildQueuePollTimer) {
-            m_rebuildQueuePollTimer = new QTimer(this);
-            m_rebuildQueuePollTimer->setInterval(2000);
-            connect(m_rebuildQueuePollTimer, &QTimer::timeout, this,
-                    &MainWindow::maybeStartQueuedRebuild);
-        }
-        m_rebuildQueuePollTimer->start();
-        return;
-    }
+    // Restart immediately even with agents in progress: agent sessions are
+    // resumable (the `claude` process is relaunched and re-attached on startup),
+    // so a mid-run restart no longer loses work and there's no reason to make the
+    // user wait for the fleet to go idle (adhoc #176). This supersedes the old
+    // queue-behind-agents gate (adhoc #75/#91/#104/#111/#116/#134/#143).
     m_rebuildRestartQueued = false;
     if (m_rebuildQueuePollTimer)
         m_rebuildQueuePollTimer->stop();
