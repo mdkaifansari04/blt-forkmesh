@@ -73,6 +73,12 @@ def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
+async def _passthrough_alias(env, owner, repo):
+    # Non-org repos resolve to themselves; org-alias resolution is pinned in
+    # test_orgs_teams.py.
+    return owner
+
+
 class FakeResponse:
     def __init__(self, data, status=200):
         self.data = data
@@ -154,6 +160,7 @@ def _mention_env(log, *, is_private=0, has_repo=True, seen=False,
             "blind_index": blind_index,
             "d1_first": d1_first,
             "d1_run": d1_run,
+            "_ap_org_alias_owner": _passthrough_alias,
             "_ap_repo_settings_get": _ap_repo_settings_get,
             "_ap_mention_ai_intent": _ap_mention_ai_intent,
             "_ap_fetch_note_images": _ap_fetch_note_images,
