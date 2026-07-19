@@ -2061,6 +2061,10 @@ private:
                                      const QString &model = QString());
     void promptNewBranch();
     void deleteBranch(const QString &branch);
+    // Delete a remote-tracking branch on its origin (git push <remote> --delete),
+    // then prune the stale remote-tracking ref. `branch` is the "<remote>/<ref>"
+    // shown in the Branches table.
+    void deleteRemoteBranch(const QString &branch);
     // The branch listed next to `branch` in the Branches table (the row below it,
     // else the row above), used to pick the post-delete selection (adhoc #256).
     QString neighbourBranchInList(const QString &branch) const;
@@ -3715,6 +3719,8 @@ private:
     // lands after the user switched repos.
     QWidget *m_sizeMapChart = nullptr;
     QLabel *m_sizeMapStatus = nullptr;
+    // Checkbox that drops .gitignored paths from the scan (adhoc #197).
+    QCheckBox *m_sizeMapHideIgnored = nullptr;
     QString m_sizeMapScannedPath;
     bool m_sizeMapScanning = false;
     int m_sizeMapScanEpoch = 0;

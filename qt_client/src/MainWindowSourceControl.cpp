@@ -9,6 +9,7 @@
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
 
+#include <QCheckBox>
 #include <QLayout>
 #include <QFutureWatcher>
 #include <QScrollArea>
@@ -2446,9 +2447,12 @@ namespace {
 // totals. Depth is capped — deeper directories still count toward every
 // ancestor's size, they just stop producing children of their own. Runs on a
 // QtConcurrent thread, so nothing here may touch widgets or MainWindow state.
+// `ignored` holds absolute paths to prune (the .gitignore hide toggle, adhoc
+// #197); it is empty when the toggle is off.
 constexpr int kSizeMapMaxDepth = 8;
 
-SunburstNode scanDirectorySizes(const QString &path, int depth)
+SunburstNode scanDirectorySizes(const QString &path, int depth,
+                                const QSet<QString> &ignored)
 {
     SunburstNode node;
     node.name = QFileInfo(path).fileName();
@@ -2456,11 +2460,13 @@ SunburstNode scanDirectorySizes(const QString &path, int depth)
         QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden |
         QDir::System | QDir::NoSymLinks);
     for (const QFileInfo &info : entries) {
+        if (!ignored.isEmpty() && ignored.contains(info.absoluteFilePath()))
+            continue;
         if (info.isDir()) {
             if (info.fileName() == QLatin1String(".git"))
                 continue;
             SunburstNode child =
-                scanDirectorySizes(info.absoluteFilePath(), depth + 1);
+                scanDirectorySizes(info.absoluteFilePath(), depth + 1, ignored);
             node.size += child.size;
             node.fileCount += child.fileCount;
             if (depth < kSizeMapMaxDepth && child.size > 0)
@@ -2519,6 +2525,16 @@ QWidget *MainWindow::buildSizeMapTab()
     headerRow->addWidget(refresh, 0, Qt::AlignTop);
     layout->addLayout(headerRow);
 
+    auto *hideIgnored = new QCheckBox("Hide .gitignored files");
+    hideIgnored->setCursor(Qt::PointingHandCursor);
+    hideIgnored->setToolTip(
+        "Drop everything git ignores (build output, node_modules, …) from the "
+        "map, so only tracked and un-ignored files count toward the sizes.");
+    m_sizeMapHideIgnored = hideIgnored;
+    connect(hideIgnored, &QCheckBox::toggled, this,
+            [this] { refreshSizeMapTab(true); });
+    layout->addWidget(hideIgnored);
+
     m_sizeMapStatus = new QLabel;
     m_sizeMapStatus->setObjectName("statusLine");
     m_sizeMapStatus->setWordWrap(true);
@@ -2550,13 +2566,37 @@ void MainWindow::refreshSizeMapTab(bool force)
         return; // the chart already shows this working copy
     if (m_sizeMapScanning)
         return;
+    // Resolve the .gitignore prune set on the GUI thread (git via QProcess is
+    // awkward from a QtConcurrent worker), then hand it to the scan. Using
+    // --directory keeps wholly-ignored trees to a single entry instead of every
+    // file inside them.
+    const bool hideIgnored =
+        m_sizeMapHideIgnored && m_sizeMapHideIgnored->isChecked();
+    QSet<QString> ignored;
+    if (hideIgnored) {
+        QByteArray out;
+        if (runGitCapture(path,
+                          {"ls-files", "--others", "--ignored",
+                           "--exclude-standard", "--directory", "-z"},
+                          &out, nullptr)) {
+            const QDir root(path);
+            for (const QByteArray &raw : out.split('\0')) {
+                if (raw.isEmpty())
+                    continue;
+                QString rel = QString::fromUtf8(raw);
+                if (rel.endsWith(QLatin1Char('/')))
+                    rel.chop(1);
+                ignored.insert(root.absoluteFilePath(rel));
+            }
+        }
+    }
     m_sizeMapScanning = true;
     const int epoch = ++m_sizeMapScanEpoch;
     m_sizeMapStatus->setText(
         QStringLiteral("Scanning %1 …").arg(QDir::toNativeSeparators(path)));
     auto *watcher = new QFutureWatcher<SunburstNode>(this);
     connect(watcher, &QFutureWatcher<SunburstNode>::finished, this,
-            [this, watcher, path, epoch] {
+            [this, watcher, path, epoch, hideIgnored] {
                 watcher->deleteLater();
                 m_sizeMapScanning = false;
                 if (epoch != m_sizeMapScanEpoch)
@@ -2573,15 +2613,18 @@ void MainWindow::refreshSizeMapTab(bool force)
                 }
                 m_sizeMapScannedPath = path;
                 m_sizeMapStatus->setText(
-                    QStringLiteral("%1 files · %2 on disk (.git excluded)")
+                    QStringLiteral("%1 files · %2 on disk (%3)")
                         .arg(QLocale().toString(root.fileCount),
-                             QLocale().formattedDataSize(root.size)));
+                             QLocale().formattedDataSize(root.size),
+                             hideIgnored
+                                 ? QStringLiteral(".git & .gitignored excluded")
+                                 : QStringLiteral(".git excluded")));
                 if (auto *liveChart =
                         static_cast<RepoSunburstChart *>(m_sizeMapChart))
                     liveChart->setRoot(std::move(root));
             });
-    watcher->setFuture(
-        QtConcurrent::run([path] { return scanDirectorySizes(path, 0); }));
+    watcher->setFuture(QtConcurrent::run(
+        [path, ignored] { return scanDirectorySizes(path, 0, ignored); }));
 }
 
 QWidget *MainWindow::buildInsightsTab()
