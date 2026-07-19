@@ -8330,10 +8330,311 @@
     } catch (_) { /* host offline — section stays hidden */ }
   }
 
+  // --- Size map (adhoc #189) --------------------------------------------
+  //
+  // A multi-level pie (sunburst) of the repo's directory sizes, fed by the
+  // host's one-round-trip /sizes op (git ls-tree -r -l folded into a nested
+  // directory tree). Ring 1 holds the repo root's directories and each deeper
+  // ring subdivides its parent; a directory's direct files are the unfilled
+  // span at the end of its arc, so "mostly loose files" reads as mostly-empty
+  // arc (the HDGraph convention). The About rail shows a small static chart;
+  // clicking it opens the fullscreen interactive one (hover details,
+  // click-to-zoom, breadcrumb). Hosts too old to know the op just leave the
+  // section hidden.
+
+  // Top-level directories take these hues in size order (fixed slots, never
+  // cycled — everything past eight goes muted gray); descendants inherit the
+  // parent hue stepped toward the surface so depth reads as shade. Both
+  // variants validated against the site's dark (#010409) / light (#ffffff)
+  // surfaces.
+  const REPO_SIZEMAP_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
+  const REPO_SIZEMAP_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
+  const REPO_SIZEMAP_GRAY = "#8a8a8a";
+
+  function repoSizeMapShade(hex, depth, lighten, extra) {
+    const toward = lighten ? 255 : 0;
+    const f = Math.min(0.55, Math.max(0, (depth - 1) * 0.16 + extra));
+    const channel = (i) => {
+      const v = parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16);
+      return Math.round(v + (toward - v) * f);
+    };
+    return `rgb(${channel(0)} ${channel(1)} ${channel(2)})`;
+  }
+
+  // One walk over the full tree assigns every directory its color, so a node
+  // keeps its hue in the mini chart, in the modal, and at every zoom level
+  // (color follows the entity, never its current rank on screen).
+  function repoSizeMapColors(root) {
+    const dark = document.documentElement.dataset.dashboardTheme !== "light";
+    const palette = dark ? REPO_SIZEMAP_DARK : REPO_SIZEMAP_LIGHT;
+    const colors = new Map();
+    const walk = (node, depth, base, index) => {
+      const hue = depth === 1
+        ? (node.name !== "…" && index < palette.length ? palette[index] : REPO_SIZEMAP_GRAY)
+        : base;
+      colors.set(node, repoSizeMapShade(hue, depth, dark, depth > 1 ? (index % 2) * 0.06 : 0));
+      (node.children || []).forEach((child, i) => walk(child, depth + 1, hue, i));
+    };
+    (root.children || []).forEach((child, i) => walk(child, 1, REPO_SIZEMAP_GRAY, i));
+    return colors;
+  }
+
+  // Flattens the tree, re-rooted at `focus`, into drawable ring segments. Each
+  // segment keeps `nodes` (the chain from focus down to it) so a click can
+  // extend the zoom trail without re-walking the tree.
+  function repoSizeMapSegments(focus, colors, rings) {
+    if (!(Number(focus?.size) > 0)) return [];
+    const segments = [];
+    const minSpan = (2 * Math.PI) / 900; // skip sub-0.4-degree slivers
+    const walk = (node, depth, from, span, chain) => {
+      if (depth > rings) return;
+      let at = from;
+      const size = Number(node.size) || 0;
+      (node.children || []).forEach((child) => {
+        const childSize = Number(child.size) || 0;
+        if (!(childSize > 0) || !(size > 0)) return;
+        const childSpan = span * Math.min(1, childSize / size);
+        if (childSpan >= minSpan) {
+          const nodes = [...chain, child];
+          segments.push({
+            node: child,
+            nodes,
+            path: nodes.map((n) => String(n.name || "")).join("/"),
+            depth,
+            a0: at,
+            a1: at + childSpan,
+            color: colors.get(child) || REPO_SIZEMAP_GRAY,
+            hasChildren: Array.isArray(child.children) && child.children.length > 0,
+          });
+          walk(child, depth + 1, at, childSpan, nodes);
+        }
+        at += childSpan;
+      });
+    };
+    walk(focus, 1, -Math.PI / 2, 2 * Math.PI, []);
+    return segments;
+  }
+
+  function repoSizeMapArc(c, r0, r1, a0, a1) {
+    const span = Math.min(a1 - a0, 2 * Math.PI - 0.0004);
+    const end = a0 + span;
+    const large = span > Math.PI ? 1 : 0;
+    const px = (r, a) => (c + r * Math.cos(a)).toFixed(2);
+    const py = (r, a) => (c + r * Math.sin(a)).toFixed(2);
+    return `M ${px(r1, a0)} ${py(r1, a0)} A ${r1} ${r1} 0 ${large} 1 ${px(r1, end)} ${py(r1, end)} ` +
+      `L ${px(r0, end)} ${py(r0, end)} A ${r0} ${r0} 0 ${large} 0 ${px(r0, a0)} ${py(r0, a0)} Z`;
+  }
+
+  // Renders the sunburst as an SVG string. Every <path> carries
+  // data-seg="<index>" into the returned segments array so callers can wire
+  // hover/click; non-interactive charts get native <title> tooltips instead.
+  function repoSizeMapSvg(focus, colors, opts) {
+    const view = opts.view;
+    const hole = opts.hole;
+    const c = view / 2;
+    const ringWidth = (c - 6 - hole) / opts.rings;
+    const segments = repoSizeMapSegments(focus, colors, opts.rings);
+    const gap = "rgb(var(--dashboard-background-rgb))";
+    const parts = [];
+    segments.forEach((seg, i) => {
+      const r0 = hole + (seg.depth - 1) * ringWidth;
+      const r1 = r0 + ringWidth;
+      parts.push(
+        `<path data-seg="${i}" d="${repoSizeMapArc(c, r0, r1, seg.a0, seg.a1)}" fill="${seg.color}" ` +
+        `stroke="${gap}" stroke-width="2"${opts.interactive ? ' class="cursor-pointer"' : ""}>` +
+        (opts.interactive ? "" : `<title>${escapeHtml(`${seg.path} — ${formatSize(seg.node.size)}`)}</title>`) +
+        `</path>`);
+    });
+    if (opts.labels) {
+      // Direct labels only where they comfortably fit (span over ~18 degrees);
+      // the hover tooltip carries everything else.
+      const labelSize = opts.labelSize || 12;
+      segments.forEach((seg) => {
+        if (seg.a1 - seg.a0 < 0.32) return;
+        const mid = (seg.a0 + seg.a1) / 2;
+        const r = hole + (seg.depth - 1) * ringWidth + ringWidth / 2;
+        const x = (c + r * Math.cos(mid)).toFixed(1);
+        const y = (c + r * Math.sin(mid)).toFixed(1);
+        const name = String(seg.node.name || "");
+        const shown = name.length > 14 ? `${name.slice(0, 13)}…` : name;
+        parts.push(
+          `<text x="${x}" y="${y}" text-anchor="middle" fill="#ffffff" font-size="${labelSize}" ` +
+          `style="pointer-events:none;paint-order:stroke;stroke:rgb(0 0 0 / 0.5);stroke-width:2.5px">` +
+          `<tspan x="${x}" dy="-0.15em">${escapeHtml(shown)}</tspan>` +
+          `<tspan x="${x}" dy="1.2em" font-size="${labelSize - 1}">${escapeHtml(formatSize(seg.node.size))}</tspan></text>`);
+      });
+    }
+    // Center hub: a transparent circle catches zoom-out clicks over the whole
+    // hole; the two text lines ride on top with pointer events off.
+    parts.push(`<circle data-sizemap-center="1" cx="${c}" cy="${c}" r="${hole - 2}" fill="transparent"${opts.canGoUp ? ' class="cursor-pointer"' : ""}></circle>`);
+    const title = String(opts.centerTitle || "");
+    const shownTitle = title.length > 16 ? `${title.slice(0, 15)}…` : title;
+    parts.push(
+      `<text x="${c}" y="${c}" text-anchor="middle" style="pointer-events:none">` +
+      `<tspan x="${c}" dy="-0.15em" fill="rgb(var(--dashboard-foreground-rgb))" font-size="${opts.centerTitleSize || 13}" font-weight="600">${escapeHtml(shownTitle)}</tspan>` +
+      `<tspan x="${c}" dy="1.35em" fill="rgb(var(--dashboard-muted-foreground-rgb))" font-size="${(opts.centerTitleSize || 13) - 2}">${escapeHtml(String(opts.centerSub || ""))}</tspan></text>`);
+    const svg =
+      `<svg viewBox="0 0 ${view} ${view}" role="img" aria-label="Directory size sunburst" class="block h-auto w-full">${parts.join("")}</svg>`;
+    return { svg, segments };
+  }
+
+  function renderRepoAboutSizeMap(repo, tree) {
+    const section = $("[data-repo-about-sizemap]");
+    const chart = $("[data-repo-about-sizemap-chart]");
+    const open = $("[data-repo-about-sizemap-open]");
+    if (!section || !chart || !open) return;
+    if (!(Number(tree?.size) > 0) || !(tree.children || []).length) return;
+    const colors = repoSizeMapColors(tree);
+    chart.innerHTML = repoSizeMapSvg(tree, colors, {
+      view: 260,
+      hole: 42,
+      rings: 3,
+      centerTitle: formatSize(tree.size),
+      centerSub: `${Number(tree.fileCount || 0).toLocaleString()} files`,
+      centerTitleSize: 14,
+    }).svg;
+    open.onclick = () => openRepoSizeMapModal(repo, tree);
+    section.classList.remove("hidden");
+  }
+
+  async function loadRepoAboutSizeMap(repo) {
+    try {
+      const data = await fetchRepoJson(repoLiveUrl(repo, "sizes"));
+      if (!data || data.ok === false) return; // host offline, or a pre-sizes node
+      if (!repoAboutStillCurrent(repo)) return;
+      renderRepoAboutSizeMap(repo, data);
+    } catch (_) { /* section stays hidden */ }
+  }
+
+  // The detailed, interactive size map: click a directory to zoom in, the
+  // center (or a breadcrumb) to zoom back out, hover for exact sizes.
+  function openRepoSizeMapModal(repo, root) {
+    const overlay = document.createElement("div");
+    overlay.className = "fixed inset-0 z-[90] flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-label", "Repository size map");
+    overlay.innerHTML = `
+      <button type="button" data-sizemap-backdrop class="absolute inset-0 cursor-default" aria-label="Close size map"></button>
+      <div class="relative z-10 flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
+        <div class="flex items-center gap-3 border-b border-border px-4 py-3">
+          <i data-lucide="chart-pie" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
+          <div class="min-w-0 flex-1">
+            <div data-sizemap-crumbs class="flex min-w-0 flex-wrap items-center gap-1 text-sm text-foreground"></div>
+            <p data-sizemap-summary class="mt-0.5 text-[11px] text-muted-foreground"></p>
+          </div>
+          <button type="button" data-sizemap-close class="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground">Esc</button>
+        </div>
+        <div class="relative min-h-0 flex-1 overflow-auto p-4">
+          <div data-sizemap-chart class="mx-auto max-w-xl"></div>
+          <div data-sizemap-tip class="pointer-events-none absolute z-20 hidden max-w-xs rounded-md border border-border bg-popover px-2.5 py-1.5 font-mono text-[11px] text-foreground shadow-lg"></div>
+        </div>
+        <p class="border-t border-border px-4 py-2 text-[11px] text-muted-foreground">Click a directory to zoom in · click the center to zoom out · a ring's unfilled span is the files sitting directly in that directory.</p>
+      </div>`;
+    document.body.appendChild(overlay);
+    const colors = repoSizeMapColors(root);
+    const chart = overlay.querySelector("[data-sizemap-chart]");
+    const crumbs = overlay.querySelector("[data-sizemap-crumbs]");
+    const summary = overlay.querySelector("[data-sizemap-summary]");
+    const tip = overlay.querySelector("[data-sizemap-tip]");
+    let trail = [root]; // root … focus
+    let segments = [];
+
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      }
+    };
+    const close = () => {
+      document.removeEventListener("keydown", onKey);
+      overlay.remove();
+    };
+    document.addEventListener("keydown", onKey);
+    overlay.querySelector("[data-sizemap-close]").onclick = close;
+    overlay.querySelector("[data-sizemap-backdrop]").onclick = close;
+
+    const render = () => {
+      const focus = trail[trail.length - 1];
+      const out = repoSizeMapSvg(focus, colors, {
+        view: 720,
+        hole: 86,
+        rings: 4,
+        labels: true,
+        interactive: true,
+        labelSize: 13,
+        canGoUp: trail.length > 1,
+        centerTitle: trail.length > 1 ? String(focus.name || "") : String(repo.name || "repository"),
+        centerSub: formatSize(Number(focus.size) || 0),
+        centerTitleSize: 16,
+      });
+      segments = out.segments;
+      chart.innerHTML = out.svg;
+      crumbs.innerHTML = trail.map((node, i) => {
+        const label = String(i === 0 ? repo.name || "repo" : node.name || "");
+        const item = i === trail.length - 1
+          ? `<span class="font-semibold">${escapeHtml(label)}</span>`
+          : `<button type="button" data-sizemap-crumb="${i}" class="dashboard-accent-link hover:underline">${escapeHtml(label)}</button>`;
+        return (i ? '<span class="text-muted-foreground">/</span>' : "") + item;
+      }).join("");
+      const focusSize = Number(trail[trail.length - 1].size) || 0;
+      const rootSize = Number(root.size) || 0;
+      summary.textContent = trail.length > 1
+        ? `${formatSize(focusSize)} · ${rootSize ? ((focusSize / rootSize) * 100).toFixed(1) : "0"}% of the repository`
+        : `${formatSize(rootSize)} across ${Number(root.fileCount || 0).toLocaleString()} files`;
+      crumbs.querySelectorAll("[data-sizemap-crumb]").forEach((button) => {
+        button.onclick = () => {
+          trail = trail.slice(0, Number(button.dataset.sizemapCrumb) + 1);
+          render();
+        };
+      });
+      window.lucide?.createIcons();
+    };
+
+    chart.addEventListener("click", (event) => {
+      if (event.target.closest("[data-sizemap-center]")) {
+        if (trail.length > 1) {
+          trail = trail.slice(0, -1);
+          render();
+        }
+        return;
+      }
+      const hit = event.target.closest("[data-seg]");
+      const seg = hit ? segments[Number(hit.dataset.seg)] : null;
+      if (seg?.hasChildren) {
+        trail = [...trail, ...seg.nodes];
+        tip.classList.add("hidden");
+        render();
+      }
+    });
+    chart.addEventListener("mousemove", (event) => {
+      const hit = event.target.closest("[data-seg]");
+      const seg = hit ? segments[Number(hit.dataset.seg)] : null;
+      if (!seg) {
+        tip.classList.add("hidden");
+        return;
+      }
+      const prefix = trail.slice(1).map((n) => String(n.name || "")).join("/");
+      const full = prefix ? `${prefix}/${seg.path}` : seg.path;
+      const rootSize = Number(root.size) || 0;
+      const pct = rootSize ? ((Number(seg.node.size) / rootSize) * 100).toFixed(1) : "0";
+      tip.textContent = `${full} — ${formatSize(seg.node.size)} · ${pct}% of repo`;
+      const host = tip.parentElement.getBoundingClientRect();
+      tip.style.left = `${Math.max(8, Math.min(event.clientX - host.left + 14, host.width - 160))}px`;
+      tip.style.top = `${event.clientY - host.top + 14}px`;
+      tip.classList.remove("hidden");
+    });
+    chart.addEventListener("mouseleave", () => tip.classList.add("hidden"));
+
+    render();
+  }
+
   // The About rail's file/language/contributor sections come from /stats in one
   // request; only when that host op is unavailable do we fall back to the slower
-  // directory walk and capped commit history.
+  // directory walk and capped commit history. The size map rides its own /sizes
+  // op in parallel (hosts predating it just leave that section hidden).
   async function loadRepoAboutInsights(repo) {
+    loadRepoAboutSizeMap(repo);
     if (await loadRepoAboutStats(repo)) return;
     loadRepoAboutFilesAndLanguages(repo);
     loadRepoAboutContributors(repo);
@@ -10409,6 +10710,13 @@
             <div data-repo-about-files class="mt-5 hidden border-t border-border pt-4">
               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Files</h4>
               <p data-repo-about-files-count class="mt-2 text-xs text-muted-foreground"></p>
+            </div>
+            <div data-repo-about-sizemap class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Size map</h4>
+              <button type="button" data-repo-about-sizemap-open class="mt-2 block w-full rounded-md p-1 transition-colors hover:bg-secondary/50" title="Open the interactive size map" aria-label="Open the interactive size map">
+                <span data-repo-about-sizemap-chart class="block"></span>
+              </button>
+              <p class="mt-1.5 text-[11px] text-muted-foreground">Directory sizes on the default branch — click the chart to explore.</p>
             </div>
             <div data-repo-about-contribs class="mt-5 hidden border-t border-border pt-4">
               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contributors <span data-repo-about-contribs-count class="font-mono text-foreground"></span></h4>

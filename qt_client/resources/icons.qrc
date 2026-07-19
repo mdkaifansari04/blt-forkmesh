@@ -47,6 +47,7 @@
         <file alias="people.svg">icons/octicons/people.svg</file>
         <file alias="person.svg">icons/octicons/person.svg</file>
         <file alias="pencil.svg">icons/octicons/pencil.svg</file>
+        <file alias="pie-chart.svg">icons/octicons/pie-chart.svg</file>
         <file alias="plus.svg">icons/octicons/plus.svg</file>
         <file alias="repo.svg">icons/octicons/repo.svg</file>
         <file alias="repo-forked.svg">icons/octicons/repo-forked.svg</file>

@@ -18,10 +18,10 @@ URLS_TEXT = (ROOT / "src" / "urls.py").read_text(encoding="utf-8")
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
 REDIRECTS = (PUBLIC / "_redirects").read_text(encoding="utf-8")
 REPO_HOST_ROUTE_RE = (
-    'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search|stats)$"'
+    'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search|stats|sizes)$"'
 )
 REPO_HOST_BROWSE_ACTIONS = (
-    'elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats"):'
+    'elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats", "sizes"):'
 )
 
 
@@ -1571,7 +1571,7 @@ def test_worker_keeps_commit_inbox_route_separate_from_public_history_route():
     assert 'REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")' in URLS_TEXT
     assert REPO_HOST_ROUTE_RE in URLS_TEXT
     assert REPO_HOST_BROWSE_ACTIONS in ENTRY_TEXT
-    assert 'if action in ("tree", "blob", "history", "commit", "branches", "stats"):' in ENTRY_TEXT
+    assert 'if action in ("tree", "blob", "history", "commit", "branches", "stats", "sizes"):' in ENTRY_TEXT
     assert 'op = "commits" if action == "history" else action' in ENTRY_TEXT
 
 
@@ -1846,7 +1846,7 @@ def test_worker_and_desktop_host_route_live_repository_branches():
     repo_host_h = (ROOT.parent / "qt_client" / "src" / "RepoHost.h").read_text(encoding="utf-8")
 
     for marker in (
-        'if action in ("tree", "blob", "history", "commit", "branches", "stats"):',
+        'if action in ("tree", "blob", "history", "commit", "branches", "stats", "sizes"):',
         'ref = (parse_qs(url.query).get("ref", [""])[0] or "").strip()',
         'op = "commits" if action == "history" else action',
         'return await self._tunnel(op, rel_path, ref, served_by, ua)',
