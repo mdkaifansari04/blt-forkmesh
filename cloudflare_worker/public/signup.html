@@ -33,7 +33,7 @@
     />
     <link rel="manifest" href="/favicon/site.webmanifest" />
     <link rel="stylesheet" href="styles.css" />
-    <script src="/signup.js?v=auth-simple-3" defer></script>
+    <script src="/signup.js?v=verify-recap-1" defer></script>
     <style>
       body {
         min-height: 100vh;
@@ -234,6 +234,76 @@
         color: #ffffff;
       }
 
+      .verify-icon {
+        width: 48px;
+        height: 48px;
+        margin: 0 auto 6px;
+        display: grid;
+        place-items: center;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.05);
+        font-size: 22px;
+      }
+      .recap {
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.04);
+        border-radius: 12px;
+        padding: 12px 14px;
+        margin: 0 0 16px;
+      }
+      .recap-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 6px 0;
+        font-size: 13px;
+      }
+      .recap-row + .recap-row {
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .recap-row .k {
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .recap-row .v {
+        color: #ffffff;
+        font-weight: 650;
+        word-break: break-all;
+        text-align: right;
+      }
+      .mail-links-label {
+        text-align: center;
+        color: rgba(255, 255, 255, 0.55);
+        font-size: 12px;
+        margin: 0 0 10px;
+      }
+      .mail-links {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+        margin: 0 0 16px;
+      }
+      .mail-links a {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        height: 2.25rem;
+        border-radius: 0.75rem;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.05);
+        color: #f5f5f5;
+        font-size: 13px;
+        font-weight: 650;
+        text-decoration: none;
+      }
+      .mail-links a:hover {
+        background: rgba(255, 255, 255, 0.1);
+      }
+      #verify-continue {
+        text-decoration: none;
+      }
+
       @media (max-width: 620px) {
         .auth-card {
           padding: 18px;
@@ -256,6 +326,7 @@
             aria-hidden="true"
           />
         </a>
+        <div id="signup-view">
         <h1 id="signup-title" class="join-title">Join ForkMesh</h1>
         <p class="join-sub">
           Start free with code hosting, live mirrors, and signed collaboration.
@@ -318,6 +389,44 @@
         <p class="row-links">
           Already have an account? <a href="/login">Log in</a>
         </p>
+        </div>
+
+        <div id="verify-view" hidden>
+          <div class="verify-icon" aria-hidden="true">✉️</div>
+          <h1 class="join-title">Check your inbox</h1>
+          <p class="join-sub">
+            Your account is created. Verify your email to finish setting up and
+            start using ForkMesh.
+          </p>
+          <div class="recap" aria-label="Account details you submitted">
+            <div class="recap-row">
+              <span class="k">Username</span>
+              <span class="v" id="recap-name">—</span>
+            </div>
+            <div class="recap-row">
+              <span class="k">Email</span>
+              <span class="v" id="recap-email">—</span>
+            </div>
+          </div>
+          <p class="mail-links-label">
+            We sent a verification link to your email. Open your inbox:
+          </p>
+          <div class="mail-links" id="mail-links">
+            <a href="https://mail.google.com/" target="_blank" rel="noopener noreferrer">Gmail</a>
+            <a href="https://outlook.live.com/mail/" target="_blank" rel="noopener noreferrer">Outlook</a>
+            <a href="https://mail.yahoo.com/" target="_blank" rel="noopener noreferrer">Yahoo</a>
+            <a href="https://mail.proton.me/" target="_blank" rel="noopener noreferrer">Proton</a>
+            <a href="https://www.icloud.com/mail/" target="_blank" rel="noopener noreferrer">iCloud</a>
+            <a href="https://mail.aol.com/" target="_blank" rel="noopener noreferrer">AOL</a>
+          </div>
+          <a class="auth-button-primary btn-primary" href="/dashboard" id="verify-continue">
+            Continue to dashboard
+          </a>
+          <p class="row-links">
+            Didn’t get it? Check spam, or resend the link from your
+            <a href="/dashboard">dashboard</a>.
+          </p>
+        </div>
       </section>
     </main>
   </body>
