@@ -161,13 +161,14 @@ def test_room_stale_sockets_are_not_counted_or_forwarded():
     assert "for peer in self._live_chat_sockets(close_stale=True):" in body
 
 
-def test_public_account_row_tolerates_identity_table_repair_failure():
+def test_public_account_row_reads_only_the_identity_tables():
+    # The legacy accounts table is gone (migration 0042): a public account read
+    # is a pure users/nodes lookup with no mirror-repair write behind it.
     entry = ENTRY.read_text(encoding="utf-8")
     start = entry.index("async def _account_row")
     end = entry.index("async def _owner_pubkey", start)
     body = entry[start:end]
 
-    assert "try:" in body
-    assert "await _mirror_account_identity_tables" in body
-    assert "except Exception:" in body
-    assert "accounts row" in body
+    assert "await _account_identity_rec_by_bi(env, name_bi)" in body
+    assert "_mirror_account_identity_tables" not in body
+    assert "FROM accounts" not in body
