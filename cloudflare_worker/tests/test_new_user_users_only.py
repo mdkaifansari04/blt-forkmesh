@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""New users live only in the users table, never legacy accounts (issue #172).
+"""Account saves persist only via the users/nodes tables (issue #172).
 
-_save_account is the single choke point every user write flows through. For a
-user-kind record with no pre-existing accounts row, it must skip the accounts
-INSERT entirely and persist only via the users/nodes mirror. Legacy accounts
-rows that still exist must keep being updated in place (reads prefer accounts,
-so leaving one stale would shadow the fresh users record). Node records are
-unaffected.
+_save_account is the single choke point every account write flows through.
+The legacy accounts table was dropped by migration 0042, so a save of any
+record kind must go solely through _mirror_account_identity_tables — no SQL
+against the accounts table, for users or nodes.
 """
 
 import ast
@@ -30,9 +28,8 @@ def _load(extra):
     return ns
 
 
-def _harness(accounts=None):
-    accounts = set(accounts or [])   # name_bi values with an existing accounts row
-    calls = {"account_inserts": [], "mirrors": []}
+def _harness():
+    calls = {"sql": [], "mirrors": []}
 
     def clean_string(value, _n, *_a, **_k):
         return str(value or "")
@@ -41,14 +38,11 @@ def _harness(accounts=None):
         return dict(obj)
 
     async def d1_first(_env, sql, *args):
-        if "FROM accounts WHERE name_bi" in sql:
-            key = args[0]
-            return {"name_bi": key} if key in accounts else None
-        raise AssertionError("unexpected d1_first: " + sql)
+        calls["sql"].append(sql)
+        return None
 
     async def d1_run(_env, sql, *args):
-        if sql.startswith("INSERT INTO accounts"):
-            calls["account_inserts"].append(args[0])
+        calls["sql"].append(sql)
 
     async def _mirror_account_identity_tables(_env, name_bi, rec, **_k):
         calls["mirrors"].append((name_bi, rec.get("name")))
@@ -64,32 +58,23 @@ def _harness(accounts=None):
     return ns, calls
 
 
-def test_new_user_skips_accounts_insert_but_mirrors_to_users():
-    ns, calls = _harness(accounts=[])
+def test_user_save_goes_only_through_identity_tables():
+    ns, calls = _harness()
     rec = {"name": "alice", "kind": "user", "pass_hash": "h"}
     asyncio.run(ns["_save_account"](object(), "bi:alice", rec, email_bi="e"))
-    assert calls["account_inserts"] == []          # never touched accounts
+    assert calls["sql"] == []                        # never touched accounts
     assert calls["mirrors"] == [("bi:alice", "alice")]  # went into users
 
 
-def test_existing_accounts_row_is_still_updated():
-    ns, calls = _harness(accounts=["bi:legacy"])
-    rec = {"name": "legacy", "kind": "user", "pass_hash": "h"}
-    asyncio.run(ns["_save_account"](object(), "bi:legacy", rec))
-    assert calls["account_inserts"] == ["bi:legacy"]    # legacy row updated in place
-    assert calls["mirrors"] == [("bi:legacy", "legacy")]
-
-
-def test_node_records_still_write_to_accounts():
-    ns, calls = _harness(accounts=[])
+def test_node_save_goes_only_through_identity_tables():
+    ns, calls = _harness()
     rec = {"name": "mirror1", "kind": "node", "pubkey": "pk"}
     asyncio.run(ns["_save_account"](object(), "bi:mirror1", rec))
-    assert calls["account_inserts"] == ["bi:mirror1"]   # nodes unchanged
+    assert calls["sql"] == []
     assert calls["mirrors"] == [("bi:mirror1", "mirror1")]
 
 
 if __name__ == "__main__":
-    test_new_user_skips_accounts_insert_but_mirrors_to_users()
-    test_existing_accounts_row_is_still_updated()
-    test_node_records_still_write_to_accounts()
+    test_user_save_goes_only_through_identity_tables()
+    test_node_save_goes_only_through_identity_tables()
     print("ok")

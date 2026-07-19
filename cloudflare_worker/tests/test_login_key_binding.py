@@ -121,7 +121,7 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
         return "bi:" + str(value)
 
     async def d1_first(_env, sql, *args):
-        if "FROM accounts WHERE email_bi" in sql:
+        if "FROM users WHERE email_bi" in sql:
             return {"data": "encrypted"} if args == ("bi:alice@example.com",) else None
         if "FROM account_devices" in sql:
             for row in device_rows:
@@ -489,12 +489,10 @@ def test_concurrent_first_device_bind_allows_exactly_one_account_winner():
         return "bi:" + str(value)
 
     async def d1_first(_env, sql, *args):
-        if "FROM accounts WHERE email_bi" in sql:
+        if "FROM users WHERE email_bi" in sql:
             email = args[0][3:]
             rec = accounts.get(email)
             return {"data": dict(rec)} if rec else None
-        if "FROM users WHERE email_bi" in sql:
-            return None
         if "FROM nodes WHERE node_bi" in sql:
             return None
         if "FROM account_devices WHERE account_bi" in sql:
