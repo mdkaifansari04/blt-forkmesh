@@ -548,6 +548,9 @@ def _actor_doc_globals():
     async def decrypt_row(env, data):
         return {"description": "A federated repo"}
 
+    async def _ap_org_alias_owner(env, owner, repo):
+        return owner
+
     return {
         "AP_ACTOR_INSTANCE": "instance",
         "AP_ACTOR_USER": "user",
@@ -561,6 +564,7 @@ def _actor_doc_globals():
         "d1_first": d1_first,
         "d1_all": d1_all,
         "decrypt_row": decrypt_row,
+        "_ap_org_alias_owner": _ap_org_alias_owner,
         "_ap_user_federates": _ap_user_federates,
         "_ap_domain_of": lambda origin: "forkmesh.com",
         "repo_web_href": lambda owner, repo: "/%s/%s" % (owner, repo),
