@@ -10557,7 +10557,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     closeButton->setToolTip("Close");
     setOcticon(closeButton, "x", 16);
     connect(closeButton, &QPushButton::clicked, this, &MainWindow::hideNodeProfile);
-    auto *titleLabel = new QLabel("Node profile");
+    auto *titleLabel = new QLabel("User profile");
     titleLabel->setObjectName("sectionLabel");
     auto *topRow = new QHBoxLayout;
     topRow->setContentsMargins(0, 0, 0, 0);
@@ -10741,12 +10741,11 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_profileMirrors->setWordWrap(true);
     m_profileMirrors->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
-    // --- User profile: kept around (unparented, never added to the layout) so
-    // refreshProfileAccountStatus() can still drive the link-state side effects
-    // it shares with other visible widgets (m_profileLinkBrowserButton,
-    // updateUserSwitcher()). The card itself is no longer shown — the node's
-    // own avatar/name already headline the left column, so a second "linked to
-    // user X" card here was redundant.
+    // --- User profile: shows this node's user account and every node linked to
+    // it (adhoc #177). refreshProfileAccountStatus() populates m_profileUserNodesList
+    // and drives the shared link-state side effects (m_profileLinkBrowserButton,
+    // updateUserSwitcher()). Added to the right column below and shown on your own
+    // profile only.
     m_profileAccountSection = new QWidget;
     m_profileAccountSection->setObjectName("profileUserCard");
     auto *accountLabel = makeProfileSection("USER PROFILE");
@@ -10915,6 +10914,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     nodeKeyActions->addWidget(m_profileLinkBrowserButton);
     nodeKeyActions->addStretch();
     rightColumn->addLayout(nodeKeyActions);
+    rightColumn->addWidget(m_profileAccountSection);
     rightColumn->addWidget(m_profileSolanaSection);
     rightColumn->addStretch();
 
@@ -11131,9 +11131,10 @@ void MainWindow::showNodeProfile(const QString &nodeId, const QString &nodeName)
     if (m_profileLinkBrowserButton)
         m_profileLinkBrowserButton->setVisible(info.self);
     if (m_profileAccountSection) {
-        // Never shown (see construction comment above); still refreshed for its
-        // side effects on other visible widgets.
-        m_profileAccountSection->setVisible(false);
+        // Self only: the "USER PROFILE" card lists this node's user account and
+        // every node linked to it (adhoc #177). refreshProfileAccountStatus()
+        // populates the list and drives its side effects on other widgets.
+        m_profileAccountSection->setVisible(info.self);
         if (info.self)
             refreshProfileAccountStatus();
     }
