@@ -91,3 +91,31 @@ def test_unique_email_migration_dedupes_keeping_first_and_enforces_uniqueness():
             )
     finally:
         connection.close()
+
+
+def test_drop_accounts_migration_removes_only_the_legacy_table():
+    migration = (ROOT / "migrations" / "0042_drop_accounts.sql").read_text(
+        encoding="utf-8"
+    )
+    connection = sqlite3.connect(":memory:")
+    try:
+        _unique_email_setup(connection)
+        connection.executescript(migration)
+
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert "accounts" not in tables
+        assert "users" in tables
+        # The users rows (the authoritative store) are untouched.
+        total = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        assert total == 5
+
+        # Re-running is a no-op (DROP TABLE IF EXISTS), matching how
+        # ensure_schema replays the same statement on lazily-created DBs.
+        connection.executescript(migration)
+    finally:
+        connection.close()
