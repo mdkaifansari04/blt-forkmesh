@@ -63,6 +63,7 @@
       code: { label: "Code", icon: "code-2", count: "" },
       commits: { label: "Commits", icon: "git-commit-horizontal", count: commitsCount },
       insights: { label: "Insights", icon: "chart-no-axes-combined", count: "" },
+      sizemap: { label: "Size map", icon: "chart-pie", count: "" },
       releases: { label: "Releases", icon: "tag", count: "" },
       issues: { label: "Issues", icon: "circle-dot", count: issuesCount },
       projects: { label: "Projects", icon: "chart-gantt", count: "" },
@@ -129,7 +130,7 @@
             </div>
           </div>
           <div class="flex min-w-0 overflow-x-auto px-3" role="tablist">
-            ${["code", "commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : [])].map((tab) => {
+            ${["code", "commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : [])].map((tab) => {
               const meta = tabMeta[tab];
               const iconAttr = tab === "issues"
                 ? 'data-lucide="circle-dot"'
@@ -221,6 +222,7 @@
             ${renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))}
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
+            <section data-dashboard-repo-tab-panel="sizemap" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-pie" class="h-3.5 w-3.5 text-primary"></i>Size map</span><span class="font-mono text-[10px] text-muted-foreground">directory sizes · default branch</span></div><div data-repo-sizemap class="p-4"></div></div></section>
             <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a notification; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
           </div>
@@ -300,10 +302,10 @@
             </div>
             <div data-repo-about-sizemap class="mt-5 hidden border-t border-border pt-4">
               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Size map</h4>
-              <button type="button" data-repo-about-sizemap-open class="mt-2 block w-full rounded-md p-1 transition-colors hover:bg-secondary/50" title="Open the interactive size map" aria-label="Open the interactive size map">
+              <button type="button" data-repo-about-sizemap-open class="mt-2 block w-full rounded-md p-1 transition-colors hover:bg-secondary/50" title="Open the size map tab" aria-label="Open the size map tab">
                 <span data-repo-about-sizemap-chart class="block"></span>
               </button>
-              <p class="mt-1.5 text-[11px] text-muted-foreground">Directory sizes on the default branch — click the chart to explore.</p>
+              <p class="mt-1.5 text-[11px] text-muted-foreground">Directory sizes on the default branch — open the <span class="text-foreground">Size map</span> tab to explore.</p>
             </div>
             <div data-repo-about-contribs class="mt-5 hidden border-t border-border pt-4">
               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contributors <span data-repo-about-contribs-count class="font-mono text-foreground"></span></h4>

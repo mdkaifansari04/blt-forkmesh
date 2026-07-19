@@ -1146,6 +1146,9 @@
     } else if (active === "insights") {
       state.loadedRepoTabs.insights = true;
       loadRepoInsights(repo);
+    } else if (active === "sizemap") {
+      state.loadedRepoTabs.sizemap = true;
+      loadRepoSizeMapTab(repo);
     } else if (active === "agents") {
       state.loadedRepoTabs.agents = true;
       loadRepoAgents(repo);

@@ -598,7 +598,7 @@
 
   // Feature-tab route segments (mirrors 404.html's `featureTabs` list) - tells
   // a tab route (e.g. /owner/repo/issues) apart from a tree/blob code deep link.
-  const REPO_TAB_ROUTES = ["commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors"];
+  const REPO_TAB_ROUTES = ["commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors"];
 
   // The owner-only "Agents" tab (adhoc #182) is only ever a recognized route
   // for the account that can actually see it - sessionCanAssignAgent gates it
@@ -4639,7 +4639,7 @@
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
-    if (["commits", "issues", "projects", "pulls", "discussions", "releases", "insights", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
+    if (["commits", "issues", "projects", "pulls", "discussions", "releases", "insights", "sizemap", "agents"].includes(tab) && !state.loadedRepoTabs?.[tab]) {
       if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
       state.loadedRepoTabs[tab] = true;
       if (tab === "commits") loadRepoCommits(state.selectedRepo);
@@ -4647,6 +4647,7 @@
       else if (tab === "projects") loadRepoProjects(state.selectedRepo);
       else if (tab === "releases") loadRepoReleases(state.selectedRepo);
       else if (tab === "insights") loadRepoInsights(state.selectedRepo);
+      else if (tab === "sizemap") loadRepoSizeMapTab(state.selectedRepo);
       else if (tab === "agents") loadRepoAgents(state.selectedRepo);
       else loadRepoCollection(state.selectedRepo, tab, `[data-repo-${tab}]`);
     } else if (tab === "issues") {
@@ -8502,8 +8503,52 @@
       centerSub: `${Number(tree.fileCount || 0).toLocaleString()} files`,
       centerTitleSize: 14,
     }).svg;
-    open.onclick = () => openRepoSizeMapModal(repo, tree);
+    open.onclick = () => activateRepoTab("sizemap");
     section.classList.remove("hidden");
+  }
+
+  // --- Size map tab (adhoc #198) ----------------------------------------
+  //
+  // The interactive size map now lives on its own repo tab instead of a modal
+  // reached from the About rail. The tab lazy-loads /sizes on first open, then
+  // mounts the same zoomable sunburst explorer full-width.
+  async function loadRepoSizeMapTab(repo) {
+    const body = $("[data-repo-sizemap]");
+    if (!body) return;
+    body.innerHTML = `<p class="text-xs text-muted-foreground">${loadingHtml("Loading size map...")}</p>`;
+    try {
+      const data = await fetchRepoJson(repoLiveUrl(repo, "sizes"));
+      if (!data || data.ok === false || !(Number(data.size) > 0) || !(data.children || []).length) {
+        body.innerHTML = `<p class="text-xs text-muted-foreground">No directory size data is available for this repository yet — it appears once an online mirror node reports it.</p>`;
+        return;
+      }
+      renderRepoSizeMapTab(repo, data);
+    } catch (_) {
+      body.innerHTML = `<p class="text-xs text-muted-foreground">Couldn't load the size map. Try again once a mirror is online.</p>`;
+    }
+  }
+
+  function renderRepoSizeMapTab(repo, root) {
+    const body = $("[data-repo-sizemap]");
+    if (!body) return;
+    body.innerHTML = `
+      <div class="mb-3 min-w-0">
+        <div data-sizemap-crumbs class="flex min-w-0 flex-wrap items-center gap-1 text-sm text-foreground"></div>
+        <p data-sizemap-summary class="mt-0.5 text-[11px] text-muted-foreground"></p>
+      </div>
+      <div class="relative">
+        <div data-sizemap-chart class="mx-auto max-w-xl"></div>
+        <div data-sizemap-tip class="pointer-events-none absolute z-20 hidden max-w-xs rounded-md border border-border bg-popover px-2.5 py-1.5 font-mono text-[11px] text-foreground shadow-lg"></div>
+      </div>
+      <p class="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">Click a directory to zoom in · click the center to zoom out · a ring's unfilled span is the files sitting directly in that directory.</p>`;
+    mountRepoSizeMapExplorer({
+      repo,
+      root,
+      chart: body.querySelector("[data-sizemap-chart]"),
+      crumbs: body.querySelector("[data-sizemap-crumbs]"),
+      summary: body.querySelector("[data-sizemap-summary]"),
+      tip: body.querySelector("[data-sizemap-tip]"),
+    });
   }
 
   async function loadRepoAboutSizeMap(repo) {
@@ -8516,52 +8561,14 @@
   }
 
   // The detailed, interactive size map: click a directory to zoom in, the
-  // center (or a breadcrumb) to zoom back out, hover for exact sizes.
-  function openRepoSizeMapModal(repo, root) {
-    const overlay = document.createElement("div");
-    overlay.className = "fixed inset-0 z-[90] flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm";
-    overlay.setAttribute("role", "dialog");
-    overlay.setAttribute("aria-modal", "true");
-    overlay.setAttribute("aria-label", "Repository size map");
-    overlay.innerHTML = `
-      <button type="button" data-sizemap-backdrop class="absolute inset-0 cursor-default" aria-label="Close size map"></button>
-      <div class="relative z-10 flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
-        <div class="flex items-center gap-3 border-b border-border px-4 py-3">
-          <i data-lucide="chart-pie" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
-          <div class="min-w-0 flex-1">
-            <div data-sizemap-crumbs class="flex min-w-0 flex-wrap items-center gap-1 text-sm text-foreground"></div>
-            <p data-sizemap-summary class="mt-0.5 text-[11px] text-muted-foreground"></p>
-          </div>
-          <button type="button" data-sizemap-close class="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground">Esc</button>
-        </div>
-        <div class="relative min-h-0 flex-1 overflow-auto p-4">
-          <div data-sizemap-chart class="mx-auto max-w-xl"></div>
-          <div data-sizemap-tip class="pointer-events-none absolute z-20 hidden max-w-xs rounded-md border border-border bg-popover px-2.5 py-1.5 font-mono text-[11px] text-foreground shadow-lg"></div>
-        </div>
-        <p class="border-t border-border px-4 py-2 text-[11px] text-muted-foreground">Click a directory to zoom in · click the center to zoom out · a ring's unfilled span is the files sitting directly in that directory.</p>
-      </div>`;
-    document.body.appendChild(overlay);
+  // center (or a breadcrumb) to zoom back out, hover for exact sizes. Mounts
+  // into the caller's {chart, crumbs, summary, tip} elements (the Size map tab
+  // panel) — it carries no overlay/dialog chrome of its own.
+  function mountRepoSizeMapExplorer({ repo, root, chart, crumbs, summary, tip }) {
+    if (!chart || !crumbs || !summary || !tip) return;
     const colors = repoSizeMapColors(root);
-    const chart = overlay.querySelector("[data-sizemap-chart]");
-    const crumbs = overlay.querySelector("[data-sizemap-crumbs]");
-    const summary = overlay.querySelector("[data-sizemap-summary]");
-    const tip = overlay.querySelector("[data-sizemap-tip]");
     let trail = [root]; // root … focus
     let segments = [];
-
-    const onKey = (event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        close();
-      }
-    };
-    const close = () => {
-      document.removeEventListener("keydown", onKey);
-      overlay.remove();
-    };
-    document.addEventListener("keydown", onKey);
-    overlay.querySelector("[data-sizemap-close]").onclick = close;
-    overlay.querySelector("[data-sizemap-backdrop]").onclick = close;
 
     const render = () => {
       const focus = trail[trail.length - 1];
@@ -10350,6 +10357,9 @@
     } else if (active === "insights") {
       state.loadedRepoTabs.insights = true;
       loadRepoInsights(repo);
+    } else if (active === "sizemap") {
+      state.loadedRepoTabs.sizemap = true;
+      loadRepoSizeMapTab(repo);
     } else if (active === "agents") {
       state.loadedRepoTabs.agents = true;
       loadRepoAgents(repo);
@@ -10690,6 +10700,7 @@
       code: { label: "Code", icon: "code-2", count: "" },
       commits: { label: "Commits", icon: "git-commit-horizontal", count: commitsCount },
       insights: { label: "Insights", icon: "chart-no-axes-combined", count: "" },
+      sizemap: { label: "Size map", icon: "chart-pie", count: "" },
       releases: { label: "Releases", icon: "tag", count: "" },
       issues: { label: "Issues", icon: "circle-dot", count: issuesCount },
       projects: { label: "Projects", icon: "chart-gantt", count: "" },
@@ -10756,7 +10767,7 @@
             </div>
           </div>
           <div class="flex min-w-0 overflow-x-auto px-3" role="tablist">
-            ${["code", "commits", "insights", "releases", "issues", "projects", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : [])].map((tab) => {
+            ${["code", "commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : [])].map((tab) => {
               const meta = tabMeta[tab];
               const iconAttr = tab === "issues"
                 ? 'data-lucide="circle-dot"'
@@ -10848,6 +10859,7 @@
             ${renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))}
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
+            <section data-dashboard-repo-tab-panel="sizemap" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-pie" class="h-3.5 w-3.5 text-primary"></i>Size map</span><span class="font-mono text-[10px] text-muted-foreground">directory sizes · default branch</span></div><div data-repo-sizemap class="p-4"></div></div></section>
             <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">live host health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a notification; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-repo-agents></div></div></section>` : ""}
           </div>
@@ -10927,10 +10939,10 @@
             </div>
             <div data-repo-about-sizemap class="mt-5 hidden border-t border-border pt-4">
               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Size map</h4>
-              <button type="button" data-repo-about-sizemap-open class="mt-2 block w-full rounded-md p-1 transition-colors hover:bg-secondary/50" title="Open the interactive size map" aria-label="Open the interactive size map">
+              <button type="button" data-repo-about-sizemap-open class="mt-2 block w-full rounded-md p-1 transition-colors hover:bg-secondary/50" title="Open the size map tab" aria-label="Open the size map tab">
                 <span data-repo-about-sizemap-chart class="block"></span>
               </button>
-              <p class="mt-1.5 text-[11px] text-muted-foreground">Directory sizes on the default branch — click the chart to explore.</p>
+              <p class="mt-1.5 text-[11px] text-muted-foreground">Directory sizes on the default branch — open the <span class="text-foreground">Size map</span> tab to explore.</p>
             </div>
             <div data-repo-about-contribs class="mt-5 hidden border-t border-border pt-4">
               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contributors <span data-repo-about-contribs-count class="font-mono text-foreground"></span></h4>
