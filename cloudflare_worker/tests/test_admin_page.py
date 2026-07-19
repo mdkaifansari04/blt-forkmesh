@@ -114,36 +114,21 @@ def test_admin_page_auth_derives_admin_from_cookie():
     assert "forkmesh.adminResumeAt" in login_js
 
 
-def test_admin_accounts_table_can_migrate_account_kind():
-    assert "def _admin_account_migration_cell" in ENTRY_TEXT
-    assert 'name="account_migration"' in ENTRY_TEXT
-    assert 'action="migrate_account"' in ENTRY_TEXT
-    assert "elif action == \"migrate_account\":" in ENTRY_TEXT
-    assert "_admin_migrate_account_kind(" in ENTRY_TEXT
-    assert "event.submitter" in ENTRY_TEXT
+def test_admin_console_dropped_legacy_accounts_migration_tools():
+    # The legacy accounts table was dropped (migration 0042), so the console's
+    # accounts-drain tooling (Move to users/nodes buttons, bulk verified-user
+    # migration) is gone with it and nothing touches the accounts table.
+    assert "_admin_account_migration_cell" not in ENTRY_TEXT
+    assert "_admin_migrate_account_kind" not in ENTRY_TEXT
+    assert "_admin_migrate_verified_users" not in ENTRY_TEXT
+    assert 'action="migrate_account"' not in ENTRY_TEXT
+    assert 'action="migrate_verified_users"' not in ENTRY_TEXT
+    assert "FROM accounts" not in ENTRY_TEXT
+    assert "DELETE FROM accounts" not in ENTRY_TEXT
 
 
-def test_admin_accounts_table_move_buttons_and_presence_indicator():
-    # Phasing out the accounts table: "Move to users/nodes" (re)mirror the record
-    # into the authoritative table and drain the legacy accounts row. Both buttons
-    # stay active and an indicator shows when the record already lives there.
-    assert "Move to users" in ENTRY_TEXT
-    assert "Move to nodes" in ENTRY_TEXT
-    # Presence indicators query the authoritative tables.
-    assert "SELECT 1 FROM users WHERE user_bi=?" in ENTRY_TEXT
-    assert "SELECT 1 FROM nodes WHERE node_bi=?" in ENTRY_TEXT
-    assert 'class="inpill"' in ENTRY_TEXT
-    # Buttons are always active — no disabled state on the migration buttons.
-    cell = ENTRY_TEXT.split("async def _admin_account_migration_cell", 1)[1]
-    cell = cell.split("\nasync def ", 1)[0]
-    assert "disabled" not in cell
-
-
-def test_admin_accounts_table_has_migrate_verified_users_button():
-    # One-click bulk migration of verified-email accounts into the users table.
-    assert "def _admin_migrate_verified_users" in ENTRY_TEXT
-    assert 'action="migrate_verified_users"' in ENTRY_TEXT
-    assert "elif action == \"migrate_verified_users\":" in ENTRY_TEXT
-    assert "Migrate all verified-email users into users" in ENTRY_TEXT
-    # Making a user/node drains the legacy accounts row.
-    assert "DELETE FROM accounts WHERE name_bi=?" in ENTRY_TEXT
+def test_admin_set_password_tool_lives_on_users_table():
+    # The password-reset tool moved with the records to the users table view.
+    assert 'if table == "users":' in ENTRY_TEXT
+    assert 'action="set_password"' in ENTRY_TEXT
+    assert "def _admin_set_password" in ENTRY_TEXT
