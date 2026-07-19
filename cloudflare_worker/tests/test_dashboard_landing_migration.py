@@ -178,7 +178,11 @@ def test_dashboard_hydrator_uses_existing_worker_apis():
     # bounced back to the landing page (adhoc #123).
     assert 'location.replace("/");\n        return;' not in dashboard_js
     assert "data-guest-auth-link" in dashboard_js
-    assert 'renderProfile(session || { nodeName: "guest" })' in dashboard_js
+    # No fabricated "guest" profile (adhoc #185): guests keep the baked chrome
+    # defaults, and the account pages bounce signed-out visitors to login.
+    assert 'renderProfile(session || { nodeName: "guest" })' not in dashboard_js
+    assert '{ nodeName: "guest" }' not in dashboard_js
+    assert 'location.replace("/login?next="' in dashboard_js
     assert "localStorage.removeItem(\"forkmesh.session\")" in dashboard_js
     assert "forkmesh_session=; Path=/; Max-Age=0" in dashboard_js
 
