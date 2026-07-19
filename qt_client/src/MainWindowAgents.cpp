@@ -2110,19 +2110,38 @@ void MainWindow::refreshCodexUsageRemaining()
     auto update = [&](bool weekly, const QString &key, qint64 windowMs,
                       const QString &pctKey, const QString &resetKey) {
         const qint64 providerReset = settings.value(resetKey).toLongLong();
-        if (providerReset > now && settings.contains(pctKey)) {
-            const int used = qBound(0, settings.value(pctKey).toInt(), 100);
-            chart->setRemaining(
-                weekly, 100 - used,
-                QStringLiteral("resets in %1")
-                    .arg(humanizeRemaining(providerReset - now)));
-            return;
-        }
-        if (providerReset > 0 && providerReset <= now) {
+        const qint64 start = settings.value(key).toLongLong();
+        // Has the current window rolled over? Prefer the provider's own reset
+        // instant; when it sent none, fall back to the local rolling-window
+        // anchor so a stale reading still ages out.
+        const bool windowElapsed =
+            providerReset > 0 ? providerReset <= now
+                              : (start > 0 && now - start >= windowMs);
+        if (windowElapsed) {
+            // The window cleared: the cached utilization is stale, so drop it
+            // and let the "ready"/estimate path below take over.
             settings.remove(pctKey);
             settings.remove(resetKey);
+        } else if (settings.contains(pctKey)) {
+            // Live account utilization from the app-server. Show it whenever we
+            // have it — including for a window that carried usedPercent but no
+            // resetsAt (adhoc #192): the used% is the real figure, so hovering
+            // must surface it rather than falling through to the time estimate.
+            // The countdown is best-effort: the provider's reset when known,
+            // else the local rolling-window estimate.
+            const int used = qBound(0, settings.value(pctKey).toInt(), 100);
+            QString note;
+            if (providerReset > now)
+                note = QStringLiteral("resets in %1")
+                           .arg(humanizeRemaining(providerReset - now));
+            else if (start > 0)
+                note = QStringLiteral("resets in %1")
+                           .arg(humanizeRemaining(windowMs - (now - start)));
+            chart->setRemaining(weekly, 100 - used, note);
+            return;
         }
-        const qint64 start = settings.value(key).toLongLong();
+        // No live utilization to show: fall back to the rolling-window time
+        // estimate ForkMesh tracks locally when Codex sessions run.
         if (start <= 0) {
             chart->setRemaining(weekly, 100, QStringLiteral("ready"));
             return;

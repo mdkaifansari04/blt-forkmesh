@@ -7940,7 +7940,11 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 // Projects (issue #384) is appended here so every
                                 // earlier tab keeps its positional id, but its
                                 // button is inserted next to Issues in the row.
-                                {"Projects", "list-unordered"}};
+                                {"Projects", "list-unordered"},
+                                // Size map (adhoc #189) is likewise appended so
+                                // earlier positional ids stay valid; its button
+                                // is inserted next to Insights in the row.
+                                {"Size map", "pie-chart"}};
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
     auto *tabRow = new QHBoxLayout;
@@ -8001,6 +8005,12 @@ QWidget *MainWindow::buildRepoDetailSection()
             // Projects sits right after Issues in the row (Code=0, Issues=1
             // among the visible buttons) despite its appended positional id.
             tabRow->insertWidget(2, b);
+        else if (i == 18)
+            // Size map sits right after Insights. By this point the row holds
+            // Code, Issues, Projects, PRs, Discussions, Actions, Security,
+            // Quality, Insights (indices 0-8), so index 9 drops it between
+            // Insights and Releases; its positional id stays 18.
+            tabRow->insertWidget(9, b);
         else if (i == 14)
             // Artifacts sits right after Releases (the tag list) instead of
             // between Mirror nodes and Shortcuts (adhoc #181). By this point the
@@ -8158,6 +8168,8 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 16 Settings
     m_projectsTabIndex = m_repoDetailStack->count();
     m_repoDetailStack->addWidget(buildProjectsSection());                // 17 Projects
+    m_sizeMapTabIndex = m_repoDetailStack->count();
+    m_repoDetailStack->addWidget(buildSizeMapTab());                     // 18 Size map
     // Chat is no longer part of the repo hierarchy: it's a top-level section
     // (m_sectionStack index 2), reached from the always-visible nav.
     m_chatStackIndex = -1;
@@ -8245,6 +8257,10 @@ QWidget *MainWindow::buildRepoDetailSection()
             refreshRepoSettings();
         else if (id == m_projectsTabIndex)
             reloadProjects();
+        else if (id == m_sizeMapTabIndex)
+            // Lazy: the directory scan only runs the first time the tab is
+            // opened for the current repo (Rescan forces a fresh walk).
+            refreshSizeMapTab(false);
         // Hand keyboard focus to the new tab's list so the user can arrow through
         // its rows right away instead of having to click a row first.
         focusRepoDetailTable(id);

@@ -61,6 +61,18 @@ def test_admin_page_requires_signed_login_cookie():
     assert '\"location\": \"/login?next=\" + quote(next_path)' in ENTRY_TEXT
 
 
+def test_every_web_logout_calls_the_logout_endpoint():
+    # Logout is universal: every client logout goes through
+    # POST /api/accounts/logout, because only the Worker can clear the
+    # HttpOnly forkmesh_admin cookie. The marketing-page header logout used to
+    # skip this and only clear localStorage, so a logged-out admin could still
+    # open the admin page (adhoc #184).
+    public = ENTRY_PATH.parents[1] / "public"
+    for rel in ("site-header.js", "dashboard/js/02-helpers.js", "dashboard.js"):
+        text = (public / rel).read_text()
+        assert 'fetch("/api/accounts/logout", { method: "POST"' in text, rel
+
+
 def test_admin_session_reissued_from_session_token():
     # A logged-in admin whose short-lived admin-page cookie has lapsed can
     # re-mint it from their still-valid account session token, so the admin
@@ -132,3 +144,36 @@ def test_admin_set_password_tool_lives_on_users_table():
     assert 'if table == "users":' in ENTRY_TEXT
     assert 'action="set_password"' in ENTRY_TEXT
     assert "def _admin_set_password" in ENTRY_TEXT
+
+
+def test_admin_resend_verify_tool_on_users_table():
+    # The users table exposes a "Resend verify email" button that dispatches to
+    # ?action=resend_verify and re-sends the confirmation link, falling back to
+    # the pending_verifications queue when email is not configured.
+    assert 'action="resend_verify"' in ENTRY_TEXT
+    assert ">Resend verify email</button>" in ENTRY_TEXT
+    assert "def _admin_resend_verification" in ENTRY_TEXT
+
+    module = ast.parse(ENTRY_TEXT)
+    fn = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_admin_resend_verification"
+    )
+    calls = {
+        node.func.id
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_account_row" in calls
+    assert "_send_verification_email" in calls
+    assert "_enqueue_verification" in calls
+
+    # It is wired into the admin POST dispatcher alongside the other actions.
+    admin = _admin_function()
+    admin_calls = {
+        node.func.id
+        for node in ast.walk(admin)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_admin_resend_verification" in admin_calls

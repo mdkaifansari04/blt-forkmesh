@@ -211,16 +211,48 @@ void MainWindow::fetchFavicon(int index)
 {
     if (index < 0 || index >= m_servers.size())
         return;
-    const QString host = serverHost(m_servers.at(index).url);
-    if (host.isEmpty() || m_faviconCache.contains(host))
-        return;
-    const QUrl url = faviconUrl(m_servers.at(index).url);
-    if (!url.isValid())
+    fetchFaviconFromUrl(serverHost(m_servers.at(index).url),
+                        faviconUrl(m_servers.at(index).url));
+}
+
+// Fetch the favicon for a bare host (as it appears in a network-log URL), so
+// the log can lead each request line with the site's icon (adhoc #190).
+void MainWindow::fetchFaviconForHost(const QString &host)
+{
+    QUrl url;
+    url.setScheme(QStringLiteral("https"));
+    url.setHost(host);
+    url.setPath(QStringLiteral("/favicon.ico"));
+    fetchFaviconFromUrl(host, url);
+}
+
+// Shared favicon download: caches to memory + disk keyed by host, de-duplicates
+// concurrent fetches via m_faviconFetching, and notifies the breadcrumb rail
+// and the network log once the icon lands.
+void MainWindow::fetchFaviconFromUrl(const QString &host, const QUrl &url)
+{
+    if (host.isEmpty() || m_faviconCache.contains(host) ||
+        m_faviconFetching.contains(host))
         return;
 
+    // Reuse a previously downloaded icon on disk before hitting the network,
+    // so a host seen in a past session doesn't re-fetch on every launch.
+    QPixmap disk;
+    const QString cached = faviconCachePath(host);
+    if (QFileInfo::exists(cached) && disk.load(cached) && !disk.isNull()) {
+        m_faviconCache.insert(host, disk);
+        refreshLogFavicon(host);
+        return;
+    }
+
+    if (!url.isValid() || !m_networkAccess)
+        return;
+
+    m_faviconFetching.insert(host);
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this, [this, reply, host] {
         reply->deleteLater();
+        m_faviconFetching.remove(host);
         if (reply->error() != QNetworkReply::NoError)
             return;
         QPixmap pix;
@@ -232,6 +264,7 @@ void MainWindow::fetchFavicon(int index)
         QDir().mkpath(faviconCacheDir());
         pix.save(faviconCachePath(host), "PNG");
         updateBreadcrumb();
+        refreshLogFavicon(host);
     });
 }
 

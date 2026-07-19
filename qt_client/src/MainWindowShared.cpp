@@ -241,6 +241,7 @@ QString actionStatusText(const QString &status)
     if (status == ActionStatus::Failed) return QStringLiteral("Failed");
     if (status == ActionStatus::Rejected) return QStringLiteral("Rejected");
     if (status == ActionStatus::Cancelled) return QStringLiteral("Cancelled");
+    if (status == ActionStatus::Skipped) return QStringLiteral("Skipped");
     return status;
 }
 
@@ -252,6 +253,7 @@ QColor actionStatusColor(const QString &status)
     if (status == ActionStatus::AwaitingApproval) return QColor("#d29922");
     if (status == ActionStatus::Rejected) return QColor("#8b949e");
     if (status == ActionStatus::Cancelled) return QColor("#8b949e");
+    if (status == ActionStatus::Skipped) return QColor("#8b949e");
     return QColor("#8b949e");
 }
 
