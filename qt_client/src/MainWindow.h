@@ -1757,6 +1757,9 @@ private:
     void enqueuePushEvent(const QString &owner, const QString &name,
                           const QString &commit, const QString &ref);
     void processActionQueue();
+    // The runner currently executing `runId`, or nullptr if no runner is. Used
+    // to target stop()/abort at the exact run rather than a single global runner.
+    ActionRunner *runnerForRun(int runId) const;
     // A freshly created run makes any earlier not-yet-finished run of the same
     // workflow (same owner/name/workflowPath) moot: it was going to build an
     // older commit anyway. Aborts those (Running via the runner, Queued/
@@ -4306,7 +4309,11 @@ private:
         NotificationLink link; // double-click destination (issue #292)
     };
     ActionStore *m_actionStore = nullptr;
-    ActionRunner *m_actionRunner = nullptr;
+    // A pool of runners so independent workflows (e.g. the Android build, the CI
+    // tests and the Cloudflare deploy triggered by one push) execute in parallel
+    // instead of queueing behind one another. All bookkeeping stays on the Qt
+    // main thread; only the child processes each runner drives run concurrently.
+    QList<ActionRunner *> m_actionRunners;
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
