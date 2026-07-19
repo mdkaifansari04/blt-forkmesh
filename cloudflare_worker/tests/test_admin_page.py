@@ -61,6 +61,18 @@ def test_admin_page_requires_signed_login_cookie():
     assert '\"location\": \"/login?next=\" + quote(next_path)' in ENTRY_TEXT
 
 
+def test_every_web_logout_calls_the_logout_endpoint():
+    # Logout is universal: every client logout goes through
+    # POST /api/accounts/logout, because only the Worker can clear the
+    # HttpOnly forkmesh_admin cookie. The marketing-page header logout used to
+    # skip this and only clear localStorage, so a logged-out admin could still
+    # open the admin page (adhoc #184).
+    public = ENTRY_PATH.parents[1] / "public"
+    for rel in ("site-header.js", "dashboard/js/02-helpers.js", "dashboard.js"):
+        text = (public / rel).read_text()
+        assert 'fetch("/api/accounts/logout", { method: "POST"' in text, rel
+
+
 def test_admin_session_reissued_from_session_token():
     # A logged-in admin whose short-lived admin-page cookie has lapsed can
     # re-mint it from their still-valid account session token, so the admin
