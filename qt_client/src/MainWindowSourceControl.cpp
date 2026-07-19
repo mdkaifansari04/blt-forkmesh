@@ -2620,8 +2620,10 @@ void MainWindow::refreshSizeMapTab(bool force)
                                  ? QStringLiteral(".git & .gitignored excluded")
                                  : QStringLiteral(".git excluded")));
                 if (auto *liveChart =
-                        static_cast<RepoSunburstChart *>(m_sizeMapChart))
+                        static_cast<RepoSunburstChart *>(m_sizeMapChart)) {
+                    liveChart->setBasePath(path);
                     liveChart->setRoot(std::move(root));
+                }
             });
     watcher->setFuture(QtConcurrent::run(
         [path, ignored] { return scanDirectorySizes(path, 0, ignored); }));

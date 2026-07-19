@@ -85,6 +85,7 @@
 #include <QWidgetAction>
 #include <QEnterEvent>
 #include <QMessageBox>
+#include <QContextMenuEvent>
 #include <QMimeDatabase>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -4322,7 +4323,15 @@ public:
         update();
     }
 
-    void clear() { setRoot(SunburstNode()); }
+    void clear()
+    {
+        m_basePath.clear();
+        setRoot(SunburstNode());
+    }
+
+    // Absolute path of the working tree the chart is showing, so a right-click
+    // can reveal the hovered directory in the desktop file manager (adhoc #200).
+    void setBasePath(const QString &path) { m_basePath = path; }
 
     QSize sizeHint() const override { return QSize(640, 640); }
 
@@ -4470,6 +4479,44 @@ protected:
         QWidget::leaveEvent(event);
     }
 
+    // Right-click a ring segment (or the hub) to open that directory in the
+    // desktop file manager (adhoc #200). Paths come straight from the segment
+    // trail, so they line up with whatever the working-tree scan produced.
+    void contextMenuEvent(QContextMenuEvent *event) override
+    {
+        if (m_basePath.isEmpty()) {
+            QWidget::contextMenuEvent(event);
+            return;
+        }
+        const int hit = segmentAt(event->pos());
+        QString rel;
+        QString label;
+        if (hit >= 0) {
+            rel = m_segments.at(hit).path;
+            label = m_segments.at(hit).name;
+        } else if (inHub(event->pos())) {
+            rel = focusRelativePath();
+            const SunburstNode *focus = focusNode();
+            label = focus && !focus->name.isEmpty() ? focus->name
+                                                    : QStringLiteral("repository");
+        } else {
+            QWidget::contextMenuEvent(event);
+            return;
+        }
+        const QString dir =
+            rel.isEmpty() ? m_basePath : QDir(m_basePath).filePath(rel);
+        if (!QDir(dir).exists()) {
+            QWidget::contextMenuEvent(event);
+            return;
+        }
+        QMenu menu(this);
+        QAction *open = menu.addAction(
+            QStringLiteral("Open \"%1\" in file explorer").arg(label));
+        connect(open, &QAction::triggered, this,
+                [dir] { QDesktopServices::openUrl(QUrl::fromLocalFile(dir)); });
+        menu.exec(event->globalPos());
+    }
+
 private:
     static constexpr int kRings = 4;
 
@@ -4510,6 +4557,21 @@ private:
             node = &node->children.at(index);
         }
         return node;
+    }
+
+    // Repo-relative path of the currently focused directory (empty at the root),
+    // matching the naming Segment::path uses.
+    QString focusRelativePath() const
+    {
+        QStringList names;
+        const SunburstNode *node = &m_root;
+        for (int index : m_trail) {
+            if (index < 0 || index >= node->children.size())
+                return QString();
+            node = &node->children.at(index);
+            names.append(node->name);
+        }
+        return names.join(QLatin1Char('/'));
     }
 
     // Fixed categorical slots for ring 1 (stepped for dark/light surfaces);
@@ -4622,6 +4684,7 @@ private:
     }
 
     SunburstNode m_root;
+    QString m_basePath; // absolute working-tree path, for "open in file explorer"
     QList<int> m_trail; // child-index chain from the root to the focus
     int m_hover = -1;
     mutable QVector<Segment> m_segments; // rebuilt each paint (geometry-dependent)
