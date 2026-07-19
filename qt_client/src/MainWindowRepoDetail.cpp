@@ -8001,6 +8001,14 @@ QWidget *MainWindow::buildRepoDetailSection()
             // Projects sits right after Issues in the row (Code=0, Issues=1
             // among the visible buttons) despite its appended positional id.
             tabRow->insertWidget(2, b);
+        else if (i == 14)
+            // Artifacts sits right after Releases (the tag list) instead of
+            // between Mirror nodes and Shortcuts (adhoc #181). By this point the
+            // row holds Code, Issues, PRs, Discussions, Actions, Security,
+            // Quality, Insights, Releases, Mirror nodes (indices 0-9), so index 9
+            // drops Artifacts between Releases and Mirror nodes. Its positional
+            // id stays 14 so the stack-page index-addressing is unchanged.
+            tabRow->insertWidget(9, b);
         else
             tabRow->addWidget(b);
     }
