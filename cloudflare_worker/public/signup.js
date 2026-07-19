@@ -162,11 +162,49 @@
         "bad");
       return;
     }
-    createButton.disabled = true;
-    createButton.textContent = "Opening dashboard…";
     storeSession(body);
-    setSignupHint("Account created. Opening your dashboard…", "good");
-    window.setTimeout(() => { location.href = "/dashboard"; }, 500);
+    showVerifyView(nodeName, email);
+  }
+
+  // Popular webmail providers keyed by email domain, so the matching inbox
+  // link is surfaced first on the "check your inbox" screen.
+  const MAIL_PROVIDERS = {
+    "gmail.com": "https://mail.google.com/",
+    "googlemail.com": "https://mail.google.com/",
+    "outlook.com": "https://outlook.live.com/mail/",
+    "hotmail.com": "https://outlook.live.com/mail/",
+    "live.com": "https://outlook.live.com/mail/",
+    "yahoo.com": "https://mail.yahoo.com/",
+    "proton.me": "https://mail.proton.me/",
+    "protonmail.com": "https://mail.proton.me/",
+    "icloud.com": "https://www.icloud.com/mail/",
+    "me.com": "https://www.icloud.com/mail/",
+    "aol.com": "https://mail.aol.com/",
+  };
+
+  function showVerifyView(nodeName, email) {
+    const signupView = $("#signup-view");
+    const verifyView = $("#verify-view");
+    if (!verifyView) {
+      // Fallback if markup is missing: land on the dashboard as before.
+      location.href = "/dashboard";
+      return;
+    }
+    $("#recap-name").textContent = nodeName;
+    $("#recap-email").textContent = email;
+    // Move the provider matching the user's email domain to the front.
+    const domain = (email.split("@")[1] || "").toLowerCase();
+    const inbox = MAIL_PROVIDERS[domain];
+    const links = $("#mail-links");
+    if (inbox && links) {
+      const match = Array.prototype.find.call(
+        links.querySelectorAll("a"), (a) => a.getAttribute("href") === inbox);
+      if (match) links.insertBefore(match, links.firstChild);
+    }
+    if (signupView) signupView.hidden = true;
+    verifyView.hidden = false;
+    document.title = "Verify your email · ForkMesh";
+    window.scrollTo(0, 0);
   }
 
   nameInput.addEventListener("input", validateName);
