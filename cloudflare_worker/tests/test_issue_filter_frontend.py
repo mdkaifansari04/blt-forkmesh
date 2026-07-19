@@ -337,7 +337,7 @@ def test_dashboard_js_batches_record_reads_and_lazy_loads_tabs():
         : DASHBOARD_JS.index("function updateRepoLiveCounts")
     ]
     assert "state.loadedRepoTabs = {};" in panels
-    assert '["commits", "issues", "projects", "pulls", "discussions", "releases", "insights", "agents"].includes(tab)' in DASHBOARD_JS
+    assert '["commits", "issues", "projects", "pulls", "discussions", "releases", "insights", "sizemap", "agents"].includes(tab)' in DASHBOARD_JS
     # The tab badge still fills immediately from the root tree's served counts,
     # badging the OPEN issue count (issue #397) rather than the open+closed total.
     assert 'setRepoTabCount("issues", openIssues);' in DASHBOARD_JS

@@ -3017,8 +3017,52 @@
       centerSub: `${Number(tree.fileCount || 0).toLocaleString()} files`,
       centerTitleSize: 14,
     }).svg;
-    open.onclick = () => openRepoSizeMapModal(repo, tree);
+    open.onclick = () => activateRepoTab("sizemap");
     section.classList.remove("hidden");
+  }
+
+  // --- Size map tab (adhoc #198) ----------------------------------------
+  //
+  // The interactive size map now lives on its own repo tab instead of a modal
+  // reached from the About rail. The tab lazy-loads /sizes on first open, then
+  // mounts the same zoomable sunburst explorer full-width.
+  async function loadRepoSizeMapTab(repo) {
+    const body = $("[data-repo-sizemap]");
+    if (!body) return;
+    body.innerHTML = `<p class="text-xs text-muted-foreground">${loadingHtml("Loading size map...")}</p>`;
+    try {
+      const data = await fetchRepoJson(repoLiveUrl(repo, "sizes"));
+      if (!data || data.ok === false || !(Number(data.size) > 0) || !(data.children || []).length) {
+        body.innerHTML = `<p class="text-xs text-muted-foreground">No directory size data is available for this repository yet — it appears once an online mirror node reports it.</p>`;
+        return;
+      }
+      renderRepoSizeMapTab(repo, data);
+    } catch (_) {
+      body.innerHTML = `<p class="text-xs text-muted-foreground">Couldn't load the size map. Try again once a mirror is online.</p>`;
+    }
+  }
+
+  function renderRepoSizeMapTab(repo, root) {
+    const body = $("[data-repo-sizemap]");
+    if (!body) return;
+    body.innerHTML = `
+      <div class="mb-3 min-w-0">
+        <div data-sizemap-crumbs class="flex min-w-0 flex-wrap items-center gap-1 text-sm text-foreground"></div>
+        <p data-sizemap-summary class="mt-0.5 text-[11px] text-muted-foreground"></p>
+      </div>
+      <div class="relative">
+        <div data-sizemap-chart class="mx-auto max-w-xl"></div>
+        <div data-sizemap-tip class="pointer-events-none absolute z-20 hidden max-w-xs rounded-md border border-border bg-popover px-2.5 py-1.5 font-mono text-[11px] text-foreground shadow-lg"></div>
+      </div>
+      <p class="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">Click a directory to zoom in · click the center to zoom out · a ring's unfilled span is the files sitting directly in that directory.</p>`;
+    mountRepoSizeMapExplorer({
+      repo,
+      root,
+      chart: body.querySelector("[data-sizemap-chart]"),
+      crumbs: body.querySelector("[data-sizemap-crumbs]"),
+      summary: body.querySelector("[data-sizemap-summary]"),
+      tip: body.querySelector("[data-sizemap-tip]"),
+    });
   }
 
   async function loadRepoAboutSizeMap(repo) {
@@ -3031,52 +3075,14 @@
   }
 
   // The detailed, interactive size map: click a directory to zoom in, the
-  // center (or a breadcrumb) to zoom back out, hover for exact sizes.
-  function openRepoSizeMapModal(repo, root) {
-    const overlay = document.createElement("div");
-    overlay.className = "fixed inset-0 z-[90] flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm";
-    overlay.setAttribute("role", "dialog");
-    overlay.setAttribute("aria-modal", "true");
-    overlay.setAttribute("aria-label", "Repository size map");
-    overlay.innerHTML = `
-      <button type="button" data-sizemap-backdrop class="absolute inset-0 cursor-default" aria-label="Close size map"></button>
-      <div class="relative z-10 flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
-        <div class="flex items-center gap-3 border-b border-border px-4 py-3">
-          <i data-lucide="chart-pie" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
-          <div class="min-w-0 flex-1">
-            <div data-sizemap-crumbs class="flex min-w-0 flex-wrap items-center gap-1 text-sm text-foreground"></div>
-            <p data-sizemap-summary class="mt-0.5 text-[11px] text-muted-foreground"></p>
-          </div>
-          <button type="button" data-sizemap-close class="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground">Esc</button>
-        </div>
-        <div class="relative min-h-0 flex-1 overflow-auto p-4">
-          <div data-sizemap-chart class="mx-auto max-w-xl"></div>
-          <div data-sizemap-tip class="pointer-events-none absolute z-20 hidden max-w-xs rounded-md border border-border bg-popover px-2.5 py-1.5 font-mono text-[11px] text-foreground shadow-lg"></div>
-        </div>
-        <p class="border-t border-border px-4 py-2 text-[11px] text-muted-foreground">Click a directory to zoom in · click the center to zoom out · a ring's unfilled span is the files sitting directly in that directory.</p>
-      </div>`;
-    document.body.appendChild(overlay);
+  // center (or a breadcrumb) to zoom back out, hover for exact sizes. Mounts
+  // into the caller's {chart, crumbs, summary, tip} elements (the Size map tab
+  // panel) — it carries no overlay/dialog chrome of its own.
+  function mountRepoSizeMapExplorer({ repo, root, chart, crumbs, summary, tip }) {
+    if (!chart || !crumbs || !summary || !tip) return;
     const colors = repoSizeMapColors(root);
-    const chart = overlay.querySelector("[data-sizemap-chart]");
-    const crumbs = overlay.querySelector("[data-sizemap-crumbs]");
-    const summary = overlay.querySelector("[data-sizemap-summary]");
-    const tip = overlay.querySelector("[data-sizemap-tip]");
     let trail = [root]; // root … focus
     let segments = [];
-
-    const onKey = (event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        close();
-      }
-    };
-    const close = () => {
-      document.removeEventListener("keydown", onKey);
-      overlay.remove();
-    };
-    document.addEventListener("keydown", onKey);
-    overlay.querySelector("[data-sizemap-close]").onclick = close;
-    overlay.querySelector("[data-sizemap-backdrop]").onclick = close;
 
     const render = () => {
       const focus = trail[trail.length - 1];
