@@ -56,9 +56,6 @@ def test_schema_has_enable_outreach_column():
     # ones get it from the ALTER statements (migration 0040).
     assert "enable_outreach INTEGER NOT NULL DEFAULT 0" in SCHEMA_TEXT
     assert (
-        "ALTER TABLE accounts ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0"
-        in ENTRY_TEXT)
-    assert (
         "ALTER TABLE users ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0"
         in ENTRY_TEXT)
 
@@ -70,8 +67,8 @@ def test_outreach_handler_honors_enable_outreach_flag():
     assert "_outreach_enabled" in calls
     reader = _async_func("_outreach_enabled")
     text = ast.get_source_segment(ENTRY_TEXT, reader)
-    assert "SELECT enable_outreach FROM accounts WHERE name_bi=?" in text
     assert "SELECT enable_outreach FROM users WHERE user_bi=?" in text
+    assert "FROM accounts" not in text
 
 
 def test_outreach_routes_are_wired():
