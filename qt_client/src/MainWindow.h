@@ -1738,6 +1738,9 @@ private:
     // Stop the currently selected run: abort it if it's executing, or drop it
     // from the queue if it hasn't started yet. Records the run as Cancelled.
     void stopSelectedRun();
+    // Skip the currently selected run before it executes: drop it from the queue
+    // (or decline it while it's awaiting approval) and record it as Skipped.
+    void skipSelectedRun();
     // Start a new coding agent to fix the selected (failed) run, on its own
     // branch/PR like any other ad-hoc agent run (adhoc #114).
     void fixSelectedRunWithAgent(const QString &provider, const QString &model);
@@ -4354,6 +4357,8 @@ private:
     QPushButton *m_actionRerunButton = nullptr;
     // Stops the selected run while it's still queued or executing.
     QPushButton *m_actionStopButton = nullptr;
+    // Skips the selected run while it's still pending (queued or awaiting approval).
+    QPushButton *m_actionSkipButton = nullptr;
     // Copies the selected run's full log to the clipboard.
     QPushButton *m_actionCopyLogButton = nullptr;
     // "Fix with agent" (adhoc #114): only shown for a failed run. Starts a new
