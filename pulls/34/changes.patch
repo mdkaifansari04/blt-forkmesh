@@ -1,0 +1,1641 @@
+diff --git a/cloudflare_worker/public/dashboard.js b/cloudflare_worker/public/dashboard.js
+index bdc70d60..ae996e94 100644
+--- a/cloudflare_worker/public/dashboard.js
++++ b/cloudflare_worker/public/dashboard.js
+@@ -8330,10 +8330,311 @@
+     } catch (_) { /* host offline — section stays hidden */ }
+   }
+ 
++  // --- Size map (adhoc #189) --------------------------------------------
++  //
++  // A multi-level pie (sunburst) of the repo's directory sizes, fed by the
++  // host's one-round-trip /sizes op (git ls-tree -r -l folded into a nested
++  // directory tree). Ring 1 holds the repo root's directories and each deeper
++  // ring subdivides its parent; a directory's direct files are the unfilled
++  // span at the end of its arc, so "mostly loose files" reads as mostly-empty
++  // arc (the HDGraph convention). The About rail shows a small static chart;
++  // clicking it opens the fullscreen interactive one (hover details,
++  // click-to-zoom, breadcrumb). Hosts too old to know the op just leave the
++  // section hidden.
++
++  // Top-level directories take these hues in size order (fixed slots, never
++  // cycled — everything past eight goes muted gray); descendants inherit the
++  // parent hue stepped toward the surface so depth reads as shade. Both
++  // variants validated against the site's dark (#010409) / light (#ffffff)
++  // surfaces.
++  const REPO_SIZEMAP_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
++  const REPO_SIZEMAP_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
++  const REPO_SIZEMAP_GRAY = "#8a8a8a";
++
++  function repoSizeMapShade(hex, depth, lighten, extra) {
++    const toward = lighten ? 255 : 0;
++    const f = Math.min(0.55, Math.max(0, (depth - 1) * 0.16 + extra));
++    const channel = (i) => {
++      const v = parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16);
++      return Math.round(v + (toward - v) * f);
++    };
++    return `rgb(${channel(0)} ${channel(1)} ${channel(2)})`;
++  }
++
++  // One walk over the full tree assigns every directory its color, so a node
++  // keeps its hue in the mini chart, in the modal, and at every zoom level
++  // (color follows the entity, never its current rank on screen).
++  function repoSizeMapColors(root) {
++    const dark = document.documentElement.dataset.dashboardTheme !== "light";
++    const palette = dark ? REPO_SIZEMAP_DARK : REPO_SIZEMAP_LIGHT;
++    const colors = new Map();
++    const walk = (node, depth, base, index) => {
++      const hue = depth === 1
++        ? (node.name !== "…" && index < palette.length ? palette[index] : REPO_SIZEMAP_GRAY)
++        : base;
++      colors.set(node, repoSizeMapShade(hue, depth, dark, depth > 1 ? (index % 2) * 0.06 : 0));
++      (node.children || []).forEach((child, i) => walk(child, depth + 1, hue, i));
++    };
++    (root.children || []).forEach((child, i) => walk(child, 1, REPO_SIZEMAP_GRAY, i));
++    return colors;
++  }
++
++  // Flattens the tree, re-rooted at `focus`, into drawable ring segments. Each
++  // segment keeps `nodes` (the chain from focus down to it) so a click can
++  // extend the zoom trail without re-walking the tree.
++  function repoSizeMapSegments(focus, colors, rings) {
++    if (!(Number(focus?.size) > 0)) return [];
++    const segments = [];
++    const minSpan = (2 * Math.PI) / 900; // skip sub-0.4-degree slivers
++    const walk = (node, depth, from, span, chain) => {
++      if (depth > rings) return;
++      let at = from;
++      const size = Number(node.size) || 0;
++      (node.children || []).forEach((child) => {
++        const childSize = Number(child.size) || 0;
++        if (!(childSize > 0) || !(size > 0)) return;
++        const childSpan = span * Math.min(1, childSize / size);
++        if (childSpan >= minSpan) {
++          const nodes = [...chain, child];
++          segments.push({
++            node: child,
++            nodes,
++            path: nodes.map((n) => String(n.name || "")).join("/"),
++            depth,
++            a0: at,
++            a1: at + childSpan,
++            color: colors.get(child) || REPO_SIZEMAP_GRAY,
++            hasChildren: Array.isArray(child.children) && child.children.length > 0,
++          });
++          walk(child, depth + 1, at, childSpan, nodes);
++        }
++        at += childSpan;
++      });
++    };
++    walk(focus, 1, -Math.PI / 2, 2 * Math.PI, []);
++    return segments;
++  }
++
++  function repoSizeMapArc(c, r0, r1, a0, a1) {
++    const span = Math.min(a1 - a0, 2 * Math.PI - 0.0004);
++    const end = a0 + span;
++    const large = span > Math.PI ? 1 : 0;
++    const px = (r, a) => (c + r * Math.cos(a)).toFixed(2);
++    const py = (r, a) => (c + r * Math.sin(a)).toFixed(2);
++    return `M ${px(r1, a0)} ${py(r1, a0)} A ${r1} ${r1} 0 ${large} 1 ${px(r1, end)} ${py(r1, end)} ` +
++      `L ${px(r0, end)} ${py(r0, end)} A ${r0} ${r0} 0 ${large} 0 ${px(r0, a0)} ${py(r0, a0)} Z`;
++  }
++
++  // Renders the sunburst as an SVG string. Every <path> carries
++  // data-seg="<index>" into the returned segments array so callers can wire
++  // hover/click; non-interactive charts get native <title> tooltips instead.
++  function repoSizeMapSvg(focus, colors, opts) {
++    const view = opts.view;
++    const hole = opts.hole;
++    const c = view / 2;
++    const ringWidth = (c - 6 - hole) / opts.rings;
++    const segments = repoSizeMapSegments(focus, colors, opts.rings);
++    const gap = "rgb(var(--dashboard-background-rgb))";
++    const parts = [];
++    segments.forEach((seg, i) => {
++      const r0 = hole + (seg.depth - 1) * ringWidth;
++      const r1 = r0 + ringWidth;
++      parts.push(
++        `<path data-seg="${i}" d="${repoSizeMapArc(c, r0, r1, seg.a0, seg.a1)}" fill="${seg.color}" ` +
++        `stroke="${gap}" stroke-width="2"${opts.interactive ? ' class="cursor-pointer"' : ""}>` +
++        (opts.interactive ? "" : `<title>${escapeHtml(`${seg.path} — ${formatSize(seg.node.size)}`)}</title>`) +
++        `</path>`);
++    });
++    if (opts.labels) {
++      // Direct labels only where they comfortably fit (span over ~18 degrees);
++      // the hover tooltip carries everything else.
++      const labelSize = opts.labelSize || 12;
++      segments.forEach((seg) => {
++        if (seg.a1 - seg.a0 < 0.32) return;
++        const mid = (seg.a0 + seg.a1) / 2;
++        const r = hole + (seg.depth - 1) * ringWidth + ringWidth / 2;
++        const x = (c + r * Math.cos(mid)).toFixed(1);
++        const y = (c + r * Math.sin(mid)).toFixed(1);
++        const name = String(seg.node.name || "");
++        const shown = name.length > 14 ? `${name.slice(0, 13)}…` : name;
++        parts.push(
++          `<text x="${x}" y="${y}" text-anchor="middle" fill="#ffffff" font-size="${labelSize}" ` +
++          `style="pointer-events:none;paint-order:stroke;stroke:rgb(0 0 0 / 0.5);stroke-width:2.5px">` +
++          `<tspan x="${x}" dy="-0.15em">${escapeHtml(shown)}</tspan>` +
++          `<tspan x="${x}" dy="1.2em" font-size="${labelSize - 1}">${escapeHtml(formatSize(seg.node.size))}</tspan></text>`);
++      });
++    }
++    // Center hub: a transparent circle catches zoom-out clicks over the whole
++    // hole; the two text lines ride on top with pointer events off.
++    parts.push(`<circle data-sizemap-center="1" cx="${c}" cy="${c}" r="${hole - 2}" fill="transparent"${opts.canGoUp ? ' class="cursor-pointer"' : ""}></circle>`);
++    const title = String(opts.centerTitle || "");
++    const shownTitle = title.length > 16 ? `${title.slice(0, 15)}…` : title;
++    parts.push(
++      `<text x="${c}" y="${c}" text-anchor="middle" style="pointer-events:none">` +
++      `<tspan x="${c}" dy="-0.15em" fill="rgb(var(--dashboard-foreground-rgb))" font-size="${opts.centerTitleSize || 13}" font-weight="600">${escapeHtml(shownTitle)}</tspan>` +
++      `<tspan x="${c}" dy="1.35em" fill="rgb(var(--dashboard-muted-foreground-rgb))" font-size="${(opts.centerTitleSize || 13) - 2}">${escapeHtml(String(opts.centerSub || ""))}</tspan></text>`);
++    const svg =
++      `<svg viewBox="0 0 ${view} ${view}" role="img" aria-label="Directory size sunburst" class="block h-auto w-full">${parts.join("")}</svg>`;
++    return { svg, segments };
++  }
++
++  function renderRepoAboutSizeMap(repo, tree) {
++    const section = $("[data-repo-about-sizemap]");
++    const chart = $("[data-repo-about-sizemap-chart]");
++    const open = $("[data-repo-about-sizemap-open]");
++    if (!section || !chart || !open) return;
++    if (!(Number(tree?.size) > 0) || !(tree.children || []).length) return;
++    const colors = repoSizeMapColors(tree);
++    chart.innerHTML = repoSizeMapSvg(tree, colors, {
++      view: 260,
++      hole: 42,
++      rings: 3,
++      centerTitle: formatSize(tree.size),
++      centerSub: `${Number(tree.fileCount || 0).toLocaleString()} files`,
++      centerTitleSize: 14,
++    }).svg;
++    open.onclick = () => openRepoSizeMapModal(repo, tree);
++    section.classList.remove("hidden");
++  }
++
++  async function loadRepoAboutSizeMap(repo) {
++    try {
++      const data = await fetchRepoJson(repoLiveUrl(repo, "sizes"));
++      if (!data || data.ok === false) return; // host offline, or a pre-sizes node
++      if (!repoAboutStillCurrent(repo)) return;
++      renderRepoAboutSizeMap(repo, data);
++    } catch (_) { /* section stays hidden */ }
++  }
++
++  // The detailed, interactive size map: click a directory to zoom in, the
++  // center (or a breadcrumb) to zoom back out, hover for exact sizes.
++  function openRepoSizeMapModal(repo, root) {
++    const overlay = document.createElement("div");
++    overlay.className = "fixed inset-0 z-[90] flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm";
++    overlay.setAttribute("role", "dialog");
++    overlay.setAttribute("aria-modal", "true");
++    overlay.setAttribute("aria-label", "Repository size map");
++    overlay.innerHTML = `
++      <button type="button" data-sizemap-backdrop class="absolute inset-0 cursor-default" aria-label="Close size map"></button>
++      <div class="relative z-10 flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
++        <div class="flex items-center gap-3 border-b border-border px-4 py-3">
++          <i data-lucide="chart-pie" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
++          <div class="min-w-0 flex-1">
++            <div data-sizemap-crumbs class="flex min-w-0 flex-wrap items-center gap-1 text-sm text-foreground"></div>
++            <p data-sizemap-summary class="mt-0.5 text-[11px] text-muted-foreground"></p>
++          </div>
++          <button type="button" data-sizemap-close class="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground">Esc</button>
++        </div>
++        <div class="relative min-h-0 flex-1 overflow-auto p-4">
++          <div data-sizemap-chart class="mx-auto max-w-xl"></div>
++          <div data-sizemap-tip class="pointer-events-none absolute z-20 hidden max-w-xs rounded-md border border-border bg-popover px-2.5 py-1.5 font-mono text-[11px] text-foreground shadow-lg"></div>
++        </div>
++        <p class="border-t border-border px-4 py-2 text-[11px] text-muted-foreground">Click a directory to zoom in · click the center to zoom out · a ring's unfilled span is the files sitting directly in that directory.</p>
++      </div>`;
++    document.body.appendChild(overlay);
++    const colors = repoSizeMapColors(root);
++    const chart = overlay.querySelector("[data-sizemap-chart]");
++    const crumbs = overlay.querySelector("[data-sizemap-crumbs]");
++    const summary = overlay.querySelector("[data-sizemap-summary]");
++    const tip = overlay.querySelector("[data-sizemap-tip]");
++    let trail = [root]; // root … focus
++    let segments = [];
++
++    const onKey = (event) => {
++      if (event.key === "Escape") {
++        event.preventDefault();
++        close();
++      }
++    };
++    const close = () => {
++      document.removeEventListener("keydown", onKey);
++      overlay.remove();
++    };
++    document.addEventListener("keydown", onKey);
++    overlay.querySelector("[data-sizemap-close]").onclick = close;
++    overlay.querySelector("[data-sizemap-backdrop]").onclick = close;
++
++    const render = () => {
++      const focus = trail[trail.length - 1];
++      const out = repoSizeMapSvg(focus, colors, {
++        view: 720,
++        hole: 86,
++        rings: 4,
++        labels: true,
++        interactive: true,
++        labelSize: 13,
++        canGoUp: trail.length > 1,
++        centerTitle: trail.length > 1 ? String(focus.name || "") : String(repo.name || "repository"),
++        centerSub: formatSize(Number(focus.size) || 0),
++        centerTitleSize: 16,
++      });
++      segments = out.segments;
++      chart.innerHTML = out.svg;
++      crumbs.innerHTML = trail.map((node, i) => {
++        const label = String(i === 0 ? repo.name || "repo" : node.name || "");
++        const item = i === trail.length - 1
++          ? `<span class="font-semibold">${escapeHtml(label)}</span>`
++          : `<button type="button" data-sizemap-crumb="${i}" class="dashboard-accent-link hover:underline">${escapeHtml(label)}</button>`;
++        return (i ? '<span class="text-muted-foreground">/</span>' : "") + item;
++      }).join("");
++      const focusSize = Number(trail[trail.length - 1].size) || 0;
++      const rootSize = Number(root.size) || 0;
++      summary.textContent = trail.length > 1
++        ? `${formatSize(focusSize)} · ${rootSize ? ((focusSize / rootSize) * 100).toFixed(1) : "0"}% of the repository`
++        : `${formatSize(rootSize)} across ${Number(root.fileCount || 0).toLocaleString()} files`;
++      crumbs.querySelectorAll("[data-sizemap-crumb]").forEach((button) => {
++        button.onclick = () => {
++          trail = trail.slice(0, Number(button.dataset.sizemapCrumb) + 1);
++          render();
++        };
++      });
++      window.lucide?.createIcons();
++    };
++
++    chart.addEventListener("click", (event) => {
++      if (event.target.closest("[data-sizemap-center]")) {
++        if (trail.length > 1) {
++          trail = trail.slice(0, -1);
++          render();
++        }
++        return;
++      }
++      const hit = event.target.closest("[data-seg]");
++      const seg = hit ? segments[Number(hit.dataset.seg)] : null;
++      if (seg?.hasChildren) {
++        trail = [...trail, ...seg.nodes];
++        tip.classList.add("hidden");
++        render();
++      }
++    });
++    chart.addEventListener("mousemove", (event) => {
++      const hit = event.target.closest("[data-seg]");
++      const seg = hit ? segments[Number(hit.dataset.seg)] : null;
++      if (!seg) {
++        tip.classList.add("hidden");
++        return;
++      }
++      const prefix = trail.slice(1).map((n) => String(n.name || "")).join("/");
++      const full = prefix ? `${prefix}/${seg.path}` : seg.path;
++      const rootSize = Number(root.size) || 0;
++      const pct = rootSize ? ((Number(seg.node.size) / rootSize) * 100).toFixed(1) : "0";
++      tip.textContent = `${full} — ${formatSize(seg.node.size)} · ${pct}% of repo`;
++      const host = tip.parentElement.getBoundingClientRect();
++      tip.style.left = `${Math.max(8, Math.min(event.clientX - host.left + 14, host.width - 160))}px`;
++      tip.style.top = `${event.clientY - host.top + 14}px`;
++      tip.classList.remove("hidden");
++    });
++    chart.addEventListener("mouseleave", () => tip.classList.add("hidden"));
++
++    render();
++  }
++
+   // The About rail's file/language/contributor sections come from /stats in one
+   // request; only when that host op is unavailable do we fall back to the slower
+-  // directory walk and capped commit history.
++  // directory walk and capped commit history. The size map rides its own /sizes
++  // op in parallel (hosts predating it just leave that section hidden).
+   async function loadRepoAboutInsights(repo) {
++    loadRepoAboutSizeMap(repo);
+     if (await loadRepoAboutStats(repo)) return;
+     loadRepoAboutFilesAndLanguages(repo);
+     loadRepoAboutContributors(repo);
+@@ -10410,6 +10711,13 @@
+               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Files</h4>
+               <p data-repo-about-files-count class="mt-2 text-xs text-muted-foreground"></p>
+             </div>
++            <div data-repo-about-sizemap class="mt-5 hidden border-t border-border pt-4">
++              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Size map</h4>
++              <button type="button" data-repo-about-sizemap-open class="mt-2 block w-full rounded-md p-1 transition-colors hover:bg-secondary/50" title="Open the interactive size map" aria-label="Open the interactive size map">
++                <span data-repo-about-sizemap-chart class="block"></span>
++              </button>
++              <p class="mt-1.5 text-[11px] text-muted-foreground">Directory sizes on the default branch — click the chart to explore.</p>
++            </div>
+             <div data-repo-about-contribs class="mt-5 hidden border-t border-border pt-4">
+               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contributors <span data-repo-about-contribs-count class="font-mono text-foreground"></span></h4>
+               <div data-repo-about-contribs-list class="mt-2 flex flex-wrap gap-1.5"></div>
+diff --git a/cloudflare_worker/public/dashboard/chat/index.html b/cloudflare_worker/public/dashboard/chat/index.html
+index 2cd3c034..e06d7857 100644
+--- a/cloudflare_worker/public/dashboard/chat/index.html
++++ b/cloudflare_worker/public/dashboard/chat/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=8c564b91253e" defer></script>
++    <script src="/dashboard.js?v=60e6a38332ed" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="chat">
+diff --git a/cloudflare_worker/public/dashboard/index.html b/cloudflare_worker/public/dashboard/index.html
+index 89ef372c..50e20fad 100644
+--- a/cloudflare_worker/public/dashboard/index.html
++++ b/cloudflare_worker/public/dashboard/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=8c564b91253e" defer></script>
++    <script src="/dashboard.js?v=60e6a38332ed" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="home">
+diff --git a/cloudflare_worker/public/dashboard/js/06-repo-content.js b/cloudflare_worker/public/dashboard/js/06-repo-content.js
+index a0b58e9f..e502ba53 100644
+--- a/cloudflare_worker/public/dashboard/js/06-repo-content.js
++++ b/cloudflare_worker/public/dashboard/js/06-repo-content.js
+@@ -2854,10 +2854,311 @@
+     } catch (_) { /* host offline — section stays hidden */ }
+   }
+ 
++  // --- Size map (adhoc #189) --------------------------------------------
++  //
++  // A multi-level pie (sunburst) of the repo's directory sizes, fed by the
++  // host's one-round-trip /sizes op (git ls-tree -r -l folded into a nested
++  // directory tree). Ring 1 holds the repo root's directories and each deeper
++  // ring subdivides its parent; a directory's direct files are the unfilled
++  // span at the end of its arc, so "mostly loose files" reads as mostly-empty
++  // arc (the HDGraph convention). The About rail shows a small static chart;
++  // clicking it opens the fullscreen interactive one (hover details,
++  // click-to-zoom, breadcrumb). Hosts too old to know the op just leave the
++  // section hidden.
++
++  // Top-level directories take these hues in size order (fixed slots, never
++  // cycled — everything past eight goes muted gray); descendants inherit the
++  // parent hue stepped toward the surface so depth reads as shade. Both
++  // variants validated against the site's dark (#010409) / light (#ffffff)
++  // surfaces.
++  const REPO_SIZEMAP_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
++  const REPO_SIZEMAP_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
++  const REPO_SIZEMAP_GRAY = "#8a8a8a";
++
++  function repoSizeMapShade(hex, depth, lighten, extra) {
++    const toward = lighten ? 255 : 0;
++    const f = Math.min(0.55, Math.max(0, (depth - 1) * 0.16 + extra));
++    const channel = (i) => {
++      const v = parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16);
++      return Math.round(v + (toward - v) * f);
++    };
++    return `rgb(${channel(0)} ${channel(1)} ${channel(2)})`;
++  }
++
++  // One walk over the full tree assigns every directory its color, so a node
++  // keeps its hue in the mini chart, in the modal, and at every zoom level
++  // (color follows the entity, never its current rank on screen).
++  function repoSizeMapColors(root) {
++    const dark = document.documentElement.dataset.dashboardTheme !== "light";
++    const palette = dark ? REPO_SIZEMAP_DARK : REPO_SIZEMAP_LIGHT;
++    const colors = new Map();
++    const walk = (node, depth, base, index) => {
++      const hue = depth === 1
++        ? (node.name !== "…" && index < palette.length ? palette[index] : REPO_SIZEMAP_GRAY)
++        : base;
++      colors.set(node, repoSizeMapShade(hue, depth, dark, depth > 1 ? (index % 2) * 0.06 : 0));
++      (node.children || []).forEach((child, i) => walk(child, depth + 1, hue, i));
++    };
++    (root.children || []).forEach((child, i) => walk(child, 1, REPO_SIZEMAP_GRAY, i));
++    return colors;
++  }
++
++  // Flattens the tree, re-rooted at `focus`, into drawable ring segments. Each
++  // segment keeps `nodes` (the chain from focus down to it) so a click can
++  // extend the zoom trail without re-walking the tree.
++  function repoSizeMapSegments(focus, colors, rings) {
++    if (!(Number(focus?.size) > 0)) return [];
++    const segments = [];
++    const minSpan = (2 * Math.PI) / 900; // skip sub-0.4-degree slivers
++    const walk = (node, depth, from, span, chain) => {
++      if (depth > rings) return;
++      let at = from;
++      const size = Number(node.size) || 0;
++      (node.children || []).forEach((child) => {
++        const childSize = Number(child.size) || 0;
++        if (!(childSize > 0) || !(size > 0)) return;
++        const childSpan = span * Math.min(1, childSize / size);
++        if (childSpan >= minSpan) {
++          const nodes = [...chain, child];
++          segments.push({
++            node: child,
++            nodes,
++            path: nodes.map((n) => String(n.name || "")).join("/"),
++            depth,
++            a0: at,
++            a1: at + childSpan,
++            color: colors.get(child) || REPO_SIZEMAP_GRAY,
++            hasChildren: Array.isArray(child.children) && child.children.length > 0,
++          });
++          walk(child, depth + 1, at, childSpan, nodes);
++        }
++        at += childSpan;
++      });
++    };
++    walk(focus, 1, -Math.PI / 2, 2 * Math.PI, []);
++    return segments;
++  }
++
++  function repoSizeMapArc(c, r0, r1, a0, a1) {
++    const span = Math.min(a1 - a0, 2 * Math.PI - 0.0004);
++    const end = a0 + span;
++    const large = span > Math.PI ? 1 : 0;
++    const px = (r, a) => (c + r * Math.cos(a)).toFixed(2);
++    const py = (r, a) => (c + r * Math.sin(a)).toFixed(2);
++    return `M ${px(r1, a0)} ${py(r1, a0)} A ${r1} ${r1} 0 ${large} 1 ${px(r1, end)} ${py(r1, end)} ` +
++      `L ${px(r0, end)} ${py(r0, end)} A ${r0} ${r0} 0 ${large} 0 ${px(r0, a0)} ${py(r0, a0)} Z`;
++  }
++
++  // Renders the sunburst as an SVG string. Every <path> carries
++  // data-seg="<index>" into the returned segments array so callers can wire
++  // hover/click; non-interactive charts get native <title> tooltips instead.
++  function repoSizeMapSvg(focus, colors, opts) {
++    const view = opts.view;
++    const hole = opts.hole;
++    const c = view / 2;
++    const ringWidth = (c - 6 - hole) / opts.rings;
++    const segments = repoSizeMapSegments(focus, colors, opts.rings);
++    const gap = "rgb(var(--dashboard-background-rgb))";
++    const parts = [];
++    segments.forEach((seg, i) => {
++      const r0 = hole + (seg.depth - 1) * ringWidth;
++      const r1 = r0 + ringWidth;
++      parts.push(
++        `<path data-seg="${i}" d="${repoSizeMapArc(c, r0, r1, seg.a0, seg.a1)}" fill="${seg.color}" ` +
++        `stroke="${gap}" stroke-width="2"${opts.interactive ? ' class="cursor-pointer"' : ""}>` +
++        (opts.interactive ? "" : `<title>${escapeHtml(`${seg.path} — ${formatSize(seg.node.size)}`)}</title>`) +
++        `</path>`);
++    });
++    if (opts.labels) {
++      // Direct labels only where they comfortably fit (span over ~18 degrees);
++      // the hover tooltip carries everything else.
++      const labelSize = opts.labelSize || 12;
++      segments.forEach((seg) => {
++        if (seg.a1 - seg.a0 < 0.32) return;
++        const mid = (seg.a0 + seg.a1) / 2;
++        const r = hole + (seg.depth - 1) * ringWidth + ringWidth / 2;
++        const x = (c + r * Math.cos(mid)).toFixed(1);
++        const y = (c + r * Math.sin(mid)).toFixed(1);
++        const name = String(seg.node.name || "");
++        const shown = name.length > 14 ? `${name.slice(0, 13)}…` : name;
++        parts.push(
++          `<text x="${x}" y="${y}" text-anchor="middle" fill="#ffffff" font-size="${labelSize}" ` +
++          `style="pointer-events:none;paint-order:stroke;stroke:rgb(0 0 0 / 0.5);stroke-width:2.5px">` +
++          `<tspan x="${x}" dy="-0.15em">${escapeHtml(shown)}</tspan>` +
++          `<tspan x="${x}" dy="1.2em" font-size="${labelSize - 1}">${escapeHtml(formatSize(seg.node.size))}</tspan></text>`);
++      });
++    }
++    // Center hub: a transparent circle catches zoom-out clicks over the whole
++    // hole; the two text lines ride on top with pointer events off.
++    parts.push(`<circle data-sizemap-center="1" cx="${c}" cy="${c}" r="${hole - 2}" fill="transparent"${opts.canGoUp ? ' class="cursor-pointer"' : ""}></circle>`);
++    const title = String(opts.centerTitle || "");
++    const shownTitle = title.length > 16 ? `${title.slice(0, 15)}…` : title;
++    parts.push(
++      `<text x="${c}" y="${c}" text-anchor="middle" style="pointer-events:none">` +
++      `<tspan x="${c}" dy="-0.15em" fill="rgb(var(--dashboard-foreground-rgb))" font-size="${opts.centerTitleSize || 13}" font-weight="600">${escapeHtml(shownTitle)}</tspan>` +
++      `<tspan x="${c}" dy="1.35em" fill="rgb(var(--dashboard-muted-foreground-rgb))" font-size="${(opts.centerTitleSize || 13) - 2}">${escapeHtml(String(opts.centerSub || ""))}</tspan></text>`);
++    const svg =
++      `<svg viewBox="0 0 ${view} ${view}" role="img" aria-label="Directory size sunburst" class="block h-auto w-full">${parts.join("")}</svg>`;
++    return { svg, segments };
++  }
++
++  function renderRepoAboutSizeMap(repo, tree) {
++    const section = $("[data-repo-about-sizemap]");
++    const chart = $("[data-repo-about-sizemap-chart]");
++    const open = $("[data-repo-about-sizemap-open]");
++    if (!section || !chart || !open) return;
++    if (!(Number(tree?.size) > 0) || !(tree.children || []).length) return;
++    const colors = repoSizeMapColors(tree);
++    chart.innerHTML = repoSizeMapSvg(tree, colors, {
++      view: 260,
++      hole: 42,
++      rings: 3,
++      centerTitle: formatSize(tree.size),
++      centerSub: `${Number(tree.fileCount || 0).toLocaleString()} files`,
++      centerTitleSize: 14,
++    }).svg;
++    open.onclick = () => openRepoSizeMapModal(repo, tree);
++    section.classList.remove("hidden");
++  }
++
++  async function loadRepoAboutSizeMap(repo) {
++    try {
++      const data = await fetchRepoJson(repoLiveUrl(repo, "sizes"));
++      if (!data || data.ok === false) return; // host offline, or a pre-sizes node
++      if (!repoAboutStillCurrent(repo)) return;
++      renderRepoAboutSizeMap(repo, data);
++    } catch (_) { /* section stays hidden */ }
++  }
++
++  // The detailed, interactive size map: click a directory to zoom in, the
++  // center (or a breadcrumb) to zoom back out, hover for exact sizes.
++  function openRepoSizeMapModal(repo, root) {
++    const overlay = document.createElement("div");
++    overlay.className = "fixed inset-0 z-[90] flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm";
++    overlay.setAttribute("role", "dialog");
++    overlay.setAttribute("aria-modal", "true");
++    overlay.setAttribute("aria-label", "Repository size map");
++    overlay.innerHTML = `
++      <button type="button" data-sizemap-backdrop class="absolute inset-0 cursor-default" aria-label="Close size map"></button>
++      <div class="relative z-10 flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
++        <div class="flex items-center gap-3 border-b border-border px-4 py-3">
++          <i data-lucide="chart-pie" class="h-4 w-4 shrink-0 text-muted-foreground"></i>
++          <div class="min-w-0 flex-1">
++            <div data-sizemap-crumbs class="flex min-w-0 flex-wrap items-center gap-1 text-sm text-foreground"></div>
++            <p data-sizemap-summary class="mt-0.5 text-[11px] text-muted-foreground"></p>
++          </div>
++          <button type="button" data-sizemap-close class="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground">Esc</button>
++        </div>
++        <div class="relative min-h-0 flex-1 overflow-auto p-4">
++          <div data-sizemap-chart class="mx-auto max-w-xl"></div>
++          <div data-sizemap-tip class="pointer-events-none absolute z-20 hidden max-w-xs rounded-md border border-border bg-popover px-2.5 py-1.5 font-mono text-[11px] text-foreground shadow-lg"></div>
++        </div>
++        <p class="border-t border-border px-4 py-2 text-[11px] text-muted-foreground">Click a directory to zoom in · click the center to zoom out · a ring's unfilled span is the files sitting directly in that directory.</p>
++      </div>`;
++    document.body.appendChild(overlay);
++    const colors = repoSizeMapColors(root);
++    const chart = overlay.querySelector("[data-sizemap-chart]");
++    const crumbs = overlay.querySelector("[data-sizemap-crumbs]");
++    const summary = overlay.querySelector("[data-sizemap-summary]");
++    const tip = overlay.querySelector("[data-sizemap-tip]");
++    let trail = [root]; // root … focus
++    let segments = [];
++
++    const onKey = (event) => {
++      if (event.key === "Escape") {
++        event.preventDefault();
++        close();
++      }
++    };
++    const close = () => {
++      document.removeEventListener("keydown", onKey);
++      overlay.remove();
++    };
++    document.addEventListener("keydown", onKey);
++    overlay.querySelector("[data-sizemap-close]").onclick = close;
++    overlay.querySelector("[data-sizemap-backdrop]").onclick = close;
++
++    const render = () => {
++      const focus = trail[trail.length - 1];
++      const out = repoSizeMapSvg(focus, colors, {
++        view: 720,
++        hole: 86,
++        rings: 4,
++        labels: true,
++        interactive: true,
++        labelSize: 13,
++        canGoUp: trail.length > 1,
++        centerTitle: trail.length > 1 ? String(focus.name || "") : String(repo.name || "repository"),
++        centerSub: formatSize(Number(focus.size) || 0),
++        centerTitleSize: 16,
++      });
++      segments = out.segments;
++      chart.innerHTML = out.svg;
++      crumbs.innerHTML = trail.map((node, i) => {
++        const label = String(i === 0 ? repo.name || "repo" : node.name || "");
++        const item = i === trail.length - 1
++          ? `<span class="font-semibold">${escapeHtml(label)}</span>`
++          : `<button type="button" data-sizemap-crumb="${i}" class="dashboard-accent-link hover:underline">${escapeHtml(label)}</button>`;
++        return (i ? '<span class="text-muted-foreground">/</span>' : "") + item;
++      }).join("");
++      const focusSize = Number(trail[trail.length - 1].size) || 0;
++      const rootSize = Number(root.size) || 0;
++      summary.textContent = trail.length > 1
++        ? `${formatSize(focusSize)} · ${rootSize ? ((focusSize / rootSize) * 100).toFixed(1) : "0"}% of the repository`
++        : `${formatSize(rootSize)} across ${Number(root.fileCount || 0).toLocaleString()} files`;
++      crumbs.querySelectorAll("[data-sizemap-crumb]").forEach((button) => {
++        button.onclick = () => {
++          trail = trail.slice(0, Number(button.dataset.sizemapCrumb) + 1);
++          render();
++        };
++      });
++      window.lucide?.createIcons();
++    };
++
++    chart.addEventListener("click", (event) => {
++      if (event.target.closest("[data-sizemap-center]")) {
++        if (trail.length > 1) {
++          trail = trail.slice(0, -1);
++          render();
++        }
++        return;
++      }
++      const hit = event.target.closest("[data-seg]");
++      const seg = hit ? segments[Number(hit.dataset.seg)] : null;
++      if (seg?.hasChildren) {
++        trail = [...trail, ...seg.nodes];
++        tip.classList.add("hidden");
++        render();
++      }
++    });
++    chart.addEventListener("mousemove", (event) => {
++      const hit = event.target.closest("[data-seg]");
++      const seg = hit ? segments[Number(hit.dataset.seg)] : null;
++      if (!seg) {
++        tip.classList.add("hidden");
++        return;
++      }
++      const prefix = trail.slice(1).map((n) => String(n.name || "")).join("/");
++      const full = prefix ? `${prefix}/${seg.path}` : seg.path;
++      const rootSize = Number(root.size) || 0;
++      const pct = rootSize ? ((Number(seg.node.size) / rootSize) * 100).toFixed(1) : "0";
++      tip.textContent = `${full} — ${formatSize(seg.node.size)} · ${pct}% of repo`;
++      const host = tip.parentElement.getBoundingClientRect();
++      tip.style.left = `${Math.max(8, Math.min(event.clientX - host.left + 14, host.width - 160))}px`;
++      tip.style.top = `${event.clientY - host.top + 14}px`;
++      tip.classList.remove("hidden");
++    });
++    chart.addEventListener("mouseleave", () => tip.classList.add("hidden"));
++
++    render();
++  }
++
+   // The About rail's file/language/contributor sections come from /stats in one
+   // request; only when that host op is unavailable do we fall back to the slower
+-  // directory walk and capped commit history.
++  // directory walk and capped commit history. The size map rides its own /sizes
++  // op in parallel (hosts predating it just leave that section hidden).
+   async function loadRepoAboutInsights(repo) {
++    loadRepoAboutSizeMap(repo);
+     if (await loadRepoAboutStats(repo)) return;
+     loadRepoAboutFilesAndLanguages(repo);
+     loadRepoAboutContributors(repo);
+diff --git a/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js b/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
+index 18c7aafd..9c5aeb24 100644
+--- a/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
++++ b/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
+@@ -298,6 +298,13 @@
+               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Files</h4>
+               <p data-repo-about-files-count class="mt-2 text-xs text-muted-foreground"></p>
+             </div>
++            <div data-repo-about-sizemap class="mt-5 hidden border-t border-border pt-4">
++              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Size map</h4>
++              <button type="button" data-repo-about-sizemap-open class="mt-2 block w-full rounded-md p-1 transition-colors hover:bg-secondary/50" title="Open the interactive size map" aria-label="Open the interactive size map">
++                <span data-repo-about-sizemap-chart class="block"></span>
++              </button>
++              <p class="mt-1.5 text-[11px] text-muted-foreground">Directory sizes on the default branch — click the chart to explore.</p>
++            </div>
+             <div data-repo-about-contribs class="mt-5 hidden border-t border-border pt-4">
+               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contributors <span data-repo-about-contribs-count class="font-mono text-foreground"></span></h4>
+               <div data-repo-about-contribs-list class="mt-2 flex flex-wrap gap-1.5"></div>
+diff --git a/cloudflare_worker/public/dashboard/network/index.html b/cloudflare_worker/public/dashboard/network/index.html
+index 80dc08d6..46e0922c 100644
+--- a/cloudflare_worker/public/dashboard/network/index.html
++++ b/cloudflare_worker/public/dashboard/network/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=8c564b91253e" defer></script>
++    <script src="/dashboard.js?v=60e6a38332ed" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="network">
+diff --git a/cloudflare_worker/public/dashboard/profile/index.html b/cloudflare_worker/public/dashboard/profile/index.html
+index 52ed05f1..0d61869f 100644
+--- a/cloudflare_worker/public/dashboard/profile/index.html
++++ b/cloudflare_worker/public/dashboard/profile/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=8c564b91253e" defer></script>
++    <script src="/dashboard.js?v=60e6a38332ed" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="profile">
+diff --git a/cloudflare_worker/public/dashboard/profile/repositories/index.html b/cloudflare_worker/public/dashboard/profile/repositories/index.html
+index 064388fe..aaa02e64 100644
+--- a/cloudflare_worker/public/dashboard/profile/repositories/index.html
++++ b/cloudflare_worker/public/dashboard/profile/repositories/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=8c564b91253e" defer></script>
++    <script src="/dashboard.js?v=60e6a38332ed" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="profile-repositories">
+diff --git a/cloudflare_worker/public/dashboard/repo.html b/cloudflare_worker/public/dashboard/repo.html
+index d487d01c..627bbc88 100644
+--- a/cloudflare_worker/public/dashboard/repo.html
++++ b/cloudflare_worker/public/dashboard/repo.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=8c564b91253e" defer></script>
++    <script src="/dashboard.js?v=60e6a38332ed" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="repo">
+diff --git a/cloudflare_worker/public/dashboard/repos/index.html b/cloudflare_worker/public/dashboard/repos/index.html
+index 6e46e0ce..caf66edd 100644
+--- a/cloudflare_worker/public/dashboard/repos/index.html
++++ b/cloudflare_worker/public/dashboard/repos/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=8c564b91253e" defer></script>
++    <script src="/dashboard.js?v=60e6a38332ed" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="repos">
+diff --git a/cloudflare_worker/public/dashboard/settings/index.html b/cloudflare_worker/public/dashboard/settings/index.html
+index 7fe60b17..e3add1bc 100644
+--- a/cloudflare_worker/public/dashboard/settings/index.html
++++ b/cloudflare_worker/public/dashboard/settings/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=8c564b91253e" defer></script>
++    <script src="/dashboard.js?v=60e6a38332ed" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="settings">
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index 44e67674..12aba251 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -19057,7 +19057,7 @@ class Default(WorkerEntrypoint):
+                     await touch_registered_node(self.env, owner_bi, owner_rec)
+                 except Exception:
+                     pass
+-            elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats"):
++            elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats", "sizes"):
+                 # Browsing a private repo's files/commits needs a view token as
+                 # ?ts=&sig= (the host-token query shape): the owner's own
+                 # (forkmesh-view-v1), or — when ?viewer= names a collaborator the
+@@ -20618,7 +20618,7 @@ class ForkMeshHost(DurableObject):
+             served = REPO_HOST_RE.match(path)
+             served_by = safe_segment(served.group(1)) if served else ""
+             return await self._tunnel("search", query, ref, served_by, ua)
+-        if action in ("tree", "blob", "history", "commit", "branches", "stats"):
++        if action in ("tree", "blob", "history", "commit", "branches", "stats", "sizes"):
+             await self._mark_present(path)
+             op = "commits" if action == "history" else action
+             # This DO is per-repo, so the owner in its path IS the mirror node
+diff --git a/cloudflare_worker/src/urls.py b/cloudflare_worker/src/urls.py
+index d48395fa..803f7c2a 100644
+--- a/cloudflare_worker/src/urls.py
++++ b/cloudflare_worker/src/urls.py
+@@ -59,7 +59,7 @@ REPO_AGENTS_TRANSCRIPT_RE = re.compile(
+ # Live tunnel: desktop clients connect to /host; the website pulls /tree and
+ # /blob, which the worker forwards to the best-connected host.
+ REPO_HOST_RE = re.compile(
+-    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search|stats)$")
++    r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search|stats|sizes)$")
+ # Release asset download (issue #304): the bytes live in the node's
+ # content-addressed store (never in git), streamed back over the host tunnel.
+ # Stable, content-addressed URL — immutable, so it caches forever at the edge.
+diff --git a/cloudflare_worker/tests/test_dashboard_landing_migration.py b/cloudflare_worker/tests/test_dashboard_landing_migration.py
+index 796ad15d..4535d835 100644
+--- a/cloudflare_worker/tests/test_dashboard_landing_migration.py
++++ b/cloudflare_worker/tests/test_dashboard_landing_migration.py
+@@ -18,10 +18,10 @@ URLS_TEXT = (ROOT / "src" / "urls.py").read_text(encoding="utf-8")
+ WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
+ REDIRECTS = (PUBLIC / "_redirects").read_text(encoding="utf-8")
+ REPO_HOST_ROUTE_RE = (
+-    'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search|stats)$"'
++    'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search|stats|sizes)$"'
+ )
+ REPO_HOST_BROWSE_ACTIONS = (
+-    'elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats"):'
++    'elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats", "sizes"):'
+ )
+ 
+ 
+@@ -1571,7 +1571,7 @@ def test_worker_keeps_commit_inbox_route_separate_from_public_history_route():
+     assert 'REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")' in URLS_TEXT
+     assert REPO_HOST_ROUTE_RE in URLS_TEXT
+     assert REPO_HOST_BROWSE_ACTIONS in ENTRY_TEXT
+-    assert 'if action in ("tree", "blob", "history", "commit", "branches", "stats"):' in ENTRY_TEXT
++    assert 'if action in ("tree", "blob", "history", "commit", "branches", "stats", "sizes"):' in ENTRY_TEXT
+     assert 'op = "commits" if action == "history" else action' in ENTRY_TEXT
+ 
+ 
+@@ -1846,7 +1846,7 @@ def test_worker_and_desktop_host_route_live_repository_branches():
+     repo_host_h = (ROOT.parent / "qt_client" / "src" / "RepoHost.h").read_text(encoding="utf-8")
+ 
+     for marker in (
+-        'if action in ("tree", "blob", "history", "commit", "branches", "stats"):',
++        'if action in ("tree", "blob", "history", "commit", "branches", "stats", "sizes"):',
+         'ref = (parse_qs(url.query).get("ref", [""])[0] or "").strip()',
+         'op = "commits" if action == "history" else action',
+         'return await self._tunnel(op, rel_path, ref, served_by, ua)',
+diff --git a/qt_client/resources/icons.qrc b/qt_client/resources/icons.qrc
+index 68e6a4ba..4676ace9 100644
+--- a/qt_client/resources/icons.qrc
++++ b/qt_client/resources/icons.qrc
+@@ -47,6 +47,7 @@
+         <file alias="people.svg">icons/octicons/people.svg</file>
+         <file alias="person.svg">icons/octicons/person.svg</file>
+         <file alias="pencil.svg">icons/octicons/pencil.svg</file>
++        <file alias="pie-chart.svg">icons/octicons/pie-chart.svg</file>
+         <file alias="plus.svg">icons/octicons/plus.svg</file>
+         <file alias="repo.svg">icons/octicons/repo.svg</file>
+         <file alias="repo-forked.svg">icons/octicons/repo-forked.svg</file>
+diff --git a/qt_client/resources/icons/octicons/pie-chart.svg b/qt_client/resources/icons/octicons/pie-chart.svg
+new file mode 100644
+index 00000000..d21195cf
+--- /dev/null
++++ b/qt_client/resources/icons/octicons/pie-chart.svg
+@@ -0,0 +1 @@
++<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><path d="M7 2.5A6.5 6.5 0 1 0 13.5 9H7V2.5Z"/><path d="M8.5 1A6.5 6.5 0 0 1 15 7.5H8.5V1Z"/></svg>
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 4dbb262f..31767215 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -1158,6 +1158,11 @@ private:
+     QWidget *buildRepoSecurityTab();
+     QWidget *buildRepoQualityTab();
+     QWidget *buildInsightsTab();
++    // Size map tab (adhoc #189): sunburst of the working tree's directory
++    // sizes. refreshSizeMapTab scans on a worker thread; force=false is the
++    // lazy tab-click path that reuses the last scan of the same repo.
++    QWidget *buildSizeMapTab();
++    void refreshSizeMapTab(bool force);
+     QWidget *buildPlaceholderTab(const QString &name);
+ 
+     // Discussions tab (signed repository discussions with inbox fallback).
+@@ -3689,6 +3694,17 @@ private:
+     int m_shortcutsTabIndex = -1; // index of the Shortcuts page
+     int m_settingsTabIndex = -1; // index of the Settings page
+     int m_projectsTabIndex = -1; // index of the Projects page (issue #384)
++    int m_sizeMapTabIndex = -1; // index of the Size map page (adhoc #189)
++    // Size map tab state: the chart is a RepoSunburstChart (MainWindowInternal.h),
++    // held as QWidget* like the other inline-widget members. m_sizeMapScannedPath
++    // remembers which working copy the chart currently shows so re-opening the
++    // tab on the same repo skips the rescan; the epoch discards a scan that
++    // lands after the user switched repos.
++    QWidget *m_sizeMapChart = nullptr;
++    QLabel *m_sizeMapStatus = nullptr;
++    QString m_sizeMapScannedPath;
++    bool m_sizeMapScanning = false;
++    int m_sizeMapScanEpoch = 0;
+     QPushButton *m_repoProjectsTab = nullptr; // handle for the Projects (N) badge
+     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
+     QTableWidget *m_branchesTable = nullptr;
+diff --git a/qt_client/src/MainWindowInternal.h b/qt_client/src/MainWindowInternal.h
+index c6fa21b5..1028d559 100644
+--- a/qt_client/src/MainWindowInternal.h
++++ b/qt_client/src/MainWindowInternal.h
+@@ -97,6 +97,7 @@
+ #include <QImageReader>
+ #include <QKeyEvent>
+ #include <QHelpEvent>
++#include <QLineF>
+ #include <QToolTip>
+ #include <QConicalGradient>
+ #include <QLinearGradient>
+@@ -165,6 +166,7 @@
+ #include <QVBoxLayout>
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <functional>
+ #include <memory>
+ #include <optional>
+@@ -4281,6 +4283,350 @@ private:
+     QList<IssueBurnupPoint> m_series;
+ };
+ 
++// One directory in the Size map tab's tree: total bytes of everything beneath
++// it, with subdirectories as children (largest first). The gap between a
++// node's size and the sum of its children is the bytes sitting in files
++// directly inside it — the sunburst renders that share as unfilled span, the
++// HDGraph convention the tab mirrors (adhoc #189).
++struct SunburstNode {
++    QString name;
++    qint64 size = 0;
++    int fileCount = 0;
++    QList<SunburstNode> children;
++};
++
++// The Size map tab's multi-level pie (adhoc #189): ring 1 is the working
++// tree's top-level directories, each deeper ring subdivides its parent.
++// Hover shows the exact path/size/share, clicking a directory re-centres the
++// chart on it and clicking the hub goes back up one level. Top-level
++// directories take fixed categorical hues in size order (never cycled —
++// everything past eight goes muted gray) and descendants inherit the parent
++// hue stepped toward the surface, so a directory keeps its colour at every
++// zoom level. No Q_OBJECT: interaction is self-contained, so it stays a
++// header-only widget like the other inline charts.
++class RepoSunburstChart final : public QWidget
++{
++public:
++    explicit RepoSunburstChart(QWidget *parent = nullptr) : QWidget(parent)
++    {
++        setMinimumSize(360, 400);
++        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
++        setMouseTracking(true);
++    }
++
++    void setRoot(SunburstNode root)
++    {
++        m_root = std::move(root);
++        m_trail.clear();
++        m_hover = -1;
++        update();
++    }
++
++    void clear() { setRoot(SunburstNode()); }
++
++    QSize sizeHint() const override { return QSize(640, 640); }
++
++protected:
++    void paintEvent(QPaintEvent *) override
++    {
++        QPainter painter(this);
++        painter.setRenderHint(QPainter::Antialiasing);
++        const bool dark = currentThemeIsDark();
++        const QColor surface(dark ? "#0d1117" : "#ffffff");
++        const QColor text(dark ? "#e6edf3" : "#1f2328");
++        const QColor muted(dark ? "#8b949e" : "#656d76");
++        m_segments.clear();
++
++        const SunburstNode *focus = focusNode();
++        if (!focus || focus->size <= 0) {
++            painter.setPen(muted);
++            painter.drawText(rect(), Qt::AlignCenter,
++                             QStringLiteral("No files to chart yet"));
++            return;
++        }
++
++        const Geometry g = geometry_();
++        layoutRing(*focus, 1, 90.0, -360.0, m_trail);
++
++        for (int i = 0; i < m_segments.size(); ++i) {
++            const Segment &seg = m_segments.at(i);
++            const qreal r0 = g.hole + (seg.depth - 1) * g.ringWidth;
++            const qreal r1 = r0 + g.ringWidth;
++            QPainterPath path;
++            const QRectF outer(g.center.x() - r1, g.center.y() - r1, 2 * r1, 2 * r1);
++            const QRectF inner(g.center.x() - r0, g.center.y() - r0, 2 * r0, 2 * r0);
++            path.arcMoveTo(outer, seg.startDeg);
++            path.arcTo(outer, seg.startDeg, seg.spanDeg);
++            path.arcTo(inner, seg.startDeg + seg.spanDeg, -seg.spanDeg);
++            path.closeSubpath();
++            QColor fill = seg.color;
++            if (i == m_hover)
++                fill = dark ? fill.lighter(125) : fill.darker(112);
++            painter.setPen(QPen(surface, 2));
++            painter.setBrush(fill);
++            painter.drawPath(path);
++        }
++
++        // Direct labels only where they comfortably fit (over ~18 degrees);
++        // the hover tooltip carries every other value.
++        painter.setFont(font());
++        for (const Segment &seg : m_segments) {
++            if (qAbs(seg.spanDeg) < 18.0)
++                continue;
++            const qreal midDeg = seg.startDeg + seg.spanDeg / 2;
++            const qreal midRad = midDeg * M_PI / 180.0;
++            const qreal r = g.hole + (seg.depth - 1) * g.ringWidth + g.ringWidth / 2;
++            const QPointF at(g.center.x() + r * std::cos(midRad),
++                             g.center.y() - r * std::sin(midRad));
++            const QString name = painter.fontMetrics().elidedText(
++                seg.name, Qt::ElideRight, int(g.ringWidth * 1.8));
++            const QRectF box(at.x() - 70, at.y() - 15, 140, 30);
++            painter.setPen(QColor(0, 0, 0, 150));
++            painter.drawText(box.translated(1, 1), Qt::AlignCenter,
++                             name + "\n" + QLocale().formattedDataSize(seg.size));
++            painter.setPen(Qt::white);
++            painter.drawText(box, Qt::AlignCenter,
++                             name + "\n" + QLocale().formattedDataSize(seg.size));
++        }
++
++        // Hub: the focused directory's name and total; when zoomed, hint that
++        // clicking it goes back up.
++        painter.setPen(text);
++        QFont hubFont = font();
++        hubFont.setBold(true);
++        painter.setFont(hubFont);
++        const QRectF hub(g.center.x() - g.hole, g.center.y() - g.hole,
++                         2 * g.hole, 2 * g.hole);
++        const QString hubName = m_trail.isEmpty()
++                                    ? (m_root.name.isEmpty()
++                                           ? QStringLiteral("repository")
++                                           : m_root.name)
++                                    : focus->name;
++        painter.drawText(hub.adjusted(6, 0, -6, -14), Qt::AlignCenter,
++                         painter.fontMetrics().elidedText(
++                             hubName, Qt::ElideMiddle, int(g.hole * 1.7)));
++        painter.setFont(font());
++        painter.setPen(muted);
++        painter.drawText(hub.adjusted(6, 22, -6, 0), Qt::AlignCenter,
++                         QLocale().formattedDataSize(focus->size) +
++                             (m_trail.isEmpty() ? QString()
++                                                : QStringLiteral("\n⌃ up")));
++    }
++
++    void mouseMoveEvent(QMouseEvent *event) override
++    {
++        const int hit = segmentAt(event->pos());
++        if (hit != m_hover) {
++            m_hover = hit;
++            update();
++        }
++        if (hit >= 0) {
++            const Segment &seg = m_segments.at(hit);
++            setCursor(seg.hasChildren ? Qt::PointingHandCursor : Qt::ArrowCursor);
++            const qreal pct = m_root.size > 0
++                                  ? 100.0 * double(seg.size) / double(m_root.size)
++                                  : 0.0;
++            QToolTip::showText(
++                event->globalPosition().toPoint(),
++                QStringLiteral("%1 — %2 · %3% of repo")
++                    .arg(seg.path, QLocale().formattedDataSize(seg.size),
++                         QString::number(pct, 'f', 1)),
++                this);
++        } else {
++            QToolTip::hideText();
++            setCursor(!m_trail.isEmpty() && inHub(event->pos())
++                          ? Qt::PointingHandCursor
++                          : Qt::ArrowCursor);
++        }
++        QWidget::mouseMoveEvent(event);
++    }
++
++    void mousePressEvent(QMouseEvent *event) override
++    {
++        if (event->button() == Qt::LeftButton) {
++            if (inHub(event->pos())) {
++                if (!m_trail.isEmpty()) {
++                    m_trail.removeLast();
++                    m_hover = -1;
++                    update();
++                }
++                return;
++            }
++            const int hit = segmentAt(event->pos());
++            if (hit >= 0 && m_segments.at(hit).hasChildren) {
++                m_trail = m_segments.at(hit).trail;
++                m_hover = -1;
++                update();
++                return;
++            }
++        }
++        QWidget::mousePressEvent(event);
++    }
++
++    void leaveEvent(QEvent *event) override
++    {
++        m_hover = -1;
++        update();
++        QWidget::leaveEvent(event);
++    }
++
++private:
++    static constexpr int kRings = 4;
++
++    struct Segment {
++        qreal startDeg = 0; // Qt convention: 0° at 3 o'clock, CCW positive
++        qreal spanDeg = 0;  // negative = clockwise on screen
++        int depth = 1;      // 1-based ring index from the focus
++        qint64 size = 0;
++        QString name;
++        QString path; // repo-relative, for the tooltip
++        QColor color;
++        bool hasChildren = false;
++        QList<int> trail; // child-index chain from the root to this node
++    };
++
++    struct Geometry {
++        QPointF center;
++        qreal hole = 0;
++        qreal ringWidth = 0;
++    };
++
++    Geometry geometry_() const
++    {
++        Geometry g;
++        g.center = QPointF(width() / 2.0, height() / 2.0);
++        const qreal radius = qMax<qreal>(60.0, qMin(width(), height()) / 2.0 - 8);
++        g.hole = qMax<qreal>(34.0, radius * 0.24);
++        g.ringWidth = (radius - g.hole) / kRings;
++        return g;
++    }
++
++    const SunburstNode *focusNode() const
++    {
++        const SunburstNode *node = &m_root;
++        for (int index : m_trail) {
++            if (index < 0 || index >= node->children.size())
++                return &m_root;
++            node = &node->children.at(index);
++        }
++        return node;
++    }
++
++    // Fixed categorical slots for ring 1 (stepped for dark/light surfaces);
++    // deeper rings shade the inherited hue toward the surface so depth reads
++    // as lightness, and odd siblings get a nudge so same-hue neighbours stay
++    // separable next to the 2px gaps.
++    QColor slotColor(int index, bool dark) const
++    {
++        static const char *kDark[] = {"#3987e5", "#199e70", "#c98500",
++                                      "#008300", "#9085e9", "#e66767",
++                                      "#d55181", "#d95926"};
++        static const char *kLight[] = {"#2a78d6", "#1baf7a", "#eda100",
++                                       "#008300", "#4a3aa7", "#e34948",
++                                       "#e87ba4", "#eb6834"};
++        if (index < 0 || index >= 8)
++            return QColor("#8a8a8a");
++        return QColor(dark ? kDark[index] : kLight[index]);
++    }
++
++    static QColor shaded(const QColor &base, int depth, bool dark, int index)
++    {
++        const qreal f = qMin(0.55, (depth - 1) * 0.16 +
++                                       (depth > 1 ? (index % 2) * 0.06 : 0.0));
++        const int toward = dark ? 255 : 0;
++        return QColor(int(base.red() + (toward - base.red()) * f),
++                      int(base.green() + (toward - base.green()) * f),
++                      int(base.blue() + (toward - base.blue()) * f));
++    }
++
++    // The colour of the node `trail` points at has to survive zooming, so it
++    // is always derived from the FULL tree: slot by ring-1 child index, then
++    // shaded by absolute depth.
++    QColor colorForTrail(const QList<int> &trail, bool dark) const
++    {
++        if (trail.isEmpty())
++            return QColor("#8a8a8a");
++        return shaded(slotColor(trail.first(), dark), trail.size(), dark,
++                      trail.last());
++    }
++
++    void layoutRing(const SunburstNode &node, int depth, qreal startDeg,
++                    qreal spanDeg, const QList<int> &trail)
++    {
++        if (depth > kRings || node.size <= 0)
++            return;
++        const bool dark = currentThemeIsDark();
++        qreal at = startDeg;
++        for (int i = 0; i < node.children.size(); ++i) {
++            const SunburstNode &child = node.children.at(i);
++            if (child.size <= 0)
++                continue;
++            const qreal childSpan =
++                spanDeg * qMin<qreal>(1.0, double(child.size) / double(node.size));
++            if (qAbs(childSpan) >= 0.4) {
++                QList<int> childTrail = trail;
++                childTrail.append(i);
++                QStringList names;
++                const SunburstNode *walk = &m_root;
++                for (int index : childTrail) {
++                    walk = &walk->children.at(index);
++                    names.append(walk->name);
++                }
++                Segment seg;
++                seg.startDeg = at;
++                seg.spanDeg = childSpan;
++                seg.depth = depth;
++                seg.size = child.size;
++                seg.name = child.name;
++                seg.path = names.join(QLatin1Char('/'));
++                seg.color = colorForTrail(childTrail, dark);
++                seg.hasChildren = !child.children.isEmpty();
++                seg.trail = childTrail;
++                m_segments.append(seg);
++                layoutRing(child, depth + 1, at, childSpan, childTrail);
++            }
++            at += childSpan;
++        }
++    }
++
++    bool inHub(const QPoint &pos) const
++    {
++        const Geometry g = geometry_();
++        return QLineF(g.center, pos).length() <= g.hole;
++    }
++
++    int segmentAt(const QPoint &pos) const
++    {
++        const Geometry g = geometry_();
++        const qreal r = QLineF(g.center, pos).length();
++        if (r <= g.hole)
++            return -1;
++        // Same convention as the segments: degrees CCW from 3 o'clock.
++        qreal angle = std::atan2(g.center.y() - pos.y(), pos.x() - g.center.x())
++                      * 180.0 / M_PI;
++        for (int i = 0; i < m_segments.size(); ++i) {
++            const Segment &seg = m_segments.at(i);
++            const qreal r0 = g.hole + (seg.depth - 1) * g.ringWidth;
++            const qreal r1 = r0 + g.ringWidth;
++            if (r < r0 || r > r1)
++                continue;
++            // Segments run clockwise (negative span) from startDeg; normalise
++            // the cursor angle into [start+span, start].
++            qreal delta = std::fmod(seg.startDeg - angle, 360.0);
++            if (delta < 0)
++                delta += 360.0;
++            if (delta <= qAbs(seg.spanDeg))
++                return i;
++        }
++        return -1;
++    }
++
++    SunburstNode m_root;
++    QList<int> m_trail; // child-index chain from the root to the focus
++    int m_hover = -1;
++    mutable QVector<Segment> m_segments; // rebuilt each paint (geometry-dependent)
++};
++
+ inline QString formatDuration(qint64 ms)
+ {
+     const qint64 totalSeconds = std::max<qint64>(0, ms / 1000);
+diff --git a/qt_client/src/MainWindowRepoDetail.cpp b/qt_client/src/MainWindowRepoDetail.cpp
+index eddad0f4..91c13d61 100644
+--- a/qt_client/src/MainWindowRepoDetail.cpp
++++ b/qt_client/src/MainWindowRepoDetail.cpp
+@@ -7933,7 +7933,11 @@ QWidget *MainWindow::buildRepoDetailSection()
+                                 // Projects (issue #384) is appended here so every
+                                 // earlier tab keeps its positional id, but its
+                                 // button is inserted next to Issues in the row.
+-                                {"Projects", "list-unordered"}};
++                                {"Projects", "list-unordered"},
++                                // Size map (adhoc #189) is likewise appended so
++                                // earlier positional ids stay valid; its button
++                                // is inserted next to Insights in the row.
++                                {"Size map", "pie-chart"}};
+     m_repoDetailTabs = new QButtonGroup(this);
+     m_repoDetailTabs->setExclusive(true);
+     auto *tabRow = new QHBoxLayout;
+@@ -7985,6 +7989,12 @@ QWidget *MainWindow::buildRepoDetailSection()
+             // Projects sits right after Issues in the row (Code=0, Issues=1
+             // among the visible buttons) despite its appended positional id.
+             tabRow->insertWidget(2, b);
++        else if (i == 18)
++            // Size map sits right after Insights. By this point the row holds
++            // Code, Issues, Projects, PRs, Discussions, Actions, Security,
++            // Quality, Insights (indices 0-8), so index 9 drops it between
++            // Insights and Releases; its positional id stays 18.
++            tabRow->insertWidget(9, b);
+         else if (i == 14)
+             // Artifacts sits right after Releases (the tag list) instead of
+             // between Mirror nodes and Shortcuts (adhoc #181). By this point the
+@@ -8142,6 +8152,8 @@ QWidget *MainWindow::buildRepoDetailSection()
+     m_repoDetailStack->addWidget(buildRepoSettingsTab());                // 16 Settings
+     m_projectsTabIndex = m_repoDetailStack->count();
+     m_repoDetailStack->addWidget(buildProjectsSection());                // 17 Projects
++    m_sizeMapTabIndex = m_repoDetailStack->count();
++    m_repoDetailStack->addWidget(buildSizeMapTab());                     // 18 Size map
+     // Chat is no longer part of the repo hierarchy: it's a top-level section
+     // (m_sectionStack index 2), reached from the always-visible nav.
+     m_chatStackIndex = -1;
+@@ -8229,6 +8241,10 @@ QWidget *MainWindow::buildRepoDetailSection()
+             refreshRepoSettings();
+         else if (id == m_projectsTabIndex)
+             reloadProjects();
++        else if (id == m_sizeMapTabIndex)
++            // Lazy: the directory scan only runs the first time the tab is
++            // opened for the current repo (Rescan forces a fresh walk).
++            refreshSizeMapTab(false);
+         // Hand keyboard focus to the new tab's list so the user can arrow through
+         // its rows right away instead of having to click a row first.
+         focusRepoDetailTable(id);
+diff --git a/qt_client/src/MainWindowSourceControl.cpp b/qt_client/src/MainWindowSourceControl.cpp
+index a46416fd..3fbc72b1 100644
+--- a/qt_client/src/MainWindowSourceControl.cpp
++++ b/qt_client/src/MainWindowSourceControl.cpp
+@@ -10,8 +10,10 @@
+ #include "KebabHeaderView.h"
+ 
+ #include <QLayout>
++#include <QFutureWatcher>
+ #include <QScrollArea>
+ #include <QScrollBar>
++#include <QtConcurrent/QtConcurrentRun>
+ 
+ #include <algorithm>
+ 
+@@ -2438,6 +2440,150 @@ void MainWindow::refreshRepoQuality()
+     m_qualityFindingsTable->setSortingEnabled(true);
+ }
+ 
++namespace {
++// Working-tree scan for the Size map tab (adhoc #189): raw on-disk bytes,
++// .git excluded, symlinks skipped so link cycles can't loop or inflate the
++// totals. Depth is capped — deeper directories still count toward every
++// ancestor's size, they just stop producing children of their own. Runs on a
++// QtConcurrent thread, so nothing here may touch widgets or MainWindow state.
++constexpr int kSizeMapMaxDepth = 8;
++
++SunburstNode scanDirectorySizes(const QString &path, int depth)
++{
++    SunburstNode node;
++    node.name = QFileInfo(path).fileName();
++    const QFileInfoList entries = QDir(path).entryInfoList(
++        QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden |
++        QDir::System | QDir::NoSymLinks);
++    for (const QFileInfo &info : entries) {
++        if (info.isDir()) {
++            if (info.fileName() == QLatin1String(".git"))
++                continue;
++            SunburstNode child =
++                scanDirectorySizes(info.absoluteFilePath(), depth + 1);
++            node.size += child.size;
++            node.fileCount += child.fileCount;
++            if (depth < kSizeMapMaxDepth && child.size > 0)
++                node.children.append(std::move(child));
++        } else {
++            node.size += info.size();
++            node.fileCount += 1;
++        }
++    }
++    std::sort(node.children.begin(), node.children.end(),
++              [](const SunburstNode &a, const SunburstNode &b) {
++                  return a.size > b.size;
++              });
++    return node;
++}
++} // namespace
++
++QWidget *MainWindow::buildSizeMapTab()
++{
++    auto *page = new QWidget;
++    page->setObjectName("mainContent");
++
++    auto *layout = new QVBoxLayout(page);
++    layout->setContentsMargins(18, 18, 18, 18);
++    layout->setSpacing(10);
++
++    auto *heading = new QLabel("Size map");
++    heading->setObjectName("channelTitle");
++    auto *subtitle = new QLabel(
++        "How the working tree's bytes spread across directories (.git "
++        "excluded). Click a directory to zoom in, the centre to zoom back out; "
++        "a ring's unfilled span is the files sitting directly in that "
++        "directory.");
++    subtitle->setObjectName("statusLine");
++    subtitle->setWordWrap(true);
++
++    auto *refresh = new QPushButton("Rescan");
++    refresh->setObjectName("ghostButton");
++    refresh->setProperty("buttonSize", "sm");
++    refresh->setCursor(Qt::PointingHandCursor);
++    setOcticon(refresh, "sync", 16);
++    connect(refresh, &QPushButton::clicked, this,
++            [this] { refreshSizeMapTab(true); });
++    addRefreshSpin(refresh);
++
++    auto *headingCol = new QVBoxLayout;
++    headingCol->setContentsMargins(0, 0, 0, 0);
++    headingCol->setSpacing(3);
++    headingCol->addWidget(heading);
++    headingCol->addWidget(subtitle);
++
++    auto *headerRow = new QHBoxLayout;
++    headerRow->setContentsMargins(0, 0, 0, 0);
++    headerRow->setSpacing(8);
++    headerRow->addLayout(headingCol, 1);
++    headerRow->addWidget(refresh, 0, Qt::AlignTop);
++    layout->addLayout(headerRow);
++
++    m_sizeMapStatus = new QLabel;
++    m_sizeMapStatus->setObjectName("statusLine");
++    m_sizeMapStatus->setWordWrap(true);
++    layout->addWidget(m_sizeMapStatus);
++
++    auto *chart = new RepoSunburstChart;
++    m_sizeMapChart = chart;
++    layout->addWidget(chart, 1);
++    return page;
++}
++
++void MainWindow::refreshSizeMapTab(bool force)
++{
++    auto *chart = static_cast<RepoSunburstChart *>(m_sizeMapChart);
++    if (!chart || !m_sizeMapStatus)
++        return;
++    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
++        return;
++    const QString path =
++        writableRecordFor(m_repositories.at(m_repoDetailIndex)).localPath;
++    if (path.isEmpty() || !QDir(path).exists()) {
++        chart->clear();
++        m_sizeMapScannedPath.clear();
++        m_sizeMapStatus->setText(
++            "No local working copy to scan for this repository.");
++        return;
++    }
++    if (!force && m_sizeMapScannedPath == path)
++        return; // the chart already shows this working copy
++    if (m_sizeMapScanning)
++        return;
++    m_sizeMapScanning = true;
++    const int epoch = ++m_sizeMapScanEpoch;
++    m_sizeMapStatus->setText(
++        QStringLiteral("Scanning %1 …").arg(QDir::toNativeSeparators(path)));
++    auto *watcher = new QFutureWatcher<SunburstNode>(this);
++    connect(watcher, &QFutureWatcher<SunburstNode>::finished, this,
++            [this, watcher, path, epoch] {
++                watcher->deleteLater();
++                m_sizeMapScanning = false;
++                if (epoch != m_sizeMapScanEpoch)
++                    return; // a newer scan superseded this one
++                SunburstNode root = watcher->result();
++                // The user may have opened another repo while the scan ran —
++                // a stale tree would mislabel the chart, so rescan instead.
++                if (m_repoDetailIndex >= 0 &&
++                    m_repoDetailIndex < m_repositories.size() &&
++                    writableRecordFor(m_repositories.at(m_repoDetailIndex))
++                            .localPath != path) {
++                    refreshSizeMapTab(false);
++                    return;
++                }
++                m_sizeMapScannedPath = path;
++                m_sizeMapStatus->setText(
++                    QStringLiteral("%1 files · %2 on disk (.git excluded)")
++                        .arg(QLocale().toString(root.fileCount),
++                             QLocale().formattedDataSize(root.size)));
++                if (auto *liveChart =
++                        static_cast<RepoSunburstChart *>(m_sizeMapChart))
++                    liveChart->setRoot(std::move(root));
++            });
++    watcher->setFuture(
++        QtConcurrent::run([path] { return scanDirectorySizes(path, 0); }));
++}
++
+ QWidget *MainWindow::buildInsightsTab()
+ {
+     auto *page = new QWidget;
+diff --git a/qt_client/src/RepoHost.cpp b/qt_client/src/RepoHost.cpp
+index ef9a9537..78eaeda0 100644
+--- a/qt_client/src/RepoHost.cpp
++++ b/qt_client/src/RepoHost.cpp
+@@ -7,6 +7,7 @@
+ #include <QJsonArray>
+ #include <QJsonDocument>
+ #include <QJsonObject>
++#include <QMap>
+ #include <QPointer>
+ #include <QProcess>
+ #include <QRegularExpression>
+@@ -18,6 +19,9 @@
+ #include <QTimer>
+ #include <QVector>
+ 
++#include <algorithm>
++#include <functional>
++
+ #include <utility>
+ 
+ namespace {
+@@ -760,6 +764,104 @@ QJsonObject statsReplyFor(const QString &mirrorPath, const QString &branch)
+                        {"contributorCount", contributors.size()}};
+ }
+ 
++// Directory-size tree for the website's size-map sunburst (adhoc #189). One
++// `ls-tree -r -l` pass yields every blob's path and byte size; folding those
++// into a nested directory tree here spares the site fetching per-blob sizes.
++// Children are subdirectories only, largest first — the gap between a
++// directory's total and the sum of its children is the bytes held in files
++// directly inside it, which the chart renders as unfilled span (HDGraph
++// style). Depth is capped (deeper trees collapse into their depth-8 ancestor)
++// and each directory serialises at most its 40 largest children, folding the
++// rest into a single "…" entry, so the reply stays bounded on huge repos.
++QJsonObject sizesReplyFor(const QString &mirrorPath, const QString &branch)
++{
++    const QString ref = refForRepoPath(mirrorPath, QString(), branch);
++    if (ref.isEmpty())
++        return {{"ok", false}, {"error", "empty_repo"}};
++
++    QByteArray treeOut;
++    QString gitErr;
++    if (!runGit(mirrorPath, {"ls-tree", "-r", "-l", "-z", ref}, treeOut, &gitErr))
++        return {{"ok", false},
++                {"error", gitErr.isEmpty() ? QStringLiteral("ls_tree_failed") : gitErr}};
++
++    constexpr int kMaxDepth = 8;
++    constexpr int kMaxChildren = 40;
++    struct DirNode {
++        QString name;
++        qint64 size = 0;
++        QMap<QString, int> children; // child dir name -> index into nodes
++    };
++    QVector<DirNode> nodes;
++    nodes.append(DirNode()); // 0 = repo root
++    int fileCount = 0;
++    for (const QByteArray &record : treeOut.split('\0')) {
++        if (record.isEmpty())
++            continue;
++        const int tab = record.indexOf('\t');
++        if (tab < 0)
++            continue;
++        const QList<QByteArray> meta = record.left(tab).simplified().split(' ');
++        if (meta.size() < 4 || meta.at(1) != "blob")
++            continue;
++        bool ok = false;
++        const qlonglong size = meta.at(3).toLongLong(&ok);
++        if (!ok || size < 0)
++            continue;
++        fileCount += 1;
++        const QStringList parts =
++            QString::fromUtf8(record.mid(tab + 1)).split('/');
++        int at = 0;
++        nodes[0].size += size;
++        for (int depth = 0; depth + 1 < parts.size() && depth < kMaxDepth;
++             ++depth) {
++            const QString &dir = parts.at(depth);
++            int child = nodes.at(at).children.value(dir, -1);
++            if (child < 0) {
++                child = nodes.size();
++                DirNode node;
++                node.name = dir;
++                nodes.append(node);
++                nodes[at].children.insert(dir, child);
++            }
++            nodes[child].size += size;
++            at = child;
++        }
++    }
++
++    std::function<QJsonArray(int)> childrenJson = [&](int at) {
++        QList<int> kids = nodes.at(at).children.values();
++        std::sort(kids.begin(), kids.end(), [&](int a, int b) {
++            return nodes.at(a).size > nodes.at(b).size;
++        });
++        QJsonArray out;
++        qint64 folded = 0;
++        for (int i = 0; i < kids.size(); ++i) {
++            if (out.size() >= kMaxChildren) {
++                folded += nodes.at(kids.at(i)).size;
++                continue;
++            }
++            const int kid = kids.at(i);
++            QJsonObject entry{{"name", nodes.at(kid).name},
++                              {"size", double(nodes.at(kid).size)}};
++            const QJsonArray sub = childrenJson(kid);
++            if (!sub.isEmpty())
++                entry.insert("children", sub);
++            out.append(entry);
++        }
++        if (folded > 0)
++            out.append(QJsonObject{{"name", QStringLiteral("…")},
++                                   {"size", double(folded)}});
++        return out;
++    };
++
++    return QJsonObject{{"ok", true},
++                       {"name", QString()},
++                       {"size", double(nodes.at(0).size)},
++                       {"fileCount", fileCount},
++                       {"children", childrenJson(0)}};
++}
++
+ QString imageMimeForPath(const QString &path)
+ {
+     const QString lower = path.toLower();
+@@ -1215,6 +1317,8 @@ void RepoHost::handleRequest(const QJsonObject &request)
+         action = QStringLiteral("list branches");
+     else if (op == "search")
+         action = QStringLiteral("search '%1'").arg(path);
++    else if (op == "sizes")
++        action = QStringLiteral("size map (directory sizes)");
+     else if (op == "release-blob")
+         action = QStringLiteral("download release asset %1").arg(path);
+     else
+@@ -1365,6 +1469,24 @@ void RepoHost::handleRequest(const QJsonObject &request)
+         return;
+     }
+ 
++    // Size-map sunburst data (adhoc #189): like "stats", a full ls-tree pass,
++    // so it runs off the GUI thread. Carries no repo path, so it bypasses the
++    // isSafeRepoPath gate.
++    if (op == "sizes") {
++        const QString mirrorPath = m_mirrorPath;
++        const QString repoBranch = branch;
++        runOffThread(
++            [mirrorPath, repoBranch] { return sizesReplyFor(mirrorPath, repoBranch); },
++            [this, reqId, op](QJsonObject reply) {
++                reply.insert("type", "response");
++                reply.insert("reqId", reqId);
++                reply.insert("op", op);
++                reply.insert("path", QString());
++                sendText(QJsonDocument(reply).toJson(QJsonDocument::Compact));
++            });
++        return;
++    }
++
+     // Repo-scoped search (issue #360): `path` carries the query, not a repo path,
+     // so it bypasses the isSafeRepoPath gate below and runs off-thread (git grep
+     // can be slow) like "blob" does.
