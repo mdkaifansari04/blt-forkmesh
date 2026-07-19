@@ -1744,6 +1744,9 @@ private:
     // Stop the currently selected run: abort it if it's executing, or drop it
     // from the queue if it hasn't started yet. Records the run as Cancelled.
     void stopSelectedRun();
+    // Skip the currently selected run before it executes: drop it from the queue
+    // (or decline it while it's awaiting approval) and record it as Skipped.
+    void skipSelectedRun();
     // Start a new coding agent to fix the selected (failed) run, on its own
     // branch/PR like any other ad-hoc agent run (adhoc #114).
     void fixSelectedRunWithAgent(const QString &provider, const QString &model);
@@ -1763,6 +1766,9 @@ private:
     void enqueuePushEvent(const QString &owner, const QString &name,
                           const QString &commit, const QString &ref);
     void processActionQueue();
+    // The runner currently executing `runId`, or nullptr if no runner is. Used
+    // to target stop()/abort at the exact run rather than a single global runner.
+    ActionRunner *runnerForRun(int runId) const;
     // A freshly created run makes any earlier not-yet-finished run of the same
     // workflow (same owner/name/workflowPath) moot: it was going to build an
     // older commit anyway. Aborts those (Running via the runner, Queued/
@@ -4313,7 +4319,11 @@ private:
         NotificationLink link; // double-click destination (issue #292)
     };
     ActionStore *m_actionStore = nullptr;
-    ActionRunner *m_actionRunner = nullptr;
+    // A pool of runners so independent workflows (e.g. the Android build, the CI
+    // tests and the Cloudflare deploy triggered by one push) execute in parallel
+    // instead of queueing behind one another. All bookkeeping stays on the Qt
+    // main thread; only the child processes each runner drives run concurrently.
+    QList<ActionRunner *> m_actionRunners;
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
@@ -4354,6 +4364,8 @@ private:
     QPushButton *m_actionRerunButton = nullptr;
     // Stops the selected run while it's still queued or executing.
     QPushButton *m_actionStopButton = nullptr;
+    // Skips the selected run while it's still pending (queued or awaiting approval).
+    QPushButton *m_actionSkipButton = nullptr;
     // Copies the selected run's full log to the clipboard.
     QPushButton *m_actionCopyLogButton = nullptr;
     // "Fix with agent" (adhoc #114): only shown for a failed run. Starts a new

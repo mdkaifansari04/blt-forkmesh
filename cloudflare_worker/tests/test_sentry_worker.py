@@ -319,7 +319,7 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "SIGXFSZ (file size limit exceeded)" in CRASH_HANDLER_CPP_TEXT
     assert "SIGTERM, SIGINT" in CRASH_HANDLER_CPP_TEXT
     assert "SIGKILL or SIGSTOP" in CRASH_HANDLER_CPP_TEXT
-    assert "std::atomic_bool g_surviveTerminationSignals" in CRASH_HANDLER_CPP_TEXT
+    assert "std::atomic_int g_surviveTerminationSignals" in CRASH_HANDLER_CPP_TEXT
     assert "bool isTerminationSignal(int sig)" in CRASH_HANDLER_CPP_TEXT
     assert "g_surviveTerminationSignals.load(std::memory_order_relaxed)" in CRASH_HANDLER_CPP_TEXT
     assert "termination signal survived" in CRASH_HANDLER_CPP_TEXT
