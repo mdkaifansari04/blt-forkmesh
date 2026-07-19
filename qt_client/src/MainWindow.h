@@ -901,7 +901,13 @@ private:
     void persistEditsToActiveServer();
     void loadCachedFavicons();
     void fetchFavicon(int index);
+    void fetchFaviconForHost(const QString &host);
+    void fetchFaviconFromUrl(const QString &host, const QUrl &url);
     QPixmap faviconFor(const ServerConfig &server) const;
+    // Network-log favicons (adhoc #190): show each request's site icon inline.
+    QString logFaviconTag(const QString &message);
+    void registerLogFaviconResource(const QString &host);
+    void refreshLogFavicon(const QString &host);
     QWidget *buildHomeSection();
     // Node profile: full-page centered section (index 10 in m_sectionStack).
     QWidget *buildNodeProfileSection();
@@ -1158,6 +1164,11 @@ private:
     QWidget *buildRepoSecurityTab();
     QWidget *buildRepoQualityTab();
     QWidget *buildInsightsTab();
+    // Size map tab (adhoc #189): sunburst of the working tree's directory
+    // sizes. refreshSizeMapTab scans on a worker thread; force=false is the
+    // lazy tab-click path that reuses the last scan of the same repo.
+    QWidget *buildSizeMapTab();
+    void refreshSizeMapTab(bool force);
     QWidget *buildPlaceholderTab(const QString &name);
 
     // Discussions tab (signed repository discussions with inbox fallback).
@@ -1733,6 +1744,9 @@ private:
     // Stop the currently selected run: abort it if it's executing, or drop it
     // from the queue if it hasn't started yet. Records the run as Cancelled.
     void stopSelectedRun();
+    // Skip the currently selected run before it executes: drop it from the queue
+    // (or decline it while it's awaiting approval) and record it as Skipped.
+    void skipSelectedRun();
     // Start a new coding agent to fix the selected (failed) run, on its own
     // branch/PR like any other ad-hoc agent run (adhoc #114).
     void fixSelectedRunWithAgent(const QString &provider, const QString &model);
@@ -1752,6 +1766,9 @@ private:
     void enqueuePushEvent(const QString &owner, const QString &name,
                           const QString &commit, const QString &ref);
     void processActionQueue();
+    // The runner currently executing `runId`, or nullptr if no runner is. Used
+    // to target stop()/abort at the exact run rather than a single global runner.
+    ActionRunner *runnerForRun(int runId) const;
     // A freshly created run makes any earlier not-yet-finished run of the same
     // workflow (same owner/name/workflowPath) moot: it was going to build an
     // older commit anyway. Aborts those (Running via the runner, Queued/
@@ -3105,6 +3122,7 @@ private:
     QList<ServerConfig> m_servers;
     int m_activeServer = 0;
     QHash<QString, QPixmap> m_faviconCache; // host -> favicon
+    QSet<QString> m_faviconFetching;        // hosts with an in-flight favicon GET
 
     // Donation nudge banner (no Solana address yet).
     QWidget *m_solanaBanner = nullptr;
@@ -3689,6 +3707,17 @@ private:
     int m_shortcutsTabIndex = -1; // index of the Shortcuts page
     int m_settingsTabIndex = -1; // index of the Settings page
     int m_projectsTabIndex = -1; // index of the Projects page (issue #384)
+    int m_sizeMapTabIndex = -1; // index of the Size map page (adhoc #189)
+    // Size map tab state: the chart is a RepoSunburstChart (MainWindowInternal.h),
+    // held as QWidget* like the other inline-widget members. m_sizeMapScannedPath
+    // remembers which working copy the chart currently shows so re-opening the
+    // tab on the same repo skips the rescan; the epoch discards a scan that
+    // lands after the user switched repos.
+    QWidget *m_sizeMapChart = nullptr;
+    QLabel *m_sizeMapStatus = nullptr;
+    QString m_sizeMapScannedPath;
+    bool m_sizeMapScanning = false;
+    int m_sizeMapScanEpoch = 0;
     QPushButton *m_repoProjectsTab = nullptr; // handle for the Projects (N) badge
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
@@ -4290,7 +4319,11 @@ private:
         NotificationLink link; // double-click destination (issue #292)
     };
     ActionStore *m_actionStore = nullptr;
-    ActionRunner *m_actionRunner = nullptr;
+    // A pool of runners so independent workflows (e.g. the Android build, the CI
+    // tests and the Cloudflare deploy triggered by one push) execute in parallel
+    // instead of queueing behind one another. All bookkeeping stays on the Qt
+    // main thread; only the child processes each runner drives run concurrently.
+    QList<ActionRunner *> m_actionRunners;
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
@@ -4331,6 +4364,8 @@ private:
     QPushButton *m_actionRerunButton = nullptr;
     // Stops the selected run while it's still queued or executing.
     QPushButton *m_actionStopButton = nullptr;
+    // Skips the selected run while it's still pending (queued or awaiting approval).
+    QPushButton *m_actionSkipButton = nullptr;
     // Copies the selected run's full log to the clipboard.
     QPushButton *m_actionCopyLogButton = nullptr;
     // "Fix with agent" (adhoc #114): only shown for a failed run. Starts a new

@@ -298,6 +298,13 @@
               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Files</h4>
               <p data-repo-about-files-count class="mt-2 text-xs text-muted-foreground"></p>
             </div>
+            <div data-repo-about-sizemap class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Size map</h4>
+              <button type="button" data-repo-about-sizemap-open class="mt-2 block w-full rounded-md p-1 transition-colors hover:bg-secondary/50" title="Open the interactive size map" aria-label="Open the interactive size map">
+                <span data-repo-about-sizemap-chart class="block"></span>
+              </button>
+              <p class="mt-1.5 text-[11px] text-muted-foreground">Directory sizes on the default branch — click the chart to explore.</p>
+            </div>
             <div data-repo-about-contribs class="mt-5 hidden border-t border-border pt-4">
               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contributors <span data-repo-about-contribs-count class="font-mono text-foreground"></span></h4>
               <div data-repo-about-contribs-list class="mt-2 flex flex-wrap gap-1.5"></div>
