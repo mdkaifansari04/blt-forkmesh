@@ -11360,17 +11360,31 @@ async def _ap_user_federates(env, name):
                 and not rec.get("profile_private"))
 
 
+async def _ap_org_alias_owner(env, owner, repo):
+    # Organization repo aliases (issue #388): a fediverse actor is addressed by
+    # the org handle (@org.repo@host), but the backing repo — its repositories
+    # row, media, per-repo AP settings and issue inbox — lives under the linked
+    # node, never under the org name. Resolve org->node for those data reads so
+    # federation keeps working after a repo is fronted by an org, while the
+    # public actor identity (handle, reply author, web URLs) stays the org. A
+    # plain node URL (no alias) resolves to itself, so this is a safe no-op on
+    # every non-org path.
+    node = await _org_repo_node(env, owner, repo)
+    return node or owner
+
+
 async def _ap_repo_federates(env, owner, repo):
     # Only published, public repos federate. A missing catalog row means the
     # repo was never published — unlike the git-clone path (which stays open
     # for ad-hoc hosts), an unpublished repo has no fediverse presence. The
     # owner can also switch federation off per repo (web/Qt repo settings).
-    key_bi = await blind_index(env, owner + "/" + repo)
+    data_owner = await _ap_org_alias_owner(env, owner, repo)
+    key_bi = await blind_index(env, data_owner + "/" + repo)
     row = await d1_first(
         env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
     if not row or int(row.get("is_private") or 0):
         return False
-    return (await _ap_repo_settings_get(env, owner, repo))["federate"]
+    return (await _ap_repo_settings_get(env, data_owner, repo))["federate"]
 
 
 # Per-repo fediverse switches the owner manages from the web and Qt repo
@@ -11386,7 +11400,10 @@ AP_REPO_SETTING_DEFAULTS = {
 async def _ap_repo_settings_bi(env, owner, repo):
     # Distinct namespace + full lowercasing on both halves: callers reach this
     # with URL-cased (About handler) and handle-cased (AP gates) names, and
-    # they must all land on the same row.
+    # they must all land on the same row. Org-alias handles resolve to the
+    # backing node so a mention gate keys on the same row the owner's repo
+    # settings wrote under the node name (issue #388).
+    owner = await _ap_org_alias_owner(env, owner, repo)
     return await blind_index(
         env, "ap-repo-settings:%s/%s" % (str(owner or "").strip().lower(),
                                          str(repo or "").strip().lower()))
@@ -11568,7 +11585,10 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
                    else "ForkMesh profile of @%s." % handle)
     else:
         owner, _, repo = handle.partition(".")
-        key_bi = await blind_index(env, owner + "/" + repo)
+        # Org handles read their repo data from the linked node (issue #388),
+        # but display, profile URL and web links stay under the org name below.
+        data_owner = await _ap_org_alias_owner(env, owner, repo)
+        key_bi = await blind_index(env, data_owner + "/" + repo)
         repo_row = await d1_first(
             env, "SELECT is_private, data FROM repositories WHERE key_bi=?",
             key_bi)
@@ -12464,12 +12484,16 @@ async def _ap_handle_repo_mention(env, request, note, remote, owner, repo):
     # switch: a mention-created issue is remote content entering the repo, the
     # same trust decision acceptComments already governs (an unpublished repo
     # has no fediverse presence, so a missing catalog row also drops).
-    key_bi = await blind_index(env, owner + "/" + repo)
+    # The actor is addressed by the org handle, but the repo row, AP settings
+    # and issue inbox live under the linked node (issue #388). Resolve once and
+    # use the node for every data read; the org name stays the reply author.
+    data_owner = await _ap_org_alias_owner(env, owner, repo)
+    key_bi = await blind_index(env, data_owner + "/" + repo)
     row = await d1_first(
         env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
     if not row or int(row.get("is_private") or 0):
         return dropped
-    settings = await _ap_repo_settings_get(env, owner, repo)
+    settings = await _ap_repo_settings_get(env, data_owner, repo)
     if not settings["federate"] or not settings["acceptComments"]:
         return dropped
     mention_bi = await blind_index(env, "ap-mention:" + note["id"])
@@ -12517,7 +12541,7 @@ async def _ap_handle_repo_mention(env, request, note, remote, owner, repo):
     body += "\n\nFiled from a fediverse mention by %s: %s" % (
         author_label, note["url"])
     ok, result = await _forkbot_enqueue_issue(
-        env, owner, repo, fields["title"], body, author_label,
+        env, data_owner, repo, fields["title"], body, author_label,
         source="fediverse", labels=["fediverse"], attachments=images)
     await d1_run(
         env,
@@ -19057,7 +19081,7 @@ class Default(WorkerEntrypoint):
                     await touch_registered_node(self.env, owner_bi, owner_rec)
                 except Exception:
                     pass
-            elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats"):
+            elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats", "sizes"):
                 # Browsing a private repo's files/commits needs a view token as
                 # ?ts=&sig= (the host-token query shape): the owner's own
                 # (forkmesh-view-v1), or — when ?viewer= names a collaborator the
@@ -20618,7 +20642,7 @@ class ForkMeshHost(DurableObject):
             served = REPO_HOST_RE.match(path)
             served_by = safe_segment(served.group(1)) if served else ""
             return await self._tunnel("search", query, ref, served_by, ua)
-        if action in ("tree", "blob", "history", "commit", "branches", "stats"):
+        if action in ("tree", "blob", "history", "commit", "branches", "stats", "sizes"):
             await self._mark_present(path)
             op = "commits" if action == "history" else action
             # This DO is per-repo, so the owner in its path IS the mirror node
