@@ -122,6 +122,9 @@
 
   function logout() {
     try {
+      // The Worker owns session invalidation: this clears the HttpOnly
+      // forkmesh_admin cookie so the admin page is unreachable after logout.
+      // site-header.js (marketing pages) calls the same endpoint.
       fetch("/api/accounts/logout", { method: "POST", keepalive: true }).catch(() => {});
       localStorage.removeItem("forkmesh.session");
       document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";

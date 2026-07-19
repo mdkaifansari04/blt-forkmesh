@@ -362,6 +362,16 @@ class AuthService extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    // Fire-and-forget server-side logout — the same /api/accounts/logout every
+    // web client uses. On web builds the browser holds the HttpOnly
+    // forkmesh_admin cookie, and only the Worker can clear it; without this an
+    // admin stayed able to open the admin page after logging out here.
+    unawaited(
+      _postJson(
+        '/api/accounts/logout',
+        {},
+      ).catchError((_) => const <String, dynamic>{}),
+    );
     await _prefs.remove(_sessionKey);
     _session = null;
     notifyListeners();
