@@ -53,7 +53,11 @@ std::atomic_flag g_handling = ATOMIC_FLAG_INIT;
 // Set only while a local action workflow owns child processes. A failing child
 // step may be terminated as part of a wider process group; the UI should record
 // that signal and continue so the action can settle into a normal failed run.
-std::atomic_bool g_surviveTerminationSignals{false};
+// Reference count of in-flight action runs that want the app to survive a
+// termination signal. It is a counter, not a bool, because several runners can
+// execute workflows in parallel now — protection must stay on until the LAST of
+// them finishes, not drop the moment any single run completes.
+std::atomic_int g_surviveTerminationSignals{0};
 
 // Async-signal-safe unsigned-to-decimal. Writes into buf, returns length.
 int safeUtoa(unsigned long v, char *buf)
@@ -246,7 +250,7 @@ void crashHandler(int sig, siginfo_t *info, void *)
     const bool terminationSignal = isTerminationSignal(sig);
     const bool surviveTermination =
         terminationSignal &&
-        g_surviveTerminationSignals.load(std::memory_order_relaxed);
+        g_surviveTerminationSignals.load(std::memory_order_relaxed) > 0;
     safeWriteMainLogSignalRecord(sig, when, surviveTermination);
 
     if (surviveTermination) {
@@ -423,7 +427,17 @@ void setCrashContext(const QString &context)
 void setTerminationSignalSurvivalEnabled(bool enabled)
 {
 #ifdef FORKMESH_CRASH_HANDLER
-    g_surviveTerminationSignals.store(enabled, std::memory_order_relaxed);
+    // Balanced enable/disable per active run; never let the count go negative if
+    // a disable somehow arrives without a matching enable.
+    if (enabled) {
+        g_surviveTerminationSignals.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        int prev = g_surviveTerminationSignals.load(std::memory_order_relaxed);
+        while (prev > 0 &&
+               !g_surviveTerminationSignals.compare_exchange_weak(
+                   prev, prev - 1, std::memory_order_relaxed))
+            ;
+    }
 #else
     Q_UNUSED(enabled);
 #endif
