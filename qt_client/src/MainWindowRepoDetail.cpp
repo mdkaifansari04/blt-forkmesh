@@ -639,6 +639,13 @@ QWidget *MainWindow::buildRepoOverviewPage()
     toolbar->addWidget(m_worktreesButton);
     toolbar->addWidget(m_toolbarCommitsButton);
     toolbar->addWidget(m_tagsButton);
+    // Releases (adhoc #180): moved out of the top tab bar to sit beside Tags on
+    // the Code overview page. The button itself is created with the other repo
+    // tabs in buildRepoDetailSection (kept in m_repoDetailTabs so tab switching
+    // and the Releases (N) badge keep working) — here we just place it in the
+    // toolbar. buildRepoOverviewPage runs after that loop, so it already exists.
+    if (m_repoReleasesTab)
+        toolbar->addWidget(m_repoReleasesTab);
     toolbar->addWidget(m_fileSearch, 1);
 
     // Everything below the latest-commit bar swaps between the file browser
@@ -7954,7 +7961,9 @@ QWidget *MainWindow::buildRepoDetailSection()
             continue;
         const TabDef tab = tabs.at(i);
         auto *b = new QPushButton(QString::fromLatin1(tab.label));
-        b->setObjectName("repoTab");
+        // Releases (id 12) is styled like a toolbar button, not a tab: it lives in
+        // the Code overview toolbar next to Tags (adhoc #180), not the tab row.
+        b->setObjectName(i == 12 ? "ghostButton" : "repoTab");
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
         setOcticon(b, QString::fromLatin1(tab.icon), 16);
@@ -7981,7 +7990,14 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (i == 17)
             m_repoProjectsTab = b; // handle for the Projects (N) badge
         m_repoDetailTabs->addButton(b, i);
-        if (i == 17)
+        if (i == 12)
+            // Releases (adhoc #180): no top-bar tab. Its button is placed in the
+            // Code overview toolbar next to Tags (see buildRepoOverviewPage), so
+            // releases sit beside tags instead of between Insights and Mirror
+            // nodes. It stays in m_repoDetailTabs (id 12) so tab switching, the
+            // Releases (N) badge and the Tags button shortcut all keep working.
+            (void)b; // added to the toolbar layout below, not the tab row
+        else if (i == 17)
             // Projects sits right after Issues in the row (Code=0, Issues=1
             // among the visible buttons) despite its appended positional id.
             tabRow->insertWidget(2, b);
