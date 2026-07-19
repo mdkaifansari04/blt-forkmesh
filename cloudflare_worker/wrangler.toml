@@ -104,8 +104,8 @@ FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 # deposit wallets) is NOT here — it lives in .env.production and is pushed as a
 # Worker secret by deploy.sh, so it isn't committed and can't be wiped by a
 # deploy. Falls back to NODE_SOLANA_ADDRESS when unset.
-# Admins are set in the database, not here: the accounts table has an is_admin
-# column. Grant one with: UPDATE accounts SET is_admin=1 WHERE name='<node>'.
+# Admins are set in the database, not here: the users table has an is_admin
+# column. Grant one with: UPDATE users SET is_admin=1 WHERE username='<user>'.
 # DATA_KEY encrypts ALL D1 data at rest (AES-GCM row blobs) and derives the
 # blind-index HMAC key — including the Ed25519 SEEDS that control custody
 # deposit/bounty wallets. It is INTENTIONALLY NOT here: a value in [vars] is
