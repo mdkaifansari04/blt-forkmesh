@@ -58,6 +58,12 @@ def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
+async def _passthrough_alias(env, owner, repo):
+    # Non-org repos resolve to themselves; org-alias resolution is pinned
+    # separately in test_orgs_teams.py.
+    return owner
+
+
 def _json_response(data, status=200, cache_seconds=None, cache_control=None,
                    extra_headers=None):
     return {"status": status, "data": data}
@@ -94,6 +100,7 @@ def _settings_ns(settings_rows):
                      "blind_index": blind_index,
                      "d1_first": d1_first,
                      "json": json,
+                     "_ap_org_alias_owner": _passthrough_alias,
                      "AP_REPO_SETTING_DEFAULTS": AP_REPO_SETTING_DEFAULTS,
                  })
 
@@ -142,6 +149,7 @@ def _federates_ns(is_private, federate):
     return _load("_ap_repo_federates", extra_globals={
         "blind_index": blind_index,
         "d1_first": d1_first,
+        "_ap_org_alias_owner": _passthrough_alias,
         "_ap_repo_settings_get": _ap_repo_settings_get,
     })
 
@@ -205,6 +213,7 @@ def test_about_get_returns_followers_list_and_settings():
                    "d1_first": d1_first,
                    "d1_all": d1_all,
                    "decrypt_row": decrypt_row,
+                   "_ap_org_alias_owner": _passthrough_alias,
                    "_ap_enabled": _ap_enabled,
                    "_ap_actor_bi": _ap_actor_bi,
                    "_ap_origin": lambda env, request=None:
@@ -310,6 +319,7 @@ def _about_post_env(log, stored_settings=None, good_sig="GOODSIG"):
                      "d1_run": d1_run,
                      "decrypt_row": decrypt_row,
                      "encrypt_row": encrypt_row,
+                     "_ap_org_alias_owner": _passthrough_alias,
                      "edge_cache_delete": edge_cache_delete,
                      "_catalog_record_matches_identity":
                          lambda record, owner, repo: bool(record),

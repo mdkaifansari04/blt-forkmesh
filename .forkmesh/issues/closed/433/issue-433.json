@@ -1,0 +1,103 @@
+{
+    "assignees": [
+        "Claude Code"
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1784402987611,
+    "endDate": 1784433600000,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nMake the repository's automation create the same current issue, milestone, and project records that the desktop and browser readers already consume.\n\n## Implementation\n\n- Replace the legacy `issues/<n>/issue.md` writer in `tools/forkmesh_mcp_server.py` with `.forkmesh/issues/{open,closed}/<n>/issue-<n>.json` signed-event records.\n- Allocate issue numbers across both status folders and handle a concurrent number collision by re-reading before commit.\n- Add start/end date support to issue creation.\n- Add tools for creating and updating milestone definitions, creating a signed project, setting its dates and milestone, and linking sorted issue numbers.\n- Reuse the exact canonical signing rules from `IssueStore` and `ProjectStore`; keep one shared fixture set to detect drift.\n- Preserve the existing native commit-message conventions.\n\n## Acceptance criteria\n\n- Records created through the tool load without repair in desktop and browser views.\n- Every event signature verifies with the repository's native canonical bytes.\n- New issue creation never writes the legacy Markdown layout.\n- Invalid dates, unknown issue links, duplicate milestone titles, and number collisions return actionable errors without partial records.\n- Tests cover creation in a repository containing both open and closed issues plus an existing project.\n\n## Dependencies\n\nNone.\n\n## Verification\n\nExtend `tools/test_forkmesh_mcp_server.py` to create two dated issues, two milestones, and a linked project, then load and verify the output through native-schema fixtures.",
+            "id": "open-433",
+            "sig": "WP-yZRyNMGTtk_yn4yV0Qkv3BhbkTtsLOBMwymZMACyy_tQ-F460QcRNQwbxXdRCYebvv9YOkXq9TNaWhLTkCg",
+            "title": "Migrate planning tools to the native signed tracker format",
+            "ts": 1784402987611,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784520000000,
+            "id": "5a60cc1c-fbea-474b-8db3-508289aef18d",
+            "sig": "GF8eANk8vzHBADCDEsYdLC7-bWP9mTprlJcQbJP_SLXjAiADBymI132_wqTUef_tqGoSW4zrQxHIY5gqEZlkDA",
+            "startDate": 1784347200000,
+            "ts": 1784402987612,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784433600000,
+            "id": "15adaea3-7a73-42eb-a40a-c40c228156af",
+            "sig": "Vyoy_RxX4qapWsup3u_HdAOIQeADt8BaJoJs261kLljMwRczS2OIrcNWI5l4WxrfV_z-tkeSK-8rYMmnwozoCg",
+            "startDate": 1784347200000,
+            "ts": 1784405500064,
+            "type": "dates"
+        },
+        {
+            "agentCreatePr": false,
+            "agentProvider": "claude-code",
+            "agentSessionId": 161,
+            "agentStatus": "queued",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "cfcbab3a-6152-4733-ab1c-c8a291128329",
+            "sig": "Ew6kpkj3NqFXdxRNANhMSVcJdHCKi0PzBuNI50RT5sJZfk7YtzMYWsolUop4fU2GTB4P3L_eLG0HXBmm9eJxCw",
+            "ts": 1784410309843,
+            "type": "agent"
+        },
+        {
+            "assignees": [
+                "Claude Code"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "ed56b040-b0fc-465a-a5db-81de3bc7e3f6",
+            "sig": "U0tvev3C0oq8hDJzpk_92VhM9D2GKrfaU51A3Pd7_xlnHtlokCCrCDQ6qZRlkbFFq4s7uR0WEMpJd-Ck6q_uAQ",
+            "ts": 1784410309920,
+            "type": "assignees"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "Closed by merged branch \"agent/issue-433-migrate-planning-tools-to-the-native-signed-trac\".",
+            "id": "eb2b0e5f-bd84-474b-8a6c-044d627c6c8f",
+            "sig": "KIoPREDJTGdejRRuCE8-MRdvMF2ZqpHRV9puSRg4yFqBsQdNpksCIourDlUNaLh5rZTytpmScV8NDLB2W9ebAw",
+            "ts": 1784412731978,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "b6ca65bd-d66a-44bf-a299-32431f6c6c20",
+            "sig": "qUo2P5KH1f_kPyPT55VtnzQWbP-rneRjQzy3hiy6vN8oNkA86mdwTqHERKL1EX1HGE_cb77adZYyag75ziF6Bw",
+            "status": "closed",
+            "ts": 1784412732016,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "infra",
+        "enhancement"
+    ],
+    "milestone": "Daily Git workflow",
+    "number": 433,
+    "priority": 3,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784347200000,
+    "status": "closed",
+    "title": "Migrate planning tools to the native signed tracker format",
+    "updatedAt": 1784412732016,
+    "votes": 0
+}

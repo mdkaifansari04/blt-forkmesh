@@ -298,6 +298,13 @@
               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Files</h4>
               <p data-repo-about-files-count class="mt-2 text-xs text-muted-foreground"></p>
             </div>
+            <div data-repo-about-sizemap class="mt-5 hidden border-t border-border pt-4">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Size map</h4>
+              <button type="button" data-repo-about-sizemap-open class="mt-2 block w-full rounded-md p-1 transition-colors hover:bg-secondary/50" title="Open the interactive size map" aria-label="Open the interactive size map">
+                <span data-repo-about-sizemap-chart class="block"></span>
+              </button>
+              <p class="mt-1.5 text-[11px] text-muted-foreground">Directory sizes on the default branch — click the chart to explore.</p>
+            </div>
             <div data-repo-about-contribs class="mt-5 hidden border-t border-border pt-4">
               <h4 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contributors <span data-repo-about-contribs-count class="font-mono text-foreground"></span></h4>
               <div data-repo-about-contribs-list class="mt-2 flex flex-wrap gap-1.5"></div>
@@ -1084,6 +1091,17 @@
     // profile/notification controls for a Sign Up / Log In link.
     const guest = !session || (!session.nodeName && !session.email);
     if (guest) {
+      // The profile and settings documents are account pages — signed-out
+      // visitors have no profile to show there, so bounce through login and
+      // come back once they have one. /@name public profiles share the profile
+      // document and stay open to guests.
+      const page = currentPage();
+      const accountPage = page === "settings" ||
+        ((page === "profile" || page === "profile-repositories") && !publicProfileNameFromPath());
+      if (accountPage) {
+        location.replace("/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`));
+        return false;
+      }
       const authLink = $("[data-guest-auth-link]");
       if (authLink) {
         authLink.classList.remove("hidden");
@@ -1097,7 +1115,13 @@
       document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
     }
 
-    renderProfile(session || { nodeName: "guest" });
+    if (guest) {
+      // No fabricated "guest" identity: the chrome keeps its baked defaults;
+      // only the per-page header context still needs to be set.
+      renderHeaderContext();
+    } else {
+      renderProfile(session);
+    }
     if (session?.nodeName) {
       if (grant) offerLinkGrant(grant);
       canonicalProfileReady = hydrateCanonicalProfile(session).then(() => loadNotifications()).catch(() => {});

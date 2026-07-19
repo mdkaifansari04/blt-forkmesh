@@ -1,0 +1,47 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 466,
+    "title": "Measure preservation diversity and repository coverage",
+    "status": "open",
+    "labels": [
+        "feature",
+        "infra"
+    ],
+    "milestone": "Open operations",
+    "startDate": 1784779200000,
+    "endDate": 1785297600000,
+    "priority": 34,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784405500041,
+    "updatedAt": 1784405500042,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-466",
+            "title": "Measure preservation diversity and repository coverage",
+            "body": "## Outcome\n\nBack the availability dashboard with real clone challenges, failure-domain diversity, exact content coverage, route health, and offline recovery state.\n\n## Implementation\n\n- Run bounded clone challenges against eligible mirrors and record exact object identifier, duration, bytes, route, and verification time.\n- Compute privacy-preserving operator, coarse region, and network-domain diversity without displaying or persisting raw client addresses.\n- Measure branch, tag, Git large-object, release-asset, documentation, and collaboration coverage against signed manifests.\n- Report trusted mirror quorum, seed health, repository size, current offline bundle, and each configured route's health.\n- Generate stable risk codes for low copy count, correlated failure domains, stale challenges, partial content, missing artifacts, and absent offline recovery.\n\n## Acceptance criteria\n\n- No healthy claim is made without a recent successful challenge for the exact advertised revision.\n- Unknown measurements remain unknown and never improve a score.\n- Raw addresses and precise locations do not enter the API, UI, logs, or stored assessment.\n- Partial ref, large-object, artifact, and collaboration coverage is visible independently.\n- The same signed inputs produce the same risk codes and trusted quorum.\n\n## Dependencies\n\nCombines #439, #453, #461, #465, and #467.\n\n## Verification\n\nChallenge healthy, stale, corrupt, partial, correlated, diverse, routed, unrouted, trusted, untrusted, and offline-bundled mirrors; compare object ids, privacy scans, coverage, quorum, and risk codes.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500041,
+            "sig": "EOsg0GiWIKE46jOiW10Z9VzBxidKR1EiehXmtHF5WNFATbzo8KacpWwURrfDYFRlrD0TPV-P77wEQ4qM00AxDQ"
+        },
+        {
+            "type": "dates",
+            "id": "b4e1952a-182c-4817-b0e1-57a7399e7256",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500042,
+            "startDate": 1784779200000,
+            "endDate": 1785297600000,
+            "sig": "ZSpRa7oy9YJF2eOihfeA64l-smfVZycs0ZoscESNtgSYCO5thlFR57Qfw31lxpbQGbT4WJ0s8MupOT7SN72nCg"
+        }
+    ]
+}

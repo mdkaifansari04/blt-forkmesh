@@ -16,5 +16,29 @@
         "due": 0,
         "status": "open",
         "title": "Phase 2"
+    },
+    {
+        "title": "Daily Git workflow",
+        "due": 1784952000000,
+        "status": "open",
+        "description": "Contracts, standard Git workflows, browser contribution, discovery, dependency use, and core independence."
+    },
+    {
+        "title": "Resilient operation",
+        "due": 1785556800000,
+        "status": "open",
+        "description": "Offline transfer, headless service operation, full conformance, integration, and the August 1 release gate."
+    },
+    {
+        "title": "Secure collaboration",
+        "due": 1785211200000,
+        "status": "open",
+        "description": "Recoverable identity, private encryption, scanning, convergent events, social records, reviews, receipts, and product quality."
+    },
+    {
+        "title": "Open operations",
+        "due": 1785297600000,
+        "status": "open",
+        "description": "Migration, node policy, selective sync, routes, automation, releases, packaging, independent deployment, and protocol specifications."
     }
 ]

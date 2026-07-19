@@ -36,14 +36,22 @@ void MainWindow::initActions()
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
         QStringLiteral("/actions");
     m_actionStore = new ActionStore(root);
-    m_actionRunner = new ActionRunner(m_actionStore, this);
-    connect(m_actionRunner, &ActionRunner::logLine, this, &MainWindow::onRunLog);
-    connect(m_actionRunner, &ActionRunner::statusChanged, this,
-            &MainWindow::onRunStatusChanged);
-    connect(m_actionRunner, &ActionRunner::finished, this,
-            &MainWindow::onRunFinished);
-    connect(m_actionRunner, &ActionRunner::releaseMetadataLanded, this,
-            &MainWindow::onReleaseMetadataLanded);
+    // Size the runner pool so independent workflows run in parallel without
+    // swamping a small node: cap it to the machine's cores, but keep at least
+    // two so a heavy build (e.g. the Flutter Android APK) never single-handedly
+    // blocks the CI suite or the Cloudflare deploy behind it.
+    const int concurrency = qBound(2, QThread::idealThreadCount(), 4);
+    for (int i = 0; i < concurrency; ++i) {
+        auto *runner = new ActionRunner(m_actionStore, this);
+        connect(runner, &ActionRunner::logLine, this, &MainWindow::onRunLog);
+        connect(runner, &ActionRunner::statusChanged, this,
+                &MainWindow::onRunStatusChanged);
+        connect(runner, &ActionRunner::finished, this,
+                &MainWindow::onRunFinished);
+        connect(runner, &ActionRunner::releaseMetadataLanded, this,
+                &MainWindow::onReleaseMetadataLanded);
+        m_actionRunners.append(runner);
+    }
 
     m_actionRuns = m_actionStore->loadAllRuns();
     // A run still marked Running was interrupted by a previous shutdown; it can't
@@ -621,6 +629,19 @@ void MainWindow::refreshOpenRepoDetail()
         return;
     }
     const ScopedFlag refreshGuard(m_heavyRefreshInFlight);
+    // Don't yank the keyboard out of the prompt while the user is mid-sentence
+    // (adhoc #160): this heavy rebuild — tables, transcripts, the file view —
+    // runs on every code sync and can move focus off whatever text field is
+    // being typed into, stopping the user mid-keystroke. Remember which text
+    // input held focus and, if the rebuild stole it, hand it straight back.
+    QPointer<QWidget> typingFocus;
+    if (QWidget *focused = QApplication::focusWidget()) {
+        if ((qobject_cast<QLineEdit *>(focused) ||
+             qobject_cast<QPlainTextEdit *>(focused) ||
+             qobject_cast<QTextEdit *>(focused)) &&
+            focused->window() == this)
+            typingFocus = focused;
+    }
     // Re-read the branch tip, commit list, About sidebar and the current file
     // view so a freshly pushed commit shows without reopening the repo.
     loadBranchesAndTags();
@@ -648,13 +669,30 @@ void MainWindow::refreshOpenRepoDetail()
     // Rebuild the Mirror nodes view (cheap, roster-based) so its tab count badge
     // stays current even when that tab isn't the one on screen.
     loadMirrorNodesPanel();
+    // Restore focus to the field the user was typing in if the rebuild moved it
+    // (adhoc #160). Only when it's still alive, on-screen and editable, and only
+    // if focus actually drifted — so we never fight a focus the user just moved.
+    if (typingFocus && typingFocus->isVisibleTo(this) &&
+        typingFocus->isEnabled() && QApplication::focusWidget() != typingFocus)
+        typingFocus->setFocus(Qt::OtherFocusReason);
 }
 
 void MainWindow::processActionQueue()
 {
-    if (!m_actionRunner || m_actionRunner->busy())
+    if (m_actionRunners.isEmpty())
         return;
+    // Fill every idle runner from the queue so independent workflows overlap.
+    // Each finished() re-enters here to top the pool back up.
     while (!m_actionQueue.isEmpty()) {
+        ActionRunner *idle = nullptr;
+        for (ActionRunner *runner : m_actionRunners) {
+            if (!runner->busy()) {
+                idle = runner;
+                break;
+            }
+        }
+        if (!idle)
+            return; // pool saturated; a finishing run will resume the queue
         const int runId = m_actionQueue.takeFirst();
         ActionRun *run = findRun(runId);
         if (!run || run->status != ActionStatus::Queued)
@@ -677,10 +715,16 @@ void MainWindow::processActionQueue()
         // start() emits statusChanged synchronously (which reloads m_actionRuns),
         // so copy the run out first and don't touch the pointer afterwards.
         const ActionRun snapshot = *run;
-        m_actionRunner->start(snapshot, wf, mirror, workTree,
-                              ActionStore::variables());
-        return; // one run at a time; finished() drives the next
+        idle->start(snapshot, wf, mirror, workTree, ActionStore::variables());
     }
+}
+
+ActionRunner *MainWindow::runnerForRun(int runId) const
+{
+    for (ActionRunner *runner : m_actionRunners)
+        if (runner->currentRunId() == runId)
+            return runner;
+    return nullptr;
 }
 
 void MainWindow::cancelSupersededRuns(const ActionRun &newRun)
@@ -710,13 +754,13 @@ void MainWindow::cancelSupersededRuns(const ActionRun &newRun)
             continue; // reloaded away underneath us
         const ActionRun run = *found; // copy: acting below may reload m_actionRuns
         if (run.status == ActionStatus::Running) {
-            if (m_actionRunner && m_actionRunner->currentRunId() == run.id) {
+            if (ActionRunner *runner = runnerForRun(run.id)) {
                 logSystem(QStringLiteral(
                               "Actions: aborting \"%1\" for %2/%3 @ %4 \xE2\x80\x94 "
                               "superseded by a newer run of the same workflow.")
                               .arg(run.workflowName, run.owner, run.name,
                                    run.commit.left(8)));
-                m_actionRunner->stop(); // records Cancelled once torn down
+                runner->stop(); // records Cancelled once torn down
             }
         } else if (run.status == ActionStatus::Queued ||
                    run.status == ActionStatus::AwaitingApproval) {
@@ -1276,9 +1320,18 @@ void MainWindow::refreshActionsTable()
             whenItem->setToolTip(QDateTime::fromMSecsSinceEpoch(run.createdAtMs)
                                      .toString(QStringLiteral("MMM d  hh:mm")));
 
+        // How long the run took, wall-clock from when it actually started to when
+        // it finished. Only finished runs have both timestamps; queued/running
+        // rows leave this blank (the "When" column already shows their progress).
+        QString durationText;
+        if (run.startedAtMs > 0 && run.finishedAtMs >= run.startedAtMs)
+            durationText = formatDuration(run.finishedAtMs - run.startedAtMs);
+        auto *durationItem = new QTableWidgetItem(durationText);
+
         m_actionsTable->setItem(row, 0, wfItem);
         m_actionsTable->setItem(row, 1, statusItem);
         m_actionsTable->setItem(row, 2, whenItem);
+        m_actionsTable->setItem(row, 3, durationItem);
         if (run.id == m_selectedRunId)
             m_actionsTable->selectRow(row);
     }
@@ -2209,6 +2262,10 @@ void MainWindow::showRun(int runId)
         m_actionStopButton->setVisible(run != nullptr &&
                                        (run->status == ActionStatus::Running ||
                                         run->status == ActionStatus::Queued));
+    if (m_actionSkipButton)
+        m_actionSkipButton->setVisible(run != nullptr &&
+                                       (run->status == ActionStatus::Queued ||
+                                        run->status == ActionStatus::AwaitingApproval));
     const bool fixable = run != nullptr && run->status == ActionStatus::Failed;
     if (m_actionFixButton)
         m_actionFixButton->setVisible(fixable);
@@ -2364,10 +2421,10 @@ void MainWindow::stopSelectedRun()
     // onRunFinished refreshes the UI and drains the queue — so don't touch the
     // run here beyond logging the intent.
     if (run->status == ActionStatus::Running) {
-        if (m_actionRunner && m_actionRunner->currentRunId() == run->id) {
+        if (ActionRunner *runner = runnerForRun(run->id)) {
             logSystem(QStringLiteral("Actions: stopping \"%1\" for %2/%3.")
                           .arg(run->workflowName, run->owner, run->name));
-            m_actionRunner->stop();
+            runner->stop();
         }
         return;
     }
@@ -2386,6 +2443,31 @@ void MainWindow::stopSelectedRun()
         showRun(m_selectedRunId);
         updateNotificationButton();
     }
+}
+
+void MainWindow::skipSelectedRun()
+{
+    ActionRun *run = findRun(m_selectedRunId);
+    if (!run)
+        return;
+
+    // Skip only applies before a run starts: a queued run is dropped from the
+    // queue, an awaiting-approval run is declined outright. Either way it never
+    // executes and is recorded as Skipped (distinct from a Cancelled stop).
+    if (run->status != ActionStatus::Queued &&
+        run->status != ActionStatus::AwaitingApproval)
+        return;
+
+    m_actionQueue.removeAll(run->id);
+    run->status = ActionStatus::Skipped;
+    run->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_actionStore->saveRun(*run);
+    logSystem(QStringLiteral("Actions: skipped \"%1\" for %2/%3.")
+                  .arg(run->workflowName, run->owner, run->name));
+    m_actionRuns = m_actionStore->loadAllRuns();
+    refreshActionsTable();
+    showRun(m_selectedRunId);
+    updateNotificationButton();
 }
 
 void MainWindow::fixSelectedRunWithAgent(const QString &provider, const QString &model)
@@ -2555,10 +2637,11 @@ QWidget *MainWindow::buildRepoActionsTab()
     subtitle->setObjectName("statusLine");
     subtitle->setWordWrap(true);
 
-    m_actionsTable = new QTableWidget(0, 3);
+    m_actionsTable = new QTableWidget(0, 4);
     installColumnHeaderMenu(m_actionsTable); // 3-dots per-column menu (issue #318)
     m_actionsTable->setObjectName("issueTable");
-    m_actionsTable->setHorizontalHeaderLabels({"Workflow", "Status", "When"});
+    m_actionsTable->setHorizontalHeaderLabels(
+        {"Workflow", "Status", "When", "Duration"});
     m_actionsTable->horizontalHeader()->setStretchLastSection(true);
     m_actionsTable->horizontalHeader()->setHighlightSections(false);
     // Give the Workflow column twice the default width so names like
@@ -2707,6 +2790,18 @@ QWidget *MainWindow::buildRepoActionsTab()
     connect(m_actionStopButton, &QPushButton::clicked, this,
             &MainWindow::stopSelectedRun);
 
+    // Skip: drop a still-pending run before it executes. Sits beside Stop; only
+    // shown for a run that hasn't started (queued or awaiting approval).
+    m_actionSkipButton = new QPushButton("Skip");
+    m_actionSkipButton->setObjectName("ghostButton");
+    m_actionSkipButton->setProperty("buttonSize", "sm");
+    m_actionSkipButton->setCursor(Qt::PointingHandCursor);
+    m_actionSkipButton->setToolTip("Skip this run without executing it");
+    setOcticon(m_actionSkipButton, "circle-slash", 16);
+    m_actionSkipButton->hide();
+    connect(m_actionSkipButton, &QPushButton::clicked, this,
+            &MainWindow::skipSelectedRun);
+
     // Copy log: drop the selected run's full log on the clipboard. Sits beside
     // Rerun and shares its visible-when-a-run-is-selected lifecycle.
     m_actionCopyLogButton = new QPushButton("Copy log");
@@ -2800,6 +2895,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     titleRow->addWidget(m_actionRunTitle);
     titleRow->addStretch();
     titleRow->addWidget(m_actionStopButton);
+    titleRow->addWidget(m_actionSkipButton);
     titleRow->addWidget(m_actionCopyLogButton);
     titleRow->addWidget(m_actionFixButton);
     titleRow->addWidget(m_actionFixAgentCombo);

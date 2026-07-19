@@ -7,26 +7,37 @@ Worker runtime bundles and entry.py re-imports.
 """
 
 SCHEMA_STATEMENTS = [
+    # The legacy accounts table (superseded by users/nodes, migration 0025) was
+    # fully drained and dropped by migration 0042; make sure lazily-ensured DBs
+    # lose it too.
+    "DROP TABLE IF EXISTS accounts",
     # email_bi (blind index of the email) lets users log in by email, not just
-    # node name (migration 0003). is_admin is an operator-settable flag and name
-    # is the public node name in plaintext, so an admin can be granted directly
-    # in the DB: UPDATE accounts SET is_admin=1 WHERE name='alice' (migration 0006).
+    # node name (migration 0003). is_admin is an operator-settable flag and
+    # username is the public name in plaintext, so an admin can be granted
+    # directly in the DB: UPDATE users SET is_admin=1 WHERE username='alice'
+    # (migration 0006).
     # ip_bi is the blind index (keyed HMAC) of the signup IP — never the IP itself,
     # which lives only inside the encrypted `data` blob. It lets anti-abuse count
     # how many accounts share a source IP for uniqueness without storing or
     # exposing a reversible address (migration 0015).
-    "CREATE TABLE IF NOT EXISTS accounts (name_bi TEXT PRIMARY KEY, data TEXT NOT NULL, "
-    "email_bi TEXT, name TEXT, is_admin INTEGER NOT NULL DEFAULT 0, ip_bi TEXT)",
-    "CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email_bi)",
-    "CREATE INDEX IF NOT EXISTS idx_accounts_ip ON accounts(ip_bi)",
+    # enable_outreach is an operator-settable flag, like is_admin, that grants a
+    # user access to the founders /outreach console without adding them to the
+    # outreach_team roster: UPDATE users SET enable_outreach=1 WHERE
+    # username='alice' (migration 0040).
+    # The UNIQUE email index is partial: one account per email (keyless nodes
+    # have no email, so NULL/'' rows are excluded and unconstrained). Enforced
+    # for existing DBs by migration 0041, which also removes any pre-existing
+    # duplicate emails.
     """CREATE TABLE IF NOT EXISTS users (
         user_bi TEXT PRIMARY KEY,
         data TEXT NOT NULL,
         email_bi TEXT,
         username TEXT,
         is_admin INTEGER NOT NULL DEFAULT 0,
-        ip_bi TEXT)""",
-    "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email_bi)",
+        ip_bi TEXT,
+        enable_outreach INTEGER NOT NULL DEFAULT 0)""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email_bi) "
+    "WHERE email_bi IS NOT NULL AND email_bi <> ''",
     "CREATE INDEX IF NOT EXISTS idx_users_ip ON users(ip_bi)",
     """CREATE TABLE IF NOT EXISTS nodes (
         node_bi TEXT PRIMARY KEY,
@@ -375,7 +386,7 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_system_status_minute_ts ON system_status_minute(minute_ts)",
     # Founders-outreach team: accounts an admin has authorized to send email
     # from the shared founders address via /outreach. `name` is the public
-    # account name in plaintext (like accounts.name) so the roster is listable
+    # account name in plaintext (like users.username) so the roster is listable
     # without decryption; name_bi is the usual blind index of it.
     """CREATE TABLE IF NOT EXISTS outreach_team (
         name_bi TEXT PRIMARY KEY, name TEXT NOT NULL,
@@ -569,7 +580,7 @@ SCHEMA_STATEMENTS = [
     # --- Organizations + teams (issue #388, migration 0038) ------------------
     # User-created org namespaces that serve linked repos at /<org>/<repo>
     # instead of the hosting node's name. Org identity and membership rosters
-    # are public data (same trust level as accounts.name / profile_follows /
+    # are public data (same trust level as users.username / profile_follows /
     # outreach_team), so names and roles stay plaintext for cheap listing;
     # per-org extras (display name, description, creator) live in the encrypted
     # data blob. org_bi = blind_index("org:<name>").

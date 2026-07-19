@@ -273,6 +273,43 @@ def test_route_runs_the_alias_rewrite_before_any_matching():
         ENTRY_TEXT.index("git_info = GIT_INFO_RE.match(url.path)")
 
 
+# --- Fediverse org-alias resolution (adhoc #187) -----------------------------
+
+def _ap_alias_ns():
+    async def _org_repo_node(env, org, repo):
+        return "jett" if org == "acme" else ""
+
+    return _load("_ap_org_alias_owner", extra_globals={
+        "_org_repo_node": _org_repo_node,
+    })["_ap_org_alias_owner"]
+
+
+def test_ap_org_alias_owner_resolves_org_handles_to_the_backing_node():
+    # A fediverse mention of @acme.widget@host must read its repo row, AP
+    # settings and issue inbox under the linked node ("jett"), not the org.
+    resolve = _ap_alias_ns()
+    assert _run(resolve(None, "acme", "widget")) == "jett"
+    # A plain node handle (no org alias) resolves to itself, so every
+    # non-org AP path is a no-op.
+    assert _run(resolve(None, "jett", "widget")) == "jett"
+
+
+def test_ap_data_reads_route_through_the_org_alias_resolver():
+    # The repo-federates gate, per-repo settings key, actor doc and the
+    # mention handler must all resolve the org alias before touching repo
+    # data — otherwise an org-fronted repo is invisible to federation.
+    fed = ENTRY_TEXT[ENTRY_TEXT.index("async def _ap_repo_federates"):]
+    fed = fed[:fed.index("\n\n\n")]
+    assert "_ap_org_alias_owner(env, owner, repo)" in fed
+    settings_bi = ENTRY_TEXT[ENTRY_TEXT.index("async def _ap_repo_settings_bi"):]
+    settings_bi = settings_bi[:settings_bi.index("\n\n\n")]
+    assert "_ap_org_alias_owner(env, owner, repo)" in settings_bi
+    mention = ENTRY_TEXT[ENTRY_TEXT.index("async def _ap_handle_repo_mention"):]
+    mention = mention[:mention.index("\n\n\nasync def")]
+    assert "data_owner = await _ap_org_alias_owner(env, owner, repo)" in mention
+    assert "_forkbot_enqueue_issue(\n        env, data_owner, repo," in mention
+
+
 # --- Push gate ---------------------------------------------------------------
 
 def test_push_gate_branches_a_foreign_username_to_the_org_token():

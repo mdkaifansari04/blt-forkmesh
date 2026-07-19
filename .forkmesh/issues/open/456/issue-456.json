@@ -1,0 +1,46 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 456,
+    "title": "Ship a rootless OCI headless image and seed configuration",
+    "status": "open",
+    "labels": [
+        "infra"
+    ],
+    "milestone": "Open operations",
+    "startDate": 1784692800000,
+    "endDate": 1784952000000,
+    "priority": 24,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784405500021,
+    "updatedAt": 1784405500022,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-456",
+            "title": "Ship a rootless OCI headless image and seed configuration",
+            "body": "## Outcome\n\nPackage the headless node as a reproducible rootless OCI image with one-command seed startup and explicit durable state.\n\n## Implementation\n\n- Build the image from the same headless binary and directory contract as #442.\n- Run as a numeric unprivileged user with read-only application layers and explicit identity, mirror, configuration, and log volumes.\n- Provide a declarative single-node configuration with health checks, resource limits, restart behavior, and graceful shutdown.\n- Pin build inputs and emit an image digest, software bill of materials, and provenance attestation.\n- Add upgrade and rollback checks that preserve durable data and reject incompatible schema downgrades.\n\n## Acceptance criteria\n\n- The image never requires root or a display server.\n- Deleting and recreating the runtime preserves only documented volumes.\n- A clean command starts a seed, passes health, serves a fixture clone, and stops cleanly.\n- The same source commit produces reproducible application contents.\n- Upgrade failure leaves the prior verified runtime and data usable.\n\n## Dependencies\n\nConsumes the service and storage contract from #442; platform variants continue in #473.\n\n## Verification\n\nBuild from a clean dependency cache, start the declarative fixture, clone through it, restart, upgrade, inject an incompatible schema, roll back, and verify volume ownership and cleanup.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500021,
+            "sig": "KuaWr55D1BrRIRwfGh5nNpM8MwF4JCwjaIh1YzaxmmimsCaWxahKajdfxqqnidmBxmbzQ8miMMXc-Oi_cIbrDQ"
+        },
+        {
+            "type": "dates",
+            "id": "2b7524db-3d1f-49f3-a851-20636f066113",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500022,
+            "startDate": 1784692800000,
+            "endDate": 1784952000000,
+            "sig": "ReL9KFEWO-497vVJeBkW0Ef_mOUO7kk4IvH6x71QMAHd2lUhQj8IjoBl7qzBjjiXc3vlWY19CHqI5OrgU0-fDg"
+        }
+    ]
+}

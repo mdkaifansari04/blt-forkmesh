@@ -152,6 +152,12 @@
 
   function logout() {
     try {
+      // Server-side logout first: only the Worker can clear the HttpOnly
+      // forkmesh_admin cookie, and skipping this left the admin page readable
+      // after a marketing-page logout. Same call as the dashboard logout in
+      // dashboard/js/02-helpers.js — every web logout goes through this one
+      // endpoint.
+      fetch("/api/accounts/logout", { method: "POST", keepalive: true }).catch(() => {});
       localStorage.removeItem("forkmesh.session");
     } catch (_) {}
     // Clear the presence cookie too — the Worker 302s / to the dashboard while

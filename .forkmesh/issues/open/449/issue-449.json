@@ -1,0 +1,46 @@
+{
+    "schema": "forkmesh-issue-v1",
+    "number": 449,
+    "title": "Rekey private data after device or collaborator revocation",
+    "status": "open",
+    "labels": [
+        "security"
+    ],
+    "milestone": "Secure collaboration",
+    "startDate": 1784779200000,
+    "endDate": 1785124800000,
+    "priority": 17,
+    "progress": 0,
+    "assignees": [],
+    "createdAt": 1784405500007,
+    "updatedAt": 1784405500008,
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyUsd": 0.0,
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "votes": 0,
+    "events": [
+        {
+            "type": "open",
+            "id": "open-449",
+            "title": "Rekey private data after device or collaborator revocation",
+            "body": "## Outcome\n\nRotate private-repository keys safely after access, device, recovery participant, or organization policy changes.\n\n## Implementation\n\n- Assign monotonically increasing key generations to encrypted Git data, collaboration metadata, artifacts, indexes, and backups.\n- Generate a fresh content key and recipient envelopes after revocation or rotation, with atomic publication of the new generation.\n- Reject replay, downgrade, mixed-generation manifests, and envelopes for revoked devices.\n- Support organization-managed recovery envelopes and an explicit lost-key recovery ceremony.\n- Display a permanent warning that already decrypted copies cannot be remotely erased or made secret again.\n\n## Acceptance criteria\n\n- A revoked identity cannot decrypt any object first published after the rotation boundary.\n- Authorized devices can resume an interrupted rekey without publishing a partial generation.\n- Old authorized history stays readable according to the selected forward-secrecy policy.\n- Recovery requires the configured threshold and creates a signed audit record.\n- Every client displays the decrypted-copy limitation before access removal is confirmed.\n\n## Dependencies\n\nDepends on encrypted private storage in #448 and identity recovery in #447.\n\n## Verification\n\nExercise collaborator, device, and organization revocation; interrupted rekey; replay and downgrade; threshold recovery; corrupt generation; and post-rotation publish/clone fixtures.",
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500007,
+            "sig": "GGS5VQojQzD0CCJGA3ZBIkTv-fqY_jgAq2OjzmmEXHzZNbM1RAhu1OouoqYj3ZTzp3yALoOYkEd2QshgOugcBg"
+        },
+        {
+            "type": "dates",
+            "id": "341fb52f-0dca-4c0d-b360-99bf26795f2f",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "ts": 1784405500008,
+            "startDate": 1784779200000,
+            "endDate": 1785124800000,
+            "sig": "J1D80yscSQaTEdNJOcMyHgNnhgyVUw5z1WbOHfgs5lOIgxZsZuy_gyn1_65pCR8anbFvi_YZ1BSPGxLyNQdKCg"
+        }
+    ]
+}

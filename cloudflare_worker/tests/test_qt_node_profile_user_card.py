@@ -30,10 +30,10 @@ def test_node_profile_features_user_card_before_node_details():
     assert "m_profileUserName" not in header
     assert 'm_profileAccountSection->setObjectName("profileUserCard");' in build
     assert 'auto *accountLabel = makeProfileSection("USER PROFILE");' in build
-    # The "USER PROFILE" card duplicated the node's own identity (already shown
-    # in the left-column header) with a redundant "Linked to user X" line, so
-    # it's no longer added to the visible layout at all.
-    assert "rightColumn->addWidget(m_profileAccountSection);" not in build
+    # adhoc #177: the "USER PROFILE" card lists every node linked to the user
+    # account (not just this node), so it is shown in the right column. It is
+    # not a redundant identity repeat — it surfaces the user's *other* nodes.
+    assert "rightColumn->addWidget(m_profileAccountSection);" in build
     assert "layout->addWidget(m_profileAccountSection);" not in build
 
 

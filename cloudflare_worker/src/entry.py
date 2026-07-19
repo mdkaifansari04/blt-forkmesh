@@ -878,6 +878,24 @@ async def notify_repo_host(env, owner, repo, topic):
         pass
 
 
+# Per-isolate memo of recent DO live-host probes: key_bi -> {"ts", "hosts"}
+# ("hosts" is None when the probe failed/timed out). hydrate_repo_group_live_
+# hosts used to await one Durable Object probe PER stale group member
+# SEQUENTIALLY (up to HOST_COUNT_TIMEOUT_MS each) on every public info/refs,
+# browse and /mirrors request. A logical repo group with many offline mirrors
+# (a fleet die-off purges their host_presence rows, so every member stays
+# "stale" forever) turned each request into minutes of awaiting dead tunnels —
+# the Workers runtime then canceled the request as hung, surfacing the Pyodide
+# "Cannot enter into task" error on git-upload-pack info/refs (adhoc #167, the
+# same info/refs-hang family as adhoc #144/#153). Probes now run concurrently,
+# are capped per request (also protecting the per-request subrequest budget),
+# and every completed probe — including a failed one — is memoized briefly so
+# a clone burst doesn't re-probe the same dead mirrors on every request.
+_LIVE_HOST_PROBE_MEMO = {}
+LIVE_HOST_PROBE_MEMO_TTL_MS = 30 * 1000
+HYDRATE_PROBE_MAX = 8
+
+
 async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
                                         presence, now):
     # host_presence is an eventually-refreshed D1 cache. For routing and the
@@ -899,6 +917,7 @@ async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
         # Fallback mirrors can still be selected by name when the named source
         # has no catalog row yet.
         target = {"owner": owner, "name": repo, "rootCommit": ""}
+    stale = []
     for row in catalog_rows or []:
         rec = row.get("data") or {}
         key = str(row.get("key_bi") or "")
@@ -910,8 +929,30 @@ async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
         # the N-subrequest fan-out that ran on every /mirrors request.
         if now - int(presence.get(key, 0) or 0) < 30 * 1000:
             continue
-        hosts = await repo_live_host_count(
-            env, rec.get("owner"), rec.get("name"))
+        memo = _LIVE_HOST_PROBE_MEMO.get(key)
+        if memo and now - memo["ts"] < LIVE_HOST_PROBE_MEMO_TTL_MS:
+            hosts = memo["hosts"]
+            if hosts is not None:
+                if hosts > 0:
+                    presence[key] = now
+                else:
+                    presence.pop(key, None)
+            continue
+        stale.append((key, rec))
+    # Probe concurrently (each already bounded by HOST_COUNT_TIMEOUT_MS inside
+    # repo_live_host_count, so the whole batch costs one timeout, not one per
+    # mirror) and capped per request. Members beyond the cap keep their stale
+    # presence this request; because probed members land in the memo, the next
+    # request's stale list starts where this one stopped, so a large group is
+    # covered across a few requests instead of hanging any single one.
+    probes = stale[:HYDRATE_PROBE_MAX]
+    results = await asyncio.gather(*(
+        repo_live_host_count(env, rec.get("owner"), rec.get("name"))
+        for _key, rec in probes), return_exceptions=True)
+    for (key, _rec), hosts in zip(probes, results):
+        if not isinstance(hosts, int):
+            hosts = None  # failed/timed-out probe: memoized, presence untouched
+        _LIVE_HOST_PROBE_MEMO[key] = {"ts": now, "hosts": hosts}
         if hosts is None:
             continue
         if hosts > 0:
@@ -1031,11 +1072,11 @@ async def _network_payout_nodes(env):
         pass
     rows = await d1_all(
         env,
-        """SELECT a.name_bi, a.name, a.data, ap.ts AS online_ts
-             FROM accounts a
+        """SELECT n.node_bi AS name_bi, n.name, n.data, ap.ts AS online_ts
+             FROM nodes n
              LEFT JOIN account_presence ap
-               ON ap.name_bi = a.name_bi AND ap.ts >= ?
-             ORDER BY COALESCE(ap.ts, 0) DESC, a.name ASC""",
+               ON ap.name_bi = n.node_bi AND ap.ts >= ?
+             ORDER BY COALESCE(ap.ts, 0) DESC, n.name ASC""",
         cutoff,
     )
     mirroring = await _mirroring_owners(env)
@@ -1155,9 +1196,9 @@ async def _live_online_nodes(env, now):
 
     acct_rows = await d1_all(
         env,
-        """SELECT ap.name_bi, a.name, a.data
+        """SELECT ap.name_bi, n.name, n.data
              FROM account_presence ap
-             LEFT JOIN accounts a ON a.name_bi = ap.name_bi
+             LEFT JOIN nodes n ON n.node_bi = ap.name_bi
              WHERE ap.ts >= ?""",
         now - ONLINE_SAMPLE_WINDOW_MS,
     )
@@ -2162,27 +2203,23 @@ def _short_wallet(addr):
 
 
 async def _wallet_name_map(env):
-    # Build wallet -> friendly node name from local accounts and federated
+    # Build wallet -> friendly node name from local nodes and federated
     # presence, so funds-received boards can label payout wallets. Best-effort.
     mapping = {}
-    # The accounts table is legacy and drains into users/nodes, so read the
-    # payout-bearing records from both accounts and the nodes table.
-    for source in ("SELECT name, data FROM accounts",
-                   "SELECT name, data FROM nodes"):
-        try:
-            rows = await d1_all(env, source)
-            for row in rows:
-                rec = await decrypt_row(env, row.get("data"))
-                if not rec:
-                    continue
-                wallet = (rec.get("solana") or "").strip()
-                if not wallet:
-                    continue
-                name = clean_string(row.get("name") or rec.get("name", ""), MAX_NODE_NAME)
-                if name:
-                    mapping.setdefault(wallet, name)
-        except Exception:
-            pass
+    try:
+        rows = await d1_all(env, "SELECT name, data FROM nodes")
+        for row in rows:
+            rec = await decrypt_row(env, row.get("data"))
+            if not rec:
+                continue
+            wallet = (rec.get("solana") or "").strip()
+            if not wallet:
+                continue
+            name = clean_string(row.get("name") or rec.get("name", ""), MAX_NODE_NAME)
+            if name:
+                mapping.setdefault(wallet, name)
+    except Exception:
+        pass
     try:
         fed = await d1_all(env, "SELECT wallet, name FROM federated_presence")
         for row in fed:
@@ -2545,25 +2582,55 @@ async def _decrypted_public_catalog(env, now):
     cached = _PUBLIC_CATALOG_MEMO
     if cached["rows"] is not None and now - cached["ts"] < PUBLIC_CATALOG_MEMO_TTL_MS:
         return cached["rows"]
-    rows = await d1_all(
-        env,
-        "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
+    # Single-flight refill: under a clone burst every concurrent request lands
+    # here the moment the TTL lapses, and each used to start its OWN full scan
+    # + sequential decrypt_row() pass — recreating, once per TTL window, the
+    # event-loop congestion this memo exists to prevent ("Cannot enter into
+    # task" on git-upload-pack info/refs). The first caller claims the refresh
+    # slot (no await between check and claim, so the claim is atomic on the
+    # single-threaded loop) and refills; concurrent callers keep the stale
+    # rows, which only feed best-effort mirror selection. Deliberately NOT a
+    # shared future/lock: a request resuming inside I/O another request
+    # started dies with "Cannot perform I/O on behalf of a different request"
+    # (see ensure_schema). A cold isolate (rows is None) still refills from
+    # every caller — there is nothing stale to serve them.
+    if cached["rows"] is not None and \
+            now - cached["refresh_ts"] < PUBLIC_CATALOG_MEMO_TTL_MS:
+        return cached["rows"]
+    cached["refresh_ts"] = now
     try:
-        active_nodes = await active_registered_node_bis(env, now)
-    except Exception:
-        active_nodes = None
-    catalog_rows = []
-    for row in rows:
-        if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
-            continue
-        rec = await decrypt_row(env, row.get("data"))
-        if not rec:
-            continue
-        catalog_rows.append({
-            "key_bi": row.get("key_bi"),
-            "is_private": int(row.get("is_private") or 0),
-            "data": rec,
-        })
+        rows = await d1_all(
+            env,
+            "SELECT key_bi, owner_bi, data, is_private FROM repositories WHERE is_private = 0")
+        try:
+            active_nodes = await active_registered_node_bis(env, now)
+        except Exception:
+            active_nodes = None
+        catalog_rows = []
+        decrypted = {}
+        for row in rows:
+            if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
+                continue
+            blob = str(row.get("data") or "")
+            rec = _CATALOG_ROW_DECRYPT_MEMO.get(blob)
+            if not rec:
+                rec = await decrypt_row(env, blob)
+                if not rec:
+                    continue
+            if len(decrypted) < CATALOG_ROW_DECRYPT_MEMO_MAX:
+                decrypted[blob] = rec
+            catalog_rows.append({
+                "key_bi": row.get("key_bi"),
+                "is_private": int(row.get("is_private") or 0),
+                "data": rec,
+            })
+        _CATALOG_ROW_DECRYPT_MEMO.clear()
+        _CATALOG_ROW_DECRYPT_MEMO.update(decrypted)
+    except BaseException:
+        # Release the slot (covers CancelledError from a canceled request) so
+        # the next caller retries instead of waiting out a phantom refresh.
+        cached["refresh_ts"] = 0
+        raise
     cached["rows"] = catalog_rows
     cached["ts"] = now
     return catalog_rows
@@ -2653,8 +2720,25 @@ _SOL_USD_CACHE_TTL_MS = 5 * 60 * 1000
 # task"), same failure mode already fixed elsewhere via per-isolate memoization
 # (see the 2026-07-11 free-plan overload notes). A short TTL is fine: this only
 # feeds best-effort mirror selection, not the integrity-checked ref content.
-_PUBLIC_CATALOG_MEMO = {"ts": 0, "rows": None}
+_PUBLIC_CATALOG_MEMO = {"ts": 0, "rows": None, "refresh_ts": 0}
 PUBLIC_CATALOG_MEMO_TTL_MS = 5000
+# Ciphertext -> decrypted record, reused ACROSS catalog memo refills. The 5s
+# memo above stopped every request from re-decrypting the catalog, but the one
+# request that claims each refill still paid a full AES-GCM decrypt_row() per
+# public repo — pure Pyodide CPU (base64 + JS-boundary crossings per row) that
+# grows with the catalog and landed on whichever request lapsed the TTL. Under
+# clone traffic that is an info/refs request, and a large catalog pushed that
+# single request past the Workers CPU limit ("Worker exceeded CPU time limit"
+# on GET .../info/refs, adhoc #183 — the same clone-path family as #144/#153/
+# #167). A row's encrypted blob is rewritten (fresh IV) on every update, so an
+# unchanged blob is byte-identical and its previous plaintext is still valid:
+# a refill now only decrypts rows whose ciphertext actually changed. Records
+# are shared read-only by catalog consumers (they already share them for a TTL
+# window via the memo above) and must not be mutated. Rebuilt from the rows
+# seen each refill, so deleted rows drop out and the memo stays bounded by the
+# live catalog (plus a hard cap as a backstop).
+_CATALOG_ROW_DECRYPT_MEMO = {}
+CATALOG_ROW_DECRYPT_MEMO_MAX = 4096
 DONATION_ADDRESS_TTL_MS = 60 * 60 * 1000
 # After the address expires (hidden, no longer usable) keep it parked for one
 # more hour before deleting it outright, so a late payment can still be matched
@@ -2715,10 +2799,11 @@ SCHEMA_ALTER_STATEMENTS = [
     "ALTER TABLE pull_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE commit_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE discussion_inbox ADD COLUMN submitter_bi TEXT",
-    # Blind index of the signup IP for duplicate-signup detection (migration 0015).
-    "ALTER TABLE accounts ADD COLUMN ip_bi TEXT",
     # Raw User-Agent of each release download, shown in the admin list (migration 0034).
     "ALTER TABLE release_downloads ADD COLUMN ua TEXT",
+    # Operator-settable flag granting a user access to the /outreach console
+    # without a roster row (migration 0040). Mirrors is_admin.
+    "ALTER TABLE users ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -4879,7 +4964,7 @@ async def waitlist_handler(env, request):
     return json_response({"ok": True}, status=201)
 
 
-# --- Accounts (accounts table) — name + solana + password + TOTP ------------
+# --- Accounts (users/nodes tables) — name + solana + password + TOTP --------
 
 def _account_kind(rec):
     rec = rec or {}
@@ -4892,9 +4977,10 @@ def _account_kind(rec):
 async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
                                           ip_bi=None, is_admin=None,
                                           touch_seen=False):
-    # Physical users/nodes tables (migration 0025) mirror the encrypted legacy
-    # account record so the website can query users and machine nodes as separate
-    # entities while old clients keep using /api/accounts/* during rollout.
+    # Authoritative store for account records: the physical users/nodes tables
+    # (migration 0025). The legacy accounts table these once mirrored was
+    # dropped by migration 0042; old clients keep using /api/accounts/* but
+    # every record lives here now, keyed by blind_index(name) on both tables.
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     if not name:
         return
@@ -4920,7 +5006,10 @@ async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
         await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
 
     pubkey = clean_string(rec.get("pubkey", ""), 120)
-    if pubkey:
+    if pubkey or kind == "node":
+        # A node-kind record without a pubkey is a keyless reservation (name
+        # parked before the key binds at finalize); it must still persist here
+        # now that the nodes table is the only store for node records.
         owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME).lower()
         if not owner and kind == "user":
             owner = name
@@ -4968,12 +5057,9 @@ async def touch_registered_node(env, name_bi, rec=None):
 
 
 async def _account_identity_rec_by_bi(env, name_bi):
-    # Authoritative-store fallback for a name_bi lookup once the legacy accounts
-    # row has been drained into the users/nodes tables (admin "make user/node"
-    # and the verified-email migration delete the accounts row after mirroring
-    # the full encrypted record into users/nodes). user_bi and node_bi are both
-    # blind_index(name) — the same value as an account's name_bi — so one key
-    # resolves either table. Returns the decrypted record, or None.
+    # Authoritative-store lookup by blind_index(name): user_bi and node_bi are
+    # both blind_index(name), so one key resolves either table. Returns the
+    # decrypted record, or None.
     if not name_bi:
         return None
     row = await d1_first(env, "SELECT data FROM users WHERE user_bi=?", name_bi)
@@ -4984,41 +5070,20 @@ async def _account_identity_rec_by_bi(env, name_bi):
     return await decrypt_row(env, row.get("data"))
 
 
-# name_bis whose users/nodes mirror this isolate already repaired. The mirror
-# rewrite costs 1-2 encrypt_row + 2 upserts, and hot handlers reach
-# _account_row 2-3x per request (_owner_pubkey, _authorize_owner,
-# touch_registered_node) — repeating it on every READ was a top contributor
-# to the 2026-07-11 free-plan CPU overload. Write paths call
+# name_bis whose users/nodes rows this isolate already refreshed via
+# touch_registered_node's full rewrite. The rewrite costs 1-2 encrypt_row +
+# 2 upserts — repeating it on every activity signal was a top contributor
+# to the 2026-07-11 free-plan CPU overload, so after the first touch a
+# heartbeat only stamps last_seen. Write paths call
 # _mirror_account_identity_tables directly (via _save_account), so a stale
-# entry here can never mask a real update; a recycled isolate simply repairs
-# once more.
+# entry here can never mask a real update; a recycled isolate simply
+# rewrites once more.
 _MIRRORED_ACCOUNT_BIS = set()
 
 
 async def _account_row(env, name):
     name_bi = await blind_index(env, name)
-    row = await d1_first(
-        env,
-        "SELECT data, email_bi, ip_bi, is_admin FROM accounts WHERE name_bi=?",
-        name_bi)
-    if not row:
-        # The accounts table is legacy: once a record has been migrated into the
-        # users/nodes tables its accounts row is deleted, so fall back to those.
-        return name_bi, await _account_identity_rec_by_bi(env, name_bi)
-    rec = await decrypt_row(env, row["data"])
-    if rec and name_bi not in _MIRRORED_ACCOUNT_BIS:
-        try:
-            await _mirror_account_identity_tables(
-                env, name_bi, rec, email_bi=row.get("email_bi"),
-                ip_bi=row.get("ip_bi"), is_admin=row.get("is_admin", 0))
-            if len(_MIRRORED_ACCOUNT_BIS) < 10000:
-                _MIRRORED_ACCOUNT_BIS.add(name_bi)
-        except Exception:
-            # Public account reads must not fail just because the derived
-            # users/nodes mirror table needs repair; the encrypted accounts row
-            # remains the source of truth and write paths will try again later.
-            pass
-    return name_bi, rec
+    return name_bi, await _account_identity_rec_by_bi(env, name_bi)
 
 
 async def _owner_pubkey(env, owner):
@@ -5032,13 +5097,6 @@ async def _account_row_by_pubkey(env, pubkey):
         rec = await decrypt_row(env, node.get("data"))
         if rec:
             return node.get("node_bi"), rec
-    # Legacy fallback while accounts are still migrating into nodes.
-    rows = await d1_all(env, "SELECT name_bi, data FROM accounts")
-    for row in rows:
-        rec = await decrypt_row(env, row.get("data"))
-        if rec and rec.get("pubkey") == pubkey:
-            await _mirror_account_identity_tables(env, row["name_bi"], rec)
-            return row["name_bi"], rec
     return None, None
 
 
@@ -5239,52 +5297,18 @@ def _basic_auth_challenge():
 
 
 async def _save_account(env, name_bi, rec, email_bi=None, ip_bi=None):
-    # Persist the encrypted record; pass email_bi to (re)index for email login and
-    # ip_bi to (re)index the signup IP for duplicate detection. Both are only
-    # written when supplied, so a caller that doesn't have them in hand (e.g. a
-    # donation-poll save) never clobbers a value set at finalize. The plaintext
-    # `name` column mirrors the (public) node name so an operator can grant admin
-    # in the DB by name; is_admin is never written here, so a value set directly in
-    # the DB survives ordinary account updates.
-    enc = await encrypt_row(env, rec)
-    name = rec.get("name", "")
-    # Column names here are fixed literals (never user input), so building the
-    # statement by name is safe.
-    cols = ["data", "name"]
-    vals = [enc, name]
-    if email_bi is not None:
-        cols.append("email_bi")
-        vals.append(email_bi)
-    if ip_bi is not None:
-        cols.append("ip_bi")
-        vals.append(ip_bi)
-    insert_cols = ", ".join(["name_bi"] + cols)
-    placeholders = ", ".join(["?"] * (1 + len(vals)))
-    set_clause = ", ".join(c + "=excluded." + c for c in cols)
-    await d1_run(
-        env,
-        "INSERT INTO accounts (" + insert_cols + ") VALUES (" + placeholders + ") "
-        "ON CONFLICT(name_bi) DO UPDATE SET " + set_clause,
-        name_bi, *vals,
-    )
+    # Persist the encrypted record into the users/nodes tables; pass email_bi to
+    # (re)index for email login and ip_bi to (re)index the signup IP for
+    # duplicate detection. Both are only written when supplied, so a caller that
+    # doesn't have them in hand (e.g. a donation-poll save) never clobbers a
+    # value set at finalize. is_admin is never written here, so a value set
+    # directly in the DB survives ordinary account updates.
     await _mirror_account_identity_tables(
         env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
 
 
 async def _save_account_full(env, name_bi, rec, email_bi=None, ip_bi=None,
                              is_admin=0):
-    enc = await encrypt_row(env, rec)
-    await d1_run(
-        env,
-        """INSERT INTO accounts (name_bi, data, email_bi, name, is_admin, ip_bi)
-           VALUES (?,?,?,?,?,?)
-           ON CONFLICT(name_bi) DO UPDATE SET
-             data=excluded.data, email_bi=excluded.email_bi,
-             name=excluded.name, is_admin=excluded.is_admin,
-             ip_bi=excluded.ip_bi""",
-        name_bi, enc, email_bi, rec.get("name", ""),
-        int(is_admin or 0), ip_bi,
-    )
     await _mirror_account_identity_tables(
         env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi,
         is_admin=is_admin)
@@ -5478,13 +5502,8 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
         return name_bi, rec, "node_name_taken"
 
     account_row = await d1_first(
-        env, "SELECT data, email_bi, ip_bi, is_admin FROM accounts WHERE name_bi=?",
+        env, "SELECT data, email_bi, ip_bi, is_admin FROM users WHERE user_bi=?",
         name_bi)
-    if not account_row:
-        # Legacy accounts row already drained into the users table.
-        account_row = await d1_first(
-            env, "SELECT data, email_bi, ip_bi, is_admin FROM users WHERE user_bi=?",
-            name_bi)
     if not account_row:
         return name_bi, rec, "invalid_credentials"
 
@@ -5543,7 +5562,6 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
     await d1_run(
         env, "UPDATE account_devices SET account_bi=? WHERE account_bi=?",
         new_name_bi, name_bi)
-    await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
     await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
     await purge_catalog_related_caches()
@@ -5654,7 +5672,6 @@ async def _delete_account_namespace(env, name_bi, rec):
     if email:
         email_bi = await blind_index(env, email)
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
-    await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
     await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
 
@@ -5996,20 +6013,6 @@ async def _account_users_directory(env, request):
         seen.add(name)
         out.append(_account_chat_user_payload(rec))
 
-    # Legacy fallback while older rows are still being mirrored into users.
-    rows = await d1_all(env, "SELECT data FROM accounts")
-    for row in rows or []:
-        rec = await decrypt_row(env, row.get("data", ""))
-        if not rec or _account_kind(rec) != "user" or rec.get("status") != "active":
-            continue
-        name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        out.append(_account_chat_user_payload(rec))
-        if len(out) >= 1000:
-            break
-
     return json_response({"ok": True, "users": out})
 
 
@@ -6157,10 +6160,8 @@ async def _account_signup(env, request):
         return json_response({"error": "node_name_taken"}, status=409)
 
     email_bi = await blind_index(env, email)
-    dup = await d1_first(env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
-    if not dup:
-        dup = await d1_first(
-            env, "SELECT user_bi AS name_bi FROM users WHERE email_bi=?", email_bi)
+    dup = await d1_first(
+        env, "SELECT user_bi AS name_bi FROM users WHERE email_bi=?", email_bi)
     if dup and dup.get("name_bi") != name_bi:
         return json_response({"error": "email_taken"}, status=409)
 
@@ -6206,11 +6207,9 @@ async def _account_password_record(env, data):
     rec = None
     if "@" in identifier:
         email_bi = await blind_index(env, identifier)
-        row = await d1_first(env, "SELECT name_bi, data FROM accounts WHERE email_bi=?", email_bi)
-        if not row:
-            row = await d1_first(
-                env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
-                email_bi)
+        row = await d1_first(
+            env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
+            email_bi)
         if row:
             name_bi = row.get("name_bi", "")
             rec = await decrypt_row(env, row.get("data"))
@@ -6750,11 +6749,8 @@ async def _account_finalize(env, request):
             return json_response({"error": "password_too_short"}, status=400)
         email_bi = await blind_index(env, email)
         dup = await d1_first(
-            env, "SELECT name_bi FROM accounts WHERE email_bi=?", email_bi)
-        if not dup:
-            dup = await d1_first(
-                env, "SELECT user_bi AS name_bi FROM users WHERE email_bi=?",
-                email_bi)
+            env, "SELECT user_bi AS name_bi FROM users WHERE email_bi=?",
+            email_bi)
         if dup and dup.get("name_bi") != name_bi:
             return json_response({"error": "email_taken"}, status=409)
         salt, phash = await hash_password(password)
@@ -6839,11 +6835,9 @@ async def _account_profile(env, request):
         rec = None
         if "@" in identifier:
             email_bi = await blind_index(env, identifier)
-            row = await d1_first(env, "SELECT name_bi, data FROM accounts WHERE email_bi=?", email_bi)
-            if not row:
-                row = await d1_first(
-                    env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
-                    email_bi)
+            row = await d1_first(
+                env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
+                email_bi)
             if row:
                 name_bi = row.get("name_bi", "")
                 rec = await decrypt_row(env, row.get("data"))
@@ -7117,11 +7111,8 @@ async def _resolve_user_by_password(env, data):
     if "@" in identifier:
         email_bi = await blind_index(env, identifier)
         row = await d1_first(
-            env, "SELECT name_bi, data FROM accounts WHERE email_bi=?", email_bi)
-        if not row:
-            row = await d1_first(
-                env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
-                email_bi)
+            env, "SELECT user_bi AS name_bi, data FROM users WHERE email_bi=?",
+            email_bi)
         if row:
             name_bi = row.get("name_bi", "")
             rec = await decrypt_row(env, row.get("data"))
@@ -7730,10 +7721,7 @@ async def _account_login(env, request):
     if "@" in identifier:
         email_bi = await blind_index(env, identifier)
         row = await d1_first(
-            env, "SELECT data FROM accounts WHERE email_bi=?", email_bi)
-        if not row:
-            row = await d1_first(
-                env, "SELECT data FROM users WHERE email_bi=?", email_bi)
+            env, "SELECT data FROM users WHERE email_bi=?", email_bi)
         if row:
             rec = await decrypt_row(env, row["data"])
     elif valid_node_name(identifier):
@@ -7933,6 +7921,42 @@ async def _account_logout(env, request):
     return json_response(
         {"ok": True},
         extra_headers={"Set-Cookie": _clear_admin_session_cookie()},
+        cache_control="no-store, max-age=0, must-revalidate",
+    )
+
+
+async def _account_admin_session(env, request):
+    # Re-mint the HttpOnly `forkmesh_admin` page cookie from a still-valid
+    # account session token, so an admin the app already treats as logged in
+    # (localStorage session + 30-day forkmesh_session marker) doesn't have to
+    # retype their password just to open the admin dashboard. The 12h admin
+    # cookie is set only by _account_login and lapses long before the login
+    # session does, which is why the admin page used to bounce a logged-in
+    # admin back to /login (adhoc #163). The session token — issued only to an
+    # already-authenticated caller and refreshed on every account poll — proves
+    # identity here; is_admin gates the grant, so this never escalates.
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    token = clean_string((data or {}).get("sessionToken", ""), 512).strip()
+    if not token:
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = clean_string(auth[7:], 512).strip()
+    name = _account_session_token_name(env, token)
+    if not name or not await _is_admin(env, name):
+        return json_response(
+            {"error": "not_admin"},
+            status=403,
+            extra_headers={"Set-Cookie": _clear_admin_session_cookie()},
+            cache_control="no-store, max-age=0, must-revalidate",
+        )
+    admin_path = _admin_path(env)
+    admin_url = ("/" + admin_path + "?admin=" + quote(name)) if admin_path else ""
+    return json_response(
+        {"ok": True, "nodeName": name, "adminUrl": admin_url},
+        extra_headers={"Set-Cookie": _admin_session_cookie(env, name)},
         cache_control="no-store, max-age=0, must-revalidate",
     )
 
@@ -8174,10 +8198,7 @@ async def _online_payout_addresses(env):
     addresses = []
     for r in rows:
         row = await d1_first(
-            env, "SELECT name, data FROM accounts WHERE name_bi=?", r["name_bi"])
-        if not row:
-            row = await d1_first(
-                env, "SELECT name, data FROM nodes WHERE node_bi=?", r["name_bi"])
+            env, "SELECT name, data FROM nodes WHERE node_bi=?", r["name_bi"])
         if not row:
             continue
         rec = await decrypt_row(env, row["data"])
@@ -9558,27 +9579,21 @@ async def org_repos_handler(env, request, org):
 
 
 # --- Admins + manual email verification -------------------------------------
-# A user is "set as administrator" via the accounts.is_admin column in the DB
-# (UPDATE accounts SET is_admin=1 WHERE name='<node>'). Admins' clients are
+# A user is "set as administrator" via the users.is_admin column in the DB
+# (UPDATE users SET is_admin=1 WHERE username='<user>'). Admins' clients are
 # notified when a new user joins and can verify the new user's email by hand
 # until an email service (e.g. SES) is wired up.
 
 async def _is_admin(env, name):
-    # Admin status lives in the is_admin column, on the legacy accounts row while
-    # it exists and mirrored onto the authoritative users row. Grant it directly
-    # in the DB: UPDATE accounts SET is_admin=1 WHERE name='<node>' (or the same
-    # on users once the account has migrated). Falls back to users so a migrated
-    # admin keeps their grant.
+    # Admin status lives in the users.is_admin column. Grant it directly in the
+    # DB: UPDATE users SET is_admin=1 WHERE username='<user>'.
     name = (name or "").strip().lower()
     if not name:
         return False
     name_bi = await blind_index(env, name)
     try:
         row = await d1_first(
-            env, "SELECT is_admin FROM accounts WHERE name_bi=?", name_bi)
-        if not row:
-            row = await d1_first(
-                env, "SELECT is_admin FROM users WHERE user_bi=?", name_bi)
+            env, "SELECT is_admin FROM users WHERE user_bi=?", name_bi)
     except Exception:
         return False  # column may predate migration 0006
     return bool(row and int(row.get("is_admin", 0) or 0))
@@ -9826,13 +9841,13 @@ def _feedback_email_content(name):
 
 async def _send_feedback_emails(env):
     now = int(Date.now())
-    # Accounts with no send row yet; the LEFT JOIN keeps re-scans cheap as the
+    # Users with no send row yet; the LEFT JOIN keeps re-scans cheap as the
     # sent set grows. Eligibility (user kind, active, verified email, 24h old)
     # lives in the encrypted record, so decrypt a bounded batch per tick.
     rows = await d1_all(
         env,
-        "SELECT a.name_bi, a.data FROM accounts a"
-        " LEFT JOIN feedback_email_sends f ON f.account_bi = a.name_bi"
+        "SELECT u.user_bi AS name_bi, u.data FROM users u"
+        " LEFT JOIN feedback_email_sends f ON f.account_bi = u.user_bi"
         " WHERE f.account_bi IS NULL LIMIT ?",
         FEEDBACK_EMAIL_SCAN)
     sent = 0
@@ -9965,6 +9980,25 @@ OUTREACH_TEMPLATES = [
         ),
     },
     {
+        "key": "investor",
+        "label": "Investor outreach",
+        "subject": "ForkMesh — decentralized code hosting (investor intro)",
+        "body": (
+            "Hi [name],\n\n"
+            "I'm [your name], one of the founders of ForkMesh "
+            "(https://forkmesh.com) — an open-source, peer-to-peer network for "
+            "hosting and mirroring Git repositories, where independent "
+            "operators run nodes and earn a share of the network's funding for "
+            "keeping projects online.\n\n"
+            "We're raising [round] to grow the relay infrastructure and node "
+            "payout network, and I'm reaching out because [why this investor]. "
+            "[Traction so far — nodes online, repos mirrored, revenue, etc.]\n\n"
+            "Could I send over our deck, or grab 20 minutes in the next week "
+            "or two to walk you through where the network is heading?\n\n"
+            "Best,\n[your name]\nForkMesh — founders@forkmesh.com"
+        ),
+    },
+    {
         "key": "partnership",
         "label": "Partnership / integration",
         "subject": "Partnering with ForkMesh",
@@ -10010,6 +10044,23 @@ async def _outreach_member(env, name):
     row = await d1_first(
         env, "SELECT name FROM outreach_team WHERE name_bi=?", name_bi)
     return bool(row)
+
+
+async def _outreach_enabled(env, name):
+    # Per-user access flag (users.enable_outreach), the operator-settable
+    # sibling of is_admin. Grant it directly in the DB to give a user the
+    # /outreach console without a roster row: UPDATE users SET
+    # enable_outreach=1 WHERE username='<user>'.
+    name = (name or "").strip().lower()
+    if not name:
+        return False
+    name_bi = await blind_index(env, name)
+    try:
+        row = await d1_first(
+            env, "SELECT enable_outreach FROM users WHERE user_bi=?", name_bi)
+    except Exception:
+        return False  # column may predate migration 0040
+    return bool(row and int(row.get("enable_outreach", 0) or 0))
 
 
 async def _outreach_team_list(env):
@@ -10140,7 +10191,8 @@ async def outreach_handler(env, request):
         return json_response({"error": "unauthorized"}, status=401)
     name = (rec.get("name", "") or "").strip().lower()
     is_admin = await _is_admin(env, name)
-    allowed = is_admin or await _outreach_member(env, name)
+    allowed = (is_admin or await _outreach_member(env, name)
+               or await _outreach_enabled(env, name))
     if path == "/api/outreach" and method in ("GET", "POST"):
         return await _outreach_access(env, name, is_admin, allowed)
     if path == "/api/outreach/send" and method == "POST":
@@ -10172,10 +10224,7 @@ async def _account_forgot_password(env, request):
         if "@" in identifier:
             email_bi = await blind_index(env, identifier)
             row = await d1_first(
-                env, "SELECT data FROM accounts WHERE email_bi=?", email_bi)
-            if not row:
-                row = await d1_first(
-                    env, "SELECT data FROM users WHERE email_bi=?", email_bi)
+                env, "SELECT data FROM users WHERE email_bi=?", email_bi)
             if row:
                 rec = await decrypt_row(env, row.get("data"))
         elif valid_node_name(identifier):
@@ -10701,10 +10750,7 @@ async def _federation_report_nodes(env):
     seen = set()
     for r in (rows or []):
         row = await d1_first(
-            env, "SELECT data FROM accounts WHERE name_bi=?", r["name_bi"])
-        if not row:
-            row = await d1_first(
-                env, "SELECT data FROM nodes WHERE node_bi=?", r["name_bi"])
+            env, "SELECT data FROM nodes WHERE node_bi=?", r["name_bi"])
         if not row:
             continue
         rec = await decrypt_row(env, row["data"])
@@ -10981,6 +11027,8 @@ async def accounts_handler(env, request):
         return await _account_rotate(env, request)
     if url.path == "/api/accounts/logout" and method == "POST":
         return await _account_logout(env, request)
+    if url.path == "/api/accounts/admin-session" and method == "POST":
+        return await _account_admin_session(env, request)
     if url.path == "/api/accounts/rotate" and method == "POST":
         return await _account_rotate(env, request)
     if url.path == "/api/accounts/forgot-password" and method == "POST":
@@ -11023,16 +11071,12 @@ async def accounts_handler(env, request):
             cached = await edge_cache_match(lookup_cache_key)
             if cached is not None:
                 return cached
-        # Now that users and nodes are separate tables, this public profile
-        # lookup reads from those authoritative per-kind stores instead of the
-        # legacy accounts table. accounts is only consulted as a fallback for
-        # records not yet mirrored into users/nodes — e.g. a reserved name with
-        # no pubkey, which the mirror intentionally keeps out of users/nodes so
-        # the signup availability check below can still see the name as taken.
+        # Users and nodes are separate tables: this public profile lookup reads
+        # from those authoritative per-kind stores (keyless reservations live
+        # in nodes too, so the signup availability check below still sees a
+        # reserved name as taken).
         name_bi = await blind_index(env, name)
         rec = await _account_identity_rec_by_bi(env, name_bi)
-        if rec is None:
-            _, rec = await _account_row(env, name)
         if not rec:
             # Availability misses are deliberately uncached: the signup
             # form's name check must see a just-taken name immediately.
@@ -11316,17 +11360,31 @@ async def _ap_user_federates(env, name):
                 and not rec.get("profile_private"))
 
 
+async def _ap_org_alias_owner(env, owner, repo):
+    # Organization repo aliases (issue #388): a fediverse actor is addressed by
+    # the org handle (@org.repo@host), but the backing repo — its repositories
+    # row, media, per-repo AP settings and issue inbox — lives under the linked
+    # node, never under the org name. Resolve org->node for those data reads so
+    # federation keeps working after a repo is fronted by an org, while the
+    # public actor identity (handle, reply author, web URLs) stays the org. A
+    # plain node URL (no alias) resolves to itself, so this is a safe no-op on
+    # every non-org path.
+    node = await _org_repo_node(env, owner, repo)
+    return node or owner
+
+
 async def _ap_repo_federates(env, owner, repo):
     # Only published, public repos federate. A missing catalog row means the
     # repo was never published — unlike the git-clone path (which stays open
     # for ad-hoc hosts), an unpublished repo has no fediverse presence. The
     # owner can also switch federation off per repo (web/Qt repo settings).
-    key_bi = await blind_index(env, owner + "/" + repo)
+    data_owner = await _ap_org_alias_owner(env, owner, repo)
+    key_bi = await blind_index(env, data_owner + "/" + repo)
     row = await d1_first(
         env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
     if not row or int(row.get("is_private") or 0):
         return False
-    return (await _ap_repo_settings_get(env, owner, repo))["federate"]
+    return (await _ap_repo_settings_get(env, data_owner, repo))["federate"]
 
 
 # Per-repo fediverse switches the owner manages from the web and Qt repo
@@ -11342,7 +11400,10 @@ AP_REPO_SETTING_DEFAULTS = {
 async def _ap_repo_settings_bi(env, owner, repo):
     # Distinct namespace + full lowercasing on both halves: callers reach this
     # with URL-cased (About handler) and handle-cased (AP gates) names, and
-    # they must all land on the same row.
+    # they must all land on the same row. Org-alias handles resolve to the
+    # backing node so a mention gate keys on the same row the owner's repo
+    # settings wrote under the node name (issue #388).
+    owner = await _ap_org_alias_owner(env, owner, repo)
     return await blind_index(
         env, "ap-repo-settings:%s/%s" % (str(owner or "").strip().lower(),
                                          str(repo or "").strip().lower()))
@@ -11484,7 +11545,7 @@ async def ap_nodeinfo_handler(env, request, index):
         return resp
     now = int(Date.now())
     if now - _NODEINFO_CACHE["ts"] >= NODEINFO_CACHE_TTL_MS:
-        users = await d1_first(env, "SELECT COUNT(*) AS c FROM accounts")
+        users = await d1_first(env, "SELECT COUNT(*) AS c FROM users")
         posts = await d1_first(env, "SELECT COUNT(*) AS c FROM ap_objects")
         _NODEINFO_CACHE.update({
             "ts": now,
@@ -11524,7 +11585,10 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
                    else "ForkMesh profile of @%s." % handle)
     else:
         owner, _, repo = handle.partition(".")
-        key_bi = await blind_index(env, owner + "/" + repo)
+        # Org handles read their repo data from the linked node (issue #388),
+        # but display, profile URL and web links stay under the org name below.
+        data_owner = await _ap_org_alias_owner(env, owner, repo)
+        key_bi = await blind_index(env, data_owner + "/" + repo)
         repo_row = await d1_first(
             env, "SELECT is_private, data FROM repositories WHERE key_bi=?",
             key_bi)
@@ -12420,12 +12484,16 @@ async def _ap_handle_repo_mention(env, request, note, remote, owner, repo):
     # switch: a mention-created issue is remote content entering the repo, the
     # same trust decision acceptComments already governs (an unpublished repo
     # has no fediverse presence, so a missing catalog row also drops).
-    key_bi = await blind_index(env, owner + "/" + repo)
+    # The actor is addressed by the org handle, but the repo row, AP settings
+    # and issue inbox live under the linked node (issue #388). Resolve once and
+    # use the node for every data read; the org name stays the reply author.
+    data_owner = await _ap_org_alias_owner(env, owner, repo)
+    key_bi = await blind_index(env, data_owner + "/" + repo)
     row = await d1_first(
         env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
     if not row or int(row.get("is_private") or 0):
         return dropped
-    settings = await _ap_repo_settings_get(env, owner, repo)
+    settings = await _ap_repo_settings_get(env, data_owner, repo)
     if not settings["federate"] or not settings["acceptComments"]:
         return dropped
     mention_bi = await blind_index(env, "ap-mention:" + note["id"])
@@ -12473,7 +12541,7 @@ async def _ap_handle_repo_mention(env, request, note, remote, owner, repo):
     body += "\n\nFiled from a fediverse mention by %s: %s" % (
         author_label, note["url"])
     ok, result = await _forkbot_enqueue_issue(
-        env, owner, repo, fields["title"], body, author_label,
+        env, data_owner, repo, fields["title"], body, author_label,
         source="fediverse", labels=["fediverse"], attachments=images)
     await d1_run(
         env,
@@ -13690,10 +13758,7 @@ async def send_notification_digests(env):
         if not recipient_bi:
             continue
         acct = await d1_first(
-            env, "SELECT data FROM accounts WHERE name_bi=?", recipient_bi)
-        if not acct:
-            acct = await d1_first(
-                env, "SELECT data FROM users WHERE user_bi=?", recipient_bi)
+            env, "SELECT data FROM users WHERE user_bi=?", recipient_bi)
         if not acct:
             acct = await d1_first(
                 env, "SELECT data FROM nodes WHERE node_bi=?", recipient_bi)
@@ -17115,6 +17180,7 @@ async def admin_stats(env):
     err_row = await d1_first(
         env, "SELECT COUNT(*) AS n FROM error_log WHERE ts >= ?", day_ago,
     )
+    err_total_row = await d1_first(env, "SELECT COUNT(*) AS n FROM error_log")
     # Installs started in the last 24h = distinct anonymous runs that reported the
     # opening "start" step. Best-effort; the table may not exist on a fresh DB.
     try:
@@ -17132,6 +17198,7 @@ async def admin_stats(env):
         "clients": await _flagship_client_count(env),
         "installs_24h": int((inst_row or {}).get("n", 0) or 0),
         "errors_24h": int((err_row or {}).get("n", 0) or 0),
+        "errors_total": int((err_total_row or {}).get("n", 0) or 0),
     }
 
 
@@ -17302,9 +17369,21 @@ def _admin_session_valid(env, request, admin):
     return hmac.compare_digest(sig, expected)
 
 
+def _admin_cookie_name(request):
+    # The signed admin cookie embeds the admin name as its first segment;
+    # _admin_session_valid verifies the HMAC actually binds that name.
+    return clean_string(
+        _cookie_value(request, ADMIN_SESSION_COOKIE).split(".")[0],
+        MAX_NODE_NAME).lower()
+
+
 async def _check_admin_page_auth(env, request):
-    params = parse_qs(urlparse(request.url).query)
-    admin = clean_string(params.get("admin", [""])[0], MAX_NODE_NAME).lower()
+    # Auth rides entirely on the signed HttpOnly cookie. The ?admin= query
+    # param is link-continuity state only: requiring it meant an admin who
+    # opened the bare admin path (or landed on it after login) always failed
+    # auth, and /login's silent admin-session resume then redirect-looped
+    # between the two pages forever (adhoc #168).
+    admin = _admin_cookie_name(request)
     return bool(admin and await _is_admin(env, admin) and
                 _admin_session_valid(env, request, admin))
 
@@ -17394,8 +17473,11 @@ ADMIN_STYLE = """
         border:1px solid var(--ab-border-2);border-radius:6px;padding:8px;
         font:13px ui-monospace,monospace}
  .ab-root .tools .navlink{padding:8px 4px}
- .ab-root .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:nowrap}
+ .ab-root .account-kind{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
  .ab-root .account-kind button{padding:3px 8px;font-size:12px}
+ /* The migration cell holds pills + buttons that must all stay visible, so it
+    opts out of the compact table's single-line clip/ellipsis + 240px cap. */
+ .ab-root table.compact td.account-cell{max-width:none;overflow:visible;white-space:normal}
  .ab-root .kindpill{border:1px solid var(--ab-border-2);border-radius:999px;padding:2px 8px;
         color:var(--ab-fg);background:var(--ab-card);font:600 12px system-ui,sans-serif}
  .ab-root .inpill{border:1px solid #1a7f37;border-radius:999px;padding:1px 7px;
@@ -17463,8 +17545,7 @@ def _admin_json_cell(decoded):
 def _admin_bulk_form_open(table, csrf_field="", admin_query=""):
     return (
         '<form method="post" action="%s" '
-        'onsubmit="if(event.submitter&amp;&amp;event.submitter.name==='
-        '\'account_migration\')return true;return confirm(\'Delete the selected '
+        'onsubmit="return confirm(\'Delete the selected '
         'row(s)? This cannot be undone.\')">'
         '%s'
         '<div class="tools">'
@@ -17485,42 +17566,6 @@ def _admin_select_all_th():
 def _admin_row_checkbox(rowid):
     return ('<td><input type="checkbox" name="ids" value="%s"></td>'
             % _html_escape(rowid))
-
-
-async def _admin_account_migration_cell(env, row, rec, admin_query=""):
-    rec = rec if isinstance(rec, dict) else {}
-    name = clean_string(rec.get("name") or row.get("name") or "",
-                        MAX_NODE_NAME).strip().lower()
-    if not name:
-        return '<td><span class="meta">no account name</span></td>'
-    kind = _account_kind(rec)
-    action = _admin_href(admin_query, table="accounts", action="migrate_account")
-    # We are phasing out the accounts table. "Move to users/nodes" pins the
-    # record as that kind, (re)mirrors it into the authoritative users/nodes
-    # table, and drains the legacy accounts row — so both buttons stay active
-    # even for the current kind (it recreates the mirror if it went missing).
-    name_bi = row.get("name_bi") or await blind_index(env, name)
-    in_users = bool(await d1_first(
-        env, "SELECT 1 FROM users WHERE user_bi=?", name_bi))
-    in_nodes = bool(await d1_first(
-        env, "SELECT 1 FROM nodes WHERE node_bi=?", name_bi))
-    present = {"user": in_users, "node": in_nodes}
-    buttons = []
-    for target, table, label in (("user", "users", "Move to users"),
-                                 ("node", "nodes", "Move to nodes")):
-        indicator = (' <span class="inpill" title="Already exists in the %s '
-                     'table">in %s</span>' % (table, table)) if present[target] else ""
-        buttons.append(
-            '<button type="submit" formmethod="post" formaction="%s" '
-            'name="account_migration" value="%s" '
-            'onclick="return confirm(\'Move account %s to %s?\')">%s</button>%s'
-            % (action, _html_escape(name + ":" + target), _html_escape(name),
-               table, label, indicator)
-        )
-    return (
-        '<td><div class="account-kind"><span class="kindpill">%s</span>%s</div></td>'
-        % (_html_escape(kind), "".join(buttons))
-    )
 
 
 async def _admin_table_columns(env, table):
@@ -17691,26 +17736,31 @@ def _render_telemetry_overview(summary):
 
 async def _render_table_view(env, table, csrf_field="", admin_query=""):
     # Generic "show all rows" view for one D1 table. The encrypted `data` column
-    # (accounts/repos/inboxes store an AES-GCM blob there) is decrypted in place
+    # (users/nodes/repos/inboxes store an AES-GCM blob there) is decrypted in place
     # so the admin can actually read it. The table name is validated by the
     # caller against the live table list, so it is safe to interpolate.
     # rowid lets the admin select + bulk-delete any row regardless of the table's
     # declared primary key (all these tables are rowid tables).
-    rows = await d1_all(env, "SELECT rowid AS _rowid_, * FROM " + table + " LIMIT 500")
+    # Newest-first by default: rowid ascends with insertion, so ORDER BY rowid DESC
+    # surfaces the most recent rows (and, with LIMIT, keeps the newest 500) for
+    # every table — including the error log, which reads from these rows.
+    rows = await d1_all(
+        env, "SELECT rowid AS _rowid_, * FROM " + table
+        + " ORDER BY rowid DESC LIMIT 500")
     count_row = await d1_first(env, "SELECT COUNT(*) AS n FROM " + table)
     total = int((count_row or {}).get("n", 0) or 0)
 
     # Admin tool: reset any user account's login password. Shown above the
-    # accounts table; posts back to ?action=set_password (handled in _admin).
+    # users table; posts back to ?action=set_password (handled in _admin).
     prefix = ""
-    if table == "accounts":
+    if table == "users":
         prefix = (
             '<div class="tools">'
             '<form method="post" action="%s" '
             'onsubmit="return confirm(\'Set a new login password for this '
             'account?\')">'
             + csrf_field +
-            '<input type="text" name="name" placeholder="node name" '
+            '<input type="text" name="name" placeholder="user name" '
             'autocomplete="off" required>'
             '<input type="password" name="password" '
             'placeholder="new password (min 8 chars)" minlength="8" required>'
@@ -17718,23 +17768,20 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             '</form>'
             '<span class="meta">Resets a user account\'s login password '
             '(PBKDF2-hashed); email and payout address are left unchanged.</span>'
-            '</div>'
-        ) % _admin_href(admin_query, table="accounts", action="set_password")
-        prefix += (
-            '<div class="tools">'
             '<form method="post" action="%s" '
-            'onsubmit="return confirm(\'Migrate every account with a verified '
-            'email into the users table and remove it from accounts?\')">'
+            'onsubmit="return confirm(\'Resend the verification email for this '
+            'account?\')">'
             + csrf_field +
-            '<button type="submit">Migrate all verified-email users into users</button>'
+            '<input type="text" name="name" placeholder="user name" '
+            'autocomplete="off" required>'
+            '<button type="submit">Resend verify email</button>'
             '</form>'
-            '<span class="meta">One-click: pins every account whose email is '
-            'verified as a user, mirrors it into the authoritative users table, '
-            'and deletes its legacy accounts row. Unverified rows are left in '
-            'place.</span>'
+            '<span class="meta">Re-sends the email-confirmation link to a user\'s '
+            'stored address; queues it for manual verification if email is not '
+            'configured.</span>'
             '</div>'
-        ) % _admin_href(admin_query, table="accounts",
-                        action="migrate_verified_users")
+        ) % (_admin_href(admin_query, table="users", action="set_password"),
+             _admin_href(admin_query, table="users", action="resend_verify"))
 
     if table == "telemetry":
         # Purpose-built crash/stall dashboard + recent events, newest first.
@@ -17874,9 +17921,6 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
         cells = [_admin_row_checkbox(rid),
                  '<td><a class="navlink" href="%s">Edit</a></td>'
                  % _admin_href(admin_query, table=table, action="edit", rowid=rid)]
-        if table == "accounts":
-            cells.append(await _admin_account_migration_cell(
-                env, r, decoded_data, admin_query))
         for col in columns:
             value = r.get(col)
             if col == "data" and decoded_data is not None:
@@ -17888,8 +17932,7 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
                 None if decoded_data is None else decoded_data.get(col)))
         body.append("<tr>" + "".join(cells) + "</tr>")
 
-    head = (_admin_select_all_th() + "<th>Edit</th>" +
-            ("<th>Kind</th>" if table == "accounts" else "")) + "".join(
+    head = (_admin_select_all_th() + "<th>Edit</th>") + "".join(
         "<th>%s</th>" % _html_escape(c) for c in columns) + "".join(
         '<th class="jcol" title="from the data JSON">%s</th>' % _html_escape(c)
         for c in json_cols)
@@ -17912,6 +17955,7 @@ def _render_admin_stats(stats):
         ("clients", "chat clients", False),
         ("repos", "catalog repos", False),
         ("installs_24h", "installs (24h)", False),
+        ("errors_total", "errors (all time)", True),
         ("errors_24h", "errors (24h)", True),
     ]
     out = []
@@ -17929,7 +17973,7 @@ def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=
         tables = sorted(tables, key=lambda t: counts.get(t, 0), reverse=True)
     toggle_label = "A–Z" if sort_records else "Sort by records"
     toggle_href = _admin_href(admin_query, table=active,
-                              sort=("" if sort_records else "records"))
+                              sort=("name" if sort_records else "records"))
     links = ['<div class="sec">Tables <a class="navsort" href="%s">%s</a></div>'
              % (toggle_href, toggle_label)]
     for t in tables:
@@ -17938,10 +17982,11 @@ def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=
         n = counts.get(t)
         suffix = (' <span class="navcount">%d</span>' % n) if n is not None else ""
         # Carry the active sort along: sort state lives only in the URL, so a
-        # table link that dropped it would silently reset the nav to A–Z.
+        # table link that dropped it would silently reset the nav to the
+        # most-records-first default.
         links.append('<a href="%s"%s>%s%s</a>'
                      % (_admin_href(admin_query, table=t,
-                                    sort=("records" if sort_records else "")),
+                                    sort=("records" if sort_records else "name")),
                         cls, _html_escape(label), suffix))
     return "<nav>" + "".join(links) + "</nav>"
 
@@ -17954,6 +17999,22 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
         "<meta name=\"color-scheme\" content=\"light dark\">"
         "<title>forkmesh · admin</title>"
+        # site-header.js is deferred (it also injects the header markup), so on
+        # its own it would only stamp html.light/html.dark AFTER first paint —
+        # a visible dark→light flash. This blocking pre-paint snippet mirrors
+        # its resolveTheme() (same localStorage keys, then OS preference) and
+        # stamps the class before any CSS paints, killing the flash. The
+        # deferred script re-applies the same value and owns the toggle.
+        "<script>(function(){try{"
+        "var k=['forkmesh.dashboard.theme','forkmesh.theme'],t='';"
+        "for(var i=0;i<k.length;i++){var v=localStorage.getItem(k[i]);"
+        "if(v==='light'||v==='dark'){t=v;break;}}"
+        "if(!t)t=(window.matchMedia&&window.matchMedia("
+        "'(prefers-color-scheme: light)').matches)?'light':'dark';"
+        "var r=document.documentElement,l=t==='light';"
+        "r.classList.toggle('light',l);r.classList.toggle('dark',!l);"
+        "r.style.colorScheme=l?'light':'dark';"
+        "}catch(e){}})();</script>"
         # The universal site header (brand, nav, account chip) + the theme
         # engine it carries: site-header.js stamps html.light/html.dark from
         # the visitor's saved choice or OS preference, which ADMIN_STYLE's
@@ -18026,78 +18087,28 @@ async def _admin_set_password(env, name, password):
     return "Password updated for '%s'. The user can log in with it now." % name
 
 
-async def _admin_migrate_account_kind(env, name, kind):
-    name = clean_string(name or "", MAX_NODE_NAME).strip().lower()
-    kind = clean_string(kind or "", 16).strip().lower()
+async def _admin_resend_verification(env, request, name):
+    # Re-send the email-confirmation link for a user account from the admin page.
+    # Mirrors the self-service resendVerification path in the account-update
+    # endpoint: send via Mailtrap when configured, otherwise fall back to the
+    # pending_verifications queue for manual admin verification.
+    name = clean_string(name or "", MAX_NODE_NAME).lower()
     if not name:
-        return "Account migration failed: an account name is required."
-    if kind not in ("user", "node"):
-        return "Account migration failed: target kind must be user or node."
-    if not valid_node_name(name):
-        return "Account migration failed: '%s' is not a valid account name." % name
+        return "Resend verify email failed: a node name is required."
     name_bi, rec = await _account_row(env, name)
     if not rec:
-        return "Account migration failed: no account named '%s'." % name
-    old_kind = _account_kind(rec)
-    already_pinned = old_kind == kind and rec.get("kind") == kind
-    rec["kind"] = kind
-    # Persist (mirrors the record into the authoritative users/nodes tables),
-    # then drain the legacy accounts row: making a user or a node moves it out of
-    # the accounts table entirely (adhoc #20).
-    await _save_account(env, name_bi, rec)
-    await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
-    if already_pinned:
-        return ("Account '%s' was already a %s; removed its legacy accounts row."
-                % (name, kind))
-    verb = "Pinned" if old_kind == kind else "Migrated"
-    msg = "%s account '%s' as %s (removed from the accounts table)." % (
-        verb, name, kind)
-    notes = []
-    if kind == "user" and not rec.get("pass_hash"):
-        notes.append("Set a password before this user can log in.")
-    if kind == "node" and _owned_nodes(rec):
-        notes.append("Linked nodes on this record were left unchanged; transfer them separately if needed.")
-    if notes:
-        msg += " " + " ".join(notes)
-    return msg
-
-
-async def _admin_migrate_verified_users(env):
-    # Bulk one-click migration (adhoc #20): every legacy accounts row whose
-    # encrypted record has a verified email is pinned as a user, mirrored into
-    # the authoritative users table, and then removed from the accounts table.
-    rows = await d1_all(env, "SELECT name_bi, data FROM accounts")
-    migrated = 0
-    skipped = 0
-    errors = []
-    for row in rows or []:
-        name_bi = row.get("name_bi")
-        if not name_bi:
-            continue
-        rec = await decrypt_row(env, row.get("data", ""))
-        if not rec or not rec.get("email") or not rec.get("email_verified"):
-            skipped += 1
-            continue
-        try:
-            rec["kind"] = "user"
-            email_bi = await blind_index(
-                env, clean_string(rec.get("email", ""), 254).lower())
-            # _save_account mirrors into users; then drop the legacy row.
-            await _save_account(env, name_bi, rec, email_bi=email_bi)
-            await d1_run(env, "DELETE FROM accounts WHERE name_bi=?", name_bi)
-            migrated += 1
-        except Exception as error:
-            errors.append(clean_string(rec.get("name", "unknown"), MAX_NODE_NAME)
-                          + ": " + _safe_error_text(error))
-    if migrated == 0 and not errors:
-        return ("No accounts with verified emails to migrate "
-                "(%d account row(s) checked)." % skipped)
-    msg = ("Migrated %d verified-email account(s) into the users table and "
-           "removed them from accounts (%d without a verified email left in "
-           "place)." % (migrated, skipped))
-    if errors:
-        msg += " Errors: " + "; ".join(errors[:5])
-    return msg
+        return "Resend verify email failed: no account named '%s'." % name
+    email = rec.get("email", "")
+    if not email:
+        return "Resend verify email failed: '%s' has no email on file." % name
+    if rec.get("email_verified"):
+        return "'%s' is already verified; no email sent." % name
+    sent = await _send_verification_email(env, request, name, email)
+    if sent:
+        return "Verification email re-sent to %s for '%s'." % (email, name)
+    await _enqueue_verification(env, name_bi, name, email)
+    return ("Email is not configured; queued '%s' for manual verification "
+            "instead." % name)
 
 
 async def _admin_console_request_ownership(env, target, owner):
@@ -18129,7 +18140,12 @@ async def _admin_disburse(env):
     if not treasury:
         return ("No Solana treasury address configured "
                 "(set TREASURY_SOLANA_ADDRESS or NODE_SOLANA_ADDRESS).")
-    rows = await d1_all(env, "SELECT name_bi, data FROM accounts")
+    # Join deposits can sit on either identity table: a keyless web signup
+    # finalizes as a user, a key-bound one as a node.
+    rows = list(await d1_all(
+        env, "SELECT user_bi AS name_bi, data FROM users") or [])
+    rows += list(await d1_all(
+        env, "SELECT node_bi AS name_bi, data FROM nodes") or [])
     swept = 0
     already = 0
     pending = 0
@@ -18184,11 +18200,16 @@ class Default(WorkerEntrypoint):
         # recorded the missing sample as downtime (~5% uptime shown while the
         # site was actually up). The samples also run FIRST, so even a tick
         # that dies in a later job has already landed its data point.
-        cron_expression = _scheduled_cron_expression(controller)
-        cron_check_in_id = _sentry_event_id()
         cron_started_ms = int(Date.now())
         cron_failures = []
         minute = int(cron_started_ms // 60000)
+        # Sentry cron monitor disabled for now (commented out on request).
+        # The opening "in_progress" check-in and the closing ok/error check-in
+        # below are left in place, commented, so the monitor can be re-enabled
+        # by uncommenting both halves.
+        #
+        # cron_expression = _scheduled_cron_expression(controller)
+        # cron_check_in_id = _sentry_event_id()
         # Send the "in_progress" check-in FIRST, before any D1/decrypt work,
         # so Sentry has proof this tick started even if the platform kills
         # the isolate later (cold Pyodide isolate blowing the invocation's
@@ -18198,12 +18219,12 @@ class Default(WorkerEntrypoint):
         # error, which is what actually happened; dropping the closing
         # ok/error check-in on the same check_in_id still only costs one
         # extra Sentry round trip per tick.
-        try:
-            await capture_sentry_cron_check_in(
-                self.env, "in_progress", check_in_id=cron_check_in_id,
-                cron=cron_expression)
-        except BaseException:
-            pass
+        # try:
+        #     await capture_sentry_cron_check_in(
+        #         self.env, "in_progress", check_in_id=cron_check_in_id,
+        #         cron=cron_expression)
+        # except BaseException:
+        #     pass
         # The /status health sample runs FIRST: it is the cheapest job (no
         # row decryption) and the one whose absence shows publicly as fake
         # downtime, so a tick that dies partway (cold Pyodide isolate blowing
@@ -18340,11 +18361,13 @@ class Default(WorkerEntrypoint):
                     error=error, failures=cron_failures)
         # Closing check-in for the same check_in_id sent above, so Sentry
         # resolves the "in_progress" marker to a final ok/error result.
-        final_cron_status = "error" if cron_failures else "ok"
-        await capture_sentry_cron_check_in(
-            self.env, final_cron_status, check_in_id=cron_check_in_id,
-            cron=cron_expression,
-            duration=(int(Date.now()) - cron_started_ms) / 1000)
+        # Sentry cron monitor disabled for now (commented out on request);
+        # re-enable together with the opening check-in above.
+        # final_cron_status = "error" if cron_failures else "ok"
+        # await capture_sentry_cron_check_in(
+        #     self.env, final_cron_status, check_in_id=cron_check_in_id,
+        #     cron=cron_expression,
+        #     duration=(int(Date.now()) - cron_started_ms) / 1000)
 
     async def fetch(self, request):
         url = None
@@ -18411,7 +18434,10 @@ class Default(WorkerEntrypoint):
                 },
             )
         params = parse_qs(urlparse(request.url).query)
-        admin_query = _admin_query(params.get("admin", [""])[0])
+        # Nav links carry ?admin= for continuity; fall back to the cookie's
+        # name when the page was opened without the param (adhoc #168).
+        admin_query = _admin_query(params.get("admin", [""])[0]
+                                   or _admin_cookie_name(request))
 
         # POST actions: ?action=disburse retries join-deposit sweeps;
         # ?action=set_password resets a user account's login password. Every
@@ -18443,19 +18469,15 @@ class Default(WorkerEntrypoint):
                     )
                 except Exception as error:
                     banner = "Set password failed: " + repr(error)
-            elif action == "migrate_account":
+            elif action == "resend_verify":
                 try:
-                    raw = form.get("account_migration", [""])[0]
-                    name, _, kind = raw.partition(":")
-                    banner = await _admin_migrate_account_kind(
-                        self.env, name, kind)
+                    banner = await _admin_resend_verification(
+                        self.env,
+                        request,
+                        form.get("name", [""])[0],
+                    )
                 except Exception as error:
-                    banner = "Account migration failed: " + repr(error)
-            elif action == "migrate_verified_users":
-                try:
-                    banner = await _admin_migrate_verified_users(self.env)
-                except Exception as error:
-                    banner = "Verified-user migration failed: " + repr(error)
+                    banner = "Resend verify email failed: " + repr(error)
             elif action == "request_ownership":
                 try:
                     banner = await _admin_console_request_ownership(
@@ -18537,7 +18559,9 @@ class Default(WorkerEntrypoint):
             except Exception:
                 counts[t] = 0
         stats = await admin_stats(self.env)
-        sort_records = params.get("sort", [""])[0] == "records"
+        # Default the table browser to most-records-first; ?sort=name opts back
+        # into the A–Z ordering.
+        sort_records = params.get("sort", [""])[0] != "name"
         return Response(
             render_admin_html(stats, tables, active, table_html, banner, counts,
                               csrf_field=csrf_field, admin_query=admin_query,
@@ -19102,7 +19126,7 @@ class Default(WorkerEntrypoint):
                     await touch_registered_node(self.env, owner_bi, owner_rec)
                 except Exception:
                     pass
-            elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats"):
+            elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats", "sizes"):
                 # Browsing a private repo's files/commits needs a view token as
                 # ?ts=&sig= (the host-token query shape): the owner's own
                 # (forkmesh-view-v1), or — when ?viewer= names a collaborator the
@@ -20663,7 +20687,7 @@ class ForkMeshHost(DurableObject):
             served = REPO_HOST_RE.match(path)
             served_by = safe_segment(served.group(1)) if served else ""
             return await self._tunnel("search", query, ref, served_by, ua)
-        if action in ("tree", "blob", "history", "commit", "branches", "stats"):
+        if action in ("tree", "blob", "history", "commit", "branches", "stats", "sizes"):
             await self._mark_present(path)
             op = "commits" if action == "history" else action
             # This DO is per-repo, so the owner in its path IS the mirror node
@@ -21218,25 +21242,35 @@ class ForkMeshHost(DurableObject):
             source = str(target.get("source") or "local-node")
             catalog_rows = []
             if source != "local-node":
-                try:
-                    active_nodes = await active_registered_node_bis(
-                        self.env, int(Date.now()))
-                except Exception:
-                    active_nodes = None
-                rows = await d1_all(
-                    self.env, "SELECT key_bi, owner_bi, data FROM repositories")
-                for r in rows:
-                    if (active_nodes is not None and
-                            str(r.get("owner_bi") or "") not in active_nodes):
-                        continue
-                    rec = await decrypt_row(self.env, r.get("data"))
-                    if rec:
+                # Same-group source records from the shared per-isolate catalog
+                # memo (same fix as _online_source_of_truth, adhoc #144): a raw
+                # repositories scan + sequential decrypt_row() per row ran here
+                # on EVERY public info/refs of a mirror namespace, and under a
+                # clone burst that held the single Worker event loop long
+                # enough for the runtime to cancel concurrent requests as hung
+                # ("Cannot enter into task"). The memo's public/active-node
+                # scoping is harmless: the raw scan already applied the
+                # active-node filter, and a group source invisible to the memo
+                # just drops clone_state_pins to the target's own pins — the
+                # pre-existing legacy fallback.
+                for r in await _decrypted_public_catalog(
+                        self.env, int(Date.now())):
+                    if repo_mirror_same_group(target, r["data"]):
                         catalog_rows.append(
-                            {"key_bi": r.get("key_bi"), "data": rec})
+                            {"key_bi": r.get("key_bi"), "data": r["data"]})
+            # Pin history scoped to the keys clone_state_pins can actually use
+            # (target + same-group sources) — the old unscoped SELECT read
+            # every repo's history on every info/refs (same scoping fix as the
+            # /mirrors payload).
             history = {}
+            keys = [k for k in
+                    [str(key_bi)] +
+                    [str(r.get("key_bi") or "") for r in catalog_rows] if k]
             hist_rows = await d1_all(
                 self.env,
-                "SELECT key_bi, state_hash FROM repo_state_history")
+                "SELECT key_bi, state_hash FROM repo_state_history"
+                " WHERE key_bi IN (%s)" % ",".join("?" for _ in keys),
+                *keys)
             for r in hist_rows:
                 history.setdefault(str(r.get("key_bi") or ""), []).append(
                     r.get("state_hash"))

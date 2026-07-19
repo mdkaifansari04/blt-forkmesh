@@ -25,15 +25,12 @@ ENTRY_TEXT = (
     ENTRY.read_text(encoding="utf-8") + "\n" + SCHEMA.read_text(encoding="utf-8"))
 
 
-def test_accounts_table_has_ip_blind_index_column_and_index():
-    assert "is_admin INTEGER NOT NULL DEFAULT 0, ip_bi TEXT)" in ENTRY_TEXT
-    assert "CREATE INDEX IF NOT EXISTS idx_accounts_ip ON accounts(ip_bi)" in ENTRY_TEXT
-
-
-def test_ip_column_is_added_idempotently_for_existing_databases():
-    # ensure_schema() backfills the column on already-deployed account tables, and
-    # swallows the "duplicate column name" raised on a second run.
-    assert 'ALTER TABLE accounts ADD COLUMN ip_bi TEXT' in ENTRY_TEXT
+def test_users_table_has_ip_blind_index_column_and_index():
+    # The users table (the authoritative account store since the legacy
+    # accounts table was dropped by migration 0042) carries the blind-index
+    # column and its lookup index from CREATE.
+    assert "ip_bi TEXT" in ENTRY_TEXT
+    assert "CREATE INDEX IF NOT EXISTS idx_users_ip ON users(ip_bi)" in ENTRY_TEXT
 
 
 def test_parity_d1_migration_file_exists():

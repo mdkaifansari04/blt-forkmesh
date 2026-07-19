@@ -22,6 +22,11 @@ run_worker_first = [
   "/.well-known/*",
   "/ap/*",
   "/nodeinfo/*",
+  # In production, forkmesh.com/ itself is owned by the separate marketing
+  # Worker (../cloudflare_marketing_worker) via an exact-match route, which
+  # takes precedence over this Worker for the root URL only. This "/" entry
+  # keeps the relay's homepage handler working as the fallback on workers.dev
+  # previews and in local dev, where no route splitting exists.
   "/",
   "/health",
   "/simulate-sentry-error",
@@ -99,8 +104,8 @@ FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 # deposit wallets) is NOT here — it lives in .env.production and is pushed as a
 # Worker secret by deploy.sh, so it isn't committed and can't be wiped by a
 # deploy. Falls back to NODE_SOLANA_ADDRESS when unset.
-# Admins are set in the database, not here: the accounts table has an is_admin
-# column. Grant one with: UPDATE accounts SET is_admin=1 WHERE name='<node>'.
+# Admins are set in the database, not here: the users table has an is_admin
+# column. Grant one with: UPDATE users SET is_admin=1 WHERE username='<user>'.
 # DATA_KEY encrypts ALL D1 data at rest (AES-GCM row blobs) and derives the
 # blind-index HMAC key — including the Ed25519 SEEDS that control custody
 # deposit/bounty wallets. It is INTENTIONALLY NOT here: a value in [vars] is
@@ -198,13 +203,15 @@ deleted_classes = [
 enabled = true
 head_sampling_rate = 1
 
+# Logs stay in the Cloudflare dashboard only. The Sentry destinations added in
+# the 2026-07-18 full-sampling round exported an info event for every D1 call,
+# Durable Object websocket wakeup, and request ("d1_run OK",
+# "hibernatableWebSocket OK", "POST OK", ...), flooding Sentry. Real error
+# reporting is unaffected: it goes through capture_sentry_error in src/entry.py.
 [observability.logs]
 enabled = true
 head_sampling_rate = 1
-invocation_logs = false 
-destinations = [ "sentry-logs" ]
+invocation_logs = false
 
 [observability.traces]
-enabled = true
-head_sampling_rate = 1
-destinations = [ "sentry-traces" ]
+enabled = false

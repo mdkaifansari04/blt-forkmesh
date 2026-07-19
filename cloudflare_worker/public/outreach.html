@@ -120,6 +120,27 @@
       .log-ok { color: #4ade80; font-size: 12px; white-space: nowrap; }
       .log-fail { color: #f87171; font-size: 12px; white-space: nowrap; }
 
+      .tracker { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+        gap: 18px; align-items: start; }
+      @media (max-width: 560px) { .tracker { grid-template-columns: 1fr; } }
+      .tracker h4 { margin: 0 0 8px; font-size: 11px; font-weight: 700;
+        letter-spacing: 0.05em; text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.55); }
+      .pipe-row { padding: 9px 0; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+      .pipe-row:first-of-type { border-top: 0; }
+      .pipe-name { display: flex; justify-content: space-between; gap: 8px;
+        color: #ffffff; font-weight: 650; font-size: 13px; }
+      .pipe-name .count { color: rgba(255, 255, 255, 0.52); font-weight: 500; font-size: 12px; }
+      .pipe-stages { display: flex; gap: 6px; margin-top: 7px; }
+      .pipe-stage { flex: 1; border-radius: 8px; padding: 5px 4px; text-align: center;
+        background: rgba(255, 255, 255, 0.05); color: rgba(255, 255, 255, 0.6);
+        font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; }
+      .pipe-stage .n { display: block; font-size: 15px; font-weight: 750;
+        color: #ffffff; letter-spacing: 0; }
+      .pipe-stage.ok .n { color: #4ade80; }
+      .pipe-stage.fail .n { color: #f87171; }
+      .pipe-empty { color: rgba(255, 255, 255, 0.52); font-size: 12px; }
+
       .team-add { display: flex; gap: 8px; margin-top: 10px; }
       .team-add input { flex: 1; padding: 0.45rem 0.7rem; border-radius: 0.7rem;
         border: 1px solid rgba(255, 255, 255, 0.14);
@@ -205,10 +226,21 @@
             from the founders address too; remove them to revoke access.</p>
         </div>
 
-        <!-- Recent sends (visible to everyone who can send). -->
+        <!-- Outreach tracker (visible to everyone who can send): the list of
+             emails sent on the left, a status pipeline per template type on
+             the right. -->
         <div class="panel" id="or-log" hidden>
-          <h3>Recent sends</h3>
-          <div id="or-log-list"></div>
+          <h3>Outreach tracker</h3>
+          <div class="tracker">
+            <div class="tracker-list">
+              <h4>Emails sent</h4>
+              <div id="or-log-list"></div>
+            </div>
+            <div class="tracker-pipeline">
+              <h4>Pipeline by template</h4>
+              <div id="or-pipeline"></div>
+            </div>
+          </div>
         </div>
 
         <p class="row-links"><a href="/dashboard">← Back to dashboard</a></p>
