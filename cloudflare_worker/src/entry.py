@@ -17768,8 +17768,20 @@ async def _render_table_view(env, table, csrf_field="", admin_query=""):
             '</form>'
             '<span class="meta">Resets a user account\'s login password '
             '(PBKDF2-hashed); email and payout address are left unchanged.</span>'
+            '<form method="post" action="%s" '
+            'onsubmit="return confirm(\'Resend the verification email for this '
+            'account?\')">'
+            + csrf_field +
+            '<input type="text" name="name" placeholder="user name" '
+            'autocomplete="off" required>'
+            '<button type="submit">Resend verify email</button>'
+            '</form>'
+            '<span class="meta">Re-sends the email-confirmation link to a user\'s '
+            'stored address; queues it for manual verification if email is not '
+            'configured.</span>'
             '</div>'
-        ) % _admin_href(admin_query, table="users", action="set_password")
+        ) % (_admin_href(admin_query, table="users", action="set_password"),
+             _admin_href(admin_query, table="users", action="resend_verify"))
 
     if table == "telemetry":
         # Purpose-built crash/stall dashboard + recent events, newest first.
@@ -18073,6 +18085,30 @@ async def _admin_set_password(env, name, password):
     rec.setdefault("status", "active")
     await _save_account(env, name_bi, rec)
     return "Password updated for '%s'. The user can log in with it now." % name
+
+
+async def _admin_resend_verification(env, request, name):
+    # Re-send the email-confirmation link for a user account from the admin page.
+    # Mirrors the self-service resendVerification path in the account-update
+    # endpoint: send via Mailtrap when configured, otherwise fall back to the
+    # pending_verifications queue for manual admin verification.
+    name = clean_string(name or "", MAX_NODE_NAME).lower()
+    if not name:
+        return "Resend verify email failed: a node name is required."
+    name_bi, rec = await _account_row(env, name)
+    if not rec:
+        return "Resend verify email failed: no account named '%s'." % name
+    email = rec.get("email", "")
+    if not email:
+        return "Resend verify email failed: '%s' has no email on file." % name
+    if rec.get("email_verified"):
+        return "'%s' is already verified; no email sent." % name
+    sent = await _send_verification_email(env, request, name, email)
+    if sent:
+        return "Verification email re-sent to %s for '%s'." % (email, name)
+    await _enqueue_verification(env, name_bi, name, email)
+    return ("Email is not configured; queued '%s' for manual verification "
+            "instead." % name)
 
 
 async def _admin_console_request_ownership(env, target, owner):
@@ -18433,6 +18469,15 @@ class Default(WorkerEntrypoint):
                     )
                 except Exception as error:
                     banner = "Set password failed: " + repr(error)
+            elif action == "resend_verify":
+                try:
+                    banner = await _admin_resend_verification(
+                        self.env,
+                        request,
+                        form.get("name", [""])[0],
+                    )
+                except Exception as error:
+                    banner = "Resend verify email failed: " + repr(error)
             elif action == "request_ownership":
                 try:
                     banner = await _admin_console_request_ownership(

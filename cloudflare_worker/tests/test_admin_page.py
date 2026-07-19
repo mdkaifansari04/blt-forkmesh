@@ -144,3 +144,36 @@ def test_admin_set_password_tool_lives_on_users_table():
     assert 'if table == "users":' in ENTRY_TEXT
     assert 'action="set_password"' in ENTRY_TEXT
     assert "def _admin_set_password" in ENTRY_TEXT
+
+
+def test_admin_resend_verify_tool_on_users_table():
+    # The users table exposes a "Resend verify email" button that dispatches to
+    # ?action=resend_verify and re-sends the confirmation link, falling back to
+    # the pending_verifications queue when email is not configured.
+    assert 'action="resend_verify"' in ENTRY_TEXT
+    assert ">Resend verify email</button>" in ENTRY_TEXT
+    assert "def _admin_resend_verification" in ENTRY_TEXT
+
+    module = ast.parse(ENTRY_TEXT)
+    fn = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_admin_resend_verification"
+    )
+    calls = {
+        node.func.id
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_account_row" in calls
+    assert "_send_verification_email" in calls
+    assert "_enqueue_verification" in calls
+
+    # It is wired into the admin POST dispatcher alongside the other actions.
+    admin = _admin_function()
+    admin_calls = {
+        node.func.id
+        for node in ast.walk(admin)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_admin_resend_verification" in admin_calls
