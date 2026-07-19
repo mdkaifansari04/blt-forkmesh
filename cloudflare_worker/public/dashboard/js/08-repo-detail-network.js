@@ -1658,6 +1658,22 @@
         return;
       }
 
+      const issueImportButton = event.target.closest("[data-repo-issue-import]");
+      if (issueImportButton && state.selectedRepo) {
+        if (!state.session?.nodeName) {
+          location.href = "/login";
+          return;
+        }
+        openIssueImport(state.selectedRepo);
+        return;
+      }
+
+      const issueTemplateButton = event.target.closest("[data-repo-issue-template]");
+      if (issueTemplateButton) {
+        downloadIssueCsvTemplate();
+        return;
+      }
+
       const pullNewButton = event.target.closest("[data-repo-pull-new]");
       if (pullNewButton && state.selectedRepo) {
         if (!state.session?.nodeName) {
@@ -1890,6 +1906,12 @@
     if (issueForm && state.selectedRepo) {
       event.preventDefault();
       handleIssueComposeSubmit(state.selectedRepo, issueForm);
+      return;
+    }
+    const issueImportForm = event.target.closest("[data-repo-issue-import-form]");
+    if (issueImportForm && state.selectedRepo) {
+      event.preventDefault();
+      handleIssueImportSubmit(state.selectedRepo, issueImportForm);
       return;
     }
     const discussionReplyForm = event.target.closest("[data-repo-discussion-reply-form]");

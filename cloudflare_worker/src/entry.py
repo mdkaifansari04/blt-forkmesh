@@ -15404,6 +15404,7 @@ async def issues_handler(env, request, owner, repo):
                 "labels": [clean_string(x, 60) for x in (labels or [])][:20]
                 if isinstance(labels, list) else [],
                 "milestone": clean_string(meta_in.get("milestone", ""), 120),
+                "project": clean_string(meta_in.get("project", ""), 120),
                 "priority": priority if 0 <= priority <= 99 else 0,
                 "assignees": [clean_string(x, 60) for x in (assignees or [])][:20]
                 if isinstance(assignees, list) else [],
