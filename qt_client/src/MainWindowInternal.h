@@ -97,6 +97,7 @@
 #include <QImageReader>
 #include <QKeyEvent>
 #include <QHelpEvent>
+#include <QLineF>
 #include <QToolTip>
 #include <QConicalGradient>
 #include <QLinearGradient>
@@ -165,6 +166,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -4279,6 +4281,350 @@ protected:
 
 private:
     QList<IssueBurnupPoint> m_series;
+};
+
+// One directory in the Size map tab's tree: total bytes of everything beneath
+// it, with subdirectories as children (largest first). The gap between a
+// node's size and the sum of its children is the bytes sitting in files
+// directly inside it — the sunburst renders that share as unfilled span, the
+// HDGraph convention the tab mirrors (adhoc #189).
+struct SunburstNode {
+    QString name;
+    qint64 size = 0;
+    int fileCount = 0;
+    QList<SunburstNode> children;
+};
+
+// The Size map tab's multi-level pie (adhoc #189): ring 1 is the working
+// tree's top-level directories, each deeper ring subdivides its parent.
+// Hover shows the exact path/size/share, clicking a directory re-centres the
+// chart on it and clicking the hub goes back up one level. Top-level
+// directories take fixed categorical hues in size order (never cycled —
+// everything past eight goes muted gray) and descendants inherit the parent
+// hue stepped toward the surface, so a directory keeps its colour at every
+// zoom level. No Q_OBJECT: interaction is self-contained, so it stays a
+// header-only widget like the other inline charts.
+class RepoSunburstChart final : public QWidget
+{
+public:
+    explicit RepoSunburstChart(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setMinimumSize(360, 400);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        setMouseTracking(true);
+    }
+
+    void setRoot(SunburstNode root)
+    {
+        m_root = std::move(root);
+        m_trail.clear();
+        m_hover = -1;
+        update();
+    }
+
+    void clear() { setRoot(SunburstNode()); }
+
+    QSize sizeHint() const override { return QSize(640, 640); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        const bool dark = currentThemeIsDark();
+        const QColor surface(dark ? "#0d1117" : "#ffffff");
+        const QColor text(dark ? "#e6edf3" : "#1f2328");
+        const QColor muted(dark ? "#8b949e" : "#656d76");
+        m_segments.clear();
+
+        const SunburstNode *focus = focusNode();
+        if (!focus || focus->size <= 0) {
+            painter.setPen(muted);
+            painter.drawText(rect(), Qt::AlignCenter,
+                             QStringLiteral("No files to chart yet"));
+            return;
+        }
+
+        const Geometry g = geometry_();
+        layoutRing(*focus, 1, 90.0, -360.0, m_trail);
+
+        for (int i = 0; i < m_segments.size(); ++i) {
+            const Segment &seg = m_segments.at(i);
+            const qreal r0 = g.hole + (seg.depth - 1) * g.ringWidth;
+            const qreal r1 = r0 + g.ringWidth;
+            QPainterPath path;
+            const QRectF outer(g.center.x() - r1, g.center.y() - r1, 2 * r1, 2 * r1);
+            const QRectF inner(g.center.x() - r0, g.center.y() - r0, 2 * r0, 2 * r0);
+            path.arcMoveTo(outer, seg.startDeg);
+            path.arcTo(outer, seg.startDeg, seg.spanDeg);
+            path.arcTo(inner, seg.startDeg + seg.spanDeg, -seg.spanDeg);
+            path.closeSubpath();
+            QColor fill = seg.color;
+            if (i == m_hover)
+                fill = dark ? fill.lighter(125) : fill.darker(112);
+            painter.setPen(QPen(surface, 2));
+            painter.setBrush(fill);
+            painter.drawPath(path);
+        }
+
+        // Direct labels only where they comfortably fit (over ~18 degrees);
+        // the hover tooltip carries every other value.
+        painter.setFont(font());
+        for (const Segment &seg : m_segments) {
+            if (qAbs(seg.spanDeg) < 18.0)
+                continue;
+            const qreal midDeg = seg.startDeg + seg.spanDeg / 2;
+            const qreal midRad = midDeg * M_PI / 180.0;
+            const qreal r = g.hole + (seg.depth - 1) * g.ringWidth + g.ringWidth / 2;
+            const QPointF at(g.center.x() + r * std::cos(midRad),
+                             g.center.y() - r * std::sin(midRad));
+            const QString name = painter.fontMetrics().elidedText(
+                seg.name, Qt::ElideRight, int(g.ringWidth * 1.8));
+            const QRectF box(at.x() - 70, at.y() - 15, 140, 30);
+            painter.setPen(QColor(0, 0, 0, 150));
+            painter.drawText(box.translated(1, 1), Qt::AlignCenter,
+                             name + "\n" + QLocale().formattedDataSize(seg.size));
+            painter.setPen(Qt::white);
+            painter.drawText(box, Qt::AlignCenter,
+                             name + "\n" + QLocale().formattedDataSize(seg.size));
+        }
+
+        // Hub: the focused directory's name and total; when zoomed, hint that
+        // clicking it goes back up.
+        painter.setPen(text);
+        QFont hubFont = font();
+        hubFont.setBold(true);
+        painter.setFont(hubFont);
+        const QRectF hub(g.center.x() - g.hole, g.center.y() - g.hole,
+                         2 * g.hole, 2 * g.hole);
+        const QString hubName = m_trail.isEmpty()
+                                    ? (m_root.name.isEmpty()
+                                           ? QStringLiteral("repository")
+                                           : m_root.name)
+                                    : focus->name;
+        painter.drawText(hub.adjusted(6, 0, -6, -14), Qt::AlignCenter,
+                         painter.fontMetrics().elidedText(
+                             hubName, Qt::ElideMiddle, int(g.hole * 1.7)));
+        painter.setFont(font());
+        painter.setPen(muted);
+        painter.drawText(hub.adjusted(6, 22, -6, 0), Qt::AlignCenter,
+                         QLocale().formattedDataSize(focus->size) +
+                             (m_trail.isEmpty() ? QString()
+                                                : QStringLiteral("\n⌃ up")));
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        const int hit = segmentAt(event->pos());
+        if (hit != m_hover) {
+            m_hover = hit;
+            update();
+        }
+        if (hit >= 0) {
+            const Segment &seg = m_segments.at(hit);
+            setCursor(seg.hasChildren ? Qt::PointingHandCursor : Qt::ArrowCursor);
+            const qreal pct = m_root.size > 0
+                                  ? 100.0 * double(seg.size) / double(m_root.size)
+                                  : 0.0;
+            QToolTip::showText(
+                event->globalPosition().toPoint(),
+                QStringLiteral("%1 — %2 · %3% of repo")
+                    .arg(seg.path, QLocale().formattedDataSize(seg.size),
+                         QString::number(pct, 'f', 1)),
+                this);
+        } else {
+            QToolTip::hideText();
+            setCursor(!m_trail.isEmpty() && inHub(event->pos())
+                          ? Qt::PointingHandCursor
+                          : Qt::ArrowCursor);
+        }
+        QWidget::mouseMoveEvent(event);
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            if (inHub(event->pos())) {
+                if (!m_trail.isEmpty()) {
+                    m_trail.removeLast();
+                    m_hover = -1;
+                    update();
+                }
+                return;
+            }
+            const int hit = segmentAt(event->pos());
+            if (hit >= 0 && m_segments.at(hit).hasChildren) {
+                m_trail = m_segments.at(hit).trail;
+                m_hover = -1;
+                update();
+                return;
+            }
+        }
+        QWidget::mousePressEvent(event);
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        m_hover = -1;
+        update();
+        QWidget::leaveEvent(event);
+    }
+
+private:
+    static constexpr int kRings = 4;
+
+    struct Segment {
+        qreal startDeg = 0; // Qt convention: 0° at 3 o'clock, CCW positive
+        qreal spanDeg = 0;  // negative = clockwise on screen
+        int depth = 1;      // 1-based ring index from the focus
+        qint64 size = 0;
+        QString name;
+        QString path; // repo-relative, for the tooltip
+        QColor color;
+        bool hasChildren = false;
+        QList<int> trail; // child-index chain from the root to this node
+    };
+
+    struct Geometry {
+        QPointF center;
+        qreal hole = 0;
+        qreal ringWidth = 0;
+    };
+
+    Geometry geometry_() const
+    {
+        Geometry g;
+        g.center = QPointF(width() / 2.0, height() / 2.0);
+        const qreal radius = qMax<qreal>(60.0, qMin(width(), height()) / 2.0 - 8);
+        g.hole = qMax<qreal>(34.0, radius * 0.24);
+        g.ringWidth = (radius - g.hole) / kRings;
+        return g;
+    }
+
+    const SunburstNode *focusNode() const
+    {
+        const SunburstNode *node = &m_root;
+        for (int index : m_trail) {
+            if (index < 0 || index >= node->children.size())
+                return &m_root;
+            node = &node->children.at(index);
+        }
+        return node;
+    }
+
+    // Fixed categorical slots for ring 1 (stepped for dark/light surfaces);
+    // deeper rings shade the inherited hue toward the surface so depth reads
+    // as lightness, and odd siblings get a nudge so same-hue neighbours stay
+    // separable next to the 2px gaps.
+    QColor slotColor(int index, bool dark) const
+    {
+        static const char *kDark[] = {"#3987e5", "#199e70", "#c98500",
+                                      "#008300", "#9085e9", "#e66767",
+                                      "#d55181", "#d95926"};
+        static const char *kLight[] = {"#2a78d6", "#1baf7a", "#eda100",
+                                       "#008300", "#4a3aa7", "#e34948",
+                                       "#e87ba4", "#eb6834"};
+        if (index < 0 || index >= 8)
+            return QColor("#8a8a8a");
+        return QColor(dark ? kDark[index] : kLight[index]);
+    }
+
+    static QColor shaded(const QColor &base, int depth, bool dark, int index)
+    {
+        const qreal f = qMin(0.55, (depth - 1) * 0.16 +
+                                       (depth > 1 ? (index % 2) * 0.06 : 0.0));
+        const int toward = dark ? 255 : 0;
+        return QColor(int(base.red() + (toward - base.red()) * f),
+                      int(base.green() + (toward - base.green()) * f),
+                      int(base.blue() + (toward - base.blue()) * f));
+    }
+
+    // The colour of the node `trail` points at has to survive zooming, so it
+    // is always derived from the FULL tree: slot by ring-1 child index, then
+    // shaded by absolute depth.
+    QColor colorForTrail(const QList<int> &trail, bool dark) const
+    {
+        if (trail.isEmpty())
+            return QColor("#8a8a8a");
+        return shaded(slotColor(trail.first(), dark), trail.size(), dark,
+                      trail.last());
+    }
+
+    void layoutRing(const SunburstNode &node, int depth, qreal startDeg,
+                    qreal spanDeg, const QList<int> &trail)
+    {
+        if (depth > kRings || node.size <= 0)
+            return;
+        const bool dark = currentThemeIsDark();
+        qreal at = startDeg;
+        for (int i = 0; i < node.children.size(); ++i) {
+            const SunburstNode &child = node.children.at(i);
+            if (child.size <= 0)
+                continue;
+            const qreal childSpan =
+                spanDeg * qMin<qreal>(1.0, double(child.size) / double(node.size));
+            if (qAbs(childSpan) >= 0.4) {
+                QList<int> childTrail = trail;
+                childTrail.append(i);
+                QStringList names;
+                const SunburstNode *walk = &m_root;
+                for (int index : childTrail) {
+                    walk = &walk->children.at(index);
+                    names.append(walk->name);
+                }
+                Segment seg;
+                seg.startDeg = at;
+                seg.spanDeg = childSpan;
+                seg.depth = depth;
+                seg.size = child.size;
+                seg.name = child.name;
+                seg.path = names.join(QLatin1Char('/'));
+                seg.color = colorForTrail(childTrail, dark);
+                seg.hasChildren = !child.children.isEmpty();
+                seg.trail = childTrail;
+                m_segments.append(seg);
+                layoutRing(child, depth + 1, at, childSpan, childTrail);
+            }
+            at += childSpan;
+        }
+    }
+
+    bool inHub(const QPoint &pos) const
+    {
+        const Geometry g = geometry_();
+        return QLineF(g.center, pos).length() <= g.hole;
+    }
+
+    int segmentAt(const QPoint &pos) const
+    {
+        const Geometry g = geometry_();
+        const qreal r = QLineF(g.center, pos).length();
+        if (r <= g.hole)
+            return -1;
+        // Same convention as the segments: degrees CCW from 3 o'clock.
+        qreal angle = std::atan2(g.center.y() - pos.y(), pos.x() - g.center.x())
+                      * 180.0 / M_PI;
+        for (int i = 0; i < m_segments.size(); ++i) {
+            const Segment &seg = m_segments.at(i);
+            const qreal r0 = g.hole + (seg.depth - 1) * g.ringWidth;
+            const qreal r1 = r0 + g.ringWidth;
+            if (r < r0 || r > r1)
+                continue;
+            // Segments run clockwise (negative span) from startDeg; normalise
+            // the cursor angle into [start+span, start].
+            qreal delta = std::fmod(seg.startDeg - angle, 360.0);
+            if (delta < 0)
+                delta += 360.0;
+            if (delta <= qAbs(seg.spanDeg))
+                return i;
+        }
+        return -1;
+    }
+
+    SunburstNode m_root;
+    QList<int> m_trail; // child-index chain from the root to the focus
+    int m_hover = -1;
+    mutable QVector<Segment> m_segments; // rebuilt each paint (geometry-dependent)
 };
 
 inline QString formatDuration(qint64 ms)
