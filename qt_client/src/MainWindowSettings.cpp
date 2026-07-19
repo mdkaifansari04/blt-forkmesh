@@ -3294,8 +3294,27 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
         lower.contains("blocks ") || lower.contains("unable")) {
         return {QStringLiteral("#f85149"), QStringLiteral("ERROR")};
     }
+    // Category should reflect *what drove the request*, not the payload the
+    // server happened to return. The verbose "net" log line embeds a peeked
+    // response snippet as "[body: …]", and a repository object always carries
+    // fields like "solana" and "lastSync" — so matching the rules against the
+    // body mis-badged a catalog publish as WALLET (from the "solana" JSON key)
+    // or SYNC (from "lastSync"). Drop the bracketed body before classifying so
+    // the badge comes from the verb/URL/event instead (adhoc #182). The error
+    // precedence check above still runs on the full message, because a failure
+    // reply's explanation is often only in that server-sent body.
+    QString forRules = lower;
+    const int bodyStart = forRules.indexOf(QLatin1String("[body:"));
+    if (bodyStart >= 0) {
+        // The body snippet can itself contain ']' (JSON arrays), so cut to the
+        // last ']' — the closing bracket we appended, since the trailing URL
+        // and event text don't contain one.
+        const int bodyEnd = forRules.lastIndexOf(QLatin1Char(']'));
+        if (bodyEnd > bodyStart)
+            forRules.remove(bodyStart, bodyEnd - bodyStart + 1);
+    }
     for (const Rule &r : kNetworkLogRules) {
-        if (lower.contains(QLatin1String(r.needle)))
+        if (forRules.contains(QLatin1String(r.needle)))
             return {QString::fromLatin1(r.accent), QString::fromLatin1(r.badge)};
     }
     return {QStringLiteral("#6e7681"), QStringLiteral("INFO")};
