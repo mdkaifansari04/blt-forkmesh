@@ -1084,6 +1084,17 @@
     // profile/notification controls for a Sign Up / Log In link.
     const guest = !session || (!session.nodeName && !session.email);
     if (guest) {
+      // The profile and settings documents are account pages — signed-out
+      // visitors have no profile to show there, so bounce through login and
+      // come back once they have one. /@name public profiles share the profile
+      // document and stay open to guests.
+      const page = currentPage();
+      const accountPage = page === "settings" ||
+        ((page === "profile" || page === "profile-repositories") && !publicProfileNameFromPath());
+      if (accountPage) {
+        location.replace("/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`));
+        return false;
+      }
       const authLink = $("[data-guest-auth-link]");
       if (authLink) {
         authLink.classList.remove("hidden");
@@ -1097,7 +1108,13 @@
       document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
     }
 
-    renderProfile(session || { nodeName: "guest" });
+    if (guest) {
+      // No fabricated "guest" identity: the chrome keeps its baked defaults;
+      // only the per-page header context still needs to be set.
+      renderHeaderContext();
+    } else {
+      renderProfile(session);
+    }
     if (session?.nodeName) {
       if (grant) offerLinkGrant(grant);
       canonicalProfileReady = hydrateCanonicalProfile(session).then(() => loadNotifications()).catch(() => {});
