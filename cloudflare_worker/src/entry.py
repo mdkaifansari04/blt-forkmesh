@@ -19057,7 +19057,7 @@ class Default(WorkerEntrypoint):
                     await touch_registered_node(self.env, owner_bi, owner_rec)
                 except Exception:
                     pass
-            elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats"):
+            elif host_match.group(3) in ("tree", "blobs", "blob", "raw", "history", "commit", "branches", "search", "stats", "sizes"):
                 # Browsing a private repo's files/commits needs a view token as
                 # ?ts=&sig= (the host-token query shape): the owner's own
                 # (forkmesh-view-v1), or — when ?viewer= names a collaborator the
@@ -20618,7 +20618,7 @@ class ForkMeshHost(DurableObject):
             served = REPO_HOST_RE.match(path)
             served_by = safe_segment(served.group(1)) if served else ""
             return await self._tunnel("search", query, ref, served_by, ua)
-        if action in ("tree", "blob", "history", "commit", "branches", "stats"):
+        if action in ("tree", "blob", "history", "commit", "branches", "stats", "sizes"):
             await self._mark_present(path)
             op = "commits" if action == "history" else action
             # This DO is per-repo, so the owner in its path IS the mirror node
