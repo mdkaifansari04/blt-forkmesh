@@ -2607,17 +2607,25 @@ async def _decrypted_public_catalog(env, now):
         except Exception:
             active_nodes = None
         catalog_rows = []
+        decrypted = {}
         for row in rows:
             if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
                 continue
-            rec = await decrypt_row(env, row.get("data"))
+            blob = str(row.get("data") or "")
+            rec = _CATALOG_ROW_DECRYPT_MEMO.get(blob)
             if not rec:
-                continue
+                rec = await decrypt_row(env, blob)
+                if not rec:
+                    continue
+            if len(decrypted) < CATALOG_ROW_DECRYPT_MEMO_MAX:
+                decrypted[blob] = rec
             catalog_rows.append({
                 "key_bi": row.get("key_bi"),
                 "is_private": int(row.get("is_private") or 0),
                 "data": rec,
             })
+        _CATALOG_ROW_DECRYPT_MEMO.clear()
+        _CATALOG_ROW_DECRYPT_MEMO.update(decrypted)
     except BaseException:
         # Release the slot (covers CancelledError from a canceled request) so
         # the next caller retries instead of waiting out a phantom refresh.
@@ -2714,6 +2722,23 @@ _SOL_USD_CACHE_TTL_MS = 5 * 60 * 1000
 # feeds best-effort mirror selection, not the integrity-checked ref content.
 _PUBLIC_CATALOG_MEMO = {"ts": 0, "rows": None, "refresh_ts": 0}
 PUBLIC_CATALOG_MEMO_TTL_MS = 5000
+# Ciphertext -> decrypted record, reused ACROSS catalog memo refills. The 5s
+# memo above stopped every request from re-decrypting the catalog, but the one
+# request that claims each refill still paid a full AES-GCM decrypt_row() per
+# public repo — pure Pyodide CPU (base64 + JS-boundary crossings per row) that
+# grows with the catalog and landed on whichever request lapsed the TTL. Under
+# clone traffic that is an info/refs request, and a large catalog pushed that
+# single request past the Workers CPU limit ("Worker exceeded CPU time limit"
+# on GET .../info/refs, adhoc #183 — the same clone-path family as #144/#153/
+# #167). A row's encrypted blob is rewritten (fresh IV) on every update, so an
+# unchanged blob is byte-identical and its previous plaintext is still valid:
+# a refill now only decrypts rows whose ciphertext actually changed. Records
+# are shared read-only by catalog consumers (they already share them for a TTL
+# window via the memo above) and must not be mutated. Rebuilt from the rows
+# seen each refill, so deleted rows drop out and the memo stays bounded by the
+# live catalog (plus a hard cap as a backstop).
+_CATALOG_ROW_DECRYPT_MEMO = {}
+CATALOG_ROW_DECRYPT_MEMO_MAX = 4096
 DONATION_ADDRESS_TTL_MS = 60 * 60 * 1000
 # After the address expires (hidden, no longer usable) keep it parked for one
 # more hour before deleting it outright, so a late payment can still be matched
