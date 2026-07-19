@@ -1158,6 +1158,11 @@ private:
     QWidget *buildRepoSecurityTab();
     QWidget *buildRepoQualityTab();
     QWidget *buildInsightsTab();
+    // Size map tab (adhoc #189): sunburst of the working tree's directory
+    // sizes. refreshSizeMapTab scans on a worker thread; force=false is the
+    // lazy tab-click path that reuses the last scan of the same repo.
+    QWidget *buildSizeMapTab();
+    void refreshSizeMapTab(bool force);
     QWidget *buildPlaceholderTab(const QString &name);
 
     // Discussions tab (signed repository discussions with inbox fallback).
@@ -3692,6 +3697,17 @@ private:
     int m_shortcutsTabIndex = -1; // index of the Shortcuts page
     int m_settingsTabIndex = -1; // index of the Settings page
     int m_projectsTabIndex = -1; // index of the Projects page (issue #384)
+    int m_sizeMapTabIndex = -1; // index of the Size map page (adhoc #189)
+    // Size map tab state: the chart is a RepoSunburstChart (MainWindowInternal.h),
+    // held as QWidget* like the other inline-widget members. m_sizeMapScannedPath
+    // remembers which working copy the chart currently shows so re-opening the
+    // tab on the same repo skips the rescan; the epoch discards a scan that
+    // lands after the user switched repos.
+    QWidget *m_sizeMapChart = nullptr;
+    QLabel *m_sizeMapStatus = nullptr;
+    QString m_sizeMapScannedPath;
+    bool m_sizeMapScanning = false;
+    int m_sizeMapScanEpoch = 0;
     QPushButton *m_repoProjectsTab = nullptr; // handle for the Projects (N) badge
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
