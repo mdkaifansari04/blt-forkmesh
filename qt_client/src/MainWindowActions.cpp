@@ -2262,6 +2262,10 @@ void MainWindow::showRun(int runId)
         m_actionStopButton->setVisible(run != nullptr &&
                                        (run->status == ActionStatus::Running ||
                                         run->status == ActionStatus::Queued));
+    if (m_actionSkipButton)
+        m_actionSkipButton->setVisible(run != nullptr &&
+                                       (run->status == ActionStatus::Queued ||
+                                        run->status == ActionStatus::AwaitingApproval));
     const bool fixable = run != nullptr && run->status == ActionStatus::Failed;
     if (m_actionFixButton)
         m_actionFixButton->setVisible(fixable);
@@ -2439,6 +2443,31 @@ void MainWindow::stopSelectedRun()
         showRun(m_selectedRunId);
         updateNotificationButton();
     }
+}
+
+void MainWindow::skipSelectedRun()
+{
+    ActionRun *run = findRun(m_selectedRunId);
+    if (!run)
+        return;
+
+    // Skip only applies before a run starts: a queued run is dropped from the
+    // queue, an awaiting-approval run is declined outright. Either way it never
+    // executes and is recorded as Skipped (distinct from a Cancelled stop).
+    if (run->status != ActionStatus::Queued &&
+        run->status != ActionStatus::AwaitingApproval)
+        return;
+
+    m_actionQueue.removeAll(run->id);
+    run->status = ActionStatus::Skipped;
+    run->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_actionStore->saveRun(*run);
+    logSystem(QStringLiteral("Actions: skipped \"%1\" for %2/%3.")
+                  .arg(run->workflowName, run->owner, run->name));
+    m_actionRuns = m_actionStore->loadAllRuns();
+    refreshActionsTable();
+    showRun(m_selectedRunId);
+    updateNotificationButton();
 }
 
 void MainWindow::fixSelectedRunWithAgent(const QString &provider, const QString &model)
@@ -2761,6 +2790,18 @@ QWidget *MainWindow::buildRepoActionsTab()
     connect(m_actionStopButton, &QPushButton::clicked, this,
             &MainWindow::stopSelectedRun);
 
+    // Skip: drop a still-pending run before it executes. Sits beside Stop; only
+    // shown for a run that hasn't started (queued or awaiting approval).
+    m_actionSkipButton = new QPushButton("Skip");
+    m_actionSkipButton->setObjectName("ghostButton");
+    m_actionSkipButton->setProperty("buttonSize", "sm");
+    m_actionSkipButton->setCursor(Qt::PointingHandCursor);
+    m_actionSkipButton->setToolTip("Skip this run without executing it");
+    setOcticon(m_actionSkipButton, "circle-slash", 16);
+    m_actionSkipButton->hide();
+    connect(m_actionSkipButton, &QPushButton::clicked, this,
+            &MainWindow::skipSelectedRun);
+
     // Copy log: drop the selected run's full log on the clipboard. Sits beside
     // Rerun and shares its visible-when-a-run-is-selected lifecycle.
     m_actionCopyLogButton = new QPushButton("Copy log");
@@ -2854,6 +2895,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     titleRow->addWidget(m_actionRunTitle);
     titleRow->addStretch();
     titleRow->addWidget(m_actionStopButton);
+    titleRow->addWidget(m_actionSkipButton);
     titleRow->addWidget(m_actionCopyLogButton);
     titleRow->addWidget(m_actionFixButton);
     titleRow->addWidget(m_actionFixAgentCombo);
