@@ -6534,8 +6534,8 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
         const double amount = issue.bountyUsd;
         const QString question =
             QStringLiteral("Issue #%1 has a $%2 bounty. Show the funding QR now?\n\n"
-                           "Send the SOL to the escrow address; on payout 90%% goes "
-                           "to the pull request author and 10%% to the ForkMesh "
+                           "Send the SOL to the escrow address; on payout 90% goes "
+                           "to the pull request author and 10% to the ForkMesh "
                            "treasury.")
                 .arg(number)
                 .arg(QString::number(amount, 'f', 2));
@@ -6571,8 +6571,9 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
         request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
         QNetworkReply *reply = m_networkAccess->post(
             request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        const QString payeeDisplay = pr.authorName.trimmed();
         connect(reply, &QNetworkReply::finished, this,
-                [this, reply, repo, number, amount] {
+                [this, reply, repo, number, amount, payeeDisplay] {
                     const QByteArray body = reply->readAll();
                     reply->deleteLater();
                     const QJsonObject obj = QJsonDocument::fromJson(body).object();
@@ -6608,7 +6609,8 @@ void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
                     // The dialog shows the QR, polls for the deposit, and on
                     // confirmation records the paid split; if the funder closes it
                     // early, a background watcher (and the worker cron) still pay.
-                    showBountyQrDialog(repo, number, uri, address, amount, amountSol);
+                    showBountyQrDialog(repo, number, uri, address, amount,
+                                       amountSol, QString(), payeeDisplay);
                 });
     }
 }
@@ -6662,8 +6664,9 @@ void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     QNetworkReply *reply = m_networkAccess->post(
         request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    const QString payeeDisplay = pr.authorName.trimmed();
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, repo, number, amount, walletMode] {
+            [this, reply, repo, number, amount, walletMode, payeeDisplay] {
         const QByteArray body = reply->readAll();
         reply->deleteLater();
         const QJsonObject obj = QJsonDocument::fromJson(body).object();
@@ -6725,7 +6728,7 @@ void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
                       .arg(QString::number(amount, 'f', 2))
                       .arg(amountSol));
         showBountyQrDialog(repo, number, uri, address, amount, amountSol,
-                           QStringLiteral("pr"));
+                           QStringLiteral("pr"), payeeDisplay);
     });
 }
 
