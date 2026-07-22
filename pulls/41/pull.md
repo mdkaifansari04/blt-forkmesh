@@ -4,7 +4,7 @@ number: 41
 title: Agent: make it so that if you login with a user that the key on desktop is replaced …
 base: main
 head: agent/adhoc-211-make-it-so-that-if-you-login-with-a-user-that-th
-status: open
+status: merged
 ts: 1784752911649
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh
