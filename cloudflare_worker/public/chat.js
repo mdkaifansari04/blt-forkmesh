@@ -36,6 +36,20 @@ const CHAT_MENTION_RE = /(^|[^A-Za-z0-9_-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\
 // relay's room DO needs — it closes sockets with no frames for 3 minutes, which
 // is why the old web client (which sent nothing while idle) kept disconnecting.
 const PRESENCE_INTERVAL_MS = 60000;
+// Registered-user directory (public, no secrets — see _account_users_directory
+// in the Worker). Seeds the people pane so every account shows even before it
+// has ever spoken in the room, and a light poll (the endpoint is edge-cached,
+// and a signup invalidates that cache) surfaces brand-new signups right away
+// with a welcome line in the log.
+const USERS_DIRECTORY_ENDPOINT = "/api/accounts/users";
+const USERS_DIRECTORY_REFRESH_MS = 60000;
+// Counters behind the site-header chat badge; the chat page re-baselines them
+// while open so time spent reading here counts as "seen".
+const CHAT_ACTIVITY_ENDPOINT = "/api/chat/activity";
+const CHAT_ACTIVITY_SEEN_KEY = "forkmesh.chat.activitySeen";
+// Only a directory entry created this recently gets the "just joined" welcome
+// line — an account merely missing from the previous (top-1000) page isn't news.
+const NEW_USER_ANNOUNCE_WINDOW_MS = 10 * 60 * 1000;
 const PEER_STALE_MS = 180000;
 const GROUP_WINDOW_MS = 5 * 60 * 1000; // same-sender messages collapse under one header
 const REACTION_EMOJI = ["👍", "❤️", "😂", "🎉", "👀", "🚀"];
@@ -813,6 +827,72 @@ function personIsOnline(person) {
   return person.lastSeenMs > 0 && Date.now() - person.lastSeenMs <= PEER_STALE_MS;
 }
 
+// ---- registered-user directory ------------------------------------------------
+// The room roster only knows senders it has decrypted frames from, so a user
+// who signed up on the website but never opened chat was invisible here. Merge
+// in the public account directory: every registered user gets a (offline)
+// roster entry, and a signup that appears between polls is announced in the
+// log so the room can welcome them right away.
+
+const directoryKnown = new Set(); // lowercased account names already merged
+let directorySeeded = false;
+
+async function refreshUsersDirectory() {
+  let users;
+  try {
+    const res = await fetch(USERS_DIRECTORY_ENDPOINT, {
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) return;
+    const data = await res.json().catch(() => null);
+    users = data && Array.isArray(data.users) ? data.users : [];
+  } catch (_) {
+    return;
+  }
+  for (const user of users) {
+    const name = String(user.name || "").trim().toLowerCase().slice(0, MAX_NAME);
+    if (!name) continue;
+    const fresh = !directoryKnown.has(name);
+    directoryKnown.add(name);
+    // Namespaced id so this offline placeholder never collides with a live
+    // senderId entry for the same account; renderPeople dedupes the pair by
+    // name, keeping the freshest sighting (i.e. the live one).
+    const id = "account:" + name;
+    const prev = roster.get(id);
+    roster.set(id, {
+      id,
+      name,
+      kind: "user",
+      lastSeenMs: prev ? prev.lastSeenMs : 0,
+    });
+    if (fresh && directorySeeded &&
+        Date.now() - Number(user.createdAt || 0) < NEW_USER_ANNOUNCE_WINDOW_MS) {
+      appendSystem("🎉 " + name + " just joined ForkMesh — say hi!");
+    }
+  }
+  directorySeeded = true;
+  schedulePeopleRender();
+}
+
+// Record the current activity counters as "seen" so the chat icon in the site
+// header (site-header.js reads the same key) shows no badge for what's on
+// screen right now.
+async function markChatActivitySeen() {
+  try {
+    const res = await fetch(CHAT_ACTIVITY_ENDPOINT, {
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) return;
+    const data = await res.json().catch(() => null);
+    if (!data || !data.ok) return;
+    localStorage.setItem(CHAT_ACTIVITY_SEEN_KEY, JSON.stringify({
+      messageCount: Number(data.messageCount) || 0,
+      userCount: Number(data.userCount) || 0,
+      at: Date.now(),
+    }));
+  } catch (_) {}
+}
+
 function renderPeople() {
   if (!peopleEl) return;
   peopleEl.textContent = "";
@@ -1449,6 +1529,14 @@ async function initChat() {
   if (input) input.placeholder = `Message ${activeChannel}…`;
   renderRooms();
   renderPeople();
+  // Fill the people pane with every registered user (and thereafter pick up
+  // brand-new signups), and baseline the header badge counters for this visit.
+  refreshUsersDirectory();
+  markChatActivitySeen();
+  setInterval(() => {
+    refreshUsersDirectory();
+    markChatActivitySeen();
+  }, USERS_DIRECTORY_REFRESH_MS);
   await hydrateUserSession();
   // Connect right away for signed-in users so retained room history is visible
   // without first focusing an input.
