@@ -1,0 +1,66 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405499999,
+    "endDate": 1785124800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nImport, continuously mirror, and export a hosted repository through one provider-neutral adapter contract while preserving context and reporting every lossy conversion.\n\n## Implementation\n\n- Define adapter capabilities for Git refs, issues, pull requests, reviews, comments, labels, milestones, discussions, documentation snapshots, workflow definitions and checks, releases and assets, and portable social records.\n- Implement one-action onboarding from a standard Git URL plus an adapter credential, with resumable cursors and idempotent retries.\n- Support two-way ref and collaboration synchronization with origin markers, conflict records, and loop prevention.\n- Preserve source identifiers, timestamps, relationships, attachments, and authorship status without impersonating source signatures; sign local importer provenance.\n- Produce a signed migration report listing imported, updated, skipped, unsupported, unverifiable, and failed records plus a resilience summary linked to #439 and #466.\n\n## Acceptance criteria\n\n- A repeated import with the same cursor creates no duplicate refs or records.\n- Concurrent changes on both sides produce an explicit conflict instead of silent last-write-wins loss.\n- Interrupted code, metadata, and asset transfers resume from durable cursors.\n- Unsupported source fields are preserved in the report and never presented as migrated.\n- The adapter core has no source-provider names or provider-specific branches; adapter fixtures supply all variance.\n\n## Dependencies\n\nUses #440 for deterministic records, #461 for releases, and #464/#471 for event and check exchange.\n\n## Verification\n\nRound-trip a fixture repository containing every supported record type through an in-process adapter, interrupt each phase, replay it, and compare refs, relationships, provenance, assets, cursors, and the signed report.",
+            "id": "open-445",
+            "sig": "rb2yBBdKgWxVocmolRGcCFjEu4rHYcszPYO8lGvxpLr4V0sXDNOsC5R72gYSGJNKmMGStxbUFGTglR3Il7KTBw",
+            "title": "Add a provider-neutral mirror adapter and migration report",
+            "ts": 1784405499999,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785124800000,
+            "id": "2dba5ec6-18ec-497c-add7-6c523f7f227f",
+            "sig": "6fdMiBtQQUGTD05vv_8Y2WgvqgoNWcpSp8myRv3qqz1JvUpAt1ebr5KXTpOKsEmKEjmWN6k9fNw_Yo4iHKi8CA",
+            "startDate": 1784347200000,
+            "ts": 1784405500000,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "b7c3e31a-7779-41b0-87c1-3bd60858f35a",
+            "sig": "iuGXK_-EJp1ehhNy2LD9xaWNewYqrf17Bug6SJHT_Bu9OsMjUMMaiKFZqvOliumbnx3T1OQKT9IP5mT4oD5KBQ",
+            "ts": 1784729751137,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "4b1de9a6-8066-4eca-aff3-e580c8a27af2",
+            "sig": "5ha0fHFzF5teoj8v-Luiqj_wothwjVKqb7vktghW_7D13v7XagPlX9f-WBAqeNmLIVmuaG3nTpO1yh0PxmC1BQ",
+            "status": "closed",
+            "ts": 1784729751138,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "feature",
+        "infra"
+    ],
+    "milestone": "Open operations",
+    "number": 445,
+    "priority": 13,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784347200000,
+    "status": "closed",
+    "title": "Add a provider-neutral mirror adapter and migration report",
+    "updatedAt": 1784729751138,
+    "votes": 0
+}

@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751262,
+    "endDate": 1786680000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nUsers can understand what will always remain free and portable, what ForkMesh sells, and how paid services sustain the network without control of the protocol.\n\n## Scope\n\n- Separate the free protocol and self-hostable software from paid hosting, team administration, indexing, reliability, support, and infrastructure.\n- Publish initial plans, usage units, portability commitments, support boundaries, and an explicit no-data-sale policy.\n- Model acquisition, service costs, gross margin, and the path from public-project value to paid adoption.\n\n## Acceptance criteria\n\n- A public entitlement matrix clearly distinguishes protocol rights, self-hosted capabilities, free hosted limits, and paid services.\n- Pricing interviews validate buyer, budget, and top paid jobs with documented revisions.\n- Unit-economics instrumentation exists before any unlimited paid plan launches.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Product contract & measurement**\n- Numeric priority: **2 of 44** (1 is highest)\n- Depends on: #476\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**15% as of 2026-07-22.** The README names aligned revenue directions and the network already hosts services, but no simple entitlement/pricing model or measured unit economics is published. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Pricing comprehension, qualified demand, trial-to-paid conversion, service cost, and infrastructure margin. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-486",
+            "sig": "TH25olCUIeEgDd0lR7TeX-uZMXJiB418-LsmxVs7b6WYR0PoqfHyU6u_41hswHucBiOs_aRhVPDph-mZfJspBw",
+            "title": "Publish the free-protocol and paid-services business model",
+            "ts": 1784729751262,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "2265226e-69bf-429e-ba7c-0f511c4e5b3f",
+            "labels": [
+                "revenue",
+                "product",
+                "docs"
+            ],
+            "sig": "sRmCIAINvMBKwXILm6gZmf1_N0lbPq-imhld8xWckwsFJSL_to6KNfY_EZmBvKSaeCK2kZRcBZ6jIZBMj0o0DA",
+            "ts": 1784729751263,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "c2f40688-e271-4647-9eab-70429d79a5fe",
+            "milestone": "Product contract & measurement",
+            "sig": "9i33pYl3972pErH3NaQ0kFAvAVr1PvaBckGrnRHWKAITV-uGB1KrFGwRwHPZ8mTscxGZs494APQBQoYq6nTmCw",
+            "ts": 1784729751264,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1786680000000,
+            "id": "0bf33006-2876-4da4-b96d-b4c9f54dd929",
+            "sig": "83j9Z3DWxJ0gI-AC8A8hfCgMGGMbXRCZ62yejnRn93Zz57PN1YdMKV_JGdDWzerwCyQ5w2l9C_WTlHIDbzhxAQ",
+            "startDate": 1784692800000,
+            "ts": 1784729751265,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3efbaf05-27f8-4638-8d02-6501d47bcd9f",
+            "priority": 2,
+            "sig": "mtZa-5QuMa5TbNFLh0efArEvMfkr0PT80TG7hX2UkBu8aNCudBWDGeB5dg0PF4lmOy4bpGY7kKd_AOj_XIuSCA",
+            "ts": 1784729751266,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "216f2bf2-2738-4056-84ef-90dd7b32102d",
+            "progress": 15,
+            "sig": "zbpbaj_WXMa33wK-rndWOEQa3sE8b99i9ggG-O5IvRwdPQCz5pq082h8ew91xOxUWItj5oiaFZNodom2Z-0lBA",
+            "ts": 1784729751267,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "revenue",
+        "product",
+        "docs"
+    ],
+    "milestone": "Product contract & measurement",
+    "number": 486,
+    "priority": 2,
+    "progress": 15,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Publish the free-protocol and paid-services business model",
+    "updatedAt": 1784729751267,
+    "votes": 0
+}

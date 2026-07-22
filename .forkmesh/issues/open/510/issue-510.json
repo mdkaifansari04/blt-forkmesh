@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751406,
+    "endDate": 1816920000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nThird parties can build migration, automation, discovery, deployment, analytics, and moderation tools without depending on internal UI behavior.\n\n## Scope\n\n- Version HTTP resources, streaming events, command-line output, webhook delivery, authentication, and capability discovery.\n- Document pagination, filtering, idempotency, ordering, retries, signatures, rate limits, errors, and deprecation.\n- Ship maintained examples and SDK-light integration fixtures for each major tool category.\n\n## Acceptance criteria\n\n- Contract tests run against hosted and self-hosted services and across supported version skew.\n- Webhook and stream consumers recover from duplicate, delayed, missing, and out-of-order delivery.\n- At least three external integration examples work from published documentation alone.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 ecosystem gate**\n- Milestone: **Open platform & ecosystem**\n- Numeric priority: **35 of 44** (1 is highest)\n- Depends on: #484, #485\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**45% as of 2026-07-22.** ForkMesh already exposes repository HTTP routes, WebSockets, workflow files, MCP tools, and command helpers; complete versioned public contracts and examples remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: External integrations, contract pass rate, API errors, webhook delivery, and upgrade breakage. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-510",
+            "sig": "RtuxffuUG6RQqTgQ12xs1XmN0eR2vpNi1lbxut5xLCahn3sn5t2bDYCsevFUXqWXtpUXMpUoNqIDcxq_g1ulCw",
+            "title": "Expose stable HTTP, event-stream, CLI, and webhook interfaces",
+            "ts": 1784729751406,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e729384b-c279-4dda-8006-e82408704d23",
+            "labels": [
+                "protocol",
+                "infra",
+                "feature"
+            ],
+            "sig": "8wi5yEdRjH5WDOtcBaGV5ue7PS7-ti-V1Zz3cm6wsIqxy3Ba_ZDja-1I07N7p7tENHR4d0PqXM9RGvI9cdxfBA",
+            "ts": 1784729751407,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "f583b0ae-01cb-456c-ae75-0b0f07415535",
+            "milestone": "Open platform & ecosystem",
+            "sig": "rzG3UZKM17nlz8NMdK_TZRk89MWQtd0-5EGwDnA0jpKGHpyizt8BUrGqqhzLyKL5QXiNNy6qBc31kFkrt8usDw",
+            "ts": 1784729751408,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1816920000000,
+            "id": "ef5933c8-ccc9-4c1b-b7c8-92aec14c77d3",
+            "sig": "a4lPzFEo-bVssdn8jgqKUqps0y_fnRG0sbikzh6sHpq8tXqX78eMStnid7I74gIYAa0w5Ruj8iogv0tvOvDYAA",
+            "startDate": 1792382400000,
+            "ts": 1784729751409,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "0c8b1af7-dec6-4e8d-916a-042fc302688a",
+            "priority": 35,
+            "sig": "vBUM0CDsm92HYw86i17o0xjQTHp6oD3dXmEVKEJgxvPrSgAuQoRfcQH3EP1tJiEXAfSDG-vkEkHVr5IZKQjKBg",
+            "ts": 1784729751410,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "38e8e6b4-1fe2-4970-bb64-d780bf033745",
+            "progress": 45,
+            "sig": "rhLNJ7NxvRlLgXlkwYUeaDjt1jbzlZ9Q7JGtg--WfWTaJY47-4X8skaQ4CzMtXsKrfoD5kXdFUriFSEJ2E_vDw",
+            "ts": 1784729751411,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "protocol",
+        "infra",
+        "feature"
+    ],
+    "milestone": "Open platform & ecosystem",
+    "number": 510,
+    "priority": 35,
+    "progress": 45,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1792382400000,
+    "status": "open",
+    "title": "Expose stable HTTP, event-stream, CLI, and webhook interfaces",
+    "updatedAt": 1784729751411,
+    "votes": 0
+}

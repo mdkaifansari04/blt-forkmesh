@@ -2737,7 +2737,8 @@ private:
     void showBountyQrDialog(const RepositoryRecord &repo, int number,
                             const QString &uri, const QString &address,
                             double amountUsd, const QString &amountSol,
-                            const QString &kind = QString());
+                            const QString &kind = QString(),
+                            const QString &payee = QString());
     // Issue #347: fetch/mint the owner's inbuilt bounty wallet and show its
     // deposit address, QR and live balance so the owner can pre-fund it.
     void showBountyWalletDialog();
@@ -2831,6 +2832,10 @@ private:
     QWidget *makeComposerIdentity(QLabel **outAvatar = nullptr,
                                   const QString &verb = QString());
     void logout();
+    // Sign in to an existing ForkMesh user account (email + password) from
+    // Settings, without leaving the app. Prompts for the username, then runs the
+    // email/password login flow. A user account can own many nodes.
+    void loginToUserAccount();
     // Erase every trace of ForkMesh from this computer (data, settings, desktop
     // integration and the program files) after confirmation, then quit.
     void uninstallForkMesh();
@@ -2932,6 +2937,9 @@ private:
     void refreshChatMembers();
     void refreshChatUserDirectory();
     void mergeChatUserDirectory(const QJsonArray &users);
+    // Profile popup for a row in the chat users column: who they are, when
+    // they joined, their nodes, and extra account info fetched on demand.
+    void showChatUserProfile(const MemberInfo &member, const QStringList &nodeLines);
     void promptAddChannel();
     // Create an invite-only room (see ServerNode::createPrivateChannel) and start
     // in it. Its name is remembered so it survives a reconnect/restart.
@@ -5222,6 +5230,10 @@ private:
     QHash<QString, MemberInfo> m_chatDirectoryUsers; // lowercased user -> profile
     bool m_chatDirectoryFetchInFlight = false;
     qint64 m_chatDirectoryFetchedMs = 0;
+    // Repeating directory poll so brand-new signups appear in the users column
+    // without a reconnect (adhoc #209); the endpoint is edge-cached server-side.
+    QTimer *m_chatDirectoryTimer = nullptr;
+    bool m_chatDirectoryLoaded = false; // first fill done (may legitimately be empty)
     QSet<QString> m_removedPeerIds;  // IDs explicitly removed via removeChatMember
     // True once this node has posted (or confirmed it already posted) its one-time
     // welcome greeting this run, so the per-roster check stays cheap (issue #192).

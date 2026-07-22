@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751238,
+    "endDate": 1801198800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nCommunities can adopt ForkMesh while continuing to work on major centralized and self-hosted forges, with changes flowing safely in both directions.\n\n## Scope\n\n- Certify one major centralized provider and one self-hosted forge first, then add adapters behind a common provider contract.\n- Synchronize refs, issues, pull requests, comments, reviews, labels, releases, identities, edits, and deletions with loop prevention.\n- Expose mapping, lag, retries, conflicts, source-of-truth rules, and pause/resume controls.\n\n## Acceptance criteria\n\n- Repeated bidirectional sync is idempotent and never duplicates or silently overwrites records.\n- Provider fixtures cover edits, deletion, force updates, rate limits, outages, and identity ambiguity.\n- Sync lag meets the published SLO and every unresolved conflict is visible and recoverable.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Collaboration public beta**\n- Numeric priority: **17 of 44** (1 is highest)\n- Depends on: #477, #481, #483, #484\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**20% as of 2026-07-22.** Git remotes can be mirrored and refreshed, but complete bidirectional collaboration adapters and conflict policy are not yet delivered. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Sync lag, convergence rate, conflict rate, retry success, and retained external workflows. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-482",
+            "sig": "4-WYHWPxgaCyR0Ut4hQI-XA1ZzUs66nZJ3PG7eKE77p9lNa8ZLRkJ8QaGKD1pmcnpeCqUwYUJvmU4jGdAUemDw",
+            "title": "Build continuous two-way forge synchronization",
+            "ts": 1784729751238,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "86794d00-e1d6-484e-9eb5-7bca9aedf77c",
+            "labels": [
+                "product",
+                "protocol",
+                "infra"
+            ],
+            "sig": "Jj6jHNT27Zp4WktyyDCfSl_pxhPZWhsSZ4GuJ-1b5xMPx2YXsliggpK6pBhdETyN3DgmWoJqG5UvtROFuWWBAA",
+            "ts": 1784729751239,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "623a0d52-d8ba-4154-83da-2e0a3205409b",
+            "milestone": "Collaboration public beta",
+            "sig": "gKQ5zotwmaSgvWsyPAhaRJsNmG-FHqjaTDWPpuCJgMKvWeEsMbWNz8gn7Xxeu5jEp7jq0snhnIFXA1jo-NKWAA",
+            "ts": 1784729751240,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1801198800000,
+            "id": "c70fe01a-1395-48e3-835b-00898ba4670f",
+            "sig": "oTzuDQ2b2ytHCEXhGYhkw4H8M-ph31L2Yd7Ju84u60ZKfidxlivcSWiZH62I1knxA0FiMxf1s-Blxbefsa6KAw",
+            "startDate": 1786939200000,
+            "ts": 1784729751241,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "b7e4a633-05b4-4069-ba28-7ba99b0e7871",
+            "priority": 17,
+            "sig": "vXjmA1GrCkiiQV3kjHPCGojTSnOGaADaoPrUHN1i0RRVgRnL6xAaVN-tHUJCxzqjj9PFN5aZ-Hat_madUM2EDQ",
+            "ts": 1784729751242,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "76a77b41-86e9-490f-8e66-cfa0c4eecf9d",
+            "progress": 20,
+            "sig": "x4Ww-nICBkXmLysT18YYc0L26C5s06P0JuAm9tz8Dpvb42MtIzmoV_uEvU0QwvwI7yQZ-7A8i0ERDYXO9sSWDg",
+            "ts": 1784729751243,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "protocol",
+        "infra"
+    ],
+    "milestone": "Collaboration public beta",
+    "number": 482,
+    "priority": 17,
+    "progress": 20,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1786939200000,
+    "status": "open",
+    "title": "Build continuous two-way forge synchronization",
+    "updatedAt": 1784729751243,
+    "votes": 0
+}

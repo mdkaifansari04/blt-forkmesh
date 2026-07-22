@@ -1,0 +1,66 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500023,
+    "endDate": 1785297600000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nMake every service boundary and failure mode machine-readable, then prove the network can run without the repository's default public deployment.\n\n## Implementation\n\n- Define a deployment manifest for canonical, cached, transient, encrypted, and observable data plus retention and operator ownership.\n- Package independently configurable relay and control, public index and search, web, seed, identity resolution, room relay, workflow broker, and organization service roles.\n- Provide one declarative bootstrap that can colocate roles or point each role at an independent operator.\n- Add signed configuration export and import, health, backup boundaries, and conformance checks for every role.\n- Document and test identity resolution, public discovery, cloning, contribution routing, and recovery when the default public services disappear.\n\n## Acceptance criteria\n\n- A clean self-host fixture starts every role without a hidden dependency on a default public endpoint.\n- Removing the default control plane leaves existing repositories cloneable and independently discoverable.\n- The manifest states exactly which metadata each role can and cannot observe.\n- Canonical Git and collaboration data remain with configured repository nodes.\n- Configuration migration rejects secret leakage, unknown roles, and incompatible schema versions.\n\n## Dependencies\n\nBuilds on #442, #456, #473, and protocol schemas from #474.\n\n## Verification\n\nStart a full independent topology, import configuration, clone and contribute, remove each role and the default public endpoints in turn, restore it, and verify declared failure behavior and data boundaries.",
+            "id": "open-457",
+            "sig": "1VNS2LarO5_yDLfX6BVedm_BsFfbDayqWAhSmb4F4pdEYNQrykrAx6wf3vxxx0xhaojWv9aiI6pD_G_PeRITDw",
+            "title": "Publish deployment boundaries and independent service bootstrap",
+            "ts": 1784405500023,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785297600000,
+            "id": "ab2a173a-35db-4e62-8ed3-ccce1b4ab2c1",
+            "sig": "6xT3H8QH2WYl30BLWzd6JpII9WlM6CuhJHLhUO-yG4L9rFWijlNNGUQQFsamVQQOrp4fdYJqJCdb9h0Y6XfOBQ",
+            "startDate": 1785038400000,
+            "ts": 1784405500024,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "6a4e5f0f-a7b1-4277-a0c2-cda693883f89",
+            "sig": "pKVaQG0cGZBnByLESaB2IgTAA19u8wT-9tcqc-BY82SodL2DhhTATKHsDvPkr0m6sSWYxHTo9N0Y4C58pZBcAA",
+            "ts": 1784729751161,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "f5c45696-9103-4f7c-b48f-da05170fcf59",
+            "sig": "Pf4CcXc3dcYAESd9EdWtSUXebIPAD0oHL8VMYYUdzYyHDgz4Oyg4A_maFtu8lokLLglGj6H2YQTiQ-RhniBeAw",
+            "status": "closed",
+            "ts": 1784729751162,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "infra",
+        "enhancement"
+    ],
+    "milestone": "Open operations",
+    "number": 457,
+    "priority": 25,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1785038400000,
+    "status": "closed",
+    "title": "Publish deployment boundaries and independent service bootstrap",
+    "updatedAt": 1784729751162,
+    "votes": 0
+}

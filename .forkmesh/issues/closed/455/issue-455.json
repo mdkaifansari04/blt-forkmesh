@@ -1,0 +1,66 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500019,
+    "endDate": 1784952000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nMake repository dependencies resolve through stable standard Git URLs, immutable locks, content identity, and verified mirror fallback.\n\n## Implementation\n\n- Define a content-addressed repository identity and resolver response that maps a canonical Git URL to verified mirror routes.\n- Add real subprocess fixtures for four common language dependency clients using commit, tag, and branch references.\n- Document and validate immutable commit locking, subdirectory references, submodules, and lockfile refresh.\n- Fail over from an unavailable canonical route only to a mirror proving the requested repository identity and object identifier.\n- Emit source-provenance metadata that records the requested URL, chosen route, resolved commit, and verification result.\n\n## Acceptance criteria\n\n- All dependency fixtures install using unmodified client commands.\n- A tag or branch movement cannot change an already locked build.\n- A mirror with the wrong repository identity or missing object is rejected.\n- Fallback works without rewriting the dependency manifest.\n- Provenance contains no credential-bearing URL.\n\n## Dependencies\n\nDepends on standard Git probes in #435 and consumes route health from #453.\n\n## Verification\n\nRun clean-cache and warm-cache installs, immutable locks, moved refs, canonical outage, valid and invalid mirror fallback, submodule, and credential-redaction fixtures.",
+            "id": "open-455",
+            "sig": "46J-h-ghfgwNr-ILO_ZwWn5zRKVxnzbVpJrQ0reeAXIWIRwnlpNHbNry16wPDw7ZDh4C8vRdu5BqdMljE0AwBA",
+            "title": "Validate stable Git dependency URLs and mirror fallback",
+            "ts": 1784405500019,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784952000000,
+            "id": "a5d3c5d4-a7d3-4000-beba-214bf63deb7c",
+            "sig": "XzoWJT0Ffsd-rvWUjakBErSm7aVEpFl583-KMSZzWRRkc6ieV_me8_vWv-wjOPWZIWqiqf7ikz6iaEHrZjHTDw",
+            "startDate": 1784779200000,
+            "ts": 1784405500020,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "97dc4dce-0d93-44d7-815d-062c9d6a0928",
+            "sig": "u2OJ8JDHCyTOMkvXQxEInTXuPa4u2DhULuqidWif5gF4RplQU4GUBjDj-8kW6TjB1GoFtNTatzKzzWUBLdDwCg",
+            "ts": 1784729751157,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "14039820-c2b6-421b-8cfb-4d70aae95f5e",
+            "sig": "9EWKF6UudTohcD5bZHcothPmxB1FDSSmJD5VcjWOwrVdecL0qd6fS1fmtkLWd41CM6DYM9fyx0n7X1NO-z6iCA",
+            "status": "closed",
+            "ts": 1784729751158,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "infra",
+        "enhancement"
+    ],
+    "milestone": "Daily Git workflow",
+    "number": 455,
+    "priority": 23,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784779200000,
+    "status": "closed",
+    "title": "Validate stable Git dependency URLs and mirror fallback",
+    "updatedAt": 1784729751158,
+    "votes": 0
+}

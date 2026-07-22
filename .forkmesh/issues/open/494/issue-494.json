@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751310,
+    "endDate": 1793332800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nEvery repository and collaboration object explains where it has reached, how many copies were verified, and whether the visible state is current or conflicted.\n\n## Scope\n\n- Standardize states for queued, syncing, verified, stale, degraded, conflicted, paused, external-only, and failed.\n- Display nodes reached, verified copies, trusted mirrors, last confirmation, lag, and actionable error detail.\n- Use the same state model in web, desktop, mobile, CLI, APIs, migration, and provider sync.\n\n## Acceptance criteria\n\n- A shared fixture produces equivalent plain-language and machine-readable status on every client.\n- Offline, delayed, rejected, conflicted, and recovered objects transition correctly without false success.\n- Status detail never leaks private object names or peer addresses outside policy.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Preservation public alpha**\n- Numeric priority: **14 of 44** (1 is highest)\n- Depends on: #484\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**35% as of 2026-07-22.** Repository and release surfaces expose some sync timestamps and mirror state; the shared per-object evidence model and complete client coverage remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Status freshness, unexplained failures, conflict resolution, support contacts, and cross-client parity. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-494",
+            "sig": "KIn7CYwyRmhgWTaLPwYHaukgjv-Qpauh3tBgYjjbKLvFgjRNt4sVY6tO-mzock6F308BrnRwH7Ue5gylq5JxCQ",
+            "title": "Show human-readable synchronization status everywhere",
+            "ts": 1784729751310,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "a2004861-bbd2-45fe-924d-b88f35085a7e",
+            "labels": [
+                "product",
+                "ux",
+                "infra"
+            ],
+            "sig": "ma8oaLn0M6cEI-OFV4mAqwEZYZXGGK043PF1-CDpemJoX8a1kLjdEB3owChCoUmylxMv_ljhkKpdAXfixzmGBQ",
+            "ts": 1784729751311,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "2337a6b4-6d33-4ebf-8489-54edafe16abf",
+            "milestone": "Preservation public alpha",
+            "sig": "8AkWlDCHOTh6HyKz2nHzCdk0Ajd36SOsOq9xi6KXi5yvNU3l7SSSPoJdn-oFlWgNX9PcnaJAnR02MlwcL0GvDQ",
+            "ts": 1784729751312,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1793332800000,
+            "id": "026c91ca-de80-41a3-99c5-f9b7f881357f",
+            "sig": "aPTTqQ3NmP6Ffogh78JULlWn7dVDwo_nmyxdxCIM8ejTQ7otNqAtviMYomPYG5j0zKtpUisIQrpM2grqmJNsBA",
+            "startDate": 1784692800000,
+            "ts": 1784729751313,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "d417cfc0-a5af-4618-91b3-e911b5932dd8",
+            "priority": 14,
+            "sig": "A4emrwExqTzGRxKoKqFy-5mLL0MXtX-v6vaRLpACcX7nQtX3DSr5cKCG-nLIkGFXkkKzTXbja9XXCncGYGUkBg",
+            "ts": 1784729751314,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "5c3e1f63-d8b9-4ed5-97ab-baeddeb0ef2f",
+            "progress": 35,
+            "sig": "Cg0cbQPydvjPCCbFnUtCwdGjBPEPFWog9k5zsnu4BB-cmxO6HsYF2c8ke2V1tA8dfNvnC9_6FASfx2_Fzuz-Dg",
+            "ts": 1784729751315,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "ux",
+        "infra"
+    ],
+    "milestone": "Preservation public alpha",
+    "number": 494,
+    "priority": 14,
+    "progress": 35,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Show human-readable synchronization status everywhere",
+    "updatedAt": 1784729751315,
+    "votes": 0
+}

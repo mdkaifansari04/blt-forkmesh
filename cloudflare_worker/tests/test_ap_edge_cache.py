@@ -426,6 +426,10 @@ def _media_globals(edge, d1_log):
         "edge_cache_match_media": edge_cache_match_media,
         "decrypt_row": decrypt_row,
         "JsResponse": FakeJsResponse,
+        # Uint8Array.new(_to_js(bytes)) copies the WASM view into a JS-owned
+        # buffer so the body survives being read off the GIL; the stub just
+        # returns the bytes back (bytes() copies) to mirror that.
+        "Uint8Array": SimpleNamespace(new=lambda v: bytes(v)),
         "to_js": lambda v: v,
         "_to_js": lambda v: v,
         "base64": __import__("base64"),

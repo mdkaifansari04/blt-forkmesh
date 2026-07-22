@@ -1,0 +1,87 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784402987623,
+    "endDate": 1784692800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nPresent one measured availability assessment instead of making users interpret several raw mirror and integrity fields.\n\n## Implementation\n\n- Define a versioned availability response derived from the existing mirror payload.\n- Report online versus known nodes, verified cloneable copies, integrity failures, freshest confirmed sync, hosted bytes, artifact coverage, and bounded risk reasons.\n- Model `unknown` separately from `failed`; never convert missing telemetry into a healthy claim.\n- Use the same state names and risk codes in desktop, browser, and mobile repository views.\n- Update the assessment when a source or mirror disconnects, reconnects, falls behind, or repairs its state.\n\n## Acceptance criteria\n\n- The UI makes no claim that is not backed by a response field and timestamp.\n- Healthy, degraded, healing, rejected, offline, and unknown states have contract tests.\n- Clone is disabled only when no verified route is available.\n- Reconnect and integrity repair update the view without an application restart.\n- No geographic or network-diversity claim appears because those measurements are not collected.\n\n## Dependencies\n\nNone.\n\n## Verification\n\nRun response fixtures through each client renderer and exercise live disconnect, stale mirror, mismatched state, repair, and complete outage cases.",
+            "id": "open-439",
+            "sig": "2NMtWdjvgXqAjHhfZbCASa4yrcMtqgRUMnbWarU8ohBEolVPAJfCDNwSbpwNXV9PQbvJgm63OsW08cz_9Y0qCg",
+            "title": "Surface a compact repository availability assessment",
+            "ts": 1784402987623,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784952000000,
+            "id": "16e7133d-5b6b-4b27-8147-3aa63f62f566",
+            "sig": "_69BbI_bg1Q_ZSRz6oePhpjch9hlO1mfqV57imiFKGTdHGpKeVFWkkXUXW1JhDbx1ZCGpYkD6gCtTAumUOy1Ag",
+            "startDate": 1784692800000,
+            "ts": 1784402987624,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nPresent one evidence-backed repository availability assessment while retaining exact per-object and preservation details.\n\n## Implementation\n\n- Define a versioned assessment derived from known nodes, signed receipts, clone challenges, coverage manifests, route health, and offline recovery state.\n- Report online versus known nodes, verified cloneable copies, pinned and trusted counts, freshest confirmation, hosted bytes, branch and tag coverage, large objects, release artifacts, collaboration records, and current offline bundle.\n- Model unknown separately from failed and never convert missing telemetry into a healthy claim.\n- Use the same state names and risk codes in desktop, browser, mobile, and headless output.\n- Link the compact assessment to per-object receipts from #465 and privacy-preserving diversity and coverage evidence from #466.\n\n## Acceptance criteria\n\n- Every claim is backed by a response field, evidence time, and revision identifier.\n- Healthy, degraded, healing, rejected, offline, unknown, partial, and stale states have contract tests.\n- Clone is disabled only when no verified route is available.\n- Disconnect, lag, corruption, repair, repin, route change, and new evidence update without restart.\n- Diversity is shown only from the privacy-preserving measurements implemented in #466.\n\n## Dependencies\n\nConsumes #453, #461, #465, #466, and #467; its base response can land before those extensions.\n\n## Verification\n\nRun shared fixtures through every renderer and exercise live disconnect, stale mirror, mismatched revision, partial coverage, receipt quorum, route loss, correlated mirrors, repair, and complete outage.",
+            "id": "d76e6575-65b3-4f56-90a9-94691ca2ea42",
+            "sig": "yrMBL066_SZxBiiI_CxVvLyA883Lmh9zZdu1SXZsGwwVXdrlXVuwYYZvvjXUd9QTWUQgAgBYmPMMLlCnpe4BCw",
+            "target": "open-439",
+            "ts": 1784405500061,
+            "type": "edit"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784692800000,
+            "id": "60e08994-c957-4d30-9594-bf233efd78e8",
+            "sig": "bBG0Y7OgHDsSSUJ1iWRE_GuDv3-P1o9-VXOGUg1N7A93JR6K69lxAoLD10xcMF5Iagf1gMW9bOeecELxqrmCDQ",
+            "startDate": 1784520000000,
+            "ts": 1784405500069,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "bd459a7b-cfe4-42bf-87b7-974a3fd3009b",
+            "sig": "zhxLO6RCP4xNLmkHJaZXXSiM-p_-e3JsrAYODfGaQHHbBsJN4T23XDPWXvvwgNhSW44QoVYdi1Y4KZoEKdrfDA",
+            "ts": 1784729751125,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "85dd89ce-b34d-4af8-990c-4488ff19ab65",
+            "sig": "wzr0jNtXSl_ftBZWCZovtc_Mue9lKeyTOngEESAbBRJ06zT62VEj0gcSMOQcWKXQaCH9MmUDk7f9LI4hCZ45Cg",
+            "status": "closed",
+            "ts": 1784729751126,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "feature",
+        "enhancement"
+    ],
+    "milestone": "Daily Git workflow",
+    "number": 439,
+    "priority": 9,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784520000000,
+    "status": "closed",
+    "title": "Surface a compact repository availability assessment",
+    "updatedAt": 1784729751126,
+    "votes": 0
+}

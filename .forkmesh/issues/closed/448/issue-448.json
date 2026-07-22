@@ -1,0 +1,66 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500005,
+    "endDate": 1784692800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nUse the existing archive cryptography in the production private-repository path so Git objects, collaboration data, artifacts, indexes, caches, and backups are encrypted at rest.\n\n## Implementation\n\n- Wire streaming seal and open operations into private mirror publish, fetch, serve, backup, and restore paths.\n- Encrypt issue, pull-request, review, release, and room metadata with the same repository visibility boundary.\n- Build local search from an encrypted index or an explicitly active decrypted workspace; never publish private terms to the public catalog.\n- Use versioned recipient envelopes for people, devices, recovery keys, and organization-managed keys.\n- Keep catalog entries opaque except for the minimum routing fields required to locate authorized ciphertext.\n\n## Acceptance criteria\n\n- Known private plaintext is absent from mirror storage, cache, index, logs, crash reports, and backups outside an explicitly active decrypted workspace.\n- Streaming paths do not buffer a full repository or artifact in memory.\n- Unauthorized peers cannot distinguish private object names, collaboration subjects, or search terms.\n- Corrupt envelopes and ciphertext fail before destination state changes.\n- Public repository behavior and performance remain unchanged.\n\n## Dependencies\n\nUses the existing mirror cryptography primitives; key lifecycle continues in #449.\n\n## Verification\n\nPublish and clone a private fixture with code, issues, reviews, releases, artifacts, and searchable terms, then scan all inactive storage and diagnostic output for the seeded plaintext markers.",
+            "id": "open-448",
+            "sig": "8UvRhlDZtDRynZLLT23SG3bvj99iSX717A0_aTFqAKYEjjP7PzfrajszBMgajsC9Y6fgjFy97V5b8DIcLLhRCw",
+            "title": "Encrypt private repository storage, metadata, artifacts, and search",
+            "ts": 1784405500005,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784692800000,
+            "id": "71f9f238-1e7a-473b-ba44-82292f6c6d44",
+            "sig": "CarNW9Ccv-PPPSNKNMvUlYTGGvQDt-2Thzpc-eg9BxBVtEkBcCa7G96jpxcVku-TfwLgtba9s4TuP_cSLJXrBg",
+            "startDate": 1784347200000,
+            "ts": 1784405500006,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "3cb898a8-ea50-4bdb-9aec-875d2fa2eed7",
+            "sig": "pfr_i21XZga_j-emVeI0Yye7ELA-7e7BxafxE_6hjwzdN-iPnJI68jHvFYYv2Jc5ttgOxcusfnR-sQTjpEyjCQ",
+            "ts": 1784729751143,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e16d56f5-bd3e-45d8-9e8b-aed829ed4d55",
+            "sig": "no-1X4YAzpyzol8w0MsihHjUXEGBeNFedDU9ljulmX0cZYF6BgV2Ndhfw5pruaBtVkFYNsQfJExy3yD9gYqWCA",
+            "status": "closed",
+            "ts": 1784729751144,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "security",
+        "feature"
+    ],
+    "milestone": "Secure collaboration",
+    "number": 448,
+    "priority": 16,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784347200000,
+    "status": "closed",
+    "title": "Encrypt private repository storage, metadata, artifacts, and search",
+    "updatedAt": 1784729751144,
+    "votes": 0
+}

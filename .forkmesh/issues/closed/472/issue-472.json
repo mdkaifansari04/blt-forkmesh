@@ -1,0 +1,76 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500053,
+    "endDate": 1785211200000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nBootstrap and sync nodes on a local network or nearby device link when public routing and Internet access are unavailable.\n\n## Implementation\n\n- Advertise and discover repository-node services through standard local-network service discovery with signed node identity.\n- Define one framed resumable peer-stream protocol shared by LAN sockets and platform nearby-link adapters.\n- Add LAN-only and nearby-only modes with explicit repository allowlists and no public bootstrap attempt.\n- Handle duplicate names, spoofed advertisements, address changes, pairing confirmation, and interrupted transfer.\n- Add a disaster bootstrap workflow combining a verified offline bundle, local discovery, and peer sync.\n\n## Acceptance criteria\n\n- LAN-only and nearby-only tests observe no public DNS query or socket.\n- An unsigned or identity-mismatched advertisement is never trusted automatically.\n- The same interrupted stream resumes across address change without accepting corrupt bytes.\n- Two isolated fixture nodes discover, pair, clone, exchange collaboration-only state, and repair from a bundle.\n- Disabling discovery removes advertisements and cached addresses within the declared bound.\n\n## Dependencies\n\nUses resumable and selective sync in #452, route policy in #453, and bundle verification in #441.\n\n## Verification\n\nRun isolated local discovery, duplicate service, spoof, pairing reject, address change, LAN-only leak, nearby-link interruption, collaboration-only sync, corrupt stream, bundle bootstrap, and shutdown-expiry fixtures.",
+            "id": "open-472",
+            "sig": "n81r-21zqVjD2uobNzN2lnMxEWJfeghOsQzwVhkaPoK1gYz2nOjA9cKvtxqfYE5gGa_if-TWeUG75dQPKAL4Dw",
+            "title": "Discover peers and sync over nearby transports",
+            "ts": 1784405500053,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785124800000,
+            "id": "509ccd9e-a53b-42e8-8888-9bedd4c37620",
+            "sig": "sjY0WKq-RuzWiyuvxovV3ndPrq3Z_m4zD4GYmspArxQc7ihR1QqJ2qm-fDNgqMelQ15x0_7jAPz2jTIQRJpkDQ",
+            "startDate": 1784520000000,
+            "ts": 1784405500054,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785211200000,
+            "id": "f5162fe9-c428-47ee-9944-1bf3c35e6695",
+            "sig": "rhAl9xFWVL2jbyHs1Zszahh2LSDztxF9x8vY8NasfmbwoeA8GxXa56id1J-ucFNonYjx2aRV3_FDjZIa7VRQBQ",
+            "startDate": 1784520000000,
+            "ts": 1784405765203,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "251ab1c3-b0ee-4d94-89bb-6dbba14130fb",
+            "sig": "P22LPSmhtxpag6YtQ92PjguZWWU7tnOdQL-Ie-ey2IEHk-ZyJc5usma93_Ajc1NUDK8KhlveUhCKxQM6DXnTCQ",
+            "ts": 1784729751191,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "fccbc0f8-df03-48ae-9229-ee4146bd9041",
+            "sig": "tgJtAznU5-n49Vzdbdh8BHcFvJpfPwBJ1TeJ-w63N9ktrokMJNoBKc-_KoxN4lxdmHNTAIXrglyAe1nqFSAADA",
+            "status": "closed",
+            "ts": 1784729751192,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "feature",
+        "security"
+    ],
+    "milestone": "Open operations",
+    "number": 472,
+    "priority": 40,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784520000000,
+    "status": "closed",
+    "title": "Discover peers and sync over nearby transports",
+    "updatedAt": 1784729751192,
+    "votes": 0
+}

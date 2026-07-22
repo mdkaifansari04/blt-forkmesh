@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751424,
+    "endDate": 1816920000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nProtocol changes, security decisions, funding, moderation standards, compatibility commitments, and independent participation follow published accountable rules.\n\n## Scope\n\n- Define proposal, review, decision, appeal, emergency security, deprecation, and compatibility processes with public records.\n- Publish roles, conflicts, funding disclosures, moderation baseline, implementation-neutral participation, and succession paths.\n- Protect the free protocol and portable identity/repository rights from hosted-service or token capture.\n\n## Acceptance criteria\n\n- A real protocol proposal and security decision complete the process with timelines and dissent recorded.\n- Independent implementers and community operators hold meaningful review and decision roles.\n- Funding and conflict disclosures are current, searchable, and linked to affected decisions.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P1 ecosystem trust**\n- Milestone: **Open platform & ecosystem**\n- Numeric priority: **42 of 44** (1 is highest)\n- Depends on: #511, #512\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**5% as of 2026-07-22.** Development and issues are public, but formal proposals, decision rights, appeals, disclosures, and independent participation are not yet established. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Proposal participation, decision latency, appeals, independent representation, and policy compliance. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-513",
+            "sig": "XgDKqmX8hI4w3QPs18brBBV5vfDgtBXwGUn3_jHKhKJGP4M1AAjZ2FFv6-O2uqDtstrWBdcP34vGg0LYWLCvCg",
+            "title": "Establish transparent protocol and ecosystem governance",
+            "ts": 1784729751424,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "33c4e39d-3f22-4474-ad85-923d0edaed47",
+            "labels": [
+                "governance",
+                "community",
+                "protocol"
+            ],
+            "sig": "pvAQ34-nKuJTHzxDN6_x9Ar1qK1M91OX5zENNI3l2OwSoJDIY8yjAtWzCFe1rqJAxXquiHYjubmsIs_FWxQyDg",
+            "ts": 1784729751425,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "59f3a57a-432d-4fc5-b116-069cdb18888c",
+            "milestone": "Open platform & ecosystem",
+            "sig": "hmM2Tv42jhyWB1YvRd9ybJgAo32AeRrw9SO61t0HkR6Q7_P8nwggRinZTpUYVjNBTVjF_nD6i50fMDhtkKvlCg",
+            "ts": 1784729751426,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1816920000000,
+            "id": "8d6b01a2-e72d-4c3d-8bbf-40b34d2c54ab",
+            "sig": "UVLRic7lcMmy3WWQ-QjlAUl4z7Xa5Huls5lGZ-PZmyNirlZ5iI1tS9jPy0eWgBQU_jX3kybLI_gAURPMA0UrDg",
+            "startDate": 1792382400000,
+            "ts": 1784729751427,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "bde20d04-bad9-4400-9d53-a6632c7971fb",
+            "priority": 42,
+            "sig": "v05pf6qh8l3eYbKr69Y31mpvwInMtn2QzBoAwHiRIDw2uc-iV7RNgIpxdItgmma0hmIDzfpq_9SwDoZJ9w8MCQ",
+            "ts": 1784729751428,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "d39c5b00-8077-4b1f-bf65-a2e11c89fd66",
+            "progress": 5,
+            "sig": "oT9Pr5Dql1U-OUmCvbwJSYz-om6DwstfamOh2a6eltPC_xIA59S2xHhw1fs5EJ-dkPkvwyQnIx3YWOnFzqKHBg",
+            "ts": 1784729751429,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "governance",
+        "community",
+        "protocol"
+    ],
+    "milestone": "Open platform & ecosystem",
+    "number": 513,
+    "priority": 42,
+    "progress": 5,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1792382400000,
+    "status": "open",
+    "title": "Establish transparent protocol and ecosystem governance",
+    "updatedAt": 1784729751429,
+    "votes": 0
+}

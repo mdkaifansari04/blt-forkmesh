@@ -598,7 +598,12 @@ def repo_web_href(owner, repo):
 
 def git_bytes_response(data, content_type):
     return JsResponse.new(
-        _to_js(bytes(data)),
+        # Copy into a JS-owned buffer: a bare _to_js(bytes) is a view into
+        # Python's WASM memory, and the client streams this body AFTER the
+        # handler returns and the GIL is released — reading the view then is a
+        # runtime crash ("PyProxy when Python GIL not held"), not an exception,
+        # and it poisons the isolate for every later invocation (incl. cron).
+        Uint8Array.new(_to_js(bytes(data))),
         to_js(
             {
                 "status": 200,
@@ -3044,6 +3049,47 @@ async def chat_room_key_handler(env, request):
         {"ok": True, "passphrase": await _room_chat_passphrase(env)},
         cache_control="no-store, max-age=0, must-revalidate",
     )
+
+
+CHAT_ACTIVITY_CACHE_KEY = "https://forkmesh.internal/api/chat/activity"
+CHAT_ACTIVITY_TTL = 30
+
+
+async def chat_activity_handler(env, request):
+    # Lightweight public digest behind the site-wide header chat badge: how many
+    # retained #general messages exist and how many user accounts are registered.
+    # Counts only — chat_history bodies stay encrypted and user rows are never
+    # decrypted (email_bi is only set on email-bearing user accounts, so it
+    # separates users from keyless node reservations without touching `data`).
+    # Edge-cached so every page load across the site collapses to one D1 read
+    # pair per colo per TTL.
+    del request
+    cached = await edge_cache_match(CHAT_ACTIVITY_CACHE_KEY)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    msg_row = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c, MAX(ts) AS latest FROM chat_history "
+        "WHERE room_key=?",
+        FLAGSHIP_ROOM_KEY,
+    )
+    user_row = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c FROM users "
+        "WHERE email_bi IS NOT NULL AND email_bi <> ''",
+    )
+    resp = json_response(
+        {
+            "ok": True,
+            "messageCount": int((msg_row or {}).get("c") or 0),
+            "latestMessageTs": int((msg_row or {}).get("latest") or 0),
+            "userCount": int((user_row or {}).get("c") or 0),
+        },
+        cache_seconds=CHAT_ACTIVITY_TTL,
+    )
+    await edge_cache_put(CHAT_ACTIVITY_CACHE_KEY, resp)
+    return resp
 
 
 async def blind_index(env, value):
@@ -5991,11 +6037,22 @@ def _account_chat_user_payload(rec):
     }
 
 
+USERS_DIRECTORY_CACHE_KEY = "https://forkmesh.internal/api/accounts/users"
+USERS_DIRECTORY_TTL = 30
+
+
 async def _account_users_directory(env, request):
     # Public chat roster directory: user profiles only, with no email, password,
     # device, admin, or signature material. Live node presence is still carried
     # by the encrypted room roster; this endpoint fills in offline users.
+    # Edge-cached: the chat page polls this to surface new signups, and each
+    # origin hit decrypts up to 1000 rows — collapse the polls per colo per TTL.
+    # A signup deletes the cached copy so the new account shows without waiting
+    # out the TTL.
     del request
+    cached = await edge_cache_match(USERS_DIRECTORY_CACHE_KEY)
+    if cached is not None:
+        return cached
     out = []
     seen = set()
     rows = await d1_all(
@@ -6013,7 +6070,10 @@ async def _account_users_directory(env, request):
         seen.add(name)
         out.append(_account_chat_user_payload(rec))
 
-    return json_response({"ok": True, "users": out})
+    resp = json_response({"ok": True, "users": out},
+                         cache_seconds=USERS_DIRECTORY_TTL)
+    await edge_cache_put(USERS_DIRECTORY_CACHE_KEY, resp)
+    return resp
 
 
 def _donation_expiry_fields(rec, now):
@@ -6193,6 +6253,10 @@ async def _account_signup(env, request):
         sent = await _send_verification_email(env, request, name, rec["email"])
         if not sent:
             await _enqueue_verification(env, name_bi, name, rec["email"])
+    # Drop the cached chat roster/activity so open chat pages and header badges
+    # pick up the new account on their next poll instead of a TTL later.
+    await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
+    await edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY)
     return json_response(await _account_public_payload(env, rec), status=201)
 
 
@@ -11856,7 +11920,10 @@ async def ap_object_media_handler(env, request, object_uuid, index):
         raw = base64.b64decode(item.get("data", ""), validate=True)
     except Exception:
         return json_response({"error": "not_found"}, status=404)
-    resp = JsResponse.new(_to_js(bytes(raw)), to_js({
+    # Uint8Array.new copies into a JS-owned buffer; a bare _to_js(bytes) view
+    # into WASM memory would be read off the GIL (edge-cache put / client
+    # stream, after this handler returns) and crash the isolate.
+    resp = JsResponse.new(Uint8Array.new(_to_js(bytes(raw))), to_js({
         "status": 200,
         "headers": {
             "content-type": item.get("mediaType", "image/png"),
@@ -12746,8 +12813,10 @@ async def repo_media_handler(env, request, owner, repo, media_kind):
     except Exception:
         return json_response({"error": "not_found"}, status=404)
     # The actor document busts caches via ?v=<updated_at>, so long edge/browser
-    # caching here is safe.
-    resp = JsResponse.new(_to_js(bytes(raw)), to_js({
+    # caching here is safe. Uint8Array.new copies into a JS-owned buffer — a
+    # bare _to_js(bytes) view into WASM memory read off the GIL (edge-cache
+    # put / client stream, after this returns) crashes the isolate.
+    resp = JsResponse.new(Uint8Array.new(_to_js(bytes(raw))), to_js({
         "status": 200,
         "headers": {
             "content-type": "image/png",
@@ -12820,8 +12889,10 @@ async def repo_card_handler(env, request, owner, repo):
     }
     png = og_card.render_repo_card(info, time.time())
     # Stats drift, so keep the browser TTL modest; preview crawlers cache the
-    # rendered card on their side anyway.
-    resp = JsResponse.new(_to_js(bytes(png)), to_js({
+    # rendered card on their side anyway. Uint8Array.new copies into a JS-owned
+    # buffer — a bare _to_js(bytes) view into WASM memory read off the GIL
+    # (edge-cache put / client stream, after this returns) crashes the isolate.
+    resp = JsResponse.new(Uint8Array.new(_to_js(bytes(png))), to_js({
         "status": 200,
         "headers": {
             "content-type": "image/png",
@@ -14824,6 +14895,25 @@ async def _forkbot_next_issue_number(env, repo_bi, owner, repo):
         return 0
 
 
+def _forkbot_attributed_body(body, source, actor):
+    """Append a footer crediting ForkBot and the human who asked for the issue,
+    so a reader of the merged issue can see it came from a chat request rather
+    than assuming a person typed it up. The fediverse path builds its own
+    "Filed from a fediverse mention by ..." attribution before calling in, so
+    only the default chat source gets the footer here (avoids double-crediting).
+    """
+    if source != "forkbot":
+        return body
+    if actor and actor != FORKBOT_AUTHOR:
+        footer = "Filed by ForkBot at @%s's request via chat." % actor
+    else:
+        footer = "Filed by ForkBot via chat."
+    body = (body or "").rstrip()
+    if not body:
+        return "_%s_" % footer
+    return "%s\n\n---\n_%s_" % (body, footer)
+
+
 async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
                                  source="forkbot", labels=None,
                                  attachments=None):
@@ -14844,6 +14934,7 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
 
     now = int(Date.now())
     actor = clean_string(requester, MAX_NODE_NAME).lower() or FORKBOT_AUTHOR
+    body = _forkbot_attributed_body(body, source, actor)
     # Proposed number the desktop honors when the slot is free (0 = let the
     # desktop assign). Allocated before the insert so it lands in the stored
     # item and can be echoed straight back to the chat.
@@ -18724,6 +18815,11 @@ class Default(WorkerEntrypoint):
         # to authenticated clients — replaces the old public app-wide constant.
         if url.path in ("/api/chat/room-key", "/api/chat/room-key/"):
             return await chat_room_key_handler(self.env, request)
+
+        # Public chat-activity counters (message + user counts) that drive the
+        # unread badge on the shared site header's chat icon.
+        if url.path in ("/api/chat/activity", "/api/chat/activity/"):
+            return await chat_activity_handler(self.env, request)
 
         # Chat-triggered Cloudflare AI interface. Clients forward explicit
         # "forkbot ..." mentions here; the Worker queues compatible issue-inbox

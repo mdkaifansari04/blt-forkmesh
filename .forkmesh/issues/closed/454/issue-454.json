@@ -1,0 +1,76 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500017,
+    "endDate": 1785211200000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nEnforce repository-owned merge rules against the exact pull-request head before a protected ref changes.\n\n## Implementation\n\n- Define a signed, versioned merge-policy file for path ownership, required reviewers, approval counts, requested-change handling, and required workflow checks.\n- Bind approvals and checks to the exact head object identifier and workflow digest; invalidate them after a patchset change.\n- Resolve scoped maintainers through #447 and deterministic review state through #440.\n- Use the same policy evaluator in desktop, browser, headless, and merge-queue paths.\n- Allow a signed, reason-bearing, separately authorized override event that remains visible in history.\n\n## Acceptance criteria\n\n- Unowned paths, missing reviewers, requested changes, stale approvals, stale checks, and unknown policy versions fail closed.\n- An accepted merge records the policy version, head, satisfied reviewers, and checks.\n- Policy evaluation is identical in every client and under shuffled event arrival.\n- A multi-ref protected update remains atomic.\n- Overrides require an explicit role and cannot alter the stored policy.\n\n## Dependencies\n\nDepends on #437, #440, #447, #470, and #471; merge execution continues in #469.\n\n## Verification\n\nRun path-ownership, reviewer-count, requested-change, stale-head, stale-workflow, missing-check, scoped-role, invalid-policy, signed-override, and client-parity fixtures.",
+            "id": "open-454",
+            "sig": "DJ1isKkEGCnN33KTbk_jKosRSSylRrRiF4wn2PymrfBDddJNqfGgY-EFSSEk72fAShY7XQThMfp9dHPL_tyaDg",
+            "title": "Gate merges on ownership, required reviews, and checks",
+            "ts": 1784405500017,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785297600000,
+            "id": "539af029-a2a5-4bd0-a9b4-8f736ed01f60",
+            "sig": "wqeahSBFXhnwmmH9zkiEVR0JF1XnJC3sZIf4aO-rcZQ1nMdOCdoHFefcL98B7UhmoIOE_K-pwbcPi8Z0tw3qBQ",
+            "startDate": 1785038400000,
+            "ts": 1784405500018,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785211200000,
+            "id": "6e8924d3-7e12-461f-8ca5-6edd5ab759d5",
+            "sig": "-edq360MDWJ2cRvvHEhNipFO0ROAodAYvqOJ8Iq-Nqd7RVedYbjHX73i3NMaN9n93DoI1357_kDPKB5hRro8Aw",
+            "startDate": 1785038400000,
+            "ts": 1784405765198,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "8cb8ce06-e54f-4187-ad52-de059889aeae",
+            "sig": "AA--V3UlirjUonwDGw3J4PdVgTMFtV2hLDmct1TQ4ktpkMRYj-u3TebNgd1UROd0b8fvGFgNjwe2K5piVXoDDQ",
+            "ts": 1784729751155,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3bf66315-8695-4771-a0d1-ee1bfa5a216e",
+            "sig": "icz30SUVWvBLZfGzKD7lHnAO9k1yZ4Jl_v8wpc2LBH5wpMgCMJzHdnq9TEzEUfkBF5VscBU24XMjWxHPchLxCw",
+            "status": "closed",
+            "ts": 1784729751156,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "security",
+        "feature"
+    ],
+    "milestone": "Open operations",
+    "number": 454,
+    "priority": 22,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1785038400000,
+    "status": "closed",
+    "title": "Gate merges on ownership, required reviews, and checks",
+    "updatedAt": 1784729751156,
+    "votes": 0
+}

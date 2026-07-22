@@ -295,6 +295,49 @@ html.light .fm-header-mobile-account .fm-header-signup {
   border-color: var(--fm-header-muted);
 }
 
+/* ── chat icon + unread badge ── */
+.fm-header-chat {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--fm-header-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fm-header-fg);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+
+.fm-header-chat:hover {
+  border-color: var(--fm-header-muted);
+  text-decoration: none;
+}
+
+.fm-header-chat svg {
+  width: 17px;
+  height: 17px;
+}
+
+.fm-header-chat-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #cf222e;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  box-sizing: border-box;
+}
+
 /* ── account area ── */
 .fm-header-account {
   display: flex;

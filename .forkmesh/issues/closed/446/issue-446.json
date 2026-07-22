@@ -1,0 +1,66 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500001,
+    "endDate": 1784692800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nLet people read without an account and submit signed issues, comments, reviews, and pull requests from a browser identity that can later move to a full node.\n\n## Implementation\n\n- Generate an Ed25519 contribution identity in the browser and keep the encrypted private material in local protected storage.\n- Add passkey, standards-based identity-provider, and email magic-link session adapters without making any one adapter mandatory.\n- Queue signed contributions offline and submit them through the existing bounded inbox when connectivity returns.\n- Provide an explicit export and handoff flow into the recoverable identity model in #447.\n- Keep anonymous access read-only and apply existing rate, size, signature, and attachment validation before inbox storage.\n\n## Acceptance criteria\n\n- A clean browser can submit each supported contribution without installing a node.\n- Private signing material never reaches logs, analytics, URLs, or server storage.\n- Offline replay is idempotent and preserves the original signed bytes.\n- Identity handoff retains authorship and revokes the abandoned browser device when requested.\n- Anonymous mutation attempts and invalid sessions fail without creating inbox state.\n\n## Dependencies\n\nUses the existing signed contribution inbox; coordinates identity upgrade with #447.\n\n## Verification\n\nExercise anonymous reads, each sign-in adapter, browser-key creation, offline queue/replay, duplicate submission, handoff, revocation, rate limits, and secret-leak scans in browser tests.",
+            "id": "open-446",
+            "sig": "jgcOGr1LsduLBWj9ijDfnVBhxSoDhKVdwemFitTkoQLIldE7o8KUOT15o-iYj8Ov1kNxKIFoIZEJHp40cJ0SDg",
+            "title": "Complete the no-install web contribution flow",
+            "ts": 1784405500001,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784692800000,
+            "id": "4bfa57ce-e94b-44da-b7ca-61178e60b6eb",
+            "sig": "l7Xs-_jSqmN19gTLsnv2gRnESgQuf_a65PvNBJ1lZtRIcuNJApOQQbahvtCKTCc1Oehpf1KPYhpuCTTq29obDA",
+            "startDate": 1784347200000,
+            "ts": 1784405500002,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "38e07ed1-f472-4820-af9e-374c29f4b521",
+            "sig": "E0HzaKZPYG7y6XJoj4NtkExvqxfsWyW8dJocpoE2oW267ywgsDStTqR1c3RIfLeH2NDHBZm9weYQ5VDSJTEEDg",
+            "ts": 1784729751139,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "9c29a49b-ffa9-4d45-a696-9740ade5a333",
+            "sig": "EFdL2VUgByslLAgXPwGEUJEwdwypVvxd4JpmeaxE98DZmMVKvk_b6-aoBxpU2bqWbvIaniUm-QhuKUuadnv0Cg",
+            "status": "closed",
+            "ts": 1784729751140,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "feature",
+        "security"
+    ],
+    "milestone": "Daily Git workflow",
+    "number": 446,
+    "priority": 14,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784347200000,
+    "status": "closed",
+    "title": "Complete the no-install web contribution flow",
+    "updatedAt": 1784729751140,
+    "votes": 0
+}

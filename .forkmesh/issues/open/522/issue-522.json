@@ -1,0 +1,38 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1784739042533,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "Create a 60-second video, Twitter thread, and offer a $5 bounty to encourage devs to try ForkMesh during the next GitHub outage. The video should show how to switch to ForkMesh mirror in 1 click, the Twitter thread should outline 3 ways to never lose code when GitHub is down, and the bounty should be for devs who mirror 1 repo and tweet proof.\n\n---\n_Filed by ForkBot at @sammy's request via chat._",
+            "id": "forkbot-1784739042533",
+            "sig": "",
+            "title": "Create GitHub Outage Survival Kit",
+            "ts": 1784739042533,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "forkbot"
+    ],
+    "milestone": "",
+    "number": 522,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Create GitHub Outage Survival Kit",
+    "updatedAt": 1784739042533,
+    "votes": 0
+}

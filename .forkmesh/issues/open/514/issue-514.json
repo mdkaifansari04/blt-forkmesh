@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751430,
+    "endDate": 1801198800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nUsers can follow reputable maintainers, reviewers, security researchers, mirror operators, organizations, and moderation groups without accepting one global trust authority.\n\n## Scope\n\n- Represent signed scoped lists with provenance, delegation, composition, expiration, revocation, and version history.\n- Allow local override, multiple simultaneous lists, conflict visibility, appeals, and privacy-preserving follows.\n- Separate trust by role and repository/community scope so reputation is never universal by default.\n\n## Acceptance criteria\n\n- Lists merge and verify across clients while preserving issuer, scope, and revocation.\n- Compromised or malicious list drills support fast revocation and visible local recovery.\n- No essential repository access, identity, or contribution path requires following a list.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P1 community trust**\n- Milestone: **Collaboration public beta**\n- Numeric priority: **41 of 44** (1 is highest)\n- Depends on: #484, #485\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**10% as of 2026-07-22.** Signed identity/profile and federation primitives exist; scoped list schemas, composition, override, appeals, and cross-client workflows remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Active lists, cross-client verification, revocation time, overrides, appeals, and abuse reports. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-514",
+            "sig": "SFvJcfskRrg09Ri099rEfzzetPE9uTccCYPT1Iq_gvUoL-cnXvJPOFW4y_8bSDyGHs67n6dt1spmKlmy3g-IBw",
+            "title": "Create scoped community-operated trust lists",
+            "ts": 1784729751430,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "d04ce443-a9b0-4ed6-84c1-e94e68826892",
+            "labels": [
+                "community",
+                "security",
+                "protocol"
+            ],
+            "sig": "anIihV7ReVCAfpCZxh38NKds8WIjmDP8lt3EL_LvIWz7GeDd_EtHY_e2LyKbGYX78g-m3J9nmfUAj2j3h2rUBA",
+            "ts": 1784729751431,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "970fa966-2b5e-4420-988f-bc0aa77b7200",
+            "milestone": "Collaboration public beta",
+            "sig": "l2rOWo0cM_ci4pyoSZu0VE4FBhU0XpkWVVBLZBQBggP1nj3AGstL7Pc-w9do2RxO1D8v9JJhpLB4qJDSePsWAw",
+            "ts": 1784729751432,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1801198800000,
+            "id": "47a7e651-ad6f-40d6-94ea-6ac0f42946fb",
+            "sig": "TaYMBfB8S_yBIN2o1geZt2O3cPM5Y2mB7ytQ-oLIYgvvB3c96-MJPECEmO6WLWXbZHEf2XPZkwi9R_2lw6VcBg",
+            "startDate": 1786939200000,
+            "ts": 1784729751433,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "ccd48bd0-f79d-4c1e-9e70-56082cc3c925",
+            "priority": 41,
+            "sig": "flto2-p8H_06VWUBb08yeaRl2x1oHRnxsiwHekNsyeT_SY-RuReAqSxgXs0bsaV4dg_uIRTnUIhOclxjDLFMBg",
+            "ts": 1784729751434,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "ca755af4-e998-4769-8793-fa62ffeffb1d",
+            "progress": 10,
+            "sig": "it-18CZtW3Lds863-M3VrRCPk_0P8QaVcWIKfGwzHaNSDLCh-E3mSTfFGlxTEl75U1xt2YFy3Mk2xrO35NPIAg",
+            "ts": 1784729751435,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "community",
+        "security",
+        "protocol"
+    ],
+    "milestone": "Collaboration public beta",
+    "number": 514,
+    "priority": 41,
+    "progress": 10,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1786939200000,
+    "status": "open",
+    "title": "Create scoped community-operated trust lists",
+    "updatedAt": 1784729751435,
+    "votes": 0
+}

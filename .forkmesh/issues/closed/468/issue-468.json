@@ -1,0 +1,65 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500045,
+    "endDate": 1785211200000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nMake pull requests reviewable across immutable patchsets, dependencies, ownership rules, comparison history, and local checkout.\n\n## Implementation\n\n- Store immutable patchset records with base, head, author, creation time, change summary, and predecessor.\n- Represent stacked pull-request parent and dependency relationships with cycle rejection and readiness state.\n- Render current, prior, and inter-patchset comparisons plus commit history and conflict status.\n- Resolve repository-owned path reviewers and expose requested, satisfied, stale, and missing ownership.\n- Generate exact local checkout and review commands and keep command-line and web review actions on the same signed event schema.\n\n## Acceptance criteria\n\n- Rewritten branches create a new patchset without altering prior review history.\n- Stack cycles and missing dependencies are rejected with actionable errors.\n- Approvals and inline anchors identify the exact patchset they cover.\n- Compare results match local Git object ids and file changes.\n- Browser, desktop, and command-line readiness state is identical.\n\n## Dependencies\n\nUses deterministic events in #440, inline review in #463, and ownership policy in #454.\n\n## Verification\n\nExercise appended and rewritten patchsets, multi-level stacks, cycles, missing parent, historical compares, rename and conflict cases, ownership changes, local checkout, and client-parity fixtures.",
+            "id": "open-468",
+            "sig": "uok3t2Y6On3T1YPpc9wYtS4ekn6fq8UkJMutg81VJyvmvZNaanlBvBNnGWJ_7RpLUC1oGuVz_5GMXGjTZ9EtAQ",
+            "title": "Complete ownership, patchset, and stacked review workflows",
+            "ts": 1784405500045,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785211200000,
+            "id": "1f05d05f-613a-499b-b104-513c8a652dd3",
+            "sig": "3LMOnanQPDOZ595Y8eZeqtbpuqV7gZjd27TJ9CipDzebMF-gzU9nS0OtDbyMJACXwHdavVoiI8wMh0pSeFmHDg",
+            "startDate": 1784779200000,
+            "ts": 1784405500046,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "8c7c5868-c2df-46c0-ad76-b791abe250e9",
+            "sig": "bMwBBAHgG_OtAWPg1QwiYkBXvZ6ehMh6Kve6Qdgvw5tSL0ShvFnvV1Cn4EofBSz7Z5r8I8iyzUytZnos4TdIBQ",
+            "ts": 1784729751183,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "b55adc50-9df5-492d-acfe-767eeb254fe2",
+            "sig": "epk7B_JihD9wI7rzMSt8nCLHXcXvKyDbQMHq12zZziiwEn9W6sVtpe3aP20pnn3ACwCZiI3hP3DSKts_OP-bBQ",
+            "status": "closed",
+            "ts": 1784729751184,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "feature"
+    ],
+    "milestone": "Secure collaboration",
+    "number": 468,
+    "priority": 36,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784779200000,
+    "status": "closed",
+    "title": "Complete ownership, patchset, and stacked review workflows",
+    "updatedAt": 1784729751184,
+    "votes": 0
+}

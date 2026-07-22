@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751214,
+    "endDate": 1793332800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nVisitors can find active, trustworthy projects and clone them immediately without already knowing a ForkMesh URL.\n\n## Scope\n\n- Index names, descriptions, code metadata, maintainers, activity, discussions, mirror count, and measured availability.\n- Provide trending, new, and active-discussion views with transparent ranking, freshness, deduplication, and spam controls.\n- Show verified-maintainer provenance and copy-ready clone actions on every result.\n\n## Acceptance criteria\n\n- Search and discovery facets return deterministic, paginated results within published latency and freshness budgets.\n- Trending methodology and moderation rules are public and resistant to obvious replay and self-mirroring manipulation.\n- A visitor can go from an index result to a successful clone without an account.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Preservation public alpha**\n- Numeric priority: **12 of 44** (1 is highest)\n- Depends on: #476, #494\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**45% as of 2026-07-22.** A live signed repository catalog and public browser exist; richer search, ranking, maintainer verification, and abuse resistance remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Search success, result-to-clone conversion, freshness, latency, and spam-removal rate. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-478",
+            "sig": "pCH0up9_b6reXwBp80Yt0mbf-ZEntVj0iBSaulhoBWzxouN3MYigjljv9VP1POvRGfU7M7i86bCwnqah8NATBA",
+            "title": "Launch the searchable public repository index",
+            "ts": 1784729751214,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "83c3eec4-9740-4d62-b417-49115d397286",
+            "labels": [
+                "product",
+                "community",
+                "feature"
+            ],
+            "sig": "TPEuXJIp0iI99Y_1kuL0yT8kT9bnP0abJLyPPrh-UQUkF9nhc0-DVs32I-GcCp4S3U1eVqSu4lTmBa3UYPJtAg",
+            "ts": 1784729751215,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "4dd8fb3c-da7c-4571-a536-c4f3d98d1810",
+            "milestone": "Preservation public alpha",
+            "sig": "aVkYVG0AERJegtBAH3CKCL3207jOB0GIM48TQBKQijRh0fXv2PhemjMJo4dGrh3-mkWgM0df5vqyNAlKh6FECg",
+            "ts": 1784729751216,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1793332800000,
+            "id": "a45b1e64-791e-4817-ac41-b556163307d8",
+            "sig": "I4xg4N1cGACdkOCPPdG6mt6uaMM65Fs9cMPjjPLzxmKFSUC4yw6ZOjCmrXif7olCt34K4K2ThBXwGNb1MAorDg",
+            "startDate": 1784692800000,
+            "ts": 1784729751217,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "dbc13246-93fc-4366-94e4-826312c791cc",
+            "priority": 12,
+            "sig": "DfKZugTE1M7xp01WRDJFAKSy49wGM0mzGwAH4hQmUTpOlYfU2cFY_3lt-7hJ5cOo9zHg7CWIuBLlqpw5woA1Bw",
+            "ts": 1784729751218,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "2e9ffc2c-4023-4027-9601-8e50a6a57103",
+            "progress": 45,
+            "sig": "xbJkDq8oh7F9E2Jhw91m4POC5Qy4o-5FSkjTyA8k8o-pfmj6yXeK1EiANo0rdzvDZ-dABkIg_xQxc4S_LqGMBQ",
+            "ts": 1784729751219,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "community",
+        "feature"
+    ],
+    "milestone": "Preservation public alpha",
+    "number": 478,
+    "priority": 12,
+    "progress": 45,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Launch the searchable public repository index",
+    "updatedAt": 1784729751219,
+    "votes": 0
+}

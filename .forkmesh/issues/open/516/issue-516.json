@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751442,
+    "endDate": 1786680000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nRepository access, identity, contribution, governance, and essential network participation work fully without a token, blockchain, reward system, or speculative asset.\n\n## Scope\n\n- Write the invariant into product architecture, commercial commitments, protocol governance, and conformance requirements.\n- Isolate optional payment/reward adapters from canonical repository, identity, authorization, discovery, and governance state.\n- Provide conventional payment and no-payment paths wherever optional incentives are offered.\n\n## Acceptance criteria\n\n- A clean deployment with every incentive adapter disabled passes all essential protocol and product journeys.\n- No identity, permission, ranking, moderation, or governance decision depends on asset ownership or transaction history.\n- Removing or replacing an incentive provider does not change canonical repository or collaboration state.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 invariant**\n- Milestone: **Product contract & measurement**\n- Numeric priority: **4 of 44** (1 is highest)\n- Depends on: None\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**80% as of 2026-07-22.** ForkMesh access and identity are already independent of optional Solana donations/bounties; the invariant still needs formal architecture, tests, and governance protection. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Essential no-incentive journey pass rate, adapter coupling violations, and user comprehension. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-516",
+            "sig": "PYdbcq94rIWKHWKuYLHZaLca28Df2JWo59HRW3_ke4KaBS7ukLzuFAEcvaHxmYWCptaWAtTfQtCnXRhnhJFnDQ",
+            "title": "Make tokens and experimental incentives strictly optional",
+            "ts": 1784729751442,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "b9458b5a-541b-4996-abc8-8be1a8aa334f",
+            "labels": [
+                "governance",
+                "protocol",
+                "product"
+            ],
+            "sig": "V2MHkZh9cku02D9Qrexgy_nKQ9m4q30pW-czXk1bOnJEgY1XpM-OrzTuwkmrA1x2XR0HMWkmWzumD_mfiKXeBA",
+            "ts": 1784729751443,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "0e395383-3846-4c7f-a6e2-21891eb4a2fb",
+            "milestone": "Product contract & measurement",
+            "sig": "A-WujWN8-dFKwtDzDEmZhmUXnOWxXtBr-4lDAtHoRwUv0QeMzuq_QqUYGV2yzfRjMKSoYrErkQMmG_A002fODA",
+            "ts": 1784729751444,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1786680000000,
+            "id": "48dd35a9-5244-4858-b1be-432e8912cdb6",
+            "sig": "uPX_sqZxx7-NiMXaJ2ZQwAZCvNWNS13-3Vz0_lwI3lFMkuYKRGizDGZTFow5o2Z0oiwteEPuXceIqr4Sd65nCw",
+            "startDate": 1784692800000,
+            "ts": 1784729751445,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "152e9a83-d50d-4192-a080-39d95f74e8a2",
+            "priority": 4,
+            "sig": "VFaq0oWRSLTulsPYjfHEXp7BEiYA2_5I8jdZGCTDql29DoyBpCWzV57JS5Y0PXMTl4aqChjXO8c5VSBe3D7-Cg",
+            "ts": 1784729751446,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "ba3c94c5-8f3a-45b1-a651-c8bc00e51f3a",
+            "progress": 80,
+            "sig": "BXZzhFpQDgpeSrGpITxTujYDnhpDQKtCQEa1yQkEAePs7j66XN_o5VgAkKdR-f32M5CzmxeyqRqBuKv0_JoYCw",
+            "ts": 1784729751447,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "governance",
+        "protocol",
+        "product"
+    ],
+    "milestone": "Product contract & measurement",
+    "number": 516,
+    "priority": 4,
+    "progress": 80,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Make tokens and experimental incentives strictly optional",
+    "updatedAt": 1784729751447,
+    "votes": 0
+}
