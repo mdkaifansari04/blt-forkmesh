@@ -14895,6 +14895,25 @@ async def _forkbot_next_issue_number(env, repo_bi, owner, repo):
         return 0
 
 
+def _forkbot_attributed_body(body, source, actor):
+    """Append a footer crediting ForkBot and the human who asked for the issue,
+    so a reader of the merged issue can see it came from a chat request rather
+    than assuming a person typed it up. The fediverse path builds its own
+    "Filed from a fediverse mention by ..." attribution before calling in, so
+    only the default chat source gets the footer here (avoids double-crediting).
+    """
+    if source != "forkbot":
+        return body
+    if actor and actor != FORKBOT_AUTHOR:
+        footer = "Filed by ForkBot at @%s's request via chat." % actor
+    else:
+        footer = "Filed by ForkBot via chat."
+    body = (body or "").rstrip()
+    if not body:
+        return "_%s_" % footer
+    return "%s\n\n---\n_%s_" % (body, footer)
+
+
 async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
                                  source="forkbot", labels=None,
                                  attachments=None):
@@ -14915,6 +14934,7 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
 
     now = int(Date.now())
     actor = clean_string(requester, MAX_NODE_NAME).lower() or FORKBOT_AUTHOR
+    body = _forkbot_attributed_body(body, source, actor)
     # Proposed number the desktop honors when the slot is free (0 = let the
     # desktop assign). Allocated before the insert so it lands in the stored
     # item and can be echoed straight back to the chat.
