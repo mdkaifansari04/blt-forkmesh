@@ -4,7 +4,7 @@ number: 38
 title: Agent: on new repository have the option for private or public - private repos must …
 base: main
 head: agent/adhoc-201-on-new-repository-have-the-option-for-private-or
-status: open
+status: merged
 ts: 1784731747639
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh
