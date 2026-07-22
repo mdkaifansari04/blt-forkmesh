@@ -1498,7 +1498,7 @@ void MainWindow::deleteCurrentMirror()
                                  : QDir::cleanPath(rawWorktree);
 
     QString message = QStringLiteral(
-        "Delete repository %1/%2 from this node?\n\nMirror: %3")
+        "Delete repository %1/%2 from this machine?\n\nMirror: %3")
                           .arg(repo.owner, repo.name,
                                path.isEmpty() ? QStringLiteral("not created") : path);
     if (!repo.localPath.isEmpty())
@@ -1824,7 +1824,7 @@ QWidget *MainWindow::buildRepoSettingsTab()
 
     auto *actionsHint = new QLabel(
         "Mirrored repositories start with actions disabled. Enable this only for "
-        "repos whose workflows you trust to run on this node.");
+        "repos whose workflows you trust to run on this machine.");
     actionsHint->setObjectName("statusLine");
     actionsHint->setWordWrap(true);
     outer->addWidget(actionsHint);
@@ -1866,7 +1866,7 @@ QWidget *MainWindow::buildRepoSettingsTab()
     outer->addWidget(dangerHeading);
 
     auto *deleteHint = new QLabel(
-        "Delete this repository from this node completely. Your working "
+        "Delete this repository from this machine completely. Your working "
         "directory, if any, is kept on disk but no longer tracked by "
         "ForkMesh. Published repos are also removed from the public "
         "ForkMesh catalog, freeing up the name for reuse. You can also "
@@ -2110,7 +2110,7 @@ void MainWindow::refreshRepoSettings()
                     "published/fork location.");
             else if (r.cloneUrl.trimmed().isEmpty())
                 m_repoSourceHint->setText(
-                    "No upstream set — this node hosts the repo directly.");
+                    "No upstream set — this machine hosts the repo directly.");
             else
                 m_repoSourceHint->setText(
                     "The mirror fetches from this URL. Update it to repoint the "
@@ -2157,8 +2157,8 @@ void MainWindow::refreshRepoSettings()
             "yet. The visibility choice applies once you publish it.");
     else if (repo.isPrivate)
         m_repoVisibilityHint->setText(
-            "Private: hidden from the public catalog. Only this node's key can "
-            "browse or clone it through the mainnode.");
+            "Private: hidden from the public catalog. Only this machine's key "
+            "can browse or clone it through the mainnode.");
     else
         m_repoVisibilityHint->setText(
             "Public: listed in the catalog and anyone can browse or clone it "
@@ -4012,8 +4012,8 @@ void MainWindow::syncRepository(int index, bool quiet)
     if (!preview && hasMirror && repo.publishToNetwork &&
         repo.localPath.trimmed().isEmpty() && repo.owner == accountOwner()) {
         if (!quiet)
-            flashMessage(QStringLiteral("Nothing to sync for %1/%2 — this node "
-                                        "hosts it directly.")
+            flashMessage(QStringLiteral("Nothing to sync for %1/%2 — this "
+                                        "machine hosts it directly.")
                              .arg(repo.owner, repo.name));
         return;
     }
@@ -4404,6 +4404,8 @@ void MainWindow::loginToUserAccount()
     QSettings().setValue(kAccountNameSetting, m_accountName);
     if (m_settingsNameEdit)
         m_settingsNameEdit->setText(m_accountName);
+    if (m_settingsMachineNodeEdit)
+        m_settingsMachineNodeEdit->setText(machineNodeName());
     refreshSettingsEmailVerifiedBadge();
     QMessageBox::information(this, "Log in",
                              "Signed in as " + m_accountName + ".");
@@ -4455,7 +4457,7 @@ void MainWindow::uninstallForkMesh()
         "This permanently and irreversibly erases ForkMesh from this computer, "
         "including:\n\n"
         "  •  every mirrored repository\n"
-        "  •  this node's identity key (your account cannot be recovered)\n"
+        "  •  this machine's identity key (your account cannot be recovered)\n"
         "  •  all chat history, settings and caches\n"
         "  •  the desktop launcher and icons\n"
         "  •  the ForkMesh program files\n\nFolders removed:\n");

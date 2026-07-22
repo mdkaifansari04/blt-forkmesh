@@ -4662,11 +4662,17 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     // first entry when nothing's been arrowed to yet, and insert it just like
     // activating with Enter would. The popup (not m_messageInput) is filtered
     // because a Qt::Popup grabs the keyboard while it's up.
-    if (m_mentionCompleter && obj == m_mentionCompleter->popup() &&
+    // NB: compare against the cached m_mentionCompleterPopup, never
+    // m_mentionCompleter->popup(). This runs for every application event, and
+    // popup() lazily builds its QListView on first call — whose construction
+    // pumps events back through here and would recurse into another popup()
+    // until the stack overflows (SIGSEGV, adhoc #220). The cache stays null
+    // until the view is fully built, so this branch simply doesn't fire yet.
+    if (m_mentionCompleterPopup && obj == m_mentionCompleterPopup &&
         event->type() == QEvent::KeyPress) {
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->key() == Qt::Key_Tab) {
-            const QModelIndex idx = m_mentionCompleter->popup()->currentIndex();
+            const QModelIndex idx = m_mentionCompleterPopup->currentIndex();
             QString name;
             if (idx.isValid())
                 name = idx.data(Qt::DisplayRole).toString();
@@ -4674,7 +4680,7 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                 name = m_mentionCompleter->currentCompletion();
             if (!name.isEmpty()) {
                 insertMention(name);
-                m_mentionCompleter->popup()->hide();
+                m_mentionCompleterPopup->hide();
                 return true;
             }
         }
@@ -7813,7 +7819,14 @@ QWidget *MainWindow::buildChatSection()
     // it's visible, so key presses (Tab included) land on the popup rather than
     // on m_messageInput. Filter the popup directly so Tab accepts the
     // highlighted name, matching the web chat composer (adhoc #212).
-    m_mentionCompleter->popup()->installEventFilter(this);
+    // popup() lazily builds the QListView here on first call; cache the pointer
+    // so eventFilter can compare against it WITHOUT calling popup() (which would
+    // re-enter during this very construction and recurse — see the member decl,
+    // adhoc #220). Assign only after installEventFilter so the cache reflects the
+    // fully-built view.
+    QAbstractItemView *mentionPopup = m_mentionCompleter->popup();
+    mentionPopup->installEventFilter(this);
+    m_mentionCompleterPopup = mentionPopup;
     refreshMentionCandidates();
     // 🙂 opens a compact emoji grid that inserts into the composer at the caret.
     auto *emojiButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x99\x82"));

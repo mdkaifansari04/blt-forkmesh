@@ -2800,7 +2800,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_navSolanaBalance->setFixedWidth(148);
     m_navSolanaBalance->setCursor(Qt::PointingHandCursor);
     m_navSolanaBalance->setToolTip(
-        "This node's Solana wallet balance \xE2\x80\x94 click to switch "
+        "Your Solana wallet balance \xE2\x80\x94 click to switch "
         "currency (SOL / USD / INR)");
     // Clicking the balance itself cycles its display currency, so the control
     // sits right on the value instead of needing a separate swap icon.
@@ -3741,9 +3741,9 @@ void MainWindow::updateNodeOnlineControls()
     if (m_nodeOnlineToggle->isChecked() != online)
         m_nodeOnlineToggle->setChecked(online);
     m_nodeOnlineToggle->setToolTip(
-        online ? QStringLiteral("This node is online and collecting rewards. "
+        online ? QStringLiteral("This machine is online and collecting rewards. "
                                 "Click to take it offline.")
-               : QStringLiteral("This node is offline and not collecting "
+               : QStringLiteral("This machine is offline and not collecting "
                                 "rewards. Click to bring it back online."));
 
     if (m_nodeOnlineStatusLabel) {
@@ -4159,10 +4159,11 @@ void MainWindow::cycleNavSolanaCurrency()
 void MainWindow::updateNavSolanaBalance()
 {
     if (m_navNodeName) {
-        // "user/node" (e.g. "jett/forkmesh") when this node has a distinct
-        // owning user account; just the node name for a solo/unclaimed node,
-        // where topBarUserName() already falls back to the node name itself.
-        const QString nodeName = accountNameFromInput(m_userName, QString());
+        // "user/node" (e.g. "jett/forkmesh") — the user account paired with THIS
+        // machine's node name when they differ; just the one name for a
+        // solo/unclaimed node, where topBarUserName() falls back to the node
+        // name itself. The node half is machineNodeName(), never the username.
+        const QString nodeName = machineNodeName();
         const QString user = topBarUserName().trimmed();
         const QString name =
             (!user.isEmpty() && !nodeName.isEmpty() &&
@@ -4185,7 +4186,7 @@ void MainWindow::updateNavSolanaBalance()
     if (addr.isEmpty()) {
         m_navSolanaLamports = -1;
         m_navSolanaBalance->setText(QStringLiteral("SOL --"));
-        m_navSolanaBalance->setToolTip("Add a Solana address to show this node's balance");
+        m_navSolanaBalance->setToolTip("Add a Solana address to show your balance");
         return;
     }
     if (!isLikelySolanaAddress(addr)) {
@@ -4196,7 +4197,7 @@ void MainWindow::updateNavSolanaBalance()
     }
 
     m_navSolanaBalance->setText(QStringLiteral("SOL ..."));
-    m_navSolanaBalance->setToolTip(QStringLiteral("Checking this node's Solana balance"));
+    m_navSolanaBalance->setToolTip(QStringLiteral("Checking your Solana balance"));
     queryNavSolanaBalance(addr, 0);
 }
 
@@ -4216,7 +4217,7 @@ void MainWindow::renderNavSolanaBalance()
     if (cur == QLatin1String("sol")) {
         m_navSolanaBalance->setText(solBalance);
         m_navSolanaBalance->setToolTip(
-            QStringLiteral("This node's Solana balance: %1").arg(solBalance));
+            QStringLiteral("Your Solana balance: %1").arg(solBalance));
         return;
     }
     const auto it = m_navFiatRates.constFind(cur);
@@ -4228,7 +4229,7 @@ void MainWindow::renderNavSolanaBalance()
             formatFiatBalance(m_navSolanaLamports, it->first, cur);
         m_navSolanaBalance->setText(fiatBalance);
         m_navSolanaBalance->setToolTip(
-            QStringLiteral("This node's balance: %1 (%2)")
+            QStringLiteral("Your balance: %1 (%2)")
                 .arg(fiatBalance, solBalance));
         return;
     }
@@ -4286,7 +4287,7 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
             const QString amount = formatSolanaBalance(lamports - previousLamports);
             QApplication::alert(this, 0);
             postNotification(QStringLiteral("New disbursement received"),
-                             QStringLiteral("%1 added to this node's wallet. "
+                             QStringLiteral("%1 added to your wallet. "
                                             "New balance: %2")
                                  .arg(amount, balance),
                              false, QStringLiteral("emblem-default"));
@@ -4304,7 +4305,7 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
         }
         m_navSolanaBalance->setText(balance);
         m_navSolanaBalance->setToolTip(
-            QStringLiteral("This node's Solana balance: %1").arg(balance));
+            QStringLiteral("Your Solana balance: %1").arg(balance));
     });
 }
 
@@ -4343,7 +4344,7 @@ void MainWindow::queryNavSolanaUsdPrice(const QString &addr, qint64 lamports)
         const QString fiatBalance = formatFiatBalance(lamports, rate, cur);
         m_navSolanaBalance->setText(fiatBalance);
         m_navSolanaBalance->setToolTip(
-            QStringLiteral("This node's balance: %1 (%2 at %3%4/SOL)")
+            QStringLiteral("Your balance: %1 (%2 at %3%4/SOL)")
                 .arg(fiatBalance, solBalance, fiatCurrencySymbol(cur),
                      QString::number(rate, 'f', 2)));
     });
@@ -4379,7 +4380,7 @@ void MainWindow::showNodeMenu()
     for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
         QString text = e.name;
         if (e.self)
-            text += " (you)";
+            text += " (this machine)";
         text += QStringLiteral("   %1 repo%2")
                     .arg(e.repoCount)
                     .arg(e.repoCount == 1 ? "" : "s");
@@ -4512,7 +4513,8 @@ void MainWindow::showNodesWindow()
                                "<b>%2</b>%3")
                     .arg(isOnline ? "#3fb950" : "#8b949e",
                          node.name.toHtmlEscaped(),
-                         node.self ? " <span style='color:#8b949e'>(you)</span>"
+                         node.self ? " <span style='color:#8b949e'>(this "
+                                     "machine)</span>"
                                    : QString()));
             title->setTextFormat(Qt::RichText);
             info->addWidget(title);
@@ -5228,7 +5230,7 @@ void MainWindow::refreshRepoPinBanner()
                                 logSystem(
                                     "Integrity pin: clones of " + owner + "/" + name +
                                     " are being rejected — the relay's pinned hash no "
-                                    "longer matches the refs this node serves.");
+                                    "longer matches the refs this machine serves.");
                                 loadMirrorNodesPanel(); // paint the caution triangle now
                             }
                         });
@@ -5770,7 +5772,7 @@ QWidget *MainWindow::buildSolanaNotice()
     m_solanaBanner = new QWidget;
     m_solanaBanner->setObjectName("solanaBanner");
     m_solanaBannerLabel = new QLabel(
-        "Add a Solana address so others can sponsor this node — it keeps "
+        "Add a Solana address so others can sponsor your hosting — it keeps "
         "the network open to donations and more sustainable.");
     m_solanaBannerLabel->setObjectName("solanaBannerLabel");
     m_solanaBannerLabel->setWordWrap(true);
@@ -5822,9 +5824,9 @@ QWidget *MainWindow::buildWalletVerifyNotice()
     auto *title = new QLabel("Verify your payout wallet to receive payouts");
     title->setObjectName("walletVerifyTitle");
     auto *body = new QLabel(
-        "This node's payout wallet isn't verified yet, so it can't receive "
+        "Your payout wallet isn't verified yet, so it can't receive "
         "payouts. Make a small deposit (\xE2\x89\xA5 0.001 SOL) to your wallet "
-        "to prove you control it \xE2\x80\x94 then this node starts earning its "
+        "to prove you control it \xE2\x80\x94 then you start earning your "
         "share of the network rewards.");
     body->setObjectName("walletVerifyBody");
     body->setWordWrap(true);
@@ -6316,8 +6318,8 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         mirrorButton->setObjectName("ghostButton");
         mirrorButton->setCursor(Qt::PointingHandCursor);
         mirrorButton->setToolTip(mirroredIndex >= 0
-                                     ? QStringLiteral("This node already mirrors it")
-                                     : QStringLiteral("Mirror this repository on this node"));
+                                     ? QStringLiteral("This machine already mirrors it")
+                                     : QStringLiteral("Mirror this repository on this machine"));
         setOcticon(mirrorButton, "sync", 13);
         if (mirroredIndex >= 0) {
             mirrorButton->setEnabled(false);
@@ -6502,7 +6504,7 @@ void MainWindow::mirrorNetworkRepo(const QString &owner, const QString &name,
                                    const QString &cloneUrl, bool isPrivate)
 {
     if (findNetworkRepoIndex(owner, name, false) >= 0) {
-        flashMessage(QStringLiteral("This node already mirrors %1/%2.")
+        flashMessage(QStringLiteral("This machine already mirrors %1/%2.")
                          .arg(owner, name));
         refreshNetworkReposPage();
         return;
@@ -7394,7 +7396,7 @@ void MainWindow::refreshNodesTable()
 
         QString label = e.name.isEmpty() ? QStringLiteral("(unnamed)") : e.name;
         if (e.self)
-            label += QStringLiteral("  (you)");
+            label += QStringLiteral("  (this machine)");
         auto *nameItem =
             new QTableWidgetItem(osBadgeIcon(e.platform, isOnline, 16), label);
         // Stash the real node name so a row stays identifiable after re-sorting.
@@ -7581,7 +7583,7 @@ void MainWindow::showNodeDetailForRow(int row)
                             "chat room")
                       : QStringLiteral("Online")));
     if (entry.self)
-        addRow(QStringLiteral("This node"), QStringLiteral("Yes (you)"));
+        addRow(QStringLiteral("This machine"), QStringLiteral("Yes"));
     QString platform = entry.platform.trimmed();
     if (platform.isEmpty())
         platform = mi.platform.trimmed();
@@ -10574,11 +10576,12 @@ QWidget *MainWindow::buildNodeProfilePanel()
     // centered on wide windows when flanked by the stretchers in
     // buildNodeProfileSection. The content's size hint comes out narrow (the
     // word-wrap labels report tiny minimums), so without a healthy minimum the
-    // panel rendered ~450px wide and clipped the "THIS NODE" action row
+    // panel rendered ~450px wide and clipped the "THIS MACHINE" action row
     // (Logout), the Node ID key, the balance button and the verify-wallet
-    // button on the right. Give both columns real room so everything shows.
-    scroll->setMinimumWidth(760);
-    scroll->setMaximumWidth(1180);
+    // button on the right. Give both columns real room so everything shows —
+    // wide enough that the nodes list can carry full per-node detail rows.
+    scroll->setMinimumWidth(920);
+    scroll->setMaximumWidth(1440);
     m_nodeProfilePanel = scroll;
 
     auto *content = new QWidget;
@@ -10662,7 +10665,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     // be a small pill in the top-right nav cluster; moved here so it reads as
     // the node's power switch rather than a stray status badge.
     m_profileOnlineSection = new QWidget;
-    auto *onlineSectionLabel = makeProfileSection("THIS NODE'S POWER SWITCH");
+    auto *onlineSectionLabel = makeProfileSection("THIS MACHINE'S POWER SWITCH");
     auto *nodeOnlineSwitch = new ToggleSwitch;
     m_nodeOnlineToggle = nodeOnlineSwitch;
     connect(nodeOnlineSwitch, &QAbstractButton::clicked, this,
@@ -10676,7 +10679,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     m_nodeUptimeLabel->setStyleSheet(
         QStringLiteral("color:#8b949e; font-size:10px; font-weight:600;"));
     m_nodeUptimeLabel->setToolTip(
-        QStringLiteral("How long this node has been online this session"));
+        QStringLiteral("How long this machine has been online this session"));
     auto *onlineStatusColumn = new QVBoxLayout;
     onlineStatusColumn->setContentsMargins(0, 0, 0, 0);
     onlineStatusColumn->setSpacing(0);
@@ -10698,7 +10701,10 @@ QWidget *MainWindow::buildNodeProfilePanel()
     // (rebuild, update, settings, logout) that used to be a stacked text menu,
     // then icon-only; labels came back so each action is clear at a glance.
     m_profileSelfActions = new QWidget;
-    auto *selfLabel = makeProfileSection("THIS NODE");
+    // "THIS MACHINE", not "THIS NODE": on your own profile you're a user, and
+    // users are not nodes — these actions just happen to act on the machine
+    // the app is running on.
+    auto *selfLabel = makeProfileSection("THIS MACHINE");
     m_profileRebuildButton = makeProfileActionButton(
         "sync", "Rebuild",
         "Rebuild from the local source checkout and relaunch (fast; no update)");
@@ -10719,7 +10725,7 @@ QWidget *MainWindow::buildNodeProfilePanel()
     connect(selfSettingsButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
     auto *selfLogoutButton = makeProfileActionButton("sign-out", "Logout",
-                                                      "Log out of this node");
+                                                      "Log out on this machine");
     connect(selfLogoutButton, &QPushButton::clicked, this,
             [this] { leaveSession(); });
     auto *actionRow = new QHBoxLayout;
@@ -10781,31 +10787,48 @@ QWidget *MainWindow::buildNodeProfilePanel()
     // profile only.
     m_profileAccountSection = new QWidget;
     m_profileAccountSection->setObjectName("profileUserCard");
-    auto *accountLabel = makeProfileSection("USER PROFILE");
+    // Header flips between "NODES (n)" (linked: just the fleet, no chrome) and
+    // "USER ACCOUNT" (unlinked: link-state text + login button). The old
+    // always-on "USER PROFILE" label + status boxes ate half the card before
+    // the first node row; renderProfileAccountStatus now hides both once the
+    // account is linked so the card is just the nodes.
+    m_profileAccountLabel = makeProfileSection("NODES");
     m_profileAccountStatus = new QLabel;
     m_profileAccountStatus->setObjectName("statusLine");
     m_profileAccountStatus->setWordWrap(true);
     m_profileAccountStatus->setTextFormat(Qt::RichText);
     m_profileUserNodesList = new QListWidget;
     m_profileUserNodesList->setObjectName("profileNodeList");
-    m_profileUserNodesList->setIconSize(QSize(28, 28));
+    m_profileUserNodesList->setIconSize(QSize(32, 32));
     m_profileUserNodesList->setSelectionMode(QAbstractItemView::NoSelection);
     m_profileUserNodesList->setFocusPolicy(Qt::NoFocus);
     m_profileUserNodesList->setFrameShape(QFrame::NoFrame);
     m_profileUserNodesList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_profileUserNodesList->setCursor(Qt::PointingHandCursor);
+    m_profileUserNodesList->setToolTip(
+        QStringLiteral("Nodes owned by this user account. Click one to open "
+                       "its node profile."));
+    // Rows carry the real node name in UserRole (the display text may have a
+    // "(this machine)" marker); clicking opens that node's own profile.
+    connect(m_profileUserNodesList, &QListWidget::itemClicked, this,
+            [this](QListWidgetItem *item) {
+                const QString node = item->data(Qt::UserRole).toString();
+                if (!node.isEmpty())
+                    showNodeProfile(QString(), node);
+            });
     m_profileLinkUserButton = new QPushButton("Log in as a user");
     m_profileLinkUserButton->setObjectName("ghostButton");
     m_profileLinkUserButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_profileLinkUserButton, "person", 14);
     m_profileLinkUserButton->setToolTip(
-        "Link this node to your user account by signing in. One user can own "
-        "many nodes.");
+        "Link this machine's node to your user account by signing in. One user "
+        "can own many nodes.");
     connect(m_profileLinkUserButton, &QPushButton::clicked, this,
             &MainWindow::promptLinkNodeToUser);
     auto *accountLayout = new QVBoxLayout(m_profileAccountSection);
     accountLayout->setContentsMargins(10, 10, 10, 10);
     accountLayout->setSpacing(6);
-    accountLayout->addWidget(accountLabel);
+    accountLayout->addWidget(m_profileAccountLabel);
     accountLayout->addWidget(m_profileAccountStatus);
     accountLayout->addWidget(m_profileUserNodesList);
     accountLayout->addWidget(m_profileLinkUserButton, 0, Qt::AlignLeft);
@@ -10838,13 +10861,14 @@ QWidget *MainWindow::buildNodeProfilePanel()
     // default browser so the user logged in on forkmesh.com takes ownership of
     // this node without typing anything.
     m_profileLinkBrowserButton =
-        new QPushButton("Link this node to your account");
+        new QPushButton("Link this machine to your account");
     m_profileLinkBrowserButton->setObjectName("ghostButton");
     m_profileLinkBrowserButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_profileLinkBrowserButton, "link", 14);
     m_profileLinkBrowserButton->setToolTip(
-        "Open forkmesh.com in your browser and attach this node to the user "
-        "account you're logged in as there. One user can own many nodes.");
+        "Open forkmesh.com in your browser and attach this machine's node to "
+        "the user account you're logged in as there. One user can own many "
+        "nodes.");
     connect(m_profileLinkBrowserButton, &QPushButton::clicked, this,
             &MainWindow::openLinkNodeInBrowser);
 
@@ -11287,18 +11311,19 @@ static QStringList profileNodesFromJson(const QJsonValue &value)
 }
 
 // Render a "<b>a</b>, <b>b</b>" list of the nodes linked to this user account,
-// marking the one we're viewing from ("(this node)") so the fleet is legible.
+// marking the machine we're viewing from ("(this machine)") so the fleet is
+// legible. Matched by machineNodeName() — the username is never a node.
 QString MainWindow::linkedNodesHtml() const
 {
     if (m_profileLinkedNodes.isEmpty())
         return QString();
-    const QString self = accountOwner();
+    const QString machine = machineNodeName();
     QStringList parts;
     for (const QString &n : m_profileLinkedNodes) {
         QString label = QStringLiteral("<b>%1</b>").arg(n.toHtmlEscaped());
-        if (n == self)
+        if (n.compare(machine, Qt::CaseInsensitive) == 0)
             label += QString::fromUtf8(" <span style='color:#8b949e'>(this "
-                                       "node)</span>");
+                                       "machine)</span>");
         parts << label;
     }
     return parts.join(QStringLiteral(", "));
@@ -11325,67 +11350,164 @@ void MainWindow::renderProfileAccountStatus()
     if (userName.isEmpty() && (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty()))
         userName = accountOwner().trimmed().toLower();
     const bool hasUserProfile = !userName.isEmpty();
+    int nodeCount = 0;
     if (m_profileUserNodesList) {
         QStringList nodes = m_profileLinkedNodes;
-        const QString self = accountOwner();
-        if (hasUserProfile && !self.isEmpty() &&
-            !nodes.contains(self, Qt::CaseInsensitive))
-            nodes.prepend(self);
+        // THIS machine is one of the user's nodes too — listed under its own
+        // machine node name, never under the username (users are not nodes;
+        // the old code prepended accountOwner() here, which is how "jett" got
+        // labelled "(this node)").
+        const QString machine = machineNodeName();
+        if (hasUserProfile && !machine.isEmpty() &&
+            !nodes.contains(machine, Qt::CaseInsensitive))
+            nodes.prepend(machine);
+        nodeCount = nodes.size();
+
+        // Rich per-node rows: join each name against the same sources the Nodes
+        // directory table uses — the chat roster (platform / version / mirrors,
+        // via nodeListIdentityKey) and the relay's canonical online set — plus
+        // the node dropdown's repo counts.
+        auto rosterInfo = [this](const QString &name) -> MemberInfo {
+            MemberInfo best;
+            bool found = false;
+            for (const MemberInfo &m : std::as_const(m_homeRoster)) {
+                if (nodeListIdentityKey(m) != name)
+                    continue;
+                if (!found || (m.online && !best.online)) {
+                    best = m;
+                    found = true;
+                    continue;
+                }
+                if (best.version.trimmed().isEmpty())
+                    best.version = m.version;
+                if (best.platform.trimmed().isEmpty())
+                    best.platform = m.platform;
+                if (best.mirrors.isEmpty())
+                    best.mirrors = m.mirrors;
+            }
+            return best;
+        };
+        const QString dot = QString::fromUtf8(" \xC2\xB7 ");
         m_profileUserNodesList->clear();
         for (const QString &nodeName : std::as_const(nodes)) {
+            const MemberInfo mi = rosterInfo(nodeName);
+            const NodeMenuEntry *menu = nullptr;
+            for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
+                if (e.name.compare(nodeName, Qt::CaseInsensitive) == 0) {
+                    menu = &e;
+                    break;
+                }
+            }
+            const bool isThisMachine =
+                nodeName.compare(machine, Qt::CaseInsensitive) == 0;
+            // Same online precedence as refreshNodesTable: this machine trusts
+            // the local backend; otherwise the relay set once fetched; before
+            // that, either signal.
+            const bool rosterLive = mi.online || (menu && menu->online);
+            const bool relayLive =
+                m_relayOnlineNodes.contains(nodeName.trimmed().toLower());
+            const bool online = isThisMachine
+                                    ? (m_backend != nullptr)
+                                    : (m_relayOnlineNodesFetched
+                                           ? relayLive
+                                           : (rosterLive || relayLive));
+
+            QStringList meta;
+            meta << (online ? QStringLiteral("Online") : QStringLiteral("Offline"));
+            const QString platform =
+                mi.platform.trimmed().isEmpty() && menu ? menu->platform
+                                                        : mi.platform.trimmed();
+            if (!platform.isEmpty())
+                meta << platform;
+            if (!mi.version.trimmed().isEmpty())
+                meta << QStringLiteral("v%1").arg(mi.version.trimmed());
+            if (menu && menu->repoCount > 0)
+                meta << QStringLiteral("%1 repo%2")
+                            .arg(menu->repoCount)
+                            .arg(menu->repoCount == 1 ? QString()
+                                                      : QStringLiteral("s"));
+            if (!mi.mirrors.isEmpty())
+                meta << QStringLiteral("%1 mirror%2")
+                            .arg(mi.mirrors.size())
+                            .arg(mi.mirrors.size() == 1 ? QString()
+                                                        : QStringLiteral("s"));
+
             auto *item = new QListWidgetItem;
-            const QPixmap icon =
-                roundedRectPixmap(nodeMachineFavicon(nodeName, 28), 28, 8);
-            item->setIcon(QIcon(icon));
-            item->setText(nodeName == self ? nodeName + QStringLiteral(" (this node)")
-                                           : nodeName);
+            item->setIcon(QIcon(
+                roundedRectPixmap(nodeMachineFavicon(nodeName, 32), 32, 8)));
+            item->setText(
+                nodeName +
+                (isThisMachine ? QStringLiteral("  (this machine)") : QString()) +
+                QLatin1Char('\n') + meta.join(dot));
+            item->setData(Qt::UserRole, nodeName);
+            item->setToolTip(QStringLiteral("%1%2\nOwned by %3 \xE2\x80\x94 "
+                                            "click to open this node's profile")
+                                 .arg(nodeName,
+                                      isThisMachine
+                                          ? QStringLiteral(" (this machine)")
+                                          : QString(),
+                                      userName.isEmpty()
+                                          ? QStringLiteral("this account")
+                                          : userName));
             m_profileUserNodesList->addItem(item);
         }
         const bool showNodes = !nodes.isEmpty();
         m_profileUserNodesList->setVisible(showNodes);
         if (showNodes)
             m_profileUserNodesList->setFixedHeight(
-                qMin(156, qMax(42, nodes.size() * 36 + 8)));
+                qMin(324, qMax(60, nodes.size() * 52 + 8)));
     }
     if (!m_nodeOwnerUser.trimmed().isEmpty()) {
-        // A child node attached to a separate user account.
+        // A child node attached to a separate user account: slim one-liner, the
+        // list itself carries the fleet.
+        if (m_profileAccountLabel)
+            m_profileAccountLabel->setText(
+                QStringLiteral("NODES (%1)").arg(nodeCount));
         m_profileAccountStatus->setText(
             QString::fromUtf8(
                 "<span style='color:#3fb950'>\xE2\x9C\x94 Linked to user "
                 "<b>%1</b></span>")
                 .arg(m_nodeOwnerUser.toHtmlEscaped()));
+        m_profileAccountStatus->setVisible(true);
         m_profileLinkUserButton->setText("Linked to a user");
         m_profileLinkUserButton->setVisible(false);
     } else if (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty()) {
-        // This account is itself a user (it has login credentials); it can't
-        // be "linked to a user" — instead it OWNS nodes. Show them and hide
-        // the login button (linking is driven from each child node's app).
-        const QString body =
-            m_profileLinkedNodes.isEmpty()
-                ? QString::fromUtf8(
-                      "No other nodes are linked yet \xE2\x80\x94 open "
-                      "another node's app and use \"Log in as a user\" or "
-                      "\"Link this node to your account\" there to attach it "
-                      "to this account.")
-                : QStringLiteral("Nodes linked to this account are listed below.");
-        m_profileAccountStatus->setText(
-            QString::fromUtf8(
-                "<span style='color:#3fb950'>\xE2\x9C\x94 This is your user "
-                "account</span><br>%1").arg(body));
+        // This account is itself a user: the card is just the node fleet under a
+        // "NODES (n)" header. The old "✔ This is your user account" status box
+        // (and the USER PROFILE header above it) used to push the actual nodes
+        // half a card down; the fleet list needs no preamble.
+        if (m_profileAccountLabel)
+            m_profileAccountLabel->setText(
+                QStringLiteral("NODES (%1)").arg(nodeCount));
+        if (m_profileLinkedNodes.isEmpty()) {
+            m_profileAccountStatus->setText(QString::fromUtf8(
+                "No other nodes are linked yet \xE2\x80\x94 open "
+                "another node's app and use \"Log in as a user\" or "
+                "\"Link this node to your account\" there to attach it "
+                "to this account."));
+            m_profileAccountStatus->setVisible(true);
+        } else {
+            m_profileAccountStatus->clear();
+            m_profileAccountStatus->setVisible(false);
+        }
         m_profileLinkUserButton->setVisible(false);
     } else {
         // While a browser link grant is being watched (adhoc #120), say so
         // instead of "isn't linked yet" — the repaint on every poll would
         // otherwise clobber the context of what the user just started.
+        if (m_profileAccountLabel)
+            m_profileAccountLabel->setText(QStringLiteral("USER ACCOUNT"));
         m_profileAccountStatus->setText(
             m_linkGrantPollsLeft > 0
                 ? QString::fromUtf8(
-                      "Finishing in your browser \xE2\x80\xA6 this node will "
-                      "be attached to the user logged in on the website.")
+                      "Finishing in your browser \xE2\x80\xA6 this machine's "
+                      "node will be attached to the user logged in on the "
+                      "website.")
                 : QString::fromUtf8(
-                      "This node isn't linked to a user account yet. One user "
-                      "can own many nodes \xE2\x80\x94 log in to attach this "
-                      "node."));
+                      "This machine's node isn't linked to a user account yet. "
+                      "One user can own many nodes \xE2\x80\x94 log in to "
+                      "attach it."));
+        m_profileAccountStatus->setVisible(true);
         m_profileLinkUserButton->setText("Log in as a user");
         m_profileLinkUserButton->setEnabled(true);
         m_profileLinkUserButton->setVisible(true);
@@ -11407,9 +11529,16 @@ void MainWindow::refreshProfileAccountStatus()
         m_profileLinkedNodes.clear();
         m_profileIsUserAccount = false;
         updateUserSwitcher();
+        if (m_profileAccountLabel)
+            m_profileAccountLabel->setText(QStringLiteral("USER ACCOUNT"));
+        if (m_profileUserNodesList) {
+            m_profileUserNodesList->clear();
+            m_profileUserNodesList->setVisible(false);
+        }
         m_profileAccountStatus->setText(QString::fromUtf8(
-            "Register this node first (see \"Get paid to mirror\") to link it to "
-            "a user account."));
+            "Register this machine's node first (see \"Get paid to mirror\") to "
+            "link it to a user account."));
+        m_profileAccountStatus->setVisible(true);
         m_profileLinkUserButton->setText("Log in as a user");
         m_profileLinkUserButton->setEnabled(false);
         m_profileLinkUserButton->setVisible(true);
