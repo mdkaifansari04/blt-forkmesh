@@ -1,0 +1,377 @@
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index 10fdc577..ba2bb20e 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -7822,6 +7822,7 @@ async def _account_login(env, request):
+     device = None
+     desktop_capable = False
+     device_kind = ""
++    replace_primary_key = data.get("replacePrimaryKey") is True
+     if pubkey:
+         account_name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+         try:
+@@ -7839,7 +7840,10 @@ async def _account_login(env, request):
+         target_user_bi = (owner_row or {}).get("user_bi") or name_bi
+         proven_users = await _device_proven_user_bis(env, pubkey)
+         if any(user_bi != target_user_bi for user_bi in proven_users):
+-            return json_response({"error": "device_key_conflict"}, status=409)
++            return json_response(
++                {"error": "device_key_conflict",
++                 "accountPubkey": clean_string(rec.get("pubkey", ""), 120)},
++                status=409)
+         await _device_retire_unproven_claims(env, name_bi, pubkey)
+         await _register_account_device(
+             env, name_bi, pubkey, "desktop_node",
+@@ -7849,13 +7853,27 @@ async def _account_login(env, request):
+         final_proven_users = await _device_proven_user_bis(env, pubkey)
+         device_caps = clean_string(
+             (device or {}).get("capabilities", ""), 512).split(",")
++        device_enabled = (bool((device or {}).get("enabled", True)) and
++                          not bool((device or {}).get("revoked_at", 0)))
+         if (not device
+                 or CONTRIBUTION_KEY_PROOF_CAPABILITY not in device_caps
+                 or target_user_bi not in final_proven_users
+                 or any(user_bi != target_user_bi
+                        for user_bi in final_proven_users)):
+             return json_response({"error": "device_key_conflict"}, status=409)
+-        if not rec.get("pubkey"):
++        if (replace_primary_key and device_enabled and
++                "owner_sign" in device_caps and rec.get("pubkey") != pubkey):
++            previous = clean_string(rec.get("pubkey", ""), 120)
++            prev_pubkeys = rec.get("prev_pubkeys")
++            if not isinstance(prev_pubkeys, list):
++                prev_pubkeys = []
++            if previous and previous not in prev_pubkeys:
++                prev_pubkeys.append(previous)
++            rec["pubkey"] = pubkey
++            rec["prev_pubkeys"] = prev_pubkeys
++            rec["rotated_at"] = int(Date.now())
++            await _save_account(env, name_bi, rec)
++        elif not rec.get("pubkey"):
+             rec["pubkey"] = pubkey
+             await _save_account(env, name_bi, rec)
+         try:
+@@ -7865,7 +7883,7 @@ async def _account_login(env, request):
+         caps = device.get("capabilities", DESKTOP_NODE_CAPABILITIES) if device else DESKTOP_NODE_CAPABILITIES
+         if isinstance(caps, str):
+             caps = [c for c in caps.split(",") if c]
+-        enabled = bool(device.get("enabled", True)) and not bool(device.get("revoked_at", 0)) if device else True
++        enabled = device_enabled
+         primary_key_matched = pubkey == clean_string(rec.get("pubkey", ""), 120)
+         desktop_capable = primary_key_matched and enabled and "owner_sign" in caps
+         session_caps = caps if desktop_capable else CLIENT_CAPABILITIES.split(",")
+diff --git a/cloudflare_worker/tests/test_login_key_binding.py b/cloudflare_worker/tests/test_login_key_binding.py
+index a99db45b..d86360a2 100644
+--- a/cloudflare_worker/tests/test_login_key_binding.py
++++ b/cloudflare_worker/tests/test_login_key_binding.py
+@@ -342,6 +342,45 @@ def test_login_registers_additional_desktop_pubkey_without_replacing_primary():
+     assert login_fails == []
+ 
+ 
++def test_explicit_desktop_login_can_promote_its_key_to_primary():
++    original = _active_account(pubkey=DEVICE_KEY)
++    handler, saved, devices, _login_clears, login_fails = _login_harness(original)
++
++    response = asyncio.run(
++        handler(
++            object(),
++            _Request(
++                {
++                    "email": "alice@example.com",
++                    "password": "correct horse battery staple",
++                    "pubkey": SECOND_DEVICE_KEY,
++                    "deviceTs": DEVICE_TS,
++                    "deviceSig": DEVICE_SIG,
++                    "replacePrimaryKey": True,
++                }
++            ),
++        )
++    )
++
++    assert response["status"] == 200
++    assert response["data"]["pubkey"] == SECOND_DEVICE_KEY
++    assert response["data"]["desktopCapable"] is True
++    assert response["data"]["canHost"] is True
++    assert response["data"]["canPublish"] is True
++    assert response["data"]["canOwnerSign"] is True
++    assert saved == [(
++        "bi:alice-node",
++        {
++            **original,
++            "pubkey": SECOND_DEVICE_KEY,
++            "prev_pubkeys": [DEVICE_KEY],
++            "rotated_at": 1783000000000,
++        },
++    )]
++    assert devices and devices[0]["pubkey"] == SECOND_DEVICE_KEY
++    assert login_fails == []
++
++
+ def test_login_without_desktop_pubkey_still_allows_plain_web_session():
+     handler, saved, devices, _login_clears, login_fails = _login_harness(_active_account())
+ 
+@@ -433,11 +472,12 @@ def test_login_rejects_possession_proven_cross_account_device_conflict():
+         "pubkey": DEVICE_KEY,
+         "deviceTs": DEVICE_TS,
+         "deviceSig": DEVICE_SIG,
++        "replacePrimaryKey": True,
+     })))
+ 
+     assert response == {
+         "status": 409,
+-        "data": {"error": "device_key_conflict"},
++        "data": {"error": "device_key_conflict", "accountPubkey": ""},
+     }
+     assert devices == []
+ 
+@@ -691,6 +731,9 @@ def test_qt_login_sends_desktop_pubkey_to_worker():
+     assert 'loginRequest.insert(QStringLiteral("deviceSig"), deviceSig)' in login
+     assert 'resp.value(QStringLiteral("deviceKeyMatched")).toBool(false)' in login
+     assert 'resp.value(QStringLiteral("desktopCapable")).toBool(false)' in login
++    assert 'loginRequest.insert(QStringLiteral("replacePrimaryKey"), true)' in login
++    assert "m_profileIdentity.replaceWithFreshKey()" in login
++    assert "m_profileIdentity.restorePreviousKey(" in login
+ 
+ 
+ def test_qt_silent_auth_does_not_treat_cached_password_as_signed_hosting_auth():
+diff --git a/qt_client/src/ForkMeshIdentity.cpp b/qt_client/src/ForkMeshIdentity.cpp
+index 73c3e922..58e9b22d 100644
+--- a/qt_client/src/ForkMeshIdentity.cpp
++++ b/qt_client/src/ForkMeshIdentity.cpp
+@@ -430,6 +430,98 @@ bool ForkMeshIdentity::importEncryptedKeyfile(const QString &keyfileText,
+     return installRawSeed(seed);
+ }
+ 
++bool ForkMeshIdentity::replaceWithFreshKey()
++{
++    if (!isValid() && !load())
++        return false;
++
++    const QString dir = defaultKeyDir();
++    const QString keyPath = dir + QStringLiteral("/ed25519.pem");
++    const QString archiveDir = dir + QStringLiteral("/previous");
++    if (!QDir().mkpath(archiveDir)) {
++        m_error = "Could not create the previous-identity directory.";
++        return false;
++    }
++    const QString archivedPath =
++        archiveDir + QLatin1Char('/') + m_publicKey + QStringLiteral(".pem");
++    if (!QFile::exists(archivedPath) && !QFile::copy(keyPath, archivedPath)) {
++        m_error = "Could not preserve the current identity key before replacing it.";
++        return false;
++    }
++    QFile::setPermissions(archivedPath, QFile::ReadOwner | QFile::WriteOwner);
++
++    const QString nextPath = dir + QStringLiteral("/ed25519.next.pem");
++    QFile::remove(nextPath);
++    if (!generate(nextPath))
++        return false;
++
++    // The archived copy makes the replacement recoverable even on filesystems
++    // that cannot atomically overwrite an existing file.
++    if (!QFile::remove(keyPath) || !QFile::rename(nextPath, keyPath)) {
++        QFile::remove(nextPath);
++        if (!QFile::exists(keyPath))
++            QFile::copy(archivedPath, keyPath);
++        m_error = "Could not install the new desktop identity key.";
++        return false;
++    }
++
++    m_keyDir = dir;
++    return readKey(keyPath) && refreshPublicKey();
++}
++
++bool ForkMeshIdentity::restorePreviousKey(const QString &publicKeyB64url)
++{
++    static const QRegularExpression publicKeyPattern(
++        QStringLiteral("^[A-Za-z0-9_-]{43}$"));
++    if (!publicKeyPattern.match(publicKeyB64url).hasMatch())
++        return false;
++    if (!isValid() && !load())
++        return false;
++    if (publicKeyB64url == m_publicKey)
++        return true;
++
++    const QString dir = defaultKeyDir();
++    const QString keyPath = dir + QStringLiteral("/ed25519.pem");
++    const QString archiveDir = dir + QStringLiteral("/previous");
++    const QString requestedPath =
++        archiveDir + QLatin1Char('/') + publicKeyB64url + QStringLiteral(".pem");
++    if (!QFile::exists(requestedPath) || !QDir().mkpath(archiveDir))
++        return false;
++
++    const QString currentArchive =
++        archiveDir + QLatin1Char('/') + m_publicKey + QStringLiteral(".pem");
++    if (!QFile::exists(currentArchive) &&
++        !QFile::copy(keyPath, currentArchive)) {
++        m_error = "Could not preserve the current identity key before switching it.";
++        return false;
++    }
++    QFile::setPermissions(currentArchive, QFile::ReadOwner | QFile::WriteOwner);
++
++    const QString nextPath = dir + QStringLiteral("/ed25519.next.pem");
++    QFile::remove(nextPath);
++    if (!QFile::copy(requestedPath, nextPath) || !QFile::remove(keyPath) ||
++        !QFile::rename(nextPath, keyPath)) {
++        QFile::remove(nextPath);
++        if (!QFile::exists(keyPath))
++            QFile::copy(currentArchive, keyPath);
++        m_error = "Could not restore this account's desktop identity key.";
++        return false;
++    }
++    QFile::setPermissions(keyPath, QFile::ReadOwner | QFile::WriteOwner);
++
++    m_keyDir = dir;
++    if (!readKey(keyPath) || !refreshPublicKey() ||
++        m_publicKey != publicKeyB64url) {
++        QFile::remove(keyPath);
++        QFile::copy(currentArchive, keyPath);
++        readKey(keyPath);
++        refreshPublicKey();
++        m_error = "The preserved desktop identity did not match this account.";
++        return false;
++    }
++    return true;
++}
++
+ bool ForkMeshIdentity::hasBackedUp() const
+ {
+     return !m_keyDir.isEmpty() && QFile::exists(m_keyDir + "/backed_up");
+diff --git a/qt_client/src/ForkMeshIdentity.h b/qt_client/src/ForkMeshIdentity.h
+index ffd98b74..ce49ebda 100644
+--- a/qt_client/src/ForkMeshIdentity.h
++++ b/qt_client/src/ForkMeshIdentity.h
+@@ -74,6 +74,17 @@ public:
+     bool importEncryptedKeyfile(const QString &keyfileText,
+                                 const QString &passphrase);
+ 
++    // Replace the active desktop identity with a newly generated key while
++    // retaining the old PEM in the identity directory. Used when an explicit
++    // account login finds that this machine is still carrying another user's
++    // key.
++    bool replaceWithFreshKey();
++
++    // Restore a key previously preserved by replaceWithFreshKey() or an
++    // earlier account switch. Returns false when this machine has never held
++    // the requested private key.
++    bool restorePreviousKey(const QString &publicKeyB64url);
++
+     // First-run backup nag: has the user saved/acknowledged a backup of this
+     // key yet? Backed by a sentinel file next to the key, same rationale as
+     // hasAnnouncedWelcome().
+diff --git a/qt_client/src/MainWindowSetup.cpp b/qt_client/src/MainWindowSetup.cpp
+index d5a46547..b655b1d4 100644
+--- a/qt_client/src/MainWindowSetup.cpp
++++ b/qt_client/src/MainWindowSetup.cpp
+@@ -2638,10 +2638,12 @@ bool MainWindow::verifyTotpLogin(const QString &email,
+ {
+     if (fatal)
+         *fatal = false;
+-    QJsonObject loginRequest{{"email", email}, {"password", password},
+-                             {"totp", totp}};
+-    const QString publicKey = m_profileIdentity.publicKey();
+-    if (!publicKey.isEmpty()) {
++    auto makeLoginRequest = [&](bool replacePrimaryKey = false) {
++        QJsonObject loginRequest{{"email", email}, {"password", password},
++                                 {"totp", totp}};
++        const QString publicKey = m_profileIdentity.publicKey();
++        if (publicKey.isEmpty())
++            return loginRequest;
+         const QString deviceTs =
+             QString::number(QDateTime::currentMSecsSinceEpoch());
+         const QByteArray deviceCanonical =
+@@ -2656,10 +2658,12 @@ bool MainWindow::verifyTotpLogin(const QString &email,
+             loginRequest.insert(QStringLiteral("deviceTs"), deviceTs);
+             loginRequest.insert(QStringLiteral("deviceSig"), deviceSig);
+         }
+-    }
++        if (replacePrimaryKey)
++            loginRequest.insert(QStringLiteral("replacePrimaryKey"), true);
++        return loginRequest;
++    };
+     int status = 0;
+-    const QJsonObject resp =
+-        postAccountSync("login", loginRequest, &status);
++    QJsonObject resp = postAccountSync("login", makeLoginRequest(), &status);
+     auto acceptLogin = [&](const QJsonObject &payload, bool ownsDesktopKey) {
+         m_accountAuthenticated = true;
+         m_accountName = payload.value("nodeName").toString(accountName);
+@@ -2696,20 +2700,44 @@ bool MainWindow::verifyTotpLogin(const QString &email,
+         }
+     };
+ 
++    auto desktopKeyAccepted = [](const QJsonObject &resp) {
++        return resp.value(QStringLiteral("deviceKeyMatched")).toBool(false) &&
++               resp.value(QStringLiteral("desktopCapable")).toBool(false);
++    };
++
++    // An explicit password/TOTP login selects this account for the desktop.
++    // Promote a valid same-account device key to the account's signing key. If
++    // the loaded identity belongs to another user, replace it with a fresh key
++    // first so one Ed25519 identity is never shared across accounts.
++    if (status == 200 && resp.value("ok").toBool() &&
++        !desktopKeyAccepted(resp)) {
++        const bool restored = m_profileIdentity.restorePreviousKey(
++            resp.value(QStringLiteral("pubkey")).toString());
++        resp = postAccountSync("login", makeLoginRequest(!restored), &status);
++    } else if (status == 409 &&
++               resp.value("error").toString() ==
++                   QLatin1String("device_key_conflict")) {
++        const bool restored = m_profileIdentity.restorePreviousKey(
++            resp.value(QStringLiteral("accountPubkey")).toString());
++        if (restored || m_profileIdentity.replaceWithFreshKey())
++            resp = postAccountSync("login", makeLoginRequest(!restored), &status);
++        if (m_pubkeyLabel) {
++            m_pubkeyLabel->setText("Ed25519 public key: " +
++                                   m_profileIdentity.shortPublicKey());
++            m_pubkeyLabel->setToolTip(m_profileIdentity.publicKey());
++        }
++    }
++
+     if (status == 200 && resp.value("ok").toBool()) {
+-        const bool ownsDesktopKey =
+-            resp.value(QStringLiteral("deviceKeyMatched")).toBool(false) &&
+-            resp.value(QStringLiteral("desktopCapable")).toBool(false);
++        const bool ownsDesktopKey = desktopKeyAccepted(resp);
+         acceptLogin(resp, ownsDesktopKey);
+         return true;
+     }
+     const QString err = resp.value("error").toString();
+ 
+-    // If the password is correct but this account is already bound to another
+-    // desktop key, do a second web-style login without pubkey. That matches the
+-    // web/mobile architecture: a client may use the central Worker with
+-    // email/password, but only the bound desktop key can publish/host. Do not
+-    // silently rotate or replace the account key here.
++    // If device proof or replacement still fails, retain password-only access
++    // as a safe fallback. This is mainly for a broken clock/key store or a relay
++    // that has not yet been upgraded to support explicit desktop replacement.
+     if (AccountCapability::allowsPasswordOnlyFallback(err)) {
+         int webStatus = 0;
+         const QJsonObject webResp = postAccountSync(
+diff --git a/qt_client/tests/test_crypto.cpp b/qt_client/tests/test_crypto.cpp
+index 46fc3f09..30269175 100644
+--- a/qt_client/tests/test_crypto.cpp
++++ b/qt_client/tests/test_crypto.cpp
+@@ -5592,6 +5592,21 @@ int main(int argc, char *argv[])
+               "describeOauth masks the token to its tail");
+     }
+ 
++    // Account switching must never reuse one user's key for another. Replacing
++    // the active key preserves it locally, and selecting the original account
++    // restores the exact private identity rather than rotating it again.
++    {
++        const QString originalKey = identity.publicKey();
++        check(identity.replaceWithFreshKey(),
++              "account switch replaces a conflicting desktop identity");
++        check(identity.publicKey() != originalKey,
++              "replacement desktop identity has a fresh public key");
++        check(identity.restorePreviousKey(originalKey),
++              "switching back restores the preserved account identity");
++        check(identity.publicKey() == originalKey,
++              "restored account identity has the original public key");
++    }
++
+     if (failures) {
+         qCritical("TESTS FAILED");
+         return 1;
