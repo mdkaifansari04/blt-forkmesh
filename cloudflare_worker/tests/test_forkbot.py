@@ -66,6 +66,7 @@ FUNCS = {
     "_forkbot_ai_issue_fields",
     "_forkbot_ai_interpret",
     "_forkbot_next_issue_number",
+    "_forkbot_attributed_body",
     "_forkbot_enqueue_issue",
     "forkbot_chat_handler",
 }
@@ -387,7 +388,11 @@ def test_forkbot_chat_handler_queues_default_repo_issue():
     assert item["event"]["author"] == "forkbot"
     assert item["event"]["authorName"] == "forkbot"
     assert item["event"]["sig"] == ""
-    assert item["event"]["body"] == "make crash logs searchable"
+    # The stored body credits ForkBot and the requester so a reader of the
+    # merged issue can see where it came from.
+    assert item["event"]["body"] == (
+        "make crash logs searchable\n\n"
+        "---\n_Filed by ForkBot at @alice's request via chat._")
 
 
 def test_forkbot_uses_workers_ai_for_issue_title_and_body_when_available():
@@ -414,8 +419,10 @@ def test_forkbot_uses_workers_ai_for_issue_title_and_body_when_available():
     assert ai.model == "@cf/meta/llama-3.1-8b-instruct"
     assert ai.payload["messages"][0]["role"] == "system"
     assert calls["inserted"][0][1]["titleIfNew"] == "Make logs searchable"
+    # No sender in the request -> the footer still credits ForkBot/the source.
     assert calls["inserted"][0][1]["event"]["body"] == (
-        "Index the main log so crash reports can be found.")
+        "Index the main log so crash reports can be found.\n\n"
+        "---\n_Filed by ForkBot via chat._")
 
 
 def test_forkbot_unknown_command_returns_help_without_enqueueing():
@@ -453,7 +460,8 @@ def test_forkbot_ai_intent_creates_issue_from_natural_request():
     assert response["data"]["issueNumber"] == 4
     assert calls["inserted"][0][1]["titleIfNew"] == "Flaky login test"
     assert calls["inserted"][0][1]["event"]["body"] == (
-        "The login integration test fails intermittently.")
+        "The login integration test fails intermittently.\n\n"
+        "---\n_Filed by ForkBot at @alice's request via chat._")
 
 
 def test_forkbot_ai_intent_none_returns_help_without_enqueueing():
@@ -540,6 +548,23 @@ def test_forkbot_issue_numbers_increment_and_reanchor_to_catalog():
     # A stale/lower catalog max never drags the counter backward.
     env.catalog_max = 2
     assert asyncio.run(alloc(env, "bi:r", "o", "r")) == 11
+
+
+def test_forkbot_attributed_body_credits_source_and_requester():
+    ns = _load_forkbot()
+    attribute = ns["_forkbot_attributed_body"]
+    # Chat request with a known sender.
+    assert attribute("fix the thing", "forkbot", "alice") == (
+        "fix the thing\n\n---\n_Filed by ForkBot at @alice's request via chat._")
+    # Anonymous chat request falls back to a source-only credit.
+    assert attribute("fix the thing", "forkbot", "forkbot") == (
+        "fix the thing\n\n---\n_Filed by ForkBot via chat._")
+    # An empty body still carries the credit.
+    assert attribute("", "forkbot", "alice") == (
+        "_Filed by ForkBot at @alice's request via chat._")
+    # The fediverse path builds its own attribution, so it is left untouched.
+    assert attribute("mention body", "fediverse", "@bob@example.social") == (
+        "mention body")
 
 
 def test_forkbot_route_and_workers_ai_binding_are_configured():
