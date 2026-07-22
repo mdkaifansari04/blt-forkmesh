@@ -48,6 +48,9 @@ struct MemberInfo {
     // callers should treat the same as "node" for backward compatibility.
     QString accountKind;
     QString note;     // e.g. "(discovered)"
+    // Account creation time (ms since epoch) from the accounts directory, so
+    // the UI can show when a user joined. 0 = unknown (live-roster-only peer).
+    qint64 createdAtMs = 0;
     bool self = false;
     bool online = false; // live link right now (green dot)
     QString solanaAddress;

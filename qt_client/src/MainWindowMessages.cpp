@@ -694,9 +694,19 @@ void MainWindow::refreshChatUserDirectory()
 {
     if (!m_networkAccess || m_chatDirectoryFetchInFlight)
         return;
+    // Keep polling so a brand-new signup appears in the users column within a
+    // minute, like the website's chat does (adhoc #208/#209). Cheap: the worker
+    // edge-caches /api/accounts/users and invalidates that cache on signup.
+    if (!m_chatDirectoryTimer) {
+        m_chatDirectoryTimer = new QTimer(this);
+        m_chatDirectoryTimer->setInterval(60 * 1000);
+        connect(m_chatDirectoryTimer, &QTimer::timeout, this,
+                &MainWindow::refreshChatUserDirectory);
+        m_chatDirectoryTimer->start();
+    }
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (m_chatDirectoryFetchedMs > 0 &&
-        now - m_chatDirectoryFetchedMs < 5 * 60 * 1000)
+        now - m_chatDirectoryFetchedMs < 45 * 1000)
         return;
 
     m_chatDirectoryFetchInFlight = true;
@@ -741,6 +751,8 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
         member.self = !ownName.isEmpty() &&
                       ownName.compare(name, Qt::CaseInsensitive) == 0;
         member.online = false;
+        member.createdAtMs =
+            qint64(obj.value(QStringLiteral("createdAt")).toDouble());
         const QJsonArray nodes = obj.value(QStringLiteral("nodes")).toArray();
         QStringList nodeNames;
         for (const QJsonValue &nodeValue : nodes) {
@@ -760,6 +772,16 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
         }
         next.insert(key, member);
     }
+    // Surface signups that happened while we were running (skip the first fill,
+    // which would "announce" every existing account).
+    if (m_chatDirectoryLoaded) {
+        for (auto it = next.constBegin(); it != next.constEnd(); ++it) {
+            if (!m_chatDirectoryUsers.contains(it.key()) && !it.value().self)
+                logSystem(QStringLiteral("New user joined ForkMesh: %1")
+                              .arg(it.value().name));
+        }
+    }
+    m_chatDirectoryLoaded = true;
     m_chatDirectoryUsers = next;
     refreshMentionCandidates();
     refreshChatMembers();
@@ -942,7 +964,27 @@ void MainWindow::refreshChatMembers()
         if (group.online)
             ++onlineCount;
 
-        auto *card = new QWidget;
+        // The whole card is clickable: it opens the user's profile popup with
+        // their join date and account info (adhoc #209).
+        auto *card = new ClickableIssueBody;
+        card->setCursor(Qt::PointingHandCursor);
+        card->setToolTip(QStringLiteral("View profile"));
+        {
+            QStringList nodeLines;
+            for (const ChatNodeBadge &nb : std::as_const(group.nodes)) {
+                QString line = nb.label.isEmpty() ? QStringLiteral("node") : nb.label;
+                line += nb.online ? QStringLiteral(" · online")
+                                  : QStringLiteral(" · offline");
+                if (!nb.platform.trimmed().isEmpty())
+                    line += QStringLiteral(" · ") + nb.platform.trimmed();
+                nodeLines << line;
+            }
+            MemberInfo profileMember = member;
+            profileMember.online = group.online;
+            card->onClicked = [this, profileMember, nodeLines] {
+                showChatUserProfile(profileMember, nodeLines);
+            };
+        }
         auto *row = new QHBoxLayout(card);
         row->setContentsMargins(4, 4, 4, 4);
         row->setSpacing(10);
@@ -1040,6 +1082,255 @@ void MainWindow::refreshChatMembers()
             QString::fromUtf8("USERS \xE2\x80\x94 %1 \xC2\xB7 %2 online")
                 .arg(groups.size())
                 .arg(onlineCount));
+}
+
+// Profile popup for a chat users-column row (adhoc #209): identity, when they
+// joined, their nodes, and richer account info (bio, location, followers…)
+// fetched live from the public accounts API.
+void MainWindow::showChatUserProfile(const MemberInfo &member,
+                                     const QStringList &nodeLines)
+{
+    const QString account =
+        (member.ownerUser.trimmed().isEmpty() ? member.name : member.ownerUser)
+            .trimmed()
+            .toLower();
+
+    auto *dialog = new QDialog(this);
+    dialog->setObjectName("chatUserProfileDialog");
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(member.name);
+    dialog->setMinimumWidth(380);
+
+    // --- Header: avatar + name + online state.
+    QPixmap avatar = m_avatars.value(member.id);
+    if (avatar.isNull())
+        avatar = letterFavicon(member.name);
+    auto *icon = new QLabel;
+    icon->setPixmap(roundedRectPixmap(avatar, 56, 14));
+    icon->setFixedSize(56, 56);
+
+    auto *nameLabel = new QLabel(
+        QStringLiteral("<span style='font-size:16px;font-weight:700'>%1</span>%2")
+            .arg(member.name.toHtmlEscaped(),
+                 member.self
+                     ? QStringLiteral(" <span style='color:#8b949e'>(you)</span>")
+                     : QString()));
+    nameLabel->setTextFormat(Qt::RichText);
+    auto *statusLabel = new QLabel(
+        QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> %2")
+            .arg(member.online ? QStringLiteral("#3fb950")
+                               : QStringLiteral("#8b949e"),
+                 member.online ? QStringLiteral("Online")
+                               : QStringLiteral("Offline")));
+    statusLabel->setTextFormat(Qt::RichText);
+
+    auto *headText = new QVBoxLayout;
+    headText->setContentsMargins(0, 0, 0, 0);
+    headText->setSpacing(2);
+    headText->addWidget(nameLabel);
+    headText->addWidget(statusLabel);
+    headText->addStretch(1);
+
+    auto *headRow = new QHBoxLayout;
+    headRow->setContentsMargins(0, 0, 0, 0);
+    headRow->setSpacing(12);
+    headRow->addWidget(icon, 0, Qt::AlignTop);
+    headRow->addLayout(headText, 1);
+
+    // --- Details table, re-rendered when the async account lookup fills in
+    // the rest. Rows we don't know yet are simply absent.
+    auto *details = new QLabel;
+    details->setTextFormat(Qt::RichText);
+    details->setWordWrap(true);
+    details->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+    struct ProfileFacts {
+        qint64 joinedMs = 0;
+        int followers = -1, following = -1, mirrors = -1;
+        QString location;
+        bool isAdmin = false;
+    };
+    auto facts = std::make_shared<ProfileFacts>();
+    facts->joinedMs = member.createdAtMs;
+    // The directory user carries createdAt; a live node picked before its
+    // directory entry may not — the same-account directory row fills it.
+    if (facts->joinedMs <= 0) {
+        const MemberInfo dirUser = m_chatDirectoryUsers.value(account);
+        facts->joinedMs = dirUser.createdAtMs;
+    }
+
+    const QString accountShown = account;
+    auto renderDetails = [details, facts, accountShown, nodeLines] {
+        auto detailRow = [](const QString &key, const QString &value) {
+            return QStringLiteral(
+                       "<tr><td style='color:#8b949e;padding:2px 14px 2px 0;"
+                       "white-space:nowrap'>%1</td>"
+                       "<td style='padding:2px 0'>%2</td></tr>")
+                .arg(key, value);
+        };
+        QStringList rows;
+        if (!accountShown.isEmpty())
+            rows << detailRow(QStringLiteral("Account"),
+                              QStringLiteral("@%1").arg(accountShown.toHtmlEscaped()));
+        if (facts->joinedMs > 0)
+            rows << detailRow(
+                QStringLiteral("Joined"),
+                QStringLiteral("%1 <span style='color:#8b949e'>(%2)</span>")
+                    .arg(formatRepoDate(facts->joinedMs),
+                         formatIssueRelativeTime(facts->joinedMs)));
+        if (!facts->location.isEmpty())
+            rows << detailRow(QStringLiteral("Location"),
+                              facts->location.toHtmlEscaped());
+        if (facts->followers >= 0)
+            rows << detailRow(QStringLiteral("Followers"),
+                              QString::number(facts->followers));
+        if (facts->following >= 0)
+            rows << detailRow(QStringLiteral("Following"),
+                              QString::number(facts->following));
+        if (facts->mirrors > 0)
+            rows << detailRow(QStringLiteral("Mirrored repos"),
+                              QString::number(facts->mirrors));
+        if (facts->isAdmin)
+            rows << detailRow(QStringLiteral("Role"),
+                              QString::fromUtf8("Administrator \xF0\x9F\x91\x91"));
+        if (!nodeLines.isEmpty())
+            rows << detailRow(
+                QStringLiteral("Nodes (%1)").arg(nodeLines.size()),
+                QStringList(nodeLines).replaceInStrings(
+                    QStringLiteral("&"), QStringLiteral("&amp;"))
+                    .replaceInStrings(QStringLiteral("<"), QStringLiteral("&lt;"))
+                    .join(QStringLiteral("<br>")));
+        details->setText(
+            QStringLiteral("<table cellspacing='0' cellpadding='0'>%1</table>")
+                .arg(rows.join(QString())));
+    };
+    renderDetails();
+
+    // Bio paragraph, filled by the lookup when the account has one.
+    auto *bioLabel = new QLabel;
+    bioLabel->setWordWrap(true);
+    bioLabel->setVisible(false);
+    bioLabel->setStyleSheet(QStringLiteral("color:#c9d1d9;"));
+    auto *loadingLabel = new QLabel(QString::fromUtf8("Loading profile\xE2\x80\xA6"));
+    loadingLabel->setStyleSheet(QStringLiteral("color:#8b949e; font-size:11px;"));
+
+    // --- Actions: DM them (needs a live node), open the full web profile.
+    auto *buttonRow = new QHBoxLayout;
+    buttonRow->setContentsMargins(0, 0, 0, 0);
+    buttonRow->setSpacing(8);
+    if (!member.self) {
+        // A DM needs a live peer: prefer the clicked entry's own id when it is
+        // a real node, else any online roster node owned by this account.
+        QString peerId, peerName;
+        if (!member.id.isEmpty() &&
+            !member.id.startsWith(QStringLiteral("user:")) && member.online) {
+            peerId = member.id;
+            peerName = member.name;
+        } else {
+            for (const MemberInfo &m : std::as_const(m_homeRoster)) {
+                if (!m.online || m.id.isEmpty() || m.self)
+                    continue;
+                const QString owner = m.ownerUser.trimmed().toLower();
+                const QString name = m.name.trimmed().toLower();
+                if (owner == account || (owner.isEmpty() && name == account)) {
+                    peerId = m.id;
+                    peerName = member.name;
+                    break;
+                }
+            }
+        }
+        if (!peerId.isEmpty()) {
+            auto *messageButton = new QPushButton(QStringLiteral("Message"));
+            messageButton->setObjectName("primaryButton");
+            messageButton->setCursor(Qt::PointingHandCursor);
+            connect(messageButton, &QPushButton::clicked, this,
+                    [this, dialog, peerId, peerName] {
+                        dialog->accept();
+                        openDirectChat(peerId, peerName);
+                    });
+            buttonRow->addWidget(messageButton);
+        }
+    }
+    if (!account.isEmpty()) {
+        auto *webButton = new QPushButton(QStringLiteral("Web profile"));
+        webButton->setObjectName("ghostButton");
+        webButton->setCursor(Qt::PointingHandCursor);
+        connect(webButton, &QPushButton::clicked, this, [this, account] {
+            const QUrl url = chatMentionProfileUrl(
+                m_serverUrlEdit ? m_serverUrlEdit->text() : QString(), account);
+            if (url.isValid() && !url.host().isEmpty())
+                QDesktopServices::openUrl(url);
+        });
+        buttonRow->addWidget(webButton);
+    }
+    buttonRow->addStretch(1);
+    auto *closeButton = new QPushButton(QStringLiteral("Close"));
+    closeButton->setObjectName("ghostButton");
+    closeButton->setCursor(Qt::PointingHandCursor);
+    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::accept);
+    buttonRow->addWidget(closeButton);
+
+    auto *layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(20, 18, 20, 16);
+    layout->setSpacing(12);
+    layout->addLayout(headRow);
+    layout->addWidget(details);
+    layout->addWidget(bioLabel);
+    layout->addWidget(loadingLabel);
+    layout->addStretch(1);
+    layout->addLayout(buttonRow);
+
+    // --- Fill in the rest from the public account lookup (join date for live
+    // nodes, bio, location, follower counts, admin badge). Guarded with
+    // QPointers: the reply may land after the popup was closed.
+    if (m_networkAccess && !account.isEmpty()) {
+        QNetworkRequest request(accountsApiUrl(account));
+        request.setRawHeader("Accept", "application/json");
+        QNetworkReply *reply = m_networkAccess->get(request);
+        QPointer<QDialog> dialogGuard(dialog);
+        QPointer<QLabel> bioGuard(bioLabel);
+        QPointer<QLabel> loadingGuard(loadingLabel);
+        connect(reply, &QNetworkReply::finished, this,
+                [reply, dialogGuard, bioGuard, loadingGuard, facts,
+                 renderDetails] {
+                    const QByteArray body = reply->readAll();
+                    const bool ok = reply->error() == QNetworkReply::NoError;
+                    reply->deleteLater();
+                    if (!dialogGuard)
+                        return;
+                    if (loadingGuard)
+                        loadingGuard->setVisible(false);
+                    if (!ok)
+                        return;
+                    const QJsonObject rec = QJsonDocument::fromJson(body).object();
+                    if (!rec.value(QStringLiteral("exists")).toBool(true))
+                        return;
+                    const qint64 created =
+                        qint64(rec.value(QStringLiteral("createdAt")).toDouble());
+                    if (created > 0)
+                        facts->joinedMs = created;
+                    facts->location =
+                        rec.value(QStringLiteral("profileLocation")).toString().trimmed();
+                    facts->followers =
+                        rec.value(QStringLiteral("followers")).toInt(-1);
+                    facts->following =
+                        rec.value(QStringLiteral("following")).toInt(-1);
+                    facts->mirrors =
+                        rec.value(QStringLiteral("mirrorCount")).toInt(-1);
+                    facts->isAdmin = rec.value(QStringLiteral("isAdmin")).toBool();
+                    renderDetails();
+                    const QString bio =
+                        rec.value(QStringLiteral("profileBio")).toString().trimmed();
+                    if (bioGuard && !bio.isEmpty()) {
+                        bioGuard->setText(bio.toHtmlEscaped());
+                        bioGuard->setVisible(true);
+                    }
+                });
+    } else {
+        loadingLabel->setVisible(false);
+    }
+
+    dialog->show();
 }
 
 void MainWindow::removeChatMember(const QString &id, const QString &name)
