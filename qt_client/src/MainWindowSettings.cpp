@@ -35,14 +35,32 @@ QWidget *MainWindow::buildSettingsSection()
     auto *profileLabel = new QLabel("PROFILE");
     profileLabel->setObjectName("sectionLabel");
 
+    // Username (the account) and this machine's node name are two different
+    // things: a user signs in once and can own many nodes; the machine you're
+    // sitting at is just one of them. They used to share a single "Node name"
+    // field, which is exactly the conflation being unwound here.
     m_settingsNameEdit = new QLineEdit;
     m_settingsNameEdit->setMaxLength(32);
-    m_settingsNameEdit->setPlaceholderText("Node name");
+    m_settingsNameEdit->setPlaceholderText("Username");
     m_settingsNameEdit->setToolTip(
-        "This machine's node name on the network. Your user account can own "
-        "multiple nodes.");
+        "Your ForkMesh user account. One user account can own many nodes; "
+        "changing this changes who you are, not this machine's node name.");
     connect(m_settingsNameEdit, &QLineEdit::editingFinished, this,
             [this] { onProfileNameChanged(m_settingsNameEdit->text()); });
+
+    m_settingsMachineNodeEdit = new QLineEdit;
+    m_settingsMachineNodeEdit->setMaxLength(63);
+    m_settingsMachineNodeEdit->setPlaceholderText("Node name (this machine)");
+    m_settingsMachineNodeEdit->setToolTip(
+        "This machine's node name on the mesh \xE2\x80\x94 how it appears in "
+        "rosters and node lists. Not your username: nodes are machines, and "
+        "your user account can own many of them.");
+    m_settingsMachineNodeEdit->setText(machineNodeName());
+    connect(m_settingsMachineNodeEdit, &QLineEdit::editingFinished, this, [this] {
+        saveMachineNodeName(m_settingsMachineNodeEdit->text());
+        // Reflect the sanitized (or defaulted) value back into the field.
+        m_settingsMachineNodeEdit->setText(machineNodeName());
+    });
 
     m_settingsAvatarPreview = new QLabel("No\navatar");
     m_settingsAvatarPreview->setObjectName("avatarPreview");
@@ -55,7 +73,7 @@ QWidget *MainWindow::buildSettingsSection()
     auto *generateButton = new QPushButton("Generate");
     generateButton->setObjectName("ghostButton");
     generateButton->setCursor(Qt::PointingHandCursor);
-    generateButton->setToolTip("Generate a fresh random machine avatar for this node");
+    generateButton->setToolTip("Generate a fresh random avatar for your profile");
     connect(generateButton, &QPushButton::clicked, this, [this] {
         const QByteArray png = forkMeshNodeAvatarPng(
             QString::number(QRandomGenerator::global()->generate64()));
@@ -90,7 +108,8 @@ QWidget *MainWindow::buildSettingsSection()
     auto *form = new QFormLayout;
     form->setLabelAlignment(Qt::AlignLeft);
     form->setSpacing(8);
-    form->addRow("Node name", m_settingsNameEdit);
+    form->addRow("Username", m_settingsNameEdit);
+    form->addRow("Node name", m_settingsMachineNodeEdit);
     form->addRow("Solana", m_settingsSolanaEdit);
     m_settingsEmailLabel = new QLabel("Email");
     m_settingsEmailVerifiedBadge = new QLabel;
@@ -273,7 +292,7 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().value(kPushAlertSetting, false).toBool());
     pushAlertCheck->setToolTip(
         "Pop up a desktop notification with the repo, branch and commit "
-        "whenever someone pushes to one of this node's mirrors.");
+        "whenever someone pushes to one of this machine's mirrors.");
     connect(pushAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kPushAlertSetting, enabled);
     });
@@ -306,11 +325,11 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kNodeConnectAlertSetting, enabled);
     });
     auto *disbursementAlertCheck =
-        new QCheckBox("Show a system alert when this node receives a disbursement");
+        new QCheckBox("Show a system alert when you receive a disbursement");
     disbursementAlertCheck->setChecked(
         QSettings().value(kDisbursementAlertSetting, false).toBool());
     disbursementAlertCheck->setToolTip(
-        "Pop up a desktop notification when this node's Solana wallet balance "
+        "Pop up a desktop notification when your Solana wallet balance "
         "increases after a refresh.");
     connect(disbursementAlertCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kDisbursementAlertSetting, enabled);
@@ -396,7 +415,7 @@ QWidget *MainWindow::buildSettingsSection()
         "Email digest entry when a release is published.");
     auto *emailCreditsCheck = emailPrefCheck(
         "Email me when credits refill", kEmailNotifyCreditsRefilledSetting, true,
-        "Email digest entry when this node reports Claude Code credits refilled.");
+        "Email digest entry when this machine reports Claude Code credits refilled.");
     auto *emailBountyFundedCheck = emailPrefCheck(
         "Email me funded bounties", kEmailNotifyBountyFundedSetting, true,
         "Email digest entry when a bounty is funded.");
@@ -624,7 +643,7 @@ QWidget *MainWindow::buildSettingsSection()
     showCurrencyCombo->addItem("Show balance in INR (\xE2\x82\xB9)",
                                QStringLiteral("inr"));
     showCurrencyCombo->setToolTip(
-        "Currency for this node's top-bar balance (live SOL price for USD/INR). "
+        "Currency for your top-bar balance (live SOL price for USD/INR). "
         "Also switchable by clicking the balance in the top bar.");
     {
         const int idx = showCurrencyCombo->findData(solanaDisplayCurrency());
@@ -769,8 +788,9 @@ QWidget *MainWindow::buildSettingsSection()
     auto *nodeStatsLabel = new QLabel("NODE STATS");
     nodeStatsLabel->setObjectName("sectionLabel");
     auto *nodeStatsHint = new QLabel(
-        "Show this node's resource use to other nodes in the Mirror nodes view. "
-        "Off by default; servers installed from the Hosts tab report all three.");
+        "Show this machine's resource use to other nodes in the Mirror nodes "
+        "view. Off by default; servers installed from the Hosts tab report all "
+        "three.");
     nodeStatsHint->setObjectName("statusLine");
     nodeStatsHint->setWordWrap(true);
     struct NodeStatToggle {
@@ -1131,7 +1151,7 @@ QWidget *MainWindow::buildSettingsSection()
     emailOnRefillCheck->setChecked(
         QSettings().value(kEmailOnCreditsRefillSetting, false).toBool());
     emailOnRefillCheck->setToolTip(
-        "When this node's 5-hour or weekly Claude Code usage window was maxed "
+        "When this machine's 5-hour or weekly Claude Code usage window was maxed "
         "out and then resets, email the account on file (requires a verified "
         "email — see the profile section above).");
     connect(emailOnRefillCheck, &QCheckBox::toggled, this, [](bool enabled) {
@@ -1958,8 +1978,8 @@ void MainWindow::transferClaudeCodeAccount()
         QMessageBox::information(
             &dialog, "Imported",
             "Installed " + installed.join(" + ") +
-                " on this node. It can now take agent requests as the exporting "
-                "owner.");
+                " on this machine. It can now take agent requests as the "
+                "exporting owner.");
     });
 
     auto *closeBtn = new QPushButton("Close");
@@ -2002,7 +2022,7 @@ QStringList MainWindow::headlessClaudeAuth(const QStringList &args)
         if (oauth.value("accessToken").toString().isEmpty() && apiKey().isEmpty())
             return {QStringLiteral(
                 "Nothing to export: no Claude Code login or Claude API key on "
-                "this node. Run `claude` and sign in first.")};
+                "this machine. Run `claude` and sign in first.")};
         const QString exportedFrom =
             QSettings().value(kAccountNameSetting).toString();
         const QString encoded =
@@ -2054,8 +2074,8 @@ QStringList MainWindow::headlessClaudeAuth(const QStringList &args)
             installed << QStringLiteral("Claude API key");
         }
         return {QStringLiteral("imported ") + installed.join(" + ") +
-                QStringLiteral("; this node can now take agent requests as the "
-                               "exporting owner")};
+                QStringLiteral("; this machine can now take agent requests as "
+                               "the exporting owner")};
     }
 
     return {QStringLiteral("usage: claude-auth status|export [path]|import <path>")};
@@ -2298,6 +2318,8 @@ void MainWindow::rebuildAndRelaunch()
     logRestart(QStringLiteral("clean rebuild & restart started"));
     if (m_settingsNameEdit)
         saveProfileName(m_settingsNameEdit->text());
+    if (m_settingsMachineNodeEdit)
+        saveMachineNodeName(m_settingsMachineNodeEdit->text());
     m_buildButton = m_rebuildButton;
     m_buildStatusLabel = m_rebuildStatus;
     m_rebuildButton->setEnabled(false);

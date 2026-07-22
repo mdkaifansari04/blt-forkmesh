@@ -1178,6 +1178,8 @@ void MainWindow::startSession()
     // (which now stands in for the old settings gear).
     if (m_settingsNameEdit)
         m_settingsNameEdit->setText(m_userName);
+    if (m_settingsMachineNodeEdit)
+        m_settingsMachineNodeEdit->setText(machineNodeName());
     setSettingsAvatar(m_userAvatar);
     updateUserSwitcher();
     updateAvatarButton();
@@ -1208,7 +1210,7 @@ void MainWindow::startSession()
     QSettings().setValue(kRoomNameSetting, kDefaultRoomName);
     persistEditsToActiveServer();
     const QUrl url(fullServerUrl);
-    auto *server = new ServerNode(chatDisplayName(), accountOwner(),
+    auto *server = new ServerNode(chatDisplayName(), machineNodeName(),
                                   nodeOwnerDisplayName(),
                                   m_profileIdentity.publicKey(), url,
                                   kDefaultRoomName,
@@ -1506,15 +1508,16 @@ void MainWindow::showNodeClaimCode(const QString &user, const QString &code)
         return;
     auto *box = new QMessageBox(this);
     box->setAttribute(Qt::WA_DeleteOnClose);
-    box->setWindowTitle(QStringLiteral("Link this node?"));
+    box->setWindowTitle(QStringLiteral("Link this machine?"));
     box->setIcon(QMessageBox::Information);
     box->setText(
-        QStringLiteral("<b>%1</b> is claiming this node on forkmesh.com.<br><br>"
+        QStringLiteral("<b>%1</b> is claiming this machine's node on "
+                       "forkmesh.com.<br><br>"
                        "Confirmation code:"
                        "<div style='font-size:28px;letter-spacing:6px'><b>%2</b></div>"
-                       "Enter this code on the website to link this node to that "
-                       "account. If this isn't you, just close this window — the "
-                       "code expires in 10 minutes and is never sent anywhere "
+                       "Enter this code on the website to link this machine to "
+                       "that account. If this isn't you, just close this window — "
+                       "the code expires in 10 minutes and is never sent anywhere "
                        "else.")
             .arg(who.toHtmlEscaped(), code.toHtmlEscaped()));
     box->setStandardButtons(QMessageBox::Close);
@@ -1921,6 +1924,47 @@ QString MainWindow::chatDisplayName() const
     return accountNameFromInput(m_userName, QString()).left(80);
 }
 
+// The node name of THIS machine — never the username. A user account owns many
+// nodes; the machine you're sitting at is one of them and needs its own name.
+// Explicitly set (Settings > Node name) wins. Unset defaults:
+//  - user-account installs: the machine hostname — using the username as a node
+//    name is exactly the user/node conflation being unwound;
+//  - bare node-account installs (headless mirrors, unclaimed desktops): the
+//    account name, because there the account IS the node — renaming the fleet's
+//    advertised identities out from under the website/rosters would be a
+//    regression, not a fix.
+QString MainWindow::machineNodeName() const
+{
+    const QString saved = accountNameFromInput(
+        QSettings().value(kMachineNodeNameSetting).toString(), QString());
+    if (!saved.isEmpty())
+        return saved;
+    if (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty()) {
+        const QString host =
+            accountNameFromInput(QSysInfo::machineHostName(), QString());
+        if (!host.isEmpty())
+            return host;
+    }
+    return accountOwner();
+}
+
+// Persist a new machine node name and push it out to everything that shows or
+// advertises it: the roster hello frame (via updateChatIdentity), the top-right
+// "user/node" chip, and the profile panel's nodes list if it's open.
+void MainWindow::saveMachineNodeName(const QString &name)
+{
+    const QString clean = accountNameFromInput(name, QString());
+    if (clean.isEmpty())
+        QSettings().remove(kMachineNodeNameSetting); // back to the default
+    else
+        QSettings().setValue(kMachineNodeNameSetting, clean);
+    updateChatIdentity();
+    updateNavSolanaBalance();
+    if (m_profileIsSelf)
+        renderProfileAccountStatus();
+    logSystem("This machine's node name is now \"" + machineNodeName() + "\".");
+}
+
 void MainWindow::updateChatIdentity()
 {
     if (!m_backend)
@@ -1930,7 +1974,10 @@ void MainWindow::updateChatIdentity()
         m_backend->setUserName(name);
         m_lastChatDisplayName = name;
     }
-    m_backend->setNodeIdentity(accountOwner(), nodeOwnerDisplayName());
+    // node = this machine's node name, owner = the user account. Advertising the
+    // username as the node name was the user/node conflation (users own nodes;
+    // they aren't nodes).
+    m_backend->setNodeIdentity(machineNodeName(), nodeOwnerDisplayName());
     const QByteArray avatar = effectiveUserAvatar();
     if (avatar != m_lastChatAvatar) {
         m_backend->setAvatar(avatar);

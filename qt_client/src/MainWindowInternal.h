@@ -2554,6 +2554,11 @@ const QString kRepoUrl = QStringLiteral("https://github.com/forkmesh/forkmesh.gi
 const QString kDisplayNameSetting = QStringLiteral("profile/displayName");
 const QString kHandleSetting = QStringLiteral("profile/handle");
 const QString kAccountNameSetting = QStringLiteral("account/nodeName");
+// This machine's own node name on the mesh, distinct from the username: a user
+// account owns many nodes, and the machine you're sitting at is just one of
+// them. Unset means "derive a default" (hostname for user-account installs,
+// the account name for bare node accounts) — see MainWindow::machineNodeName().
+const QString kMachineNodeNameSetting = QStringLiteral("node/machineName");
 // Persisted Hosts list (adhoc #263): JSON array of {name, ip, user, pass}.
 const QString kHostsSetting = QStringLiteral("hosts/list");
 const QString kSolanaSetting = QStringLiteral("profile/solana");
@@ -7699,12 +7704,13 @@ inline int mirrorNumberedDirMax(const QString &mirrorPath, const QString &branch
 // several distinct mirror nodes into a single row: mirror2/mirror3 vanished from
 // the Nodes list even though the per-repo Mirror nodes view (which keys on the
 // advert / nodeName via displayNodeName) listed them correctly. Prefer the
-// registered nodeName so each physical node keeps its own row; our own node
-// keeps its chat name so the "(you)" row still reads naturally.
+// registered nodeName so each physical node keeps its own row — self included:
+// our own frame now advertises machineNodeName() (never the username), so the
+// self row reads as the machine it is rather than as the user.
 inline QString nodeListIdentityKey(const MemberInfo &m)
 {
     const QString nodeName = m.nodeName.trimmed();
-    if (!m.self && !nodeName.isEmpty())
+    if (!nodeName.isEmpty())
         return nodeName;
     return m.name.trimmed();
 }

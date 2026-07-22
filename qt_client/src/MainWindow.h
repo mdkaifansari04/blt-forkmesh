@@ -95,6 +95,7 @@ class QTextEdit;
 class QCheckBox;
 class QComboBox;
 class QCompleter;
+class QAbstractItemView;
 class QDateEdit;
 class QStringListModel;
 class QGraphicsOpacityEffect;
@@ -756,6 +757,8 @@ private:
     QString topBarUserName() const; // linked user/account name shown in the top bar
     QString nodeOwnerDisplayName() const; // user account that owns this node, if known
     QString chatDisplayName() const; // user identity used for chat sender names
+    QString machineNodeName() const; // THIS machine's node name (never the username)
+    void saveMachineNodeName(const QString &name); // persist + re-advertise
     void updateChatIdentity();     // push user name/avatar into the chat backend
     void updateUserSwitcher();     // refresh top-bar user label/avatar
     void updateNodeSwitcher();     // refresh top-bar node label / count
@@ -3434,9 +3437,17 @@ private:
     // whole line; its model holds the current roster's names.
     QCompleter *m_mentionCompleter = nullptr;
     QStringListModel *m_mentionModel = nullptr;
+    // Cached popup view for the mention completer. QCompleter::popup() lazily
+    // constructs its QListView on first call, and that construction pumps
+    // widget-init events through our app-wide event filter — so calling popup()
+    // from inside eventFilter re-enters during construction and recurses until
+    // the stack overflows (SIGSEGV). Compare against this cached pointer instead;
+    // it stays null until the popup is fully built (adhoc #220).
+    QAbstractItemView *m_mentionCompleterPopup = nullptr;
 
     // Settings section widgets
-    QLineEdit *m_settingsNameEdit = nullptr;
+    QLineEdit *m_settingsNameEdit = nullptr;        // Username (the account)
+    QLineEdit *m_settingsMachineNodeEdit = nullptr; // this machine's node name
     QLineEdit *m_settingsSolanaEdit = nullptr; // #66: node Solana address in Settings
     QLabel *m_settingsEmailLabel = nullptr;
     QLabel *m_settingsEmailVerifiedBadge = nullptr;
@@ -5139,7 +5150,8 @@ private:
     // user and offers "Log in as a user" to attach it. m_nodeOwnerUser holds the
     // owning user's name (empty = unlinked), learned from account lookups.
     QWidget *m_profileAccountSection = nullptr;
-    QLabel *m_profileAccountStatus = nullptr;
+    QLabel *m_profileAccountLabel = nullptr;  // "NODES (n)" / "USER ACCOUNT" header
+    QLabel *m_profileAccountStatus = nullptr; // link-state text; hidden once linked
     QListWidget *m_profileUserNodesList = nullptr;
     QPushButton *m_profileLinkUserButton = nullptr;
     // "Link this node to your account" next to the node ID: browser-based
