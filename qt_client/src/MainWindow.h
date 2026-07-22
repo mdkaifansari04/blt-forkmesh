@@ -2937,6 +2937,9 @@ private:
     void refreshChatMembers();
     void refreshChatUserDirectory();
     void mergeChatUserDirectory(const QJsonArray &users);
+    // Profile popup for a row in the chat users column: who they are, when
+    // they joined, their nodes, and extra account info fetched on demand.
+    void showChatUserProfile(const MemberInfo &member, const QStringList &nodeLines);
     void promptAddChannel();
     // Create an invite-only room (see ServerNode::createPrivateChannel) and start
     // in it. Its name is remembered so it survives a reconnect/restart.
@@ -5227,6 +5230,10 @@ private:
     QHash<QString, MemberInfo> m_chatDirectoryUsers; // lowercased user -> profile
     bool m_chatDirectoryFetchInFlight = false;
     qint64 m_chatDirectoryFetchedMs = 0;
+    // Repeating directory poll so brand-new signups appear in the users column
+    // without a reconnect (adhoc #209); the endpoint is edge-cached server-side.
+    QTimer *m_chatDirectoryTimer = nullptr;
+    bool m_chatDirectoryLoaded = false; // first fill done (may legitimately be empty)
     QSet<QString> m_removedPeerIds;  // IDs explicitly removed via removeChatMember
     // True once this node has posted (or confirmed it already posted) its one-time
     // welcome greeting this run, so the per-roster check stays cheap (issue #192).
