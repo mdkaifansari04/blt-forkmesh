@@ -2466,7 +2466,13 @@ bool PullStore::deletePull(int number, bool rewriteHistory, QString *error)
     // m_workTree only if a working tree somehow isn't available at all.
     const QString meta = metaWorkTree();
     const QString metaDir = meta.isEmpty() ? m_workTree : meta;
-    if (hasUnrelatedTrackedChanges(metaDir, relPath, error))
+    // The plain delete below commits path-scoped (`commit -- pulls/<n>`), so
+    // unrelated tracked changes elsewhere in the work tree (e.g. edits on main)
+    // never enter it and can't block the deletion. Only the opt-in history
+    // rewrite needs a clean tree: git filter-branch refuses to run with unstaged
+    // changes, so gate the guard on rewriteHistory rather than rejecting every
+    // delete when the working tree happens to be dirty.
+    if (rewriteHistory && hasUnrelatedTrackedChanges(metaDir, relPath, error))
         return false;
 
     // First commit a normal deletion so the work tree is clean for the history

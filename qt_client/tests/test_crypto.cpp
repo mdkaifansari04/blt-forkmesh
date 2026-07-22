@@ -4597,6 +4597,43 @@ int main(int argc, char *argv[])
                   "merging applies the kept files and not the deleted one");
         }
 
+        // --- PullStore deletePull works with a dirty working tree -----------
+        // Regression for adhoc #214: a plain delete commits path-scoped
+        // (`commit -- pulls/<n>`), so unrelated tracked edits elsewhere (e.g.
+        // uncommitted changes on main) never enter it and must not block the
+        // deletion. Only the opt-in history rewrite needs a clean tree.
+        {
+            const QString baseBranch = QString::fromUtf8(
+                gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
+            check(writeTestFile(tmp.path() + "/del214.txt", "v1\n"),
+                  "write pull-delete-dirty fixture file");
+            git({"add", "del214.txt"});
+            git({"commit", "-q", "-m", "add del214"});
+            const QString patch214 =
+                "diff --git a/del214.txt b/del214.txt\n"
+                "index 000..111 100644\n--- a/del214.txt\n+++ b/del214.txt\n"
+                "@@ -1 +1 @@\n-v1\n+v2\n";
+            const int pn = pulls.createPull("Dirty tree", "body", baseBranch,
+                                            "feat-214", patch214, QString(),
+                                            /*branchBacked=*/false, &err);
+            check(pn > 0, "createPull stores a PR to delete against a dirty tree");
+
+            // Dirty the working tree with an unrelated tracked change.
+            check(writeTestFile(tmp.path() + "/del214.txt", "dirty\n"),
+                  "make an unrelated tracked change before deleting");
+
+            QString delErr;
+            check(pulls.deletePull(pn, /*rewriteHistory=*/false, &delErr),
+                  "deletePull succeeds even with unrelated tracked changes");
+            bool stillThere = false;
+            for (const PullRequest &p : pulls.loadAll())
+                if (p.number == pn)
+                    stillThere = true;
+            check(!stillThere, "the deleted PR is gone from the store");
+            // Leave the tree clean for later blocks.
+            git({"checkout", "-q", "--", "del214.txt"});
+        }
+
         // --- PullStore branch-backed PRs keep the diff out of the repo -------
         // A PR whose head is a real branch stores only the signed pull.md
         // pointer; its diff and full commit series are reconstructed from
