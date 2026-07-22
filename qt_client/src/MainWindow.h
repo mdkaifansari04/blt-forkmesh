@@ -2737,7 +2737,8 @@ private:
     void showBountyQrDialog(const RepositoryRecord &repo, int number,
                             const QString &uri, const QString &address,
                             double amountUsd, const QString &amountSol,
-                            const QString &kind = QString());
+                            const QString &kind = QString(),
+                            const QString &payee = QString());
     // Issue #347: fetch/mint the owner's inbuilt bounty wallet and show its
     // deposit address, QR and live balance so the owner can pre-fund it.
     void showBountyWalletDialog();

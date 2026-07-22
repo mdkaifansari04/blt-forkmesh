@@ -6491,7 +6491,7 @@ void MainWindow::refreshRepoCollaborators()
 void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
                                     const QString &uri, const QString &address,
                                     double amountUsd, const QString &amountSol,
-                                    const QString &kind)
+                                    const QString &kind, const QString &payee)
 {
     // "pr" bounties (issue #347) aren't tracked in the issue store, so the paid
     // state is reported in the dialog only; issue bounties (kind "") also stamp
@@ -6499,21 +6499,84 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
     const bool isPr = kind == QLatin1String("pr");
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("Fund bounty"));
+    // A defined, card-based look: a subtle panel behind each block (amount,
+    // QR, the payout breakdown) so the dialog reads as a structured receipt
+    // rather than a wall of text. Colours track the app theme (light/dark) so
+    // the dialog matches the rest of the window instead of the native palette.
+    const bool dark = currentThemeIsDark();
+    const QString pageBg = dark ? "#0d1117" : "#ffffff";
+    const QString cardBg = dark ? "#161b22" : "#f6f8fa";
+    const QString border = dark ? "#30363d" : "#d0d7de";
+    const QString fg = dark ? "#e6edf3" : "#1f2328";
+    const QString muted = dark ? "#8b949e" : "#57606a";
+    const QString accent = dark ? "#58a6ff" : "#0969da";
+    dialog.setStyleSheet(
+        QStringLiteral(
+            "QDialog { background:%1; }"
+            "QFrame#bountyCard { background:%2; border:1px solid %3;"
+            "  border-radius:10px; }"
+            "QFrame#bountyQrCard { background:#ffffff; border:1px solid %3;"
+            "  border-radius:10px; }"
+            "QLabel#bountyHeading { color:%4; font-size:15px; font-weight:600; }"
+            "QLabel#bountyAmount { color:%4; font-size:26px; font-weight:700; }"
+            "QLabel#bountyUsd { color:%5; font-size:13px; }"
+            "QLabel#bountyEntityName { color:%4; font-weight:600; }"
+            "QLabel#bountyEntitySub { color:%5; font-size:11px; }"
+            "QLabel#bountyEntityPct { color:#3fb950; font-weight:600; }"
+            "QLabel#bountyAddr { color:%6; font-family:monospace; background:%1;"
+            "  border:1px solid %3; border-radius:6px; padding:6px 8px; }")
+            .arg(pageBg, cardBg, border, fg, muted, accent));
+    dialog.setMinimumWidth(380);
     auto *layout = new QVBoxLayout(&dialog);
-    auto *intro = new QLabel(
-        QString::fromUtf8("The pull request is merged. Send <b>%1 SOL</b> (\xE2\x89\x88 "
-                       "$%2) to this escrow address to fund the bounty. On "
-                       "confirmation, 90%% is paid to the pull request author and "
-                       "10%% to the ForkMesh treasury.")
-            .arg(amountSol.isEmpty() ? QStringLiteral("…") : amountSol,
-                 QString::number(amountUsd, 'f', 2)));
+    layout->setSpacing(12);
+    layout->setContentsMargins(18, 18, 18, 18);
+
+    auto *heading = new QLabel(
+        isPr ? QStringLiteral("Reward the merged pull request")
+             : QString::fromUtf8("Fund the bounty on #%1").arg(number));
+    heading->setObjectName("bountyHeading");
+    heading->setWordWrap(true);
+    layout->addWidget(heading);
+
+    auto *intro = new QLabel(QString::fromUtf8(
+        "The pull request is merged. Send the amount below to the escrow "
+        "address to fund the bounty \xE2\x80\x94 on confirmation it splits "
+        "automatically to the entities listed."));
+    intro->setObjectName("bountyUsd");
     intro->setWordWrap(true);
-    intro->setTextFormat(Qt::RichText);
     layout->addWidget(intro);
+
+    // Amount card: the exact SOL figure baked into the Solana Pay URI, plus its
+    // live USD equivalent, shown large so the funder sends the right amount.
+    auto *amountCard = new QFrame;
+    amountCard->setObjectName("bountyCard");
+    auto *amountBox = new QVBoxLayout(amountCard);
+    amountBox->setContentsMargins(14, 12, 14, 12);
+    amountBox->setSpacing(2);
+    auto *amountLabel = new QLabel(
+        QString::fromUtf8("%1 SOL")
+            .arg(amountSol.isEmpty() ? QStringLiteral("\xE2\x80\xA6") : amountSol));
+    amountLabel->setObjectName("bountyAmount");
+    amountBox->addWidget(amountLabel);
+    auto *usdLabel = new QLabel(
+        QString::fromUtf8("\xE2\x89\x88 $%1 USD").arg(
+            QString::number(amountUsd, 'f', 2)));
+    usdLabel->setObjectName("bountyUsd");
+    amountBox->addWidget(usdLabel);
+    layout->addWidget(amountCard);
+
     // The Solana Pay URI bakes in the amount, so it's long and yields a
     // high-version (many-module) QR. At a fixed scale that overflows the dialog
     // and gets clipped, so size each module to the largest integer that keeps
-    // the whole code within the dialog width (and crisp).
+    // the whole code within the dialog width (and crisp). The QR always renders
+    // inside a white card so it stays scannable in the dark theme and is never
+    // hidden behind other content.
+    auto *qrCard = new QFrame;
+    qrCard->setObjectName("bountyQrCard");
+    auto *qrBox = new QVBoxLayout(qrCard);
+    qrBox->setContentsMargins(12, 12, 12, 12);
+    auto *qrLabel = new QLabel;
+    qrLabel->setAlignment(Qt::AlignCenter);
     const auto modules = QrCode::encode(uri.toUtf8());
     if (!modules.empty()) {
         constexpr int kMargin = 3;
@@ -6521,20 +6584,75 @@ void MainWindow::showBountyQrDialog(const RepositoryRecord &repo, int number,
         const int span = static_cast<int>(modules.size()) + 2 * kMargin;
         const int scale = qMax(2, kMaxQrPx / span);
         const QImage qr = QrCode::encodeToImage(uri, scale, kMargin);
-        auto *qrLabel = new QLabel;
         qrLabel->setPixmap(QPixmap::fromImage(qr));
-        qrLabel->setAlignment(Qt::AlignCenter);
-        layout->addWidget(qrLabel);
+    } else {
+        qrLabel->setText(QStringLiteral("Scan the escrow address below"));
+        qrLabel->setStyleSheet(QStringLiteral("color:#57606a;"));
     }
+    qrBox->addWidget(qrLabel);
+    layout->addWidget(qrCard, 0, Qt::AlignCenter);
+
     auto *addr = new QLabel(address);
-    addr->setObjectName("statusLine");
+    addr->setObjectName("bountyAddr");
     addr->setTextInteractionFlags(Qt::TextSelectableByMouse);
     addr->setAlignment(Qt::AlignCenter);
     addr->setWordWrap(true);
+    addr->setToolTip(QStringLiteral("Escrow deposit address"));
     layout->addWidget(addr);
+
+    // Payout breakdown: every entity that receives a slice of the escrow, with
+    // its share (90% author / 10% treasury) shown as both a percentage and a
+    // USD figure so nothing about the split is hidden.
+    const bool havePayee = !payee.trimmed().isEmpty();
+    const QString authorName = havePayee
+                                   ? QString::fromUtf8("@%1").arg(payee.trimmed())
+                                   : QStringLiteral("Pull request author");
+    struct Entity {
+        QString name;
+        QString sub;
+        int pct;
+    };
+    const QList<Entity> entities{
+        {authorName,
+         havePayee ? QStringLiteral("Pull request author")
+                   : QStringLiteral("Paid to the merged PR's author"),
+         90},
+        {QStringLiteral("ForkMesh treasury"),
+         QStringLiteral("Protocol fee"), 10},
+    };
+    auto *splitCard = new QFrame;
+    splitCard->setObjectName("bountyCard");
+    auto *splitGrid = new QGridLayout(splitCard);
+    splitGrid->setContentsMargins(14, 12, 14, 12);
+    splitGrid->setHorizontalSpacing(10);
+    splitGrid->setVerticalSpacing(10);
+    splitGrid->setColumnStretch(0, 1);
+    int gridRow = 0;
+    for (const Entity &e : entities) {
+        auto *nameCol = new QVBoxLayout;
+        nameCol->setSpacing(0);
+        auto *name = new QLabel(e.name);
+        name->setObjectName("bountyEntityName");
+        name->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        auto *sub = new QLabel(e.sub);
+        sub->setObjectName("bountyEntitySub");
+        nameCol->addWidget(name);
+        nameCol->addWidget(sub);
+        splitGrid->addLayout(nameCol, gridRow, 0);
+        auto *pct = new QLabel(
+            QString::fromUtf8("%1%  \xC2\xB7  \xE2\x89\x88 $%2")
+                .arg(e.pct)
+                .arg(QString::number(amountUsd * e.pct / 100.0, 'f', 2)));
+        pct->setObjectName("bountyEntityPct");
+        pct->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        splitGrid->addWidget(pct, gridRow, 1);
+        ++gridRow;
+    }
+    layout->addWidget(splitCard);
 
     auto *status = new QLabel(QStringLiteral("Waiting for the deposit…"));
     status->setObjectName("modeHint");
+    status->setStyleSheet(QStringLiteral("color:%1;").arg(muted));
     status->setWordWrap(true);
     status->setAlignment(Qt::AlignCenter);
     layout->addWidget(status);
