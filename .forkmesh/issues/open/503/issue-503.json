@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751364,
+    "endDate": 1786680000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nUsers and operators can see what outside infrastructure observes, what data is canonical or temporary, and exactly what works when each service disappears.\n\n## Scope\n\n- Inventory DNS, certificates, CDN/edge, forge APIs, identity providers, email, payments, package registries, telemetry, and hosted runners.\n- Classify observed data, retention, jurisdiction, canonical ownership, caches, recovery paths, and replaceability.\n- Pair each dependency with a tested outage/degradation mode and a self-host or offline alternative where promised.\n\n## Acceptance criteria\n\n- The map covers every production network call and stored third-party identifier found by automated inventory.\n- Failure drills confirm documented behavior and identify any hidden mandatory service.\n- Privacy and self-hosting documentation is generated or checked against the same manifest.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 trust gate**\n- Milestone: **Product contract & measurement**\n- Numeric priority: **28 of 44** (1 is highest)\n- Depends on: None\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**20% as of 2026-07-22.** README architecture and privacy notes describe important boundaries, but a complete machine-checked dependency, observation, and failure map remains. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Undocumented dependencies, outage drill pass rate, mandatory hosted calls, and privacy-review findings. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-503",
+            "sig": "U6wIW6T5g82VnyHEt_D_cc9r1TljJBEhtGXYQ8TudpnFjWNV1vcJR3kHPx0d6q15z-U0h9PJN3JXy9LyOL18Dw",
+            "title": "Publish the external-dependency and observability map",
+            "ts": 1784729751364,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "5439910a-4bf5-4a7b-8808-ee223401bb8a",
+            "labels": [
+                "docs",
+                "security",
+                "product"
+            ],
+            "sig": "RIK_o9VRhljFiEC_nVDLL8YWn1lR3XR9x4CxobOcqhjoYk6tOiWLn6_Ntd5VG0LtLHqXlwbRvgUQAPNSqcLgDg",
+            "ts": 1784729751365,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "fe996cb9-b7ac-4790-a710-d1e9ce66af7a",
+            "milestone": "Product contract & measurement",
+            "sig": "9nePHXs38eEEPGDP6kUb26slcf2Ca7KEbdkr21ONxsZbayid1pOjmU3-82a7nkCGFUnG7ZlySvObLIAuSVVECg",
+            "ts": 1784729751366,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1786680000000,
+            "id": "9cb3cab4-025e-4fea-bbd4-e25fe4c2cfa1",
+            "sig": "CXhfzQJjAVbxKwEsaSnYO2928wEmZuZ63PtQvp8I1NGzYIvagBMrm0P8z_VZ8QWXi-373WpQAv_VAoRWTIgHAA",
+            "startDate": 1784692800000,
+            "ts": 1784729751367,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "59a124a0-d667-48ec-835b-cd1cb19f7e6e",
+            "priority": 28,
+            "sig": "kinf3S6RAtcXTk16ldSgDtN0aoo40pDnJ5mTqPwSKRTwFt-R-2TXnOkB4EW8JocwoXiSHbL3Kqj9BVPOTxuHAQ",
+            "ts": 1784729751368,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "33a02fff-a1cb-4c85-99d0-cb221bc51cc9",
+            "progress": 20,
+            "sig": "MkPjQM2TCD32wjwd4HAiUXQ6o9_yRI7OrGwbf9kVCTFYpKWXw2tlrRJR7X2ZNMDL45AnMhHWYYobE6QIRre1Cg",
+            "ts": 1784729751369,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "docs",
+        "security",
+        "product"
+    ],
+    "milestone": "Product contract & measurement",
+    "number": 503,
+    "priority": 28,
+    "progress": 20,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Publish the external-dependency and observability map",
+    "updatedAt": 1784729751369,
+    "votes": 0
+}

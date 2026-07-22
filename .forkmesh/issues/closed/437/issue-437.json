@@ -1,0 +1,76 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784402987619,
+    "endDate": 1784952000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nPrevent destructive updates to protected branches and tags while preserving normal push behavior for unprotected refs.\n\n## Implementation\n\n- Define `.forkmesh/push-policy.json` with a versioned schema, protected-ref globs, delete and non-fast-forward rules, allowed repository roles, owner identity, timestamp, and signature.\n- Define machine-readable canonical signing vectors for the policy.\n- Pass the authenticated pusher identity and resolved role through the relay tunnel to `RepoHost`.\n- Enforce the policy atomically before refs update. A missing policy preserves current behavior; a present but malformed or invalidly signed policy rejects the push.\n- Return a clear receive-pack rejection and refresh integrity state only after an accepted push.\n\n## Acceptance criteria\n\n- Owner and delegated-writer paths are covered.\n- Delete and force-push are rejected for protected refs and allowed for unprotected refs when policy permits.\n- Invalid signatures, unknown roles, and malformed rules fail closed.\n- A multi-ref push never partially updates when one command violates policy.\n- Standard Git clients display the denial reason.\n\n## Dependencies\n\nDepends on #435 for the receive-pack compatibility harness.\n\n## Verification\n\nAdd accepted fast-forward, rejected delete, rejected non-fast-forward, allowed unprotected force-push, role, invalid-policy, and mixed multi-ref cases.",
+            "id": "open-437",
+            "sig": "aLnB0DAPWmfEO4WgmtmHyEiEZP79PYDIucFOMHnA6ohM6MO8Fnbseu4tdDFxA7sEEQQS7OSf-xQS1BDUr2quDg",
+            "title": "Enforce signed protected-ref policies during push",
+            "ts": 1784402987619,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784952000000,
+            "id": "bc53319f-15ce-4b12-b618-6d1f790faba0",
+            "sig": "OIP9qqX2dLYGuWqPdHKbnQ1yotxPoGWrarPzyXet7Y9uaRT4MvbNGj7gjPTHVqgrV74_xwqE9lAoIItDnx5aAg",
+            "startDate": 1784606400000,
+            "ts": 1784402987620,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784952000000,
+            "id": "ffb9bbd0-b610-4643-bba3-cf936b321377",
+            "sig": "rpjqKE-E049LavTDvUtqer0uf4yvpkcCKFn7Rx_NpgHw6w_KSiOs_9YB1aHjUddCs0B8mZRO0X3KLORUnZjTCw",
+            "startDate": 1784779200000,
+            "ts": 1784405500067,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "82427c00-e365-400d-b7b6-51084f7cf010",
+            "sig": "sfXV9IZR4TF44WBXnSfhIIXqltIS5o2a_m1iy2ZzYrJZc4QG_OnK0tcDaD_iHmwLuvTqxUdBGxfRW37Z748VCg",
+            "ts": 1784729751121,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3c8d1c59-d972-42d0-b24a-05f74aab3927",
+            "sig": "7BSRG_TpTl-8FJU6s68vX2MjFOUM5Ges7EtiOaXgFfYcXdIwzulefLCngu4xzxGQJBrptiEWCwvw4qOnQ1fNCQ",
+            "status": "closed",
+            "ts": 1784729751122,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "security",
+        "feature"
+    ],
+    "milestone": "Daily Git workflow",
+    "number": 437,
+    "priority": 5,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784779200000,
+    "status": "closed",
+    "title": "Enforce signed protected-ref policies during push",
+    "updatedAt": 1784729751122,
+    "votes": 0
+}

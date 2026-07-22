@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751382,
+    "endDate": 1793332800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nMaintainers facing shutdown, takedown, account loss, censorship, or provider discontinuation can preserve a project quickly and understand residual risks.\n\n## Scope\n\n- Offer guided journeys for planned shutdown, urgent takedown risk, lost account, censorship, and provider end-of-life.\n- Prioritize refs, issues, releases, documentation, artifacts, identity proofs, and trusted mirrors according to time and access available.\n- Explain ownership, legal and secret risks, verification, external dependencies, and emergency recovery contacts.\n\n## Acceptance criteria\n\n- Scenario drills produce a verified usable mirror and migration report within documented time budgets.\n- Urgent mode makes tradeoffs explicit and never marks skipped data as preserved.\n- Onboarding routes maintainers to trusted community or paid recovery capacity without lock-in.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P1 acquisition and mission**\n- Milestone: **Preservation public alpha**\n- Numeric priority: **30 of 44** (1 is highest)\n- Depends on: #477, #490, #492\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**20% as of 2026-07-22.** Remote repository onboarding and mirroring work, but crisis-specific prioritization, guidance, partner routing, and drills remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Crisis migrations, time to verified copy, preserved coverage, recovery success, and support outcomes. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-506",
+            "sig": "KT1PhtJe2fduONYoiK5BMhTIRCp-y9DwQrHfg7FA0C4Zx4qyQ8gnav6dRSPrXxzbv6us15O3d0QWt90knWfaCA",
+            "title": "Create preservation-first crisis onboarding",
+            "ts": 1784729751382,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "4d0ed9f0-ae5b-4c42-9854-59a57b4410ef",
+            "labels": [
+                "product",
+                "community",
+                "docs"
+            ],
+            "sig": "RGrUDwluyEKwD6yeRXNNhtch7GWETeq7CIeLVpumMT38XwDl9gsAVVJ3sHKq0LRHDf1AKcf9iQ0gftyem0JbBg",
+            "ts": 1784729751383,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "531af871-e636-4b47-a90a-8053a9f2284e",
+            "milestone": "Preservation public alpha",
+            "sig": "MfLZQI3j5kmwtaucLxsSVVwukHoLAcg4NoahAULUO-4oTOPh0krcv4LJQoMi0k_X-SCh3qPaLQcsCdwJRfGnAg",
+            "ts": 1784729751384,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1793332800000,
+            "id": "89edf10a-341a-4c98-9274-b4e48c872dc3",
+            "sig": "1IoYJ9HZ3hxlLWTFSYYtwtMrUJT4P0sLf0-D0S7bFy9_PcbTy-3QssOSItpa3tVADB4MzL0UCGSkxp3oHK4JCA",
+            "startDate": 1784692800000,
+            "ts": 1784729751385,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "1f9e3242-ca97-4fd6-9a25-e43987192e6a",
+            "priority": 30,
+            "sig": "Gyyo2J929cwucMKXa_By1HrYF3AvcLAStjcQEvnAfq1khzhNXrL3UFeMTUEsA4ZCfrsfsy7D-dkwTy07DHtRAw",
+            "ts": 1784729751386,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "cfc17827-5be8-448f-9882-f6c0f70239bf",
+            "progress": 20,
+            "sig": "T80LzBBTyVEQCeUglsKNIRowAMZbBJhjePTGaFjOhSffEq3v-XjCOQ5trcN1m7is2CFN6kIRmEYKsdcNhswmCw",
+            "ts": 1784729751387,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "community",
+        "docs"
+    ],
+    "milestone": "Preservation public alpha",
+    "number": 506,
+    "priority": 30,
+    "progress": 20,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Create preservation-first crisis onboarding",
+    "updatedAt": 1784729751387,
+    "votes": 0
+}

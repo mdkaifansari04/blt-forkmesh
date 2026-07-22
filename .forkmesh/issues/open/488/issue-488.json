@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751274,
+    "endDate": 1809057600000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nUsers can purchase network benefits with clear limits and service levels without operating infrastructure or giving up an exit path.\n\n## Scope\n\n- Package relay, search, indexing, notification, backup, and forge-sync services into understandable plans and usage meters.\n- Implement trials, billing, quotas, SLOs, status history, support boundaries, export, and self-host migration.\n- Measure per-tenant compute, storage, egress, indexing, and support cost before setting production limits.\n\n## Acceptance criteria\n\n- A user can start a trial, see usage, pay, change plan, export data, and cancel without support intervention.\n- Each service publishes and measures availability, latency, freshness, durability, and recovery objectives.\n- Failure of billing or the hosted account never invalidates portable identity or public protocol access.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 commercial gate**\n- Milestone: **Hosted teams & revenue GA**\n- Numeric priority: **23 of 44** (1 is highest)\n- Depends on: #477, #478, #486, #501, #519\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**20% as of 2026-07-22.** ForkMesh operates relay, catalog, website, and notification foundations today; product packaging, billing, tenancy, SLOs, and margins remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Trial starts, paid conversion, attach rate by service, retention, SLO attainment, and service margin. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-488",
+            "sig": "Mv5cNxdQOFg4fzLs9P57hocrwLJSpWPj40DZ3ayAANGlgh-ucStV1CipkwQDfjD-s6AtpGiAvu93qqukAtpRBQ",
+            "title": "Offer paid managed relay, index, notification, backup, and sync services",
+            "ts": 1784729751274,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "9805d4ab-24bb-45a8-8db4-344d84cb4fab",
+            "labels": [
+                "revenue",
+                "infra",
+                "feature"
+            ],
+            "sig": "-NZ5Oj7La213spBemDsT6QfgAOfXEw4aqc6mbqjtWroM-g4md27wg0wltNz8UvDqCQ8wYCwrPaF-k_7zdRybCQ",
+            "ts": 1784729751275,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "886f663b-9646-48be-a9e0-097255367c0f",
+            "milestone": "Hosted teams & revenue GA",
+            "sig": "C2OmE-3sNxXVT4a2KcnxX6FiaQil3GfCmpAhVKruS_MMH4k1YDa2CTO6jXIVAXS0B0ND1mm7q83vXkzj8mmACw",
+            "ts": 1784729751276,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1809057600000,
+            "id": "5509d7d8-4c16-4585-919f-e2bffb9b9158",
+            "sig": "cXfyZ621GGT4fEItKeOJF-yCa7TZjo4U5Tv1ZLXWy5Q0VBYNPoWu7vi-QIAKB6vqzKo8LKTQNyEUyYX4RZgPAg",
+            "startDate": 1786939200000,
+            "ts": 1784729751277,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3b310b66-6b1b-46dd-b4cd-efa5f43dee59",
+            "priority": 23,
+            "sig": "-uK8gGpTAYmzK-SkGgxy2vaqj7GZ3c1Zeh3aEViLrBfFdjNKTX9mqrqtAXmbJc08EWhQmB5NfbHMxoht32oYDQ",
+            "ts": 1784729751278,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "d9af7639-cb3b-41b7-adfd-b0787b540fa3",
+            "progress": 20,
+            "sig": "sDxuNH2uFk8pa6h_cbQ50yQ9UUbexVOXJllxyeLfAERg_4PQUiHtGcBUyWE2vknc6hvaVIKyTQogjT1fqfe-Cg",
+            "ts": 1784729751279,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "revenue",
+        "infra",
+        "feature"
+    ],
+    "milestone": "Hosted teams & revenue GA",
+    "number": 488,
+    "priority": 23,
+    "progress": 20,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1786939200000,
+    "status": "open",
+    "title": "Offer paid managed relay, index, notification, backup, and sync services",
+    "updatedAt": 1784729751279,
+    "votes": 0
+}

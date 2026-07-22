@@ -1,0 +1,86 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751202,
+    "endDate": 1786680000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts\u2014without relying on any single hosting provider.\n\n## Scope\n\n- Use the same sentence on the homepage, repository profile, README, onboarding, and commercial material.\n- Pair the promise with a short proof path: collaborate, add a mirror, take the source host offline, and clone again.\n- Test the wording with maintainers, contributors, and operators; retain familiar developer terminology.\n\n## Acceptance criteria\n\n- Every primary surface uses the approved sentence without contradictory positioning.\n- At least 80% of five-person usability cohorts can accurately restate the three jobs and the no-single-provider benefit.\n- Each claim links to a working product action or an explicitly marked roadmap item.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Product contract & measurement**\n- Numeric priority: **1 of 44** (1 is highest)\n- Depends on: None\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**70% as of 2026-07-22.** A close version already exists in repository metadata and README copy; wording, proof, and cross-surface validation remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Promise comprehension, homepage-to-clone conversion, and unsupported-claim count. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-476",
+            "sig": "jHLJjo3MJT1POMl0iS2jNOfgngrA9Pu7tOzqT3VBWXnMQOLSXfvKOiPI8kjqGORKXGkMGduXJGaVeOGWa87LAQ",
+            "title": "Publish one clear product promise",
+            "ts": 1784729751202,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "2550204c-36a8-45a8-b3ca-a310043be194",
+            "labels": [
+                "product",
+                "docs"
+            ],
+            "sig": "UlparF18IZVzjSM5_7X9NaQJkJ6ZW0nld-rfFuHUnW5jJdVBI-OAGQ0folcmmj8rRCMeH16HXyt3jj0bQAHSDg",
+            "ts": 1784729751203,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "588a84b4-69e2-4648-ab8c-b21c10e3ea21",
+            "milestone": "Product contract & measurement",
+            "sig": "r7370L7YTNt-R4u4PfoDmommhdKM8gDDTygJ4PzdfhGXAxxBAMZ8NGs9UZgaajGvrzV_nU71HmVtu-dbyn89Dw",
+            "ts": 1784729751204,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1786680000000,
+            "id": "6b9f93be-4fb4-4113-afa1-f47b99d0bf79",
+            "sig": "xfjAh4KRs8KBpzQPbQ4KP040_djrun5KH0u5X60eZzRCvKAomRkOKxv2b8D1s2zi__lFivaho1YGb_oo0KPoAw",
+            "startDate": 1784692800000,
+            "ts": 1784729751205,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "ad7d1d40-b709-4629-a3eb-af92800fc58a",
+            "priority": 1,
+            "sig": "PVdgp7xlk0u4Thl1x11gDbYFq35UVs8DR2b2ldzkbwXMHgv1bOIRwmoKi7KuKlOgW5QCUqTsZclKq_WoMyp7Ag",
+            "ts": 1784729751206,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3b6fe6ba-e9f5-4321-bd58-b2881f6d810d",
+            "progress": 70,
+            "sig": "wSqvtYiw8TrR_wjzXB2tebukX0-JqZhNwwIGwc56J0XocuwB_Q5_NoEB2I4WzQSvEVR467LrVcdBtW19Gg6PDA",
+            "ts": 1784729751207,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "docs"
+    ],
+    "milestone": "Product contract & measurement",
+    "number": 476,
+    "priority": 1,
+    "progress": 70,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Publish one clear product promise",
+    "updatedAt": 1784729751207,
+    "votes": 0
+}

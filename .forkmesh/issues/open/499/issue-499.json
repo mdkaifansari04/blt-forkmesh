@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751340,
+    "endDate": 1793332800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nContributors and operators get consistent secret detection before commits, publication, synchronization, and mirroring, with an unmistakable permanence warning.\n\n## Scope\n\n- Use one scanner contract across hooks, browser upload, push, publication, provider import, sync, and mirror intake.\n- Support organization and repository rules for warn, block, audited override, custom patterns, and allowlisted test data.\n- Provide containment and rotation guidance without pretending a replicated secret can always be erased.\n\n## Acceptance criteria\n\n- A maintained benign/malicious corpus produces bounded false-positive and false-negative rates at every boundary.\n- Blocking policy prevents publication before any remote receipt; overrides are explicit and signed.\n- Detection after replication triggers clear containment, rotation, notification, and residual-risk steps.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 security gate**\n- Milestone: **Preservation public alpha**\n- Numeric priority: **20 of 44** (1 is highest)\n- Depends on: #477, #484\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**15% as of 2026-07-22.** Repository security checks and hooks provide a foundation, but one enforced scanner pipeline, organization policy, and replicated-secret response remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Secrets blocked pre-publication, post-publication detections, false positives, overrides, and remediation time. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-499",
+            "sig": "4xALU_21ISiShSak-wQFI0aa4eLhptWaJ01y4Mv0Lah7xRw5iK6E8V4mSWUXb8jvt4T0MVgjWCbgHYTYjuFVBQ",
+            "title": "Block or warn on secrets before irreversible replication",
+            "ts": 1784729751340,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "68472bcb-218d-487a-a447-6487902204fb",
+            "labels": [
+                "security",
+                "product",
+                "feature"
+            ],
+            "sig": "oVtW4ECefZSwg5VbjFEDdj4Qcd7jkDaLKlGF358HwsP_tBEb2N2uuNGZT0X6MUk_i1k8z5qnNurgqbEcHjUdBw",
+            "ts": 1784729751341,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "b2bf25f1-3c59-4e61-a282-c6e68fdecb4b",
+            "milestone": "Preservation public alpha",
+            "sig": "aNFw7-adAX-4HWIdCoa59Vg7LitrTsMnDcSyrLE1llg2Insx1ISKB1_45mllPeCTIXh4NP4zUUaaWzzCldM5Aw",
+            "ts": 1784729751342,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1793332800000,
+            "id": "5300bf92-0dfa-49f5-ac01-eaac218ee359",
+            "sig": "yc8hPXF4f4rYGz_633xOawILjEh6ZE-KR-un7l_0nzANsSDeqaxjefR22FIWlfFJxIFb9dY6rxP7WI8LL0pnAQ",
+            "startDate": 1784692800000,
+            "ts": 1784729751343,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "6ecef6c3-acb7-44f1-8289-a5c71e370b4e",
+            "priority": 20,
+            "sig": "1drGZVrQdoaJ0qdu4RbfqDCamknMrN9o-1B49uDJZ_gvdq1mxtjMPiBW7E71ln2jMMKY5f5vCdRBTVwe-ERXBw",
+            "ts": 1784729751344,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "01095315-0deb-46e3-b041-25a6aa82fd27",
+            "progress": 15,
+            "sig": "QYBbw0LsZzS5uhMWXlSEQjevEqjWpfnBD0ncgMWAbFTuhS2ti4C94hRzw0KQ_j5-ucwCPEEeK-a2s8OrongbBA",
+            "ts": 1784729751345,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "security",
+        "product",
+        "feature"
+    ],
+    "milestone": "Preservation public alpha",
+    "number": 499,
+    "priority": 20,
+    "progress": 15,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Block or warn on secrets before irreversible replication",
+    "updatedAt": 1784729751345,
+    "votes": 0
+}

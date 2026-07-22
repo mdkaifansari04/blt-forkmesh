@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751250,
+    "endDate": 1801198800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nIssues, pull requests, comments, labels, reactions, reviews, milestones, boards, notifications, and moderation decisions converge without a central database.\n\n## Scope\n\n- Specify canonical encoding, object identity, signatures, causality, references, tombstones, moderation lineage, and replay defense.\n- Implement deterministic folds and conflict rules for every collaboration object family.\n- Retain raw signed events so independent clients can verify and recompute current state.\n\n## Acceptance criteria\n\n- Permuting, duplicating, delaying, and replaying valid events produces the same state on independent implementations.\n- Invalid signatures, unauthorized moderation, and ambiguous concurrent edits cannot silently win.\n- Property, fuzz, adversarial, and migration tests cover every object family and schema version.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Collaboration public beta**\n- Numeric priority: **7 of 44** (1 is highest)\n- Depends on: None\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**45% as of 2026-07-22.** ForkMesh already uses signed append-only records for several object families; deterministic cross-node convergence and complete family coverage remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Convergence corpus pass rate, invalid-event rejection, replay incidents, and independent verifier parity. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-484",
+            "sig": "O4PLsLJ_tTfcqOmBBjOfYfrwBbrsQDg_HFJ3ma8J4dAOnVUf2f3iq9TqAhbq2V3H3MwzuVbaEqPw6d37PcV9Bg",
+            "title": "Define conflict-safe signed collaboration objects",
+            "ts": 1784729751250,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "97a448c3-3a1e-4916-bed6-ba391dc88823",
+            "labels": [
+                "protocol",
+                "security",
+                "feature"
+            ],
+            "sig": "D7TdNxAL0wk3XuUeojJp-9rBvoJkwpoSaj-MT3ALc1NOtaG6vJp_7sTUBiivuPGSalS9i7V9zfY2c7xFQvaEAg",
+            "ts": 1784729751251,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "6822353d-0c67-428a-a9b8-08d1d786c3ad",
+            "milestone": "Collaboration public beta",
+            "sig": "80P3W891tSIXorPLISw7zPzhdOueT0ZA9iO4YWwD9HUyOMFxinQBhlo8UWFDjNdOCOnD3G5r9i1D4xDlOFEzAw",
+            "ts": 1784729751252,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1801198800000,
+            "id": "2c5fd900-b120-4456-a099-1276c62012b5",
+            "sig": "1bztaxzzI2j3beXm5YGzM90rYKLHjbp8h5cHVH1P4xvIWB1v_Bj34IKBWH4_tltZA0G9qIYBY9XxaPwtb1PJDg",
+            "startDate": 1786939200000,
+            "ts": 1784729751253,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "596e1fb1-9d95-4d63-bf99-57f9e35e9437",
+            "priority": 7,
+            "sig": "I6tJEoNQSDnAfjlLLD_cfl2p4wYtqKeRjFc2Cj9v2iynPZ97iLz3-8bwIuUydR_RLk8PUYkdxjo5Ge88arRUDg",
+            "ts": 1784729751254,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "0ffcc971-3f60-46a1-862a-d799edb4c39b",
+            "progress": 45,
+            "sig": "VgSBMzkXPL1IRmpmk9EVRuRksAXuAJxNG9tPythgDiwhrIRH5cE7m7cqvMFNtaTijiI5Syt0FYKZjxAsROjAAw",
+            "ts": 1784729751255,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "protocol",
+        "security",
+        "feature"
+    ],
+    "milestone": "Collaboration public beta",
+    "number": 484,
+    "priority": 7,
+    "progress": 45,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1786939200000,
+    "status": "open",
+    "title": "Define conflict-safe signed collaboration objects",
+    "updatedAt": 1784729751255,
+    "votes": 0
+}

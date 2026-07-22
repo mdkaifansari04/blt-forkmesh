@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751220,
+    "endDate": 1793332800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nAnyone can browse and clone public projects anonymously, then make a signed first contribution with a browser identity before installing a node.\n\n## Scope\n\n- Keep all public repository, issue, pull-request, release, and availability views readable without login.\n- Create a passkey-backed browser identity for comments, issues, reviews, and patches with clear consent at the signing boundary.\n- Allow identity export or node handoff without losing authorship, history, follows, or recovery options.\n\n## Acceptance criteria\n\n- Anonymous public browsing and cloning never redirect to registration.\n- A new browser identity can create and later verify a signed contribution end to end.\n- Exporting that identity to a full node preserves stable identity and all prior contributions.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Preservation public alpha**\n- Numeric priority: **13 of 44** (1 is highest)\n- Depends on: #476, #485\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**55% as of 2026-07-22.** Public browsing and web-created issues/agent sessions work; passkey signing and lossless browser-to-node identity handoff remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Anonymous read success, first-contribution conversion, identity export success, and contribution retention. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-479",
+            "sig": "xJ9yb4YakXUIKCK7rXucTY8_uCFFaB8_vFFKvodirZKxntHStJrg8mZHXuaKiwglbtVa4-qU7VSd5GAkDJjNAA",
+            "title": "Support accountless reading and portable browser contribution",
+            "ts": 1784729751220,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "3170e752-da60-4983-b039-4cb05b4b4dfc",
+            "labels": [
+                "product",
+                "community",
+                "security"
+            ],
+            "sig": "GtWv0RKPMDEf6c4gw7OBzvClFz_WpD0U1xvpWl8AVzAuSf4MaDcTzPY6oBDm_upqjeHasltu_AkkxdPi2WKuCw",
+            "ts": 1784729751221,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "ef92318f-8f93-4ed2-811f-5d10eb63a75e",
+            "milestone": "Preservation public alpha",
+            "sig": "u7qY7AFe8_6fRjm0RV2fRUdF8AwBc8_dQUw1rz2tWt2TVF1z_lpmykbcsZvOiWTtsb-u1FgRYDdrt6se0pnXDg",
+            "ts": 1784729751222,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1793332800000,
+            "id": "0119bb8a-1dcc-4b60-ae57-4324e50a9b4f",
+            "sig": "C8-17GAd4XsrW6X6j3puEkUPkhTCALFwlv00j6KvCEzIiOM7GZLfN1Qe9Puue1QKJbytTw6-FeFAyKyvuR1VDg",
+            "startDate": 1784692800000,
+            "ts": 1784729751223,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "aa407531-2d27-44e6-9521-40a63f5536d3",
+            "priority": 13,
+            "sig": "nB4pspJ95Eo_d4C55AKshNXUzU9dqGksH6CdQLz-MbIZ2gSbBwQsB1kZjECcPO9pbMgCNeEwwnitOZ0Ni0S1Bw",
+            "ts": 1784729751224,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "c682ea12-ba27-4c31-9a62-a8b149a82928",
+            "progress": 55,
+            "sig": "1CiyyApU5v5jcNMyqMqmhjTc5uZVQcnV6MCA4oLqviRZEHTKO7dOysZUx1Fziu6mVp3QRdP6Rzn3xd4PWpb9Dg",
+            "ts": 1784729751225,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "community",
+        "security"
+    ],
+    "milestone": "Preservation public alpha",
+    "number": 479,
+    "priority": 13,
+    "progress": 55,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Support accountless reading and portable browser contribution",
+    "updatedAt": 1784729751225,
+    "votes": 0
+}

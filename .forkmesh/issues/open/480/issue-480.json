@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751226,
+    "endDate": 1793332800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nDevelopers can use ForkMesh repositories through normal Git commands and existing clients without a ForkMesh-specific source-control dialect.\n\n## Scope\n\n- Cover clone, fetch, push, hooks, branches, rebase, force-with-lease and force updates, shallow and partial clones, bundles, submodules, and signed commits.\n- Test common terminal versions and desktop clients against direct, relay, and mirror-failover paths.\n- Define safe, actionable failures wherever a capability is intentionally unsupported.\n\n## Acceptance criteria\n\n- The versioned conformance suite exercises every promised operation and detects ref or object corruption.\n- Supported stock clients require no custom patch and preserve signatures and object IDs.\n- Known limitations are generated into the public matrix with reproductions and last-tested versions.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Preservation public alpha**\n- Numeric priority: **5 of 44** (1 is highest)\n- Depends on: None\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**50% as of 2026-07-22.** Clone, fetch, mirroring, browsing, release artifacts, and owner push foundations exist; the complete cross-client matrix and edge cases remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Compatibility pass rate by operation/client/transport and zero data-loss regressions. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-480",
+            "sig": "KfYLhG0EYC9iUC-EdQSvO4CujJhOQKnyjkH4X72ip3BGHXXq5V7o8n3Q68IeUrPaIdCCkB8tfgQTPYGbDd-wDQ",
+            "title": "Preserve standard Git workflow compatibility",
+            "ts": 1784729751226,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "27f3c797-d761-4ae6-b069-9e34aa51d7f6",
+            "labels": [
+                "product",
+                "protocol",
+                "infra"
+            ],
+            "sig": "ZsZ5wMmAUKkLJ7nM614sWNeGiHmKOeFQ_axgmQK5fpnF55iIZtD-FyL8CJ29aDyZ2bQ_xPzv6b3rYd_WJy5JBg",
+            "ts": 1784729751227,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "34dda6cc-06a8-47e8-af66-fabcd5cf551c",
+            "milestone": "Preservation public alpha",
+            "sig": "gkCLZTuSO-4BEirfJoXx15iSNR592m_PC_C1gYFqY4876xDkUt3DUPNJL35ykd_I_ryyndA0FGG9jvWdoadYBg",
+            "ts": 1784729751228,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1793332800000,
+            "id": "60c41439-0c4a-4fe0-8c16-31b27ac3e87f",
+            "sig": "nl1iwHGzg09DHxlpq50392BTPdqYcvpkD1q_kPdktJU1FhLDbVy613gKOLcCjE7u03TKuKRoEe_ShlKY4NLIAw",
+            "startDate": 1784692800000,
+            "ts": 1784729751229,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "7a0e2a37-fb71-4c04-bf22-edbffbf85875",
+            "priority": 5,
+            "sig": "QnjrpvSksWamODwTdtGtiA-z4qmmTM2cQzQorz-xAJpxevW1QkVk1VPQsQ9hfmabMzS7JjAyWJ8OXkTdofbzDw",
+            "ts": 1784729751230,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "db32db8c-7dfd-4855-a2d2-244f9aa5b0b4",
+            "progress": 50,
+            "sig": "pVzk-BBpBDjdH8m12aHsKg0_UjnSve9T6jXJTbdX0qXjWvc2XhoHUqrbKSNB4AqyysBG44rDK9KGk3jpXxoSCg",
+            "ts": 1784729751231,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "protocol",
+        "infra"
+    ],
+    "milestone": "Preservation public alpha",
+    "number": 480,
+    "priority": 5,
+    "progress": 50,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Preserve standard Git workflow compatibility",
+    "updatedAt": 1784729751231,
+    "votes": 0
+}

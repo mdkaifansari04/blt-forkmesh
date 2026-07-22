@@ -1,0 +1,66 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500041,
+    "endDate": 1785297600000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nBack the availability dashboard with real clone challenges, failure-domain diversity, exact content coverage, route health, and offline recovery state.\n\n## Implementation\n\n- Run bounded clone challenges against eligible mirrors and record exact object identifier, duration, bytes, route, and verification time.\n- Compute privacy-preserving operator, coarse region, and network-domain diversity without displaying or persisting raw client addresses.\n- Measure branch, tag, Git large-object, release-asset, documentation, and collaboration coverage against signed manifests.\n- Report trusted mirror quorum, seed health, repository size, current offline bundle, and each configured route's health.\n- Generate stable risk codes for low copy count, correlated failure domains, stale challenges, partial content, missing artifacts, and absent offline recovery.\n\n## Acceptance criteria\n\n- No healthy claim is made without a recent successful challenge for the exact advertised revision.\n- Unknown measurements remain unknown and never improve a score.\n- Raw addresses and precise locations do not enter the API, UI, logs, or stored assessment.\n- Partial ref, large-object, artifact, and collaboration coverage is visible independently.\n- The same signed inputs produce the same risk codes and trusted quorum.\n\n## Dependencies\n\nCombines #439, #453, #461, #465, and #467.\n\n## Verification\n\nChallenge healthy, stale, corrupt, partial, correlated, diverse, routed, unrouted, trusted, untrusted, and offline-bundled mirrors; compare object ids, privacy scans, coverage, quorum, and risk codes.",
+            "id": "open-466",
+            "sig": "EOsg0GiWIKE46jOiW10Z9VzBxidKR1EiehXmtHF5WNFATbzo8KacpWwURrfDYFRlrD0TPV-P77wEQ4qM00AxDQ",
+            "title": "Measure preservation diversity and repository coverage",
+            "ts": 1784405500041,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785297600000,
+            "id": "b4e1952a-182c-4817-b0e1-57a7399e7256",
+            "sig": "ZSpRa7oy9YJF2eOihfeA64l-smfVZycs0ZoscESNtgSYCO5thlFR57Qfw31lxpbQGbT4WJ0s8MupOT7SN72nCg",
+            "startDate": 1784779200000,
+            "ts": 1784405500042,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "ae35cd90-1f37-4076-90d0-831022e45751",
+            "sig": "y2ewqDLyBAbRhCiU2yjqy84MKO47lEcKl1CXRjjvn0-PZzkaJ3B0tPRi9hmNqXHbq5L7DIBGr3y4k_rZ2NwnDw",
+            "ts": 1784729751179,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "ca0e79a0-9b12-4d0f-af74-a55175f04235",
+            "sig": "KNgjfF0zYT1_gOdZs5MZrlwQ6_DcykZOYyqa1GXxOBQgoRYkyOafra45wj9XWVWBmnmaE2pPYHl0dvGD0X9wAg",
+            "status": "closed",
+            "ts": 1784729751180,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "feature",
+        "infra"
+    ],
+    "milestone": "Open operations",
+    "number": 466,
+    "priority": 34,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784779200000,
+    "status": "closed",
+    "title": "Measure preservation diversity and repository coverage",
+    "updatedAt": 1784729751180,
+    "votes": 0
+}

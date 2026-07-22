@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751286,
+    "endDate": 1793332800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nEvery import ends with an exportable report showing exactly what arrived, what remains external, what failed, and what was verified.\n\n## Scope\n\n- Report counts and source identifiers by object type, refs and artifacts, checksums, retries, failures, and unresolved external dependencies.\n- Sign the report and link each verification result to reproducible evidence without leaking secrets.\n- Offer remediation, retry, and machine-readable export alongside a plain-language summary.\n\n## Acceptance criteria\n\n- Fixture totals reconcile source, imported, skipped, failed, and external records with no unclassified remainder.\n- Tampering with report data or verified content is detected by an independent verifier.\n- A maintainer can retry only failed work and receive a superseding report with preserved history.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Preservation public alpha**\n- Numeric priority: **11 of 44** (1 is highest)\n- Depends on: #477\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**10% as of 2026-07-22.** Import status exists at the Git level, but complete object-level reconciliation, signed reports, remediation, and independent verification remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Verified fidelity, unclassified records, retry recovery, report downloads, and support contacts per migration. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-490",
+            "sig": "HGCjhM8f5dvb7h64r3fdivAeSTumEIlp-vb5cYeAPlr7LI86bQh8jC-ih_Yx-AIVX7lstSM2l8IAnEpwJicjCg",
+            "title": "Produce transparent cryptographic migration reports",
+            "ts": 1784729751286,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "615b4611-4ddf-4275-ac1a-1262ee5df323",
+            "labels": [
+                "product",
+                "infra",
+                "security"
+            ],
+            "sig": "HASkJ5hqKpw5HrNbowY_l_1UFA269g_M5SY43uFe90umFX_MY7DSix8zCDAeEA57qPr5ePl2ZV41h5UzeHmpBA",
+            "ts": 1784729751287,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "03416307-2b37-4620-bbaa-140d66a5bfed",
+            "milestone": "Preservation public alpha",
+            "sig": "nzeWfj8i61IwgisLxcA0bt5x6TUkhmBRmy8QHg44i5jGxJ736Ds3Wg3X2qb0n-1AOx_1eAcXD031wFopy3VWAQ",
+            "ts": 1784729751288,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1793332800000,
+            "id": "0037069b-2676-498b-8b25-29685a21ac07",
+            "sig": "4zQqIgAjFOWIzURiojTP5RtG4tlQgLXbO4jPOGDlu2s3fHLFsDfaXMtTNIcPoK5OkLo7URGOSC_CFufI1FyVAA",
+            "startDate": 1784692800000,
+            "ts": 1784729751289,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "25b6da75-3dbb-4460-89ee-1bfddf6b3273",
+            "priority": 11,
+            "sig": "_1SV83SdD9vJGDNcyiaDgqX-47g33Aoid6vvnIhfKPBHKOPrni4bqSLbiFNM02Mgt8YkA5hsEKFoXPJSLWL8DQ",
+            "ts": 1784729751290,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "5733d676-4ca3-4eb2-8c52-6d8809f2b508",
+            "progress": 10,
+            "sig": "5YnmPx5katGZA83pniuNtx3TUtmG-gBWWBgaONPZCDgjdeekbLKnDmKO3D4wAyQFhMdLtr8_E9heG_DXV8OVDg",
+            "ts": 1784729751291,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "infra",
+        "security"
+    ],
+    "milestone": "Preservation public alpha",
+    "number": 490,
+    "priority": 11,
+    "progress": 10,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Produce transparent cryptographic migration reports",
+    "updatedAt": 1784729751291,
+    "votes": 0
+}

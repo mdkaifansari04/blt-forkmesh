@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751370,
+    "endDate": 1822276800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nRepositories and collaboration continue usefully through interrupted links, strict data budgets, local-only communities, and removable media.\n\n## Scope\n\n- Implement resumable synchronization, bandwidth schedules/limits, metadata-only mode, branch/path filtering, and deferred large objects.\n- Support local peer discovery plus signed removable-media export/import with reconciliation on reconnect.\n- Expose transfer estimates, checkpoints, integrity, missing objects, conflicts, and safe cancellation.\n\n## Acceptance criteria\n\n- Fault-injection tests resume after repeated disconnects without duplicate transfer or corrupt state.\n- Filtered and metadata-only replicas advertise limitations and never claim full availability.\n- Air-gapped export/import round-trips refs and collaboration history with verifiable provenance.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P1 resilience**\n- Milestone: **Adversarial resilience & disaster readiness**\n- Numeric priority: **38 of 44** (1 is highest)\n- Depends on: #480, #491, #492\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**30% as of 2026-07-22.** Git's local model, mirrors, LAN discovery, and repository bundles provide foundations; bounded resumable selective sync and complete removable-media collaboration remain. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Resume success, bytes saved, integrity failures, offline task completion, and reconciliation conflicts. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-504",
+            "sig": "R2RR0OzAV6OiiJTTiBaHbg-aTW0seHewFtG5JqhFC05a4hWyrU_WXLVhFMUNOUgvIpFErE4Qt8rRIhkBlCC3AA",
+            "title": "Support offline, low-bandwidth, and unreliable environments",
+            "ts": 1784729751370,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "31eb036e-20a7-4192-90f8-c8198f4d03b0",
+            "labels": [
+                "product",
+                "infra",
+                "protocol"
+            ],
+            "sig": "vTbRFP-jq2LhcqSNTHW_UYq3FhYiwpiNxRdnHAaBNA0V_etDklJwMHnqUgIP0lVtxZLLi-pkHXXSI3OM2Ea2DA",
+            "ts": 1784729751371,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "5ca0c1b5-3cb4-443b-a7e7-ffda0d96bb63",
+            "milestone": "Adversarial resilience & disaster readiness",
+            "sig": "tviXOehzcKH0ueGFU9LukgL2grAjGQMgKxnMMF-RdetWJ35VViZImn5uei0vAUyvLcvCFFRlvDxUTY8jFwILDw",
+            "ts": 1784729751372,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1822276800000,
+            "id": "bc8da045-7529-4aae-b5ce-15ed0fb06081",
+            "sig": "x6n_4EfGlUd1uqp96Db8NUIqZCblK5VIl1PUTsrHvgO1eBK0r2r-It7eu8Ft7zYitP9p-F0vAi62NXbULygLBg",
+            "startDate": 1793595600000,
+            "ts": 1784729751373,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e8d4ad2a-46ef-485c-92cd-5859e3555469",
+            "priority": 38,
+            "sig": "gKcQhaZZtBOGSi5oeGqB-DUOYCux2NPFJk6FrokuwdfQtMGJEGzeRi1wAS7dnoyh0Ir0itzn3mi3FNvj6S6VBg",
+            "ts": 1784729751374,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "91eadde7-eac3-441e-bce7-fe0dcba68cb9",
+            "progress": 30,
+            "sig": "k2Y5A8Dyj0OLnle1hpj1dHcIFnoA1WXsTPOvZgPjMXfLHJEjmn8ng1Z9ieEKVaNQhyr1uIDG1TsgIUu5p_cNCw",
+            "ts": 1784729751375,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "infra",
+        "protocol"
+    ],
+    "milestone": "Adversarial resilience & disaster readiness",
+    "number": 504,
+    "priority": 38,
+    "progress": 30,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1793595600000,
+    "status": "open",
+    "title": "Support offline, low-bandwidth, and unreliable environments",
+    "updatedAt": 1784729751375,
+    "votes": 0
+}

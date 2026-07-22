@@ -1,0 +1,67 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500049,
+    "endDate": 1785038400000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nTurn the existing local workflow runner contract into a bounded headless executor that can produce signed checks for an exact commit.\n\n## Implementation\n\n- Define signed run requests bound to repository identity, commit, workflow digest, requested capabilities, and requester role.\n- Execute in an isolated temporary workspace with CPU, memory, process, time, disk, output, and configurable network limits.\n- Support local and remote executor registration through the same protocol without requiring a hosted runner.\n- Stream bounded logs, redact configured secrets, handle cancellation, and sign terminal result metadata.\n- Publish queued, running, passed, failed, canceled, and timed-out checks through #471.\n\n## Acceptance criteria\n\n- A result cannot be applied to a different commit or workflow digest.\n- Host files, processes, credentials, and private network routes are inaccessible unless explicitly granted.\n- Cancellation and timeout leave no process or writable workspace behind.\n- Logs and artifacts remain within configured byte and retention limits.\n- Local and remote fixture executors produce the same normalized check contract.\n\n## Dependencies\n\nUses the repository's existing local action runner as the baseline and feeds #454 and #471.\n\n## Verification\n\nRun success, failure, timeout, fork bomb, memory, disk, output, cancellation, secret, network-denied, artifact, remote-disconnect, replay, and wrong-commit fixtures.",
+            "id": "open-470",
+            "sig": "WqRiQTrCmMbp9j6K02br0OmvhFhiI-mwp8xMxXMxBjA5y1IQ9grSGnTweUtNxDjtIMi8Meoo9tgmF3zdlSidAg",
+            "title": "Run repository workflows in isolated headless executors",
+            "ts": 1784405500049,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785038400000,
+            "id": "90129852-f9f1-411a-8106-f2427e191f73",
+            "sig": "AF1CLC91-LQFW3Neo5R2KufHrvpJWKIbUUSaDSe7X3uTclodL3gThU07T3FyuzWZizmKW807dQdJnjebqLaVDw",
+            "startDate": 1784520000000,
+            "ts": 1784405500050,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "b7e02471-496c-44e2-9823-fb7a2c30cac3",
+            "sig": "U3v_xETHMImeioCtbi3CDe5UDiRMvq0klGOTJtDmXZIAEldtbdPon03C3YrjQWi_9pw6D_rMpIOYQsBFHHtzBA",
+            "ts": 1784729751187,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "dd5d3681-a4c8-4b3e-8c41-c7445b5b3757",
+            "sig": "Tqawk2JNbr24M_IKknUmYk7LYbYrGCpVheUpFxCksbJN9OM0uMXpgFm18ovPQdiZWPoNrV5K-YdLzxBP_OdVAw",
+            "status": "closed",
+            "ts": 1784729751188,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "infra",
+        "feature",
+        "security"
+    ],
+    "milestone": "Open operations",
+    "number": 470,
+    "priority": 38,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784520000000,
+    "status": "closed",
+    "title": "Run repository workflows in isolated headless executors",
+    "updatedAt": 1784729751188,
+    "votes": 0
+}

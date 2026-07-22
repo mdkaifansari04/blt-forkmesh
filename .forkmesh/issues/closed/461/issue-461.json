@@ -1,0 +1,76 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500031,
+    "endDate": 1785211200000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nPreserve and serve releases as signed, content-addressed collections rather than treating tags as the entire release.\n\n## Implementation\n\n- Define a release manifest binding tag, commit, release notes, binaries, checksums, software bills of materials, provenance attestations, documentation snapshots, and package-reference metadata.\n- Store assets by digest and sign the manifest with a scoped release identity from #447.\n- Mirror assets with streaming, range resume, byte accounting, and explicit missing, partial, corrupt, or complete coverage.\n- Serve a stable verified download path that checks manifest identity and bytes before marking success.\n- Include release and artifact coverage in migration reports, availability, offline bundles, and package provenance.\n\n## Acceptance criteria\n\n- Downloaded bytes always verify against the signed manifest.\n- A tag movement, asset substitution, checksum mismatch, or untrusted signer is visible and rejected by default.\n- Large downloads resume without buffering the full asset.\n- Partial mirrors never present an unavailable asset as preserved.\n- Documentation and package references remain browsable when the original publication endpoint is absent.\n\n## Dependencies\n\nUses scoped identities from #447 and feeds #441, #445, #466, and #467.\n\n## Verification\n\nPublish, mirror, interrupt, resume, corrupt, partially remove, migrate, bundle, and download a multi-asset release; verify every state, checksum, signer, byte count, and offline documentation path.",
+            "id": "open-461",
+            "sig": "wihUhUk1ugJojvpBW42qWxz0zhm2ldmqvCB94O4GoYB5XBufCcrPmpm0Eoh5zHE2EnSBKke92_u22GM38xouCw",
+            "title": "Add signed release coverage manifests and verified downloads",
+            "ts": 1784405500031,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785124800000,
+            "id": "5d69d189-56a7-449c-b4c0-1a66976548ec",
+            "sig": "RSB8eWsbSCSNJVj0iMEVZzRK93S_7laZ1Hm5NLB4XumzeTzXfiSF-gThCTYOQ1WatKT1RT2oGLLNmJhvqlGDBw",
+            "startDate": 1784520000000,
+            "ts": 1784405500032,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785211200000,
+            "id": "762fcf5f-2be8-4678-a676-e17d33815ab1",
+            "sig": "YEMUp8TRxza0cm1-QMI2x6qCUbKZkdyS-luGsIr9pVQtegK110WM4BQJ-NJ32zCPYQOcmmZ9pCvSfAleYn47Bg",
+            "startDate": 1784520000000,
+            "ts": 1784405765200,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "daeeeed4-dc67-4360-ac2d-861dcad9db18",
+            "sig": "vFxXej9fx8Ho8TuetQsuLDDHdFcpDTvq4e-jwv6m1juheq7Pd6LkbcBXWqvScNuP-xyQinHn6rqy7L8FkDC1AA",
+            "ts": 1784729751169,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "e08aa868-c5e5-4635-9d82-482aad242132",
+            "sig": "AxbLSU6XEH3JKc0gxxgcB3qiTdHojbl0UqOTpUW-rWamJ-PCTtWs6oIaN3q5s1gkJ-9hvF3mis7AgTvrB3fhBQ",
+            "status": "closed",
+            "ts": 1784729751170,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "security",
+        "feature"
+    ],
+    "milestone": "Open operations",
+    "number": 461,
+    "priority": 29,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784520000000,
+    "status": "closed",
+    "title": "Add signed release coverage manifests and verified downloads",
+    "updatedAt": 1784729751170,
+    "votes": 0
+}

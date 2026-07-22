@@ -1,0 +1,88 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784729751388,
+    "endDate": 1793332800000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nUsers can verify exactly which clone, fetch, push, force-update, large-file, bundle, history, submodule, signature, hook, authentication, and package workflows work today.\n\n## Scope\n\n- Generate matrix rows from executable tests rather than hand-maintained marketing claims.\n- Include operation, client/version, transport, authentication, repository shape, expected result, known limits, and last run.\n- Publish raw evidence and reproducible commands with clear experimental and unsupported states.\n\n## Acceptance criteria\n\n- Every public support claim maps to a passing current result; stale rows automatically degrade status.\n- A failing conformance test changes the published matrix before release.\n- Users can filter and reproduce results for their client and workflow.\n- Linked automated evidence covers supported platforms, failure paths, rollback/recovery, documentation, and telemetry before closure.\n\n## Delivery and dependencies\n\n- Portfolio tier: **P0 release gate**\n- Milestone: **Preservation public alpha**\n- Numeric priority: **6 of 44** (1 is highest)\n- Depends on: #480\n- Assignee: unassigned until an accountable owner accepts the epic; fund independently releasable child issues rather than this umbrella epic.\n\n## Progress baseline\n\n**10% as of 2026-07-22.** Relevant tests and protocol capabilities exist, but there is no complete generated public compatibility contract. Progress may not exceed 85% without end-to-end validation or 95% without security, documentation, telemetry, and rollout evidence.\n\n## Verification and measures\n\nPrimary measures: Matrix coverage, pass rate, result freshness, reproductions run, and support-claim regressions. Closure requires linked test runs, operational evidence, and current user-facing documentation.",
+            "id": "open-507",
+            "sig": "Y4l-nEDbYwvwach6ztAGviUXOuOfR5yDqRhwg8BgYY6VCtKY00hEdwdQTMOA38UxIneCgAt3ZaM1FMws2vcJBw",
+            "title": "Generate and publish the Git compatibility matrix",
+            "ts": 1784729751388,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "eea63f03-93ad-4589-a005-ce2018ae7604",
+            "labels": [
+                "product",
+                "infra",
+                "docs"
+            ],
+            "sig": "LNfedqFummz9afwu6OBWg89fuJTPnTjcbt7a5Q7ywrpNyR2F258nrNEBmM83QgC7E4LDVTliVrM-Cp6drvslBw",
+            "ts": 1784729751389,
+            "type": "labels"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "97f79fec-109e-4eb3-9080-4cc685c95443",
+            "milestone": "Preservation public alpha",
+            "sig": "VEnDgJscbhhYE2v2I8TGCtMVcfmNjfLAAKkHRDt0YE3ZQjYCayNt5LiB-mnScrJEBhLLAZJRM2oPrtd8QpS6AA",
+            "ts": 1784729751390,
+            "type": "milestone"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1793332800000,
+            "id": "d9557562-45f6-4160-9886-e220ce55c3be",
+            "sig": "MTT-Uur1VD_RidUaweC5H4a1KtHHuTa0eFmMhPlNtOho1qZVfyk-zVZXbXVgsfQEiKsr-pQZmAMJ4-1_2esLDA",
+            "startDate": 1784692800000,
+            "ts": 1784729751391,
+            "type": "dates"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "8b77f6f0-8160-4b95-9d49-85bb614b246c",
+            "priority": 6,
+            "sig": "N7UhjVIL8m2yIDEAOItHcWfox-0gRBghGLohegd8oX9JRWeO5TNcg2jLYhpvkuCDUsaDz6lqiyL4OPp6hFT8Aw",
+            "ts": 1784729751392,
+            "type": "priority"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "9278ec80-3960-4d55-8f36-1590dff39146",
+            "progress": 10,
+            "sig": "aw0K3R6Zfp_ZsYsHVUwXZOnNrJ91_h2Yx0FVRsJRzue0cTVjkWi739tNYaiWwlO8Jam2ZuYNRUdcbHInaU7-BA",
+            "ts": 1784729751393,
+            "type": "progress"
+        }
+    ],
+    "labels": [
+        "product",
+        "infra",
+        "docs"
+    ],
+    "milestone": "Preservation public alpha",
+    "number": 507,
+    "priority": 6,
+    "progress": 10,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784692800000,
+    "status": "open",
+    "title": "Generate and publish the Git compatibility matrix",
+    "updatedAt": 1784729751393,
+    "votes": 0
+}

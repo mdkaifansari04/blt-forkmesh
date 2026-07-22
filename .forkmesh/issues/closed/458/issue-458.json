@@ -1,0 +1,66 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500025,
+    "endDate": 1784520000000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nKeep cloning, mirroring, contributing, identity, and self-hosting independent of optional account-service modules.\n\n## Implementation\n\n- Move optional account extensions behind explicit versioned interfaces and disabled-by-default feature flags.\n- Remove optional-service fields and calls from required repository creation, node startup, identity, clone, push, and contribution paths.\n- Namespace optional schemas, routes, migrations, and UI so the core can build and run with the module absent.\n- Provide a reversible migration for existing optional records without changing repository identities or signed collaboration history.\n- Generate core documentation and API schemas from a build in which optional modules are not present.\n\n## Acceptance criteria\n\n- Core desktop, browser, headless, relay, and self-host tests pass with the optional module physically absent.\n- No required API response or signed repository object contains an optional-module field.\n- Enabling or disabling the module does not change Git or collaboration object identifiers.\n- Migration is idempotent and preserves user-controlled exports.\n- Core onboarding contains no optional-service detour.\n\n## Dependencies\n\nNone.\n\n## Verification\n\nBuild and run the complete core portfolio with the module absent, disabled, enabled, migrated, and removed again; compare repository identities, signed event bytes, API schemas, and onboarding steps.",
+            "id": "open-458",
+            "sig": "sYLKV6Fshtbd1BbBHZxNXYa9HpI0-_RQLxzoXpqMRrkp5GXpna4tWtpv96DsTolqmAt8A8hxe-MZyfLFq_QnAg",
+            "title": "Remove optional account extensions from required repository paths",
+            "ts": 1784405500025,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1784520000000,
+            "id": "21790a1b-50a0-4be2-bea4-67ff4364ddeb",
+            "sig": "UihSTWzhBiqVqzk4zkp_fmaL0QbqT79yGjNxLVHwce_p_i2RqgthrYnWx6VujRtFJNJlzdGiyjIygToRps-LCQ",
+            "startDate": 1784347200000,
+            "ts": 1784405500026,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "bd2cc755-878b-468a-8efb-05c81c5b78f4",
+            "sig": "obwf5lbXu2YvwSY-REfgpDavI633U0zpRM03phgPxeRGEHcebFNhxLq-00H0M-rmjrOco_wXSbaf8FK3xlveCw",
+            "ts": 1784729751163,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "4ba6360c-ac8a-49e6-b443-c025ecb24ba4",
+            "sig": "HPU-vuCYhTXkC7zYmYzORC-nnauxDe_DqPXp38f_FkMaavyZ2HNMoP0gYt3gYoJNE5ViVwQcGtEnxhi5zJSxBQ",
+            "status": "closed",
+            "ts": 1784729751164,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "enhancement",
+        "infra"
+    ],
+    "milestone": "Daily Git workflow",
+    "number": 458,
+    "priority": 26,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784347200000,
+    "status": "closed",
+    "title": "Remove optional account extensions from required repository paths",
+    "updatedAt": 1784729751164,
+    "votes": 0
+}

@@ -1,0 +1,65 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "forkmesh",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0.0,
+    "createdAt": 1784405500033,
+    "endDate": 1785211200000,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "## Outcome\n\nKeep the expanded product fast, navigable, readable, and predictable through measured budgets rather than subjective polish claims.\n\n## Implementation\n\n- Set checked-in local and remote budgets for startup, repository browse, fuzzy search, diff render, graph render, command actions, and status refresh.\n- Add deterministic fuzzy-search relevance fixtures and commit-graph correctness checks.\n- Cover keyboard navigation, command palette, exact-command copy, dark and light themes, empty/loading/error states, and narrow viewports.\n- Add accessible names, focus order, contrast, reduced motion, and screen-reader snapshots for every new surface.\n- Run visual regression and performance tests for large diffs, long histories, many mirrors, and offline local-first operation.\n\n## Acceptance criteria\n\n- A budget regression fails the owning continuous-integration job with the measured delta.\n- Local cached repository actions remain usable with every network route disabled.\n- Fuzzy-search ordering and graph topology are deterministic.\n- No new surface requires a pointer or color alone.\n- The terminology contract from #460 passes in every snapshot.\n\n## Dependencies\n\nUses the complete test portfolio in #434 and vocabulary contract in #460.\n\n## Verification\n\nRun performance and visual fixtures on fixed data sets twice, compare normalized metrics and images, disable all routes for local flows, and inject keyboard, contrast, focus, and terminology regressions.",
+            "id": "open-462",
+            "sig": "ki7b4gbfBRY1JIF8qzgDUbSg2NVmi67ai_6PyDy4YY_AbM6tp-4FGqLIPEf-7qoW0Pkws6C_JYbHBX69xhtLBw",
+            "title": "Enforce interaction, accessibility, and performance budgets",
+            "ts": 1784405500033,
+            "type": "open"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "endDate": 1785211200000,
+            "id": "cb9d4d25-653b-4759-9d8e-0a06c9effa01",
+            "sig": "3P6t9KV7N5Xt162-1PSsf5gIBSsoX5FJbiETYfoTLtM-6gyrWgoD983pH6Vrah24idhlpIsI7DajeDjulRvxBA",
+            "startDate": 1784347200000,
+            "ts": 1784405500034,
+            "type": "dates"
+        },
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "body": "Superseded by the product, community, and revenue roadmap in Project #2. The original scope and signed history remain available for audit.",
+            "id": "6f6878a8-44c4-4ca4-92d9-532bbf0f2bc8",
+            "sig": "WwktT7kJ0zMaQJ00EW1O_d6f9xKpUu5jBCc2rccoczUK84h-tJUcsbMn7Yvo6uF9B9vpkI9sQqgww9mqPRQ8CA",
+            "ts": 1784729751171,
+            "type": "comment"
+        },
+        {
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "forkmesh",
+            "id": "6a79f67a-e141-4000-b27a-3dafcd0553e3",
+            "sig": "fhyf9FeXbnK2hEr83lc_XuohJJJhiyutTgxPcpetWYRoAm4q2CpgRVcXNtEuyBsUGFZbtgw_Qz9D659nT1JxDQ",
+            "status": "closed",
+            "ts": 1784729751172,
+            "type": "status"
+        }
+    ],
+    "labels": [
+        "enhancement"
+    ],
+    "milestone": "Secure collaboration",
+    "number": 462,
+    "priority": 30,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 1784347200000,
+    "status": "closed",
+    "title": "Enforce interaction, accessibility, and performance budgets",
+    "updatedAt": 1784729751172,
+    "votes": 0
+}
