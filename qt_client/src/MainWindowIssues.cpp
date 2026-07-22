@@ -4656,6 +4656,29 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         if (ke->matches(QKeySequence::Paste) && trySendClipboardImage())
             return true;
     }
+    // Tab accepts the highlighted @-mention suggestion into the input (adhoc
+    // #212). QCompleter's popup handles Up/Down/Enter itself but lets Tab fall
+    // through to focus-change, so bind it here: take the highlighted row, or the
+    // first entry when nothing's been arrowed to yet, and insert it just like
+    // activating with Enter would. The popup (not m_messageInput) is filtered
+    // because a Qt::Popup grabs the keyboard while it's up.
+    if (m_mentionCompleter && obj == m_mentionCompleter->popup() &&
+        event->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        if (ke->key() == Qt::Key_Tab) {
+            const QModelIndex idx = m_mentionCompleter->popup()->currentIndex();
+            QString name;
+            if (idx.isValid())
+                name = idx.data(Qt::DisplayRole).toString();
+            else if (m_mentionCompleter->setCurrentRow(0))
+                name = m_mentionCompleter->currentCompletion();
+            if (!name.isEmpty()) {
+                insertMention(name);
+                m_mentionCompleter->popup()->hide();
+                return true;
+            }
+        }
+    }
     // Ctrl+V into the footer quick-add bar: if the clipboard holds an image,
     // queue it as an attachment instead of pasting its (usually empty) text
     // (issue #79). A normal text paste falls through.
@@ -7786,6 +7809,11 @@ QWidget *MainWindow::buildChatSection()
     connect(m_mentionCompleter,
             QOverload<const QString &>::of(&QCompleter::activated), this,
             &MainWindow::insertMention);
+    // The completion popup is a Qt::Popup window that grabs the keyboard while
+    // it's visible, so key presses (Tab included) land on the popup rather than
+    // on m_messageInput. Filter the popup directly so Tab accepts the
+    // highlighted name, matching the web chat composer (adhoc #212).
+    m_mentionCompleter->popup()->installEventFilter(this);
     refreshMentionCandidates();
     // 🙂 opens a compact emoji grid that inserts into the composer at the caret.
     auto *emojiButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x99\x82"));
