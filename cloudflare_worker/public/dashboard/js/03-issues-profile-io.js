@@ -251,7 +251,7 @@
   // Mirrors IssueStore::contentForSigning + canonicalString and the desktop's
   // inbox POST (verify_issue_event in the worker). New issues are signed with
   // number 0; the maintainer assigns the durable number on drain.
-  async function submitWebIssue(repo, title, body, assignAgent = false, agentModel = "", agentProvider = "") {
+  async function submitWebIssue(repo, title, body, assignAgent = false, agentModel = "", agentProvider = "", extraMeta = {}) {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
     const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
@@ -278,7 +278,16 @@
       number: 0,
       titleIfNew: title,
       event,
-      meta: { labels: [], milestone: "", priority: 0, assignees: [], wantsAgent: Boolean(assignAgent), model: assignAgent ? String(agentModel || "") : "", provider: assignAgent ? String(agentProvider || "") : "" },
+      meta: {
+        labels: Array.isArray(extraMeta.labels) ? extraMeta.labels.map((x) => String(x)) : [],
+        milestone: String(extraMeta.milestone || ""),
+        project: String(extraMeta.project || ""),
+        priority: Number.isFinite(extraMeta.priority) ? extraMeta.priority : 0,
+        assignees: Array.isArray(extraMeta.assignees) ? extraMeta.assignees.map((x) => String(x)) : [],
+        wantsAgent: Boolean(assignAgent),
+        model: assignAgent ? String(agentModel || "") : "",
+        provider: assignAgent ? String(agentProvider || "") : "",
+      },
     };
     // When assignAgent is true, include the account session so the server can
     // verify the caller really is the repo owner or an admin (adhoc #225). The

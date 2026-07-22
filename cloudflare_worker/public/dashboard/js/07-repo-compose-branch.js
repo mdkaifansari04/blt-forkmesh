@@ -14,6 +14,14 @@
         <label class="grid gap-1 text-xs font-medium text-muted-foreground">Description
           <textarea data-repo-issue-body rows="6" placeholder="Describe the issue. Markdown is supported." class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"></textarea>
         </label>
+        <div class="grid gap-2 sm:grid-cols-2">
+          <label class="grid gap-1 text-xs font-medium text-muted-foreground">Milestone
+            <input data-repo-issue-milestone type="text" maxlength="120" placeholder="Optional (e.g. v1.0)" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
+          </label>
+          <label class="grid gap-1 text-xs font-medium text-muted-foreground">Project
+            <input data-repo-issue-project type="text" maxlength="120" placeholder="Optional (e.g. Roadmap)" class="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
+          </label>
+        </div>
         <div class="grid gap-2">
           <div class="flex flex-wrap items-center gap-2">
             <button type="button" data-repo-issue-attach-image class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="paperclip" class="h-3.5 w-3.5"></i>Attach images</button>
@@ -182,6 +190,8 @@
     if (!repo || !form) return;
     const titleInput = form.querySelector("[data-repo-issue-title]");
     const bodyInput = form.querySelector("[data-repo-issue-body]");
+    const milestoneInput = form.querySelector("[data-repo-issue-milestone]");
+    const projectInput = form.querySelector("[data-repo-issue-project]");
     const submit = form.querySelector("[data-repo-issue-submit]");
     const assignAgentInput = form.querySelector("[data-repo-issue-assign-agent]");
     const agentModelInput = form.querySelector("[data-repo-issue-agent-model]");
@@ -200,6 +210,8 @@
     const assignAgent = Boolean(assignAgentInput?.checked);
     const agentModel = assignAgent ? String(agentModelInput?.value || "") : "";
     const agentProvider = assignAgent ? String(agentProviderInput?.value || "") : "";
+    const milestone = String(milestoneInput?.value || "").trim();
+    const project = String(projectInput?.value || "").trim();
     // Swap each attached image's short placeholder back out for its real
     // data: URL now, right before signing - the signed content hash has to
     // cover exactly what gets sent.
@@ -209,7 +221,7 @@
     if (submit) submit.disabled = true;
     setHint("Signing and sending…");
     try {
-      await submitWebIssue(repo, title, body, assignAgent, agentModel, agentProvider);
+      await submitWebIssue(repo, title, body, assignAgent, agentModel, agentProvider, { milestone, project });
       // Submissions land in the maintainer's inbox, not the public mirror, so it
       // won't be visible there until they drain it - but show it locally, on
       // top of this session's issue list, so the submitter sees it right away.
@@ -220,7 +232,8 @@
         status: "open",
         author: state.session?.nodeName || "you",
         date: "just now",
-        meta: "",
+        meta: [milestone && `milestone: ${milestone}`, project && `project: ${project}`].filter(Boolean).join(" · "),
+        milestone,
         body,
         wantsAgent: assignAgent,
         pending: true,
@@ -235,6 +248,8 @@
       setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status !== "closed").length);
       if (titleInput) titleInput.value = "";
       if (bodyInput) bodyInput.value = "";
+      if (milestoneInput) milestoneInput.value = "";
+      if (projectInput) projectInput.value = "";
       images.length = 0;
       form.querySelector("[data-repo-issue-attachments]")?.replaceChildren();
       if (submit) submit.disabled = false;
@@ -254,6 +269,193 @@
           : "Could not send the issue. Please try again.",
         "bad");
     }
+  }
+
+  // --- CSV issue import (adhoc #188) ---------------------------------------
+  // Canonical column order for the downloadable template and the parsed import.
+  // Unknown columns are ignored; missing ones default to empty. labels and
+  // assignees hold multiple values separated by ";" so commas stay free to act
+  // as the CSV field delimiter.
+  const ISSUE_CSV_COLUMNS = ["title", "body", "milestone", "project", "labels", "priority", "assignees"];
+  const ISSUE_CSV_TEMPLATE =
+    "title,body,milestone,project,labels,priority,assignees\n" +
+    "\"Example: crash on startup\",\"Steps to reproduce...\",v1.0,Roadmap,\"bug;crash\",2,\"alice;bob\"\n" +
+    "\"Another issue\",\"Short description here\",,,,0,\n";
+
+  function downloadIssueCsvTemplate() {
+    const blob = new Blob([ISSUE_CSV_TEMPLATE], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "forkmesh-issues-template.csv";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // Minimal RFC-4180-ish CSV parser: handles quoted fields, "" escapes, and
+  // commas/newlines inside quotes. Returns an array of rows (arrays of cells).
+  function parseCsv(text) {
+    const rows = [];
+    let row = [];
+    let field = "";
+    let inQuotes = false;
+    const src = String(text || "").replace(/\r\n?/g, "\n");
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (src[i + 1] === '"') { field += '"'; i++; }
+          else inQuotes = false;
+        } else field += ch;
+      } else if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ",") {
+        row.push(field); field = "";
+      } else if (ch === "\n") {
+        row.push(field); field = "";
+        rows.push(row); row = [];
+      } else field += ch;
+    }
+    if (field.length || row.length) { row.push(field); rows.push(row); }
+    // Drop trailing blank lines so a file ending in a newline doesn't add a row.
+    return rows.filter((r) => r.some((cell) => String(cell).trim() !== ""));
+  }
+
+  // Map parsed CSV rows to issue submission objects. When the first row is a
+  // recognizable header (has a "title" column) its names decide the mapping;
+  // otherwise the file is treated as headerless in canonical column order.
+  function csvRowsToIssues(rows) {
+    if (!rows.length) return [];
+    const header = rows[0].map((h) => String(h).trim().toLowerCase());
+    const idx = {};
+    ISSUE_CSV_COLUMNS.forEach((name) => { idx[name] = header.indexOf(name); });
+    const hasHeader = idx.title >= 0;
+    const dataRows = hasHeader ? rows.slice(1) : rows;
+    if (!hasHeader) ISSUE_CSV_COLUMNS.forEach((name, i) => { idx[name] = i; });
+    const cell = (r, name) => (idx[name] >= 0 ? String(r[idx[name]] ?? "").trim() : "");
+    const splitList = (v) => v.split(";").map((x) => x.trim()).filter(Boolean);
+    const issues = [];
+    for (const r of dataRows) {
+      const title = cell(r, "title");
+      if (!title) continue;
+      const priorityNum = parseInt(cell(r, "priority"), 10);
+      issues.push({
+        title: title.slice(0, 240),
+        body: cell(r, "body"),
+        milestone: cell(r, "milestone"),
+        project: cell(r, "project"),
+        labels: splitList(cell(r, "labels")),
+        priority: Number.isFinite(priorityNum) ? priorityNum : 0,
+        assignees: splitList(cell(r, "assignees")),
+      });
+    }
+    return issues;
+  }
+
+  function openIssueImport(repo) {
+    const container = $("[data-repo-issues]");
+    if (!container || !repo) return;
+    container.innerHTML = `
+      <form data-repo-issue-import-form class="grid gap-3 border-t border-border bg-background p-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span class="inline-flex items-center gap-2 text-sm font-semibold text-foreground"><i data-lucide="upload" class="h-4 w-4 text-primary"></i>Import issues from CSV</span>
+          <button type="button" data-repo-issue-cancel class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to issues</button>
+        </div>
+        <p class="text-xs leading-5 text-muted-foreground">Upload a CSV with columns <code class="rounded bg-secondary px-1 py-0.5 font-mono">title, body, milestone, project, labels, priority, assignees</code>. Only <code class="rounded bg-secondary px-1 py-0.5 font-mono">title</code> is required. Separate multiple labels or assignees with <code class="rounded bg-secondary px-1 py-0.5 font-mono">;</code>. Each row is filed as its own signed issue in the maintainer's inbox.</p>
+        <div class="flex flex-wrap items-center gap-2">
+          <button type="button" data-repo-issue-template class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="download" class="h-3.5 w-3.5"></i>Download template</button>
+          <input type="file" data-repo-issue-csv-input accept=".csv,text/csv" class="text-xs text-foreground file:mr-2 file:h-8 file:cursor-pointer file:rounded-md file:border file:border-border file:bg-secondary file:px-3 file:text-xs file:font-medium file:text-foreground" />
+        </div>
+        <div data-repo-issue-import-preview class="text-xs text-muted-foreground"></div>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="flex min-w-0 flex-col gap-1">
+            ${composeIdentityHtml(state.session, "Filing")}
+            <span data-repo-issue-import-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+          </div>
+          <button type="submit" data-repo-issue-import-submit disabled class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Import issues</button>
+        </div>
+      </form>`;
+    window.lucide?.createIcons();
+    const form = container.querySelector("[data-repo-issue-import-form]");
+    const fileInput = container.querySelector("[data-repo-issue-csv-input]");
+    const preview = container.querySelector("[data-repo-issue-import-preview]");
+    const submit = container.querySelector("[data-repo-issue-import-submit]");
+    if (form) form._parsedIssues = [];
+    fileInput?.addEventListener("change", async () => {
+      const file = fileInput.files?.[0];
+      if (form) form._parsedIssues = [];
+      if (submit) submit.disabled = true;
+      if (!file) { if (preview) preview.textContent = ""; return; }
+      let text = "";
+      try { text = await file.text(); }
+      catch (_) { if (preview) { preview.className = "text-xs text-destructive"; preview.textContent = "Could not read that file."; } return; }
+      let issues = [];
+      try { issues = csvRowsToIssues(parseCsv(text)); } catch (_) { issues = []; }
+      if (form) form._parsedIssues = issues;
+      if (submit) submit.disabled = issues.length === 0;
+      if (!preview) return;
+      if (!issues.length) {
+        preview.className = "text-xs text-destructive";
+        preview.textContent = "No issues found - make sure the file has a header row with a \"title\" column and at least one titled row.";
+        return;
+      }
+      preview.className = "text-xs text-muted-foreground";
+      const sample = issues.slice(0, 5).map((it) => `• ${escapeHtml(it.title)}`).join("<br>");
+      preview.innerHTML = `Ready to import <strong class="text-foreground">${issues.length}</strong> issue${issues.length === 1 ? "" : "s"}:<br>${sample}${issues.length > 5 ? `<br>…and ${issues.length - 5} more` : ""}`;
+    });
+  }
+
+  async function handleIssueImportSubmit(repo, form) {
+    if (!repo || !form) return;
+    const issues = Array.isArray(form._parsedIssues) ? form._parsedIssues : [];
+    const submit = form.querySelector("[data-repo-issue-import-submit]");
+    const hint = form.querySelector("[data-repo-issue-import-hint]");
+    const setHint = (text, tone) => {
+      if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
+      if (hint) hint.textContent = text;
+    };
+    if (!issues.length) { setHint("Choose a CSV file first.", "bad"); return; }
+    if (submit) submit.disabled = true;
+    let ok = 0;
+    let failed = 0;
+    for (let i = 0; i < issues.length; i++) {
+      const it = issues[i];
+      setHint(`Signing and sending ${i + 1} of ${issues.length}…`);
+      try {
+        await submitWebIssue(repo, it.title, it.body, false, "", "", {
+          milestone: it.milestone,
+          project: it.project,
+          labels: it.labels,
+          priority: it.priority,
+          assignees: it.assignees,
+        });
+        ok++;
+        const pendingItem = {
+          number: null,
+          localId: `pending-${Date.now().toString(36)}-${i}`,
+          title: it.title,
+          status: "open",
+          author: state.session?.nodeName || "you",
+          date: "just now",
+          meta: [it.milestone && `milestone: ${it.milestone}`, it.project && `project: ${it.project}`].filter(Boolean).join(" · "),
+          milestone: it.milestone,
+          body: it.body,
+          pending: true,
+        };
+        state.issuesView.items = [pendingItem, ...state.issuesView.items];
+      } catch (_) {
+        failed++;
+      }
+    }
+    setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status !== "closed").length);
+    if (submit) submit.disabled = false;
+    setHint(
+      failed
+        ? `Imported ${ok} issue${ok === 1 ? "" : "s"}; ${failed} could not be sent. Go back to review.`
+        : `Imported ${ok} issue${ok === 1 ? "" : "s"} to the maintainer's inbox. Go back to review.`,
+      failed ? "bad" : "good");
   }
 
   // Branch-referencing web pull requests: no client-side diff computation
@@ -1200,7 +1402,10 @@
               </label>
               ${isPulls
                 ? `<button type="button" data-repo-pull-new class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90"><i data-lucide="git-pull-request" class="h-3.5 w-3.5"></i>New pull request</button>`
-                : `<button type="button" data-repo-issue-new class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90"><i data-lucide="plus" class="h-3.5 w-3.5"></i>New issue</button>`}
+                : `<div class="flex items-center gap-2">
+                    <button type="button" data-repo-issue-import class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border bg-background px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="upload" class="h-3.5 w-3.5"></i>Import CSV</button>
+                    <button type="button" data-repo-issue-new class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90"><i data-lucide="plus" class="h-3.5 w-3.5"></i>New issue</button>
+                  </div>`}
               <div class="flex min-w-0 flex-wrap items-center gap-2 lg:col-span-3">
                 ${filters.map(([label, options]) => renderRepoCollectionFilter(label, options)).join("")}
               </div>
