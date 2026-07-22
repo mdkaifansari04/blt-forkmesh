@@ -204,3 +204,16 @@ def test_card_handler_is_public_get_and_edge_cached():
     assert "_repo_is_private" in handler
     assert "edge_cache_match_media" in handler and "edge_cache_put" in handler
     assert "render_repo_card" in handler
+
+
+def test_binary_response_bodies_are_copied_into_js_owned_buffers():
+    # A bare _to_js(bytes) is a VIEW into Python's WASM memory. A binary
+    # Response body is streamed to the client (and read by edge-cache put)
+    # AFTER the handler returns and the GIL is released; reading that view off
+    # the GIL is a runtime crash ("Attempted to use PyProxy when Python GIL not
+    # held") that poisons the isolate for every later invocation, including the
+    # once-a-minute cron tick. Every binary body must round-trip through
+    # Uint8Array.new to land in a JS-owned buffer first (adhoc #203).
+    assert "JsResponse.new(_to_js(bytes(" not in ENTRY_SRC
+    for site in ("bytes(data)", "bytes(raw)", "bytes(png)"):
+        assert "Uint8Array.new(_to_js(%s))" % site in ENTRY_SRC

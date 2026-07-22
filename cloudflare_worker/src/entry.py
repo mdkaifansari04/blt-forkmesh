@@ -598,7 +598,12 @@ def repo_web_href(owner, repo):
 
 def git_bytes_response(data, content_type):
     return JsResponse.new(
-        _to_js(bytes(data)),
+        # Copy into a JS-owned buffer: a bare _to_js(bytes) is a view into
+        # Python's WASM memory, and the client streams this body AFTER the
+        # handler returns and the GIL is released — reading the view then is a
+        # runtime crash ("PyProxy when Python GIL not held"), not an exception,
+        # and it poisons the isolate for every later invocation (incl. cron).
+        Uint8Array.new(_to_js(bytes(data))),
         to_js(
             {
                 "status": 200,
@@ -11856,7 +11861,10 @@ async def ap_object_media_handler(env, request, object_uuid, index):
         raw = base64.b64decode(item.get("data", ""), validate=True)
     except Exception:
         return json_response({"error": "not_found"}, status=404)
-    resp = JsResponse.new(_to_js(bytes(raw)), to_js({
+    # Uint8Array.new copies into a JS-owned buffer; a bare _to_js(bytes) view
+    # into WASM memory would be read off the GIL (edge-cache put / client
+    # stream, after this handler returns) and crash the isolate.
+    resp = JsResponse.new(Uint8Array.new(_to_js(bytes(raw))), to_js({
         "status": 200,
         "headers": {
             "content-type": item.get("mediaType", "image/png"),
@@ -12746,8 +12754,10 @@ async def repo_media_handler(env, request, owner, repo, media_kind):
     except Exception:
         return json_response({"error": "not_found"}, status=404)
     # The actor document busts caches via ?v=<updated_at>, so long edge/browser
-    # caching here is safe.
-    resp = JsResponse.new(_to_js(bytes(raw)), to_js({
+    # caching here is safe. Uint8Array.new copies into a JS-owned buffer — a
+    # bare _to_js(bytes) view into WASM memory read off the GIL (edge-cache
+    # put / client stream, after this returns) crashes the isolate.
+    resp = JsResponse.new(Uint8Array.new(_to_js(bytes(raw))), to_js({
         "status": 200,
         "headers": {
             "content-type": "image/png",
@@ -12820,8 +12830,10 @@ async def repo_card_handler(env, request, owner, repo):
     }
     png = og_card.render_repo_card(info, time.time())
     # Stats drift, so keep the browser TTL modest; preview crawlers cache the
-    # rendered card on their side anyway.
-    resp = JsResponse.new(_to_js(bytes(png)), to_js({
+    # rendered card on their side anyway. Uint8Array.new copies into a JS-owned
+    # buffer — a bare _to_js(bytes) view into WASM memory read off the GIL
+    # (edge-cache put / client stream, after this returns) crashes the isolate.
+    resp = JsResponse.new(Uint8Array.new(_to_js(bytes(png))), to_js({
         "status": 200,
         "headers": {
             "content-type": "image/png",
