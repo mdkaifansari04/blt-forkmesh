@@ -1,0 +1,627 @@
+From 6fe3cbd5a7841cfdb39e1c86d6068032e692ac13 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Wed, 22 Jul 2026 21:41:11 +0530
+Subject: [PATCH 1/5] docs: specify local D1 dev migrations
+
+---
+ ...26-07-22-local-d1-dev-migrations-design.md | 31 +++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+ create mode 100644 cloudflare_worker/docs/superpowers/specs/2026-07-22-local-d1-dev-migrations-design.md
+
+diff --git a/cloudflare_worker/docs/superpowers/specs/2026-07-22-local-d1-dev-migrations-design.md b/cloudflare_worker/docs/superpowers/specs/2026-07-22-local-d1-dev-migrations-design.md
+new file mode 100644
+index 00000000..dfdd4a46
+--- /dev/null
++++ b/cloudflare_worker/docs/superpowers/specs/2026-07-22-local-d1-dev-migrations-design.md
+@@ -0,0 +1,31 @@
++# Local D1 Development Migrations Design
++
++## Problem
++
++`wrangler dev` executes the custom build command in `wrangler.toml`.
++That command invokes `migrate.sh`, which currently forces `wrangler d1 migrations apply` to use `--remote`.
++The configured production D1 database ID is absent from the authenticated Cloudflare account, so local development exits before the Worker starts.
++
++## Decision
++
++`migrate.sh` will select the D1 target from its execution context.
++When Wrangler sets `WRANGLER_COMMAND=dev`, the script will apply migrations with `--local`.
++When invoked for `deploy` or directly without a development command, the script will preserve the existing `--remote` behavior.
++`FORKMESH_D1_LOCAL=1` will continue to explicitly force local migrations for any invocation.
++
++## Scope
++
++The fix will not change `wrangler.toml` D1 identifiers or repoint production at the current account's local development database.
++The fix will not provision, alter, or apply migrations to a remote database while validating local development.
++
++## Implementation
++
++Extract scope selection into a small Bash function in `migrate.sh` so it can be tested without invoking Wrangler or Cloudflare.
++Wrap the script's executable body in `main` so the scope function can be sourced by a test without running migrations.
++Add a focused pytest module that runs the helper in a Bash subprocess for development, deployment, and explicit-local contexts.
++
++## Verification
++
++The regression test must fail before the script recognizes `WRANGLER_COMMAND=dev`.
++After the change, the focused regression test must pass and `WRANGLER_COMMAND=dev ./migrate.sh` must complete against local D1 without a Cloudflare API request.
++The deployment context test must prove that `WRANGLER_COMMAND=deploy` still selects `--remote`.
+-- 
+2.50.1 (Apple Git-155)
+
+
+From bbbe5ec9e2472a4b20735a133d713bfe3cd88d40 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Wed, 22 Jul 2026 21:42:20 +0530
+Subject: [PATCH 2/5] docs: plan local D1 dev migrations
+
+---
+ .../2026-07-22-local-d1-dev-migrations.md     | 107 ++++++++++++++++++
+ 1 file changed, 107 insertions(+)
+ create mode 100644 cloudflare_worker/docs/superpowers/plans/2026-07-22-local-d1-dev-migrations.md
+
+diff --git a/cloudflare_worker/docs/superpowers/plans/2026-07-22-local-d1-dev-migrations.md b/cloudflare_worker/docs/superpowers/plans/2026-07-22-local-d1-dev-migrations.md
+new file mode 100644
+index 00000000..8db46ca4
+--- /dev/null
++++ b/cloudflare_worker/docs/superpowers/plans/2026-07-22-local-d1-dev-migrations.md
+@@ -0,0 +1,107 @@
++# Local D1 Development Migrations Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** Allow `wrangler dev` to migrate only its local D1 state while retaining remote migrations for deployments.
++
++**Architecture:** Keep the migration command in `migrate.sh` and derive its scope from Wrangler's documented `WRANGLER_COMMAND` environment variable.
++An explicit `FORKMESH_D1_LOCAL=1` remains the highest-priority local override.
++A pytest module will execute the script against a temporary fake `pywrangler` executable, observing the actual D1 CLI arguments without contacting Cloudflare.
++
++**Tech Stack:** Bash, pytest, Python standard-library subprocess support, Wrangler D1 CLI arguments.
++
++---
++
++### Task 1: Capture migration scope selection with a regression test
++
++**Files:**
++
++- Create: `tests/test_migrate_script.py`
++- Test: `tests/test_migrate_script.py`
++
++- [ ] **Step 1: Write the failing test**
++
++```python
++def test_wrangler_dev_uses_local_d1_migrations():
++    result = run_migrate_script({"WRANGLER_COMMAND": "dev"})
++
++    assert result.returncode == 0
++    assert "d1 migrations apply forkmesh --local" in result.stdout
++```
++
++Implement `run_migrate_script` with a temporary `PYWRANGLER_VENV/bin/pywrangler` executable that prints its received arguments and exits successfully.
++The helper must remove `FORKMESH_D1_LOCAL` and `WRANGLER_COMMAND` from its inherited environment before applying the test-specific values.
++
++- [ ] **Step 2: Run the test to verify it fails**
++
++Run: `pytest tests/test_migrate_script.py::test_wrangler_dev_uses_local_d1_migrations -q`
++
++Expected: FAIL because the current script emits `d1 migrations apply forkmesh --remote` even when `WRANGLER_COMMAND=dev`.
++
++- [ ] **Step 3: Add coverage for preserved behavior**
++
++```python
++def test_deploy_uses_remote_d1_migrations():
++    result = run_migrate_script({"WRANGLER_COMMAND": "deploy"})
++
++    assert result.returncode == 0
++    assert "d1 migrations apply forkmesh --remote" in result.stdout
++
++
++def test_explicit_local_override_uses_local_d1_migrations():
++    result = run_migrate_script({"FORKMESH_D1_LOCAL": "1"})
++
++    assert result.returncode == 0
++    assert "d1 migrations apply forkmesh --local" in result.stdout
++```
++
++- [ ] **Step 4: Run the focused test file to verify the deployment and override cases pass at baseline**
++
++Run: `pytest tests/test_migrate_script.py -q`
++
++Expected: the deployment and explicit-local tests pass, while the development test fails.
++
++### Task 2: Select local scope for Wrangler development builds
++
++**Files:**
++
++- Modify: `migrate.sh:21-24`
++- Test: `tests/test_migrate_script.py`
++
++- [ ] **Step 1: Add the minimal scope condition**
++
++```bash
++# Use local D1 for Wrangler development builds. Wrangler's custom-build hook
++# sets WRANGLER_COMMAND=dev, while deploys retain the remote default.
++SCOPE="--remote"
++if [ "${FORKMESH_D1_LOCAL:-0}" = "1" ] || [ "${WRANGLER_COMMAND:-}" = "dev" ]; then
++  SCOPE="--local"
++fi
++```
++
++This replaces the current two-line `SCOPE` selection and leaves the migration command, error handling, and explicit local override unchanged.
++
++- [ ] **Step 2: Run the focused test file to verify it passes**
++
++Run: `pytest tests/test_migrate_script.py -q`
++
++Expected: PASS with three tests.
++
++- [ ] **Step 3: Exercise the exact development migration path without Cloudflare**
++
++Run: `WRANGLER_COMMAND=dev ./migrate.sh`
++
++Expected: the log says `(--local)`, applies local D1 migrations, and contains no Cloudflare API request.
++
++- [ ] **Step 4: Run adjacent migration tests**
++
++Run: `pytest tests/test_migrate_script.py tests/test_local_migrations.py -q`
++
++Expected: PASS with no test failures.
++
++- [ ] **Step 5: Commit the implementation**
++
++```bash
++git add migrate.sh tests/test_migrate_script.py docs/superpowers/plans/2026-07-22-local-d1-dev-migrations.md
++git commit -m "fix: use local D1 migrations during dev"
++```
+-- 
+2.50.1 (Apple Git-155)
+
+
+From be664c40cdcdf1816da9eb30e26977a90d6758f3 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Wed, 22 Jul 2026 21:47:11 +0530
+Subject: [PATCH 3/5] fix: use local D1 migrations during dev
+
+---
+ .../2026-07-22-local-d1-dev-migrations.md     | 18 +++---
+ cloudflare_worker/migrate.sh                  |  9 ++-
+ .../tests/test_migrate_script.py              | 61 +++++++++++++++++++
+ 3 files changed, 76 insertions(+), 12 deletions(-)
+ create mode 100644 cloudflare_worker/tests/test_migrate_script.py
+
+diff --git a/cloudflare_worker/docs/superpowers/plans/2026-07-22-local-d1-dev-migrations.md b/cloudflare_worker/docs/superpowers/plans/2026-07-22-local-d1-dev-migrations.md
+index 8db46ca4..4a284fd0 100644
+--- a/cloudflare_worker/docs/superpowers/plans/2026-07-22-local-d1-dev-migrations.md
++++ b/cloudflare_worker/docs/superpowers/plans/2026-07-22-local-d1-dev-migrations.md
+@@ -19,7 +19,7 @@ A pytest module will execute the script against a temporary fake `pywrangler` ex
+ - Create: `tests/test_migrate_script.py`
+ - Test: `tests/test_migrate_script.py`
+ 
+-- [ ] **Step 1: Write the failing test**
++- [x] **Step 1: Write the failing test**
+ 
+ ```python
+ def test_wrangler_dev_uses_local_d1_migrations():
+@@ -32,13 +32,13 @@ def test_wrangler_dev_uses_local_d1_migrations():
+ Implement `run_migrate_script` with a temporary `PYWRANGLER_VENV/bin/pywrangler` executable that prints its received arguments and exits successfully.
+ The helper must remove `FORKMESH_D1_LOCAL` and `WRANGLER_COMMAND` from its inherited environment before applying the test-specific values.
+ 
+-- [ ] **Step 2: Run the test to verify it fails**
++- [x] **Step 2: Run the test to verify it fails**
+ 
+ Run: `pytest tests/test_migrate_script.py::test_wrangler_dev_uses_local_d1_migrations -q`
+ 
+ Expected: FAIL because the current script emits `d1 migrations apply forkmesh --remote` even when `WRANGLER_COMMAND=dev`.
+ 
+-- [ ] **Step 3: Add coverage for preserved behavior**
++- [x] **Step 3: Add coverage for preserved behavior**
+ 
+ ```python
+ def test_deploy_uses_remote_d1_migrations():
+@@ -55,7 +55,7 @@ def test_explicit_local_override_uses_local_d1_migrations():
+     assert "d1 migrations apply forkmesh --local" in result.stdout
+ ```
+ 
+-- [ ] **Step 4: Run the focused test file to verify the deployment and override cases pass at baseline**
++- [x] **Step 4: Run the focused test file to verify the deployment and override cases pass at baseline**
+ 
+ Run: `pytest tests/test_migrate_script.py -q`
+ 
+@@ -68,7 +68,7 @@ Expected: the deployment and explicit-local tests pass, while the development te
+ - Modify: `migrate.sh:21-24`
+ - Test: `tests/test_migrate_script.py`
+ 
+-- [ ] **Step 1: Add the minimal scope condition**
++- [x] **Step 1: Add the minimal scope condition**
+ 
+ ```bash
+ # Use local D1 for Wrangler development builds. Wrangler's custom-build hook
+@@ -81,25 +81,25 @@ fi
+ 
+ This replaces the current two-line `SCOPE` selection and leaves the migration command, error handling, and explicit local override unchanged.
+ 
+-- [ ] **Step 2: Run the focused test file to verify it passes**
++- [x] **Step 2: Run the focused test file to verify it passes**
+ 
+ Run: `pytest tests/test_migrate_script.py -q`
+ 
+ Expected: PASS with three tests.
+ 
+-- [ ] **Step 3: Exercise the exact development migration path without Cloudflare**
++- [x] **Step 3: Exercise the exact development migration path without Cloudflare**
+ 
+ Run: `WRANGLER_COMMAND=dev ./migrate.sh`
+ 
+ Expected: the log says `(--local)`, applies local D1 migrations, and contains no Cloudflare API request.
+ 
+-- [ ] **Step 4: Run adjacent migration tests**
++- [x] **Step 4: Run adjacent migration tests**
+ 
+ Run: `pytest tests/test_migrate_script.py tests/test_local_migrations.py -q`
+ 
+ Expected: PASS with no test failures.
+ 
+-- [ ] **Step 5: Commit the implementation**
++- [x] **Step 5: Commit the implementation**
+ 
+ ```bash
+ git add migrate.sh tests/test_migrate_script.py docs/superpowers/plans/2026-07-22-local-d1-dev-migrations.md
+diff --git a/cloudflare_worker/migrate.sh b/cloudflare_worker/migrate.sh
+index 2bcc5a94..625791e8 100755
+--- a/cloudflare_worker/migrate.sh
++++ b/cloudflare_worker/migrate.sh
+@@ -18,10 +18,13 @@ if grep -q "REPLACE_WITH_D1_DATABASE_ID" wrangler.toml; then
+   exit 0
+ fi
+ 
+-# Target the deployed (remote) D1 by default; set FORKMESH_D1_LOCAL=1 to apply
+-# to the local dev database instead.
++# Target the deployed (remote) D1 by default. Wrangler sets WRANGLER_COMMAND=dev
++# for custom development builds, which must migrate the local D1 database.
++# FORKMESH_D1_LOCAL=1 also explicitly selects local D1 for any invocation.
+ SCOPE="--remote"
+-[ "${FORKMESH_D1_LOCAL:-0}" = "1" ] && SCOPE="--local"
++if [ "${FORKMESH_D1_LOCAL:-0}" = "1" ] || [ "${WRANGLER_COMMAND:-}" = "dev" ]; then
++  SCOPE="--local"
++fi
+ 
+ echo "migrate.sh: applying D1 migrations to '$DB' ($SCOPE)"
+ # Non-interactive (build subprocess): wrangler auto-confirms when stdout is not
+diff --git a/cloudflare_worker/tests/test_migrate_script.py b/cloudflare_worker/tests/test_migrate_script.py
+new file mode 100644
+index 00000000..c9a01401
+--- /dev/null
++++ b/cloudflare_worker/tests/test_migrate_script.py
+@@ -0,0 +1,61 @@
++"""Regression coverage for the D1 migration command scope."""
++
++import os
++import stat
++import subprocess
++from pathlib import Path
++from tempfile import TemporaryDirectory
++
++
++ROOT = Path(__file__).resolve().parents[1]
++MIGRATE_SCRIPT = ROOT / "migrate.sh"
++
++
++def run_migrate_script(overrides: dict[str, str]) -> subprocess.CompletedProcess[str]:
++    """Run migrate.sh with a fake pywrangler and return its captured output."""
++    with TemporaryDirectory() as temporary_directory:
++        venv_bin = Path(temporary_directory) / "bin"
++        venv_bin.mkdir()
++        fake_pywrangler = venv_bin / "pywrangler"
++        fake_pywrangler.write_text(
++            "#!/usr/bin/env bash\n"
++            "printf '%s\\n' \"$*\"\n",
++            encoding="utf-8",
++        )
++        fake_pywrangler.chmod(fake_pywrangler.stat().st_mode | stat.S_IXUSR)
++
++        environment = os.environ.copy()
++        environment.pop("FORKMESH_D1_LOCAL", None)
++        environment.pop("WRANGLER_COMMAND", None)
++        environment["PYWRANGLER_VENV"] = temporary_directory
++        environment.update(overrides)
++
++        return subprocess.run(
++            [str(MIGRATE_SCRIPT)],
++            cwd=ROOT,
++            env=environment,
++            capture_output=True,
++            text=True,
++            check=False,
++        )
++
++
++def test_wrangler_dev_uses_local_d1_migrations():
++    result = run_migrate_script({"WRANGLER_COMMAND": "dev"})
++
++    assert result.returncode == 0
++    assert "d1 migrations apply forkmesh --local" in result.stdout
++
++
++def test_deploy_uses_remote_d1_migrations():
++    result = run_migrate_script({"WRANGLER_COMMAND": "deploy"})
++
++    assert result.returncode == 0
++    assert "d1 migrations apply forkmesh --remote" in result.stdout
++
++
++def test_explicit_local_override_uses_local_d1_migrations():
++    result = run_migrate_script({"FORKMESH_D1_LOCAL": "1"})
++
++    assert result.returncode == 0
++    assert "d1 migrations apply forkmesh --local" in result.stdout
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 43fb9e1b31aa949631db0ba279d7a02e023a6e93 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Wed, 22 Jul 2026 23:10:30 +0530
+Subject: [PATCH 4/5] refactor: fix navbar username option and update the hero
+ text
+
+---
+ cloudflare_worker/public/dashboard.js         |  4 +++-
+ .../public/dashboard/chat/index.html          |  2 +-
+ cloudflare_worker/public/dashboard/index.html |  2 +-
+ .../public/dashboard/js/04-account.js         |  4 +++-
+ .../public/dashboard/network/index.html       |  2 +-
+ .../public/dashboard/profile/index.html       |  2 +-
+ .../dashboard/profile/repositories/index.html |  2 +-
+ cloudflare_worker/public/dashboard/repo.html  |  2 +-
+ .../public/dashboard/repos/index.html         |  2 +-
+ .../public/dashboard/settings/index.html      |  2 +-
+ cloudflare_worker/public/index.html           |  2 +-
+ .../tests/test_dashboard_landing_migration.py | 20 ++++++++++++++++++-
+ cloudflare_worker/wrangler.toml               |  2 +-
+ 13 files changed, 35 insertions(+), 13 deletions(-)
+
+diff --git a/cloudflare_worker/public/dashboard.js b/cloudflare_worker/public/dashboard.js
+index b7e9c714..5d0202c8 100644
+--- a/cloudflare_worker/public/dashboard.js
++++ b/cloudflare_worker/public/dashboard.js
+@@ -1879,8 +1879,9 @@
+     const headerContext = $("[data-dashboard-header-context]");
+     if (!headerContext) return;
+     if (section === "profile-overview" || section === "profile-repositories") {
++      const profile = profileSubject();
+       const renderedName = ($("[data-profile-page-node-name]")?.textContent || "").trim();
+-      headerContext.textContent = state.session?.nodeName || state.session?.email || renderedName || "Profile";
++      headerContext.textContent = profile?.nodeName || profile?.email || renderedName || "Profile";
+       return;
+     }
+     if (section === "profile") {
+@@ -1952,6 +1953,7 @@
+     profile.isFollowing = Boolean(body?.social?.isFollowing);
+     state.publicProfile = profile;
+     renderProfilePage(profile);
++    renderHeaderContext();
+     applyPublicProfileChrome(profile);
+     // Repository lists still use the catalog, while the native contribution
+     // card reads its own account ledger after the public subject is installed.
+diff --git a/cloudflare_worker/public/dashboard/chat/index.html b/cloudflare_worker/public/dashboard/chat/index.html
+index 78e16ad9..b515c124 100644
+--- a/cloudflare_worker/public/dashboard/chat/index.html
++++ b/cloudflare_worker/public/dashboard/chat/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=6a1e95689375" defer></script>
++    <script src="/dashboard.js?v=9347e83aa60a" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="chat">
+diff --git a/cloudflare_worker/public/dashboard/index.html b/cloudflare_worker/public/dashboard/index.html
+index 784d0c08..7c6d375f 100644
+--- a/cloudflare_worker/public/dashboard/index.html
++++ b/cloudflare_worker/public/dashboard/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=6a1e95689375" defer></script>
++    <script src="/dashboard.js?v=9347e83aa60a" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="home">
+diff --git a/cloudflare_worker/public/dashboard/js/04-account.js b/cloudflare_worker/public/dashboard/js/04-account.js
+index c4393d92..aa53ed68 100644
+--- a/cloudflare_worker/public/dashboard/js/04-account.js
++++ b/cloudflare_worker/public/dashboard/js/04-account.js
+@@ -518,8 +518,9 @@
+     const headerContext = $("[data-dashboard-header-context]");
+     if (!headerContext) return;
+     if (section === "profile-overview" || section === "profile-repositories") {
++      const profile = profileSubject();
+       const renderedName = ($("[data-profile-page-node-name]")?.textContent || "").trim();
+-      headerContext.textContent = state.session?.nodeName || state.session?.email || renderedName || "Profile";
++      headerContext.textContent = profile?.nodeName || profile?.email || renderedName || "Profile";
+       return;
+     }
+     if (section === "profile") {
+@@ -591,6 +592,7 @@
+     profile.isFollowing = Boolean(body?.social?.isFollowing);
+     state.publicProfile = profile;
+     renderProfilePage(profile);
++    renderHeaderContext();
+     applyPublicProfileChrome(profile);
+     // Repository lists still use the catalog, while the native contribution
+     // card reads its own account ledger after the public subject is installed.
+diff --git a/cloudflare_worker/public/dashboard/network/index.html b/cloudflare_worker/public/dashboard/network/index.html
+index 9172d8d3..fe282dfd 100644
+--- a/cloudflare_worker/public/dashboard/network/index.html
++++ b/cloudflare_worker/public/dashboard/network/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=6a1e95689375" defer></script>
++    <script src="/dashboard.js?v=9347e83aa60a" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="network">
+diff --git a/cloudflare_worker/public/dashboard/profile/index.html b/cloudflare_worker/public/dashboard/profile/index.html
+index e4e6f586..6f2e4df2 100644
+--- a/cloudflare_worker/public/dashboard/profile/index.html
++++ b/cloudflare_worker/public/dashboard/profile/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=6a1e95689375" defer></script>
++    <script src="/dashboard.js?v=9347e83aa60a" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="profile">
+diff --git a/cloudflare_worker/public/dashboard/profile/repositories/index.html b/cloudflare_worker/public/dashboard/profile/repositories/index.html
+index 7578f2a5..0216d0a8 100644
+--- a/cloudflare_worker/public/dashboard/profile/repositories/index.html
++++ b/cloudflare_worker/public/dashboard/profile/repositories/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=6a1e95689375" defer></script>
++    <script src="/dashboard.js?v=9347e83aa60a" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="profile-repositories">
+diff --git a/cloudflare_worker/public/dashboard/repo.html b/cloudflare_worker/public/dashboard/repo.html
+index 45437744..55800723 100644
+--- a/cloudflare_worker/public/dashboard/repo.html
++++ b/cloudflare_worker/public/dashboard/repo.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=6a1e95689375" defer></script>
++    <script src="/dashboard.js?v=9347e83aa60a" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="repo">
+diff --git a/cloudflare_worker/public/dashboard/repos/index.html b/cloudflare_worker/public/dashboard/repos/index.html
+index d96bc48e..934287c8 100644
+--- a/cloudflare_worker/public/dashboard/repos/index.html
++++ b/cloudflare_worker/public/dashboard/repos/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=6a1e95689375" defer></script>
++    <script src="/dashboard.js?v=9347e83aa60a" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="repos">
+diff --git a/cloudflare_worker/public/dashboard/settings/index.html b/cloudflare_worker/public/dashboard/settings/index.html
+index 9be10784..2c6a45fc 100644
+--- a/cloudflare_worker/public/dashboard/settings/index.html
++++ b/cloudflare_worker/public/dashboard/settings/index.html
+@@ -682,7 +682,7 @@
+         background-clip: padding-box;
+       }
+     </style>
+-    <script src="/dashboard.js?v=6a1e95689375" defer></script>
++    <script src="/dashboard.js?v=9347e83aa60a" defer></script>
+     <script src="/dashboard-chat.js?v=a491cdb6d1d7" defer></script>
+   </head>
+   <body class="bg-background text-foreground" data-page="settings">
+diff --git a/cloudflare_worker/public/index.html b/cloudflare_worker/public/index.html
+index 32a5ef8f..abe857a2 100644
+--- a/cloudflare_worker/public/index.html
++++ b/cloudflare_worker/public/index.html
+@@ -2167,7 +2167,7 @@
+               <h1
+                 class="motion-in motion-delay-1 mx-auto mt-8 max-w-4xl font-bold text-balance font-domine text-5xl leading-[1.05] tracking-normal md:text-7xl lg:mt-16 xl:text-[5.25rem]"
+               >
+-                Never lose the code that matters
++              Team Chat, AI agents and Git hosting
+               </h1>
+               <p
+                 class="motion-in motion-delay-2 mx-auto mt-8 max-w-2xl text-balance text-lg leading-relaxed text-foreground/90"
+diff --git a/cloudflare_worker/tests/test_dashboard_landing_migration.py b/cloudflare_worker/tests/test_dashboard_landing_migration.py
+index 9ad0865a..ab32d671 100644
+--- a/cloudflare_worker/tests/test_dashboard_landing_migration.py
++++ b/cloudflare_worker/tests/test_dashboard_landing_migration.py
+@@ -58,7 +58,7 @@ def test_dashboard_shell_is_split_into_composable_partials():
+ def test_feature_landing_is_promoted_to_index_with_worker_owned_signed_in_redirect():
+     index = _read(PUBLIC / "index.html")
+ 
+-    assert "Never lose the code that matters" in index
++    assert "Team Chat, AI agents and Git hosting" in index
+     assert "Code hosting that lives on the network." not in index
+     # The old inline localStorage redirect (paint the homepage, then swap) is
+     # gone: the Worker answers / with an instant server-side 302 keyed off the
+@@ -551,6 +551,24 @@ def test_dashboard_profile_tabs_are_unified_with_app_header():
+     assert 'renderHeaderContext();' in dashboard_js
+ 
+ 
++def test_public_profile_header_context_uses_the_viewed_profile():
++    dashboard_js = assembled_dashboard_js()
++    header_start = dashboard_js.index("function renderHeaderContext(")
++    header_end = dashboard_js.index("// ---- Public-profile mode", header_start)
++    header = dashboard_js[header_start:header_end]
++    public_load_start = dashboard_js.index("async function loadPublicProfile(")
++    public_load_end = dashboard_js.index("function applyPublicProfileChrome(", public_load_start)
++    public_load = dashboard_js[public_load_start:public_load_end]
++
++    # A signed-in visitor viewing /@another-account must see the profile that
++    # the page renders, not their own session identity, in the top bar.
++    assert "const profile = profileSubject();" in header
++    assert ('headerContext.textContent = profile?.nodeName || profile?.email || '
++            'renderedName || "Profile";') in header
++    assert "state.session?.nodeName" not in header
++    assert "renderHeaderContext();" in public_load
++
++
+ def test_dashboard_profile_tabs_link_to_network_without_placeholder_tabs():
+     overview = _read(VIEWS / "profile-overview.html")
+     repositories = _read(VIEWS / "profile-repositories.html")
+diff --git a/cloudflare_worker/wrangler.toml b/cloudflare_worker/wrangler.toml
+index 888fdcde..afa9fbdd 100644
+--- a/cloudflare_worker/wrangler.toml
++++ b/cloudflare_worker/wrangler.toml
+@@ -156,7 +156,7 @@ migrations_dir = "migrations"
+ [[env.dev.d1_databases]]
+ binding = "DB"
+ database_name = "forkmesh-dev"
+-database_id = "REPLACE_WITH_DEV_D1_DATABASE_ID"
++database_id = "54bb594f-a90c-4794-a8ea-7ad0cc9bff83"
+ migrations_dir = "migrations"
+ 
+ [[migrations]]
+-- 
+2.50.1 (Apple Git-155)
+
+
+From cf2eb8f3949661a2c45f58c275937088826df34a Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Wed, 22 Jul 2026 23:24:49 +0530
+Subject: [PATCH 5/5] fix: update homepage hero copy
+
+---
+ cloudflare_worker/public/index.html | 5 +----
+ 1 file changed, 1 insertion(+), 4 deletions(-)
+
+diff --git a/cloudflare_worker/public/index.html b/cloudflare_worker/public/index.html
+index abe857a2..034a740b 100644
+--- a/cloudflare_worker/public/index.html
++++ b/cloudflare_worker/public/index.html
+@@ -2172,10 +2172,7 @@
+               <p
+                 class="motion-in motion-delay-2 mx-auto mt-8 max-w-2xl text-balance text-lg leading-relaxed text-foreground/90"
+               >
+-                ForkMesh mirrors your Git repositories across a live mesh of
+-                desktop nodes &mdash; so your history, issues, and pull requests
+-                stay portable, verifiable, and always cloneable. Mirror the
+-                projects you rely on, and earn as you help keep them online.
++                Team chat, AI agents, Git hosting, and bounties built on a decentralized mesh. ForkMesh keeps your repositories, issues, pull requests, and conversations portable by mirroring them across desktop nodes, while rewarding contributors who help keep projects online.
+               </p>
+               <div
+                 id="install-banner"
+-- 
+2.50.1 (Apple Git-155)
+
