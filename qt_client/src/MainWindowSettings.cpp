@@ -18,7 +18,6 @@
 #include <QDialog>
 #include <QInputDialog>
 #include "KebabHeaderView.h"
-#include "ScreenAlignmentTarget.h"
 
 #include <QDoubleSpinBox>
 
@@ -265,20 +264,6 @@ QWidget *MainWindow::buildSettingsSection()
     connect(publishAgentsToWebCheck, &QCheckBox::toggled, this, [](bool enabled) {
         QSettings().setValue(kPublishAgentsToWebSetting, enabled);
     });
-
-    // Screenshot: an inline calibration target for the region screenshot tool. It
-    // shows a square with corner brackets and a centre crosshair right here in
-    // Settings — grab it with the screenshot button and confirm the captured
-    // pixels line up with the corners and the size shown. The screenshot itself is
-    // queued as the next new-agent attachment.
-    auto *screenshotLabel = new QLabel("SCREENSHOT");
-    screenshotLabel->setObjectName("sectionLabel");
-    auto *screenshotHint = new QLabel(
-        "Grab this square with the screenshot tool to check the capture lines up "
-        "with the corners \xE2\x80\x94 the shot attaches to a new agent.");
-    screenshotHint->setObjectName("statusLine");
-    screenshotHint->setWordWrap(true);
-    auto *alignmentTarget = new ScreenAlignmentTarget;
 
     auto *notifyLabel = new QLabel("NOTIFICATIONS");
     notifyLabel->setObjectName("sectionLabel");
@@ -1435,6 +1420,19 @@ QWidget *MainWindow::buildSettingsSection()
     connect(m_rebuildButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_rebuildButton); quickRebuildRestart(); });
 
+    // Log in to a user account with email + password, without leaving the app.
+    // A user account can own many nodes, so this signs this machine in to an
+    // existing account (universal cross-device access).
+    auto *loginButton = new QPushButton("Log in to a user account…");
+    loginButton->setObjectName("ghostButton");
+    loginButton->setCursor(Qt::PointingHandCursor);
+    loginButton->setToolTip(
+        "Sign in to an existing ForkMesh user account with your email and "
+        "password. Your account can own multiple nodes.");
+    setOcticon(loginButton, "sign-in", 16);
+    connect(loginButton, &QPushButton::clicked, this,
+            [this] { loginToUserAccount(); });
+
     // Log out clears the signed-in account so you can log back in (as the same
     // or a different account).
     auto *logoutButton = new QPushButton("Log out");
@@ -1465,6 +1463,7 @@ QWidget *MainWindow::buildSettingsSection()
     footerRow->setContentsMargins(0, 0, 0, 0);
     footerRow->addWidget(leaveButton);
     footerRow->addWidget(m_rebuildButton);
+    footerRow->addWidget(loginButton);
     footerRow->addWidget(logoutButton);
     footerRow->addStretch();
     footerRow->addWidget(uninstallButton);
@@ -1528,10 +1527,6 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(autoSwitchToAgentCheck);
     generalCol->addWidget(excludeExternalClaudeCheck);
     generalCol->addWidget(publishAgentsToWebCheck);
-    generalCol->addSpacing(6);
-    generalCol->addWidget(screenshotLabel);
-    generalCol->addWidget(screenshotHint);
-    generalCol->addWidget(alignmentTarget, 0, Qt::AlignLeft);
     generalCol->addStretch();
     addTab(generalTab, "General");
 

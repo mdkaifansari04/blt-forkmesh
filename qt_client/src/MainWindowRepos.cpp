@@ -4373,6 +4373,42 @@ void MainWindow::logout()
     leaveSession();
 }
 
+void MainWindow::loginToUserAccount()
+{
+    // Ask which account to sign in to (defaulting to the current node name), then
+    // run the shared email/password login flow. verifyTotpLogin() (via
+    // runLoginFlow) sets m_accountName, the session token and auth state on
+    // success, so we just sync the Settings fields afterwards.
+    bool ok = false;
+    const QString suggested = m_accountName.isEmpty()
+                                  ? QSettings().value(kAccountNameSetting).toString()
+                                  : m_accountName;
+    const QString accountName =
+        QInputDialog::getText(this, "Log in to a user account",
+                              "ForkMesh username:", QLineEdit::Normal, suggested,
+                              &ok)
+            .trimmed()
+            .toLower();
+    if (!ok || accountName.isEmpty())
+        return;
+    if (!isValidNodeName(accountName)) {
+        QMessageBox::warning(this, "Log in",
+                             "Enter a valid username (lowercase letters, numbers "
+                             "and hyphens; start with a letter).");
+        return;
+    }
+    if (!runLoginFlow(accountName))
+        return;
+
+    // Persist and reflect the freshly signed-in account in the Settings UI.
+    QSettings().setValue(kAccountNameSetting, m_accountName);
+    if (m_settingsNameEdit)
+        m_settingsNameEdit->setText(m_accountName);
+    refreshSettingsEmailVerifiedBadge();
+    QMessageBox::information(this, "Log in",
+                             "Signed in as " + m_accountName + ".");
+}
+
 void MainWindow::uninstallForkMesh()
 {
     const QString sourceDir = QStringLiteral(FORKMESH_SOURCE_DIR);

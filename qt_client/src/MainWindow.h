@@ -2831,6 +2831,10 @@ private:
     QWidget *makeComposerIdentity(QLabel **outAvatar = nullptr,
                                   const QString &verb = QString());
     void logout();
+    // Sign in to an existing ForkMesh user account (email + password) from
+    // Settings, without leaving the app. Prompts for the username, then runs the
+    // email/password login flow. A user account can own many nodes.
+    void loginToUserAccount();
     // Erase every trace of ForkMesh from this computer (data, settings, desktop
     // integration and the program files) after confirmation, then quit.
     void uninstallForkMesh();
