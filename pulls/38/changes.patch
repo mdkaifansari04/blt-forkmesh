@@ -1,0 +1,190 @@
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index c4c78109..f1eadd23 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -333,10 +333,24 @@ public:
+                                                const QString &name,
+                                                const QString &description,
+                                                const QString &firstPrompt,
+-                                               bool addReadme)
++                                               bool addReadme,
++                                               bool isPrivate)
+     {
+-        return provisionNewRepository(dest, name, description, firstPrompt,
+-                                      addReadme, nullptr);
++        m_testSkipRepositoryPublish = true;
++        const int result = provisionNewRepository(
++            dest, name, description, firstPrompt, addReadme, isPrivate, nullptr);
++        m_testSkipRepositoryPublish = false;
++        return result;
++    }
++    bool testRepositoryIsPrivate(int index) const
++    {
++        return index >= 0 && index < m_repositories.size() &&
++               m_repositories.at(index).isPrivate;
++    }
++    void testClearRepositories()
++    {
++        m_repositories.clear();
++        saveRepositories();
+     }
+     int testAddPublishedRepository(const QString &owner, const QString &name,
+                                    const QString &mirrorPath);
+@@ -2997,7 +3011,8 @@ private:
+     QStringList mentionCandidateNames() const;
+     void promptAddRepository();
+     // Create a brand-new Git repository. Opens a single screen that collects the
+-    // name, a description, an optional first prompt, and a README choice, then
++    // name, visibility, a description, an optional first prompt, and a README
++    // choice, then
+     // runs `git init -b main`, seeds the repo, and mirrors + publishes it under
+     // this node like a local repo.
+     void createNewRepository();
+@@ -3010,7 +3025,7 @@ private:
+     int provisionNewRepository(const QString &dest, const QString &name,
+                                const QString &description,
+                                const QString &firstPrompt, bool addReadme,
+-                               QString *error);
++                               bool isPrivate, QString *error);
+     // Clone a remote repo (GitHub/GitLab/any https git URL) into a local working
+     // copy, then add it like a local repo. An optional per-host access token
+     // (Settings) authenticates the clone to dodge unauthenticated rate limits.
+@@ -5333,6 +5348,7 @@ private:
+     bool m_testAccountFlowDesktopCapable = true;
+     int m_testEnsureNodeAccountCalls = 0;
+     bool m_testBypassServerStart = false;
++    bool m_testSkipRepositoryPublish = false;
+     TestIssueHistoryDeleteRunner m_testIssueHistoryDeleteRunner;
+ #endif
+ };
+diff --git a/qt_client/src/MainWindowRepos.cpp b/qt_client/src/MainWindowRepos.cpp
+index 8aee9ff1..3e62540d 100644
+--- a/qt_client/src/MainWindowRepos.cpp
++++ b/qt_client/src/MainWindowRepos.cpp
+@@ -979,9 +979,9 @@ void MainWindow::promptAddRepository()
+ 
+ void MainWindow::createNewRepository()
+ {
+-    // A single "new repository" screen: name + description + an optional first
+-    // prompt + a README choice + where on disk to create it. Everything past the
+-    // dialog (git init, seeding, mirror + publish) lives in
++    // A single "new repository" screen: name + visibility + description + an
++    // optional first prompt + a README choice + where on disk to create it.
++    // Everything past the dialog (git init, seeding, mirror + publish) lives in
+     // provisionNewRepository so it can be exercised without the UI.
+     QDialog dialog(this);
+     dialog.setWindowTitle(QStringLiteral("New repository"));
+@@ -989,6 +989,29 @@ void MainWindow::createNewRepository()
+     auto *nameEdit = new QLineEdit(&dialog);
+     nameEdit->setPlaceholderText(QStringLiteral("my-project"));
+ 
++    auto *visibilityCombo = new QComboBox(&dialog);
++    visibilityCombo->addItem(QStringLiteral("Public"), false);
++    visibilityCombo->addItem(QStringLiteral("Private"), true);
++    visibilityCombo->setToolTip(QStringLiteral(
++        "Private repository names and collaborator lists are encrypted on the "
++        "relay and excluded from public catalogs, caches, and mirrors."));
++
++    auto *visibilityHint = new QLabel(QStringLiteral(
++        "Anyone can discover and clone a public repository."), &dialog);
++    visibilityHint->setObjectName(QStringLiteral("statusLine"));
++    visibilityHint->setWordWrap(true);
++    connect(visibilityCombo, &QComboBox::currentIndexChanged, &dialog,
++            [visibilityCombo, visibilityHint](int) {
++                visibilityHint->setText(
++                    visibilityCombo->currentData().toBool()
++                        ? QStringLiteral(
++                              "Only you and people you add can discover or clone "
++                              "it. Its name and member list stay encrypted on the "
++                              "relay and out of public logs, catalogs, and caches.")
++                        : QStringLiteral(
++                              "Anyone can discover and clone a public repository."));
++            });
++
+     auto *descriptionEdit = new QPlainTextEdit(&dialog);
+     descriptionEdit->setPlaceholderText(
+         QStringLiteral("What is this repository about?"));
+@@ -1026,6 +1049,8 @@ void MainWindow::createNewRepository()
+ 
+     auto *form = new QFormLayout;
+     form->addRow(QStringLiteral("Name"), nameEdit);
++    form->addRow(QStringLiteral("Visibility"), visibilityCombo);
++    form->addRow(QString(), visibilityHint);
+     form->addRow(QStringLiteral("Description"), descriptionEdit);
+     form->addRow(QStringLiteral("First prompt"), promptEdit);
+     form->addRow(QString(), readmeBox);
+@@ -1076,7 +1101,8 @@ void MainWindow::createNewRepository()
+         QString error;
+         const int index = provisionNewRepository(
+             dest, name, descriptionEdit->toPlainText(), promptEdit->toPlainText(),
+-            readmeBox->isChecked(), &error);
++            readmeBox->isChecked(), visibilityCombo->currentData().toBool(),
++            &error);
+         if (index < 0) {
+             QMessageBox::warning(&dialog, "New repository",
+                                  error.isEmpty()
+@@ -1095,7 +1121,7 @@ void MainWindow::createNewRepository()
+ int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
+                                        const QString &description,
+                                        const QString &firstPrompt, bool addReadme,
+-                                       QString *error)
++                                       bool isPrivate, QString *error)
+ {
+     const auto fail = [&](const QString &message) -> int {
+         if (error)
+@@ -1197,6 +1223,7 @@ int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
+     repo.description = about;
+     repo.solanaAddress = savedSolanaAddress();
+     repo.publishToNetwork = true;
++    repo.isPrivate = isPrivate;
+     repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
+     repo.mirrorPath = repositoryMirrorRoot() + "/" +
+                       repoSegment(repo.owner, QStringLiteral("owner")) + "-" +
+@@ -1223,7 +1250,10 @@ int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
+                       repo.owner + "/" + repo.name + ": " + issueErr);
+     }
+ 
+-    publishRepositoryAfterMirrorRefresh(index, false);
++#ifdef FORKMESH_WINDOW_TESTS
++    if (!m_testSkipRepositoryPublish)
++#endif
++        publishRepositoryAfterMirrorRefresh(index, false);
+     logSystem("New repository: created " + repo.owner + "/" + repo.name + " in " +
+               dest + ".");
+     flashMessage(QStringLiteral("Created %1/%2.").arg(repo.owner, repo.name));
+diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
+index 33dc0ef0..30aa532a 100644
+--- a/qt_client/tests/test_window_resize.cpp
++++ b/qt_client/tests/test_window_resize.cpp
+@@ -386,6 +386,31 @@ int main(int argc, char *argv[])
+     window.testRunDeferredStartupNow();
+     QApplication::processEvents();
+ 
++    // Adhoc #201: the new-repository flow carries its visibility choice into the
++    // repository record before publication. Private metadata is therefore sent
++    // through the relay's encrypted, authenticated catalog path from the first
++    // publish instead of briefly appearing as public.
++    {
++        QTemporaryDir newRepoParent;
++        const QString dest = QDir(newRepoParent.path()).filePath(
++            QStringLiteral("secret-project"));
++        const int index = window.testProvisionNewRepository(
++            dest, QStringLiteral("secret-project"), QString(), QString(), false,
++            true);
++        check(index >= 0 && window.testRepositoryIsPrivate(index),
++              QStringLiteral("new private repository is private before publication "
++                             "(#201)"));
++        const QString publicDest = QDir(newRepoParent.path()).filePath(
++            QStringLiteral("public-project"));
++        const int publicIndex = window.testProvisionNewRepository(
++            publicDest, QStringLiteral("public-project"), QString(), QString(),
++            false, false);
++        check(publicIndex >= 0 && !window.testRepositoryIsPrivate(publicIndex),
++              QStringLiteral("new public repository remains public before "
++                             "publication (#201)"));
++        window.testClearRepositories();
++    }
++
+     QTemporaryDir primaryBranchRepo;
+     QTemporaryDir primaryMirrorParent;
+     if (initGitRepo(primaryBranchRepo) && primaryMirrorParent.isValid()) {
