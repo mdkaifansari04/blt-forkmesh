@@ -3051,6 +3051,47 @@ async def chat_room_key_handler(env, request):
     )
 
 
+CHAT_ACTIVITY_CACHE_KEY = "https://forkmesh.internal/api/chat/activity"
+CHAT_ACTIVITY_TTL = 30
+
+
+async def chat_activity_handler(env, request):
+    # Lightweight public digest behind the site-wide header chat badge: how many
+    # retained #general messages exist and how many user accounts are registered.
+    # Counts only — chat_history bodies stay encrypted and user rows are never
+    # decrypted (email_bi is only set on email-bearing user accounts, so it
+    # separates users from keyless node reservations without touching `data`).
+    # Edge-cached so every page load across the site collapses to one D1 read
+    # pair per colo per TTL.
+    del request
+    cached = await edge_cache_match(CHAT_ACTIVITY_CACHE_KEY)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    msg_row = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c, MAX(ts) AS latest FROM chat_history "
+        "WHERE room_key=?",
+        FLAGSHIP_ROOM_KEY,
+    )
+    user_row = await d1_first(
+        env,
+        "SELECT COUNT(*) AS c FROM users "
+        "WHERE email_bi IS NOT NULL AND email_bi <> ''",
+    )
+    resp = json_response(
+        {
+            "ok": True,
+            "messageCount": int((msg_row or {}).get("c") or 0),
+            "latestMessageTs": int((msg_row or {}).get("latest") or 0),
+            "userCount": int((user_row or {}).get("c") or 0),
+        },
+        cache_seconds=CHAT_ACTIVITY_TTL,
+    )
+    await edge_cache_put(CHAT_ACTIVITY_CACHE_KEY, resp)
+    return resp
+
+
 async def blind_index(env, value):
     # Deterministic, searchable HMAC of a normalized identifier (never plaintext).
     key = await _hmac_key(env)
@@ -5996,11 +6037,22 @@ def _account_chat_user_payload(rec):
     }
 
 
+USERS_DIRECTORY_CACHE_KEY = "https://forkmesh.internal/api/accounts/users"
+USERS_DIRECTORY_TTL = 30
+
+
 async def _account_users_directory(env, request):
     # Public chat roster directory: user profiles only, with no email, password,
     # device, admin, or signature material. Live node presence is still carried
     # by the encrypted room roster; this endpoint fills in offline users.
+    # Edge-cached: the chat page polls this to surface new signups, and each
+    # origin hit decrypts up to 1000 rows — collapse the polls per colo per TTL.
+    # A signup deletes the cached copy so the new account shows without waiting
+    # out the TTL.
     del request
+    cached = await edge_cache_match(USERS_DIRECTORY_CACHE_KEY)
+    if cached is not None:
+        return cached
     out = []
     seen = set()
     rows = await d1_all(
@@ -6018,7 +6070,10 @@ async def _account_users_directory(env, request):
         seen.add(name)
         out.append(_account_chat_user_payload(rec))
 
-    return json_response({"ok": True, "users": out})
+    resp = json_response({"ok": True, "users": out},
+                         cache_seconds=USERS_DIRECTORY_TTL)
+    await edge_cache_put(USERS_DIRECTORY_CACHE_KEY, resp)
+    return resp
 
 
 def _donation_expiry_fields(rec, now):
@@ -6198,6 +6253,10 @@ async def _account_signup(env, request):
         sent = await _send_verification_email(env, request, name, rec["email"])
         if not sent:
             await _enqueue_verification(env, name_bi, name, rec["email"])
+    # Drop the cached chat roster/activity so open chat pages and header badges
+    # pick up the new account on their next poll instead of a TTL later.
+    await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
+    await edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY)
     return json_response(await _account_public_payload(env, rec), status=201)
 
 
@@ -18755,6 +18814,11 @@ class Default(WorkerEntrypoint):
         # to authenticated clients — replaces the old public app-wide constant.
         if url.path in ("/api/chat/room-key", "/api/chat/room-key/"):
             return await chat_room_key_handler(self.env, request)
+
+        # Public chat-activity counters (message + user counts) that drive the
+        # unread badge on the shared site header's chat icon.
+        if url.path in ("/api/chat/activity", "/api/chat/activity/"):
+            return await chat_activity_handler(self.env, request)
 
         # Chat-triggered Cloudflare AI interface. Clients forward explicit
         # "forkbot ..." mentions here; the Worker queues compatible issue-inbox
