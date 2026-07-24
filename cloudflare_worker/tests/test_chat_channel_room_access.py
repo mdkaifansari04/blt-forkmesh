@@ -177,6 +177,44 @@ def _function_source(name):
     return ast.unparse(node)
 
 
+def _room_key_from_path(path):
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    node = next(
+        item for item in tree.body
+        if isinstance(item, ast.FunctionDef)
+        and item.name == "room_key_from_path"
+    )
+    namespace = {
+        "MAX_ROOM_NAME": 80,
+        "REPO_ROOM_RE": re.compile(
+            r"^/api/repo/([^/]+)/([^/]+)/rooms/([^/]+)/(?:ws|clients)$"
+        ),
+        "ROOM_RE": re.compile(r"^/api/room/([^/]+)/(?:ws|clients)$"),
+        "CHAT_CHANNEL_DO_RE": re.compile(
+            r"^/api/chat/channels/([0-9a-f]{32})/v([1-9][0-9]*)/"
+            r"(ws|revoke)$"
+        ),
+        "safe_segment": lambda value, _limit=80: str(value or ""),
+    }
+    module = ast.fix_missing_locations(
+        ast.Module(body=[node], type_ignores=[]))
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    return namespace["room_key_from_path"](path)
+
+
+def _room_class(namespace):
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    node = next(
+        item for item in tree.body
+        if isinstance(item, ast.ClassDef) and item.name == "ForkMeshRoom"
+    )
+    module = ast.fix_missing_locations(
+        ast.Module(body=[node], type_ignores=[]))
+    globals_map = {"DurableObject": object, **namespace}
+    exec(compile(module, str(ENTRY), "exec"), globals_map)
+    return globals_map["ForkMeshRoom"]
+
+
 def test_channel_passphrases_are_scoped_by_channel_and_version():
     namespace, _clock = _helpers()
     env = _Env()
@@ -249,6 +287,9 @@ def test_private_socket_routes_only_current_authorized_members():
     assert response["status"] == 101
     assert calls[0] == ("id", "chat-channel:" + "a" * 32 + ":v1")
     assert calls[-1][0] == "fetch"
+    assert calls[-1][1]["target"] == (
+        "https://forkmesh.test/api/chat/channels/" + "a" * 32 + "/v1/ws"
+    )
 
     for kwargs in (
         {"member": False},
@@ -262,6 +303,86 @@ def test_private_socket_routes_only_current_authorized_members():
             denied_env, denied_request(denied_token), "a" * 32))
         assert denied == {"status": 404, "data": {"error": "not_found"}}
         assert denied_calls == []
+
+
+def test_private_room_path_carries_channel_version_into_history_key():
+    channel_id = "a" * 32
+    info = _room_key_from_path(
+        f"/api/chat/channels/{channel_id}/v3/ws")
+    assert info == {
+        "key": f"chat-channel:{channel_id}:v3",
+        "owner": "",
+        "repo": "",
+        "room": channel_id,
+        "compat": False,
+        "channel_id": channel_id,
+        "channel_version": 3,
+    }
+
+
+def test_private_room_revocation_closes_every_accepted_socket():
+    now = 1_800_000_000_000
+
+    class _Date:
+        @staticmethod
+        def now():
+            return now
+
+    class _Peer:
+        def __init__(self):
+            self.closed = []
+
+        def deserializeAttachment(self):
+            return type("Attachment", (), {"last": now})()
+
+        def close(self, code, reason):
+            self.closed.append((code, reason))
+
+    peers = [_Peer(), _Peer()]
+
+    class _Context:
+        def getWebSockets(self, tag):
+            assert tag == "chat"
+            return peers
+
+    class _Headers:
+        def get(self, _name, default=None):
+            return default
+
+    class _Request:
+        method = "POST"
+        headers = _Headers()
+        url = (
+            "https://forkmesh.internal/api/chat/channels/" + "a" * 32
+            + "/v1/revoke"
+        )
+
+    room_type = _room_class({
+        "CHAT_CHANNEL_DO_RE": re.compile(
+            r"^/api/chat/channels/([0-9a-f]{32})/v([1-9][0-9]*)/"
+            r"(ws|revoke)$"
+        ),
+        "Date": _Date,
+        "MAX_CONNECTIONS": 128,
+        "ROOM_CLIENT_STALE_MS": 180_000,
+        "_ws_attr": lambda ws, name, default=None: getattr(
+            ws.deserializeAttachment(), name, default),
+        "json_response": lambda data, status=200, **_kwargs: {
+            "status": status,
+            "data": data,
+        },
+        "method_name": lambda request: request.method,
+        "room_key_from_path": lambda _path: None,
+        "urlparse": urlparse,
+    })
+    room = room_type()
+    room.ctx = _Context()
+
+    response = asyncio.run(room.fetch(_Request()))
+
+    assert response["status"] == 200
+    assert all(peer.closed == [(1008, "room access revoked")]
+               for peer in peers)
 
 
 def test_private_socket_allows_current_admin_without_membership_row():

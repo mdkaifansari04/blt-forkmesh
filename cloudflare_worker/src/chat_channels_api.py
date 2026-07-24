@@ -253,6 +253,9 @@ async def _remove_member(runtime, actor, channel_id, data):
         member_bi,
     )
     removed = bool(deleted)
+    if removed:
+        await runtime.revoke_room(
+            channel_id, int(row.get("key_version") or 1))
     current = await runtime.d1_first(
         "SELECT key_version FROM chat_channels WHERE channel_id=?",
         channel_id,

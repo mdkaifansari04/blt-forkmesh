@@ -39,6 +39,7 @@ class FakeRuntime:
         self.admins = {"admin"}
         self.accounts = {"admin", "alice", "bob"}
         self.audits = []
+        self.revoked_rooms = []
         self.ids = 0
 
     def use(self, method, actor="", data=None):
@@ -121,6 +122,9 @@ class FakeRuntime:
                 f"ticket:{account_bi}"
             ),
         }
+
+    async def revoke_room(self, channel_id, key_version):
+        self.revoked_rooms.append((channel_id, key_version))
 
     async def d1_all(self, sql, *args):
         return [dict(row) for row in self.db.execute(sql, args).fetchall()]
@@ -268,12 +272,14 @@ async def test_member_removal_rotates_once_and_revokes_access():
     assert removed["status"] == 200
     assert removed["data"]["removed"] is True
     assert removed["data"]["keyVersion"] == 2
+    assert runtime.revoked_rooms == [(channel_id, 1)]
 
     again = await api.handle(
         runtime.use("DELETE", "admin", {"username": "alice"}), path)
     assert again["status"] == 200
     assert again["data"]["removed"] is False
     assert again["data"]["keyVersion"] == 2
+    assert runtime.revoked_rooms == [(channel_id, 1)]
 
     denied = await api.handle(
         runtime.use("GET", "alice"),

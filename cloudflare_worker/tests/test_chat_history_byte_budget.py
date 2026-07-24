@@ -39,6 +39,19 @@ def _history_helpers(db):
     return namespace
 
 
+def _room_class(namespace):
+    tree = ast.parse(SOURCE, filename=str(ENTRY))
+    node = next(
+        item for item in tree.body
+        if isinstance(item, ast.ClassDef) and item.name == "ForkMeshRoom"
+    )
+    module = ast.fix_missing_locations(
+        ast.Module(body=[node], type_ignores=[]))
+    globals_map = {"DurableObject": object, **namespace}
+    exec(compile(module, str(ENTRY), "exec"), globals_map)
+    return globals_map["ForkMeshRoom"]
+
+
 def test_attachment_frame_ceiling_stays_below_d1_row_limit():
     tree = ast.parse(SOURCE, filename=str(ENTRY))
     values = {
@@ -53,10 +66,14 @@ def test_attachment_frame_ceiling_stays_below_d1_row_limit():
         and node.targets[0].id in {
             "CHAT_HISTORY_MAX_BODY",
             "CHAT_HISTORY_MAX_BYTES_PER_ROOM",
+            "CHAT_HISTORY_INGRESS_MAX_BYTES",
+            "CHAT_HISTORY_INGRESS_WINDOW_MS",
         }
     }
     assert 1_850_000 <= values["CHAT_HISTORY_MAX_BODY"] <= 1_900_000
     assert values["CHAT_HISTORY_MAX_BYTES_PER_ROOM"] == 16 * 1024 * 1024
+    assert values["CHAT_HISTORY_INGRESS_MAX_BYTES"] <= 8 * 1024 * 1024
+    assert values["CHAT_HISTORY_INGRESS_WINDOW_MS"] >= 10 * 1000
 
 
 def test_store_prunes_oldest_frames_by_count_and_total_bytes():
@@ -84,3 +101,57 @@ def test_store_prunes_oldest_frames_by_count_and_total_bytes():
         "SELECT msg_id FROM chat_history WHERE room_key='room-b'"
     ).fetchall()
     assert other == [("other",)]
+
+
+def test_room_retention_ingress_budget_is_byte_based_and_resets_by_window():
+    clock = [1_800_000_000_000]
+
+    class _Date:
+        @staticmethod
+        def now():
+            return clock[0]
+
+    room_type = _room_class({
+        "CHAT_HISTORY_INGRESS_MAX_BYTES": 10,
+        "CHAT_HISTORY_INGRESS_WINDOW_MS": 1_000,
+        "Date": _Date,
+    })
+
+    class _Storage:
+        def __init__(self):
+            self.value = None
+
+        async def get(self, key):
+            assert key == "chat_history_ingress"
+            return self.value
+
+        async def put(self, key, value):
+            assert key == "chat_history_ingress"
+            self.value = dict(value)
+
+    room = room_type()
+    room.ctx = type("Context", (), {"storage": _Storage()})()
+
+    assert asyncio.run(room._retention_ingress_admitted(6)) is True
+    assert asyncio.run(room._retention_ingress_admitted(5)) is False
+    assert asyncio.run(room._retention_ingress_admitted(4)) is True
+    clock[0] += 1_000
+    assert asyncio.run(room._retention_ingress_admitted(10)) is True
+
+
+def test_retention_requires_boolean_true_and_budgets_before_d1_write():
+    tree = ast.parse(SOURCE, filename=str(ENTRY))
+    room = next(
+        item for item in tree.body
+        if isinstance(item, ast.ClassDef) and item.name == "ForkMeshRoom"
+    )
+    method = next(
+        item for item in room.body
+        if isinstance(item, ast.AsyncFunctionDef)
+        and item.name == "_maybe_retain"
+    )
+    source = ast.unparse(method)
+
+    assert "envelope.get('persist') is True" in source
+    assert source.index("_retention_ingress_admitted") < source.index(
+        "chat_history_store")

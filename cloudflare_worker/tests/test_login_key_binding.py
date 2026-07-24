@@ -7,6 +7,7 @@ import base64
 import json
 import sqlite3
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
@@ -28,6 +29,8 @@ def _load_account_login(extra_globals):
         if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
         and node.name in {
             "_account_login",
+            "_ensure_local_demo_account",
+            "_is_local_demo_request",
             "_register_account_device",
             "_account_device_for_pubkey",
             "_account_devices_list",
@@ -90,8 +93,9 @@ def _load_contribution_actor_resolver(extra_globals):
 
 
 class _Request:
-    def __init__(self, body):
+    def __init__(self, body, url="https://forkmesh.test/api/accounts/login"):
         self._body = body
+        self.url = url
 
     async def json(self):
         return self._body
@@ -258,6 +262,7 @@ def _login_harness(rec, *, device_proof_valid=True, initial_devices=None,
             "_clear_admin_session_cookie": lambda: "clear-admin-session",
             "json_response": _json_response,
             "Date": _Date,
+            "urlparse": urlparse,
             "DESKTOP_NODE_CAPABILITIES": "browse,comment,submit_issue,submit_pr,host_repo,mirror_repo,publish_repo,owner_sign",
             "CLIENT_CAPABILITIES": "browse,comment,submit_issue,submit_pr",
             "CONTRIBUTION_KEY_PROOF_CAPABILITY": "contribution_key_proof",
@@ -364,6 +369,85 @@ def test_login_without_desktop_pubkey_still_allows_plain_web_session():
     assert response["data"]["desktopCapable"] is False
     assert saved == []
     assert login_fails == []
+
+
+def test_local_demo_credentials_bootstrap_a_real_admin_account():
+    saved = []
+
+    async def blind_index(_env, value):
+        return "bi:" + str(value).strip().lower()
+
+    async def d1_first(_env, _sql, *_args):
+        return None
+
+    async def hash_password(password):
+        assert password == "forkmesh-demo"
+        return "demo-salt", "demo-hash"
+
+    async def save_full(_env, name_bi, record, **kwargs):
+        saved.append((name_bi, dict(record), dict(kwargs)))
+
+    namespace = {
+        "LOCAL_DEMO_EMAIL": "demo@forkmesh.local",
+        "LOCAL_DEMO_NAME": "demo-node",
+        "LOCAL_DEMO_PASSWORD": "forkmesh-demo",
+        "Date": type(
+            "Date", (), {"now": staticmethod(lambda: 1_800_000_000_000)}),
+        "_account_row": lambda *_args: asyncio.sleep(0, result=("", None)),
+        "_save_account_full": save_full,
+        "blind_index": blind_index,
+        "clean_string": _clean_string,
+        "d1_first": d1_first,
+        "decrypt_row": lambda *_args: asyncio.sleep(0, result=None),
+        "hash_password": hash_password,
+        "urlparse": urlparse,
+        "verify_password": lambda *_args: asyncio.sleep(0, result=False),
+    }
+    tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
+    selected = [
+        node for node in tree.body
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+        and node.name in {
+            "_ensure_local_demo_account",
+            "_is_local_demo_request",
+        }
+    ]
+    module = ast.fix_missing_locations(
+        ast.Module(body=selected, type_ignores=[]))
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+
+    request = _Request(
+        {
+            "email": "demo@forkmesh.local",
+            "password": "forkmesh-demo",
+        },
+        url="http://127.0.0.1:8787/api/accounts/login",
+    )
+    asyncio.run(namespace["_ensure_local_demo_account"](
+        object(), request, "demo@forkmesh.local", "forkmesh-demo"))
+
+    assert saved == [(
+        "bi:demo-node",
+        {
+            "name": "demo-node",
+            "email": "demo@forkmesh.local",
+            "kind": "user",
+            "status": "active",
+            "pass_salt": "demo-salt",
+            "pass_hash": "demo-hash",
+            "email_verified": True,
+            "created_at": 1_800_000_000_000,
+        },
+        {"email_bi": "bi:demo@forkmesh.local", "is_admin": 1},
+    )]
+
+    login_source = ENTRY.read_text(encoding="utf-8")
+    login_source = login_source[
+        login_source.index("async def _account_login"):
+        login_source.index("async def _account_rotate")
+    ]
+    assert login_source.index("_ensure_local_demo_account") < (
+        login_source.index("_login_locked_until"))
 
 
 def test_device_bind_canonical_is_exact_and_normalizes_account_name():
@@ -597,6 +681,7 @@ def test_concurrent_first_device_bind_allows_exactly_one_account_winner():
         "_clear_admin_session_cookie": lambda: "clear",
         "json_response": _json_response,
         "Date": type("Date", (), {"now": staticmethod(lambda: int(DEVICE_TS))}),
+        "urlparse": urlparse,
         "DESKTOP_NODE_CAPABILITIES": "browse,owner_sign",
         "CLIENT_CAPABILITIES": "browse",
         "CONTRIBUTION_KEY_PROOF_CAPABILITY": "contribution_key_proof",
