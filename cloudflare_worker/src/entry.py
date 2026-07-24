@@ -29700,9 +29700,6 @@ class ForkMeshWorld(DurableObject):
             return
         allowed, rate_start, rate_count = self._rate_step(
             ws, state, now)
-        if not allowed:
-            self._safe_close(ws, 1008, "rate limit")
-            return
         # Every frame (including a heartbeat or invalid JSON) is an opportunity
         # to reap peers that vanished without a close event.
         self._live_sockets(cleanup=True)
@@ -29710,6 +29707,27 @@ class ForkMeshWorld(DurableObject):
         try:
             payload = json.loads(message)
         except Exception:
+            if not allowed:
+                self._safe_close(ws, 1008, "rate limit")
+            return
+        if not allowed:
+            kind = (
+                str(payload.get("type") or "").strip().lower()
+                if isinstance(payload, dict) else ""
+            )
+            disposable = kind in ("move", "presence", "ping")
+            hard_limit = world_protocol.WORLD_RATE_HARD_MAX_PER_WINDOW
+            if disposable and rate_count <= hard_limit:
+                # Keep the latest accepted attachment as the coalesced state.
+                # A subsequent frame in a fresh window will carry the browser's
+                # newest position/profile, so a normal connect+movement burst
+                # sheds traffic instead of tearing down the multiplayer socket.
+                return
+            self._safe_close(
+                ws,
+                1008,
+                "sustained rate limit" if disposable else "rate limit",
+            )
             return
         interaction = world_protocol.sanitize_interaction(payload, state)
         if interaction is not None:

@@ -24,6 +24,12 @@ WORLD_DAY_LENGTH_MS = 4 * 60 * 60 * 1000
 WORLD_MESSAGE_MAX_BYTES = 1024
 WORLD_RATE_WINDOW_MS = 1000
 WORLD_RATE_MAX_PER_WINDOW = 4
+# Ordinary browser bursts can legitimately cross the soft budget while a
+# connection publishes its profile and initial position.  The Durable Object
+# drops those disposable excess frames, but a sender that keeps flooding past
+# this bounded ceiling is still disconnected within the same one-second
+# window.
+WORLD_RATE_HARD_MAX_PER_WINDOW = 12
 WORLD_BROADCAST_WINDOW_MS = 1000
 WORLD_BROADCAST_MAX_PER_WINDOW = 24
 WORLD_CONNECT_WINDOW_MS = 10 * 1000
