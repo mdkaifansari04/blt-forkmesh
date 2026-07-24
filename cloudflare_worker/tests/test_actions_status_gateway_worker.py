@@ -2,9 +2,9 @@
 
 import ast
 import json
-import os
 from pathlib import Path
 import re
+import stat
 from types import SimpleNamespace
 import sys
 
@@ -123,6 +123,17 @@ def test_owner_only_summary_is_lease_checked_filtered_and_bounded(tmp_path):
     assert "owner" not in result["runs"][0]
     assert "repository" not in result["runs"][0]
 
+    tmp_path.chmod(0o750)
+    with pytest.raises(gateway.GatewayError, match="unavailable"):
+        gateway._load_actions_summary(
+            path,
+            node="mirror2",
+            owner="forkmesh",
+            repository="forkmesh",
+            now_ms=NOW,
+        )
+    tmp_path.chmod(0o700)
+
     write_summary(path, summary(expiresAt=NOW))
     with pytest.raises(gateway.GatewayError, match="unavailable"):
         gateway._load_actions_summary(
@@ -145,6 +156,65 @@ def test_owner_only_summary_is_lease_checked_filtered_and_bounded(tmp_path):
         )
 
 
+def test_summary_handoff_policy_accepts_only_exact_root_group_file():
+    parent = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o700,
+        st_uid=991,
+        st_gid=992,
+    )
+    assert gateway._actions_parent_metadata_allowed(
+        parent, effective_uid=991, effective_gid=992)
+    for changed in (
+        SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o750, st_uid=991, st_gid=992),
+        SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o700, st_uid=0, st_gid=992),
+        SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o700, st_uid=991, st_gid=993),
+    ):
+        assert not gateway._actions_parent_metadata_allowed(
+            changed, effective_uid=991, effective_gid=992)
+
+    def metadata(
+        *,
+        owner=0,
+        group=992,
+        mode=0o640,
+        links=1,
+        kind=stat.S_IFREG,
+    ):
+        return SimpleNamespace(
+            st_mode=kind | mode,
+            st_uid=owner,
+            st_gid=group,
+            st_nlink=links,
+            st_size=100,
+        )
+
+    fixed = gateway.SYSTEM_ACTIONS_SUMMARY_PATH
+    assert gateway._actions_summary_metadata_allowed(
+        fixed, metadata(), effective_uid=991, effective_gid=992)
+    assert gateway._actions_summary_metadata_allowed(
+        Path("/srv/custom/actions-summary.json"),
+        metadata(owner=991, group=991, mode=0o600),
+        effective_uid=991,
+        effective_gid=992,
+    )
+    for path, info in (
+        (Path("/srv/custom/actions-summary.json"), metadata()),
+        (fixed, metadata(owner=991)),
+        (fixed, metadata(group=993)),
+        (fixed, metadata(mode=0o600)),
+        (fixed, metadata(mode=0o660)),
+        (fixed, metadata(links=2)),
+        (fixed, metadata(kind=stat.S_IFLNK)),
+    ):
+        assert not gateway._actions_summary_metadata_allowed(
+            path, info, effective_uid=991, effective_gid=992)
+    assert not gateway._actions_summary_metadata_allowed(
+        fixed, metadata(), effective_uid=0, effective_gid=992)
+
+
 def test_summary_reader_rejects_symlinks_duplicates_and_unredacted_shape(tmp_path):
     real = tmp_path / "real.json"
     write_summary(real, summary())
@@ -159,7 +229,9 @@ def test_summary_reader_rejects_symlinks_duplicates_and_unredacted_shape(tmp_pat
             now_ms=NOW,
         )
 
-    duplicate = tmp_path / "duplicate.json"
+    duplicate_parent = tmp_path / "duplicate"
+    duplicate_parent.mkdir(mode=0o700)
+    duplicate = duplicate_parent / "actions-summary.json"
     duplicate.write_text(
         '{"schemaVersion":1,"schemaVersion":1,"type":'
         '"forkmesh.mirror-actions-summary","node":"mirror2",'
@@ -176,12 +248,15 @@ def test_summary_reader_rejects_symlinks_duplicates_and_unredacted_shape(tmp_pat
             now_ms=NOW,
         )
 
+    shape_parent = tmp_path / "shape"
+    shape_parent.mkdir(mode=0o700)
+    shape_path = shape_parent / "actions-summary.json"
     value = summary()
     value["runs"][0]["variables"] = {"SECRET": "do-not-return"}
-    write_summary(real, value)
+    write_summary(shape_path, value)
     with pytest.raises(gateway.GatewayError, match="unavailable"):
         gateway._load_actions_summary(
-            real,
+            shape_path,
             node="mirror2",
             owner="forkmesh",
             repository="forkmesh",
@@ -258,7 +333,7 @@ def test_route_requires_account_or_org_write_and_attested_operation():
         assert required in handler
     source = (ROOT / "tools" / "mirror_gateway.py").read_text()
     assert (
-        "actions-status requires an owner-only actionsSummaryPath"
+        "actions-status requires a protected actionsSummaryPath"
         in source
     )
     assert "self._authorize(method, target, headers, body)" in source

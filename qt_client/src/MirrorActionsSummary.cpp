@@ -23,9 +23,12 @@ namespace {
 
 constexpr qint64 kMaximumSafeJsonInteger = (qint64(1) << 53) - 1;
 constexpr qsizetype kMaximumSummaryBytes = 256 * 1024;
+constexpr qsizetype kMaximumStateBytes = 4 * 1024;
 constexpr qint64 kMaximumSummaryClockSkewMilliseconds = 60 * 1000;
 constexpr auto kSummaryType = "forkmesh.mirror-actions-summary";
 constexpr auto kSummaryFileName = "actions-summary.json";
+constexpr auto kStateType = "forkmesh.mirror-actions-state";
+constexpr auto kStateFileName = "actions-state.json";
 
 const QRegularExpression kNode(
     QStringLiteral("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"));
@@ -101,50 +104,72 @@ bool validTimestamp(qint64 value, bool allowZero)
            value <= kMaximumSafeJsonInteger;
 }
 
-bool safeSummaryPath(const QString &path)
+struct SummaryPathInspection {
+    detail::SummaryWritePolicy policy =
+        detail::SummaryWritePolicy::Reject;
+#if defined(Q_OS_UNIX)
+    gid_t parentGroupId = 0;
+    dev_t parentDevice = 0;
+    ino_t parentInode = 0;
+#endif
+};
+
+SummaryPathInspection inspectSummaryPath(const QString &path)
 {
+    SummaryPathInspection inspection;
     if (path.size() < 2 || path.size() > 4096 ||
         path.contains(QChar::Null) ||
         path.contains(QLatin1Char('\r')) ||
         path.contains(QLatin1Char('\n'))) {
-        return false;
+        return inspection;
     }
     const QFileInfo target(path);
     if (!target.isAbsolute() ||
         QDir::cleanPath(path) != target.absoluteFilePath() ||
-        target.fileName() != QLatin1String(kSummaryFileName) ||
+        (target.fileName() != QLatin1String(kSummaryFileName) &&
+         target.fileName() != QLatin1String(kStateFileName)) ||
         target.isSymLink()) {
-        return false;
+        return inspection;
     }
     const QFileInfo parent(target.absolutePath());
     if (!parent.isDir() || parent.isSymLink() ||
         parent.canonicalFilePath() !=
             QDir::cleanPath(parent.absoluteFilePath())) {
-        return false;
+        return inspection;
     }
 
 #if defined(Q_OS_UNIX)
     struct stat parentState {};
     const QByteArray parentPath =
         QFile::encodeName(parent.absoluteFilePath());
-    if (::lstat(parentPath.constData(), &parentState) != 0 ||
-        !S_ISDIR(parentState.st_mode) ||
-        parentState.st_uid != ::geteuid() ||
-        (parentState.st_mode & 0077) != 0 ||
-        (parentState.st_mode & 0700) != 0700) {
-        return false;
-    }
+    if (::lstat(parentPath.constData(), &parentState) != 0)
+        return inspection;
     struct stat targetState {};
     const QByteArray targetPath = QFile::encodeName(path);
-    if (::lstat(targetPath.constData(), &targetState) == 0) {
-        if (!S_ISREG(targetState.st_mode) ||
-            targetState.st_nlink != 1 ||
-            targetState.st_uid != ::geteuid() ||
-            (targetState.st_mode & 0077) != 0) {
-            return false;
-        }
-    } else if (errno != ENOENT) {
-        return false;
+    const bool targetExists =
+        ::lstat(targetPath.constData(), &targetState) == 0;
+    if (!targetExists && errno != ENOENT)
+        return inspection;
+    inspection.policy = detail::classifySummaryWritePolicy(
+        path,
+        static_cast<quint64>(::geteuid()),
+        static_cast<quint64>(parentState.st_uid),
+        static_cast<quint64>(parentState.st_gid),
+        static_cast<quint32>(parentState.st_mode & 07777),
+        S_ISDIR(parentState.st_mode),
+        targetExists,
+        targetExists && S_ISREG(targetState.st_mode),
+        targetExists && S_ISLNK(targetState.st_mode),
+        targetExists ? static_cast<quint64>(targetState.st_uid) : 0,
+        targetExists ? static_cast<quint64>(targetState.st_gid) : 0,
+        targetExists
+            ? static_cast<quint32>(targetState.st_mode & 07777)
+            : 0,
+        targetExists ? static_cast<quint64>(targetState.st_nlink) : 0);
+    if (inspection.policy != detail::SummaryWritePolicy::Reject) {
+        inspection.parentGroupId = parentState.st_gid;
+        inspection.parentDevice = parentState.st_dev;
+        inspection.parentInode = parentState.st_ino;
     }
 #else
     const QFileDevice::Permissions unsafe =
@@ -153,13 +178,85 @@ bool safeSummaryPath(const QString &path)
         QFileDevice::WriteOther | QFileDevice::ExeOther;
     if (target.exists() &&
         (!target.isFile() || (target.permissions() & unsafe))) {
-        return false;
+        return inspection;
     }
+    inspection.policy = detail::SummaryWritePolicy::SameAccount;
 #endif
+    return inspection;
+}
+
+bool sameParentAfterWrite(const QString &path,
+                          const SummaryPathInspection &before)
+{
+#if defined(Q_OS_UNIX)
+    const QByteArray parentPath =
+        QFile::encodeName(QFileInfo(path).absolutePath());
+    struct stat parentState {};
+    return ::lstat(parentPath.constData(), &parentState) == 0 &&
+           S_ISDIR(parentState.st_mode) &&
+           parentState.st_dev == before.parentDevice &&
+           parentState.st_ino == before.parentInode &&
+           parentState.st_gid == before.parentGroupId;
+#else
+    Q_UNUSED(path);
+    Q_UNUSED(before);
     return true;
+#endif
 }
 
 } // namespace
+
+namespace detail {
+
+SummaryWritePolicy classifySummaryWritePolicy(
+    const QString &path,
+    quint64 effectiveUserId,
+    quint64 parentUserId,
+    quint64 parentGroupId,
+    quint32 parentMode,
+    bool parentIsProtectedRealDirectory,
+    bool targetExists,
+    bool targetIsRegular,
+    bool targetIsSymbolicLink,
+    quint64 targetUserId,
+    quint64 targetGroupId,
+    quint32 targetMode,
+    quint64 targetLinkCount)
+{
+    if (!parentIsProtectedRealDirectory || parentMode != 0700 ||
+        targetIsSymbolicLink ||
+        (targetExists &&
+         (!targetIsRegular || targetLinkCount != 1))) {
+        return SummaryWritePolicy::Reject;
+    }
+
+    if (parentUserId == effectiveUserId) {
+        if (targetExists &&
+            (targetUserId != effectiveUserId || targetMode != 0600)) {
+            return SummaryWritePolicy::Reject;
+        }
+        return SummaryWritePolicy::SameAccount;
+    }
+
+    const bool fixedRootHandoffPath =
+        path == QLatin1String(kSystemSummaryPath) ||
+        path == QLatin1String(kSystemStatePath);
+    const bool fixedRootHandoff =
+        effectiveUserId == 0 &&
+        parentUserId != 0 &&
+        parentGroupId != 0 &&
+        fixedRootHandoffPath;
+    if (!fixedRootHandoff)
+        return SummaryWritePolicy::Reject;
+    if (targetExists &&
+        (targetUserId != 0 || targetGroupId != parentGroupId ||
+         targetMode != 0640)) {
+        return SummaryWritePolicy::Reject;
+    }
+    return SummaryWritePolicy::RootGatewayHandoff;
+}
+
+} // namespace detail
 
 QJsonObject buildSummary(const QString &node,
                          const QList<ActionRun> &runs,
@@ -272,42 +369,107 @@ QJsonObject buildSummary(const QString &node,
     return result;
 }
 
-bool writeSummaryFile(const QString &path,
-                      const QString &node,
-                      const QList<ActionRun> &runs,
-                      const ActionStore &store,
-                      qint64 nowMs)
+static bool writeProtectedJsonFile(const QString &path,
+                                   QByteArray encoded,
+                                   qsizetype maximumBytes)
 {
-    if (!safeSummaryPath(path))
+    const SummaryPathInspection before = inspectSummaryPath(path);
+    if (before.policy == detail::SummaryWritePolicy::Reject) {
+        encoded.fill('\0');
         return false;
-    const QJsonObject summary = buildSummary(node, runs, store, nowMs);
-    if (summary.isEmpty())
-        return false;
-    QByteArray encoded =
-        QJsonDocument(summary).toJson(QJsonDocument::Compact);
+    }
     encoded.append('\n');
-    if (encoded.size() > kMaximumSummaryBytes) {
+    if (encoded.size() > maximumBytes) {
         encoded.fill('\0');
         return false;
     }
 
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
-    if (!file.open(QIODevice::WriteOnly) ||
-        !file.setPermissions(QFileDevice::ReadOwner |
-                             QFileDevice::WriteOwner) ||
-        file.write(encoded) != encoded.size() ||
-        !file.commit()) {
+    if (!file.open(QIODevice::WriteOnly)) {
+        encoded.fill('\0');
+        return false;
+    }
+#if defined(Q_OS_UNIX)
+    const mode_t outputMode =
+        before.policy == detail::SummaryWritePolicy::RootGatewayHandoff
+            ? 0640
+            : 0600;
+    const gid_t outputGroup =
+        before.policy == detail::SummaryWritePolicy::RootGatewayHandoff
+            ? before.parentGroupId
+            : static_cast<gid_t>(-1);
+    if (file.handle() < 0 ||
+        (before.policy == detail::SummaryWritePolicy::RootGatewayHandoff &&
+         (::geteuid() != 0 ||
+          ::fchown(file.handle(), 0, outputGroup) != 0)) ||
+        ::fchmod(file.handle(), outputMode) != 0) {
+        encoded.fill('\0');
+        file.cancelWriting();
+        return false;
+    }
+#else
+    if (!file.setPermissions(QFileDevice::ReadOwner |
+                             QFileDevice::WriteOwner)) {
+        encoded.fill('\0');
+        file.cancelWriting();
+        return false;
+    }
+#endif
+    if (file.write(encoded) != encoded.size() || !file.commit()) {
         encoded.fill('\0');
         return false;
     }
     encoded.fill('\0');
-    if (!QFile::setPermissions(path, QFileDevice::ReadOwner |
-                                        QFileDevice::WriteOwner) ||
-        !safeSummaryPath(path)) {
+    const SummaryPathInspection after = inspectSummaryPath(path);
+    return after.policy == before.policy &&
+           sameParentAfterWrite(path, before);
+}
+
+bool writeSummaryFile(const QString &path,
+                      const QString &node,
+                      const QList<ActionRun> &runs,
+                      const ActionStore &store,
+                      qint64 nowMs)
+{
+    const QJsonObject summary = buildSummary(node, runs, store, nowMs);
+    if (summary.isEmpty())
+        return false;
+    return writeProtectedJsonFile(
+        path,
+        QJsonDocument(summary).toJson(QJsonDocument::Compact),
+        kMaximumSummaryBytes);
+}
+
+bool writeStateFile(const QString &path,
+                    const QString &node,
+                    const QString &state,
+                    qint64 nowMs)
+{
+    static const QSet<QString> states{
+        QStringLiteral("disabled"),
+        QStringLiteral("enabled"),
+        QStringLiteral("running"),
+    };
+    if (!kNode.match(node).hasMatch() ||
+        !states.contains(state) ||
+        !validTimestamp(nowMs, false) ||
+        nowMs > kMaximumSafeJsonInteger - kSummaryLeaseMilliseconds) {
         return false;
     }
-    return true;
+    const QJsonObject lease{
+        {QStringLiteral("schemaVersion"), 1},
+        {QStringLiteral("type"), QLatin1String(kStateType)},
+        {QStringLiteral("node"), node},
+        {QStringLiteral("state"), state},
+        {QStringLiteral("updatedAt"), nowMs},
+        {QStringLiteral("expiresAt"),
+         nowMs + kSummaryLeaseMilliseconds},
+    };
+    return writeProtectedJsonFile(
+        path,
+        QJsonDocument(lease).toJson(QJsonDocument::Compact),
+        kMaximumStateBytes);
 }
 
 } // namespace forkmesh::mirror_actions

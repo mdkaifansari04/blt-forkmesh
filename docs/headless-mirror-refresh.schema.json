@@ -198,7 +198,7 @@
           "maxLength": 32
         },
         "actionsEnabled": {
-          "description": "Owner-approved upper bound for this node's public Actions capability. Defaults to false; live enabled/running state additionally requires a fresh owner-only actions-state.json lease.",
+          "description": "Owner-approved upper bound for this node's public Actions capability. Defaults to false; live enabled/running state additionally requires a fresh protected actions-state.json lease (same-account mode 0600 or the fixed root:gateway-group mode-0640 handoff).",
           "type": "boolean",
           "default": false
         },

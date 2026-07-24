@@ -722,12 +722,20 @@ external verifier.
 | `release-blob` | GET/HEAD | `sha256` | verified streamed release bytes |
 
 `actions-status` is never enabled by default. Its gateway configuration must
-name an `actionsSummaryPath` in an owner-protected real directory. The file is
-limited to 256 KiB, twenty runs, 16 KiB of already-redacted log tail per run,
-and a fifteen-minute lease. The gateway filters it to the exact requested
-repository, and the Worker independently revalidates every field and disables
-caching. Workflow variables, commands, local paths, and full logs are not part
-of this response or the public mirror catalog.
+name an absolute, normalized `actionsSummaryPath` in the gateway account's
+real mode-0700 directory. Same-account files must be owner mode 0600. The
+packaged cross-account handoff is accepted only at
+`/var/lib/forkmesh-mirror/gateway/actions-summary.json`, where it must be a
+regular, single-link `root:forkmesh-mirror` mode-0640 file. The gateway opens
+the protected parent and no-follow leaf, checks the effective UID/GID and
+inode, and rejects every other group-readable file. A compromised service
+account can remove the handoff and make status unavailable, but cannot forge
+root ownership. The file is limited to 256 KiB, twenty runs, 16 KiB of
+already-redacted log tail per run, and a fifteen-minute lease. The gateway
+filters it to the exact requested repository, and the Worker independently
+revalidates every field and disables caching. Workflow variables, commands,
+local paths, and full logs are not part of this response or the public mirror
+catalog.
 
 For upload-pack, require:
 

@@ -68,6 +68,9 @@ MAX_ACTIONS_SUMMARY_RUNS = 20
 MAX_ACTIONS_LOG_TAIL_BYTES = 16 * 1024
 MAX_ACTIONS_SUMMARY_LEASE_MS = 15 * 60 * 1000
 MAX_ACTIONS_SUMMARY_CLOCK_SKEW_MS = 60 * 1000
+SYSTEM_ACTIONS_SUMMARY_PATH = Path(
+    "/var/lib/forkmesh-mirror/gateway/actions-summary.json"
+)
 COLLABORATION_TREE_ROOTS = frozenset({"pulls", ".forkmesh/issues"})
 PUBLIC_OPERATIONS = frozenset(
     {
@@ -682,6 +685,49 @@ def validate_manifest(
         raise GatewayError("mirror manifest payload digest is invalid")
 
 
+def _actions_parent_metadata_allowed(
+    info: os.stat_result,
+    *,
+    effective_uid: int,
+    effective_gid: int,
+) -> bool:
+    """Require the gateway's exact private service-owned handoff directory."""
+
+    return (
+        stat.S_ISDIR(info.st_mode)
+        and info.st_uid == effective_uid
+        and info.st_gid == effective_gid
+        and stat.S_IMODE(info.st_mode) == 0o700
+    )
+
+
+def _actions_summary_metadata_allowed(
+    path: Path,
+    info: os.stat_result,
+    *,
+    effective_uid: int,
+    effective_gid: int,
+) -> bool:
+    """Accept only same-account 0600 or the fixed root-to-gateway handoff."""
+
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or not 0 < info.st_size <= MAX_ACTIONS_SUMMARY_BYTES
+    ):
+        return False
+    mode = stat.S_IMODE(info.st_mode)
+    if info.st_uid == effective_uid:
+        return mode == 0o600
+    return (
+        effective_uid != 0
+        and path == SYSTEM_ACTIONS_SUMMARY_PATH
+        and info.st_uid == 0
+        and info.st_gid == effective_gid
+        and mode == 0o640
+    )
+
+
 def load_config(path: Path) -> GatewayConfig:
     source = _load_json_file(path, "gateway configuration")
     _assert_no_secret_fields(source)
@@ -761,18 +807,42 @@ def load_config(path: Path) -> GatewayConfig:
     if actions_summary_raw is not None:
         if not isinstance(actions_summary_raw, str) or not actions_summary_raw:
             raise GatewayError("actionsSummaryPath must be a path string")
-        actions_summary_path = (base / actions_summary_raw).resolve()
-        parent = actions_summary_path.parent
+        actions_summary_path = Path(actions_summary_raw)
         if (
-            not parent.is_dir()
-            or parent.is_symlink()
-            or stat.S_IMODE(parent.stat().st_mode)
-            & (stat.S_IWGRP | stat.S_IWOTH)
+            not actions_summary_path.is_absolute()
+            or actions_summary_path
+            != Path(os.path.normpath(actions_summary_raw))
+            or actions_summary_path.name != "actions-summary.json"
+        ):
+            raise GatewayError(
+                "actionsSummaryPath must be an absolute normalized summary path"
+            )
+        parent = actions_summary_path.parent
+        try:
+            parent_info = parent.lstat()
+            parent_is_real = parent.resolve(strict=True) == parent
+        except (OSError, RuntimeError) as exc:
+            raise GatewayError(
+                "actionsSummaryPath must have a protected real parent"
+            ) from exc
+        if not parent_is_real or not _actions_parent_metadata_allowed(
+            parent_info,
+            effective_uid=os.geteuid(),
+            effective_gid=os.getegid(),
         ):
             raise GatewayError(
                 "actionsSummaryPath must have a protected real parent")
-        if actions_summary_path.exists() and actions_summary_path.is_symlink():
-            raise GatewayError("actionsSummaryPath must not be a symbolic link")
+        try:
+            target_info = actions_summary_path.lstat()
+        except FileNotFoundError:
+            target_info = None
+        except OSError as exc:
+            raise GatewayError(
+                "actionsSummaryPath cannot be inspected safely") from exc
+        if target_info is not None:
+            if stat.S_ISLNK(target_info.st_mode):
+                raise GatewayError(
+                    "actionsSummaryPath must not be a symbolic link")
     limits = source.get("limits", {})
     if not isinstance(limits, dict) or set(limits) - {
         "maxReleaseBytes", "maxPrivateReplicaBytes"
@@ -908,7 +978,7 @@ def load_config(path: Path) -> GatewayConfig:
             )
         if "actions-status" in operations and actions_summary_path is None:
             raise GatewayError(
-                "actions-status requires an owner-only actionsSummaryPath"
+                "actions-status requires a protected actionsSummaryPath"
             )
 
         git_dir: Path | None = None
@@ -2646,19 +2716,51 @@ def _load_actions_summary(
     repository: str,
     now_ms: int,
 ) -> dict[str, Any]:
-    """Read one short-lived, owner-only, already-redacted Actions summary."""
+    """Read one short-lived, protected, already-redacted Actions summary."""
 
+    parent_descriptor = -1
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     descriptor = -1
     try:
-        descriptor = os.open(path, flags)
+        if (
+            not path.is_absolute()
+            or path != Path(os.path.normpath(str(path)))
+            or path.name != "actions-summary.json"
+            or path.parent.resolve(strict=True) != path.parent
+        ):
+            raise GatewayError("Actions summary is unavailable")
+        parent_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        parent_descriptor = os.open(path.parent, parent_flags)
+        parent_info = os.fstat(parent_descriptor)
+        if not _actions_parent_metadata_allowed(
+            parent_info,
+            effective_uid=os.geteuid(),
+            effective_gid=os.getegid(),
+        ):
+            raise GatewayError("Actions summary is unavailable")
+        expected = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        descriptor = os.open(
+            path.name, flags, dir_fd=parent_descriptor)
         info = os.fstat(descriptor)
         if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) & (stat.S_IRWXG | stat.S_IRWXO)
-            or not 0 < info.st_size <= MAX_ACTIONS_SUMMARY_BYTES
+            expected.st_dev != info.st_dev
+            or expected.st_ino != info.st_ino
+            or not _actions_summary_metadata_allowed(
+                path,
+                info,
+                effective_uid=os.geteuid(),
+                effective_gid=os.getegid(),
+            )
         ):
             raise GatewayError("Actions summary is unavailable")
         raw = b""
@@ -2670,7 +2772,10 @@ def _load_actions_summary(
             if not chunk:
                 break
             raw += chunk
-        if len(raw) > MAX_ACTIONS_SUMMARY_BYTES:
+        if (
+            len(raw) != info.st_size
+            or len(raw) > MAX_ACTIONS_SUMMARY_BYTES
+        ):
             raise GatewayError("Actions summary is unavailable")
     except (OSError, GatewayError) as exc:
         if isinstance(exc, GatewayError):
@@ -2679,6 +2784,8 @@ def _load_actions_summary(
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
 
     def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         output: dict[str, Any] = {}

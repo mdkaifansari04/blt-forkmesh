@@ -623,6 +623,11 @@ def test_catalog_actions_capability_is_explicit_bounded_and_disabled_by_default(
         loaded, metadata, now_ms
     )["actionsState"] == "enabled"
     _write_actions_lease(installation, now_ms=now_ms, state="running")
+    installation["gateway_state"].chmod(0o750)
+    assert refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms
+    )["actionsState"] == "enabled"
+    installation["gateway_state"].chmod(0o700)
     lease.chmod(0o640)
     assert refresh_tool._catalog_unsigned(
         loaded, metadata, now_ms
@@ -650,6 +655,50 @@ def test_catalog_actions_capability_is_explicit_bounded_and_disabled_by_default(
     assert refresh_tool._catalog_unsigned(
         loaded, metadata, now_ms
     )["actionsState"] == "enabled"
+
+
+def test_actions_state_handoff_accepts_only_exact_root_group_lease():
+    def metadata(
+        *,
+        owner=0,
+        group=992,
+        mode=0o640,
+        links=1,
+        size=100,
+        kind=stat.S_IFREG,
+    ):
+        return SimpleNamespace(
+            st_mode=kind | mode,
+            st_uid=owner,
+            st_gid=group,
+            st_nlink=links,
+            st_size=size,
+        )
+
+    fixed = refresh_tool.SYSTEM_ACTIONS_STATE_PATH
+    assert refresh_tool._actions_state_metadata_allowed(
+        fixed, metadata(), effective_uid=991, effective_gid=992)
+    assert refresh_tool._actions_state_metadata_allowed(
+        Path("/srv/custom/actions-state.json"),
+        metadata(owner=991, group=991, mode=0o600),
+        effective_uid=991,
+        effective_gid=992,
+    )
+    for path, info in (
+        (Path("/srv/custom/actions-state.json"), metadata()),
+        (fixed, metadata(owner=991)),
+        (fixed, metadata(group=993)),
+        (fixed, metadata(mode=0o600)),
+        (fixed, metadata(mode=0o660)),
+        (fixed, metadata(links=2)),
+        (fixed, metadata(size=0)),
+        (fixed, metadata(size=refresh_tool.MAX_ACTIONS_STATE_BYTES + 1)),
+        (fixed, metadata(kind=stat.S_IFLNK)),
+    ):
+        assert not refresh_tool._actions_state_metadata_allowed(
+            path, info, effective_uid=991, effective_gid=992)
+    assert not refresh_tool._actions_state_metadata_allowed(
+        fixed, metadata(), effective_uid=0, effective_gid=992)
 
 
 def test_configure_actions_atomically_preserves_config_and_renews_public_state(

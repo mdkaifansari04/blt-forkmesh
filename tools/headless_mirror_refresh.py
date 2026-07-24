@@ -76,6 +76,9 @@ ACTIONS_CONFIGURATION_TYPE = "forkmesh.mirror-actions-catalog-configuration"
 ACTIONS_STATE_TYPE = "forkmesh.mirror-actions-state"
 ACTIONS_STATE_FILE = "actions-state.json"
 ACTIONS_SUMMARY_FILE = "actions-summary.json"
+SYSTEM_ACTIONS_STATE_PATH = Path(
+    "/var/lib/forkmesh-mirror/gateway/actions-state.json"
+)
 NODE_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -455,6 +458,135 @@ def _read_secure_json(
         maximum=maximum,
         label=label,
     )
+
+
+def _actions_state_metadata_allowed(
+    path: Path,
+    info: os.stat_result,
+    *,
+    effective_uid: int,
+    effective_gid: int,
+) -> bool:
+    """Accept only same-account 0600 or the fixed root-to-service lease."""
+
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or not 0 < info.st_size <= MAX_ACTIONS_STATE_BYTES
+    ):
+        return False
+    mode = stat.S_IMODE(info.st_mode)
+    if info.st_uid == effective_uid:
+        return mode == 0o600
+    return (
+        effective_uid != 0
+        and path == SYSTEM_ACTIONS_STATE_PATH
+        and info.st_uid == 0
+        and info.st_gid == effective_gid
+        and mode == 0o640
+    )
+
+
+def _read_actions_state_json(path: Path) -> dict[str, Any]:
+    """Read the local lease through its exact protected ownership boundary."""
+
+    if (
+        not path.is_absolute()
+        or path != Path(os.path.normpath(str(path)))
+        or path.name != ACTIONS_STATE_FILE
+    ):
+        raise RefreshError("Actions state lease path is unsafe")
+    _reject_symlink_components(path, "Actions state lease")
+    parent = path.parent
+    parent_descriptor = -1
+    descriptor = -1
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        parent_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        parent_descriptor = os.open(parent, parent_flags)
+        parent_info = os.fstat(parent_descriptor)
+        if (
+            not stat.S_ISDIR(parent_info.st_mode)
+            or parent_info.st_uid != os.geteuid()
+            or parent_info.st_gid != os.getegid()
+            or stat.S_IMODE(parent_info.st_mode) != 0o700
+        ):
+            raise RefreshError(
+                "Actions state lease parent permissions or ownership are unsafe"
+            )
+        expected = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if not _actions_state_metadata_allowed(
+            path,
+            expected,
+            effective_uid=os.geteuid(),
+            effective_gid=os.getegid(),
+        ):
+            raise RefreshError(
+                "Actions state lease permissions or ownership are unsafe"
+            )
+        descriptor = os.open(
+            path.name, flags, dir_fd=parent_descriptor)
+    except (OSError, RefreshError) as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+        if isinstance(exc, RefreshError):
+            raise
+        raise RefreshError(
+            "Actions state lease cannot be opened safely") from exc
+    try:
+        actual = os.fstat(descriptor)
+        if (
+            actual.st_dev != expected.st_dev
+            or actual.st_ino != expected.st_ino
+            or not _actions_state_metadata_allowed(
+                path,
+                actual,
+                effective_uid=os.geteuid(),
+                effective_gid=os.getegid(),
+            )
+        ):
+            raise RefreshError(
+                "Actions state lease changed while opening")
+        chunks = bytearray()
+        while len(chunks) <= MAX_ACTIONS_STATE_BYTES:
+            chunk = os.read(
+                descriptor,
+                min(
+                    4096,
+                    MAX_ACTIONS_STATE_BYTES + 1 - len(chunks),
+                ),
+            )
+            if not chunk:
+                break
+            chunks.extend(chunk)
+        if (
+            len(chunks) != actual.st_size
+            or len(chunks) > MAX_ACTIONS_STATE_BYTES
+        ):
+            raise RefreshError(
+                "Actions state lease changed while reading")
+        return _parse_json(
+            bytes(chunks),
+            maximum=MAX_ACTIONS_STATE_BYTES,
+            label="Actions state lease",
+        )
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
 
 
 def _require_safe_program(path: Path, label: str) -> Path:
@@ -2241,13 +2373,7 @@ def _actions_catalog_state(
         return fallback
     path = config.gateway_config_path.parent / ACTIONS_STATE_FILE
     try:
-        _reject_symlink_components(path, "Actions state lease")
-        value = _read_secure_json(
-            path,
-            label="Actions state lease",
-            maximum=MAX_ACTIONS_STATE_BYTES,
-            owner_only=True,
-        )
+        value = _read_actions_state_json(path)
         _expect_fields(
             value,
             {

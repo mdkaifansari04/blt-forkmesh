@@ -602,45 +602,23 @@ void MainWindow::updateMirrorActionsRuntimeState()
         settings.value(QStringLiteral("actions/mirrorStatePath"))
             .toString()
             .trimmed();
-    const QFileInfo info(path);
-    if (path.size() < 2 || path.size() > 4096 || !info.isAbsolute() ||
-        info.isSymLink() || !info.absoluteDir().exists())
-        return;
     const QString node =
         settings
             .value(QString::fromLatin1(
                 forkmesh::mirror_actions::kNodeSetting))
             .toString()
             .trimmed();
-    static const QRegularExpression validNode(
-        QStringLiteral("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"));
-    if (!validNode.match(node).hasMatch())
-        return;
-    const QJsonObject lease{
-        {QStringLiteral("schemaVersion"), 1},
-        {QStringLiteral("type"),
-         QStringLiteral("forkmesh.mirror-actions-state")},
-        {QStringLiteral("node"), node},
-        {QStringLiteral("state"), state},
-        {QStringLiteral("updatedAt"), now},
-        {QStringLiteral("expiresAt"), now + 10 * 60 * 1000},
-    };
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly))
-        return;
-    file.setPermissions(QFileDevice::ReadOwner |
-                        QFileDevice::WriteOwner);
-    if (file.write(
-            QJsonDocument(lease).toJson(QJsonDocument::Compact)) < 0 ||
-        !file.commit())
+    if (!forkmesh::mirror_actions::writeStateFile(
+            path, node, state, now))
         return;
     m_mirrorActionsRuntimeState = state;
     m_mirrorActionsRuntimeStateWrittenAtMs = now;
 
 #if defined(Q_OS_UNIX)
-    // The existing root-owned renew unit validates and signs the state before
-    // publication. --no-block avoids holding the GUI/event loop; an ordinary
-    // desktop without that unit simply ignores this best-effort trigger.
+    // The existing renew unit validates and signs the state as the dedicated
+    // mirror service account before publication. --no-block avoids holding the
+    // GUI/event loop; an ordinary desktop without that unit simply ignores
+    // this best-effort trigger.
     if (changed) {
         QProcess::startDetached(
             QStringLiteral("/usr/bin/systemctl"),
