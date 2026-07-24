@@ -30240,8 +30240,17 @@ class ForkMeshWorld(DurableObject):
         peer_id = new_world_peer_id()
         country_source = world_protocol.approximate_country_code(raw_country)
         state = world_protocol.default_presence(peer_id, now)
+        blocked_slots = []
+        for peer in peers:
+            blocked_slots.append(_ws_attr(peer, "arrival_slot", -1))
+            if _ws_attr(peer, "space", "") == "town-square":
+                # A visitor who restored a saved spot onto an arrival cell
+                # blocks that cell even without a matching reservation.
+                blocked_slots.append(
+                    world_protocol.arrival_slot_near_position(
+                        _ws_attr(peer, "x", None), _ws_attr(peer, "z", None)))
         arrival_slot = world_protocol.first_available_arrival_slot(
-            _ws_attr(peer, "arrival_slot", -1) for peer in peers)
+            blocked_slots)
         state.update(world_protocol.arrival_position(arrival_slot))
         trusted_claim = {}
         is_admin = False
