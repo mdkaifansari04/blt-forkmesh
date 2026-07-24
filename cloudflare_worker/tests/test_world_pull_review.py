@@ -72,12 +72,14 @@ def test_front_matter_and_unified_diff_are_bounded_and_line_numbered():
       import {{ parsePullFrontMatter, parseUnifiedDiff }}
         from {json.dumps(MODULE.as_uri())};
       const metadata = parsePullFrontMatter(`---
+schema: forkmesh-pull-v1
 number: 44
 title: "Review exact metadata"
 status: merged
 authorName: Alice
 base: main
 head: feature/review
+derive: branch
 creationBaseOid: ${{"a".repeat(40)}}
 creationHeadOid: ${{"b".repeat(40)}}
 ---
@@ -100,8 +102,10 @@ Binary files /dev/null and b/assets/logo.png differ`;
     value = run_module(script)
     metadata = value["metadata"]
     assert metadata["number"] == 44
+    assert metadata["schema"] == "forkmesh-pull-v1"
     assert metadata["title"] == "Review exact metadata"
     assert metadata["status"] == "merged"
+    assert metadata["derive"] == "branch"
     assert metadata["creationBaseOid"] == "a" * 40
     assert metadata["creationHeadOid"] == "b" * 40
     assert metadata["body"] == "An owner-authored description."
@@ -168,6 +172,71 @@ def test_file_tree_and_viewed_key_store_only_identity_not_code():
     assert "README" not in value["key"]
 
 
+def test_merge_request_requires_matching_exact_oids_and_a_stable_request_id():
+    script = f"""
+      import {{ buildPullMergeRequest, exactPullMergeContext }}
+        from {json.dumps(MODULE.as_uri())};
+      const active = {{
+        commit: "a".repeat(40),
+        entityRecords: {{
+          repositoryCommit: "a".repeat(40),
+          pullMetadataCommit: "c".repeat(40)
+        }}
+      }};
+      const review = {{
+        state: "ready",
+        number: 44,
+        metadataCommit: "c".repeat(40),
+        metadata: {{
+          number: 44,
+          schema: "forkmesh-pull-v1",
+          derive: "branch",
+          status: "open",
+          creationBaseOid: "a".repeat(40),
+          creationHeadOid: "b".repeat(40)
+        }}
+      }};
+      const context = exactPullMergeContext(active, review);
+      const request = buildPullMergeRequest(
+        context, "world_merge_1234567890abcdef"
+      );
+      process.stdout.write(JSON.stringify({{
+        context,
+        request,
+        staleBase: exactPullMergeContext(
+          {{...active, commit: "d".repeat(40)}}, review
+        ),
+        mixedHashKinds: exactPullMergeContext(active, {{
+          ...review,
+          metadata: {{
+            ...review.metadata,
+            creationHeadOid: "b".repeat(64)
+          }}
+        }}),
+        badRequestId: buildPullMergeRequest(context, "predictable")
+      }}));
+    """
+    value = run_module(script)
+    assert value["context"] == {
+        "number": 44,
+        "expectedBaseOid": "a" * 40,
+        "expectedHeadOid": "b" * 40,
+        "expectedPullsOid": "c" * 40,
+    }
+    assert value["request"] == {
+        "schemaVersion": 1,
+        "type": "forkmesh.pull-merge-v1",
+        "pullNumber": 44,
+        "requestId": "world_merge_1234567890abcdef",
+        "expectedBaseOid": "a" * 40,
+        "expectedHeadOid": "b" * 40,
+        "expectedPullsOid": "c" * 40,
+    }
+    assert value["staleBase"] is None
+    assert value["mixedHashKinds"] is None
+    assert value["badRequestId"] is None
+
+
 def test_world_review_uses_exact_pull_ref_and_stays_internal_memory_only():
     assert 'candidate.name === "forkmesh/pulls" && candidate.commit' in APP
     assert "immutableGitOid(tree?.commit) !== pullMetadataCommit" in APP
@@ -192,9 +261,17 @@ def test_world_review_uses_exact_pull_ref_and_stays_internal_memory_only():
     assert "localStorage" not in review_slice
     assert "sessionStorage" not in review_slice
     assert 'target="_blank"' not in review_slice
-    assert "data-world-pull-merge" not in APP
-    assert "Merge pull request" not in review_slice
+    assert "data-world-pull-merge" in review_slice
+    assert "Merge pull request #" in review_slice
+    assert "exactPullMergeContext(active, review)" in review_slice
+    assert "/pulls/${context.number}/merge" in review_slice
+    assert "authorization: `Bearer ${sessionToken}`" in review_slice
+    assert "WORLD_PULL_MERGE_MAX_REQUESTS" in APP
+    assert "result.state === \"merged\" && result.published === true" in review_slice
+    assert "reloadRepositoryAfterPublishedPullMerge" in review_slice
     assert '.world-detail[data-repository-review="true"]' in CSS
     assert ".world-pull-review-layout" in CSS
     assert ".world-pull-file-tree" in CSS
     assert ".world-pull-diff-row.is-add" in CSS
+    assert ".world-pull-merge-panel" in CSS
+    assert "forbidden:" in review_slice

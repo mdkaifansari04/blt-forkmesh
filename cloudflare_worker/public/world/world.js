@@ -20,7 +20,9 @@ import {
 } from "./world-data.js";
 import { buildLiveMirrorNodes } from "./world-mirror-nodes.js";
 import {
+  buildPullMergeRequest,
   buildPullFileTree,
+  exactPullMergeContext,
   immutableGitOid,
   parsePullFrontMatter,
   parseUnifiedDiff,
@@ -78,6 +80,9 @@ const WORLD_LIGHT_LEVEL_MAX = 140;
 const WORLD_LIGHT_LEVEL_DEFAULT = 100;
 const WORLD_DIAGNOSTICS_INTERVAL_MS = 1000;
 const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
+const WORLD_PULL_MERGE_MAX_REQUESTS = 6;
+const WORLD_PULL_MERGE_POLL_MS = 400;
+const WORLD_PULL_MERGE_RESPONSE_MAX_BYTES = 16 * 1024;
 const WORLD_ACCOUNT_NAME_RE =
   /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const FLAGSHIP_REPOSITORY = Object.freeze({
@@ -276,6 +281,33 @@ function randomId() {
 
 function readSession() {
   return readJSON(localStorage, "forkmesh.session", null);
+}
+
+function validWorldSession() {
+  const session = readSession();
+  const nodeName = String(session?.nodeName || "").trim().toLowerCase();
+  const sessionToken = String(session?.sessionToken || "").trim();
+  return WORLD_ACCOUNT_NAME_RE.test(nodeName) &&
+    sessionToken &&
+    sessionToken.length <= 2048
+    ? { ...session, nodeName, sessionToken }
+    : null;
+}
+
+function createPullMergeRequestId() {
+  try {
+    if (typeof crypto.randomUUID === "function") {
+      return `world_merge_${crypto.randomUUID().replaceAll("-", "")}`;
+    }
+    const bytes = new Uint8Array(18);
+    crypto.getRandomValues(bytes);
+    return `world_merge_${[...bytes]
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("")}`;
+  } catch (_) {
+    // A merge request never falls back to a predictable Math.random id.
+    return "";
+  }
 }
 
 function storeWorldSession(body) {
@@ -4308,6 +4340,11 @@ class ForkMeshWorld extends HTMLElement {
       const pullFile = event.target.closest("[data-world-pull-file-path]");
       if (pullFile) {
         this.scrollToPullFile(pullFile.dataset.worldPullFilePath);
+        return;
+      }
+      const pullMerge = event.target.closest("[data-world-pull-merge]");
+      if (pullMerge) {
+        void this.mergeRepositoryPull();
         return;
       }
       const graphNode = event.target.closest("[data-world-graph-node]");
@@ -8871,6 +8908,95 @@ class ForkMeshWorld extends HTMLElement {
       .join("")}</div>`;
   }
 
+  repositoryPullMergeHTML(active, review) {
+    const merge = review?.merge || { state: "idle" };
+    const state = String(merge.state || "idle");
+    const context = exactPullMergeContext(active, review);
+    const session = validWorldSession();
+    const terminalCopy = {
+      merged: {
+        title: "Merged and published",
+        body: "The selected mirror confirmed both the merge and publication. The repository map is being refreshed from the published commit.",
+      },
+      conflict: {
+        title: "Merge conflict",
+        body: "The exact reviewed commits do not merge cleanly. No branch or pull-metadata ref was changed.",
+      },
+      stale: {
+        title: "Review is stale",
+        body: "The base, head, or pull-metadata commit changed. ForkMesh refused to substitute a newer ref or merge different code.",
+      },
+      forbidden: {
+        title: "Merge not authorized",
+        body: "This signed-in account is not authorized as the repository owner, node owner, or an organization writer.",
+      },
+      unauthenticated: {
+        title: "Session no longer valid",
+        body: "Sign in again before requesting a merge. No bearer token is placed in the URL or page content.",
+      },
+      pending: {
+        title: "Merge still processing",
+        body: "Bounded automatic polling ended. Checking again reuses the same idempotency request and cannot create a second merge job.",
+      },
+      failed: {
+        title: "Merge status unavailable",
+        body: "ForkMesh could not verify a terminal result. Checking again safely reuses the same idempotency request.",
+      },
+    };
+    if (terminalCopy[state]) {
+      const details = terminalCopy[state];
+      const retry =
+        session &&
+        context &&
+        ["pending", "failed"].includes(state) &&
+        buildPullMergeRequest(context, merge.requestId);
+      return `<section class="world-pull-merge-panel" data-world-pull-merge-state="${escapeHTML(
+        state,
+      )}" aria-live="${state === "merged" ? "polite" : "assertive"}" aria-atomic="true" role="${
+        ["conflict", "stale", "forbidden", "unauthenticated", "failed"].includes(
+          state,
+        )
+          ? "alert"
+          : "status"
+      }">
+        <div>
+          <span>PROTECTED MERGE</span>
+          <strong>${escapeHTML(details.title)}</strong>
+          <small id="world-pull-merge-status">${escapeHTML(details.body)}</small>
+        </div>
+        ${
+          retry
+            ? `<button type="button" data-world-pull-merge aria-describedby="world-pull-merge-status">Check merge status</button>`
+            : ""
+        }
+      </section>`;
+    }
+    if (!session) {
+      return `<p class="world-panel-footnote">Sign in to request a protected in-World merge. Review remains available without opening another tab.</p>`;
+    }
+    if (!context) {
+      return `<div class="world-notice world-notice-warning" data-world-pull-merge-state="unavailable">
+        <strong>Commit-checked merge unavailable</strong>
+        <span>The open pull request must expose matching, immutable base, head, and pull-metadata object IDs before a merge control can appear.</span>
+      </div>`;
+    }
+    const processing = state === "processing";
+    return `<section class="world-pull-merge-panel" data-world-pull-merge-state="${processing ? "processing" : "ready"}" aria-live="polite" aria-atomic="true" aria-busy="${processing}" role="status">
+      <div>
+        <span>PROTECTED MERGE</span>
+        <strong>${processing ? "Merge requested" : "Exact commits verified"}</strong>
+        <small id="world-pull-merge-status">${
+          processing
+            ? "The selected mirror is checking and publishing this idempotent request."
+            : "The request will be pinned to the reviewed base, head, and pull-metadata commits. Authorization is enforced by the protected endpoint."
+        }</small>
+      </div>
+      <button type="button" data-world-pull-merge aria-describedby="world-pull-merge-status" ${
+        processing ? "disabled" : ""
+      }>${processing ? "Merging and publishing…" : `Merge pull request #${context.number}`}</button>
+    </section>`;
+  }
+
   repositoryPullReviewHTML(active) {
     const review = this.pullReview || { state: "unavailable" };
     const back = `
@@ -9004,7 +9130,7 @@ class ForkMeshWorld extends HTMLElement {
                 <span>The World will not invent a diff or silently read a moving branch. Use a trusted Git client to inspect branch-backed changes.</span>
               </div>`
         }
-        <p class="world-panel-footnote">This viewer is for examination only. Merge controls are intentionally absent until an authenticated, owner-authorized, commit-checked merge path exists.</p>
+        ${this.repositoryPullMergeHTML(active, review)}
       </section>`;
   }
 
@@ -9089,6 +9215,230 @@ class ForkMeshWorld extends HTMLElement {
     section.scrollIntoView({ behavior: "smooth", block: "start" });
     section.focus({ preventScroll: true });
     this.markPullFileViewed(safePath);
+  }
+
+  async requestRepositoryPullMerge(path, body, sessionToken) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${sessionToken}`,
+          "content-type": "application/json",
+        },
+        credentials: "same-origin",
+        cache: "no-store",
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const announced = Number(response.headers.get("content-length") || 0);
+      if (
+        Number.isFinite(announced) &&
+        announced > WORLD_PULL_MERGE_RESPONSE_MAX_BYTES
+      ) {
+        throw new Error("merge response too large");
+      }
+      const raw = await response.text();
+      const size =
+        typeof TextEncoder === "function"
+          ? new TextEncoder().encode(raw).byteLength
+          : raw.length;
+      if (size > WORLD_PULL_MERGE_RESPONSE_MAX_BYTES) {
+        throw new Error("merge response too large");
+      }
+      let payload = {};
+      try {
+        payload = JSON.parse(raw);
+      } catch (_) {}
+      return {
+        httpStatus: response.status,
+        payload:
+          payload && typeof payload === "object" && !Array.isArray(payload)
+            ? payload
+            : {},
+      };
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  classifyRepositoryPullMergeResponse(response, request) {
+    const httpStatus = Number(response?.httpStatus) || 0;
+    const payload =
+      response?.payload && typeof response.payload === "object"
+        ? response.payload
+        : {};
+    const error = String(payload.error || "");
+    if (httpStatus === 401 || error === "invalid_session") {
+      return { state: "unauthenticated" };
+    }
+    if (httpStatus === 403 || error === "forbidden") {
+      return { state: "forbidden" };
+    }
+    if (error === "merge_conflict") return { state: "conflict" };
+    if (
+      [
+        "stale_base",
+        "stale_head",
+        "stale_pull_metadata",
+        "pull_not_found",
+        "pull_not_open",
+        "unsupported_pull",
+      ].includes(error)
+    ) {
+      return { state: "stale" };
+    }
+    if (
+      httpStatus === 202 &&
+      payload.ok === true &&
+      payload.status === "processing" &&
+      payload.requestId === request.requestId
+    ) {
+      return { state: "processing" };
+    }
+    const baseAfter = immutableGitOid(payload.baseAfter);
+    const pullsAfter = immutableGitOid(payload.pullsAfter);
+    if (
+      httpStatus === 200 &&
+      payload.ok === true &&
+      payload.status === "merged" &&
+      payload.published === true &&
+      payload.requestId === request.requestId &&
+      immutableGitOid(payload.baseBefore) === request.expectedBaseOid &&
+      immutableGitOid(payload.head) === request.expectedHeadOid &&
+      immutableGitOid(payload.pullsBefore) === request.expectedPullsOid &&
+      baseAfter &&
+      pullsAfter &&
+      baseAfter.length === request.expectedBaseOid.length &&
+      pullsAfter.length === request.expectedPullsOid.length
+    ) {
+      return {
+        state: "merged",
+        published: true,
+        baseAfter,
+        pullsAfter,
+      };
+    }
+    return { state: "failed" };
+  }
+
+  async reloadRepositoryAfterPublishedPullMerge(active, review, mergeResult) {
+    if (
+      mergeResult?.state !== "merged" ||
+      mergeResult?.published !== true ||
+      !immutableGitOid(mergeResult.baseAfter)
+    ) {
+      return false;
+    }
+    let result;
+    try {
+      result = await this.fetchRepositoryMapSnapshot(active.owner, active.repo);
+    } catch (_) {
+      return false;
+    }
+    if (
+      this.destroyed ||
+      this.pullReview !== review ||
+      this.activeRepository?.owner !== active.owner ||
+      this.activeRepository?.repo !== active.repo ||
+      immutableGitOid(result?.snapshot?.commit) !== mergeResult.baseAfter
+    ) {
+      return false;
+    }
+    this.activeRepository = result.snapshot;
+    this.repositoryMapState = "ready";
+    this.renderRepositoryMapStatus();
+    this.world?.updateRepositoryGraph?.(
+      this.activeRepository.entries,
+      buildRepositoryGraphEntities(this.activeRepository),
+    );
+    void this.loadRepositorySecurity(active.owner, active.repo, false);
+    return true;
+  }
+
+  async mergeRepositoryPull() {
+    const active = this.activeRepository;
+    const review = this.pullReview;
+    const context = exactPullMergeContext(active, review);
+    const session = validWorldSession();
+    if (!active || !review || !context || !session) return;
+    if (
+      ["processing", "merged", "conflict", "stale", "forbidden", "unauthenticated"].includes(
+        String(review.merge?.state || ""),
+      )
+    ) {
+      return;
+    }
+    const existingRequest = buildPullMergeRequest(
+      context,
+      review.merge?.requestId,
+    );
+    const requestId =
+      existingRequest?.requestId || createPullMergeRequestId();
+    const request = buildPullMergeRequest(context, requestId);
+    if (!request) {
+      review.merge = { state: "failed", requestId: "" };
+      this.renderRepositoryExplorer();
+      return;
+    }
+    const endpoint = `/api/repo/${encodeURIComponent(
+      active.owner,
+    )}/${encodeURIComponent(active.repo)}/pulls/${context.number}/merge`;
+    const selection = this.pullReviewSelection;
+    const stillCurrent = () =>
+      !this.destroyed &&
+      selection === this.pullReviewSelection &&
+      this.pullReview === review;
+    review.merge = { state: "processing", requestId };
+    this.renderRepositoryExplorer();
+
+    for (let attempt = 0; attempt < WORLD_PULL_MERGE_MAX_REQUESTS; attempt += 1) {
+      if (!stillCurrent()) return;
+      if (validWorldSession()?.sessionToken !== session.sessionToken) {
+        review.merge = { state: "unauthenticated", requestId };
+        this.renderRepositoryExplorer();
+        return;
+      }
+      let response;
+      try {
+        response = await this.requestRepositoryPullMerge(
+          endpoint,
+          request,
+          session.sessionToken,
+        );
+      } catch (_) {
+        if (!stillCurrent()) return;
+        review.merge = { state: "failed", requestId };
+        this.renderRepositoryExplorer();
+        return;
+      }
+      if (!stillCurrent()) return;
+      const result = this.classifyRepositoryPullMergeResponse(response, request);
+      if (result.state === "processing") {
+        if (attempt + 1 >= WORLD_PULL_MERGE_MAX_REQUESTS) {
+          review.merge = { state: "pending", requestId };
+          this.renderRepositoryExplorer();
+          return;
+        }
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, WORLD_PULL_MERGE_POLL_MS),
+        );
+        continue;
+      }
+      review.merge = { ...result, requestId };
+      this.renderRepositoryExplorer();
+      if (result.state === "merged" && result.published === true) {
+        this.toast("Pull request merged and published.");
+        await this.reloadRepositoryAfterPublishedPullMerge(
+          active,
+          review,
+          result,
+        );
+      }
+      return;
+    }
   }
 
   openRepositoryPullList() {

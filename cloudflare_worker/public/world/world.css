@@ -3289,6 +3289,72 @@ forkmesh-world {
   height: 1px;
 }
 
+.world-pull-merge-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid rgb(158 247 198 / 0.42);
+  background: rgb(35 107 77 / 0.18);
+  padding: 11px;
+}
+
+.world-pull-merge-panel > div,
+.world-pull-merge-panel span,
+.world-pull-merge-panel strong,
+.world-pull-merge-panel small {
+  display: block;
+  min-width: 0;
+}
+
+.world-pull-merge-panel span {
+  color: var(--world-mint);
+  font: 600 0.48rem "ForkMesh Mono", monospace;
+}
+
+.world-pull-merge-panel strong {
+  margin-top: 3px;
+  font-size: 0.68rem;
+}
+
+.world-pull-merge-panel small {
+  margin-top: 4px;
+  color: var(--world-muted);
+  font: 0.5rem/1.45 "ForkMesh Mono", monospace;
+}
+
+.world-pull-merge-panel > button {
+  min-height: 40px;
+  border: 1px solid var(--world-mint);
+  border-radius: 0;
+  background: #173c2e;
+  padding: 7px 11px;
+  color: var(--world-mint);
+  cursor: pointer;
+  font: 600 0.54rem "ForkMesh Mono", monospace;
+}
+
+.world-pull-merge-panel > button:hover,
+.world-pull-merge-panel > button:focus-visible {
+  background: #22533f;
+  outline: 2px solid var(--detail-color);
+  outline-offset: 2px;
+}
+
+.world-pull-merge-panel > button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.world-pull-merge-panel[data-world-pull-merge-state="conflict"],
+.world-pull-merge-panel[data-world-pull-merge-state="stale"],
+.world-pull-merge-panel[data-world-pull-merge-state="forbidden"],
+.world-pull-merge-panel[data-world-pull-merge-state="unauthenticated"],
+.world-pull-merge-panel[data-world-pull-merge-state="failed"] {
+  border-color: rgb(255 190 118 / 0.5);
+  background: rgb(107 66 35 / 0.2);
+}
+
 .world-pull-review > .world-panel-footnote,
 .world-pull-list-panel > .world-panel-footnote {
   padding: 0 11px 11px;
@@ -4270,6 +4336,15 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
   .world-pull-panel-heading {
     align-items: start;
+  }
+
+  .world-pull-merge-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .world-pull-merge-panel > button {
+    width: 100%;
+    min-height: 44px;
   }
 
   .world-building-grid,

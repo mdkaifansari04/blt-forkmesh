@@ -5,6 +5,7 @@ const MAX_DIFF_CHARS = 2 * 1024 * 1024;
 const MAX_DIFF_FILES = 200;
 const MAX_DIFF_ROWS = 20_000;
 const MAX_DIFF_LINE_CHARS = 4_000;
+const MERGE_REQUEST_ID_RE = /^[A-Za-z0-9_-]{12,80}$/;
 
 function boundedText(value, limit) {
   return String(value ?? "")
@@ -104,6 +105,7 @@ export function parsePullFrontMatter(markdown, fallbackNumber = 0) {
     : "unknown";
   return {
     number,
+    schema: boundedText(values.schema || "", 64).trim(),
     title: boundedText(
       values.title || (number ? `Pull request #${number}` : "Pull request"),
       240,
@@ -112,6 +114,7 @@ export function parsePullFrontMatter(markdown, fallbackNumber = 0) {
     author: boundedText(values.authorName || values.author || "Unknown", 100).trim(),
     base: boundedText(values.base || "main", 160).trim(),
     head: boundedText(values.head || "", 160).trim(),
+    derive: boundedText(values.derive || "", 32).trim().toLowerCase(),
     createdAt: Number(values.ts || values.createdAt || 0) || 0,
     creationBaseOid: immutableGitOid(
       values.creationBaseOid || values.baseOid || "",
@@ -357,4 +360,85 @@ export function pullViewedStateKey(owner, repo, metadataCommit, number) {
   return cleanOwner && cleanRepo && commit && pullNumber
     ? `${cleanOwner}/${cleanRepo}@${commit}#${pullNumber}`
     : "";
+}
+
+// Return the exact immutable inputs that the protected merge endpoint is
+// allowed to receive. A syntactically valid session is checked separately by
+// the World shell because this pure helper deliberately has no storage access.
+export function exactPullMergeContext(active, review) {
+  const metadata = review?.metadata;
+  const number = safePullNumber(review?.number);
+  const expectedBaseOid = immutableGitOid(active?.commit);
+  const expectedHeadOid = immutableGitOid(metadata?.creationHeadOid);
+  const expectedPullsOid = immutableGitOid(review?.metadataCommit);
+  const indexedBaseOid = immutableGitOid(
+    active?.entityRecords?.repositoryCommit || active?.commit,
+  );
+  const indexedPullsOid = immutableGitOid(
+    active?.entityRecords?.pullMetadataCommit,
+  );
+  if (
+    active?.isPrivate === true ||
+    review?.state !== "ready" ||
+    !metadata ||
+    metadata.schema !== "forkmesh-pull-v1" ||
+    metadata.derive !== "branch" ||
+    metadata.status !== "open" ||
+    safePullNumber(metadata.number) !== number ||
+    !expectedBaseOid ||
+    expectedBaseOid !== immutableGitOid(metadata.creationBaseOid) ||
+    indexedBaseOid !== expectedBaseOid ||
+    !expectedHeadOid ||
+    !expectedPullsOid ||
+    indexedPullsOid !== expectedPullsOid ||
+    new Set([
+      expectedBaseOid.length,
+      expectedHeadOid.length,
+      expectedPullsOid.length,
+    ]).size !== 1
+  ) {
+    return null;
+  }
+  return {
+    number,
+    expectedBaseOid,
+    expectedHeadOid,
+    expectedPullsOid,
+  };
+}
+
+export function buildPullMergeRequest(context, requestId) {
+  const checked = exactPullMergeContext(
+    {
+      commit: context?.expectedBaseOid,
+      entityRecords: {
+        repositoryCommit: context?.expectedBaseOid,
+        pullMetadataCommit: context?.expectedPullsOid,
+      },
+    },
+    {
+      state: "ready",
+      number: context?.number,
+      metadataCommit: context?.expectedPullsOid,
+      metadata: {
+        number: context?.number,
+        schema: "forkmesh-pull-v1",
+        derive: "branch",
+        status: "open",
+        creationBaseOid: context?.expectedBaseOid,
+        creationHeadOid: context?.expectedHeadOid,
+      },
+    },
+  );
+  const stableRequestId = String(requestId || "").trim();
+  if (!checked || !MERGE_REQUEST_ID_RE.test(stableRequestId)) return null;
+  return {
+    schemaVersion: 1,
+    type: "forkmesh.pull-merge-v1",
+    pullNumber: checked.number,
+    requestId: stableRequestId,
+    expectedBaseOid: checked.expectedBaseOid,
+    expectedHeadOid: checked.expectedHeadOid,
+    expectedPullsOid: checked.expectedPullsOid,
+  };
 }

@@ -394,17 +394,25 @@ async function prepareWorldPage(
       };
     }
     if (repositoryFixture) {
-      const codeOid = "a".repeat(40);
-      const pullOid = "b".repeat(40);
+      const codeOid = (
+        repositoryFixture.mergePublished ? "f" : "a"
+      ).repeat(40);
+      const pullOid = (
+        repositoryFixture.mergePublished ? "d" : "b"
+      ).repeat(40);
       const stateHash = "c".repeat(64);
       const pullMarkdown = (number, title, head) => `---
+schema: forkmesh-pull-v1
 number: ${number}
 title: "${title}"
-status: open
+status: ${
+  repositoryFixture.mergePublished && number === 44 ? "merged" : "open"
+}
 authorName: Alice
 base: main
 head: ${head}
-creationBaseOid: ${"d".repeat(40)}
+derive: branch
+creationBaseOid: ${"a".repeat(40)}
 creationHeadOid: ${"e".repeat(40)}
 ---
 This description came from the exact pull metadata commit.`;
@@ -428,7 +436,90 @@ ${longContext}
 -const oldValue = false;
 +const oldValue = true;`;
       const repoBase = "/api/repo/forkmesh/forkmesh";
-      if (url.pathname === "/api/repositories") {
+      const pullMergeMatch = url.pathname.match(
+        /^\/api\/repo\/forkmesh\/forkmesh\/pulls\/44\/merge$/,
+      );
+      if (pullMergeMatch && route.request().method() === "POST") {
+        let request = {};
+        try {
+          request = route.request().postDataJSON();
+        } catch (_) {}
+        const expectedRequest =
+          request?.schemaVersion === 1 &&
+          request?.type === "forkmesh.pull-merge-v1" &&
+          request?.pullNumber === 44 &&
+          /^[A-Za-z0-9_-]{12,80}$/.test(String(request?.requestId || "")) &&
+          request?.expectedBaseOid === "a".repeat(40) &&
+          request?.expectedHeadOid === "e".repeat(40) &&
+          request?.expectedPullsOid === "b".repeat(40);
+        if (!expectedRequest) {
+          status = 400;
+          body = { error: "invalid_request" };
+        } else if (repositoryFixture.mergeOutcome === "forbidden") {
+          status = 403;
+          body = { error: "forbidden" };
+        } else if (repositoryFixture.mergeOutcome === "conflict") {
+          status = 409;
+          body = {
+            ok: false,
+            status: "failed",
+            requestId: request.requestId,
+            error: "merge_conflict",
+          };
+        } else if (repositoryFixture.mergeOutcome === "stale") {
+          status = 409;
+          body = {
+            ok: false,
+            status: "failed",
+            requestId: request.requestId,
+            error: "stale_base",
+          };
+        } else if (repositoryFixture.mergeOutcome === "retry") {
+          const attempt = Number(repositoryFixture.mergeRequestCount || 0);
+          repositoryFixture.mergeRequestCount = attempt + 1;
+          if (attempt < 6) {
+            status = 202;
+            body = {
+              ok: true,
+              status: "processing",
+              requestId: request.requestId,
+            };
+          } else {
+            status = 409;
+            body = {
+              ok: false,
+              status: "failed",
+              requestId: request.requestId,
+              error: "merge_conflict",
+            };
+          }
+        } else {
+          const attempt = Number(repositoryFixture.mergeRequestCount || 0);
+          repositoryFixture.mergeRequestCount = attempt + 1;
+          if (attempt === 0) {
+            status = 202;
+            body = {
+              ok: true,
+              status: "processing",
+              requestId: request.requestId,
+            };
+          } else {
+            status = 200;
+            body = {
+              ok: true,
+              status: "merged",
+              requestId: request.requestId,
+              published: true,
+              baseBefore: "a".repeat(40),
+              head: "e".repeat(40),
+              pullsBefore: "b".repeat(40),
+              baseAfter: "f".repeat(40),
+              pullsAfter: "d".repeat(40),
+            };
+            repositoryFixture.mergePublished = true;
+          }
+        }
+      } else if (url.pathname === "/api/repositories") {
         body = {
           repositories: ["mirror2", "mirror3"].map((owner) => ({
             owner,
@@ -639,6 +730,26 @@ async function waitForWorld(page, url = "/world/") {
         .querySelector("[data-world-loading]")
         ?.getAttribute("aria-hidden") === "true",
   );
+}
+
+async function openWorldPullReview(page, number = 44) {
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready" &&
+      shell?.activeRepository?.owner === "forkmesh" &&
+      shell?.activeRepository?.repo === "forkmesh";
+  });
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("repositories"),
+  );
+  await page.getByRole("button", { name: /^2 pull requests$/i }).click();
+  await page
+    .locator(`[data-world-pull-open][data-world-pull-number='${number}']`)
+    .click();
+  await expect(
+    page.getByRole("heading", { name: `Pull request #${number}` }),
+  ).toBeVisible();
 }
 
 test("signed-in World receives private and global notifications", async ({
@@ -1932,6 +2043,254 @@ test("pull requests open and become viewed entirely inside the repository World"
   expect(
     repositoryRequests.filter((url) => url.pathname.endsWith("/branches")),
   ).toHaveLength(1);
+});
+
+test("an authenticated organization writer merges exact reviewed OIDs in-World", async ({
+  page,
+  context,
+}) => {
+  const fixture = { mergeOutcome: "success" };
+  const mergeRequests = [];
+  const rootTreeRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      url.pathname === "/api/repo/forkmesh/forkmesh/tree" &&
+      (url.searchParams.get("path") || "") === ""
+    ) {
+      rootTreeRequests.push(url);
+    }
+    if (url.pathname.endsWith("/pulls/44/merge")) {
+      mergeRequests.push({
+        method: request.method(),
+        authorization: request.headers().authorization || "",
+        body: request.postDataJSON(),
+      });
+    }
+  });
+  await prepareWorldPage(page, "world-org-writer-merge", {
+    session: {
+      nodeName: "release-writer",
+      sessionToken: "org-writer-session-token",
+    },
+    repositoryFixture: fixture,
+  });
+  await openWorldPullReview(page);
+  const originalPages = context.pages().length;
+  const originalRootReads = rootTreeRequests.length;
+  const mergeButton = page.getByRole("button", {
+    name: "Merge pull request #44",
+  });
+  await expect(mergeButton).toBeVisible();
+  await mergeButton.evaluate((button) => {
+    button.click();
+    document.querySelector("forkmesh-world")?.mergeRepositoryPull();
+  });
+  await expect(
+    page.locator("[data-world-pull-merge-state='merged']"),
+  ).toContainText("Merged and published");
+  await page.waitForFunction(
+    (commit) =>
+      document.querySelector("forkmesh-world")?.activeRepository?.commit ===
+      commit,
+    "f".repeat(40),
+  );
+
+  expect(mergeRequests).toHaveLength(2);
+  expect(mergeRequests.every((request) => request.method === "POST")).toBe(true);
+  expect(
+    mergeRequests.every(
+      (request) =>
+        request.authorization === "Bearer org-writer-session-token",
+    ),
+  ).toBe(true);
+  expect(mergeRequests[0].body).toEqual(mergeRequests[1].body);
+  expect(mergeRequests[0].body).toMatchObject({
+    schemaVersion: 1,
+    type: "forkmesh.pull-merge-v1",
+    pullNumber: 44,
+    expectedBaseOid: "a".repeat(40),
+    expectedHeadOid: "e".repeat(40),
+    expectedPullsOid: "b".repeat(40),
+  });
+  expect(mergeRequests[0].body.requestId).toMatch(
+    /^[A-Za-z0-9_-]{12,80}$/,
+  );
+  expect(rootTreeRequests.length).toBeGreaterThan(originalRootReads);
+  expect(context.pages()).toHaveLength(originalPages);
+  expect(page.url()).toContain("/world/");
+});
+
+test("an unauthenticated reviewer never receives a merge control", async ({
+  page,
+}) => {
+  const mergeRequests = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.endsWith("/pulls/44/merge")) {
+      mergeRequests.push(request);
+    }
+  });
+  await prepareWorldPage(page, "world-unauthenticated-review", {
+    repositoryFixture: {},
+  });
+  await openWorldPullReview(page);
+  await expect(page.locator("[data-world-pull-merge]")).toHaveCount(0);
+  await expect(
+    page.getByText(
+      "Sign in to request a protected in-World merge. Review remains available without opening another tab.",
+    ),
+  ).toBeVisible();
+  expect(mergeRequests).toHaveLength(0);
+});
+
+test("a forbidden merge is rendered safely and never reloads repository data", async ({
+  page,
+}) => {
+  const fixture = { mergeOutcome: "forbidden" };
+  const mergeRequests = [];
+  const rootTreeRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      url.pathname === "/api/repo/forkmesh/forkmesh/tree" &&
+      (url.searchParams.get("path") || "") === ""
+    ) {
+      rootTreeRequests.push(url);
+    }
+    if (url.pathname.endsWith("/pulls/44/merge")) mergeRequests.push(request);
+  });
+  await prepareWorldPage(page, "world-forbidden-merge", {
+    session: {
+      nodeName: "registered-reader",
+      sessionToken: "reader-session-token",
+    },
+    repositoryFixture: fixture,
+  });
+  await openWorldPullReview(page);
+  const rootReadsBeforeMerge = rootTreeRequests.length;
+  await page
+    .getByRole("button", { name: "Merge pull request #44" })
+    .click();
+  const denied = page.locator(
+    "[data-world-pull-merge-state='forbidden']",
+  );
+  await expect(denied).toHaveAttribute("role", "alert");
+  await expect(denied).toContainText("Merge not authorized");
+  await expect(denied).toContainText("organization writer");
+  await expect(page.locator("[data-world-pull-merge]")).toHaveCount(0);
+  expect(mergeRequests).toHaveLength(1);
+  expect(rootTreeRequests).toHaveLength(rootReadsBeforeMerge);
+});
+
+for (const scenario of [
+  {
+    outcome: "conflict",
+    state: "conflict",
+    title: "Merge conflict",
+  },
+  {
+    outcome: "stale",
+    state: "stale",
+    title: "Review is stale",
+  },
+]) {
+  test(`${scenario.outcome} merge result is explicit and does not reload`, async ({
+    page,
+  }) => {
+    const fixture = { mergeOutcome: scenario.outcome };
+    const rootTreeRequests = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (
+        url.pathname === "/api/repo/forkmesh/forkmesh/tree" &&
+        (url.searchParams.get("path") || "") === ""
+      ) {
+        rootTreeRequests.push(url);
+      }
+    });
+    await prepareWorldPage(page, `world-${scenario.outcome}-merge`, {
+      session: {
+        nodeName: "organization-writer",
+        sessionToken: `${scenario.outcome}-session-token`,
+      },
+      repositoryFixture: fixture,
+    });
+    await openWorldPullReview(page);
+    const rootReadsBeforeMerge = rootTreeRequests.length;
+    await page
+      .getByRole("button", { name: "Merge pull request #44" })
+      .click();
+    const result = page.locator(
+      `[data-world-pull-merge-state='${scenario.state}']`,
+    );
+    await expect(result).toHaveAttribute("role", "alert");
+    await expect(result).toContainText(scenario.title);
+    expect(rootTreeRequests).toHaveLength(rootReadsBeforeMerge);
+  });
+}
+
+test("bounded polling and a manual retry reuse one idempotency request", async ({
+  page,
+}) => {
+  const fixture = { mergeOutcome: "retry" };
+  const mergeBodies = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.endsWith("/pulls/44/merge")) {
+      mergeBodies.push(request.postDataJSON());
+    }
+  });
+  await prepareWorldPage(page, "world-bounded-merge-poll", {
+    session: {
+      nodeName: "organization-writer",
+      sessionToken: "bounded-poll-session-token",
+    },
+    repositoryFixture: fixture,
+  });
+  await openWorldPullReview(page);
+  await page
+    .getByRole("button", { name: "Merge pull request #44" })
+    .click();
+  await expect(
+    page.locator("[data-world-pull-merge-state='pending']"),
+  ).toContainText("Bounded automatic polling ended");
+  expect(mergeBodies).toHaveLength(6);
+  await page.getByRole("button", { name: "Check merge status" }).click();
+  await expect(
+    page.locator("[data-world-pull-merge-state='conflict']"),
+  ).toContainText("Merge conflict");
+  expect(mergeBodies).toHaveLength(7);
+  expect(new Set(mergeBodies.map((body) => body.requestId)).size).toBe(1);
+  expect(mergeBodies.every((body) => body.type === "forkmesh.pull-merge-v1")).toBe(
+    true,
+  );
+});
+
+test("the protected merge control is touch-sized and announces state on mobile", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await prepareWorldPage(page, "world-mobile-merge", {
+    session: {
+      nodeName: "mobile-writer",
+      sessionToken: "mobile-writer-session-token",
+    },
+    repositoryFixture: {},
+  });
+  await openWorldPullReview(page);
+  const panel = page.locator("[data-world-pull-merge-state='ready']");
+  const button = panel.getByRole("button", {
+    name: "Merge pull request #44",
+  });
+  await expect(panel).toHaveAttribute("role", "status");
+  await expect(panel).toHaveAttribute("aria-live", "polite");
+  await expect(panel).toHaveAttribute("aria-busy", "false");
+  await expect(button).toBeVisible();
+  const box = await button.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box.height).toBeGreaterThanOrEqual(44);
+  expect(box.width).toBeLessThanOrEqual(390);
+  await button.focus();
+  await expect(button).toBeFocused();
 });
 
 test("missing pull metadata branch fails closed without probing main", async ({
