@@ -1,3 +1,19 @@
+import {
+  b64ToBytes,
+  b64UrlToBytes as b64urlToBytes,
+  bytesToB64,
+  decryptObject,
+  derivePassphraseKey,
+} from "./chat-crypto.js";
+import {
+  MAX_ATTACHMENT_BYTES,
+  attachmentFromEntry,
+  formatAttachmentSize,
+  safeAttachmentMime,
+  safeAttachmentName,
+} from "./chat-attachments.js";
+import { createChatRoomTransport } from "./chat-room-transport.js";
+
 // Browser-side ForkMesh room chat. Reimplements the desktop client's room
 // crypto (PBKDF2 + AES-256-GCM) and message envelope so the website can join
 // the public encrypted rooms and talk to connected clients. Frames are
@@ -36,9 +52,6 @@ const RELAY_HOST = window.FORKMESH_RELAY_HOST || location.host;
 const MAX_TEXT = 16000;
 const MAX_NAME = 32;
 const MAX_ACCOUNT_NAME = 63;
-const MAX_ATTACHMENT_BYTES = 1024 * 1024;
-const MAX_ATTACHMENT_NAME = 180;
-const MAX_ATTACHMENT_MIME = 100;
 const CHAT_MENTION_RE = /(^|[^A-Za-z0-9_-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b/gi;
 // Presence cadence + staleness mirror the desktop node (ServerNode.cpp:
 // kPresenceIntervalMs / kPeerStaleMs). The beat doubles as the keep-alive the
@@ -63,6 +76,7 @@ const PEER_STALE_MS = 180000;
 const GROUP_WINDOW_MS = 5 * 60 * 1000; // same-sender messages collapse under one header
 const REACTION_EMOJI = ["👍", "❤️", "😂", "🎉", "👀", "🚀"];
 const ACTIVE_CHANNEL_KEY = "forkmesh.chat.channel";
+const CHAT_SIGN_IN_REQUIRED = "Sign in again to join chat";
 const OFFICE_SESSION_EXPIRED =
   "Your session expired. Log in again to use authorized channels.";
 const OFFICE_RELAY_UNAVAILABLE = "Chat relay unavailable. Try again.";
@@ -109,7 +123,6 @@ const officeLoginLink = document.querySelector("#chat-office-login");
 const officeRetryBtn = document.querySelector("#chat-office-retry");
 
 const enc = new TextEncoder();
-const dec = new TextDecoder();
 // A stable per-browser chat id. The relay holds no roster — every participant
 // is reconstructed client-side from the senderId on decrypted frames — so a
 // fresh random id per page load made each reload/tab of the same person show up
@@ -132,14 +145,9 @@ const selfId = (() => {
 const roomPassphrases = new Map();
 const roomKeys = new Map();
 const privateChannels = new Map();
-let roomKey = null;
-let socket = null;
-let socketScope = "";
-let connecting = false;
+let roomTransport = null;
 let openCallbacks = [];
 let cachedUserSession = null;
-let reconnectDelayMs = 2000;
-let reconnectTimer = null;
 let chatSuspended = false;
 let officeAuthorizationExpired = false;
 const seen = new Set();
@@ -185,66 +193,6 @@ let mentionHideTimer = null;
 let emojiPickerEl = null;
 let emojiPickerTarget = null;
 
-// ---- base64 <-> bytes -------------------------------------------------------
-
-function bytesToB64(bytes) {
-  const arr = new Uint8Array(bytes);
-  let bin = "";
-  for (let i = 0; i < arr.length; i += 1) bin += String.fromCharCode(arr[i]);
-  return btoa(bin);
-}
-
-function b64ToBytes(value) {
-  const bin = atob(value);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-function safeAttachmentName(value) {
-  const parts = String(value || "")
-    .replace(/\\/g, "/")
-    .split("/");
-  const name = String(parts.pop() || "")
-    .replace(/\0/g, "")
-    .trim()
-    .slice(0, MAX_ATTACHMENT_NAME);
-  return name || "file";
-}
-
-function safeAttachmentMime(value) {
-  const mime = String(value || "").trim().toLowerCase();
-  return /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(mime) &&
-    mime.length <= MAX_ATTACHMENT_MIME
-    ? mime
-    : "application/octet-stream";
-}
-
-function attachmentFromEntry(entry) {
-  if (!entry || !entry.fileName || typeof entry.file !== "string") return null;
-  if (!entry.file || entry.file.length > Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 4) {
-    return null;
-  }
-  try {
-    const bytes = b64ToBytes(entry.file);
-    if (!bytes.length || bytes.byteLength > MAX_ATTACHMENT_BYTES) return null;
-    return {
-      fileName: safeAttachmentName(entry.fileName),
-      fileMime: safeAttachmentMime(entry.fileMime),
-      file: entry.file,
-      size: bytes.byteLength,
-    };
-  } catch (_) {
-    return null;
-  }
-}
-
-function formatAttachmentSize(size) {
-  const bytes = Math.max(0, Number(size) || 0);
-  if (bytes < 1024) return `${bytes} B`;
-  return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KiB`;
-}
-
 function setAttachmentFeedback(message) {
   if (!attachmentFeedback) return;
   attachmentFeedback.textContent = String(message || "");
@@ -255,13 +203,6 @@ function setAttachmentFeedback(message) {
       }
     }, 5000);
   }
-}
-
-// The desktop identity encodes keys/signatures as unpadded base64url.
-function b64urlToBytes(value) {
-  let s = (value || "").replace(/-/g, "+").replace(/_/g, "/");
-  while (s.length % 4) s += "=";
-  return b64ToBytes(s);
 }
 
 // Verify an Ed25519 signature (raw 32-byte key, 64-byte sig) over a UTF-8
@@ -342,31 +283,6 @@ async function fetchRoomPassphrase(scope = roomScopeForChannel()) {
   return passphrase;
 }
 
-async function derivePassphraseKey(passphrase, roomName) {
-  const saltDigest = new Uint8Array(
-    await crypto.subtle.digest(
-      "SHA-256",
-      enc.encode("ForkMesh room:" + roomName)
-    )
-  );
-  const salt = saltDigest.slice(0, 16);
-  const baseKey = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(passphrase),
-    "PBKDF2",
-    false,
-    ["deriveKey"]
-  );
-  const key = await crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 210000, hash: "SHA-256" },
-    baseKey,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt", "decrypt"]
-  );
-  return key;
-}
-
 async function deriveRoomKey(scope = roomScopeForChannel()) {
   if (scope !== "public-world-general") {
     throw new Error("Private channel room access required.");
@@ -422,47 +338,6 @@ async function fetchRoomAccess(channelKey = activeChannel) {
     throw new Error("Channel room access unavailable.");
   }
   return access;
-}
-
-async function encryptObject(obj, key = roomKey) {
-  const nonce = crypto.getRandomValues(new Uint8Array(12));
-  const combined = new Uint8Array(
-    await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv: nonce, tagLength: 128 },
-        key,
-      enc.encode(JSON.stringify(obj))
-    )
-  );
-  // The desktop stores ciphertext and the 16-byte GCM tag separately.
-  const body = combined.slice(0, combined.length - 16);
-  const tag = combined.slice(combined.length - 16);
-  return {
-    kind: "cipher",
-    v: 1,
-    nonce: bytesToB64(nonce),
-    tag: bytesToB64(tag),
-    body: bytesToB64(body),
-  };
-}
-
-async function decryptObject(envelope, key = roomKey) {
-  if (!envelope || envelope.kind !== "cipher") return null;
-  try {
-    const nonce = b64ToBytes(envelope.nonce);
-    const body = b64ToBytes(envelope.body);
-    const tag = b64ToBytes(envelope.tag);
-    const combined = new Uint8Array(body.length + tag.length);
-    combined.set(body, 0);
-    combined.set(tag, body.length);
-    const plain = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: nonce, tagLength: 128 },
-        key,
-      combined
-    );
-    return JSON.parse(dec.decode(plain));
-  } catch (error) {
-    return null;
-  }
 }
 
 // ---- session ----------------------------------------------------------------
@@ -2107,7 +1982,7 @@ function handlePlain(plain, scope = roomScopeForChannel()) {
   }
 }
 
-async function onFrame(event, key = roomKey, scope = socketScope) {
+async function onFrame(event, key = null, scope = roomScopeForChannel()) {
   if (typeof event.data !== "string") return;
   let envelope;
   try {
@@ -2127,7 +2002,7 @@ function send(plain) {
     lockChatForNonUser();
     return Promise.resolve();
   }
-  const scope = socketScope || roomScopeForChannel();
+  const scope = roomTransport?.room?.scope || roomScopeForChannel();
   if (
     scope === "public-world-general" &&
     plain?.channel &&
@@ -2135,12 +2010,10 @@ function send(plain) {
   ) {
     return Promise.resolve();
   }
-  return encryptObject(plain, roomKey).then((envelope) => {
-    if (DURABLE_TYPES.has(plain && plain.type)) envelope.persist = true;
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(envelope));
-    }
-  });
+  const envelope = { persist: false };
+  if (DURABLE_TYPES.has(plain && plain.type)) envelope.persist = true;
+  if (!roomTransport) return Promise.resolve(false);
+  return roomTransport.send(plain, { persist: envelope.persist });
 }
 
 function makeForkbotPlain(text) {
@@ -2187,19 +2060,9 @@ async function maybeAskForkbot(text) {
 }
 
 function switchChatRoom() {
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-  const previous = socket;
-  socket = null;
-  socketScope = "";
-  roomKey = null;
-  connecting = false;
+  roomTransport?.dispose();
+  roomTransport = null;
   openCallbacks = [];
-  try {
-    previous?.close(1000, "channel changed");
-  } catch (_) {}
   if (canJoinChannel()) {
     unlockChatForUser();
     connect();
@@ -2210,86 +2073,36 @@ function switchChatRoom() {
 
 function scheduleReconnect() {
   if (chatSuspended) return;
-  if (reconnectTimer || !canJoinChannel()) return;
+  if (!canJoinChannel()) return;
   setStatus("Disconnected · reconnecting…");
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    connect();
-  }, reconnectDelayMs);
-  reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30000);
+  if (!roomTransport || roomTransport.state === "unauthorized") connect();
 }
 
-async function connect() {
-  if (chatSuspended) return;
-  if (socket || connecting) return;
-  const scope = roomScopeForChannel();
-  if (!canJoinChannel()) {
-    lockChatForNonUser();
-    return;
+async function authorizeChatRoom(room) {
+  if (room.scope === "public-world-general") {
+    return {
+      scope: room.scope,
+      key: await deriveRoomKey(room.scope),
+      roomName: PUBLIC_WORLD_GENERAL_ROOM,
+      webSocketUrl: PUBLIC_WORLD_CHAT_WS_PATH,
+    };
   }
-  // WebCrypto (crypto.subtle) only exists in a secure context. Served over
-  // plain HTTP — a self-hosted node or LAN IP opened on mobile — it is
-  // undefined, so the room key can never derive. Say so plainly.
-  if (!window.isSecureContext || !(window.crypto && window.crypto.subtle)) {
-    setStatus("Chat needs a secure (HTTPS) connection");
-    return;
-  }
-  connecting = true;
-  setStatus("Connecting...");
-  let derivedKey;
-  let webSocketPath;
-  try {
-    if (scope === "public-world-general") {
-      derivedKey = await deriveRoomKey(scope);
-      webSocketPath = PUBLIC_WORLD_CHAT_WS_PATH;
-    } else {
-      const access = await fetchRoomAccess(scope);
-      if (scope !== roomScopeForChannel()) {
-        connecting = false;
-        connect();
-        return;
-      }
-      derivedKey = await derivePassphraseKey(access.passphrase, access.room);
-      webSocketPath = access.webSocketUrl;
-    }
-  } catch (error) {
-    connecting = false;
-    // An expired/absent session token 401s the room-key fetch; point the user
-    // at re-authenticating instead of blaming the browser's crypto.
-    const expired = error && error.code === "auth";
-    setStatus(expired ? OFFICE_SESSION_EXPIRED : OFFICE_RELAY_UNAVAILABLE);
-    showOfficeFailure(expired ? "auth" : "relay");
-    return;
-  }
-  if (scope !== roomScopeForChannel()) {
-    connecting = false;
-    connect();
-    return;
-  }
-  roomKey = derivedKey;
-  socketScope = scope;
-  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  const socketUrl = /^wss?:\/\//i.test(webSocketPath)
-    ? webSocketPath
-    : `${scheme}//${RELAY_HOST}${webSocketPath}`;
-  let roomSocket;
-  try {
-    roomSocket = new WebSocket(socketUrl);
-  } catch (_) {
-    connecting = false;
-    setStatus(OFFICE_RELAY_UNAVAILABLE);
-    showOfficeFailure("relay");
-    return;
-  }
-  socket = roomSocket;
+  const access = await fetchRoomAccess(room.scope);
+  return {
+    scope: room.scope,
+    passphrase: access.passphrase,
+    roomName: access.room,
+    webSocketUrl: access.webSocketUrl,
+  };
+}
 
-  roomSocket.addEventListener("open", () => {
-    if (socket !== roomSocket || scope !== roomScopeForChannel()) {
-      roomSocket.close(1000, "channel changed");
+function handleTransportState(state, detail) {
+  const scope = detail.room?.scope || roomScopeForChannel();
+  if (state === "connected") {
+    if (scope !== roomScopeForChannel()) {
+      switchChatRoom();
       return;
     }
-    connecting = false;
-    reconnectDelayMs = 2000;
     if (!officeAuthorizationExpired) showOfficeFailure("");
     setStatus(
       scope === "public-world-general"
@@ -2298,46 +2111,77 @@ async function connect() {
           privateChannelForKey(scope)?.visibility || "private"
         } ${channelDisplayLabel(scope)}`
     );
-    // Announce ourselves so clients add us to their roster and replay history.
     send(makePlain("hello", {
       channels: [channelDisplayLabel(activeChannel)],
     }));
     noteSelfRoster();
     const callbacks = openCallbacks;
     openCallbacks = [];
-    callbacks.forEach((cb) => cb());
-  });
-  roomSocket.addEventListener(
-    "message",
-    (event) => onFrame(event, derivedKey, scope)
-  );
-  roomSocket.addEventListener("close", () => {
-    if (socket !== roomSocket) return;
-    socket = null;
-    socketScope = "";
-    roomKey = null;
-    connecting = false;
-    scheduleReconnect();
-  });
-  roomSocket.addEventListener("error", () => {
+    callbacks.forEach((callback) => callback());
+    return;
+  }
+  if (state === "authorizing" || state === "connecting") {
+    setStatus("Connecting...");
+    return;
+  }
+  if (state === "reconnecting") {
+    setStatus("Disconnected · reconnecting…");
+    return;
+  }
+  if (state === "unauthorized") {
+    setStatus(CHAT_SIGN_IN_REQUIRED);
+    showOfficeFailure("auth");
+    return;
+  }
+  if (state === "unavailable") {
     setStatus(OFFICE_RELAY_UNAVAILABLE);
     showOfficeFailure("relay");
-    if (socket === roomSocket) roomSocket.close();
+  }
+}
+
+function newRoomTransport() {
+  return createChatRoomTransport({
+    authorize: authorizeChatRoom,
+    onPlain: (plain, room) => handlePlain(plain, room.scope),
+    onState: handleTransportState,
+    locationLike: { protocol: location.protocol, host: RELAY_HOST },
   });
+}
+
+async function connect() {
+  if (chatSuspended) return;
+  const scope = roomScopeForChannel();
+  if (!canJoinChannel()) {
+    lockChatForNonUser();
+    return;
+  }
+  // WebCrypto (crypto.subtle) only exists in a secure context. Served over
+  // plain HTTP - a self-hosted node or LAN IP opened on mobile - it is
+  // undefined, so the room key can never derive. Say so plainly.
+  if (!window.isSecureContext || !(window.crypto && window.crypto.subtle)) {
+    setStatus("Chat needs a secure (HTTPS) connection");
+    return;
+  }
+  if (roomTransport?.room?.scope === scope) {
+    if (roomTransport.state === "suspended") await roomTransport.resume();
+    return;
+  }
+  roomTransport?.dispose();
+  roomTransport = newRoomTransport();
+  await roomTransport.connect({ scope });
 }
 
 function runWhenConnected(callback) {
   const scope = roomScopeForChannel();
   if (
-    socket &&
-    socket.readyState === WebSocket.OPEN &&
-    socketScope === scope
+    roomTransport?.connected &&
+    roomTransport.room?.scope === scope
   ) {
     callback();
     return;
   }
   openCallbacks.push(callback);
-  if (socket && socketScope !== scope) {
+  if (roomTransport && roomTransport.room?.scope !== scope) {
     switchChatRoom();
     return;
   }
@@ -2426,19 +2270,8 @@ function sendCurrentMessage() {
 function suspendOfficeChat() {
   if (!isOfficeEmbed || chatSuspended) return;
   chatSuspended = true;
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-  const previous = socket;
-  socket = null;
-  socketScope = "";
-  roomKey = null;
-  connecting = false;
+  roomTransport?.suspend();
   openCallbacks = [];
-  try {
-    previous?.close(1000, "left ForkMesh Office");
-  } catch (_) {}
   setStatus("Chat paused outside ForkMesh Office");
 }
 
@@ -2565,7 +2398,7 @@ async function initChat() {
   // (it reaps sockets that send nothing for 3 minutes — the old web client's
   // idle disconnects).
   setInterval(() => {
-    if (socket && socket.readyState === WebSocket.OPEN && canJoinChannel()) {
+    if (roomTransport?.connected && canJoinChannel()) {
       send(makePlain("presence"));
       noteSelfRoster();
     }

@@ -1012,6 +1012,7 @@ def test_world_route_binding_and_migration_are_registered():
     assert bindings == {
         "FORKMESH_MAINNODE_ROOM": "ForkMeshRoom",
         "FORKMESH_WORLD": "ForkMeshWorld",
+        "FORKMESH_OFFICE_ROOM": "ForkMeshOfficeRoom",
     }
     dev_bindings = {
         item["name"]: item["class_name"]
@@ -1020,10 +1021,13 @@ def test_world_route_binding_and_migration_are_registered():
     assert dev_bindings == {
         "FORKMESH_MAINNODE_ROOM": "ForkMeshRoom",
         "FORKMESH_WORLD": "ForkMeshWorld",
+        "FORKMESH_OFFICE_ROOM": "ForkMeshOfficeRoom",
     }
     migrations = {item["tag"]: item for item in config["migrations"]}
     assert migrations["v9"]["new_sqlite_classes"] == ["ForkMeshWorld"]
     assert migrations["v10"]["deleted_classes"] == ["ForkMeshHost"]
+    assert migrations["v11"]["new_sqlite_classes"] == [
+        "ForkMeshOfficeRoom"]
 
 
 def test_world_static_route_is_reserved_and_asset_first():

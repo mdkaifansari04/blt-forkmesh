@@ -31,6 +31,7 @@ import {
 } from "./world-pull-review.js";
 import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
 import { createWorldOfficeController } from "./world-office.js";
+import { createWorldOfficeMeeting } from "./world-office-meeting.js";
 import { createWorldScene } from "./world-scene.js";
 
 const THREE_MODULE_URL =
@@ -2619,6 +2620,87 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             Enter ForkMesh Office <kbd>E</kbd>
           </button>
         </section>
+        <section class="world-office-lobby" data-world-office-lobby aria-labelledby="world-office-lobby-title" aria-hidden="true">
+          <header class="world-office-panel-heading">
+            <div>
+              <p class="world-eyebrow">MEETING FLOOR</p>
+              <h2 id="world-office-lobby-title">ForkMesh Office</h2>
+            </div>
+            <button type="button" data-world-office-exit aria-label="Leave ForkMesh Office">×</button>
+          </header>
+          <p class="world-office-panel-intro">Choose an authorized room. Your avatar appears only inside the meeting you join.</p>
+          <div class="world-office-room-board" data-world-office-room-board aria-label="Available meeting rooms"></div>
+          <p class="world-office-panel-status" data-world-office-lobby-status role="status"></p>
+          <footer class="world-office-panel-actions">
+            <button type="button" data-world-office-fallback>Open accessible chat fallback</button>
+            <button type="button" data-world-office-exit>Return to Town Square</button>
+          </footer>
+        </section>
+
+        <section class="world-office-room" data-world-office-room aria-labelledby="world-office-room-title" aria-hidden="true">
+          <header class="world-office-panel-heading">
+            <div>
+              <p class="world-eyebrow">ENCRYPTED MEETING</p>
+              <h2 id="world-office-room-title">#general</h2>
+            </div>
+            <button type="button" data-world-office-exit aria-label="Leave ForkMesh Office">×</button>
+          </header>
+          <div class="world-office-room-grid">
+            <section class="world-office-seat-panel" aria-labelledby="world-office-seats-title">
+              <h3 id="world-office-seats-title">Meeting table</h3>
+              <div class="world-office-seats" data-world-office-seats>
+                <button type="button" data-world-office-seat="chair-1" aria-pressed="false">Chair 1</button>
+                <button type="button" data-world-office-seat="chair-2" aria-pressed="false">Chair 2</button>
+                <button type="button" data-world-office-seat="chair-3" aria-pressed="false">Chair 3</button>
+                <button type="button" data-world-office-seat="chair-4" aria-pressed="false">Chair 4</button>
+                <button type="button" data-world-office-seat="chair-5" aria-pressed="false">Chair 5</button>
+                <button type="button" data-world-office-seat="chair-6" aria-pressed="false">Chair 6</button>
+                <button type="button" data-world-office-seat="chair-7" aria-pressed="false">Chair 7</button>
+                <button type="button" data-world-office-seat="chair-8" aria-pressed="false">Chair 8</button>
+              </div>
+              <button class="world-office-stand" type="button" data-world-office-stand hidden>Stand up</button>
+            </section>
+            <section class="world-office-participant-panel" aria-labelledby="world-office-participants-title">
+              <h3 id="world-office-participants-title">In this room</h3>
+              <ul class="world-office-participants" data-world-office-participants></ul>
+            </section>
+          </div>
+          <section class="world-office-conversation" aria-labelledby="world-office-conversation-title">
+            <div class="world-office-conversation-heading">
+              <h3 id="world-office-conversation-title">Room transcript</h3>
+              <span>Encrypted on the wire</span>
+            </div>
+            <ol class="world-office-transcript" data-world-office-transcript></ol>
+            <div class="world-office-composer">
+              <label class="world-office-attach" aria-label="Attach image or document">
+                <span aria-hidden="true">＋</span>
+                <input
+                  type="file"
+                  data-world-office-attachment-input
+                  aria-label="Attach image or document"
+                  accept="image/*,.pdf,.txt,.md,.csv,.json,.zip,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
+                >
+              </label>
+              <textarea
+                data-world-office-input
+                rows="1"
+                maxlength="16000"
+                aria-label="Message this meeting"
+                placeholder="Message #general"
+                disabled
+              ></textarea>
+              <button type="button" data-world-office-send disabled>Send</button>
+            </div>
+            <p class="world-office-attachment-feedback" data-world-office-attachment role="status"></p>
+          </section>
+          <p class="world-visually-hidden" data-world-office-live aria-live="polite" aria-atomic="true"></p>
+          <p class="world-office-panel-status" data-world-office-room-status role="status"></p>
+          <footer class="world-office-panel-actions">
+            <button type="button" data-world-office-leave-room>Choose another room</button>
+            <button type="button" data-world-office-exit>Return to Town Square</button>
+          </footer>
+        </section>
+
         <section
           class="world-office-chat"
           data-world-office-chat
@@ -2630,7 +2712,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <p class="world-eyebrow">ENCRYPTED WORKSPACE</p>
               <h2 id="world-office-chat-title" tabindex="-1">ForkMesh Office</h2>
             </div>
-            <button type="button" data-world-office-close aria-label="Collapse ForkMesh Office chat">×</button>
+            <button type="button" data-world-office-close aria-label="Close accessible chat fallback">×</button>
           </header>
           <p class="world-office-chat__loading" data-world-office-loading role="status">Opening encrypted chat...</p>
           <iframe
@@ -3004,6 +3086,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldTicketExpires = 0;
     this.worldTicketTimer = 0;
     this.accountReturnFocus = null;
+    this.officeMeeting = null;
     this.officeController = null;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
@@ -3239,6 +3322,12 @@ class ForkMeshWorld extends HTMLElement {
         onOfficeProximity: (state) => {
           this.officeController?.setProximity(state);
         },
+        onOfficeChairSelect: (chairId) => {
+          this.officeMeeting?.requestSeat(chairId);
+        },
+        onOfficeMovement: (movement) => {
+          this.officeMeeting?.move(movement);
+        },
         onLocationChange: (label, id) => this.updateLocation(label, id),
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
@@ -3250,9 +3339,21 @@ class ForkMeshWorld extends HTMLElement {
         true,
         "The interactive destination renderer is available.",
       );
+      this.officeMeeting = createWorldOfficeMeeting({
+        root: this,
+        scene: this.world,
+        getSession: readSession,
+        onActivity: (category) => {
+          if (!ACTIVITY_OPTIONS.some((option) => option.id === category)) return;
+          this.currentActivityCategory = category;
+          this.sendPresence({ type: "presence" });
+          this.broadcastLocalPresence();
+        },
+      });
       this.officeController = createWorldOfficeController({
         root: this,
         world: this.world,
+        meeting: this.officeMeeting,
       });
       this.world.setTheme(this.settings.theme);
       this.world.setLightLevel(this.settings.lightLevel);
@@ -12488,6 +12589,8 @@ class ForkMeshWorld extends HTMLElement {
     const soundContext = this.soundContext;
     this.soundContext = null;
     soundContext?.close?.().catch(() => {});
+    this.officeMeeting?.destroy();
+    this.officeMeeting = null;
     this.officeController?.destroy();
     this.officeController = null;
     this.world?.dispose();

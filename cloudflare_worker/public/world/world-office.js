@@ -22,16 +22,19 @@ function isTypingTarget(target) {
 export function createWorldOfficeController({
   root,
   world,
+  meeting,
   chatPath = OFFICE_CHAT_PATH,
 }) {
   const prompt = root.querySelector("[data-world-office-prompt]");
   const enterButton = root.querySelector("[data-world-office-enter]");
+  const fallbackButton = root.querySelector("[data-world-office-fallback]");
   const panel = root.querySelector("[data-world-office-chat]");
   const heading = root.querySelector("#world-office-chat-title");
   const loading = root.querySelector("[data-world-office-loading]");
   const frame = root.querySelector("[data-world-office-frame]");
   let proximity = "distant";
   let active = false;
+  let fallbackActive = false;
   let returnFocus = null;
   let unloadTimer = null;
   let frameSuspended = false;
@@ -57,44 +60,9 @@ export function createWorldOfficeController({
     prompt.hidden = proximity !== "nearby" || active;
   }
 
-  function setProximity(nextState) {
-    proximity = nextState === "nearby" ? "nearby" : "distant";
-    if (proximity === "distant" && active) collapse();
-    renderPrompt();
-  }
-
-  function focusOffice(trigger = null) {
-    if (trigger instanceof HTMLElement) returnFocus = trigger;
-    world.focusLandmark("office");
-  }
-
-  function enterOffice(trigger = null) {
-    if (proximity !== "nearby" || active) return false;
-    if (!world.enterOffice()) return false;
-    if (trigger instanceof HTMLElement) returnFocus = trigger;
-    else if (!returnFocus) returnFocus = enterButton;
-    clearUnloadTimer();
-    active = true;
-    if (panel) {
-      panel.dataset.open = "true";
-      panel.setAttribute("aria-hidden", "false");
-    }
-    if (loading) loading.hidden = false;
-    if (frameSuspended) {
-      frame?.removeAttribute("src");
-      frameSuspended = false;
-    }
-    if (frame && frame.getAttribute("src") !== safeChatPath) {
-      frame.setAttribute("src", safeChatPath);
-    }
-    renderPrompt();
-    window.requestAnimationFrame(() => heading?.focus());
-    return true;
-  }
-
-  function collapse() {
-    if (!active) return false;
-    active = false;
+  function closeFallback({ restoreFocus = true } = {}) {
+    if (!fallbackActive && !frame?.hasAttribute("src")) return false;
+    fallbackActive = false;
     if (panel) {
       panel.dataset.open = "false";
       panel.setAttribute("aria-hidden", "true");
@@ -112,6 +80,59 @@ export function createWorldOfficeController({
       frameSuspended = false;
       unloadTimer = null;
     }, OFFICE_UNLOAD_DELAY_MS);
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => fallbackButton?.focus());
+    }
+    return true;
+  }
+
+  function setProximity(nextState) {
+    proximity = nextState === "nearby" ? "nearby" : "distant";
+    if (proximity === "distant" && active) collapse();
+    renderPrompt();
+  }
+
+  function focusOffice(trigger = null) {
+    if (trigger instanceof HTMLElement) returnFocus = trigger;
+    world.focusLandmark("office");
+  }
+
+  function enterOffice() {
+    if (proximity !== "nearby" || active) return false;
+    if (!world.enterOffice()) return false;
+    if (!returnFocus) returnFocus = enterButton;
+    active = true;
+    meeting.openLobby();
+    renderPrompt();
+    return true;
+  }
+
+  function openFallback(trigger = null) {
+    if (!active || meeting.inRoom || fallbackActive) return false;
+    if (trigger instanceof HTMLElement) returnFocus = trigger;
+    clearUnloadTimer();
+    fallbackActive = true;
+    if (panel) {
+      panel.dataset.open = "true";
+      panel.setAttribute("aria-hidden", "false");
+    }
+    if (loading) loading.hidden = false;
+    if (frameSuspended) {
+      frame?.removeAttribute("src");
+      frameSuspended = false;
+    }
+    if (frame && frame.getAttribute("src") !== safeChatPath) {
+      frame.setAttribute("src", safeChatPath);
+    }
+    window.requestAnimationFrame(() => heading?.focus());
+    return true;
+  }
+
+  function collapse() {
+    if (!active) return false;
+    closeFallback({ restoreFocus: false });
+    meeting.leaveOffice();
+    active = false;
     renderPrompt();
     const focusTarget = returnFocus?.isConnected ? returnFocus : enterButton;
     window.requestAnimationFrame(() => focusTarget?.focus());
@@ -128,19 +149,37 @@ export function createWorldOfficeController({
     const enterControl = event.target.closest("[data-world-office-enter]");
     if (enterControl) {
       event.preventDefault();
-      enterOffice(enterControl);
+      returnFocus = enterControl;
+      enterOffice();
+      return;
+    }
+    const fallbackControl = event.target.closest("[data-world-office-fallback]");
+    if (fallbackControl) {
+      event.preventDefault();
+      openFallback(fallbackControl);
       return;
     }
     if (event.target.closest("[data-world-office-close]")) {
+      event.preventDefault();
+      closeFallback();
+      return;
+    }
+    if (event.target.closest("[data-world-office-exit]")) {
       event.preventDefault();
       collapse();
     }
   }
 
   function onKeyDown(event) {
+    if (event.key === "Escape" && fallbackActive) {
+      event.preventDefault();
+      closeFallback();
+      return;
+    }
     if (event.key === "Escape" && active) {
       event.preventDefault();
-      collapse();
+      if (meeting.inRoom) meeting.leaveRoom();
+      else collapse();
       return;
     }
     if (
@@ -151,13 +190,14 @@ export function createWorldOfficeController({
       !isTypingTarget(event.target)
     ) {
       event.preventDefault();
-      enterOffice(enterButton);
+      returnFocus = enterButton;
+      enterOffice();
     }
   }
 
   function onMessage(event) {
     if (event.origin !== window.location.origin) return;
-    if (event.source !== frame.contentWindow) return;
+    if (!frame || event.source !== frame.contentWindow) return;
     const type = String(event.data?.type || "");
     if (type === "office-chat-ready" && loading) loading.hidden = true;
     if (type !== "office-chat-ready" && type !== "office-chat-room-changed") {
@@ -170,12 +210,7 @@ export function createWorldOfficeController({
     root.removeEventListener("click", onClick);
     window.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("message", onMessage);
-    if (frame?.contentWindow && frame.hasAttribute("src")) {
-      frame.contentWindow.postMessage(
-        { type: "office-chat-suspend" },
-        window.location.origin,
-      );
-    }
+    closeFallback({ restoreFocus: false });
     frame?.removeAttribute("src");
   }
 
@@ -188,6 +223,7 @@ export function createWorldOfficeController({
     setProximity,
     focusOffice,
     enterOffice,
+    openFallback,
     collapse,
     destroy,
     get active() {

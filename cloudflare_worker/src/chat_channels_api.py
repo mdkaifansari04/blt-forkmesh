@@ -367,6 +367,7 @@ async def _room_access(runtime, account_bi, actor, channel_id, is_admin):
         channel_id,
         int(row.get("key_version") or 1),
         account_bi,
+        actor,
     )
     payload = dict(access or {})
     payload["channel"] = _channel_payload(row, record, is_admin)
