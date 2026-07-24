@@ -18606,6 +18606,91 @@ async def _authorize_owner(env, request, owner):
     return await _verify_owner_signature(env, owner, sig, canonical)
 
 
+async def _authorize_repo_inbox_owner(env, request, owner, repo):
+    """Authorize a repository inbox drain without losing organization context.
+
+    Organization repository URLs are rewritten to their backing node before
+    route matching, while the original Worker Request deliberately retains the
+    public alias URL.  A desktop organization administrator signs that public
+    owner name (the one stored in its RepositoryRecord), not the backing mirror
+    node name.  Accept that proof only when the alias is still linked to this
+    exact public repository and the signer is a current org owner/admin.
+
+    Private repositories deliberately stay on the direct owner-key path:
+    organization membership alone is never a plaintext/private-inbox grant.
+    """
+    if await _authorize_owner(env, request, owner):
+        return True
+    try:
+        original_url = urlparse(request.url)
+        match = REPO_API_PREFIX_RE.match(original_url.path)
+    except Exception:
+        return False
+    if not match:
+        return False
+    alias_owner = (safe_segment(match.group(1)) or "").lower()
+    alias_repo = (safe_segment(match.group(2)) or "").lower()
+    owner_l = str(owner or "").strip().lower()
+    repo_l = str(repo or "").strip().lower()
+    if (
+        not alias_owner
+        or alias_owner == owner_l
+        or alias_repo != repo_l
+        or await _repo_is_private(env, owner_l, repo_l)
+    ):
+        return False
+
+    # Re-check the durable link instead of trusting the short-lived alias memo:
+    # revoking/unlinking an organization must revoke drain authority at once.
+    org_bi, org_row = await _org_row(env, alias_owner)
+    if not org_row:
+        return False
+    linked = await d1_first(
+        env,
+        "SELECT 1 AS ok FROM org_repos "
+        "WHERE org_bi=? AND repo=? AND node_owner=?",
+        org_bi, repo_l, owner_l,
+    )
+    if not linked:
+        return False
+
+    params = parse_qs(original_url.query)
+    ts = params.get("ts", [""])[0]
+    sig = params.get("sig", [""])[0]
+    if not ts or not sig:
+        return False
+    try:
+        skew = abs(int(Date.now()) - int(ts))
+    except (TypeError, ValueError):
+        return False
+    if skew > LOGIN_MAX_SKEW_MS:
+        return False
+    canonical = (
+        "forkmesh-issues-pull-v1\n" + alias_owner + "\n" + ts
+    ).encode()
+    members = await d1_all(
+        env,
+        "SELECT name,role FROM org_members "
+        "WHERE org_bi=? AND role IN ('owner','admin') "
+        "ORDER BY name LIMIT ?",
+        org_bi, MAX_ORG_MEMBERS,
+    )
+    for member in members or []:
+        if str(member.get("role") or "") not in ("owner", "admin"):
+            continue
+        account = clean_string(
+            member.get("name") or "", MAX_NODE_NAME
+        ).strip().lower()
+        if (
+            valid_node_name(account)
+            and await _verify_owner_signature(
+                env, account, sig, canonical
+            )
+        ):
+            return True
+    return False
+
+
 async def _authorize_owner_account(env, owner, data, request=None,
                                    allow_admin=True):
     # Authorize the caller as the repo owner (or a network admin) via their
@@ -21144,7 +21229,8 @@ async def pulls_handler(env, request, owner, repo):
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
-        if not await _authorize_owner(env, request, owner):
+        if not await _authorize_repo_inbox_owner(
+                env, request, owner, repo):
             return json_response({"error": "unauthorized"}, status=401)
         rows = await d1_all(
             env, "SELECT data FROM pull_inbox WHERE repo_bi=? ORDER BY id ASC",
@@ -21155,7 +21241,8 @@ async def pulls_handler(env, request, owner, repo):
         return json_response({"ok": True, "pending": pending})
 
     if method == "DELETE":
-        if not await _authorize_owner(env, request, owner):
+        if not await _authorize_repo_inbox_owner(
+                env, request, owner, repo):
             return json_response({"error": "unauthorized"}, status=401)
         await d1_run(env, "DELETE FROM pull_inbox WHERE repo_bi=?", repo_bi)
         return json_response({"ok": True})
