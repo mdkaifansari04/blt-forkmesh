@@ -346,6 +346,58 @@ def test_merge_job_cleanup_enforces_expiry_repo_and_global_hard_bounds():
         add("hard-overflow", "repo-hard", "requested", 2000, 20_000)
 
 
+def test_forward_migration_repairs_early_merge_job_table_without_data_loss():
+    database = sqlite3.connect(":memory:")
+    database.executescript(
+        """
+        CREATE TABLE repo_merge_jobs (
+          request_id TEXT PRIMARY KEY,
+          request_digest TEXT NOT NULL,
+          repo_bi TEXT NOT NULL,
+          actor_bi TEXT NOT NULL,
+          pull_number INTEGER NOT NULL,
+          selected_node TEXT NOT NULL,
+          status TEXT NOT NULL,
+          result TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX idx_repo_merge_jobs_repo
+          ON repo_merge_jobs(repo_bi,status,updated_at);
+        INSERT INTO repo_merge_jobs VALUES (
+          'repair-me','digest','repo','actor',7,'mirror2','requested','',
+          1000,2000
+        );
+        """
+    )
+    repair = (
+        WORKER
+        / "migrations"
+        / "0071_rebuild_repository_pull_merge_jobs.sql"
+    ).read_text(encoding="utf-8")
+    database.executescript(repair)
+    columns = {
+        row[1] for row in database.execute(
+            "PRAGMA table_info(repo_merge_jobs)")
+    }
+    assert "expires_at" in columns
+    row = database.execute(
+        "SELECT request_id,expires_at FROM repo_merge_jobs"
+    ).fetchone()
+    assert row == ("repair-me", 2000 + 7 * 24 * 60 * 60 * 1000)
+    objects = {
+        row[0] for row in database.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE tbl_name='repo_merge_jobs'")
+    }
+    assert {
+        "idx_repo_merge_jobs_repo",
+        "idx_repo_merge_jobs_expiry",
+        "trg_repo_merge_jobs_repo_bound",
+        "trg_repo_merge_jobs_global_bound",
+    } <= objects
+
+
 def test_executor_command_receives_json_stdin_without_shell_or_ambient_secrets():
     calls = []
 
