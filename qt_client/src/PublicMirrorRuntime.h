@@ -117,6 +117,9 @@ public:
     static bool toolingAvailable(const Tools &tools = Tools(),
                                  QString *error = nullptr);
     static bool isArchiveId(const QString &value);
+    // Hash "<object> <refname>" rows by refname, matching the Python gateway's
+    // canonical heads+tags fingerprint regardless of Git's output order.
+    static QString refsSha256FromForEachRef(const QByteArray &output);
     static QString ciphertextPath(const QString &archiveRoot,
                                   const QString &archiveId);
     static QString keyReference(const QString &archiveId);

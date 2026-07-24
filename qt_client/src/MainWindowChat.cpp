@@ -12,6 +12,7 @@
 #include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
 #include "PrivateMirrorStore.h"
+#include "PublicMirrorRuntime.h"
 #include "RepoSecurity.h"
 #include "RewardPoolSigner.h"
 #include "ScreenCaptureOverlay.h"
@@ -5473,19 +5474,7 @@ void MainWindow::updateRepoPushButton()
 // (the worker rejects every clone whose live refs don't hash to the pin).
 static QString hashForEachRefOutput(const QByteArray &out)
 {
-    QStringList lines;
-    const QStringList rows = QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
-    for (const QString &raw : rows) {
-        const QString line = raw.trimmed();
-        if (line.isEmpty() || line.endsWith(QStringLiteral("^{}")))
-            continue;
-        lines.append(line);
-    }
-    lines.sort();
-    return QString::fromUtf8(
-        QCryptographicHash::hash(lines.join('\n').toUtf8(),
-                                 QCryptographicHash::Sha256)
-            .toHex());
+    return PublicMirrorRuntime::refsSha256FromForEachRef(out);
 }
 
 // sha256 over the canonical heads+tags advertisement of a bare mirror (see

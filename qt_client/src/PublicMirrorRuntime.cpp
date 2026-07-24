@@ -20,6 +20,8 @@
 
 #include <openssl/crypto.h>
 
+#include <algorithm>
+
 namespace {
 
 constexpr qint64 kMaximumVaultBytes = 4LL * 1024 * 1024;
@@ -365,15 +367,7 @@ QString refsSha256(const QString &path,
                     error, hardenedGitEnvironment())) {
         return {};
     }
-    QList<QByteArray> lines;
-    for (const QByteArray &line : output.split('\n')) {
-        if (!line.isEmpty())
-            lines.append(line);
-    }
-    const QByteArray canonical = QByteArrayList(lines).join('\n');
-    return QString::fromLatin1(
-        QCryptographicHash::hash(canonical, QCryptographicHash::Sha256)
-            .toHex());
+    return PublicMirrorRuntime::refsSha256FromForEachRef(output);
 }
 
 QByteArray vaultKey(const QByteArray &secret, const QByteArray &salt)
@@ -1067,6 +1061,35 @@ bool parseIntegerString(const QJsonValue &value, qint64 *result)
 }
 
 } // namespace
+
+QString PublicMirrorRuntime::refsSha256FromForEachRef(
+    const QByteArray &output)
+{
+    QList<QByteArray> lines;
+    for (QByteArray line : output.split('\n')) {
+        line = line.trimmed();
+        const qsizetype separator = line.indexOf(' ');
+        if (line.isEmpty() || line.endsWith(QByteArrayLiteral("^{}")) ||
+            separator <= 0 || separator + 1 >= line.size()) {
+            continue;
+        }
+        const QByteArray refname = line.mid(separator + 1);
+        if (!refname.startsWith(QByteArrayLiteral("refs/heads/")) &&
+            !refname.startsWith(QByteArrayLiteral("refs/tags/"))) {
+            continue;
+        }
+        lines.append(line);
+    }
+    std::sort(lines.begin(), lines.end(),
+              [](const QByteArray &left, const QByteArray &right) {
+                  return left.mid(left.indexOf(' ') + 1) <
+                         right.mid(right.indexOf(' ') + 1);
+              });
+    const QByteArray canonical = QByteArrayList(lines).join('\n');
+    return QString::fromLatin1(
+        QCryptographicHash::hash(canonical, QCryptographicHash::Sha256)
+            .toHex());
+}
 
 PublicMirrorMaterialization::PublicMirrorMaterialization(
     std::unique_ptr<QTemporaryDir> directory, QString repositoryPath)
