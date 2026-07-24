@@ -477,6 +477,52 @@ function makeLabelSprite(THREE, title, subtitle, color) {
   return sprite;
 }
 
+function makeGroundPlaque(THREE, title, subtitle, color) {
+  const plaque = new THREE.Group();
+  plaque.name = "forkmesh-section-plaque";
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(3.9, 0.22, 1.5),
+    makeMaterial(THREE, "#233b33", { roughness: 0.82 }),
+  );
+  base.position.y = 0.11;
+  plaque.add(base);
+  const slab = new THREE.Mesh(
+    new THREE.BoxGeometry(3.6, 1.3, 0.14),
+    makeMaterial(THREE, "#101d18", { roughness: 0.55, metalness: 0.12 }),
+  );
+  slab.position.set(0, 0.74, 0.12);
+  // Lean the top back so the face reads from the raised world camera.
+  slab.rotation.x = -0.42;
+  plaque.add(slab);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.44, 1.14),
+    new THREE.MeshBasicMaterial({
+      map: wordTexture(THREE, title, subtitle, color),
+      transparent: true,
+    }),
+  );
+  face.position.z = 0.08;
+  slab.add(face);
+  return plaque;
+}
+
+// Places a section's name plaque on the ground in front of the section — on
+// the side facing the Town Square center, where visitors walk up. `position`
+// is the section's world position; sections at the center face the arrival
+// grid instead.
+function addSectionPlaque(THREE, group, position, title, subtitle, color, distance) {
+  const x = Array.isArray(position) ? position[0] : 0;
+  const z = Array.isArray(position) ? position[2] : 0;
+  const length = Math.hypot(x, z);
+  const ux = length > 0.001 ? -x / length : 0;
+  const uz = length > 0.001 ? -z / length : 1;
+  const plaque = makeGroundPlaque(THREE, title, subtitle, color);
+  plaque.position.set(ux * distance, 0, uz * distance);
+  plaque.rotation.y = Math.atan2(ux, uz);
+  group.add(plaque);
+  return plaque;
+}
+
 function avatarStatusTexture(THREE, emoji, note) {
   return canvasTexture(THREE, 512, 192, (context) => {
     context.clearRect(0, 0, 512, 192);
@@ -1384,14 +1430,15 @@ function createRegisteredUserLounge(THREE, animated) {
     }
   }
   lounge.userData.seatOffsets = seatOffsets;
-  const sign = makeLabelSprite(
+  addSectionPlaque(
     THREE,
+    lounge,
+    REGISTERED_LOUNGE_POSITION,
     "MEMBER LOUNGE",
     "registered contributors · recent activity glows",
     "#9ef7c6",
+    9.2,
   );
-  sign.position.set(0, 5.3, 0);
-  lounge.add(sign);
   const memberCountSign = makeLabelSprite(
     THREE,
     "MEMBERS",
@@ -1433,14 +1480,15 @@ function createDurableObjectDistrict(THREE) {
   );
   base.position.y = 0.18;
   district.add(base);
-  const sign = makeLabelSprite(
+  addSectionPlaque(
     THREE,
+    district,
+    DURABLE_OBJECT_DISTRICT_POSITION,
     "DURABLE OBJECTS",
     "usage appears only with explicit configured limits",
     "#80e8ff",
+    9,
   );
-  sign.position.set(0, 4.7, 0);
-  district.add(sign);
   const emptyMarker = new THREE.Mesh(
     new THREE.TorusGeometry(1.2, 0.08, 8, 36),
     makeMaterial(THREE, "#718087", {
@@ -1540,10 +1588,7 @@ function createInformationBooth(THREE, position, interactive) {
   canopy.position.y = 3.02;
   group.add(canopy);
 
-  const sign = makeLabelSprite(THREE, "START HERE", "information booth", "#9ef7c6");
-  sign.scale.set(5.6, 1.86, 1);
-  sign.position.set(0, 3.95, 0);
-  group.add(sign);
+  addSectionPlaque(THREE, group, position, "START HERE", "information booth", "#9ef7c6", 3.6);
 
   const beacon = new THREE.PointLight("#9ef7c6", 2.4, 10, 1.8);
   beacon.position.set(0, 3.5, 0);
@@ -1639,14 +1684,15 @@ function createFountain(THREE, position, interactive, animated) {
   light.position.y = 5.3;
   group.add(light);
 
-  const label = makeLabelSprite(
+  addSectionPlaque(
     THREE,
+    group,
+    position,
     "GLOBAL REWARD POOL",
     "public on-chain balance · external signer",
     "#f7c96b",
+    6.4,
   );
-  label.position.set(0, 7.4, 0);
-  group.add(label);
 
   group.position.set(...position);
   group.userData.landmark = "fountain";
@@ -1730,9 +1776,7 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   );
   plinth.position.y = 0.23;
   group.add(plinth);
-  const sign = makeLabelSprite(THREE, "REPOSITORIES", "walk through the code", "#77d9ff");
-  sign.position.set(0, 7.25, 0);
-  group.add(sign);
+  addSectionPlaque(THREE, group, position, "REPOSITORIES", "walk through the code", "#77d9ff", 4.4);
 
   group.position.set(...position);
   group.userData.landmark = "repositories";
@@ -1851,14 +1895,15 @@ function createRoutingStation(THREE, position, interactive, animated) {
   dish.rotation.x = Math.PI / 2;
   group.add(dish);
 
-  const sign = makeLabelSprite(
+  addSectionPlaque(
     THREE,
+    group,
+    position,
     "ROUTING STATION",
     "healthy HTTPS mirrors",
     "#80e8ff",
+    5,
   );
-  sign.position.set(0, 6.75, 0);
-  group.add(sign);
 
   const finished = finishLandmark(group, "routing", position, interactive);
   animated.push((time) => {
@@ -1926,9 +1971,7 @@ function createOrganizationQuarter(THREE, position, interactive, animated) {
   );
   doorway.position.set(0, 0.64, -2.64);
   group.add(doorway);
-  const sign = makeLabelSprite(THREE, "ORGANIZATIONS", "permissioned team spaces", "#d5b6ff");
-  sign.position.set(0, 10, 0);
-  group.add(sign);
+  addSectionPlaque(THREE, group, position, "ORGANIZATIONS", "permissioned team spaces", "#d5b6ff", 4.4);
 
   group.position.set(...position);
   group.userData.landmark = "organizations";
@@ -2003,9 +2046,7 @@ function createFediverseCenter(THREE, position, interactive, animated) {
     );
   });
   group.add(connections);
-  const sign = makeLabelSprite(THREE, "FEDIVERSE", "consent-aware social center", "#ff9eb7");
-  sign.position.set(0, 6.3, 0);
-  group.add(sign);
+  addSectionPlaque(THREE, group, position, "FEDIVERSE", "consent-aware social center", "#ff9eb7", 6.4);
   group.userData.socialOrbs = orbs;
 
   group.position.set(...position);
@@ -2080,9 +2121,7 @@ function createSecurityWorkshop(THREE, position, interactive, animated) {
   );
   scan.position.set(0, 4.62, -2.29);
   group.add(scan);
-  const sign = makeLabelSprite(THREE, "SECURITY", "scoped scans + human review", "#88f0df");
-  sign.position.set(0, 7.1, 0);
-  group.add(sign);
+  addSectionPlaque(THREE, group, position, "SECURITY", "scoped scans + human review", "#88f0df", 5.2);
 
   group.position.set(...position);
   group.userData.landmark = "security";
@@ -2135,9 +2174,7 @@ function createLaunchpad(THREE, position, interactive, animated) {
   );
   portalFill.position.y = 3.1;
   group.add(portalFill);
-  const sign = makeLabelSprite(THREE, "LAUNCHPAD", "events · sky offices · worlds", "#b6d8ff");
-  sign.position.set(0, 6.5, 0);
-  group.add(sign);
+  addSectionPlaque(THREE, group, position, "LAUNCHPAD", "events · sky offices · worlds", "#b6d8ff", 6);
   group.position.set(...position);
   group.userData.landmark = "launchpad";
   group.traverse((child) => {
@@ -2200,9 +2237,7 @@ function createCommunityStage(THREE, position, interactive, animated) {
     row.position.set(-0.25 + index * 0.08, 3.85 - index * 0.57, 1.58);
     group.add(row);
   }
-  const sign = makeLabelSprite(THREE, "EVENTS", "UTC community stage", "#ffb77d");
-  sign.position.set(0, 6.1, 0);
-  group.add(sign);
+  addSectionPlaque(THREE, group, position, "EVENTS", "UTC community stage", "#ffb77d", 6);
   finishLandmark(group, "events", position, interactive);
   animated.push((time) => {
     board.material.emissive?.set?.("#2c1711");
@@ -2261,14 +2296,15 @@ function createNeighborhood(THREE, position, interactive, animated) {
   quietSign.scale.set(4.2, 1.4, 1);
   quietSign.position.set(0, 2.3, 5.0);
   group.add(quietSign);
-  const sign = makeLabelSprite(
+  addSectionPlaque(
     THREE,
+    group,
+    position,
     "NEIGHBORHOOD",
     "knock · visit · privacy",
     "#b8e986",
+    6.4,
   );
-  sign.position.set(0, 5.4, 0);
-  group.add(sign);
   finishLandmark(group, "neighborhood", position, interactive);
   animated.push((time) => {
     group.rotation.y = Math.sin(time * 0.00008) * 0.025;
@@ -2304,14 +2340,15 @@ function createCodeWorkshops(THREE, position, interactive, animated) {
     benches.push(graph);
     group.add(graph);
   }
-  const sign = makeLabelSprite(
+  addSectionPlaque(
     THREE,
+    group,
+    position,
     "CODE WORKSHOPS",
     "analysis + collaboration",
     "#73f0ad",
+    5.4,
   );
-  sign.position.set(0, 5.4, 0);
-  group.add(sign);
   finishLandmark(group, "workshops", position, interactive);
   animated.push((time) => {
     benches.forEach((graph, index) => {
@@ -2373,14 +2410,15 @@ function createBroadcastGarden(THREE, position, interactive, animated) {
   );
   note.position.set(0, 2.35, 1.12);
   group.add(note);
-  const sign = makeLabelSprite(
+  addSectionPlaque(
     THREE,
+    group,
+    position,
     "BROADCAST",
     "opt-in media garden",
     "#8fcfff",
+    6,
   );
-  sign.position.set(0, 5.7, 0);
-  group.add(sign);
   finishLandmark(group, "broadcast", position, interactive);
   animated.push((time) => {
     note.rotation.z = Math.sin(time * 0.001) * 0.2;
@@ -2421,14 +2459,15 @@ function createSupportCenter(THREE, position, interactive, animated) {
       beacon.rotation.y = time * 0.0006 * (index % 2 ? -1 : 1);
     });
   }
-  const sign = makeLabelSprite(
+  addSectionPlaque(
     THREE,
+    group,
+    position,
     "SUPPORT CENTER",
     "voluntary · transparent · no returns",
     "#ffd08f",
+    5.2,
   );
-  sign.position.set(0, 4.7, 0);
-  group.add(sign);
   group.position.set(...position);
   group.userData.landmark = "support";
   group.traverse((child) => {
