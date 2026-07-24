@@ -562,12 +562,61 @@ def test_headless_catalog_omits_unreadable_or_unavailable_statistics(
 
     stats = refresh_tool._sample_repository_statistics(config)
     assert "issueCount" not in stats
-    assert "issueMaxNumber" not in stats
+    # The tree itself still reserves issue number 1 even when its record cannot
+    # be read, so a later automated issue must not reuse that occupied number.
+    assert stats["issueMaxNumber"] == "1"
     assert "artifactCount" not in stats
     assert stats["commitCount"] == "2"
     assert stats["branchCount"] == "1"
     assert stats["pullCount"] == "0"
     assert stats["discussionCount"] == "0"
+
+
+def test_issue_statistics_reserve_all_numeric_directories_and_default_live(
+    installation,
+):
+    work = installation["work"]
+    records = {
+        ".forkmesh/issues/open/12/note.txt": "record missing\n",
+        ".forkmesh/issues/closed/19/note.txt": "record missing\n",
+        ".forkmesh/issues/21/issue-21.json": "{not valid json",
+    }
+    for relative, contents in records.items():
+        target = work / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(contents, encoding="utf-8")
+    _run(["git", "add", ".forkmesh"], work)
+    _run(["git", "commit", "-m", "add damaged issue metadata"], work)
+    _run(["git", "push", "mirror", "main"], work)
+
+    stats = refresh_tool._sample_repository_statistics(
+        installation["config"]
+    )
+    # Qt treats an unreadable open/legacy issue as live, while every numeric
+    # tree (including a closed one without its record) reserves its number.
+    assert stats["issueCount"] == "2"
+    assert stats["issueMaxNumber"] == "21"
+
+
+def test_repository_statistics_isolate_recursion_error(installation, monkeypatch):
+    def recursive_issue_failure(_config):
+        raise RecursionError("untrusted issue nesting")
+
+    monkeypatch.setattr(
+        refresh_tool,
+        "_source_issue_counts",
+        recursive_issue_failure,
+    )
+    stats = refresh_tool._sample_repository_statistics(
+        installation["config"]
+    )
+    assert "issueCount" not in stats
+    assert "issueMaxNumber" not in stats
+    assert stats["commitCount"] == "1"
+    assert stats["branchCount"] == "1"
+    assert stats["pullCount"] == "0"
+    assert stats["discussionCount"] == "0"
+    assert stats["artifactCount"] == "0"
 
 
 def test_register_posts_endpoint_then_node_owner_catalog(

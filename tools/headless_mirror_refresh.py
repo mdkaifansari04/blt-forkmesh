@@ -1130,83 +1130,108 @@ def _issue_record_is_tombstoned(record: Mapping[str, Any]) -> bool | None:
 
 def _source_issue_counts(
     config: RefreshConfig,
-) -> tuple[int, int] | None:
+) -> tuple[int | None, int | None] | None:
     revision = _source_revision(config)
     paths = _source_tree_paths(
         config, revision, ".forkmesh/issues"
     )
     if paths is None:
         return None
-    patterns = (
-        (
-            "open",
-            re.compile(
-                rb"^\.forkmesh/issues/open/([1-9][0-9]*)/"
-                rb"issue-\1\.json$"
-            ),
-        ),
-        (
-            "closed",
-            re.compile(
-                rb"^\.forkmesh/issues/closed/([1-9][0-9]*)/"
-                rb"issue-\1\.json$"
-            ),
-        ),
-        (
-            "legacy",
-            re.compile(
-                rb"^\.forkmesh/issues/([1-9][0-9]*)/"
-                rb"issue-\1\.json$"
-            ),
-        ),
+    # Qt derives the allocation high-water mark from numeric directories, not
+    # only from a canonical issue-N.json blob. Do the same so a damaged or
+    # partially migrated issue directory can never make ForkBot reuse an
+    # already occupied number. Recursive ls-tree does not report directories,
+    # so any descendant path proves that the corresponding tree exists.
+    directory_pattern = re.compile(
+        rb"^\.forkmesh/issues/(?:(open|closed)/)?([0-9]+)/"
     )
-    records: dict[int, tuple[str, bytes]] = {}
+    directories: dict[str, set[bytes]] = {
+        "open": set(),
+        "closed": set(),
+        "legacy": set(),
+    }
     max_number = 0
-    for state, pattern in patterns:
-        for path in paths:
-            match = pattern.fullmatch(path)
-            if not match:
-                continue
-            number = _bounded_repository_count(match.group(1))
-            if number is None:
-                return None
-            max_number = max(max_number, number)
-            current = records.get(number)
-            # Modern status folders supersede a leftover pre-migration record,
-            # matching the desktop reader. Conflicting modern folders are not a
-            # trustworthy state and therefore suppress both issue counts.
-            if current and current[0] != "legacy" and state != "legacy":
-                return None
-            if not current or current[0] == "legacy":
-                records[number] = (state, path)
+    for path in paths:
+        match = directory_pattern.match(path)
+        if not match:
+            continue
+        state = (
+            match.group(1).decode("ascii")
+            if match.group(1)
+            else "legacy"
+        )
+        name = match.group(2)
+        number = _bounded_repository_count(name)
+        if number is None:
+            return None
+        directories[state].add(name)
+        max_number = max(max_number, number)
+    bounded_max = _bounded_repository_count(max_number)
+    if bounded_max is None:
+        return None
+
+    # Match the desktop reader's precedence: an open/<name> tree is examined
+    # first, closed/<name> reserves the same legacy name, and only a remaining
+    # pre-split root tree is read. A missing or malformed canonical record is
+    # conservatively live, just as the Qt issue list does.
+    records: list[tuple[str, bytes]] = []
+    counted_names = set(directories["open"])
+    for name in sorted(directories["open"]):
+        records.append(
+            (
+                "open",
+                b".forkmesh/issues/open/"
+                + name
+                + b"/issue-"
+                + name
+                + b".json",
+            )
+        )
+    counted_names.update(directories["closed"])
+    for name in sorted(directories["legacy"] - counted_names):
+        records.append(
+            (
+                "legacy",
+                b".forkmesh/issues/"
+                + name
+                + b"/issue-"
+                + name
+                + b".json",
+            )
+        )
+
+    available_paths = set(paths)
     readable_paths = tuple(
-        path for state, path in records.values() if state != "closed"
+        path for _state, path in records if path in available_paths
     )
     blobs = _source_blob_batch(config, revision, readable_paths)
     if blobs is None:
-        return None
+        return None, bounded_max
     open_count = 0
-    for state, path in records.values():
-        if state == "closed":
+    for state, path in records:
+        if path not in blobs:
+            open_count += 1
             continue
         try:
             record = json.loads(blobs[path].decode("utf-8"))
-        except (KeyError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
+        except Exception:
+            # JSON recursion limits and malformed/unreadable issue records must
+            # not take down catalog renewal. Treat them as live, matching the
+            # desktop's conservative default, without trusting any tombstone.
+            open_count += 1
+            continue
         if not isinstance(record, dict):
-            return None
+            open_count += 1
+            continue
         if state == "open":
             tombstoned = _issue_record_is_tombstoned(record)
-            if tombstoned is None:
-                return None
-            if not tombstoned:
+            if tombstoned is not True:
                 open_count += 1
         elif record.get("status") != "closed":
             open_count += 1
     bounded_open = _bounded_repository_count(open_count)
-    bounded_max = _bounded_repository_count(max_number)
-    if bounded_open is None or bounded_max is None:
-        return None
+    if bounded_open is None:
+        return None, bounded_max
     return bounded_open, bounded_max
 
 
@@ -1300,15 +1325,27 @@ def _sample_repository_statistics(
         if value is not None:
             result[field] = str(value)
 
-    include("commitCount", _source_commit_count(config))
-    include("branchCount", _source_branch_count(config))
-    issue_counts = _source_issue_counts(config)
+    def sample(field: str, sampler: Callable[[], int | None]) -> None:
+        try:
+            include(field, sampler())
+        except Exception:
+            # Repository metadata is untrusted input. One malformed or unusually
+            # deep fact must remain unknown without suppressing all other
+            # independently readable statistics or breaking lease renewal.
+            return
+
+    sample("commitCount", lambda: _source_commit_count(config))
+    sample("branchCount", lambda: _source_branch_count(config))
+    try:
+        issue_counts = _source_issue_counts(config)
+    except Exception:
+        issue_counts = None
     if issue_counts is not None:
         include("issueCount", issue_counts[0])
         include("issueMaxNumber", issue_counts[1])
-    include("pullCount", _source_pull_count(config))
-    include("discussionCount", _source_discussion_count(config))
-    include("artifactCount", _source_artifact_count(config))
+    sample("pullCount", lambda: _source_pull_count(config))
+    sample("discussionCount", lambda: _source_discussion_count(config))
+    sample("artifactCount", lambda: _source_artifact_count(config))
     return result
 
 

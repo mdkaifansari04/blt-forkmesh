@@ -180,7 +180,29 @@ def test_missing_counters_remain_unknown_while_reported_zero_stays_zero():
     assert node["websiteServed"] is None
 
 
+def test_partial_multi_repo_counter_totals_remain_unknown():
+    out = _run([
+        {
+            "owner": "mirror2", "name": "forkmesh", "sizeBytes": 100,
+            "issueCount": "0", "commitCount": "10",
+            "pullCount": "2", "updatedAt": "1",
+        },
+        {
+            "owner": "mirror2", "name": "another-repo", "sizeBytes": 50,
+            "issueCount": "", "commitCount": "5",
+            "pullCount": None, "updatedAt": "2",
+        },
+    ])
+    node = out["nodes"][0]
+    # A partial sum is not a truthful node total. Both repositories reported
+    # commitCount, so that one aggregate remains known.
+    assert node["issueCount"] is None
+    assert node["pullCount"] is None
+    assert node["commitCount"] == 15
+
+
 if __name__ == "__main__":
     test_sums_counters_across_a_nodes_repos_and_keeps_latest_state()
     test_missing_counters_remain_unknown_while_reported_zero_stays_zero()
+    test_partial_multi_repo_counter_totals_remain_unknown()
     print("ok")

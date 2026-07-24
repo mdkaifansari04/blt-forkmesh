@@ -2198,8 +2198,10 @@ async def network_leaderboards(env):
             "name": owner, "sizeBytes": 0,
             "commit": "", "branch": "", "lastSync": "",
             "platform": "", "version": "", "nodeId": "", "_updatedMs": -1,
-            "_reportedCounters": set(),
+            "_recordCount": 0,
+            "_reportedCounterCounts": {},
         })
+        detail["_recordCount"] += 1
         detail["sizeBytes"] += size_bytes
         for field in counter_fields:
             raw_value = rec.get(field)
@@ -2213,7 +2215,8 @@ async def network_leaderboards(env):
             if counter < 0:
                 continue
             detail[field] = int(detail.get(field) or 0) + counter
-            detail["_reportedCounters"].add(field)
+            reported_counts = detail["_reportedCounterCounts"]
+            reported_counts[field] = int(reported_counts.get(field) or 0) + 1
         updated_ms = _catalog_updated_ms(rec)
         if updated_ms > detail["_updatedMs"]:
             detail["_updatedMs"] = updated_ms
@@ -2235,15 +2238,19 @@ async def network_leaderboards(env):
                      "ageMs": max(0, now - ts)})
     node_board = []
     for detail in node_details.values():
-        reported = detail.get("_reportedCounters", set())
+        record_count = int(detail.get("_recordCount") or 0)
+        reported_counts = detail.get("_reportedCounterCounts", {})
         public_detail = {
             k: v for k, v in detail.items()
-            if k not in ("_updatedMs", "_reportedCounters")
+            if k not in (
+                "_updatedMs", "_recordCount", "_reportedCounterCounts")
         }
         # Unknown stays JSON null instead of becoming a misleading aggregate
-        # zero. A real reported zero remains zero.
+        # zero. A total is known only when every included repository reported
+        # that field; otherwise a partial sum would understate the node total.
+        # A real zero reported by every repository remains zero.
         for field in counter_fields:
-            if field not in reported:
+            if int(reported_counts.get(field) or 0) != record_count:
                 public_detail[field] = None
         node_board.append(public_detail)
     node_board.sort(key=lambda n: (-n["sizeBytes"], n["name"]))
