@@ -438,6 +438,122 @@ def test_arrival_slots_fill_unique_forward_facing_rows_of_ten():
     assert world.first_available_arrival_slot(range(63)) == 63
 
 
+def test_arrival_cells_occupied_by_standing_visitors_read_as_used_slots():
+    # Exact cell centres and near-misses within the clearance both block.
+    assert world.arrival_slot_near_position(-8.1, 30.0) == 0
+    assert world.arrival_slot_near_position(-6.3, 30.0) == 1
+    assert world.arrival_slot_near_position(-7.6, 29.4) == 0
+    assert world.arrival_slot_near_position(-8.1, 27.9) == 10
+    # Positions away from the grid, and junk, never reserve anything.
+    assert world.arrival_slot_near_position(0.0, 10.0) == -1
+    assert world.arrival_slot_near_position(-8.1, 30.0 - 1.0) == -1
+    assert world.arrival_slot_near_position("junk", None) == -1
+    assert world.arrival_slot_near_position(float("nan"), 30.0) == -1
+    assert world.arrival_slot_near_position(float("inf"), 30.0) == -1
+    # A visitor standing on cell 0 with an unrelated reservation still keeps
+    # a newcomer off cell 0.
+    assert world.first_available_arrival_slot(
+        [7, world.arrival_slot_near_position(-8.1, 30.0)]) == 1
+
+
+def _world_fetch_runtime(now=50_000):
+    class DurableObject:
+        pass
+
+    class _FetchSocket:
+        def __init__(self):
+            self.attachment = None
+            self.sent = []
+
+        def serializeAttachment(self, attachment):
+            self.attachment = SimpleNamespace(**attachment)
+
+        def deserializeAttachment(self):
+            return self.attachment
+
+        def send(self, message):
+            self.sent.append(json.loads(message))
+
+        def close(self, code=1000, reason=""):
+            pass
+
+    class _Ctx:
+        def __init__(self):
+            self.sockets = []
+
+        def acceptWebSocket(self, ws, tags=None):
+            self.sockets.append(ws)
+
+        def getWebSockets(self, tag=None):
+            return list(self.sockets)
+
+    class _Pair:
+        @staticmethod
+        def new():
+            client, server = _FetchSocket(), _FetchSocket()
+            return SimpleNamespace(object_values=lambda: (client, server))
+
+    clock = {"now": now}
+    counter = {"n": 0}
+
+    def peer_id():
+        counter["n"] += 1
+        return "peer%04d" % counter["n"]
+
+    namespace = {
+        "DurableObject": DurableObject,
+        "Date": SimpleNamespace(now=lambda: clock["now"]),
+        "world_protocol": world,
+        "to_js": lambda value: value,
+        "json": json,
+        "re": re,
+        "urlparse": urlparse,
+        "new_world_peer_id": peer_id,
+        "json_response": lambda data, status=200, **_kwargs: SimpleNamespace(
+            status=status, data=data),
+        "WebSocketPair": _Pair,
+        "JsResponse": SimpleNamespace(
+            new=lambda *args, **kwargs: SimpleNamespace(status=101)),
+    }
+    for name in ("_ws_attachment", "_ws_attr", "ForkMeshWorld"):
+        node = _top_level_node(name)
+        module = ast.fix_missing_locations(
+            ast.Module(body=[node], type_ignores=[]))
+        exec(compile(module, str(ENTRY), "exec"), namespace)
+    instance = namespace["ForkMeshWorld"]()
+    instance.ctx = _Ctx()
+    return instance, clock
+
+
+class _FetchRequest:
+    url = "https://forkmesh.example/api/world/ws"
+
+    class headers:
+        @staticmethod
+        def get(name):
+            return "websocket" if str(name).lower() == "upgrade" else None
+
+
+def test_connects_land_in_open_grid_cells_never_on_a_standing_visitor():
+    instance, clock = _world_fetch_runtime()
+    welcomes = []
+    for _ in range(3):
+        clock["now"] += 15_000
+        asyncio.run(instance.fetch(_FetchRequest()))
+        welcomes.append(instance.ctx.sockets[-1].sent[0])
+    # Sequential fresh joins fill the arrival row without overlap.
+    assert [(w["self"]["x"], w["self"]["z"]) for w in welcomes] == [
+        (-8.1, 30.0), (-6.3, 30.0), (-4.5, 30.0)]
+
+    # A visitor whose reconnect reserved an unrelated slot while they kept
+    # standing on cell 0 still blocks cell 0 for the next newcomer.
+    instance.ctx.sockets[0].attachment.arrival_slot = 9
+    clock["now"] += 15_000
+    asyncio.run(instance.fetch(_FetchRequest()))
+    newcomer = instance.ctx.sockets[-1].sent[0]
+    assert (newcomer["self"]["x"], newcomer["self"]["z"]) == (-2.7, 30.0)
+
+
 def test_public_door_state_is_explicit_and_allowlisted():
     current = world.default_presence("peer", 1000)
     assert current["publicDoor"] == "closed"
