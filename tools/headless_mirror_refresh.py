@@ -122,6 +122,7 @@ class RefreshConfig:
     config_path: Path
     source_repository: Path
     archive_directory: Path
+    release_store: Path | None
     gateway_config_path: Path
     identity_state_directory: Path
     identity_helper_path: Path
@@ -552,7 +553,7 @@ def load_config(path: Path) -> RefreshConfig:
             "listen",
             "operations",
         },
-        optional={"catalog"},
+        optional={"catalog", "releaseStore"},
         label="configuration",
     )
     if (
@@ -566,6 +567,12 @@ def load_config(path: Path) -> RefreshConfig:
     )
     archive_directory = _absolute_path(
         source.get("archiveDirectory"), "archive directory"
+    )
+    release_store_value = source.get("releaseStore")
+    release_store = (
+        _absolute_path(release_store_value, "release store")
+        if release_store_value is not None
+        else None
     )
     gateway_config_path = _absolute_path(
         source.get("gatewayConfigPath"), "gateway configuration"
@@ -584,6 +591,8 @@ def load_config(path: Path) -> RefreshConfig:
     manifest_path = _absolute_path(source.get("manifestPath"), "mirror manifest")
 
     _require_owner_directory(archive_directory, "archive directory")
+    if release_store is not None:
+        _require_owner_directory(release_store, "release store")
     _require_owner_directory(identity_state_directory, "identity state directory")
     _require_secure_parent(gateway_config_path, "gateway configuration")
     _reject_symlink_components(source_repository, "source repository")
@@ -662,6 +671,7 @@ def load_config(path: Path) -> RefreshConfig:
         config_path=path,
         source_repository=source_repository,
         archive_directory=archive_directory,
+        release_store=release_store,
         gateway_config_path=gateway_config_path,
         identity_state_directory=identity_state_directory,
         identity_helper_path=identity_helper_path,
@@ -1012,19 +1022,20 @@ def _render_gateway_config(
     }
     repositories = []
     for owner in config.owner_aliases:
-        repositories.append(
-            {
-                "owner": owner,
-                "name": config.repository_name,
-                "visibility": "public",
-                "enabled": True,
-                "encryptedArchive": dict(encrypted_archive),
-                "integrity": {
-                    "expectedRefsSha256": metadata.expected_refs_sha256
-                },
-                "operations": list(config.operations),
-            }
-        )
+        repository = {
+            "owner": owner,
+            "name": config.repository_name,
+            "visibility": "public",
+            "enabled": True,
+            "encryptedArchive": dict(encrypted_archive),
+            "integrity": {
+                "expectedRefsSha256": metadata.expected_refs_sha256
+            },
+            "operations": list(config.operations),
+        }
+        if config.release_store is not None:
+            repository["releaseStore"] = str(config.release_store)
+        repositories.append(repository)
     return {
         "schemaVersion": 1,
         "node": {

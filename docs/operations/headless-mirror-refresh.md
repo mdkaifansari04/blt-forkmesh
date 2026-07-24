@@ -80,6 +80,7 @@ was not run.
   "type": "forkmesh.headless-mirror-refresh",
   "sourceRepository": "/srv/git/forkmesh.git",
   "archiveDirectory": "/var/lib/forkmesh-mirror/encrypted",
+  "releaseStore": "/var/lib/forkmesh-mirror/releases",
   "gatewayConfigPath": "/var/lib/forkmesh-mirror/gateway/mirror-gateway.json",
   "identityStateDirectory": "/var/lib/forkmesh-mirror/identity",
   "identityHelperPath": "/opt/forkmesh/tools/headless_mirror_identity.py",
@@ -136,6 +137,14 @@ mapping; an alias does not grant organization membership or private access.
 identity must already pin `publicOrigin`. `catalog.solana`, when present, is
 only a public, self-custodial payout address. Never place a seed phrase, private
 key, API token, password, or wallet credential in this file.
+
+`releaseStore` is optional. When configured, it must be an existing owner-only
+directory containing the node's content-addressed `sha256/<prefix>/<digest>/data`
+release assets. It is rendered onto every public alias backed by this encrypted
+repository so immutable release downloads can round-robin with clone and browse
+traffic. The refresh never copies assets into that directory and never treats
+it as repository source; operators must replicate a published blob and verify
+its SHA-256 before exposing it.
 
 Install the final configuration with:
 
@@ -254,9 +263,16 @@ successful receive-pack
   -> start serialized refresh service
   -> headless_mirror_refresh.py refresh
   -> restart mirror gateway
-  -> wait until the gateway is active
+  -> within one bounded deadline, verify identity-bound signed health
+     over both loopback and the configured public Cloudflare origin
   -> headless_mirror_refresh.py register
 ```
+
+The health clients ignore ambient proxy settings and reject redirects, so a
+different endpoint cannot satisfy either proof. The tracked example allows 180
+seconds for the gateway and Cloudflare Tunnel to become ready. Registration
+fails closed if either signed proof is unavailable or invalid; the independent
+four-minute renewal timer remains the fallback for a later transient outage.
 
 Do not place this sequence behind `sh -c` with user-controlled repository
 arguments. Use fixed command arrays and a fixed config path. A service manager

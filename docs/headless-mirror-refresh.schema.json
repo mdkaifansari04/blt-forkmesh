@@ -38,6 +38,10 @@
     "archiveDirectory": {
       "$ref": "#/$defs/absolutePath"
     },
+    "releaseStore": {
+      "description": "Optional owner-local content-addressed store for public release assets. Repository source remains in the encrypted archive; this path contains only explicitly published immutable binaries.",
+      "$ref": "#/$defs/absolutePath"
+    },
     "gatewayConfigPath": {
       "$ref": "#/$defs/absolutePath"
     },

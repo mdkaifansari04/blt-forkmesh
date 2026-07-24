@@ -131,8 +131,10 @@ raise SystemExit(2)
 
     state = tmp_path / "identity"
     archive = tmp_path / "archives"
+    release_store = tmp_path / "releases"
     gateway_state = tmp_path / "gateway-state"
     archive.mkdir(mode=0o700)
+    release_store.mkdir(mode=0o700)
     gateway_state.mkdir(mode=0o700)
     router_key = Ed25519PrivateKey.generate()
     from cryptography.hazmat.primitives import serialization
@@ -197,6 +199,7 @@ raise SystemExit(2)
         "type": "forkmesh.headless-mirror-refresh",
         "sourceRepository": str(bare),
         "archiveDirectory": str(archive),
+        "releaseStore": str(release_store),
         "gatewayConfigPath": str(gateway_state / "mirror-gateway.json"),
         "identityStateDirectory": str(state),
         "identityHelperPath": str(installed_helper),
@@ -237,6 +240,7 @@ raise SystemExit(2)
         "work": work,
         "bare": bare,
         "archive": archive,
+        "release_store": release_store,
         "gateway_state": gateway_state,
         "gateway_config": gateway_state / "mirror-gateway.json",
         "public": public,
@@ -264,6 +268,9 @@ def test_refresh_renders_one_archive_for_all_aliases_and_check_is_dry(
         "forkmesh",
     ]
     assert {item["name"] for item in repositories} == {"forkmesh"}
+    assert {
+        item["releaseStore"] for item in repositories
+    } == {str(installation["release_store"])}
     archives = {
         json.dumps(item["encryptedArchive"], sort_keys=True)
         for item in repositories
@@ -609,6 +616,44 @@ def test_config_rejects_permissions_symlinks_and_secret_fields(
     prohibited_path.chmod(0o600)
     with pytest.raises(refresh_tool.RefreshError, match="prohibited secret"):
         refresh_tool.load_config(prohibited_path)
+
+    release_store = installation["release_store"]
+    release_store.chmod(0o755)
+    with pytest.raises(refresh_tool.RefreshError, match="release store"):
+        refresh_tool.load_config(config_path)
+    release_store.chmod(0o700)
+
+
+def test_release_store_is_optional_for_existing_refresh_configs(
+    installation,
+    tmp_path: Path,
+):
+    legacy = dict(installation["config_value"])
+    legacy.pop("releaseStore")
+    legacy_path = tmp_path / "legacy-refresh.json"
+    legacy_path.write_text(
+        json.dumps(legacy, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    legacy_path.chmod(0o600)
+
+    config = refresh_tool.load_config(legacy_path)
+    assert config.release_store is None
+    rendered = refresh_tool._render_gateway_config(
+        config,
+        refresh_tool._load_public_identity(config),
+        refresh_tool.SealMetadata(
+            ciphertext_sha256="a" * 64,
+            ciphertext_bytes=100,
+            key_reference="forkmesh-headless-age:test",
+            expected_refs_sha256="b" * 64,
+        ),
+        installation["archive"] / ("archive-" + "a" * 64 + ".age"),
+    )
+    assert all(
+        "releaseStore" not in repository
+        for repository in rendered["repositories"]
+    )
 
 
 def test_git_fsck_failure_does_not_create_active_state_or_leak_logs(
