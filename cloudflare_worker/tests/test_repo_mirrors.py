@@ -336,13 +336,15 @@ def test_payload_uses_explicit_org_backing_node_as_integrity_anchor():
     # mirror-status payload must use the same pin instead of a stale same-name
     # local-node record, otherwise it contradicts the route it is describing.
     now = 1_000_000
+    stale = "a" * 64
+    current = "b" * 64
     rows = [
         _row("source", "jett", "forkmesh", root="abc", synced="910000",
-             state_hash="stale"),
+             state_hash=stale),
         _row("canonical", "mirror2", "forkmesh", root="", synced="990000",
-             state_hash="current", source="remote-clone"),
+             state_hash=current, source="remote-clone"),
         _row("peer", "mirror3", "forkmesh", root="", synced="980000",
-             state_hash="current", source="remote-clone"),
+             state_hash=current, source="remote-clone"),
     ]
     ordinary = build_repo_mirrors_payload(
         "mirror2", "forkmesh", rows, {}, {}, now, 600_000, 5_000,
@@ -370,11 +372,13 @@ def test_payload_uses_explicit_org_backing_node_as_integrity_anchor():
 
 def test_linked_backing_node_presence_marks_mismatched_peer_healing():
     now = 1_000_000
+    current = "a" * 64
+    old = "b" * 64
     rows = [
         _row("canonical", "mirror2", "forkmesh", root="", synced="990000",
-             state_hash="current", source="remote-clone"),
+             state_hash=current, source="remote-clone"),
         _row("peer", "mirror3", "forkmesh", root="", synced="980000",
-             state_hash="old", source="remote-clone"),
+             state_hash=old, source="remote-clone"),
     ]
     payload = build_repo_mirrors_payload(
         "mirror2", "forkmesh", rows, {"canonical": now - 1_000}, {},
@@ -394,7 +398,7 @@ def test_linked_backing_node_without_attestation_fails_closed():
         _row("canonical", "mirror2", "forkmesh", root="", synced="990000",
              source="remote-clone"),
         _row("peer", "mirror3", "forkmesh", root="", synced="980000",
-             state_hash="self-published", source="remote-clone"),
+             state_hash="c" * 64, source="remote-clone"),
     ]
     payload = build_repo_mirrors_payload(
         "mirror2", "forkmesh", rows, {}, {}, now, 600_000, 5_000,

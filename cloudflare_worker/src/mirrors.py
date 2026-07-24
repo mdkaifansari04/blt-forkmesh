@@ -250,11 +250,17 @@ def build_repo_mirrors_payload(
     canonical_online = False
     if canonical_link_mode:
         target_state = str(target_record.get("stateHash") or "").strip().lower()
-        if target_state:
+        if (
+            len(target_state) == 64
+            and all(ch in "0123456789abcdef" for ch in target_state)
+        ):
             canonical_pins.add(target_state)
         for state in (history or {}).get(str(target.get("key_bi") or ""), []) or []:
             state = str(state or "").strip().lower()
-            if state:
+            if (
+                len(state) == 64
+                and all(ch in "0123456789abcdef" for ch in state)
+            ):
                 canonical_pins.add(state)
         target_seen = _mirror_ms((presence or {}).get(target.get("key_bi")))
         canonical_online = bool(target_seen and now - target_seen <= stale_ms)
