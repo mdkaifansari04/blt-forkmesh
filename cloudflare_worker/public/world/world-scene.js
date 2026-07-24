@@ -19,6 +19,17 @@ const CAMERA_PITCH_MAX = 1.24;
 const LIGHT_LEVEL_MIN = 40;
 const LIGHT_LEVEL_MAX = 140;
 const LIGHT_LEVEL_DEFAULT = 100;
+const WORLD_SPACE_FLOORS = Object.freeze({
+  "town-square": 0.38,
+  east: 0.38,
+  central: 0.38,
+  west: 0.38,
+  "sky-campus": 15.45,
+  "space-station": 18.45,
+  "code-planet": 15.45,
+  "organization-region": 14.45,
+  "planet-atlas": 22.45,
+});
 const MOVEMENT_KEYS = new Set([
   "KeyW",
   "KeyA",
@@ -2831,6 +2842,7 @@ export function createWorldScene({
   let lastFrame = performance.now();
   let lastMovementEmit = 0;
   let lastPosition = player.position.clone();
+  let wasWalking = false;
   let cameraFocus = null;
   let cameraZoom = 1;
   let cameraYaw = Math.atan2(CAMERA_OFFSET[0], CAMERA_OFFSET[2]);
@@ -2958,6 +2970,8 @@ export function createWorldScene({
       z: destination.z,
       heading: player.rotation.y,
       activity: `arriving in ${regionId} campus`,
+      space: regionId,
+      moving: false,
     });
     return true;
   }
@@ -2988,6 +3002,7 @@ export function createWorldScene({
       heading: player.rotation.y,
       activity: `collaborating in ${spaceId}`,
       space: spaceId,
+      moving: false,
     });
     return true;
   }
@@ -3108,9 +3123,26 @@ export function createWorldScene({
         z: Number(player.position.z.toFixed(2)),
         heading: Number(player.rotation.y.toFixed(3)),
         space: currentSpace,
+        moving: true,
         activity: currentLocation === "Town Square" ? "exploring the Town Square" : `visiting ${currentLocation}`,
       });
     }
+    if (!walking && wasWalking) {
+      lastPosition.copy(player.position);
+      onMovement({
+        x: Number(player.position.x.toFixed(2)),
+        y: Number(player.position.y.toFixed(2)),
+        z: Number(player.position.z.toFixed(2)),
+        heading: Number(player.rotation.y.toFixed(3)),
+        space: currentSpace,
+        moving: false,
+        activity:
+          currentLocation === "Town Square"
+            ? "exploring the Town Square"
+            : `visiting ${currentLocation}`,
+      });
+    }
+    wasWalking = walking;
   }
 
   function updateRemotePlayers(delta, time) {
@@ -3159,16 +3191,29 @@ export function createWorldScene({
   }
 
   function setSpawn(spawn = {}) {
+    const requestedSpace = String(spawn.space || "");
+    const space = Object.hasOwn(WORLD_SPACE_FLOORS, requestedSpace)
+      ? requestedSpace
+      : "town-square";
     const x = clamp(Number(spawn.x) || 0, -WORLD_RADIUS, WORLD_RADIUS);
-    const y = clamp(Number(spawn.y) || 0.38, 0.38, 40);
     const z = clamp(Number(spawn.z) || 0, -WORLD_RADIUS, WORLD_RADIUS);
     const heading = clamp(Number(spawn.heading) || 0, -Math.PI, Math.PI);
-    currentSpace = "town-square";
-    currentFloorY = y;
-    player.position.set(x, y, z);
+    currentSpace = space;
+    currentFloorY = WORLD_SPACE_FLOORS[space];
+    player.position.set(x, currentFloorY, z);
     player.rotation.y = heading;
     lastPosition.copy(player.position);
+    wasWalking = false;
     cameraFocus = null;
+    if (space === "town-square") {
+      nearestLandmark();
+    } else {
+      currentLocation = space
+        .split("-")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ");
+      onLocationChange(currentLocation, "launchpad");
+    }
   }
 
   function removeRemoteModerationControls(avatar, peerId) {
@@ -3416,6 +3461,7 @@ export function createWorldScene({
       heading: player.rotation.y,
       activity: "visiting a consented front yard",
       space: "town-square",
+      moving: false,
     });
     return true;
   }

@@ -31,7 +31,28 @@ const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
 const VISIT_COUNT_KEY = "forkmesh.world.publicVisitCount.v1";
 const INTRO_DISMISSED_KEY = "forkmesh.world.introDismissed.v1";
+const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
+const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const POSITION_WRITE_INTERVAL_MS = 1000;
+const POSITION_RADIUS = 72;
+const POSITION_FLOOR_TOLERANCE = 0.5;
+const POSITION_FLOORS = Object.freeze({
+  "town-square": 0.38,
+  east: 0.38,
+  central: 0.38,
+  west: 0.38,
+  "sky-campus": 15.45,
+  "space-station": 18.45,
+  "code-planet": 15.45,
+  "organization-region": 14.45,
+  "planet-atlas": 22.45,
+});
 const SOCKET_RETRY_MAX_MS = 20000;
+const SOCKET_STABLE_MS = 5000;
+const SOCKET_PEER_GRACE_MS = 8000;
+const SOCKET_BUFFER_HIGH_WATER_BYTES = 64 * 1024;
+const PRESENCE_PROFILE_DEBOUNCE_MS = 300;
+const MOVEMENT_SEND_INTERVAL_MS = 1000;
 const PRESENCE_STALE_MS = 22000;
 const WORLD_TICKET_REFRESH_MS = 5 * 60 * 1000;
 const WORLD_NOTIFICATION_POLL_MS = 30 * 1000;
@@ -95,6 +116,70 @@ function writeJSON(storage, key, value) {
   try {
     storage.setItem(key, JSON.stringify(value));
   } catch (_) {}
+}
+
+function positionIdentityToken(value) {
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (const character of String(value || "")) {
+    const code = character.charCodeAt(0);
+    first = Math.imul(first ^ code, 0x01000193) >>> 0;
+    second = Math.imul(second ^ (code + 0x9d), 0x85ebca6b) >>> 0;
+  }
+  return `${first.toString(16).padStart(8, "0")}${second
+    .toString(16)
+    .padStart(8, "0")}`;
+}
+
+function positionStorageKey(identityId) {
+  return `${POSITION_KEY_PREFIX}${positionIdentityToken(identityId)}`;
+}
+
+function normalizedWorldPosition(record, now = Date.now()) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+  const allowedFields = ["heading", "space", "updatedAt", "x", "y", "z"];
+  const fields = Object.keys(record).sort();
+  if (
+    fields.length !== allowedFields.length ||
+    fields.some((field, index) => field !== allowedFields[index])
+  ) {
+    return null;
+  }
+  const space = String(record.space || "");
+  const floor = POSITION_FLOORS[space];
+  const x = Number(record.x);
+  const y = Number(record.y);
+  const z = Number(record.z);
+  const heading = Number(record.heading);
+  const updatedAt = Number(record.updatedAt);
+  if (
+    !WORLD_SPACE_IDS.has(space) ||
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    !Number.isFinite(z) ||
+    !Number.isFinite(heading) ||
+    !Number.isSafeInteger(updatedAt) ||
+    Math.abs(x) > POSITION_RADIUS ||
+    Math.abs(z) > POSITION_RADIUS ||
+    Math.abs(y - floor) > POSITION_FLOOR_TOLERANCE ||
+    heading < -Math.PI ||
+    heading > Math.PI ||
+    updatedAt < now - POSITION_MAX_AGE_MS ||
+    updatedAt > now + 60 * 1000
+  ) {
+    return null;
+  }
+  return { x, y, z, heading, space, updatedAt };
+}
+
+function readWorldPosition(storage, key, now = Date.now()) {
+  const position = normalizedWorldPosition(readJSON(storage, key, null), now);
+  if (!position) {
+    try {
+      storage.removeItem(key);
+    } catch (_) {}
+  }
+  return position;
 }
 
 function firstVisitTimestamp(now = Date.now()) {
@@ -2185,6 +2270,7 @@ class ForkMeshWorld extends HTMLElement {
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
+    this.requestedSpaceExplicit = WORLD_SPACE_IDS.has(requestedSpace);
     this.currentSpace = WORLD_SPACE_IDS.has(requestedSpace)
       ? requestedSpace
       : "town-square";
@@ -2197,7 +2283,20 @@ class ForkMeshWorld extends HTMLElement {
     this.presenceConnecting = false;
     this.socketRetry = 1000;
     this.socketTimer = 0;
+    this.socketStableTimer = 0;
+    this.peerGraceTimer = 0;
+    this.peerGraceUntil = 0;
     this.pingTimer = 0;
+    this.profilePresenceTimer = 0;
+    this.profilePresencePending = false;
+    this.movementSendTimer = 0;
+    this.pendingMovement = null;
+    this.lastMovementSentAt = 0;
+    this.positionWriteTimer = 0;
+    this.pendingPosition = null;
+    this.positionKey = "";
+    this.restoredPosition = null;
+    this.spawnSelected = false;
     this.rewardTimer = 0;
     this.mirrorTimer = 0;
     this.eventsTimer = 0;
@@ -2240,8 +2339,19 @@ class ForkMeshWorld extends HTMLElement {
     this.identity.visitCount = this.publicVisitCount;
     this.identity.activityCategory = this.currentActivityCategory;
     this.settings = mergeSettings(readJSON(localStorage, SETTINGS_KEY, null));
+    this.positionKey = positionStorageKey(this.identity.id);
+    const restoredPosition = readWorldPosition(localStorage, this.positionKey);
+    if (
+      restoredPosition &&
+      (!this.requestedSpaceExplicit ||
+        restoredPosition.space === this.currentSpace)
+    ) {
+      this.restoredPosition = restoredPosition;
+      this.currentSpace = restoredPosition.space;
+    }
     // Shared rooms, playlists, roles, and schedules are server-authoritative.
-    // localStorage is reserved for this device's visual/privacy preferences.
+    // The only additional device-local state is one bounded position record
+    // for this identity. It has no movement history, URLs, or activity labels.
     this.mediaSpaces = [];
     this.mediaRoom = normalizeMediaRoom(null);
     this.innerHTML = worldTemplate(this.identity, this.settings, this.mode);
@@ -2357,8 +2467,24 @@ class ForkMeshWorld extends HTMLElement {
         // failed live catalog must not leave file icons that look selectable.
         this.world.updateRepositoryGraph?.([], []);
       }
-      if (this.currentSpace !== "town-square") {
-        this.world.travelToSpace?.(this.currentSpace);
+      if (this.restoredPosition) {
+        this.world.setSpawn?.(this.restoredPosition);
+        this.lastMovement = {
+          ...this.lastMovement,
+          x: this.restoredPosition.x,
+          y: this.restoredPosition.y,
+          z: this.restoredPosition.z,
+          heading: this.restoredPosition.heading,
+          space: this.restoredPosition.space,
+        };
+        this.spawnSelected = true;
+      } else if (this.currentSpace !== "town-square") {
+        const traveled = WORLD_REGIONS.some(
+          (region) => region.id === this.currentSpace,
+        )
+          ? this.world.travelToRegion?.(this.currentSpace)
+          : this.world.travelToSpace?.(this.currentSpace);
+        this.spawnSelected = traveled === true;
       }
       this.connectPresence();
       this.hideLoading();
@@ -2429,7 +2555,7 @@ class ForkMeshWorld extends HTMLElement {
   };
 
   handlePageHide = () => {
-    this.sendPresence({ type: "leave" });
+    this.captureWorldPosition(true);
     this.destroy();
   };
 
@@ -8754,12 +8880,123 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   handleMovement(movement) {
+    const space = WORLD_SPACE_IDS.has(String(movement?.space || ""))
+      ? String(movement.space)
+      : this.currentSpace;
     this.lastMovement = {
       ...movement,
+      space,
       activity: this.settings.privacy.activity ? movement.activity : "online",
     };
-    this.sendPresence({ type: "move", ...this.lastMovement, moving: true });
+    this.spawnSelected = true;
+    this.rememberWorldPosition(
+      this.lastMovement,
+      movement?.moving === false,
+    );
+    this.queueMovementPresence({
+      ...this.lastMovement,
+      moving: movement?.moving !== false,
+    });
     this.broadcastLocalPresence();
+  }
+
+  rememberWorldPosition(position, flush = false) {
+    if (!this.positionKey) return;
+    const record = normalizedWorldPosition(
+      {
+        x: position?.x,
+        y: position?.y,
+        z: position?.z,
+        heading: position?.heading ?? position?.yaw,
+        space: WORLD_SPACE_IDS.has(String(position?.space || ""))
+          ? String(position.space)
+          : this.currentSpace,
+        updatedAt: Date.now(),
+      },
+      Date.now(),
+    );
+    if (!record) return;
+    this.pendingPosition = record;
+    if (flush) {
+      this.flushWorldPosition();
+      return;
+    }
+    if (!this.positionWriteTimer) {
+      this.positionWriteTimer = window.setTimeout(
+        () => this.flushWorldPosition(),
+        POSITION_WRITE_INTERVAL_MS,
+      );
+    }
+  }
+
+  captureWorldPosition(flush = false) {
+    const position = this.world?.getPosition?.();
+    if (position) this.rememberWorldPosition(position, flush);
+  }
+
+  flushWorldPosition() {
+    window.clearTimeout(this.positionWriteTimer);
+    this.positionWriteTimer = 0;
+    if (!this.pendingPosition || !this.positionKey) return;
+    const { x, y, z, heading, space, updatedAt } = this.pendingPosition;
+    writeJSON(localStorage, this.positionKey, {
+      x,
+      y,
+      z,
+      heading,
+      space,
+      updatedAt,
+    });
+    this.pendingPosition = null;
+  }
+
+  queueMovementPresence(movement) {
+    this.pendingMovement = {
+      ...movement,
+      moving: movement?.moving !== false,
+    };
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    if (!this.pendingMovement.moving) {
+      window.clearTimeout(this.movementSendTimer);
+      this.movementSendTimer = 0;
+      this.flushMovementPresence();
+      return;
+    }
+    const elapsed = performance.now() - this.lastMovementSentAt;
+    if (elapsed >= MOVEMENT_SEND_INTERVAL_MS) {
+      this.flushMovementPresence();
+      return;
+    }
+    if (!this.movementSendTimer) {
+      this.movementSendTimer = window.setTimeout(
+        () => this.flushMovementPresence(),
+        Math.max(0, MOVEMENT_SEND_INTERVAL_MS - elapsed),
+      );
+    }
+  }
+
+  flushMovementPresence() {
+    window.clearTimeout(this.movementSendTimer);
+    this.movementSendTimer = 0;
+    if (!this.pendingMovement) return;
+    const movement = this.pendingMovement;
+    if (
+      this.sendPresenceNow({
+        type: "move",
+        ...movement,
+      })
+    ) {
+      this.pendingMovement = null;
+      this.lastMovementSentAt = performance.now();
+    } else if (
+      this.socket?.readyState === WebSocket.OPEN &&
+      !this.destroyed
+    ) {
+      this.movementSendTimer = window.setTimeout(
+        () => this.flushMovementPresence(),
+        MOVEMENT_SEND_INTERVAL_MS,
+      );
+    }
   }
 
   async refreshWorldTicket() {
@@ -8805,6 +9042,40 @@ class ForkMeshWorld extends HTMLElement {
     }, WORLD_TICKET_REFRESH_MS);
   }
 
+  schedulePresenceReconnect() {
+    if (this.destroyed || document.hidden) return;
+    window.clearTimeout(this.socketTimer);
+    const jitter = 0.75 + Math.random() * 0.5;
+    const delay = Math.max(250, Math.round(this.socketRetry * jitter));
+    this.socketTimer = window.setTimeout(() => {
+      this.socketTimer = 0;
+      this.connectPresence();
+    }, delay);
+    this.socketRetry = Math.min(
+      SOCKET_RETRY_MAX_MS,
+      Math.round(this.socketRetry * 1.8),
+    );
+  }
+
+  startPeerReconnectGrace() {
+    window.clearTimeout(this.peerGraceTimer);
+    if (!this.remotePlayers.size) {
+      this.peerGraceUntil = 0;
+      this.renderPeers();
+      return;
+    }
+    this.peerGraceUntil = Date.now() + SOCKET_PEER_GRACE_MS;
+    this.renderPeers();
+    this.peerGraceTimer = window.setTimeout(() => {
+      this.peerGraceTimer = 0;
+      this.peerGraceUntil = 0;
+      if (this.socket?.readyState !== WebSocket.OPEN) {
+        this.remotePlayers.clear();
+        this.renderPeers();
+      }
+    }, SOCKET_PEER_GRACE_MS);
+  }
+
   async connectPresence() {
     if (
       this.destroyed ||
@@ -8823,6 +9094,10 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       await this.refreshWorldTicket();
     }
+    if (this.destroyed || document.hidden) {
+      this.presenceConnecting = false;
+      return;
+    }
     const socketURL = new URL(
       `${protocol}//${location.host}/api/world/ws`,
     );
@@ -8833,15 +9108,30 @@ class ForkMeshWorld extends HTMLElement {
     } catch (_) {
       this.presenceConnecting = false;
       this.setPresenceState("offline", "Local world");
+      this.schedulePresenceReconnect();
       return;
     }
     this.socket = socket;
     this.setPresenceState("connecting", "Joining world");
     socket.addEventListener("open", () => {
+      if (this.destroyed || this.socket !== socket) {
+        try {
+          socket.close(1000, "world closed");
+        } catch (_) {}
+        return;
+      }
       this.presenceConnecting = false;
-      this.socketRetry = 1000;
       this.setPresenceState("online", "World online");
-      this.sendPresence({ type: "presence" });
+      window.clearTimeout(this.socketStableTimer);
+      this.socketStableTimer = window.setTimeout(() => {
+        if (this.socket === socket && socket.readyState === WebSocket.OPEN) {
+          this.socketRetry = 1000;
+        }
+      }, SOCKET_STABLE_MS);
+      window.clearTimeout(this.profilePresenceTimer);
+      this.profilePresenceTimer = 0;
+      this.profilePresencePending = false;
+      this.sendPresenceNow({ type: "presence" });
       window.clearInterval(this.pingTimer);
       this.pingTimer = window.setInterval(
         () => this.sendPresence({ type: "ping" }),
@@ -8858,22 +9148,26 @@ class ForkMeshWorld extends HTMLElement {
       this.receivePresence(message);
     });
     socket.addEventListener("close", () => {
+      if (this.socket !== socket) return;
       this.presenceConnecting = false;
-      if (this.socket === socket) this.socket = null;
+      this.socket = null;
+      window.clearTimeout(this.socketStableTimer);
+      this.socketStableTimer = 0;
       window.clearInterval(this.pingTimer);
       this.serverPeerId = "";
-      this.remotePlayers.clear();
-      this.renderPeers();
+      window.clearTimeout(this.movementSendTimer);
+      this.movementSendTimer = 0;
+      this.pendingMovement = null;
       if (this.destroyed) return;
       this.setPresenceState("offline", "Local world");
-      window.clearTimeout(this.socketTimer);
-      this.socketTimer = window.setTimeout(
-        () => this.connectPresence(),
-        this.socketRetry,
-      );
-      this.socketRetry = Math.min(SOCKET_RETRY_MAX_MS, this.socketRetry * 1.8);
+      this.startPeerReconnectGrace();
+      this.schedulePresenceReconnect();
     });
-    socket.addEventListener("error", () => socket.close());
+    socket.addEventListener("error", () => {
+      try {
+        socket.close();
+      } catch (_) {}
+    });
   }
 
   setPresenceState(state, copy) {
@@ -8884,7 +9178,43 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   sendPresence(message) {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    if (message?.type !== "presence") {
+      return this.sendPresenceNow(message);
+    }
+    this.profilePresencePending = true;
+    window.clearTimeout(this.profilePresenceTimer);
+    this.profilePresenceTimer = window.setTimeout(
+      () => this.flushProfilePresence(),
+      PRESENCE_PROFILE_DEBOUNCE_MS,
+    );
+    return false;
+  }
+
+  flushProfilePresence() {
+    window.clearTimeout(this.profilePresenceTimer);
+    this.profilePresenceTimer = 0;
+    if (!this.profilePresencePending) return;
+    if (this.sendPresenceNow({ type: "presence" })) {
+      this.profilePresencePending = false;
+    } else if (
+      this.socket?.readyState === WebSocket.OPEN &&
+      !this.destroyed
+    ) {
+      this.profilePresenceTimer = window.setTimeout(
+        () => this.flushProfilePresence(),
+        PRESENCE_PROFILE_DEBOUNCE_MS,
+      );
+    }
+  }
+
+  sendPresenceNow(message) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
+    if (
+      ["presence", "move", "ping"].includes(String(message?.type || "")) &&
+      Number(this.socket.bufferedAmount || 0) > SOCKET_BUFFER_HIGH_WATER_BYTES
+    ) {
+      return false;
+    }
     let safe;
     if (message.type === "presence") {
       this.identity.firstVisitAge = firstVisitAge(this.firstVisitAt);
@@ -8937,11 +9267,14 @@ class ForkMeshWorld extends HTMLElement {
     } else if (message.type === "ping") {
       safe = { type: "ping" };
     } else {
-      return;
+      return false;
     }
     try {
       this.socket.send(JSON.stringify(safe));
-    } catch (_) {}
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   receivePresence(message) {
@@ -8949,21 +9282,29 @@ class ForkMeshWorld extends HTMLElement {
     if (message.type === "welcome" && Array.isArray(message.peers)) {
       this.serverPeerId = String(message.id || "");
       const ownPresence = remotePlayer(message.self);
-      if (ownPresence?.id === this.serverPeerId) {
+      if (ownPresence?.id === this.serverPeerId && !this.spawnSelected) {
+        this.currentSpace = ownPresence.space;
         this.lastMovement = {
           ...this.lastMovement,
           x: ownPresence.x,
           y: ownPresence.y,
           z: ownPresence.z,
           heading: ownPresence.heading,
+          space: ownPresence.space,
         };
         this.world?.setSpawn?.({
           x: ownPresence.x,
           y: ownPresence.y,
           z: ownPresence.z,
           heading: ownPresence.heading,
+          space: ownPresence.space,
         });
+        this.spawnSelected = true;
+        this.rememberWorldPosition(this.lastMovement, true);
       }
+      window.clearTimeout(this.peerGraceTimer);
+      this.peerGraceTimer = 0;
+      this.peerGraceUntil = 0;
       this.remotePlayers.clear();
       message.peers.forEach((peer) => {
         const player = remotePlayer(peer);
@@ -8973,7 +9314,15 @@ class ForkMeshWorld extends HTMLElement {
       });
       // Publishing starts only after the server has assigned this connection's
       // unique row/column arrival slot.
-      this.sendPresence({ type: "move", ...this.lastMovement, moving: false });
+      window.clearTimeout(this.movementSendTimer);
+      this.movementSendTimer = 0;
+      this.pendingMovement = null;
+      this.sendPresenceNow({
+        type: "move",
+        ...this.lastMovement,
+        moving: false,
+      });
+      this.lastMovementSentAt = performance.now();
     } else if (["presence", "join"].includes(message.type) && message.peer?.id) {
       const player = remotePlayer(message.peer);
       if (player?.id && player.id !== this.serverPeerId) {
@@ -9103,7 +9452,12 @@ class ForkMeshWorld extends HTMLElement {
     this.remotePlayers.forEach((player, id) => combined.set(id, player));
     const socketOnline =
       this.socket?.readyState === WebSocket.OPEN && Boolean(this.serverPeerId);
-    if (!socketOnline) {
+    const reconnectGrace =
+      !socketOnline &&
+      Boolean(this.peerGraceTimer) &&
+      this.peerGraceUntil > 0 &&
+      this.remotePlayers.size > 0;
+    if (!socketOnline && !reconnectGrace) {
       this.localPeers.forEach((peer, id) => {
         combined.set(`local:${id}`, {
           ...peer,
@@ -9119,6 +9473,7 @@ class ForkMeshWorld extends HTMLElement {
 
   destroy() {
     if (this.destroyed) return;
+    if (this.spawnSelected) this.captureWorldPosition(true);
     this.destroyed = true;
     document.removeEventListener("visibilitychange", this.handleVisibility);
     window.visualViewport?.removeEventListener(
@@ -9131,6 +9486,11 @@ class ForkMeshWorld extends HTMLElement {
     window.removeEventListener("pointermove", this.handlePublicInputActivity);
     window.removeEventListener("keydown", this.handlePublicInputActivity);
     window.clearTimeout(this.socketTimer);
+    window.clearTimeout(this.socketStableTimer);
+    window.clearTimeout(this.peerGraceTimer);
+    window.clearTimeout(this.profilePresenceTimer);
+    window.clearTimeout(this.movementSendTimer);
+    window.clearTimeout(this.positionWriteTimer);
     window.clearTimeout(this.toastTimer);
     window.clearTimeout(this.inactiveSyncTimer);
     window.clearTimeout(this.inputInactiveTimer);
@@ -9145,6 +9505,10 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.mediaTimer);
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);
+    this.peerGraceTimer = 0;
+    this.profilePresenceTimer = 0;
+    this.movementSendTimer = 0;
+    this.positionWriteTimer = 0;
     try {
       this.broadcast?.postMessage({ type: "leave", id: this.identity?.id });
       this.broadcast?.close();
