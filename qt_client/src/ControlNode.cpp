@@ -350,6 +350,23 @@ QString findCloudflareBootstrapScript(const QString &sourceDir,
     return {};
 }
 
+QString findCloudflareWorkerDirectory(const QString &sourceDir,
+                                      const QString &applicationDir)
+{
+    const QString bootstrap =
+        findCloudflareBootstrapScript(sourceDir, applicationDir);
+    if (bootstrap.isEmpty())
+        return {};
+    const QString workerPath =
+        QDir(QFileInfo(bootstrap).absoluteDir().absoluteFilePath(
+                 QStringLiteral("..")))
+            .absoluteFilePath(QStringLiteral("cloudflare_worker"));
+    const QFileInfo worker(workerPath);
+    if (!worker.isDir() || !worker.isReadable())
+        return {};
+    return worker.canonicalFilePath();
+}
+
 namespace {
 
 QString findPinnedTool(const QString &fileName, const QString &overrideName,
@@ -566,6 +583,48 @@ CloudflareBootstrapCommand buildCloudflareBootstrapCommand(
         command.environment.remove(name);
     }
     command.environment.insert(QStringLiteral("CLOUDFLARE_API_TOKEN"), apiToken);
+    return command;
+}
+
+CloudflareBootstrapCommand buildCloudflareTailCommand(
+    const QString &apiToken,
+    const QString &accountId,
+    const QString &npxProgram)
+{
+    CloudflareBootstrapCommand command;
+    const QString token = apiToken.trimmed();
+    const QString account = accountId.trimmed();
+    command.program = npxProgram.trimmed();
+    if (token.isEmpty() || command.program.isEmpty())
+        return command;
+
+    static const QRegularExpression accountPattern(
+        QStringLiteral("^[A-Za-z0-9_-]{1,128}$"));
+    if (!account.isEmpty() &&
+        !accountPattern.match(account).hasMatch()) {
+        command.program.clear();
+        return command;
+    }
+
+    command.arguments = {
+        QStringLiteral("--yes"),
+        QStringLiteral("wrangler@4.42.1"),
+        QStringLiteral("tail"),
+        QStringLiteral("--format"),
+        QStringLiteral("pretty"),
+    };
+    command.environment = QProcessEnvironment::systemEnvironment();
+    command.environment.remove(QStringLiteral("CLOUDFLARE_API_KEY"));
+    command.environment.remove(QStringLiteral("CLOUDFLARE_EMAIL"));
+    command.environment.insert(QStringLiteral("CLOUDFLARE_API_TOKEN"),
+                               token);
+    if (account.isEmpty()) {
+        command.environment.remove(
+            QStringLiteral("CLOUDFLARE_ACCOUNT_ID"));
+    } else {
+        command.environment.insert(
+            QStringLiteral("CLOUDFLARE_ACCOUNT_ID"), account);
+    }
     return command;
 }
 

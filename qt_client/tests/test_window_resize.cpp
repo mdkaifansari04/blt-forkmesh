@@ -600,6 +600,11 @@ int main(int argc, char *argv[])
     check(cloudflareToken &&
               cloudflareToken->echoMode() == QLineEdit::Password,
           QStringLiteral("Cloudflare token control masks the session-only secret"));
+    window.testShowLogSection();
+    QApplication::processEvents();
+    check(window.findChild<QPushButton *>(
+              QStringLiteral("cloudflareWorkerLogsButton")) != nullptr,
+          QStringLiteral("network log exposes the Cloudflare live-log viewer"));
     check(window.findChild<QTableWidget *>(
               QStringLiteral("controlPermissionsTable")) != nullptr &&
               window.findChild<QPushButton *>(

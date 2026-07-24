@@ -377,6 +377,9 @@ int main(int argc, char **argv)
     check(forkmesh::control::findCloudflareBootstrapScript(client, QString()) ==
               QFileInfo(script).canonicalFilePath(),
           "repository-pinned bootstrap script resolves from Qt source dir");
+    check(forkmesh::control::findCloudflareWorkerDirectory(client, QString()) ==
+              QFileInfo(worker).canonicalFilePath(),
+          "repository-pinned Worker directory resolves with the bootstrapper");
     QFile tunnelScript(root.filePath(
         QStringLiteral("tools/cloudflare_tunnel_bootstrap.py")));
     QFile gatewayScript(root.filePath(
@@ -453,6 +456,10 @@ int main(int argc, char **argv)
                         QStringLiteral("/cloudflare_bootstrap.py"))
                   .canonicalFilePath(),
           "bootstrap resolves from the Linux CMake installed layout without a source checkout");
+    check(forkmesh::control::findCloudflareWorkerDirectory(
+              QString(), installedBin) ==
+              QFileInfo(installedWorker).canonicalFilePath(),
+          "installed Worker directory resolves with the bootstrapper");
     check(forkmesh::control::findCloudflareTunnelBootstrapScript(
               QString(), installedBin) ==
                   QFileInfo(
@@ -476,6 +483,35 @@ int main(int argc, char **argv)
     check(forkmesh::control::findCloudflareBootstrapScript(
               QString(), installedBin).isEmpty(),
           "incomplete installed Worker bundle fails closed");
+    check(forkmesh::control::findCloudflareWorkerDirectory(
+              QString(), installedBin).isEmpty(),
+          "incomplete installed Worker directory fails closed");
+
+    const QString tailToken =
+        QStringLiteral("cf-tail-token-must-never-enter-argv");
+    const auto tailCommand =
+        forkmesh::control::buildCloudflareTailCommand(
+            tailToken, QStringLiteral("account_123"),
+            QStringLiteral("/usr/bin/npx"));
+    check(tailCommand.program == QStringLiteral("/usr/bin/npx") &&
+              tailCommand.arguments ==
+                  QStringList({QStringLiteral("--yes"),
+                               QStringLiteral("wrangler@4.42.1"),
+                               QStringLiteral("tail"),
+                               QStringLiteral("--format"),
+                               QStringLiteral("pretty")}),
+          "Cloudflare tail uses a direct pinned Wrangler invocation");
+    check(!tailCommand.arguments.join(QChar(u'\0')).contains(tailToken) &&
+              tailCommand.environment.value(
+                  QStringLiteral("CLOUDFLARE_API_TOKEN")) == tailToken &&
+              tailCommand.environment.value(
+                  QStringLiteral("CLOUDFLARE_ACCOUNT_ID")) ==
+                  QStringLiteral("account_123"),
+          "Cloudflare tail keeps credentials only in the child environment");
+    check(forkmesh::control::buildCloudflareTailCommand(
+              tailToken, QStringLiteral("invalid account!"),
+              QStringLiteral("/usr/bin/npx")).program.isEmpty(),
+          "Cloudflare tail rejects malformed account IDs");
 
     if (failures == 0)
         std::fprintf(stdout, "control-node tests passed\n");

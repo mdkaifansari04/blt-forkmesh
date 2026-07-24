@@ -924,6 +924,7 @@ private:
     void maybeUploadDiagnostics();
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
+    void showCloudflareWorkerLogs();
 
     // Mainnode relays (shown in the top-bar relay switcher)
     void loadServers();

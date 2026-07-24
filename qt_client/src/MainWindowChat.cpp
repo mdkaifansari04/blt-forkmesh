@@ -21,7 +21,13 @@
 #include "WorldSpeechBridge.h"
 
 #include <QBrush>
+#include <QDialog>
+#include <QInputDialog>
 #include <QNetworkInformation>
+#include <QPlainTextEdit>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QStandardPaths>
 #include <QTabWidget>
 
 #include <algorithm>
@@ -2996,6 +3002,15 @@ QWidget *MainWindow::buildLogSection()
     clearButton->setCursor(Qt::PointingHandCursor);
     clearButton->setToolTip("Clear the network log");
     setOcticon(clearButton, "trash", 14);
+    auto *cloudflareButton = new QPushButton("Cloudflare logs");
+    cloudflareButton->setObjectName(
+        QStringLiteral("cloudflareWorkerLogsButton"));
+    cloudflareButton->setCursor(Qt::PointingHandCursor);
+    cloudflareButton->setToolTip(
+        QStringLiteral("View the deployed Cloudflare Worker's live logs"));
+    setOcticon(cloudflareButton, "cloud", 14);
+    connect(cloudflareButton, &QPushButton::clicked, this,
+            &MainWindow::showCloudflareWorkerLogs);
 
     m_settingsLog = new QTextBrowser;
     m_settingsLog->setReadOnly(true);
@@ -3052,6 +3067,7 @@ QWidget *MainWindow::buildLogSection()
     headerRow->setContentsMargins(0, 0, 0, 0);
     headerRow->addWidget(label);
     headerRow->addStretch();
+    headerRow->addWidget(cloudflareButton);
     headerRow->addWidget(clearButton);
 
     auto *layout = new QVBoxLayout(page);
@@ -3061,6 +3077,179 @@ QWidget *MainWindow::buildLogSection()
     layout->addWidget(filterScroll);
     layout->addWidget(m_settingsLog, 1);
     return page;
+}
+
+void MainWindow::showCloudflareWorkerLogs()
+{
+    QString token =
+        m_cloudflareTokenEdit
+            ? m_cloudflareTokenEdit->text().trimmed()
+            : QString();
+    if (token.isEmpty()) {
+        bool accepted = false;
+        token = QInputDialog::getText(
+                    this, QStringLiteral("Cloudflare Worker logs"),
+                    QStringLiteral(
+                        "Scoped Cloudflare API token (used for this live "
+                        "viewer only):"),
+                    QLineEdit::Password, QString(), &accepted)
+                    .trimmed();
+        if (!accepted || token.isEmpty()) {
+            token.fill(QChar(u'\0'));
+            token.clear();
+            return;
+        }
+    }
+
+    const QString workerDirectory =
+        forkmesh::control::findCloudflareWorkerDirectory(
+            QStringLiteral(FORKMESH_SOURCE_DIR),
+            QCoreApplication::applicationDirPath());
+    const QString npx =
+        QStandardPaths::findExecutable(QStringLiteral("npx"));
+    QString account =
+        m_cloudflareAccountEdit
+            ? m_cloudflareAccountEdit->text().trimmed()
+            : QString();
+    if (account.isEmpty()) {
+        account =
+            QSettings()
+                .value(QStringLiteral("control/cloudflareAccount"))
+                .toString()
+                .trimmed();
+    }
+    const auto command =
+        forkmesh::control::buildCloudflareTailCommand(
+            token, account, npx);
+    if (workerDirectory.isEmpty() || command.program.isEmpty()) {
+        flashMessage(
+            workerDirectory.isEmpty()
+                ? QStringLiteral(
+                      "The installed Cloudflare Worker bundle is incomplete.")
+                : QStringLiteral(
+                      "Cloudflare live logs require Node.js/npx and a valid "
+                      "account ID."),
+            true);
+        token.fill(QChar(u'\0'));
+        token.clear();
+        return;
+    }
+    if (command.arguments.join(QChar(u'\0')).contains(token)) {
+        flashMessage(
+            QStringLiteral(
+                "Refusing an unsafe Worker log command containing a "
+                "credential."),
+            true);
+        token.fill(QChar(u'\0'));
+        token.clear();
+        return;
+    }
+    if (m_cloudflareTokenEdit &&
+        !m_cloudflareTokenEdit->text().isEmpty()) {
+        m_cloudflareTokenEdit->clear();
+        m_cloudflareTokenEdit->setPlaceholderText(
+            QStringLiteral("token is in the live log viewer only"));
+    }
+
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("cloudflareWorkerLogsDialog"));
+    dialog.setWindowTitle(QStringLiteral("Cloudflare Worker live logs"));
+    dialog.resize(900, 560);
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(8);
+
+    auto *notice = new QLabel(
+        QStringLiteral(
+            "Read-only live tail for the configured ForkMesh Worker. The API "
+            "token stays in this process's memory only and is erased when "
+            "this viewer closes."));
+    notice->setObjectName(QStringLiteral("modeHint"));
+    notice->setWordWrap(true);
+    layout->addWidget(notice);
+
+    auto *status = new QLabel(QStringLiteral("Connecting…"));
+    status->setObjectName(QStringLiteral("cloudflareWorkerLogsStatus"));
+    layout->addWidget(status);
+
+    auto *output = new QPlainTextEdit;
+    output->setObjectName(QStringLiteral("cloudflareWorkerLiveLogs"));
+    output->setReadOnly(true);
+    output->setLineWrapMode(QPlainTextEdit::NoWrap);
+    output->document()->setMaximumBlockCount(2500);
+    layout->addWidget(output, 1);
+
+    auto *closeButton = new QPushButton(QStringLiteral("Close"));
+    closeButton->setObjectName(QStringLiteral("primaryButton"));
+    closeButton->setCursor(Qt::PointingHandCursor);
+    connect(closeButton, &QPushButton::clicked, &dialog,
+            &QDialog::accept);
+    auto *buttons = new QHBoxLayout;
+    buttons->addStretch(1);
+    buttons->addWidget(closeButton);
+    layout->addLayout(buttons);
+
+    QProcess process(&dialog);
+    process.setWorkingDirectory(workerDirectory);
+    process.setProcessEnvironment(command.environment);
+    process.setProcessChannelMode(QProcess::MergedChannels);
+    process.setStandardInputFile(QProcess::nullDevice());
+    const auto appendOutput = [&process, output, &token] {
+        const QString chunk =
+            QString::fromUtf8(process.readAllStandardOutput());
+        if (chunk.isEmpty())
+            return;
+        output->moveCursor(QTextCursor::End);
+        output->insertPlainText(
+            forkmesh::control::redactProcessOutput(chunk, {token}));
+        output->moveCursor(QTextCursor::End);
+        output->ensureCursorVisible();
+    };
+    connect(&process, &QProcess::readyReadStandardOutput, &dialog,
+            appendOutput);
+    connect(&process, &QProcess::started, &dialog, [status] {
+        status->setText(
+            QStringLiteral("Connected · waiting for Worker events"));
+    });
+    connect(
+        &process, &QProcess::errorOccurred, &dialog,
+        [status](QProcess::ProcessError error) {
+            if (error == QProcess::FailedToStart) {
+                status->setText(
+                    QStringLiteral(
+                        "Could not start npx. Install Node.js to use live "
+                        "Worker logs."));
+            }
+        });
+    connect(
+        &process, &QProcess::finished, &dialog,
+        [status, appendOutput](int exitCode,
+                               QProcess::ExitStatus exitStatus) {
+            appendOutput();
+            status->setText(
+                exitStatus == QProcess::NormalExit && exitCode == 0
+                    ? QStringLiteral("Log stream ended")
+                    : QStringLiteral("Log stream stopped (exit %1)")
+                          .arg(exitCode));
+        });
+    process.start(command.program, command.arguments);
+    dialog.exec();
+
+    if (process.state() != QProcess::NotRunning) {
+        process.terminate();
+        if (!process.waitForFinished(1500)) {
+            process.kill();
+            process.waitForFinished(1000);
+        }
+    }
+    process.setProcessEnvironment(QProcessEnvironment());
+    token.fill(QChar(u'\0'));
+    token.clear();
+    if (m_cloudflareTokenEdit &&
+        m_cloudflareTokenEdit->text().isEmpty()) {
+        m_cloudflareTokenEdit->setPlaceholderText(
+            QStringLiteral("session-only Cloudflare API token"));
+    }
 }
 
 QWidget *MainWindow::buildBreadcrumb()

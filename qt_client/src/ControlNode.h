@@ -43,6 +43,13 @@ QString findCloudflareBootstrapScript(
     const QString &sourceDir = QString(),
     const QString &applicationDir = QString());
 
+// Resolve the complete Worker bundle that belongs to the bootstrapper. Read-only
+// tools such as the live log tail use this to run against the same checked-in or
+// installed wrangler configuration as deployments.
+QString findCloudflareWorkerDirectory(
+    const QString &sourceDir = QString(),
+    const QString &applicationDir = QString());
+
 // Resolve the direct-HTTPS components separately from the Worker bootstrap.
 QString findCloudflareTunnelBootstrapScript(
     const QString &sourceDir = QString(),
@@ -81,6 +88,14 @@ CloudflareBootstrapCommand buildCloudflareBootstrapCommand(
     const QString &pythonProgram,
     const QString &signerProgram,
     const QString &nodePublicKey);
+
+// Build a direct (non-shell) invocation of ForkMesh's pinned Wrangler tail.
+// The token and optional account ID are placed only in the child environment,
+// never in argv.
+CloudflareBootstrapCommand buildCloudflareTailCommand(
+    const QString &apiToken,
+    const QString &accountId,
+    const QString &npxProgram);
 
 // Decode the bootstrapper's bounded, non-secret machine result. Human log
 // output may surround the sentinel line; malformed or duplicate results fail
