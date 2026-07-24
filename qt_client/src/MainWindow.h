@@ -137,6 +137,9 @@ class QVBoxLayout;
 class QCheckBox;
 class QHBoxLayout;
 class PublicMirrorMaterialization;
+namespace forkmesh::control {
+struct MirrorActionsConfigurationRequest;
+}
 namespace forkmesh::ui { class DiffFileNavigator; } // file-list <-> diff-view sync
 
 // A configured mainnode the user can connect to. The client connects to one at
@@ -276,6 +279,7 @@ public:
     // (adhoc #15) without needing real scroll-wheel input.
     void testShowSettingsSection() { showSection(1); }
     void testShowLogSection() { showSection(4); }
+    void testShowHostsSection() { showSection(7); }
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
     QTextBrowser *testNetworkLogView() const { return m_settingsLog; }
     void testScrollNetworkLogToTop() { onNetworkLogScrolled(0); }
@@ -1075,6 +1079,14 @@ private:
     void viewHostLogsForSelection(int row);
     void runHostLogSession(const QString &ip, const QString &user,
                           const QString &pass, const QString &node);
+    // Configure a saved mirror host's Actions executor over its authenticated
+    // SSH channel. Secret values are collected in a one-shot dialog and sent
+    // only in a bounded JSON stdin payload; they are never saved in QSettings
+    // or placed in process arguments/logs.
+    void configureHostActionsForSelection(int row);
+    void runHostActionsConfiguration(
+        forkmesh::control::MirrorActionsConfigurationRequest request,
+        const QString &sshPassword);
     // Fleet-wide deploys (adhoc): each runs against EVERY saved host in
     // parallel, streaming into its own pane of the split live-output grid — a
     // published, checksum-verified binary install (#257), an
@@ -3516,6 +3528,7 @@ private:
     QTableWidget *m_hostsTable = nullptr;
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any
+    QProcess *m_hostActionsProcess = nullptr; // one-shot stdin-only Actions config
     // Installer link-code detection (adhoc #53): rolling tail of the install
     // output so the "Link code: NNNNNN" line survives chunk splits, and a
     // per-run guard so the link popup opens once.

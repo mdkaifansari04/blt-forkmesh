@@ -633,6 +633,34 @@ int main(int argc, char *argv[])
     check(window.findChild<QLineEdit *>(
               QStringLiteral("rewardPoolPrivateKeyInput")) == nullptr,
           QStringLiteral("reward private-key input exists only inside the explicit import dialog"));
+
+    const QJsonArray actionsHostFixture{
+        QJsonObject{
+            {QStringLiteral("name"), QStringLiteral("mirror2")},
+            {QStringLiteral("ip"), QStringLiteral("mirror2.example.test")},
+            {QStringLiteral("user"), QStringLiteral("forkmesh")},
+            {QStringLiteral("pass"),
+             QStringLiteral("test-password-never-rendered")},
+            {QStringLiteral("status"), QStringLiteral("installed")},
+        },
+    };
+    QSettings().setValue(
+        QStringLiteral("hosts/list"),
+        QString::fromUtf8(
+            QJsonDocument(actionsHostFixture).toJson(
+                QJsonDocument::Compact)));
+    window.testShowHostsSection();
+    QApplication::processEvents();
+    check(window.findChild<QPushButton *>(
+              QStringLiteral("hostActionsButton")) != nullptr,
+          QStringLiteral(
+              "saved mirror hosts expose the stdin-only Actions controller"));
+    check(window.findChild<QWidget *>(
+              QStringLiteral("hostActionsVariablesTable")) == nullptr,
+          QStringLiteral(
+              "Actions secret-entry widgets exist only inside the explicit dialog"));
+    QSettings().remove(QStringLiteral("hosts/list"));
+
     // Settings is deferred independently from the Control Node. Navigate there
     // before checking its one-way legacy-custody migration and controls.
     window.testShowSettingsSection();

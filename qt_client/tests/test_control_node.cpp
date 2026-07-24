@@ -513,6 +513,166 @@ int main(int argc, char **argv)
               QStringLiteral("/usr/bin/npx")).program.isEmpty(),
           "Cloudflare tail rejects malformed account IDs");
 
+    forkmesh::control::MirrorActionsConfigurationRequest actionsRequest;
+    actionsRequest.requestId =
+        QStringLiteral("0123456789abcdef0123456789abcdef");
+    actionsRequest.host = QStringLiteral("mirror2.example.com");
+    actionsRequest.sshUser = QStringLiteral("forkmesh");
+    actionsRequest.nodeName = QStringLiteral("mirror2");
+    actionsRequest.actionsEnabled = true;
+    actionsRequest.replaceVariables = true;
+    actionsRequest.variables = {
+        {QStringLiteral("DEPLOY_TOKEN"),
+         QStringLiteral("stdin-only-action-secret")},
+        {QStringLiteral("PUBLIC_MODE"), QStringLiteral("production")},
+    };
+    check(forkmesh::control::validateMirrorActionsConfigurationRequest(
+              actionsRequest).isEmpty(),
+          "bounded mirror Actions configuration is accepted");
+    QString actionsError;
+    const QByteArray actionsPayload =
+        forkmesh::control::buildMirrorActionsConfigurationPayload(
+            actionsRequest, &actionsError);
+    const QJsonObject actionsJson =
+        QJsonDocument::fromJson(actionsPayload).object();
+    check(actionsError.isEmpty() &&
+              actionsPayload.size() <= 64 * 1024 &&
+              actionsJson.value(QStringLiteral("type")).toString() ==
+                  QStringLiteral("forkmesh.mirror-actions-configuration") &&
+              actionsJson.value(QStringLiteral("actionsEnabled")).toBool() &&
+              actionsJson.value(QStringLiteral("variables"))
+                      .toObject()
+                      .value(QStringLiteral("values"))
+                      .toObject()
+                      .value(QStringLiteral("DEPLOY_TOKEN"))
+                      .toString() ==
+                  QStringLiteral("stdin-only-action-secret"),
+          "mirror Actions request serializes only into a bounded stdin document");
+    auto stateOnlyActions = actionsRequest;
+    stateOnlyActions.replaceVariables = false;
+    stateOnlyActions.variables.clear();
+    const QJsonObject stateOnlyJson =
+        QJsonDocument::fromJson(
+            forkmesh::control::buildMirrorActionsConfigurationPayload(
+                stateOnlyActions, &actionsError))
+            .object();
+    check(!stateOnlyJson.contains(QStringLiteral("variables")),
+          "state-only Actions request cannot clear or disclose remote variables");
+
+    const QString sshPassword =
+        QStringLiteral("ssh-password-that-must-never-enter-argv");
+    const auto actionsPasswordCommand =
+        forkmesh::control::buildMirrorActionsSshCommand(
+            actionsRequest, sshPassword, &actionsError);
+    const QString actionsArgv =
+        actionsPasswordCommand.arguments.join(QChar(u'\0'));
+    check(actionsPasswordCommand.program == QStringLiteral("sshpass") &&
+              actionsPasswordCommand.environment.value(
+                  QStringLiteral("SSHPASS")) == sshPassword &&
+              actionsPasswordCommand.standardInput == actionsPayload,
+          "password-authenticated Actions transport uses environment plus stdin");
+    check(!actionsArgv.contains(sshPassword) &&
+              !actionsArgv.contains(
+                  QStringLiteral("stdin-only-action-secret")) &&
+              !actionsArgv.contains(QStringLiteral("DEPLOY_TOKEN")) &&
+              !actionsArgv.contains(QStringLiteral("production")),
+          "Actions password, variable names, and values are absent from argv");
+    check(actionsArgv.contains(
+              QStringLiteral("--configure-mirror-actions-stdin")) &&
+              actionsArgv.contains(
+                  QStringLiteral("StrictHostKeyChecking=accept-new")),
+          "Actions transport invokes only the fixed stdin helper and retains host keys");
+
+    const auto actionsKeyCommand =
+        forkmesh::control::buildMirrorActionsSshCommand(
+            actionsRequest, QString(), &actionsError);
+    check(actionsKeyCommand.program == QStringLiteral("ssh") &&
+              actionsKeyCommand.arguments.contains(
+                  QStringLiteral("BatchMode=yes")) &&
+              actionsKeyCommand.arguments.contains(
+                  QStringLiteral("PreferredAuthentications=publickey")) &&
+              !actionsKeyCommand.environment.contains(
+                  QStringLiteral("SSHPASS")),
+          "empty password selects non-interactive SSH key authentication");
+
+    auto invalidActions = actionsRequest;
+    invalidActions.replaceVariables = false;
+    check(!forkmesh::control::validateMirrorActionsConfigurationRequest(
+               invalidActions).isEmpty(),
+          "secret values cannot be silently ignored without replace approval");
+    invalidActions = actionsRequest;
+    invalidActions.variables.clear();
+    invalidActions.variables.insert(QStringLiteral("BAD-NAME"),
+                                    QStringLiteral("secret"));
+    check(!forkmesh::control::validateMirrorActionsConfigurationRequest(
+               invalidActions).isEmpty(),
+          "unsafe Actions variable names fail closed");
+    invalidActions = actionsRequest;
+    invalidActions.host = QStringLiteral("-oProxyCommand=bad");
+    check(forkmesh::control::buildMirrorActionsSshCommand(
+              invalidActions, sshPassword, &actionsError).program.isEmpty(),
+          "option-shaped SSH host input fails closed");
+    invalidActions = actionsRequest;
+    invalidActions.variables.insert(
+        QStringLiteral("TOO_LARGE"), QString(16 * 1024 + 1, QLatin1Char('x')));
+    check(forkmesh::control::buildMirrorActionsConfigurationPayload(
+              invalidActions, &actionsError).isEmpty(),
+          "oversize Actions variable value fails closed before SSH");
+
+    const QJsonObject actionsResult{
+        {QStringLiteral("type"),
+         QStringLiteral("forkmesh.mirror-actions-configuration-result")},
+        {QStringLiteral("schemaVersion"), 1},
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("requestId"), actionsRequest.requestId},
+        {QStringLiteral("node"), actionsRequest.nodeName},
+        {QStringLiteral("actionsEnabled"), true},
+        {QStringLiteral("variablesReplaced"), true},
+        {QStringLiteral("variableCount"), 2},
+    };
+    const QByteArray encodedActionsResult =
+        QJsonDocument(actionsResult)
+            .toJson(QJsonDocument::Compact)
+            .toBase64(QByteArray::Base64UrlEncoding |
+                      QByteArray::OmitTrailingEquals);
+    const QByteArray resultOutput =
+        QByteArrayLiteral("bounded progress\nFORKMESH_ACTIONS_RESULT=") +
+        encodedActionsResult + QByteArrayLiteral("\n");
+    check(forkmesh::control::parseMirrorActionsConfigurationResult(
+              resultOutput, actionsRequest.requestId,
+              actionsRequest.nodeName, &actionsError)
+                  .value(QStringLiteral("ok"))
+                  .toBool(),
+          "one matching bounded Actions helper result confirms the request");
+    check(forkmesh::control::parseMirrorActionsConfigurationResult(
+              resultOutput + resultOutput, actionsRequest.requestId,
+              actionsRequest.nodeName, &actionsError).isEmpty(),
+          "duplicate Actions helper results fail closed");
+    check(forkmesh::control::parseMirrorActionsConfigurationResult(
+              resultOutput, QString(32, QLatin1Char('f')),
+              actionsRequest.nodeName, &actionsError).isEmpty(),
+          "Actions helper result for another request fails closed");
+    QJsonObject leakingActionsResult = actionsResult;
+    leakingActionsResult.insert(
+        QStringLiteral("variables"),
+        QJsonObject{{QStringLiteral("DEPLOY_TOKEN"),
+                     QStringLiteral("must-not-be-returned")}});
+    const QByteArray leakingResultOutput =
+        QByteArrayLiteral("FORKMESH_ACTIONS_RESULT=") +
+        QJsonDocument(leakingActionsResult)
+            .toJson(QJsonDocument::Compact)
+            .toBase64(QByteArray::Base64UrlEncoding |
+                      QByteArray::OmitTrailingEquals) +
+        QByteArrayLiteral("\n");
+    check(forkmesh::control::parseMirrorActionsConfigurationResult(
+              leakingResultOutput, actionsRequest.requestId,
+              actionsRequest.nodeName, &actionsError).isEmpty(),
+          "Actions helper result cannot return variable names or values");
+    check(forkmesh::control::parseMirrorActionsConfigurationResult(
+              QByteArray(64 * 1024 + 1, 'x'), actionsRequest.requestId,
+              actionsRequest.nodeName, &actionsError).isEmpty(),
+          "oversize Actions helper output fails closed");
+
     if (failures == 0)
         std::fprintf(stdout, "control-node tests passed\n");
     return failures == 0 ? 0 : 1;
