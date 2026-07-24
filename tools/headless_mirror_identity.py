@@ -125,6 +125,8 @@ PUBLIC_CATALOG_INPUT_FIELDS = frozenset(
         "artifactCount",
         "platform",
         "version",
+        "actionsEnabled",
+        "actionsState",
         "nodeId",
         "clonesServed",
         "websiteServed",
@@ -1846,6 +1848,19 @@ def _normalized_public_catalog(
         source.get("memUsedBytes"), source.get("memTotalBytes"))
     disk_used, disk_total = _clean_optional_usage(
         source.get("diskUsedBytes"), source.get("diskTotalBytes"))
+    actions_fields = {"actionsEnabled", "actionsState"}.intersection(source)
+    if actions_fields and actions_fields != {"actionsEnabled", "actionsState"}:
+        raise HelperError("catalog Actions capability is incomplete")
+    actions_enabled = source.get("actionsEnabled")
+    actions_state = source.get("actionsState")
+    if actions_fields and (
+        not isinstance(actions_enabled, bool)
+        or (
+            (not actions_enabled and actions_state != "disabled")
+            or (actions_enabled and actions_state not in {"enabled", "running"})
+        )
+    ):
+        raise HelperError("catalog Actions capability is invalid")
     record = {
         "owner": owner,
         "name": name,
@@ -1889,6 +1904,11 @@ def _normalized_public_catalog(
         "stateHash": state_hash,
         "stateSig": "",
     }
+    # Preserve absence for older catalog-v2 publishers. New headless mirrors
+    # send both fields, and both are covered by the catalog signature.
+    if actions_fields:
+        record["actionsEnabled"] = actions_enabled
+        record["actionsState"] = actions_state
     cpu_percent = _clean_optional_integer(source.get("cpuPercent"), 100)
     if cpu_percent is not None:
         record["cpuPercent"] = cpu_percent

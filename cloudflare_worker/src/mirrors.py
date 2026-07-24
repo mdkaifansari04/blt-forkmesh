@@ -341,6 +341,14 @@ def build_repo_mirrors_payload(
             rec, "memUsedBytes", "memTotalBytes")
         disk_used, disk_total = _optional_usage(
             rec, "diskUsedBytes", "diskTotalBytes")
+        actions_enabled = rec.get("actionsEnabled") is True
+        actions_state = str(rec.get("actionsState") or "").strip()
+        if (
+            (not actions_enabled and actions_state != "disabled")
+            or (actions_enabled and actions_state not in {"enabled", "running"})
+        ):
+            actions_enabled = False
+            actions_state = "disabled"
         # Would the clone integrity gate serve this node right now? Its published
         # refs fingerprint (stateHash, the same one it signs on publish) must be
         # a state the group's trust anchor attested: normally a working-copy
@@ -399,6 +407,10 @@ def build_repo_mirrors_payload(
             "artifactCount": _int_field(rec, "artifactCount"),
             "platform": str(rec.get("platform") or "").strip(),
             "version": str(rec.get("version") or "").strip(),
+            # Missing and malformed legacy records fail closed to disabled.
+            # Only the bounded status pair signed into catalog-v2 is exposed.
+            "actionsEnabled": actions_enabled,
+            "actionsState": actions_state,
             "id": str(rec.get("nodeId") or "").strip(),
             "clonesServed": clones_served,
             "websiteServed": website_served,

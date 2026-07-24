@@ -103,6 +103,61 @@ def test_public_catalog_preserves_signed_pull_count_for_world_consumers():
     assert safe_catalog_record(_base(visibility="public"))["pullCount"] == ""
 
 
+def test_actions_capability_is_strict_and_legacy_records_remain_absent():
+    legacy = safe_catalog_record(_base(visibility="public"))
+    assert "actionsEnabled" not in legacy
+    assert "actionsState" not in legacy
+
+    disabled = safe_catalog_record(_base(
+        visibility="public",
+        actionsEnabled=False,
+        actionsState="disabled",
+    ))
+    assert disabled["actionsEnabled"] is False
+    assert disabled["actionsState"] == "disabled"
+
+    for state in ("enabled", "running"):
+        enabled = safe_catalog_record(_base(
+            visibility="public",
+            actionsEnabled=True,
+            actionsState=state,
+        ))
+        assert enabled["actionsEnabled"] is True
+        assert enabled["actionsState"] == state
+
+
+def test_actions_capability_fails_closed_and_drops_non_status_material():
+    for fields in (
+        {"actionsEnabled": True},
+        {"actionsState": "enabled"},
+        {"actionsEnabled": 1, "actionsState": "enabled"},
+        {"actionsEnabled": False, "actionsState": "running"},
+        {"actionsEnabled": True, "actionsState": "queued"},
+    ):
+        assert safe_catalog_record(_base(visibility="public", **fields)) is None
+
+    record = safe_catalog_record(_base(
+        visibility="public",
+        actionsEnabled=True,
+        actionsState="enabled",
+        actionsVariables={"DEPLOY_TOKEN": "must-not-publish"},
+        actionsCommand="deploy --token must-not-publish",
+        actionsWorkingDirectory="/private/source",
+        actionsLogs="must-not-publish",
+    ))
+    assert record is not None
+    assert record["actionsEnabled"] is True
+    assert record["actionsState"] == "enabled"
+    assert "must-not-publish" not in repr(record)
+    assert "/private/source" not in repr(record)
+    assert not {
+        "actionsVariables",
+        "actionsCommand",
+        "actionsWorkingDirectory",
+        "actionsLogs",
+    }.intersection(record)
+
+
 def test_public_host_telemetry_is_bounded_and_absence_stays_unknown():
     unknown = safe_catalog_record(_base())
     assert not {

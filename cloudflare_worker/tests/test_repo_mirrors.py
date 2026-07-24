@@ -49,7 +49,8 @@ def _row(key, owner, name, *, root="", visibility="public", hosted="", synced=""
          size=0, commit="", branch="", issue_count=None, platform="", version="",
          node_id="", clones_served=None, website_served=None, artifact_count=None,
          state_hash="", source="local-node", owner_user="", cpu_percent=None,
-         mem_used=None, mem_total=None, disk_used=None, disk_total=None):
+         mem_used=None, mem_total=None, disk_used=None, disk_total=None,
+         actions_enabled=None, actions_state=None):
     data = {
         "owner": owner,
         "name": name,
@@ -79,6 +80,10 @@ def _row(key, owner, name, *, root="", visibility="public", hosted="", synced=""
         data["artifactCount"] = artifact_count
     if owner_user:
         data["ownerUser"] = owner_user
+    if actions_enabled is not None:
+        data["actionsEnabled"] = actions_enabled
+    if actions_state is not None:
+        data["actionsState"] = actions_state
     for field, value in (
         ("cpuPercent", cpu_percent),
         ("memUsedBytes", mem_used),
@@ -282,7 +287,8 @@ def test_payload_carries_node_facts_for_offline_mirrors():
              platform="linux", version="0.5.22", node_id="7ZMh_2s_IOTPxYz",
              clones_served=42, website_served=118, artifact_count=3,
              owner_user="alice", cpu_percent=37, mem_used=300,
-             mem_total=1000, disk_used=800, disk_total=2000),
+             mem_total=1000, disk_used=800, disk_total=2000,
+             actions_enabled=True, actions_state="running"),
         _row("b", "legacy", "forkmesh", root="abc", synced="980000", size=20),
     ]
     payload = build_repo_mirrors_payload(
@@ -304,6 +310,8 @@ def test_payload_carries_node_facts_for_offline_mirrors():
     assert rich["cpuPercent"] == 37
     assert (rich["memUsedBytes"], rich["memTotalBytes"]) == (300, 1000)
     assert (rich["diskUsedBytes"], rich["diskTotalBytes"]) == (800, 2000)
+    assert rich["actionsEnabled"] is True
+    assert rich["actionsState"] == "running"
     # Legacy record (no node facts): empty strings and the -1 "unknown" sentinels.
     legacy = payload["mirrors"][1]
     assert legacy["commit"] == ""
@@ -319,6 +327,8 @@ def test_payload_carries_node_facts_for_offline_mirrors():
     assert legacy["memTotalBytes"] is None
     assert legacy["diskUsedBytes"] is None
     assert legacy["diskTotalBytes"] is None
+    assert legacy["actionsEnabled"] is False
+    assert legacy["actionsState"] == "disabled"
 
 
 def test_payload_defensively_bounds_or_hides_invalid_host_telemetry():
@@ -348,6 +358,39 @@ def test_payload_defensively_bounds_or_hides_invalid_host_telemetry():
     assert by_node["bad"]["cpuPercent"] is None
     assert by_node["bad"]["memUsedBytes"] is None
     assert by_node["bad"]["memTotalBytes"] is None
+
+
+def test_payload_fails_malformed_actions_state_closed_to_disabled():
+    now = 1_000_000
+    rows = [
+        _row(
+            "a", "enabled", "forkmesh", root="abc", synced="990000",
+            actions_enabled=True, actions_state="enabled",
+        ),
+        _row(
+            "b", "running", "forkmesh", root="abc", synced="980000",
+            actions_enabled=True, actions_state="running",
+        ),
+        _row(
+            "c", "tampered", "forkmesh", root="abc", synced="970000",
+            actions_enabled=True, actions_state="queued",
+        ),
+        _row(
+            "d", "legacy", "forkmesh", root="abc", synced="960000",
+        ),
+    ]
+    payload = build_repo_mirrors_payload(
+        "enabled", "forkmesh", rows, {}, {}, now, 600_000, 5_000
+    )
+    by_node = {mirror["node"]: mirror for mirror in payload["mirrors"]}
+    assert (by_node["enabled"]["actionsEnabled"],
+            by_node["enabled"]["actionsState"]) == (True, "enabled")
+    assert (by_node["running"]["actionsEnabled"],
+            by_node["running"]["actionsState"]) == (True, "running")
+    assert (by_node["tampered"]["actionsEnabled"],
+            by_node["tampered"]["actionsState"]) == (False, "disabled")
+    assert (by_node["legacy"]["actionsEnabled"],
+            by_node["legacy"]["actionsState"]) == (False, "disabled")
 
 
 def test_payload_marks_mirrors_the_integrity_gate_rejects():

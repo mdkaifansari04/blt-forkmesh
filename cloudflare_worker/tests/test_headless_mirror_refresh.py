@@ -417,6 +417,65 @@ def test_catalog_host_telemetry_config_is_explicit_and_boolean(installation):
         refresh_tool.load_config(configured_path)
 
 
+def test_catalog_actions_capability_is_explicit_bounded_and_disabled_by_default(
+    installation,
+):
+    config = installation["config"]
+    assert config.catalog.actions_enabled is False
+
+    configured = json.loads(json.dumps(installation["config_value"]))
+    configured["catalog"]["actionsEnabled"] = True
+    configured_path = installation["config_path"].parent / "actions-refresh.json"
+    configured_path.write_text(
+        json.dumps(configured, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    configured_path.chmod(0o600)
+    loaded = refresh_tool.load_config(configured_path)
+    assert loaded.catalog.actions_enabled is True
+
+    invalid_values = ("true", 1, None, "running")
+    for index, invalid in enumerate(invalid_values):
+        candidate = json.loads(json.dumps(installation["config_value"]))
+        candidate["catalog"]["actionsEnabled"] = invalid
+        path = configured_path.with_name(f"actions-invalid-{index}.json")
+        path.write_text(json.dumps(candidate), encoding="utf-8")
+        path.chmod(0o600)
+        with pytest.raises(refresh_tool.RefreshError, match="must be a boolean"):
+            refresh_tool.load_config(path)
+
+    for prohibited in (
+        "actionsState",
+        "actionsVariables",
+        "actionsCommand",
+        "actionsWorkingDirectory",
+        "actionsLogs",
+    ):
+        candidate = json.loads(json.dumps(installation["config_value"]))
+        candidate["catalog"][prohibited] = "must-not-publish"
+        path = configured_path.with_name(f"{prohibited}.json")
+        path.write_text(json.dumps(candidate), encoding="utf-8")
+        path.chmod(0o600)
+        with pytest.raises(
+            refresh_tool.RefreshError,
+            match="unknown or missing field",
+        ):
+            refresh_tool.load_config(path)
+
+    metadata = refresh_tool.SealMetadata(
+        ciphertext_sha256="a" * 64,
+        ciphertext_bytes=123,
+        key_reference="age:test",
+        expected_refs_sha256="b" * 64,
+    )
+    assert refresh_tool._catalog_unsigned(
+        config, metadata, 1784840000000
+    )["actionsState"] == "disabled"
+    assert refresh_tool._catalog_unsigned(
+        loaded, metadata, 1784840000000
+    )["actionsState"] == "enabled"
+
+
 def test_linux_host_metric_parsers_are_bounded_and_fail_closed(installation):
     snapshots = iter([
         b"cpu  100 0 100 800 0 0 0 0\n",
@@ -738,6 +797,14 @@ def test_register_posts_endpoint_then_node_owner_catalog(
     assert catalog["pullCount"] == "0"
     assert catalog["discussionCount"] == "0"
     assert catalog["artifactCount"] == "0"
+    assert catalog["actionsEnabled"] is False
+    assert catalog["actionsState"] == "disabled"
+    assert not {
+        "actionsVariables",
+        "actionsCommand",
+        "actionsWorkingDirectory",
+        "actionsLogs",
+    }.intersection(catalog)
     assert catalog["cpuPercent"] == 37
     assert (catalog["memUsedBytes"], catalog["memTotalBytes"]) == (300, 1000)
     assert (catalog["diskUsedBytes"], catalog["diskTotalBytes"]) == (800, 2000)
