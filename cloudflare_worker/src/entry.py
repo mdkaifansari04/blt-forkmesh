@@ -18014,6 +18014,25 @@ async def repo_card_handler(env, request, owner, repo):
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
     parts = urlparse(request.url)
+    # Organization aliases are rewritten to their backing node before this
+    # handler is dispatched, but the original Request URL deliberately stays
+    # untouched.  Keep that public identity on the rendered card while using
+    # ``owner`` below for every visibility/catalog/media lookup.  Otherwise an
+    # unfurl of /forkmesh/forkmesh would advertise mirror2/forkmesh even though
+    # the page, canonical URL and clone URL all belong to the organization.
+    display_owner = owner
+    display_repo = repo
+    public_match = REPO_CARD_RE.match(parts.path)
+    if public_match:
+        candidate_owner = safe_segment(public_match.group(1))
+        candidate_repo = safe_segment(public_match.group(2))
+        if candidate_owner and candidate_repo == repo:
+            if candidate_owner == owner:
+                display_owner = candidate_owner
+            elif await _org_repo_node(
+                    env, candidate_owner, candidate_repo) == owner:
+                display_owner = candidate_owner
+            display_repo = candidate_repo
     cache_key = _ap_origin(env, request) + parts.path
     cached = await edge_cache_match_media(cache_key, "image/png")
     if cached is not None:
@@ -18028,7 +18047,8 @@ async def repo_card_handler(env, request, owner, repo):
         env, "SELECT COUNT(*) AS n FROM repo_stars WHERE repo_bi=?", repo_bi)
     followers = 0
     if await _ap_enabled(env):
-        handle = ap.repo_handle(str(owner).lower(), str(repo).lower())
+        handle = ap.repo_handle(
+            str(display_owner).lower(), str(display_repo).lower())
         actor_bi = await _ap_actor_bi(env, AP_ACTOR_REPO, handle)
         follow_row = await d1_first(
             env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
@@ -18046,8 +18066,8 @@ async def repo_card_handler(env, request, owner, repo):
     except Exception:
         mirrors = 0
     info = {
-        "owner": owner,
-        "repo": repo,
+        "owner": display_owner,
+        "repo": display_repo,
         "description": rec.get("description", ""),
         "branch": rec.get("branch", ""),
         "host": urlparse(_ap_origin(env, request)).netloc or "forkmesh.com",
@@ -28185,14 +28205,22 @@ class Default(WorkerEntrypoint):
         repo = safe_segment(unquote(parts[1])) if len(parts) >= 2 else ""
         cache_key = ""
         explicit_public = False
+        data_owner = owner
         if owner and repo:
             # Only an explicit public catalog row may contribute names,
             # description, actor links, or a shared cache entry. Private and
             # missing paths intentionally receive the same generic app shell;
             # authenticated client APIs decide whether the viewer may render
             # repository data. This keeps URL probing non-disclosing.
+            #
+            # An organization repo URL is a public alias, not the encrypted
+            # catalog key. Resolve its linked node only for privacy/catalog
+            # reads; canonical, actor, card and displayed identity below must
+            # remain the organization URL the visitor actually requested.
+            data_owner = await _org_repo_node(
+                self.env, owner, repo) or owner
             explicit_public = not await _repo_is_private(
-                self.env, owner, repo)
+                self.env, data_owner, repo)
             if explicit_public:
                 cache_key = "%s/%s/%s" % (
                     origin, quote(owner), quote(repo))
@@ -28223,7 +28251,8 @@ class Default(WorkerEntrypoint):
             og_description = ""
             try:
                 await ensure_schema(self.env)
-                repo_bi = await blind_index(self.env, owner + "/" + repo)
+                repo_bi = await blind_index(
+                    self.env, data_owner + "/" + repo)
                 repo_row = await d1_first(
                     self.env,
                     "SELECT data FROM repositories WHERE key_bi=?", repo_bi)
@@ -28238,6 +28267,7 @@ class Default(WorkerEntrypoint):
                                   % (owner, repo))
             title = "%s/%s - ForkMesh" % (owner, repo)
             tags = (
+                "<link rel=\"canonical\" href=\"%s\">"
                 "<link rel=\"me\" href=\"%s\">"
                 "<link rel=\"alternate\" type=\"application/activity+json\" "
                 "href=\"%s/ap/repos/%s/%s\">"
@@ -28253,7 +28283,7 @@ class Default(WorkerEntrypoint):
                 "<meta name=\"twitter:title\" content=\"%s\">"
                 "<meta name=\"twitter:description\" content=\"%s\">"
                 "<meta name=\"twitter:image\" content=\"%s\">"
-                % (fedi_profile,
+                % (canonical, fedi_profile,
                    origin, quote(owner), quote(repo),
                    canonical, title, _html_escape(og_description), og_image,
                    og_card.CARD_W, og_card.CARD_H,
