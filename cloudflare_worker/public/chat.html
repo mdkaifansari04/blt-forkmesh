@@ -2,6 +2,11 @@
 <html lang="en" class="dark h-full">
   <head>
     <meta charset="utf-8" />
+    <script>
+      if (new URLSearchParams(location.search).get("embed") === "office") {
+        document.documentElement.dataset.chatEmbed = "office";
+      }
+    </script>
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ForkMesh Community Chat</title>
@@ -1005,6 +1010,85 @@
         box-shadow: 0 0 6px var(--accent-dim);
       }
 
+      .chat-office-alert {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-bottom: 1px solid var(--border);
+        background: var(--accent-dim);
+        padding: 8px 12px;
+        color: var(--fg);
+        font-size: 12px;
+      }
+
+      .chat-office-alert span {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .chat-office-alert a,
+      .chat-office-alert button,
+      #chat-office-manage {
+        flex: 0 0 auto;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--surface2);
+        color: var(--fg);
+        padding: 5px 8px;
+        cursor: pointer;
+        font: inherit;
+        text-decoration: none;
+      }
+
+      html[data-chat-embed="office"],
+      html[data-chat-embed="office"] body {
+        min-width: 0;
+        height: 100dvh;
+        overflow: hidden;
+      }
+
+      html[data-chat-embed="office"] .chat-shell {
+        width: 100%;
+        min-width: 0;
+        max-width: none;
+        height: 100dvh;
+      }
+
+      html[data-chat-embed="office"] .chat-panes {
+        min-width: 0;
+        grid-template-columns: 118px minmax(0, 1fr);
+      }
+
+      html[data-chat-embed="office"] .chat-site-header { display: none; }
+      html[data-chat-embed="office"] .chat-people-pane { display: none; }
+      html[data-chat-embed="office"] .chat-e2e-note { display: none; }
+      html[data-chat-embed="office"] .chat-admin-action { display: none; }
+      html[data-chat-embed="office"] #chat-channel-dialog { display: none; }
+
+      html[data-chat-embed="office"] .chat-rooms-pane,
+      html[data-chat-embed="office"] .chat-main-pane,
+      html[data-chat-embed="office"] .chat-main-head,
+      html[data-chat-embed="office"] .chat-main-controls {
+        min-width: 0;
+      }
+
+      html[data-chat-embed="office"] .chat-room {
+        padding-inline: 10px;
+      }
+
+      html[data-chat-embed="office"] .chat-name-wrap,
+      html[data-chat-embed="office"] #chat-clear {
+        display: none;
+      }
+
+      html[data-chat-embed="office"] #chat-status {
+        display: inline;
+        max-width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
       /* ── responsive ── */
       @media (max-width: 980px) {
         .chat-panes { grid-template-columns: 200px minmax(0, 1fr); }
@@ -1032,6 +1116,15 @@
         }
         .chat-main-controls { flex-shrink: 0; gap: 6px; }
         #chat-status { display: none; }
+
+        html[data-chat-embed="office"] .chat-panes {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: auto minmax(0, 1fr);
+        }
+
+        html[data-chat-embed="office"] #chat-status {
+          display: none;
+        }
       }
 
       @media (max-width: 480px) {
@@ -1072,6 +1165,7 @@
             </span>
             <div class="chat-main-controls">
               <button id="chat-channel-manage" class="chat-admin-action" type="button" hidden>Members</button>
+              <a id="chat-office-manage" href="/chat" target="_top" hidden>Manage channels in full chat</a>
               <span id="chat-status">Waiting to connect…</span>
               <div class="chat-name-wrap">
                 <label class="chat-name-label" for="chat-name">Name</label>
@@ -1079,6 +1173,12 @@
               </div>
               <button id="chat-clear" type="button">Clear</button>
             </div>
+          </div>
+
+          <div id="chat-office-alert" class="chat-office-alert" role="alert" hidden>
+            <span id="chat-office-alert-copy"></span>
+            <a id="chat-office-login" href="/login?next=%2Fchat%3Fembed%3Doffice" target="_top" hidden>Log in</a>
+            <button id="chat-office-retry" type="button" hidden>Retry</button>
           </div>
 
           <div id="chat-log" aria-live="polite" aria-label="Chat messages">

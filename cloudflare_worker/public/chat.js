@@ -63,6 +63,11 @@ const PEER_STALE_MS = 180000;
 const GROUP_WINDOW_MS = 5 * 60 * 1000; // same-sender messages collapse under one header
 const REACTION_EMOJI = ["👍", "❤️", "😂", "🎉", "👀", "🚀"];
 const ACTIVE_CHANNEL_KEY = "forkmesh.chat.channel";
+const OFFICE_SESSION_EXPIRED =
+  "Your session expired. Log in again to use authorized channels.";
+const OFFICE_RELAY_UNAVAILABLE = "Chat relay unavailable. Try again.";
+const chatQuery = new URLSearchParams(window.location.search);
+const isOfficeEmbed = chatQuery.get("embed") === "office";
 
 const logEl = document.querySelector("#chat-log");
 const nameInput = document.querySelector("#chat-name");
@@ -97,6 +102,11 @@ const channelMembersTitle = document.querySelector("#chat-channel-members-title"
 const channelInviteForm = document.querySelector("#chat-channel-invite-form");
 const channelUsernameInput = document.querySelector("#chat-channel-username");
 const channelMembersEl = document.querySelector("#chat-channel-members");
+const officeManageLink = document.querySelector("#chat-office-manage");
+const officeAlert = document.querySelector("#chat-office-alert");
+const officeAlertCopy = document.querySelector("#chat-office-alert-copy");
+const officeLoginLink = document.querySelector("#chat-office-login");
+const officeRetryBtn = document.querySelector("#chat-office-retry");
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -130,6 +140,8 @@ let openCallbacks = [];
 let cachedUserSession = null;
 let reconnectDelayMs = 2000;
 let reconnectTimer = null;
+let chatSuspended = false;
+let officeAuthorizationExpired = false;
 const seen = new Set();
 // messageId -> message record { id, channel, ts, senderId, sender, text, self,
 // el, body, reactionsEl }. `el`/`body` reference the on-screen row while the
@@ -377,15 +389,23 @@ async function privateChannelRequest(path, options = {}) {
   headers.set("accept", "application/json");
   headers.set("Authorization", `Bearer ${session.sessionToken}`);
   if (options.body) headers.set("content-type", "application/json");
-  const response = await fetch(path, {
-    ...options,
-    headers,
-    cache: "no-store",
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      ...options,
+      headers,
+      cache: "no-store",
+    });
+  } catch (_) {
+    const error = new Error("unavailable");
+    error.code = "unavailable";
+    throw error;
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(data.error || "unavailable");
-    error.code = data.error || "unavailable";
+    error.code = response.status === 401 ? "auth" :
+      data.error || (response.status >= 500 ? "unavailable" : "request_failed");
     error.status = response.status;
     throw error;
   }
@@ -546,6 +566,22 @@ function displayName() {
 
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text;
+}
+
+function showOfficeFailure(kind = "") {
+  if (!isOfficeEmbed || !officeAlert) return;
+  const expired = kind === "auth";
+  const relay = kind === "relay";
+  officeAlert.hidden = !expired && !relay;
+  if (officeAlertCopy) {
+    officeAlertCopy.textContent = expired
+      ? OFFICE_SESSION_EXPIRED
+      : relay
+        ? OFFICE_RELAY_UNAVAILABLE
+        : "";
+  }
+  if (officeLoginLink) officeLoginLink.hidden = !expired;
+  if (officeRetryBtn) officeRetryBtn.hidden = !relay;
 }
 
 function lockChatForNonUser() {
@@ -987,6 +1023,9 @@ function updateChannelHeading() {
 function updateAdminChannelControls() {
   const session = userSession();
   const channel = privateChannelForKey(activeChannel);
+  if (officeManageLink) {
+    officeManageLink.hidden = !(isOfficeEmbed && userSession()?.isAdmin);
+  }
   if (channelCreateBtn) channelCreateBtn.hidden = !session?.isAdmin;
   if (channelManageBtn) {
     channelManageBtn.hidden = !(
@@ -1026,6 +1065,12 @@ function setActiveChannel(name, options = {}) {
   updateAdminChannelControls();
   renderRooms();
   renderActiveChannel();
+  if (isOfficeEmbed && window.parent !== window) {
+    window.parent.postMessage(
+      { type: "office-chat-room-changed" },
+      window.location.origin,
+    );
+  }
   if (options.connect !== false && previousScope !== roomScopeForChannel(activeChannel)) {
     switchChatRoom();
   }
@@ -1095,9 +1140,17 @@ async function refreshPrivateChannels(options = {}) {
   }
   try {
     const data = await privateChannelRequest(PRIVATE_CHANNELS_ENDPOINT);
+    officeAuthorizationExpired = false;
+    showOfficeFailure("");
     reconcilePrivateChannels(data.channels || [], options);
   } catch (error) {
-    if (error?.code === "auth") reconcilePrivateChannels([], options);
+    if (error?.code === "auth") {
+      officeAuthorizationExpired = true;
+      reconcilePrivateChannels([], options);
+      showOfficeFailure("auth");
+    } else {
+      showOfficeFailure("relay");
+    }
   }
 }
 
@@ -1112,6 +1165,10 @@ function privateChannelErrorMessage(error) {
     invalid_members: "Choose registered users from the list.",
     members_not_allowed: "Public channels do not use member invitations.",
     admin_required: "Administrator access is required.",
+    auth: OFFICE_SESSION_EXPIRED,
+    invalid_session: OFFICE_SESSION_EXPIRED,
+    unavailable: OFFICE_RELAY_UNAVAILABLE,
+    request_failed: OFFICE_RELAY_UNAVAILABLE,
   };
   return messages[error?.code] || "The channel request could not be completed.";
 }
@@ -2152,6 +2209,7 @@ function switchChatRoom() {
 }
 
 function scheduleReconnect() {
+  if (chatSuspended) return;
   if (reconnectTimer || !canJoinChannel()) return;
   setStatus("Disconnected · reconnecting…");
   reconnectTimer = setTimeout(() => {
@@ -2162,6 +2220,7 @@ function scheduleReconnect() {
 }
 
 async function connect() {
+  if (chatSuspended) return;
   if (socket || connecting) return;
   const scope = roomScopeForChannel();
   if (!canJoinChannel()) {
@@ -2197,9 +2256,9 @@ async function connect() {
     connecting = false;
     // An expired/absent session token 401s the room-key fetch; point the user
     // at re-authenticating instead of blaming the browser's crypto.
-    setStatus(error && error.code === "auth"
-      ? "Sign in again to join chat"
-      : "Encryption unavailable in this browser");
+    const expired = error && error.code === "auth";
+    setStatus(expired ? OFFICE_SESSION_EXPIRED : OFFICE_RELAY_UNAVAILABLE);
+    showOfficeFailure(expired ? "auth" : "relay");
     return;
   }
   if (scope !== roomScopeForChannel()) {
@@ -2213,7 +2272,15 @@ async function connect() {
   const socketUrl = /^wss?:\/\//i.test(webSocketPath)
     ? webSocketPath
     : `${scheme}//${RELAY_HOST}${webSocketPath}`;
-  const roomSocket = new WebSocket(socketUrl);
+  let roomSocket;
+  try {
+    roomSocket = new WebSocket(socketUrl);
+  } catch (_) {
+    connecting = false;
+    setStatus(OFFICE_RELAY_UNAVAILABLE);
+    showOfficeFailure("relay");
+    return;
+  }
   socket = roomSocket;
 
   roomSocket.addEventListener("open", () => {
@@ -2223,6 +2290,7 @@ async function connect() {
     }
     connecting = false;
     reconnectDelayMs = 2000;
+    if (!officeAuthorizationExpired) showOfficeFailure("");
     setStatus(
       scope === "public-world-general"
         ? "Connected · public World #general"
@@ -2252,6 +2320,8 @@ async function connect() {
     scheduleReconnect();
   });
   roomSocket.addEventListener("error", () => {
+    setStatus(OFFICE_RELAY_UNAVAILABLE);
+    showOfficeFailure("relay");
     if (socket === roomSocket) roomSocket.close();
   });
 }
@@ -2353,6 +2423,38 @@ function sendCurrentMessage() {
   });
 }
 
+function suspendOfficeChat() {
+  if (!isOfficeEmbed || chatSuspended) return;
+  chatSuspended = true;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  const previous = socket;
+  socket = null;
+  socketScope = "";
+  roomKey = null;
+  connecting = false;
+  openCallbacks = [];
+  try {
+    previous?.close(1000, "left ForkMesh Office");
+  } catch (_) {}
+  setStatus("Chat paused outside ForkMesh Office");
+}
+
+function receiveOfficeMessage(event) {
+  if (!isOfficeEmbed) return;
+  if (event.origin !== window.location.origin) return;
+  if (event.source !== window.parent) return;
+  const message = event.data;
+  if (!message || message.type !== "office-chat-suspend") return;
+  suspendOfficeChat();
+}
+
+if (isOfficeEmbed) {
+  window.addEventListener("message", receiveOfficeMessage);
+}
+
 async function initChat() {
   await hydrateUserSession();
   ensureChannel("#general");
@@ -2400,6 +2502,10 @@ async function initChat() {
   channelInviteForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     inviteChannelMember(channelUsernameInput?.value || "");
+  });
+  officeRetryBtn?.addEventListener("click", () => {
+    showOfficeFailure("");
+    connect();
   });
   if (attachmentBtn && attachmentInput) {
     attachmentBtn.addEventListener("click", () => attachmentInput.click());
@@ -2466,6 +2572,12 @@ async function initChat() {
   }, PRESENCE_INTERVAL_MS);
   // Re-evaluate online dots as peers go stale even with no traffic.
   setInterval(renderPeople, 30000);
+  if (isOfficeEmbed && window.parent !== window) {
+    window.parent.postMessage(
+      { type: "office-chat-ready" },
+      window.location.origin,
+    );
+  }
 }
 
 if (logEl && input && sendBtn) {
