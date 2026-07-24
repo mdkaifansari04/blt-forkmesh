@@ -3,9 +3,11 @@
 
 advertised_refs_canonical() must reduce a `git upload-pack --advertise-refs`
 body to exactly the same canonical string the desktop node hashes and signs
-(git for-each-ref over refs/heads/* + refs/tags/*, "<sha> <refname>" lines,
-sorted, joined by "\\n"). If the two ever drift, every clone of an attested
-repo would fail the relay's integrity gate, so pin the behaviour here.
+(git for-each-ref --sort=refname over refs/heads/* + refs/tags/*, "<sha>
+<refname>" lines, sorted by refname, joined by "\\n"). If the two ever drift,
+every clone of an attested repo would fail the relay's integrity gate, so pin
+the behaviour here. The fixtures deliberately use refs whose refname order
+differs from their object-id order, so a whole-line (sha-first) sort fails.
 """
 
 import ast
@@ -57,8 +59,12 @@ SHA_PEELED = "4444444444444444444444444444444444444444"
 
 
 def _client_canonical(refs):
-    # Mirror MainWindow::publishRepository: sorted "<sha> <refname>" joined by \n.
-    return "\n".join(sorted("%s %s" % (sha, name) for name, sha in refs.items()))
+    # Mirror PublicMirrorRuntime::refsSha256FromForEachRef (what the desktop's
+    # mirrorStateHash signs) and the mirror tools' refs_canonical(): "<sha>
+    # <refname>" lines sorted BY REFNAME (`for-each-ref --sort=refname`),
+    # joined by \n.
+    return "\n".join(
+        "%s %s" % (sha, name) for name, sha in sorted(refs.items()))
 
 
 def test_canonical_matches_client_form():

@@ -3133,6 +3133,16 @@ private:
     QString avatarCachePath(const QString &peerId) const;
     void loadCachedAvatars();
     void loadRepositories();
+    // An account/owner rename re-derives a record's <owner>-<name>.git mirror
+    // path while the bare mirror stays on disk under its old name; the working
+    // copy's push remote and post-receive hook keep feeding the old directory,
+    // but workflow discovery, publishing, and the attested state hash all read
+    // the missing new path — pushes stop kicking off actions and the node
+    // advertises stale state (adhoc #227). Adopt the mirror the working copy
+    // actually pushes into by moving it to the recorded path (or repointing
+    // the record at it when the move fails). Returns true when the record was
+    // modified and needs saving.
+    bool reconcileMirrorPath(RepositoryRecord &repo);
     void saveRepositories() const;
     void refreshRepositoryList();
     // Node handles offered by the @-mention autocomplete in comment editors:

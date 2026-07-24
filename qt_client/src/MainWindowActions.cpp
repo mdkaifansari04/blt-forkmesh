@@ -741,6 +741,18 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
     // iterations (adhoc #119).
     const RepositoryRecord repo = m_repositories.at(repoIndex);
 
+    // Every git read below runs inside the served mirror. If its directory is
+    // gone (e.g. the record's path diverged from the on-disk mirror), each read
+    // fails silently and this would end with the misleading "no .forkmesh/
+    // workflow with 'on: push'" log line — say what is actually wrong instead.
+    if (!QDir(repo.mirrorPath).exists()) {
+        logSystem(QStringLiteral(
+                      "Actions: served mirror %1 for %2/%3 is missing \xE2\x80\x94 "
+                      "cannot look up workflows at %4.")
+                      .arg(repo.mirrorPath, owner, name, commit.left(8)));
+        return;
+    }
+
     // Metadata-only pushes (issues, pull requests, commit comments) shouldn't
     // trigger CI: they carry no code change. List the pushed commit's files and
     // bail if every one lives under a metadata folder. A release is an explicit,

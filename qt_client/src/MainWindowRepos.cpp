@@ -786,7 +786,59 @@ void MainWindow::loadRepositories()
             m_repositories.append(repo);
     }
     settings.endArray();
+    // Re-attach records whose mirror directory moved out from under them (an
+    // owner rename re-derives mirrorPath without migrating the directory).
+    bool migrated = false;
+    for (RepositoryRecord &repo : m_repositories)
+        migrated = reconcileMirrorPath(repo) || migrated;
+    if (migrated)
+        saveRepositories();
     loadRepoStats();
+}
+
+bool MainWindow::reconcileMirrorPath(RepositoryRecord &repo)
+{
+    if (repo.previewOnly || repo.mirrorPath.trimmed().isEmpty() ||
+        QDir(repo.mirrorPath).exists())
+        return false;
+    // Only a working-copy holder knows which bare mirror its pushes land in:
+    // ensurePushHook points the copy's push URL at the served mirror, so that
+    // remote is the ground truth for where the old directory lives.
+    const QString localPath = repo.localPath.trimmed();
+    if (localPath.isEmpty() || !QDir(localPath).exists(QStringLiteral(".git")))
+        return false;
+    QByteArray out;
+    if (!runGitCapture(localPath,
+                       {QStringLiteral("remote"), QStringLiteral("get-url"),
+                        QStringLiteral("--push"), QStringLiteral("origin")},
+                       &out, nullptr))
+        return false;
+    const QString oldMirror = QString::fromUtf8(out).trimmed();
+    // Adopt only a real local bare repository, never a URL remote.
+    if (oldMirror.isEmpty() || oldMirror.contains(QLatin1String("://")) ||
+        QDir::cleanPath(oldMirror) == QDir::cleanPath(repo.mirrorPath) ||
+        !QFileInfo(oldMirror).isDir() ||
+        !QFileInfo(QDir(oldMirror).filePath(QStringLiteral("HEAD"))).isFile())
+        return false;
+    QDir().mkpath(QFileInfo(repo.mirrorPath).absolutePath());
+    if (QDir().rename(oldMirror, repo.mirrorPath)) {
+        logSystem(QStringLiteral(
+                      "Mirror: moved %1/%2's served mirror from %3 to %4 "
+                      "(record and on-disk mirror had diverged).")
+                      .arg(repo.owner, repo.name, oldMirror, repo.mirrorPath));
+        // The hook and push URL inside the working copy still name the old
+        // path; ensurePushHook rewrites both now that the target exists.
+        ensurePushHook(repo);
+        return false; // record unchanged; only the directory moved
+    }
+    // Could not move (permissions, cross-device): serve the mirror where it
+    // actually is instead of attesting a path that doesn't exist.
+    repo.mirrorPath = oldMirror;
+    logSystem(QStringLiteral(
+                  "Mirror: %1/%2's recorded mirror path was missing; using the "
+                  "existing mirror at %3.")
+                  .arg(repo.owner, repo.name, oldMirror));
+    return true;
 }
 
 void MainWindow::saveRepositories() const
