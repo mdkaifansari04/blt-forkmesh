@@ -41,6 +41,7 @@ class FakeRuntime:
         self.audits = []
         self.revoked_rooms = []
         self.ids = 0
+        self.fail_batch_at = None
 
     def use(self, method, actor="", data=None):
         self.request_method = method
@@ -138,10 +139,27 @@ class FakeRuntime:
         self.db.commit()
         return {"changes": cursor.rowcount}
 
+    async def batch(self, statements):
+        self.db.execute("BEGIN")
+        try:
+            for index, (sql, args) in enumerate(statements):
+                if self.fail_batch_at == index:
+                    raise RuntimeError("forced_batch_failure")
+                self.db.execute(sql, args)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
-async def create_channel(runtime, name):
+
+async def create_channel(runtime, name, visibility=None, members=None):
+    data = {"name": name}
+    if visibility is not None:
+        data["visibility"] = visibility
+    if members is not None:
+        data["members"] = members
     return await api.handle(
-        runtime.use("POST", "admin", {"name": name}),
+        runtime.use("POST", "admin", data),
         "/api/chat/channels",
     )
 
@@ -168,6 +186,7 @@ async def test_admin_creates_and_non_admin_cannot_create_channel():
         "updatedAt": runtime.clock,
         "keyVersion": 1,
         "canManage": True,
+        "visibility": "private",
     }
     stored = runtime.db.execute(
         "SELECT name_bi,data,created_by_bi,key_version FROM chat_channels"
@@ -176,6 +195,183 @@ async def test_admin_creates_and_non_admin_cannot_create_channel():
     assert json.loads(stored["data"])["name"] == "release-team"
     assert stored["created_by_bi"] == "bi:admin"
     assert stored["key_version"] == 1
+
+
+@run_async_test
+async def test_admin_creates_private_channel_with_initial_registered_members():
+    runtime = FakeRuntime()
+    created = await create_channel(
+        runtime,
+        "release-team",
+        visibility="private",
+        members=["Alice", "alice", "admin", "bob"],
+    )
+
+    assert created["status"] == 201
+    assert created["data"]["channel"]["visibility"] == "private"
+    assert created["data"]["members"] == [
+        {"username": "alice", "joinedAt": runtime.clock},
+        {"username": "bob", "joinedAt": runtime.clock},
+    ]
+    rows = runtime.db.execute(
+        "SELECT data FROM chat_channel_members ORDER BY member_bi"
+    ).fetchall()
+    assert sorted(json.loads(row["data"])["username"] for row in rows) == [
+        "alice",
+        "bob",
+    ]
+
+
+@run_async_test
+async def test_channel_creation_rejects_invalid_visibility_and_members():
+    runtime = FakeRuntime()
+
+    invalid_visibility = await create_channel(
+        runtime, "release-team", visibility="shared")
+    assert invalid_visibility["status"] == 400
+    assert invalid_visibility["data"] == {"error": "invalid_visibility"}
+
+    invalid_members = await create_channel(
+        runtime, "release-team", visibility="private", members="alice")
+    assert invalid_members["status"] == 400
+    assert invalid_members["data"] == {"error": "invalid_members"}
+
+    invalid_member_item = await create_channel(
+        runtime, "release-team", visibility="private", members=[1])
+    assert invalid_member_item["status"] == 400
+    assert invalid_member_item["data"] == {"error": "invalid_members"}
+
+    too_many_members = await create_channel(
+        runtime,
+        "release-team",
+        visibility="private",
+        members=["alice"] * (api.MAX_CHANNEL_MEMBERS + 1),
+    )
+    assert too_many_members["status"] == 429
+    assert too_many_members["data"] == {"error": "too_many_members"}
+
+    public_members = await create_channel(
+        runtime, "release-team", visibility="public", members=["alice"])
+    assert public_members["status"] == 400
+    assert public_members["data"] == {"error": "members_not_allowed"}
+
+    missing_user = await create_channel(
+        runtime, "release-team", visibility="private", members=["missing"])
+    assert missing_user["status"] == 404
+    assert missing_user["data"] == {"error": "user_not_found"}
+    assert runtime.db.execute(
+        "SELECT COUNT(*) FROM chat_channels").fetchone()[0] == 0
+    assert runtime.db.execute(
+        "SELECT COUNT(*) FROM chat_channel_members").fetchone()[0] == 0
+
+
+@run_async_test
+async def test_channel_and_initial_members_are_written_in_one_transaction():
+    runtime = FakeRuntime()
+    runtime.fail_batch_at = 1
+
+    try:
+        await create_channel(
+            runtime,
+            "release-team",
+            visibility="private",
+            members=["alice"],
+        )
+    except RuntimeError as error:
+        assert str(error) == "forced_batch_failure"
+    else:
+        raise AssertionError("batch failure must escape the API boundary")
+
+    assert runtime.db.execute(
+        "SELECT COUNT(*) FROM chat_channels").fetchone()[0] == 0
+    assert runtime.db.execute(
+        "SELECT COUNT(*) FROM chat_channel_members").fetchone()[0] == 0
+
+
+@run_async_test
+async def test_registered_users_list_and_access_public_but_not_other_private_channels():
+    runtime = FakeRuntime()
+    public = await create_channel(
+        runtime, "announcements", visibility="public")
+    private = await create_channel(
+        runtime,
+        "release-team",
+        visibility="private",
+        members=["alice"],
+    )
+
+    alice_list = await api.handle(
+        runtime.use("GET", "alice"), "/api/chat/channels")
+    bob_list = await api.handle(
+        runtime.use("GET", "bob"), "/api/chat/channels")
+    assert [item["name"] for item in alice_list["data"]["channels"]] == [
+        "announcements",
+        "release-team",
+    ]
+    assert [item["name"] for item in bob_list["data"]["channels"]] == [
+        "announcements"
+    ]
+
+    public_id = public["data"]["channel"]["id"]
+    private_id = private["data"]["channel"]["id"]
+    public_access = await api.handle(
+        runtime.use("GET", "bob"),
+        f"/api/chat/channels/{public_id}/room-access",
+    )
+    private_access = await api.handle(
+        runtime.use("GET", "bob"),
+        f"/api/chat/channels/{private_id}/room-access",
+    )
+    assert public_access["status"] == 200
+    assert public_access["data"]["channel"]["visibility"] == "public"
+    assert private_access["status"] == 404
+
+
+@run_async_test
+async def test_legacy_channel_without_visibility_remains_private():
+    runtime = FakeRuntime()
+    runtime.db.execute(
+        "INSERT INTO chat_channels "
+        "(channel_id,name_bi,data,created_by_bi,created_at,updated_at,key_version) "
+        "VALUES (?,?,?,?,?,?,1)",
+        (
+            "f" * 32,
+            "legacy-name-bi",
+            json.dumps({"name": "legacy"}),
+            "bi:admin",
+            runtime.clock,
+            runtime.clock,
+        ),
+    )
+    runtime.db.commit()
+
+    listed = await api.handle(
+        runtime.use("GET", "bob"), "/api/chat/channels")
+    access = await api.handle(
+        runtime.use("GET", "bob"),
+        f"/api/chat/channels/{'f' * 32}/room-access",
+    )
+    assert listed["data"]["channels"] == []
+    assert access["status"] == 404
+
+
+@run_async_test
+async def test_public_channel_rejects_private_membership_management():
+    runtime = FakeRuntime()
+    created = await create_channel(
+        runtime, "announcements", visibility="public")
+    channel_id = created["data"]["channel"]["id"]
+    path = f"/api/chat/channels/{channel_id}/members"
+
+    for method, data in (
+        ("GET", None),
+        ("POST", {"username": "alice"}),
+        ("DELETE", {"username": "alice"}),
+    ):
+        response = await api.handle(
+            runtime.use(method, "admin", data), path)
+        assert response["status"] == 409
+        assert response["data"] == {"error": "members_not_allowed"}
 
 
 @run_async_test

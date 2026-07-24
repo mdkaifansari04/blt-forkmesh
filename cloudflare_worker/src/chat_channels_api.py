@@ -1,10 +1,10 @@
-"""D1-backed private chat-channel and membership API."""
+"""D1-backed encrypted chat-channel and private-membership API."""
 
 import re
 
 
-CHANNEL_BODY_MAX_BYTES = 1024
-MAX_PRIVATE_CHANNELS = 100
+CHANNEL_BODY_MAX_BYTES = 64 * 1024
+MAX_CHAT_CHANNELS = 100
 MAX_CHANNEL_MEMBERS = 500
 CHANNEL_NAME_RE = re.compile(
     r"^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$")
@@ -46,7 +46,14 @@ def _channel_payload(row, record, can_manage):
         "updatedAt": int(row.get("updated_at") or 0),
         "keyVersion": int(row.get("key_version") or 1),
         "canManage": bool(can_manage),
+        "visibility": _visibility(record),
     }
+
+
+def _visibility(record):
+    return "public" if (record or {}).get("visibility") == "public" else (
+        "private"
+    )
 
 
 async def _create_channel(runtime, account_bi, actor, data):
@@ -54,6 +61,38 @@ async def _create_channel(runtime, account_bi, actor, data):
     if not CHANNEL_NAME_RE.fullmatch(name):
         return _response(
             runtime, {"error": "invalid_channel_name"}, status=400)
+    visibility = str(
+        (data or {}).get("visibility") or "private"
+    ).strip().lower()
+    if visibility not in {"private", "public"}:
+        return _response(
+            runtime, {"error": "invalid_visibility"}, status=400)
+    raw_members = (data or {}).get("members", [])
+    if not isinstance(raw_members, list):
+        return _response(runtime, {"error": "invalid_members"}, status=400)
+    if len(raw_members) > MAX_CHANNEL_MEMBERS:
+        return _response(runtime, {"error": "too_many_members"}, status=429)
+    if visibility == "public" and raw_members:
+        return _response(
+            runtime, {"error": "members_not_allowed"}, status=400)
+
+    initial_members = []
+    seen_members = set()
+    for value in raw_members:
+        if not isinstance(value, str):
+            return _response(
+                runtime, {"error": "invalid_members"}, status=400)
+        member_bi, canonical = await runtime.account(value)
+        if not member_bi or not canonical:
+            return _response(
+                runtime, {"error": "user_not_found"}, status=404)
+        if canonical in seen_members:
+            continue
+        seen_members.add(canonical)
+        if await runtime.is_admin(canonical):
+            continue
+        initial_members.append((member_bi, canonical))
+
     name_bi = await runtime.blind("chat-channel-name:" + name)
     existing = await runtime.d1_first(
         "SELECT 1 AS one FROM chat_channels WHERE name_bi=?", name_bi)
@@ -62,19 +101,35 @@ async def _create_channel(runtime, account_bi, actor, data):
             runtime, {"error": "channel_name_taken"}, status=409)
     count = await runtime.d1_first(
         "SELECT COUNT(*) AS n FROM chat_channels")
-    if int((count or {}).get("n") or 0) >= MAX_PRIVATE_CHANNELS:
+    if int((count or {}).get("n") or 0) >= MAX_CHAT_CHANNELS:
         return _response(
             runtime, {"error": "too_many_channels"}, status=429)
 
     now = runtime.now()
     channel_id = runtime.new_id()
-    sealed = await runtime.seal({"name": name, "createdBy": actor})
-    await runtime.d1_run(
+    record = {
+        "name": name,
+        "createdBy": actor,
+        "visibility": visibility,
+    }
+    sealed = await runtime.seal(record)
+    statements = [(
         "INSERT INTO chat_channels "
         "(channel_id,name_bi,data,created_by_bi,created_at,updated_at,"
         "key_version) VALUES (?,?,?,?,?,?,1)",
-        channel_id, name_bi, sealed, account_bi, now, now,
-    )
+        (channel_id, name_bi, sealed, account_bi, now, now),
+    )]
+    member_payloads = []
+    for member_bi, canonical in initial_members:
+        member_payloads.append({"username": canonical, "joinedAt": now})
+        member_data = await runtime.seal({"username": canonical})
+        statements.append((
+            "INSERT INTO chat_channel_members "
+            "(channel_id,member_bi,data,invited_by_bi,joined_at) "
+            "VALUES (?,?,?,?,?)",
+            (channel_id, member_bi, member_data, account_bi, now),
+        ))
+    await runtime.batch(statements)
     await runtime.audit(
         actor,
         "chat.channel.create",
@@ -90,7 +145,7 @@ async def _create_channel(runtime, account_bi, actor, data):
     return _response(
         runtime,
         {"ok": True, "channel": _channel_payload(
-            row, {"name": name}, True)},
+            row, record, True), "members": member_payloads},
         status=201,
     )
 
@@ -120,9 +175,10 @@ async def _list_channels(runtime, account_bi, actor, is_admin):
         )
     else:
         rows = await runtime.d1_all(
-            "SELECT c.channel_id,c.data,c.updated_at,c.key_version "
-            "FROM chat_channels c JOIN chat_channel_members m "
-            "ON m.channel_id=c.channel_id WHERE m.member_bi=? "
+            "SELECT c.channel_id,c.data,c.updated_at,c.key_version,"
+            "CASE WHEN m.member_bi IS NULL THEN 0 ELSE 1 END AS joined "
+            "FROM chat_channels c LEFT JOIN chat_channel_members m "
+            "ON m.channel_id=c.channel_id AND m.member_bi=? "
             "ORDER BY c.created_at,c.channel_id",
             account_bi,
         )
@@ -131,6 +187,12 @@ async def _list_channels(runtime, account_bi, actor, is_admin):
         try:
             record = await runtime.open(row.get("data"))
         except Exception:
+            continue
+        if (
+            not is_admin
+            and _visibility(record) != "public"
+            and not bool(int(row.get("joined") or 0))
+        ):
             continue
         channels.append(_channel_payload(row, record, is_admin))
     return _response(runtime, {"channels": channels})
@@ -162,9 +224,12 @@ async def _member_payload(runtime, row):
 
 
 async def _list_members(runtime, channel_id):
-    row, _record = await _channel(runtime, channel_id)
+    row, record = await _channel(runtime, channel_id)
     if not row:
         return _response(runtime, {"error": "not_found"}, status=404)
+    if _visibility(record) != "private":
+        return _response(
+            runtime, {"error": "members_not_allowed"}, status=409)
     rows = await runtime.d1_all(
         "SELECT data,joined_at FROM chat_channel_members "
         "WHERE channel_id=? ORDER BY joined_at,member_bi",
@@ -179,9 +244,12 @@ async def _list_members(runtime, channel_id):
 
 
 async def _add_member(runtime, account_bi, actor, channel_id, data):
-    row, _record = await _channel(runtime, channel_id)
+    row, record = await _channel(runtime, channel_id)
     if not row:
         return _response(runtime, {"error": "not_found"}, status=404)
+    if _visibility(record) != "private":
+        return _response(
+            runtime, {"error": "members_not_allowed"}, status=409)
     username = str((data or {}).get("username") or "").strip().lower()
     member_bi, canonical = await runtime.account(username)
     if not member_bi or not canonical:
@@ -239,9 +307,12 @@ async def _add_member(runtime, account_bi, actor, channel_id, data):
 
 
 async def _remove_member(runtime, actor, channel_id, data):
-    row, _record = await _channel(runtime, channel_id)
+    row, record = await _channel(runtime, channel_id)
     if not row:
         return _response(runtime, {"error": "not_found"}, status=404)
+    if _visibility(record) != "private":
+        return _response(
+            runtime, {"error": "members_not_allowed"}, status=409)
     username = str((data or {}).get("username") or "").strip().lower()
     member_bi, _canonical = await runtime.account(username)
     if not member_bi:
@@ -282,14 +353,16 @@ async def _room_access(runtime, account_bi, actor, channel_id, is_admin):
     if not row:
         return _response(runtime, {"error": "not_found"}, status=404)
     if not is_admin:
-        membership = await runtime.d1_first(
-            "SELECT 1 AS one FROM chat_channel_members "
-            "WHERE channel_id=? AND member_bi=?",
-            channel_id,
-            account_bi,
-        )
-        if not membership:
-            return _response(runtime, {"error": "not_found"}, status=404)
+        if _visibility(record) != "public":
+            membership = await runtime.d1_first(
+                "SELECT 1 AS one FROM chat_channel_members "
+                "WHERE channel_id=? AND member_bi=?",
+                channel_id,
+                account_bi,
+            )
+            if not membership:
+                return _response(
+                    runtime, {"error": "not_found"}, status=404)
     access = await runtime.room_access(
         channel_id,
         int(row.get("key_version") or 1),
@@ -301,7 +374,7 @@ async def _room_access(runtime, account_bi, actor, channel_id, is_admin):
 
 
 async def handle(runtime, path):
-    """Serve the authenticated private-channel collection and resources."""
+    """Serve authenticated encrypted-channel collection and resources."""
     await runtime.ensure_schema()
     normalized_path = str(path or "")
     collection = COLLECTION_RE.fullmatch(normalized_path)
