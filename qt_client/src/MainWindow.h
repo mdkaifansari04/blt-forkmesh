@@ -189,6 +189,14 @@ struct RepositoryRecord {
     // Enabled by default; can be turned off per repo on the Actions tab. Pushed
     // workflow changes still require explicit approval before they run.
     bool actionsEnabled = true;
+    // A gateway-managed serving repository must keep its own post-receive hook
+    // and object database isolated from workflow-created objects. The remote
+    // Actions helper therefore maintains a separate local bare mirror and this
+    // source/ref pair is polled for bounded branch changes instead of replacing
+    // the serving hook.
+    bool externallyManagedActions = false;
+    QString externalActionsSource;
+    QString externalActionsRef;
     // Workflow paths (relative to the repo root, e.g. ".forkmesh/ci.yml") that
     // the owner has switched off individually. Disabled workflows are skipped on
     // push and can't be triggered manually, but stay listed so past runs remain
@@ -1865,6 +1873,12 @@ private:
     void removePushHook(const RepositoryRecord &repo) const;
     void installAllPushHooks() const;
     void scanActionSpool();              // read *.push/*.commit events, enqueue runs
+    // Apply a controller-written generation without restarting the headless
+    // node, then poll gateway-managed sources into their isolated Actions
+    // mirrors. Neither path changes the gateway's serving hook/object store.
+    void syncMirrorActionsConfiguration();
+    void scanExternalActionsSources();
+    void updateMirrorActionsRuntimeState();
     void enqueuePushEvent(const QString &owner, const QString &name,
                           const QString &commit, const QString &ref);
     void processActionQueue();
@@ -4561,6 +4575,10 @@ private:
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
+    QString m_mirrorActionsConfigGeneration;
+    QString m_mirrorActionsRuntimeState;
+    qint64 m_mirrorActionsRuntimeStateWrittenAtMs = 0;
+    qint64 m_lastExternalActionsScanMs = 0;
     QList<AppNotification> m_notifications;
     QPushButton *m_notificationButton = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page

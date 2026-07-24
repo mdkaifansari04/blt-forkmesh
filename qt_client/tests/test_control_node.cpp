@@ -1,4 +1,5 @@
 #include "ControlNode.h"
+#include "MirrorActionsConfiguration.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -6,6 +7,8 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QProcess>
+#include <QSettings>
 #include <QTemporaryDir>
 
 #include <cstdio>
@@ -27,6 +30,20 @@ QString base64Url(const QByteArray &value)
     return QString::fromLatin1(
         value.toBase64(QByteArray::Base64UrlEncoding |
                        QByteArray::OmitTrailingEquals));
+}
+
+bool runProcess(const QString &program, const QStringList &arguments,
+                const QString &workingDirectory = {})
+{
+    QProcess process;
+    if (!workingDirectory.isEmpty())
+        process.setWorkingDirectory(workingDirectory);
+    process.setProcessChannelMode(QProcess::MergedChannels);
+    process.start(program, arguments);
+    return process.waitForStarted(3000) &&
+           process.waitForFinished(15000) &&
+           process.exitStatus() == QProcess::NormalExit &&
+           process.exitCode() == 0;
 }
 
 } // namespace
@@ -672,6 +689,176 @@ int main(int argc, char **argv)
               QByteArray(64 * 1024 + 1, 'x'), actionsRequest.requestId,
               actionsRequest.nodeName, &actionsError).isEmpty(),
           "oversize Actions helper output fails closed");
+
+    QTemporaryDir mirrorActionsRoot;
+    const QString sourceCheckout =
+        mirrorActionsRoot.filePath(QStringLiteral("source"));
+    const QString sourceBare =
+        mirrorActionsRoot.filePath(QStringLiteral("source.git"));
+    check(mirrorActionsRoot.isValid() &&
+              QDir().mkpath(sourceCheckout) &&
+              runProcess(QStringLiteral("git"),
+                         {QStringLiteral("init"),
+                          QStringLiteral("--initial-branch=main")},
+                         sourceCheckout),
+          "mirror Actions helper fixture repository initializes");
+    QFile fixtureReadme(
+        QDir(sourceCheckout).filePath(QStringLiteral("README.md")));
+    check(fixtureReadme.open(QIODevice::WriteOnly) &&
+              fixtureReadme.write("safe action fixture\n") > 0,
+          "mirror Actions helper fixture writes one source file");
+    fixtureReadme.close();
+    check(runProcess(
+              QStringLiteral("git"),
+              {QStringLiteral("-c"), QStringLiteral("user.name=ForkMesh Test"),
+               QStringLiteral("-c"),
+               QStringLiteral("user.email=forkmesh@example.test"),
+               QStringLiteral("add"), QStringLiteral("README.md")},
+              sourceCheckout) &&
+              runProcess(
+                  QStringLiteral("git"),
+                  {QStringLiteral("-c"),
+                   QStringLiteral("user.name=ForkMesh Test"),
+                   QStringLiteral("-c"),
+                   QStringLiteral("user.email=forkmesh@example.test"),
+                   QStringLiteral("commit"), QStringLiteral("-m"),
+                   QStringLiteral("fixture")},
+                  sourceCheckout) &&
+              runProcess(QStringLiteral("git"),
+                         {QStringLiteral("clone"), QStringLiteral("--bare"),
+                          sourceCheckout, sourceBare}),
+          "mirror Actions helper fixture creates a serving bare repository");
+    QDir().mkpath(QDir(sourceBare).filePath(QStringLiteral("hooks")));
+    const QString servingHook =
+        QDir(sourceBare).filePath(QStringLiteral("hooks/post-receive"));
+    QFile hook(servingHook);
+    check(hook.open(QIODevice::WriteOnly) &&
+              hook.write("#!/bin/sh\n# serving refresh hook\n") > 0,
+          "mirror Actions fixture installs a serving refresh hook");
+    hook.close();
+
+    const QString gatewayConfig =
+        mirrorActionsRoot.filePath(QStringLiteral("mirror-refresh.json"));
+    QFile gateway(gatewayConfig);
+    const QJsonObject gatewayObject{
+        {QStringLiteral("schemaVersion"), 1},
+        {QStringLiteral("type"),
+         QStringLiteral("forkmesh.headless-mirror-refresh")},
+        {QStringLiteral("sourceRepository"), sourceBare},
+        {QStringLiteral("nodeOwner"), QStringLiteral("mirror2")},
+        {QStringLiteral("repositoryName"), QStringLiteral("forkmesh")},
+        {QStringLiteral("ownerAliases"),
+         QJsonArray{QStringLiteral("mirror2"),
+                    QStringLiteral("forkmesh")}},
+        {QStringLiteral("catalog"),
+         QJsonObject{{QStringLiteral("branch"),
+                      QStringLiteral("main")}}},
+    };
+    check(gateway.open(QIODevice::WriteOnly) &&
+              gateway.write(
+                  QJsonDocument(gatewayObject)
+                      .toJson(QJsonDocument::Compact)) > 0,
+          "mirror Actions fixture writes a secret-free gateway configuration");
+    gateway.close();
+    QFile::setPermissions(gatewayConfig,
+                          QFileDevice::ReadOwner |
+                              QFileDevice::WriteOwner);
+    qputenv("FORKMESH_MIRROR_REFRESH_CONFIG",
+            gatewayConfig.toUtf8());
+
+    const QString actionSettingsPath =
+        mirrorActionsRoot.filePath(QStringLiteral("settings.ini"));
+    QSettings actionSettings(actionSettingsPath, QSettings::IniFormat);
+    actionSettings.setValue(QStringLiteral("node/machineName"),
+                            QStringLiteral("mirror2"));
+    const QJsonObject nodeActionsRequest{
+        {QStringLiteral("type"),
+         QStringLiteral("forkmesh.mirror-actions-configuration")},
+        {QStringLiteral("schemaVersion"), 1},
+        {QStringLiteral("requestId"),
+         QStringLiteral("abcdef0123456789abcdef0123456789")},
+        {QStringLiteral("node"), QStringLiteral("mirror2")},
+        {QStringLiteral("actionsEnabled"), true},
+        {QStringLiteral("variables"),
+         QJsonObject{
+             {QStringLiteral("mode"), QStringLiteral("replace")},
+             {QStringLiteral("values"),
+              QJsonObject{
+                  {QStringLiteral("DEPLOY_TOKEN"),
+                   QStringLiteral("node-local-only-value")},
+                  {QStringLiteral("DEPLOY_ENV"),
+                   QStringLiteral("production")},
+              }},
+         }},
+    };
+    const QJsonObject applied =
+        forkmesh::mirror_actions::applyConfiguration(
+            nodeActionsRequest, actionSettings);
+    check(applied.value(QStringLiteral("ok")).toBool() &&
+              applied.value(QStringLiteral("actionsEnabled")).toBool() &&
+              applied.value(QStringLiteral("variablesReplaced")).toBool() &&
+              applied.value(QStringLiteral("variableCount")).toInt() == 2 &&
+              !QJsonDocument(applied)
+                   .toJson(QJsonDocument::Compact)
+                   .contains("DEPLOY_TOKEN") &&
+              !QJsonDocument(applied)
+                   .toJson(QJsonDocument::Compact)
+                   .contains("node-local-only-value"),
+          "node helper returns only bounded metadata and never variable data");
+    const QJsonObject savedVariables =
+        QJsonDocument::fromJson(
+            actionSettings
+                .value(QStringLiteral("actions/variables"))
+                .toByteArray())
+            .object();
+    check(savedVariables.value(QStringLiteral("DEPLOY_TOKEN")).toString() ==
+                  QStringLiteral("node-local-only-value") &&
+              actionSettings
+                      .value(QString::fromLatin1(
+                          forkmesh::mirror_actions::kEnabledSetting))
+                      .toBool(),
+          "node helper stores variables only in the target device settings");
+    const int repositoryCount = actionSettings.beginReadArray(
+        QStringLiteral("repositories/items"));
+    actionSettings.setArrayIndex(0);
+    const QString isolatedMirror =
+        actionSettings.value(QStringLiteral("mirrorPath")).toString();
+    check(repositoryCount == 1 &&
+              actionSettings
+                  .value(QStringLiteral("externallyManagedActions"))
+                  .toBool() &&
+              actionSettings
+                      .value(QStringLiteral("externalActionsSource"))
+                      .toString() == sourceBare &&
+              isolatedMirror != sourceBare &&
+              QFileInfo(QDir(isolatedMirror)
+                            .filePath(QStringLiteral("HEAD")))
+                  .isFile() &&
+              !QFileInfo(QDir(isolatedMirror)
+                             .filePath(
+                                 QStringLiteral("objects/info/alternates")))
+                   .exists(),
+          "node helper creates an independent Actions mirror and marks its hook external");
+    actionSettings.endArray();
+    QFile unchangedHook(servingHook);
+    check(unchangedHook.open(QIODevice::ReadOnly) &&
+              unchangedHook.readAll().contains("serving refresh hook"),
+          "node helper preserves the serving repository post-receive hook");
+    unchangedHook.close();
+    const QFileInfo settingsInfo(actionSettingsPath);
+    check(!(settingsInfo.permissions() &
+            (QFileDevice::ReadGroup | QFileDevice::WriteGroup |
+             QFileDevice::ReadOther | QFileDevice::WriteOther)),
+          "node helper restricts its device-local settings file");
+    QJsonObject wrongNodeRequest = nodeActionsRequest;
+    wrongNodeRequest.insert(QStringLiteral("node"),
+                            QStringLiteral("mirror3"));
+    check(!forkmesh::mirror_actions::applyConfiguration(
+               wrongNodeRequest, actionSettings)
+               .value(QStringLiteral("ok"))
+               .toBool(),
+          "node helper rejects a request for another mirror identity");
+    qunsetenv("FORKMESH_MIRROR_REFRESH_CONFIG");
 
     if (failures == 0)
         std::fprintf(stdout, "control-node tests passed\n");
