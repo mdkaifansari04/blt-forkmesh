@@ -1145,8 +1145,8 @@ test("reward-program links deep-link to the self-custodial fountain controls", a
 
 async function freezeWorld(page) {
   await page.locator("forkmesh-world").evaluate((shell) => {
-    // The default theme is fixed full daylight. UTC remains a display clock
-    // and never participates in scene lighting.
+    // The default theme is fixed full daylight. Wall-clock time never
+    // participates in scene lighting.
     shell.world.setTheme("world");
     shell.world.setLightLevel(100);
   });
@@ -1548,16 +1548,14 @@ test("local diagnostics report renderer and existing socket state without new te
   expect(socketCount).toBe(1);
 });
 
-test("UTC is display-only and local light level survives movement without becoming presence data", async ({
+test("the topbar has no clock or emote actions and local light level survives movement without becoming presence data", async ({
   page,
 }) => {
   await prepareWorldPage(page, "local-light-level");
   await waitForWorld(page);
 
-  await expect(page.locator("[data-world-clock]")).toHaveText("17:20:00");
-  await expect(page.locator("[data-world-phase]")).toHaveText(
-    "UTC · 24-hour clock",
-  );
+  await expect(page.locator("[data-world-clock]")).toHaveCount(0);
+  await expect(page.locator("[data-world-emote]")).toHaveCount(0);
   const initial = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.world.getEnvironmentState(),
   );

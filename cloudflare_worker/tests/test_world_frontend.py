@@ -76,7 +76,7 @@ def test_world_is_an_immediate_accessible_game_shell():
     assert "JavaScript and WebGL enhance this page" in INDEX
 
 
-def test_world_contains_the_initial_city_districts_and_utc_clock():
+def test_world_contains_the_initial_city_districts_without_a_clock():
     for landmark in (
         "information",
         "fountain",
@@ -89,10 +89,7 @@ def test_world_contains_the_initial_city_districts_and_utc_clock():
         "support",
     ):
         assert f'id: "{landmark}"' in DATA
-    assert "export function utcClock" in DATA
-    assert "getUTCHours()" in DATA
-    assert "getUTCMinutes()" in DATA
-    assert "getUTCSeconds()" in DATA
+    assert "utcClock" not in DATA
     assert "WORLD_DAY_MS" not in DATA
     for theme in (
         "world",
@@ -103,11 +100,10 @@ def test_world_contains_the_initial_city_districts_and_utc_clock():
         "low-light",
     ):
         assert f'id: "{theme}"' in DATA
-    assert 'class="world-clock"' in APP
-    assert 'aria-label="Current UTC time"' in APP
-    assert 'data-world-clock>--:--:--' in APP
-    assert 'class="world-clock-label">UTC time' in APP
-    assert 'data-world-phase>UTC · 24-hour clock' in APP
+    assert "world-clock" not in APP
+    assert "data-world-clock" not in APP
+    assert "data-world-phase" not in APP
+    assert "world-clock" not in CSS
 
 
 def test_scene_builds_playable_landmarks_and_badged_avatars():
@@ -394,7 +390,7 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
     assert "WORLD_REGIONS" in DATA
     assert "travelToRegion" in SCENE
     assert "travelToSpace" in SCENE
-    assert "utcClock(Date.now() + this.serverOffset)" in APP
+    assert "utcClock" not in APP
     assert "worldClock" not in SCENE
     assert "setClockOffset" not in SCENE
     assert "utcOffsetHours" not in SCENE
@@ -414,9 +410,8 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
     assert 'landmarkById("neighborhood").position' in SCENE
     assert "data-world-public-door" in APP
     assert "sendWorldInteraction" in APP
-    assert 'data-world-emote="wave"' in APP
-    assert 'data-world-emote="idea"' in APP
-    assert 'data-world-emote="celebrate"' in APP
+    assert "data-world-emote" not in APP
+    assert "world-emote-bar" not in APP
     assert "function playEmote" in SCENE
     assert "function playRewardEvent" in SCENE
     assert "syncOperatorBelt" in SCENE
@@ -473,6 +468,10 @@ def test_chat_opens_inside_the_world_without_popup_permission():
     assert "destination.origin !== location.origin" in APP
     assert '["/dashboard/chat", "/dashboard/chat/"]' in APP
     assert 'destination.searchParams.set("worldEmbed", "1")' in APP
+    assert "data-world-chat-terminal" in APP
+    assert "data-world-chat-terminal-frame" in APP
+    assert '"/dashboard/chat?worldEmbed=1"' in APP
+    assert "world-chat-terminal" in CSS
     assert 'a[href^=\'/dashboard/chat\']' in APP
     assert 'href="/dashboard/chat" target="_blank"' not in APP
     assert 'playMode: "external"' in DATA
