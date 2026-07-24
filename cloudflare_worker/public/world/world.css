@@ -340,7 +340,7 @@ forkmesh-world {
   display: grid;
   place-items: center;
   background: #07110f;
-  transition: opacity 500ms ease, visibility 500ms ease;
+  transition: opacity 240ms ease, visibility 240ms ease;
 }
 
 .world-loading-screen[aria-hidden="true"] {
