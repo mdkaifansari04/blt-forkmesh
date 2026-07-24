@@ -1348,6 +1348,18 @@ function createRegisteredUserLounge(THREE, animated) {
   );
   sign.position.set(0, 5.3, 0);
   lounge.add(sign);
+  const memberCountSign = makeLabelSprite(
+    THREE,
+    "MEMBERS",
+    "counting registered users",
+    "#9ef7c6",
+  );
+  memberCountSign.scale.set(5.6, 1.9, 1);
+  // At the base edge facing the Town Square center, so the total reads
+  // before a visitor walks into the lounge itself.
+  memberCountSign.position.set(6.9, 1.8, -4.6);
+  lounge.add(memberCountSign);
+  lounge.userData.memberCountSign = memberCountSign;
   const activityBeacon = new THREE.PointLight("#9ef7c6", 1.4, 18, 2);
   activityBeacon.position.set(0, 4.2, 0);
   lounge.add(activityBeacon);
@@ -2936,6 +2948,7 @@ export function createWorldScene({
   const neighborhoodHomes = new Map();
   const nodeInfrastructure = new Map();
   const botAgents = new Map();
+  const loungeMembers = new Map();
   const emoteSprites = [];
   const rewardFlights = [];
   const keys = new Set();
@@ -3594,6 +3607,72 @@ export function createWorldScene({
     neighborhood.add(group);
     neighborhood.userData.publicHomes = group;
     neighborhood.userData.homesKey = key;
+  }
+
+  function updateMemberLounge(members = [], totalCount = 0) {
+    const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
+    const countSign = registeredUserLounge.userData.memberCountSign;
+    if (countSign && registeredUserLounge.userData.memberCountShown !== total) {
+      countSign.material.map?.dispose?.();
+      countSign.material.map = wordTexture(
+        THREE,
+        `${total} MEMBER${total === 1 ? "" : "S"}`,
+        "total registered users",
+        "#9ef7c6",
+      );
+      countSign.material.needsUpdate = true;
+      registeredUserLounge.userData.memberCountShown = total;
+    }
+    const seats = registeredUserLounge.userData.seatOffsets || [];
+    const seen = new Set();
+    (Array.isArray(members) ? members : [])
+      .filter((member) => String(member?.name || "").trim())
+      .slice(0, Math.max(1, seats.length))
+      .forEach((member, index) => {
+        const name = String(member.name).trim().slice(0, 32);
+        const id = `member:${name.toLowerCase()}`;
+        if (seen.has(id)) return;
+        seen.add(id);
+        let figure = loungeMembers.get(id);
+        if (!figure) {
+          figure = createAvatar(
+            THREE,
+            {
+              id,
+              name,
+              flag: "◌",
+              countryCode: "",
+              browser: "Hidden",
+              os: "Hidden",
+              status: "resting in the member lounge",
+              accountStatus: "Registered",
+              localTime: "",
+              activityCategory: "hidden",
+              inputActive: false,
+              visitCount: 0,
+              firstVisitAge: "hidden",
+              nodes: Array.isArray(member.nodes)
+                ? member.nodes.slice(0, 6)
+                : [],
+              statusEmoji: "",
+              statusNote: "",
+            },
+            { remote: true, scale: 0.88 },
+          );
+          world.add(figure);
+          loungeMembers.set(id, figure);
+        }
+        const seat = seats[index % Math.max(1, seats.length)];
+        figure.position.copy(registeredUserLounge.position);
+        if (seat) figure.position.add(seat);
+        figure.rotation.y = Math.PI;
+      });
+    loungeMembers.forEach((figure, id) => {
+      if (seen.has(id)) return;
+      world.remove(figure);
+      disposeObject3D(figure);
+      loungeMembers.delete(id);
+    });
   }
 
   function visitNeighborhoodHome(ownerId) {
@@ -5113,6 +5192,7 @@ export function createWorldScene({
     travelToSpace,
     visitNeighborhoodHome,
     setRemotePlayers,
+    updateMemberLounge,
     updateNetworkNodes,
     focusNetworkNode,
     updateFederatedInstances,
