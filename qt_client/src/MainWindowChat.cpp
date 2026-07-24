@@ -8,6 +8,7 @@
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "ActionStore.h"
 #include "ControlNode.h"
 #include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
@@ -3088,6 +3089,16 @@ void MainWindow::showCloudflareWorkerLogs()
         m_cloudflareTokenEdit
             ? m_cloudflareTokenEdit->text().trimmed()
             : QString();
+    // Fall back to the credential this node already stores for the deploy
+    // workflow (Settings > Secrets & Coves) so the viewer does not ask for a
+    // second token that authenticates against the same account.
+    const QMap<QString, QString> storedVariables = ActionStore::variables();
+    bool storedToken = false;
+    if (token.isEmpty()) {
+        token = forkmesh::control::cloudflareApiTokenFromVariables(
+            storedVariables);
+        storedToken = !token.isEmpty();
+    }
     if (token.isEmpty()) {
         bool accepted = false;
         token = QInputDialog::getText(
@@ -3120,6 +3131,10 @@ void MainWindow::showCloudflareWorkerLogs()
                 .value(QStringLiteral("control/cloudflareAccount"))
                 .toString()
                 .trimmed();
+    }
+    if (account.isEmpty()) {
+        account = forkmesh::control::cloudflareAccountIdFromVariables(
+            storedVariables);
     }
     const auto command =
         forkmesh::control::buildCloudflareTailCommand(
@@ -3163,10 +3178,16 @@ void MainWindow::showCloudflareWorkerLogs()
     layout->setSpacing(8);
 
     auto *notice = new QLabel(
-        QStringLiteral(
-            "Read-only live tail for the configured ForkMesh Worker. The API "
-            "token stays in this process's memory only and is erased when "
-            "this viewer closes."));
+        storedToken
+            ? QStringLiteral(
+                  "Read-only live tail for the configured ForkMesh Worker, "
+                  "authenticated with the stored CLOUDFLARE_API_TOKEN secret. "
+                  "The token stays in this process's memory only and is erased "
+                  "when this viewer closes.")
+            : QStringLiteral(
+                  "Read-only live tail for the configured ForkMesh Worker. The "
+                  "API token stays in this process's memory only and is erased "
+                  "when this viewer closes."));
     notice->setObjectName(QStringLiteral("modeHint"));
     notice->setWordWrap(true);
     layout->addWidget(notice);
