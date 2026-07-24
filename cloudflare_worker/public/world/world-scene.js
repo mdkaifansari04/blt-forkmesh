@@ -7,9 +7,11 @@ import {
 
 const WORLD_RADIUS = 72;
 const WORLD_GROUND_RADIUS = 88;
-const PLAYER_SPEED = 4.8;
-const PLAYER_MAX_SPEED = 10.4;
-const PLAYER_ACCELERATION = 3.2;
+// Base (from-rest) speed. Raised so keyboard movement leaves standstill with
+// more pace by default; multiplied by the per-device move-speed control.
+const PLAYER_SPEED = 6.4;
+const PLAYER_MAX_SPEED = 13;
+const PLAYER_ACCELERATION = 5.4;
 const CAMERA_OFFSET = [17, 16, 21];
 const CAMERA_DISTANCE = Math.hypot(...CAMERA_OFFSET);
 const CAMERA_ZOOM_MIN = 0.12;
@@ -2963,6 +2965,11 @@ export function createWorldScene({
   let cameraZoom = 1;
   let cameraYaw = Math.atan2(CAMERA_OFFSET[0], CAMERA_OFFSET[2]);
   let cameraPitch = Math.asin(CAMERA_OFFSET[1] / CAMERA_DISTANCE);
+  // Per-device movement tuning (scales the shared defaults above). Acceleration
+  // may be Infinity, meaning the player snaps to top speed the instant a key is
+  // pressed. Both are adjustable from the World's local controls.
+  let moveSpeedScale = 1;
+  let moveAccelScale = 1;
   let keyboardMovementSpeed = PLAYER_SPEED;
   let primaryPointerId = null;
   let pointerGestureMoved = false;
@@ -3029,6 +3036,32 @@ export function createWorldScene({
     );
     updateWorldEnvironment();
     return lightLevel;
+  }
+
+  function baseMoveSpeed() {
+    return PLAYER_SPEED * moveSpeedScale;
+  }
+
+  function setMovementTuning(tuning = {}) {
+    if (tuning.speed !== undefined) {
+      const numeric = Number(tuning.speed);
+      moveSpeedScale = Number.isFinite(numeric) && numeric > 0 ? numeric : 1;
+    }
+    if (tuning.acceleration !== undefined) {
+      const numeric = Number(tuning.acceleration);
+      // A non-finite (Infinity) or huge value means "instant" — snap to top
+      // speed the moment a movement key goes down.
+      moveAccelScale = Number.isFinite(numeric)
+        ? Math.max(0, numeric)
+        : Infinity;
+    }
+    // Keep the live speed within the new ceiling so a lowered cap takes effect
+    // immediately rather than only after the player stops and restarts.
+    keyboardMovementSpeed = Math.min(
+      keyboardMovementSpeed,
+      PLAYER_MAX_SPEED * moveSpeedScale,
+    );
+    return { speed: moveSpeedScale, acceleration: moveAccelScale };
   }
 
   function nearestLandmark() {
@@ -3197,12 +3230,15 @@ export function createWorldScene({
     let walking = false;
     if (movement.lengthSq()) {
       cameraFocus = null;
+      const topSpeed = PLAYER_MAX_SPEED * moveSpeedScale;
+      // Infinite acceleration collapses the ramp: keyboardMovementSpeed jumps to
+      // topSpeed on the first press instead of easing up over several frames.
       keyboardMovementSpeed = keyboardActive
         ? Math.min(
-            PLAYER_MAX_SPEED,
-            keyboardMovementSpeed + PLAYER_ACCELERATION * delta,
+            topSpeed,
+            keyboardMovementSpeed + PLAYER_ACCELERATION * moveAccelScale * delta,
           )
-        : PLAYER_SPEED;
+        : baseMoveSpeed();
       player.position.addScaledVector(
         movement,
         keyboardMovementSpeed * delta,
@@ -3210,7 +3246,7 @@ export function createWorldScene({
       player.rotation.y = Math.atan2(-movement.x, -movement.z);
       walking = true;
     } else {
-      keyboardMovementSpeed = PLAYER_SPEED;
+      keyboardMovementSpeed = baseMoveSpeed();
     }
 
     const radius = Math.hypot(player.position.x, player.position.z);
@@ -4805,7 +4841,7 @@ export function createWorldScene({
       MOVEMENT_KEYS.has(event.code) &&
       ![...keys].some((code) => MOVEMENT_KEYS.has(code))
     ) {
-      keyboardMovementSpeed = PLAYER_SPEED;
+      keyboardMovementSpeed = baseMoveSpeed();
     }
   }
 
@@ -4813,7 +4849,7 @@ export function createWorldScene({
     keys.clear();
     touchKeys.clear();
     touchPointers.clear();
-    keyboardMovementSpeed = PLAYER_SPEED;
+    keyboardMovementSpeed = baseMoveSpeed();
     primaryPointerId = null;
     pointerGestureMoved = false;
     pinchActive = false;
@@ -4842,6 +4878,13 @@ export function createWorldScene({
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
+    // ResizeObserver fires after the animation-loop rAF but before paint, and
+    // setSize() clears the WebGL drawing buffer — so without an immediate
+    // re-render the browser composites a blank frame, making the whole world
+    // flicker throughout a live drag-resize. Paint the resized frame now.
+    if (running && !disposed) {
+      renderer.render(scene, camera);
+    }
   });
   resizeObserver.observe(container);
 
@@ -5063,6 +5106,7 @@ export function createWorldScene({
     clearFocus,
     setTheme,
     setLightLevel,
+    setMovementTuning,
     setControl,
     setSpawn,
     travelToRegion,
@@ -5096,8 +5140,10 @@ export function createWorldScene({
     }),
     getMovementState: () => ({
       speed: keyboardMovementSpeed,
-      baseSpeed: PLAYER_SPEED,
-      maxSpeed: PLAYER_MAX_SPEED,
+      baseSpeed: baseMoveSpeed(),
+      maxSpeed: PLAYER_MAX_SPEED * moveSpeedScale,
+      speedScale: moveSpeedScale,
+      accelerationScale: moveAccelScale,
       keyboardActive: [...keys].some((code) => MOVEMENT_KEYS.has(code)),
     }),
     getDiagnostics,
