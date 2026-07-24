@@ -39,6 +39,21 @@ def test_public_chat_marks_durable_frames_for_relay_retention():
     assert "DURABLE_TYPES.has(" in send
 
 
+def test_replayed_self_messages_are_rendered_after_refresh():
+    for source in (CHAT, PUBLIC_CHAT):
+        on_frame = source[
+            source.index("async function onFrame("):
+            source.index("const DURABLE_TYPES", source.index("async function onFrame("))
+        ]
+        assert "plain.senderId === selfId" not in on_frame
+
+        render_entry = source[
+            source.index("function renderChatEntry("):
+            source.index("async function verifyAdminDelete(")
+        ]
+        assert 'entry.senderId === selfId ? "self" : kind' in render_entry
+
+
 def test_durable_type_set_matches_the_node():
     # Same set as the desktop node's kDurableTypes (ServerNode.cpp).
     for kind in ("chat", "edit", "delete", "reaction", "admin-delete"):

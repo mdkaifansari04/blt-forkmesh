@@ -699,6 +699,7 @@
     const who = String(entry.sender || "peer").slice(0, MAX_NAME);
     const text = entry.fileName ? "📎 " + entry.fileName : entry.text || "";
     if (!text) return;
+    kind = entry.senderId === selfId ? "self" : kind;
     appendMessage(kind, who, text, entry.id, entry.senderId,
                   Number(entry.ts) || Date.now());
   }
@@ -802,7 +803,7 @@
       return;
     }
     const plain = await decryptObject(envelope);
-    if (!plain || plain.senderId === selfId) return;
+    if (!plain) return;
     handlePlain(plain);
   }
 

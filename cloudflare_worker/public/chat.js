@@ -1424,7 +1424,16 @@ function renderChatEntry(entry, kind, scope = roomScopeForChannel()) {
     ? "📎 " + entry.fileName
     : entry.text || "";
   if (text) {
-    appendMessage(kind, who, text, entry.id, entry.senderId, entry.ts, entry.channel);
+    const renderedKind = entry.senderId === selfId ? "self" : kind;
+    appendMessage(
+      renderedKind,
+      who,
+      text,
+      entry.id,
+      entry.senderId,
+      entry.ts,
+      entry.channel,
+    );
   }
 }
 
@@ -1525,7 +1534,7 @@ async function onFrame(event, key = roomKey, scope = socketScope) {
     return;
   }
   const plain = await decryptObject(envelope, key);
-  if (!plain || plain.senderId === selfId) return;
+  if (!plain) return;
   handlePlain(plain, scope);
 }
 
