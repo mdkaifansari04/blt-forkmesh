@@ -2294,6 +2294,11 @@ private:
     // Whether `path` is switched off for the open repo.
     bool isWorkflowDisabled(const QString &path) const;
     void loadMirrorNodesPanel();
+    // Spin the caution/error status lights on Mirror-nodes rows (adhoc #230);
+    // updateMirrorNodeLightTimer() keeps the timer running only while a row's
+    // light is actually spinning, so an all-green table never ticks.
+    void animateMirrorNodeLights();
+    void updateMirrorNodeLightTimer();
     void requestMirrorNodesRefresh();
     void onMirrorRefreshRequested(const QString &source,
                                   const QString &requesterName);
@@ -4071,6 +4076,10 @@ private:
     // over the tab as the window reflows (mirrors the looper toggle, adhoc #197).
     QWidget *m_mirrorActivityStrip = nullptr;
     QTimer *m_mirrorActivityStripTimer = nullptr;
+    // Animates the spinning caution/error status lights in the Mirror nodes
+    // table (adhoc #230); only ticks while at least one row's light spins.
+    QTimer *m_nodeLightTimer = nullptr;
+    int m_nodeLightFrame = 0;
     // Coalesces the heavy tail of onRequestServed (stats save + full repo-list
     // rebuild) so a clone/browse burst costs one refresh per second, not one per
     // served request.

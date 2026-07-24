@@ -421,6 +421,10 @@ constexpr int kProgressBarRole = Qt::UserRole + 11;
 // Last-sync timestamp (qint64 ms) for a behind-but-online mirror node, read by
 // MirrorSyncDelegate to draw a pac-man countdown to its next heartbeat/re-sync.
 constexpr int kPacmanAnchorRole = Qt::UserRole + 12;
+// Status light on a Mirror-nodes row's Node cell (adhoc #230): 0 = steady lamp
+// (all green, or grey offline), 1 = caution (spinning orange), 2 = error
+// (spinning red). MainWindow::animateMirrorNodeLights re-renders non-zero rows.
+constexpr int kNodeLightRole = Qt::UserRole + 13;
 // Cadence on which a node re-fetches its mirrors from source (mirrors
 // m_mirrorSyncTimer, which adds ±15% jitter — the pie is an approximation);
 // a behind node is expected to catch up at the next tick. Only a safety net
@@ -6385,6 +6389,48 @@ inline QPixmap rotatedTintedOcticonPixmap(const QString &name, const QColor &col
     painter.rotate(angleDeg);
     painter.translate(-size / 2.0, -size / 2.0);
     painter.drawPixmap(0, 0, base);
+    return out;
+}
+
+// The status light drawn on top of each Mirror-nodes row (adhoc #230): a small
+// lit lamp in the node's health colour. Steady when everything is green (and
+// for the grey offline lamp); caution (out of sync) and error (failing the
+// integrity pin) lamps spin a bright beacon beam instead, driven frame by frame
+// by MainWindow::animateMirrorNodeLights. Not cached — the angle changes every
+// frame, and only the handful of caution/error rows redraw.
+inline QPixmap nodeStatusLightPixmap(const QColor &color, int size, qreal angleDeg,
+                                     bool spinning)
+{
+    QPixmap out(size, size);
+    out.fill(Qt::transparent);
+    QPainter p(&out);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QPointF c(size / 2.0, size / 2.0);
+    const qreal r = size / 2.0 - 1.5;
+    p.setPen(Qt::NoPen);
+    // The lamp body, dimmed while spinning so the rotating beam reads against it.
+    p.setBrush(spinning ? color.darker(160) : color);
+    p.drawEllipse(c, r, r);
+    if (spinning) {
+        // Rotating beacon beam: a bright wedge fading behind its leading edge,
+        // the same construction as RelayRadarWidget's sweep.
+        QConicalGradient sweep(c, -angleDeg);
+        QColor lead = color.lighter(130);
+        QColor tail = color;
+        tail.setAlpha(0);
+        sweep.setColorAt(0.0, lead);
+        sweep.setColorAt(0.45, tail);
+        sweep.setColorAt(1.0, tail);
+        p.setBrush(sweep);
+        p.drawEllipse(c, r, r);
+    } else {
+        // A soft specular glint so the steady lamp reads as lit, not a flat dot.
+        QColor glint = color.lighter(170);
+        glint.setAlpha(200);
+        p.setBrush(glint);
+        p.drawEllipse(QPointF(c.x() - r * 0.30, c.y() - r * 0.30), r * 0.32,
+                      r * 0.32);
+    }
     return out;
 }
 

@@ -43,6 +43,7 @@ WORLD_ARRIVAL_X = -8.1
 WORLD_ARRIVAL_Z = 30.0
 WORLD_ARRIVAL_COLUMN_GAP = 1.8
 WORLD_ARRIVAL_ROW_GAP = 2.1
+WORLD_ARRIVAL_CLEARANCE = 0.9
 
 WORLD_BROWSER_VALUES = frozenset({
     "chrome", "edge", "firefox", "safari", "other", "hidden",
@@ -286,6 +287,34 @@ def arrival_position(slot):
         "z": round(WORLD_ARRIVAL_Z - row * WORLD_ARRIVAL_ROW_GAP, 2),
         "yaw": 0.0,
     }
+
+
+def arrival_slot_near_position(x, z):
+    """Return the arrival slot whose cell (x, z) is standing in, else -1.
+
+    A visitor who restored a saved position on top of an arrival cell keeps
+    blocking that cell even when their own reservation points at a different
+    slot, so a newcomer is never dropped onto a person already standing there.
+    """
+    try:
+        x = float(x)
+        z = float(z)
+    except (TypeError, ValueError):
+        return -1
+    if not (math.isfinite(x) and math.isfinite(z)):
+        return -1
+    column = int(round((x - WORLD_ARRIVAL_X) / WORLD_ARRIVAL_COLUMN_GAP))
+    row = int(round((WORLD_ARRIVAL_Z - z) / WORLD_ARRIVAL_ROW_GAP))
+    if column < 0 or column >= WORLD_ARRIVAL_COLUMNS or row < 0:
+        return -1
+    slot = row * WORLD_ARRIVAL_COLUMNS + column
+    if slot >= WORLD_MAX_CONNECTIONS:
+        return -1
+    cell = arrival_position(slot)
+    if (abs(cell["x"] - x) > WORLD_ARRIVAL_CLEARANCE
+            or abs(cell["z"] - z) > WORLD_ARRIVAL_CLEARANCE):
+        return -1
+    return slot
 
 
 def first_available_arrival_slot(used_slots):
