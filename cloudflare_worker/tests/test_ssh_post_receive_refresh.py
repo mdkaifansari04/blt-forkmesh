@@ -90,6 +90,7 @@ def test_run_uses_only_fixed_refresh_restart_health_register_order(
         config,
         runner=runner,
         health_waiter=lambda _config: events.append(["signed-health"]),
+        refresh_sleeper=lambda seconds: events.append(["sleep", seconds]),
     )
     assert result["ok"] is True
     assert events[0][-1] == "refresh"
@@ -100,6 +101,184 @@ def test_run_uses_only_fixed_refresh_restart_health_register_order(
     ]
     assert events[2] == ["signed-health"]
     assert events[3][-1] == "register"
+    assert not config.trigger_path.exists()
+
+
+def test_run_retries_only_refresh_once_then_publishes_in_exact_order(
+    tmp_path, monkeypatch
+):
+    config = _config(tmp_path)
+    config.trigger_path.write_text("forkmesh-refresh-v1\n", encoding="ascii")
+    monkeypatch.setattr(bridge.os, "geteuid", lambda: 0)
+    now = [100.0]
+    events = []
+    refresh_timeouts = []
+    refresh_attempts = [0]
+
+    def runner(command, **kwargs):
+        operation = (
+            "restart"
+            if command[0] == "/usr/bin/systemctl"
+            else command[-1]
+        )
+        events.append(operation)
+        if operation == "refresh":
+            refresh_timeouts.append(kwargs["timeout"])
+            refresh_attempts[0] += 1
+            now[0] += 3.0
+            return SimpleNamespace(
+                returncode=1 if refresh_attempts[0] == 1 else 0
+            )
+        return SimpleNamespace(returncode=0)
+
+    def sleep(seconds):
+        events.append(("sleep", seconds))
+        now[0] += seconds
+
+    result = bridge.run(
+        config,
+        runner=runner,
+        health_waiter=lambda _config: events.append("signed-health"),
+        refresh_monotonic=lambda: now[0],
+        refresh_sleeper=sleep,
+    )
+
+    assert result["ok"] is True
+    assert events == [
+        "refresh",
+        ("sleep", bridge.REFRESH_RETRY_DELAY_SECONDS),
+        "refresh",
+        "restart",
+        "signed-health",
+        "register",
+    ]
+    assert refresh_timeouts == [
+        bridge.REFRESH_TIMEOUT_SECONDS,
+        bridge.REFRESH_TIMEOUT_SECONDS
+        - 3.0
+        - bridge.REFRESH_RETRY_DELAY_SECONDS,
+    ]
+    assert not config.trigger_path.exists()
+
+
+def test_run_stops_after_two_refresh_failures(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    config.trigger_path.write_text("forkmesh-refresh-v1\n", encoding="ascii")
+    monkeypatch.setattr(bridge.os, "geteuid", lambda: 0)
+    now = [20.0]
+    events = []
+
+    def runner(command, **kwargs):
+        assert command[-1] == "refresh"
+        events.append(("refresh", kwargs["timeout"]))
+        return SimpleNamespace(returncode=1)
+
+    def sleep(seconds):
+        events.append(("sleep", seconds))
+        now[0] += seconds
+
+    with pytest.raises(
+        bridge.RefreshBridgeError,
+        match="fixed refresh command failed",
+    ):
+        bridge.run(
+            config,
+            runner=runner,
+            health_waiter=lambda _config: pytest.fail(
+                "health must not run after refresh failure"
+            ),
+            refresh_monotonic=lambda: now[0],
+            refresh_sleeper=sleep,
+        )
+
+    assert events == [
+        ("refresh", bridge.REFRESH_TIMEOUT_SECONDS),
+        ("sleep", bridge.REFRESH_RETRY_DELAY_SECONDS),
+        (
+            "refresh",
+            bridge.REFRESH_TIMEOUT_SECONDS
+            - bridge.REFRESH_RETRY_DELAY_SECONDS,
+        ),
+    ]
+    assert not config.trigger_path.exists()
+
+
+def test_run_does_not_retry_refresh_without_remaining_deadline(
+    tmp_path, monkeypatch
+):
+    config = _config(tmp_path)
+    config.trigger_path.write_text("forkmesh-refresh-v1\n", encoding="ascii")
+    monkeypatch.setattr(bridge.os, "geteuid", lambda: 0)
+    now = [5.0]
+    calls = []
+    sleeps = []
+
+    def runner(command, **kwargs):
+        calls.append((command[-1], kwargs["timeout"]))
+        now[0] += bridge.REFRESH_TIMEOUT_SECONDS
+        return SimpleNamespace(returncode=1)
+
+    with pytest.raises(bridge.RefreshBridgeError):
+        bridge.run(
+            config,
+            runner=runner,
+            health_waiter=lambda _config: pytest.fail(
+                "health must not run after refresh failure"
+            ),
+            refresh_monotonic=lambda: now[0],
+            refresh_sleeper=sleeps.append,
+        )
+
+    assert calls == [("refresh", bridge.REFRESH_TIMEOUT_SECONDS)]
+    assert sleeps == []
+    assert not config.trigger_path.exists()
+
+
+@pytest.mark.parametrize("failure_phase", ["restart", "health", "register"])
+def test_run_never_retries_later_publication_phases(
+    tmp_path, monkeypatch, failure_phase
+):
+    config = _config(tmp_path)
+    config.trigger_path.write_text("forkmesh-refresh-v1\n", encoding="ascii")
+    monkeypatch.setattr(bridge.os, "geteuid", lambda: 0)
+    events = []
+    sleeps = []
+
+    def runner(command, **_kwargs):
+        operation = (
+            "restart"
+            if command[0] == "/usr/bin/systemctl"
+            else command[-1]
+        )
+        events.append(operation)
+        return SimpleNamespace(
+            returncode=1 if operation == failure_phase else 0
+        )
+
+    def health(_config):
+        events.append("health")
+        if failure_phase == "health":
+            raise bridge.RefreshBridgeError("signed health failed")
+
+    with pytest.raises(bridge.RefreshBridgeError):
+        bridge.run(
+            config,
+            runner=runner,
+            health_waiter=health,
+            refresh_sleeper=sleeps.append,
+        )
+
+    expected = {
+        "restart": ["refresh", "restart"],
+        "health": ["refresh", "restart", "health"],
+        "register": ["refresh", "restart", "health", "register"],
+    }
+    assert events == expected[failure_phase]
+    assert events.count("refresh") == 1
+    assert events.count("restart") == 1
+    assert events.count("health") <= 1
+    assert events.count("register") <= 1
+    assert sleeps == []
     assert not config.trigger_path.exists()
 
 

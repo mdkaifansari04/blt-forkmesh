@@ -52,6 +52,8 @@ MAX_CONFIG_BYTES = 64 * 1024
 MAX_HOOK_INPUT_BYTES = 4 * 1024 * 1024
 MAX_HEALTH_BYTES = 64 * 1024
 REFRESH_TIMEOUT_SECONDS = 30 * 60
+REFRESH_MAX_ATTEMPTS = 2
+REFRESH_RETRY_DELAY_SECONDS = 2.0
 SERVICE_TIMEOUT_SECONDS = 2 * 60
 DEFAULT_HEALTH_TIMEOUT_SECONDS = 180
 HEALTH_REQUEST_TIMEOUT_SECONDS = 3.0
@@ -342,7 +344,7 @@ def notify(
 def _run_command(
     command: list[str],
     *,
-    timeout: int,
+    timeout: float,
     runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
 ) -> None:
     try:
@@ -365,6 +367,7 @@ def _run_as_mirror(
     config: BridgeConfig,
     mode: str,
     *,
+    timeout: float = REFRESH_TIMEOUT_SECONDS,
     runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
 ) -> None:
     if mode not in {"refresh", "register"}:
@@ -381,9 +384,43 @@ def _run_as_mirror(
             str(config.refresh_config_path),
             mode,
         ],
-        timeout=REFRESH_TIMEOUT_SECONDS,
+        timeout=timeout,
         runner=runner,
     )
+
+
+def _refresh_with_retry(
+    config: BridgeConfig,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> None:
+    """Retry only the idempotent refresh within one original timeout budget."""
+    deadline = monotonic() + REFRESH_TIMEOUT_SECONDS
+    for attempt in range(REFRESH_MAX_ATTEMPTS):
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise RefreshBridgeError("fixed refresh command failed")
+        try:
+            _run_as_mirror(
+                config,
+                "refresh",
+                timeout=remaining,
+                runner=runner,
+            )
+            return
+        except RefreshBridgeError:
+            if attempt + 1 >= REFRESH_MAX_ATTEMPTS:
+                raise
+            # The fixed pause counts against the existing 30-minute refresh
+            # deadline. If it would consume the remaining budget, fail closed
+            # instead of launching an effectively unbounded second command.
+            if deadline - monotonic() <= REFRESH_RETRY_DELAY_SECONDS:
+                raise
+            sleeper(REFRESH_RETRY_DELAY_SECONDS)
+            if deadline - monotonic() <= 0:
+                raise
 
 
 def _restart_gateway(
@@ -667,12 +704,19 @@ def run(
     *,
     runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
     health_waiter: Callable[[BridgeConfig], None] = wait_for_signed_health,
+    refresh_monotonic: Callable[[], float] = time.monotonic,
+    refresh_sleeper: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     if os.geteuid() != 0:
         raise RefreshBridgeError("refresh orchestration requires root")
     processing = _claim_trigger(config)
     try:
-        _run_as_mirror(config, "refresh", runner=runner)
+        _refresh_with_retry(
+            config,
+            runner=runner,
+            monotonic=refresh_monotonic,
+            sleeper=refresh_sleeper,
+        )
         _restart_gateway(config, runner=runner)
         health_waiter(config)
         _run_as_mirror(config, "register", runner=runner)

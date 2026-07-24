@@ -186,6 +186,12 @@ unit, or argument from a pushed ref, push option, repository content, or SSH
 environment. See
 [`ssh-post-receive-refresh.schema.json`](../ssh-post-receive-refresh.schema.json).
 
+An immediate post-receive transient may make the first idempotent `refresh`
+attempt fail while the repository is still settling. The bridge waits two
+seconds and retries that operation once within the same 30-minute refresh
+deadline. It never retries `receive-pack`, service restart, signed-health
+verification, or registration.
+
 Validate before reloading sshd:
 
 ```bash
