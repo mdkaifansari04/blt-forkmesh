@@ -3393,6 +3393,9 @@ class _WorldCommunityRuntime:
     async def d1_run(self, sql, *args):
         return await d1_run(self.env, sql, *args)
 
+    async def batch(self, statements):
+        return await _contribution_run_batch(self.env, statements)
+
 
 class _ChatChannelsRuntime(_WorldCommunityRuntime):
     async def room_access(self, channel_id, key_version, account_bi):

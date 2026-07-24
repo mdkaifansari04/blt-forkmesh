@@ -485,6 +485,14 @@ def test_runtime_adapter_and_routes_use_private_channel_gates():
         ENTRY_TEXT.index("class _ChatChannelsRuntime"):
         ENTRY_TEXT.index("class _ChatChannelsRuntime") + 1800
     ]
+    world_runtime_source = ENTRY_TEXT[
+        ENTRY_TEXT.index("class _WorldCommunityRuntime"):
+        ENTRY_TEXT.index("class _ChatChannelsRuntime")
+    ]
+    assert "async def batch(self, statements)" in world_runtime_source
+    assert "_contribution_run_batch(self.env, statements)" in (
+        world_runtime_source
+    )
     assert "_chat_channel_passphrase" in runtime_source
     assert "_chat_channel_ticket" in runtime_source
     assert "quote(" in runtime_source
