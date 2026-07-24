@@ -1114,6 +1114,31 @@ QUrl worldUrlForRelay(const QString &relayUrl)
     return url;
 }
 
+QUrl worldDevServerUrl(const QString &configured)
+{
+    QString value = configured.trimmed();
+    if (value.compare(QStringLiteral("off"), Qt::CaseInsensitive) == 0)
+        return {};
+    if (value.isEmpty())
+        value = QStringLiteral("http://127.0.0.1:8788/world/");
+    if (!value.contains(QStringLiteral("://")))
+        value.prepend(QStringLiteral("http://"));
+    QUrl url(value);
+    if (!url.isValid() || url.scheme() != QLatin1String("http"))
+        return {};
+    const QString host = url.host().toLower();
+    if (host != QLatin1String("localhost") &&
+        host != QLatin1String("127.0.0.1") && host != QLatin1String("::1")) {
+        return {};
+    }
+    url.setUserInfo(QString());
+    if (url.path().isEmpty() || url.path() == QLatin1String("/"))
+        url.setPath(QStringLiteral("/world/"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    return url;
+}
+
 QStringList directMirrorRepositoryOwners(const QString &canonicalOwner,
                                          const QString &catalogOwner)
 {

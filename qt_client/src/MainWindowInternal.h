@@ -2582,6 +2582,10 @@ const QString kLocalServerUrl =
 const QString kDefaultServerUrl =
     QStringLiteral("wss://") + kMainnodeDefaultHost + kMainnodeRoomPath;
 const QString kRoomNameSetting = QStringLiteral("server/room");
+// Local World dev server (cloudflare_worker/tools/world_dev_server.py). The
+// World button probes this before falling back to the relay portal; set it to
+// "off" to skip the probe entirely.
+const QString kWorldDevUrlSetting = QStringLiteral("world/localDevUrl");
 // Last account this node key authenticated as; lets the app start offline once a
 // registered account has been confirmed at least once on this machine.
 const QString kAuthedAccountSetting = QStringLiteral("account/authedName");
