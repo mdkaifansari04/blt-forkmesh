@@ -1,5 +1,6 @@
 #include "../src/ActionFile.h"
 #include "../src/AccountCapability.h"
+#include "../src/AgentJail.h"
 #include "../src/AgentStore.h"
 #include "../src/BackoffNetworkAccessManager.h"
 #include "../src/ChatHistoryLimits.h"
@@ -5502,6 +5503,43 @@ int main(int argc, char *argv[])
                       upgradedCove.name == "Old team cove",
                   "the upgraded cove still unlocks for its invited accounts");
         }
+    }
+
+    // AgentJail (adhoc #236): jailed launches get a memory cap prepended to the
+    // shell command and a private scratch environment; a zero/negative cap
+    // leaves the command untouched so unjailed runs are byte-identical.
+    {
+        const QString cmd = QStringLiteral("exec claude --model 'opus'");
+        check(AgentJail::wrapCommand(cmd, 0) == cmd,
+              "jail off leaves the launch command unchanged");
+        check(AgentJail::wrapCommand(cmd, -5) == cmd,
+              "a negative memory cap means no jail");
+        check(AgentJail::wrapCommand(QString(), 1024).isEmpty(),
+              "an empty command stays empty even with a cap");
+        check(AgentJail::wrapCommand(cmd, 2048) ==
+                  QStringLiteral(
+                      "ulimit -d 2097152 2>/dev/null; exec claude --model 'opus'"),
+              "the cap is applied in KB via ulimit ahead of the exec");
+        check(AgentJail::wrapCommand(QStringLiteral("run %1 %2"), 1) ==
+                  QStringLiteral("ulimit -d 1024 2>/dev/null; run %1 %2"),
+              "percent placeholders in the command survive wrapping");
+
+        QTemporaryDir jailTmp;
+        check(jailTmp.isValid(), "agent jail temp dir is valid");
+        const QString jailDir = jailTmp.path() + QStringLiteral("/jail");
+        const QStringList env = AgentJail::envEntries(jailDir);
+        check(env.contains(QStringLiteral("TMPDIR=") + jailDir +
+                           QStringLiteral("/tmp")),
+              "jail env redirects TMPDIR into the jail");
+        check(env.contains(QStringLiteral("XDG_CACHE_HOME=") + jailDir +
+                           QStringLiteral("/cache")),
+              "jail env redirects the cache into the jail");
+        check(QDir(jailDir + QStringLiteral("/tmp")).exists() &&
+                  QDir(jailDir + QStringLiteral("/cache")).exists(),
+              "jail scratch directories are created up front");
+        check(AgentJail::sessionJailDir(7).endsWith(
+                  QStringLiteral("/forkmesh-agent-jails/s7")),
+              "stream sessions get a per-session jail dir under temp");
     }
 
     // AgentStore persists a Claude Code session's stream-json transcript so it

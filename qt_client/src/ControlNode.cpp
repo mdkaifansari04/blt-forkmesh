@@ -841,6 +841,56 @@ CloudflareBootstrapCommand buildCloudflareBootstrapCommand(
     return command;
 }
 
+namespace {
+
+// First stored value whose name matches one of `names`, case-insensitively and
+// in the caller's preference order. Values that span lines (or embed NULs) are
+// rejected: they are never a real credential and would break the child
+// environment they are destined for.
+QString storedCredential(const QMap<QString, QString> &variables,
+                         const QStringList &names)
+{
+    for (const QString &name : names) {
+        for (auto it = variables.constBegin(); it != variables.constEnd();
+             ++it) {
+            if (it.key().trimmed().compare(name, Qt::CaseInsensitive) != 0)
+                continue;
+            const QString value = it.value().trimmed();
+            if (value.isEmpty() || value.contains(QChar(u'\0')) ||
+                value.contains(QLatin1Char('\n')) ||
+                value.contains(QLatin1Char('\r'))) {
+                continue;
+            }
+            return value;
+        }
+    }
+    return {};
+}
+
+}  // namespace
+
+QString cloudflareApiTokenFromVariables(
+    const QMap<QString, QString> &variables)
+{
+    return storedCredential(variables, {
+                                           QStringLiteral("CLOUDFLARE_API_TOKEN"),
+                                           QStringLiteral("CF_API_TOKEN"),
+                                           QStringLiteral("CLOUDFLARE_TOKEN"),
+                                           QStringLiteral("CF_TOKEN"),
+                                       });
+}
+
+QString cloudflareAccountIdFromVariables(
+    const QMap<QString, QString> &variables)
+{
+    return storedCredential(variables,
+                            {
+                                QStringLiteral("CLOUDFLARE_ACCOUNT_ID"),
+                                QStringLiteral("CF_ACCOUNT_ID"),
+                                QStringLiteral("CLOUDFLARE_ACCOUNT"),
+                            });
+}
+
 CloudflareBootstrapCommand buildCloudflareTailCommand(
     const QString &apiToken,
     const QString &accountId,

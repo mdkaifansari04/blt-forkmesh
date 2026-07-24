@@ -22,12 +22,17 @@ public:
 
     // Launch `codex app-server` in cwd. extraEnv entries use KEY=VALUE to set
     // and KEY to unset, matching the embedded terminal's environment handling.
+    // memoryLimitMb > 0 jails the launch (adhoc #236): the shell caps the
+    // process tree's data memory at that many MB before exec'ing codex. Only
+    // applies to the default bash launch — an injected setAppServerCommand
+    // program (tests) runs as-is.
     void start(const QString &cwd, const QStringList &extraEnv,
                const QString &initialPrompt,
                const QString &resumeThreadId = QString(),
                const QString &model = QString(),
                const QString &mode = QString(),
-               const QString &effort = QString());
+               const QString &effort = QString(),
+               int memoryLimitMb = 0);
     void sendUserText(const QString &text);
     void respondToRequest(const QString &token, const QString &answer);
     void setTurnOptions(const QString &model, const QString &mode,

@@ -548,6 +548,33 @@ int main(int argc, char **argv)
               QStringLiteral("/usr/bin/npx")).program.isEmpty(),
           "Cloudflare tail rejects malformed account IDs");
 
+    const QMap<QString, QString> storedVariables = {
+        {QStringLiteral("cloudflare_api_token"), QStringLiteral("  cf-stored  ")},
+        {QStringLiteral("CF_TOKEN"), QStringLiteral("cf-secondary")},
+        {QStringLiteral("CLOUDFLARE_ACCOUNT_ID"),
+         QStringLiteral("account_from_secrets")},
+        {QStringLiteral("PUBLIC_MODE"), QStringLiteral("production")},
+    };
+    check(forkmesh::control::cloudflareApiTokenFromVariables(
+              storedVariables) == QStringLiteral("cf-stored") &&
+              forkmesh::control::cloudflareAccountIdFromVariables(
+                  storedVariables) ==
+                  QStringLiteral("account_from_secrets"),
+          "stored action secrets supply the Cloudflare token and account");
+    check(forkmesh::control::cloudflareApiTokenFromVariables(
+              {{QStringLiteral("CLOUDFLARE_API_TOKEN"),
+                QStringLiteral("   ")},
+               {QStringLiteral("CF_API_TOKEN"),
+                QStringLiteral("cf-fallback")}}) ==
+              QStringLiteral("cf-fallback"),
+          "blank stored tokens fall through to the next known secret name");
+    check(forkmesh::control::cloudflareApiTokenFromVariables(
+              {{QStringLiteral("CLOUDFLARE_API_TOKEN"),
+                QStringLiteral("cf-line\nCLOUDFLARE_EMAIL=x")}})
+              .isEmpty() &&
+              forkmesh::control::cloudflareApiTokenFromVariables({}).isEmpty(),
+          "multi-line and missing stored tokens are ignored");
+
     forkmesh::control::MirrorActionsConfigurationRequest actionsRequest;
     actionsRequest.requestId =
         QStringLiteral("0123456789abcdef0123456789abcdef");

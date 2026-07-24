@@ -138,6 +138,17 @@ CloudflareBootstrapCommand buildCloudflareBootstrapCommand(
     const QString &signerProgram,
     const QString &nodePublicKey);
 
+// Resolve the Cloudflare credentials this node already stores as action
+// variables/secrets (Settings > Secrets & Coves) so live tooling can reuse the
+// token the deploy workflow authenticates with instead of asking for a fresh
+// one. Names are matched case-insensitively; blank or multi-line values are
+// ignored so a pasted credential file can never smuggle extra lines into the
+// child environment.
+QString cloudflareApiTokenFromVariables(
+    const QMap<QString, QString> &variables);
+QString cloudflareAccountIdFromVariables(
+    const QMap<QString, QString> &variables);
+
 // Build a direct (non-shell) invocation of ForkMesh's pinned Wrangler tail.
 // The token and optional account ID are placed only in the child environment,
 // never in argv.

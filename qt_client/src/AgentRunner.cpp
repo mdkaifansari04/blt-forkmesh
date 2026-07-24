@@ -1,5 +1,7 @@
 #include "AgentRunner.h"
 
+#include "AgentJail.h"
+
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -355,6 +357,18 @@ void AgentRunner::launch(Phase phase, const QString &program,
         QDir().mkpath(m_config.isolatedHome);
         env.insert(QStringLiteral("CODEX_HOME"), m_config.isolatedHome);
     }
+    // Jail (adhoc #236): point the agent's scratch state (tmp/cache) at a
+    // private directory beside the worktree — outside it, so the redirected
+    // files can never end up in the agent's diff. The memory cap itself is
+    // applied by wrapCommand in runAgentProcess.
+    if (phase == Phase::Agent && m_config.jailMemoryMb > 0) {
+        const QStringList jailEnv =
+            AgentJail::envEntries(m_worktree + QStringLiteral("-jail"));
+        for (const QString &kv : jailEnv) {
+            const int eq = kv.indexOf(QLatin1Char('='));
+            env.insert(kv.left(eq), kv.mid(eq + 1));
+        }
+    }
     // Both remaining providers (OpenAI API and Claude API) authenticate with an
     // API key supplied in Settings. We inherit the user's shell environment, which
     // may already carry an ANTHROPIC_API_KEY/OPENAI_API_KEY that's stale or belongs
@@ -541,10 +555,17 @@ void AgentRunner::runAgentProcess()
     launch(Phase::Agent, QStringLiteral("cmd"), {QStringLiteral("/c"), command},
            m_worktree);
 #else
+    if (m_config.jailMemoryMb > 0)
+        emitLog(QStringLiteral(
+                    "==> Jailed: private scratch env, memory capped at %1 MB.")
+                    .arg(m_config.jailMemoryMb));
     const QString shell =
         QFile::exists(QStringLiteral("/bin/bash")) ? QStringLiteral("/bin/bash")
                                                    : QStringLiteral("/bin/sh");
-    launch(Phase::Agent, shell, {QStringLiteral("-lc"), command}, m_worktree);
+    launch(Phase::Agent, shell,
+           {QStringLiteral("-lc"),
+            AgentJail::wrapCommand(command, m_config.jailMemoryMb)},
+           m_worktree);
 #endif
 }
 
@@ -634,6 +655,7 @@ void AgentRunner::cleanupWorktree()
                        QStringLiteral("remove"), QStringLiteral("--force"),
                        m_worktree});
     QDir(m_worktree).removeRecursively();
+    QDir(m_worktree + QStringLiteral("-jail")).removeRecursively();
     m_worktree.clear();
 }
 
