@@ -25653,6 +25653,16 @@ async def https_mirror_endpoint_handler(env, request):
         await touch_registered_node(env, node_bi, node_rec)
     except Exception:
         pass
+    # Registration resets the endpoint to pending so a replayed registration
+    # can never preserve an old healthy lease. Challenge this exact,
+    # account-bound endpoint immediately after the durable write. This is what
+    # lets every independent mirror renew its own short lease without relying
+    # on the scheduled Worker cron (or pretending to be the organization's
+    # canonical catalog publisher). The verifier still requires Cloudflare
+    # proxied DNS, the registered Ed25519 key, and the canonical repository
+    # state pin, so acceptance here does not grant trust by itself.
+    health_active = await _https_mirror_refresh_registered_health(
+        env, registration["node"])
     return json_response({
         "ok": True,
         "node": registration["node"],
@@ -25660,7 +25670,7 @@ async def https_mirror_endpoint_handler(env, request):
         "routerPublicKey": router_key,
         "organizations": await _https_mirror_node_organizations(
             env, registration["node"]),
-        "health": "pending",
+        "health": "active" if health_active else "pending",
         "repositoryBytesInD1": False,
     }, status=201, cache_control="no-store")
 
@@ -25987,6 +25997,36 @@ async def _https_mirror_expected_forkmesh_refs(env):
         return ""
 
 
+async def _https_mirror_refresh_registered_health(env, node):
+    """Best-effort activation for one exact registered endpoint.
+
+    The endpoint row is already account-bound and signature-verified by the
+    registration handler. Health is nevertheless established only by a fresh
+    node-signed challenge whose repository digest matches the canonical public
+    state pin.
+    """
+    node = clean_string(node, MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(node):
+        return False
+    try:
+        row = await d1_first(
+            env,
+            """SELECT node_bi,node_name,base_url,public_key
+                 FROM mirror_https_endpoints WHERE node_name=?""",
+            node,
+        )
+        if not row:
+            return False
+        expected = await _https_mirror_expected_forkmesh_refs(env)
+        if not expected:
+            return False
+        return bool(await _https_mirror_health_one(env, row, expected))
+    except Exception:
+        # Registration remains safely pending. A transient control-plane fetch
+        # failure must not roll back its authenticated endpoint record.
+        return False
+
+
 async def _https_mirror_refresh_catalog_publisher_health(env, record):
     """Best-effort activation for one signed public flagship publication.
 
@@ -26014,16 +26054,7 @@ async def _https_mirror_refresh_catalog_publisher_health(env, record):
         canonical_node = canonical_node or "forkmesh"
         if node != canonical_node:
             return False
-        row = await d1_first(
-            env,
-            """SELECT node_bi,node_name,base_url,public_key
-                 FROM mirror_https_endpoints WHERE node_name=?""",
-            node,
-        )
-        if not row:
-            return False
-        expected = await _https_mirror_expected_forkmesh_refs(env)
-        return bool(await _https_mirror_health_one(env, row, expected))
+        return bool(await _https_mirror_refresh_registered_health(env, node))
     except Exception:
         # Publication is already authorized and durable. Health remains pending
         # or is cleared by the verifier; a control-plane fetch/storage failure
@@ -26173,7 +26204,10 @@ async def _https_mirror_health_one(env, row, expected_forkmesh_refs):
         await d1_run(
             env, "UPDATE nodes SET last_seen=? WHERE node_bi=?",
             now, row.get("node_bi"))
-    return general_healthy
+    # Callers that renew a public routing lease need to know whether this exact
+    # repository is eligible for rotation, not merely whether the node's
+    # generic health endpoint answered.
+    return forkmesh_active
 
 
 async def https_mirror_health_cron(env):

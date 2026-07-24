@@ -363,6 +363,7 @@ def test_register_posts_endpoint_then_node_owner_catalog(installation):
                 "ok": True,
                 "node": payload["node"],
                 "baseUrl": payload["baseUrl"],
+                "health": "active",
             }
         signed_record = dict(payload)
         catalog_signature = signed_record.pop("catalogSig")
@@ -438,6 +439,7 @@ def test_renew_republishes_valid_active_generation_without_full_preflight(
                 "ok": True,
                 "node": payload["node"],
                 "baseUrl": payload["baseUrl"],
+                "health": "active",
             }
         return 201, {
             "ok": True,
@@ -469,6 +471,79 @@ def test_renew_republishes_valid_active_generation_without_full_preflight(
         "event": "renewal_complete",
         "aliasCount": 2,
     }
+
+
+def test_register_rechecks_pending_health_after_catalog_pin_advances(
+    installation,
+):
+    config = installation["config"]
+    refresh_tool.refresh(config)
+    calls: list[tuple[str, dict]] = []
+    endpoint_calls = 0
+
+    def post(url: str, payload):
+        nonlocal endpoint_calls
+        calls.append((url, dict(payload)))
+        if url.endswith("/api/mirrors/https"):
+            endpoint_calls += 1
+            return 201, {
+                "ok": True,
+                "node": payload["node"],
+                "baseUrl": payload["baseUrl"],
+                "health": "pending" if endpoint_calls == 1 else "active",
+            }
+        return 201, {
+            "ok": True,
+            "repository": {
+                "owner": payload["owner"],
+                "name": payload["name"],
+                "stateHash": payload["stateHash"],
+            },
+        }
+
+    result = refresh_tool.register(config, post_json=post)
+    assert [url.rsplit("/", 1)[-1] for url, _ in calls] == [
+        "https",
+        "repositories",
+        "https",
+    ]
+    assert calls[0][1] == calls[2][1]
+    assert result["event"] == "registration_complete"
+
+
+def test_register_fails_when_signed_health_stays_pending(installation):
+    config = installation["config"]
+    refresh_tool.refresh(config)
+    calls: list[str] = []
+
+    def post(url: str, payload):
+        calls.append(url)
+        if url.endswith("/api/mirrors/https"):
+            return 201, {
+                "ok": True,
+                "node": payload["node"],
+                "baseUrl": payload["baseUrl"],
+                "health": "pending",
+            }
+        return 201, {
+            "ok": True,
+            "repository": {
+                "owner": payload["owner"],
+                "name": payload["name"],
+                "stateHash": payload["stateHash"],
+            },
+        }
+
+    with pytest.raises(
+        refresh_tool.RefreshError,
+        match="did not activate signed health",
+    ):
+        refresh_tool.register(config, post_json=post)
+    assert [url.rsplit("/", 1)[-1] for url in calls] == [
+        "https",
+        "repositories",
+        "https",
+    ]
 
 
 def test_renew_fails_closed_when_source_refs_changed(installation):

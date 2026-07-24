@@ -1519,6 +1519,26 @@ def _publish_registration(
         or repository.get("stateHash") != metadata.expected_refs_sha256
     ):
         raise RefreshError("catalog publication was not accepted")
+
+    # A new canonical state can legitimately leave the first endpoint
+    # challenge pending: the endpoint is registered before its catalog write
+    # advances the public state pin. Re-register once after that durable write
+    # and require the Worker to confirm a fresh signed proof against the final
+    # pin. Normal renewals already return active and avoid this extra request.
+    if endpoint_response.get("health") != "active":
+        endpoint_status, endpoint_response = post_json(
+            config.worker_origin + "/api/mirrors/https",
+            endpoint,
+        )
+        if (
+            endpoint_status not in {200, 201}
+            or endpoint_response.get("ok") is not True
+            or endpoint_response.get("node") != config.node_owner
+            or endpoint_response.get("baseUrl") != config.public_origin
+            or endpoint_response.get("health") != "active"
+        ):
+            raise RefreshError(
+                "endpoint registration did not activate signed health")
     return {
         "ok": True,
         "aliasCount": len(config.owner_aliases),
