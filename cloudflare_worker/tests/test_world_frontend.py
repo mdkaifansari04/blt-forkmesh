@@ -1430,3 +1430,29 @@ def test_linked_payout_page_has_a_truthful_non_custodial_notice():
     assert "community incentives, not investments" in PAYOUTS
     assert "guaranteed returns." in PAYOUTS
     assert "never its private key" in PAYOUTS
+
+
+def test_world_updates_arrive_via_a_gentle_in_place_reload():
+    # A deploy flips BUILD_REV on /api/version. The world notices on a slow
+    # watcher, flushes the player's position, and reloads once behind a toast,
+    # so the new build appears in place without anyone touching refresh.
+    assert "const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;" in APP
+    assert "startUpdateWatch()" in APP
+    assert "async checkForWorldUpdate()" in APP
+    assert (
+        "window.setTimeout(() => location.reload(), "
+        "WORLD_UPDATE_RELOAD_DELAY_MS)" in APP
+    )
+    # Gentle means the position survives: it is flushed before the reload so
+    # the restored spawn puts the player exactly where they were.
+    assert "this.captureWorldPosition(true);\n    this.toast(" in APP
+    # Bounded: hidden tabs never poll, visibility bursts are throttled to one
+    # request per minute, and one reload per revision prevents reload loops
+    # behind a stale cache.
+    assert (
+        "if (this.destroyed || this.updateReloadPending || document.hidden) "
+        "return;" in APP
+    )
+    assert "const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;" in APP
+    assert "sessionStorage.getItem(WORLD_UPDATE_RELOADED_REV_KEY)" in APP
+    assert "window.clearInterval(this.updateCheckTimer);" in APP
