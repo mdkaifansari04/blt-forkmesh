@@ -1405,8 +1405,13 @@ QString diffStyleSheet(int fontPt)
                "td.ln { color:%2; text-align:right; padding:0 10px; width:1%; "
                "font-size:%10px; white-space:nowrap; background:%9; "
                "border-right:1px solid %7; }"
-               "td.code { white-space:pre; padding:0 10px; color:%8; "
+               // pre-wrap (not pre) so long lines wrap within the cell instead
+               // of forcing the table wider than the viewport — keeps the split
+               // (side-by-side) view on screen. Give the two split code columns a
+               // fixed half-width so neither can grow past its share.
+               "td.code { white-space:pre-wrap; padding:0 10px; color:%8; "
                "font-size:%10px; }"
+               "td.ocode, td.ncode { width:49%; }"
                ".add { background:%3; } .del { background:%4; }"
                ".hunk { color:%5; background:%6; }"
                "td.ln.hunk { background:%6; border-right:1px solid %7; }"
