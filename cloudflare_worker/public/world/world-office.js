@@ -34,6 +34,7 @@ export function createWorldOfficeController({
   let active = false;
   let returnFocus = null;
   let unloadTimer = null;
+  let frameSuspended = false;
 
   const resolvedChatURL = new URL(chatPath, window.location.origin);
   if (
@@ -79,6 +80,10 @@ export function createWorldOfficeController({
       panel.setAttribute("aria-hidden", "false");
     }
     if (loading) loading.hidden = false;
+    if (frameSuspended) {
+      frame?.removeAttribute("src");
+      frameSuspended = false;
+    }
     if (frame && frame.getAttribute("src") !== safeChatPath) {
       frame.setAttribute("src", safeChatPath);
     }
@@ -95,6 +100,7 @@ export function createWorldOfficeController({
       panel.setAttribute("aria-hidden", "true");
     }
     if (frame?.contentWindow && frame.hasAttribute("src")) {
+      frameSuspended = true;
       frame.contentWindow.postMessage(
         { type: "office-chat-suspend" },
         window.location.origin,
@@ -103,6 +109,7 @@ export function createWorldOfficeController({
     clearUnloadTimer();
     unloadTimer = window.setTimeout(() => {
       frame?.removeAttribute("src");
+      frameSuspended = false;
       unloadTimer = null;
     }, OFFICE_UNLOAD_DELAY_MS);
     renderPrompt();

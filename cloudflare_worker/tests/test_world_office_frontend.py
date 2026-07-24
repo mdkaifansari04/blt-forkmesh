@@ -91,6 +91,13 @@ def test_office_controller_exposes_deliberate_entry_lifecycle():
         assert contract in source
 
 
+def test_reentry_reloads_a_chat_frame_suspended_during_the_grace_period():
+    source = office_source()
+    assert "let frameSuspended = false" in source
+    assert "if (frameSuspended)" in source
+    assert "frameSuspended = true" in source
+
+
 def test_world_scene_builds_and_reports_the_interactive_office():
     source = SCENE_PATH.read_text(encoding="utf-8")
     assert "function createForkMeshOffice(" in source
