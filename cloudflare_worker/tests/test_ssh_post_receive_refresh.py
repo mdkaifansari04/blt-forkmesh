@@ -444,6 +444,10 @@ def test_refresh_packaging_has_no_user_derived_commands():
     assert "$@" not in notifier
     assert "SSH_ORIGINAL_COMMAND" not in notifier
     assert "ExecStart=/usr/bin/python3 -I " in service
+    assert (
+        "CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETGID CAP_SETUID"
+        in service
+    )
 
 
 def test_refresh_health_timeout_default_and_example_allow_tunnel_startup():
