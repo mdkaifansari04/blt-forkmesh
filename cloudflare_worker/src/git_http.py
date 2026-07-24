@@ -22,9 +22,10 @@ def advertised_refs_canonical(data):
     # Canonical, hashable fingerprint of the served branches + tags, derived from
     # a `git upload-pack --advertise-refs` body (the bytes a host streams back for
     # info/refs, WITHOUT the "# service=" header the worker prepends). Output is
-    # "<sha> <refname>" lines for refs/heads/* and refs/tags/* only, sorted, joined
-    # by "\n" — byte-for-byte identical to the desktop node's mirrorStateHash()
-    # input (git for-each-ref over the same namespaces). HEAD, peeled tags
+    # "<sha> <refname>" lines for refs/heads/* and refs/tags/* only, sorted BY
+    # REFNAME, joined by "\n" — byte-for-byte identical to the desktop node's
+    # mirrorStateHash() input and the mirror tools' refs_canonical() (git
+    # for-each-ref --sort=refname over the same namespaces). HEAD, peeled tags
     # ("...^{}"), and per-line capabilities (after the first NUL) are dropped.
     # Assumes the traditional (protocol v0) advertisement; the host never sets
     # GIT_PROTOCOL=version=2, so refs are always listed inline.
@@ -57,7 +58,12 @@ def advertised_refs_canonical(data):
         if not (name.startswith("refs/heads/") or name.startswith("refs/tags/")):
             continue
         refs.append(sha + " " + name)
-    refs.sort()
+    # Order by refname, not by the whole "<sha> <refname>" line: the desktop
+    # (PublicMirrorRuntime::refsSha256FromForEachRef) and the mirror tools all
+    # canonicalize with `for-each-ref --sort=refname`, and a sha-first sort
+    # diverges from that the moment two refs' name order differs from their
+    # object-id order — which would fail every pin comparison.
+    refs.sort(key=lambda line: line.split(" ", 1)[1])
     return "\n".join(refs)
 
 
