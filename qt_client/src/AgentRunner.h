@@ -29,6 +29,9 @@ public:
         bool preferApiKeyAuth = false;
         int contextWindow = 32000;
         int maxOutputTokens = 2000;
+        // Jail (adhoc #236): > 0 runs the agent with a private scratch env and
+        // its data memory capped at this many MB (see AgentJail); 0 = no jail.
+        int jailMemoryMb = 0;
     };
 
     explicit AgentRunner(AgentStore *store, QObject *parent = nullptr);

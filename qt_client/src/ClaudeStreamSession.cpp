@@ -1,5 +1,7 @@
 #include "ClaudeStreamSession.h"
 
+#include "AgentJail.h"
+
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QProcess>
@@ -13,7 +15,8 @@ ClaudeStreamSession::~ClaudeStreamSession() { stop(); }
 void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
                                 const QString &initialPrompt, bool skipPermissions,
                                 const QString &resumeSessionId, const QString &model,
-                                const QString &effort, const QString &fallbackModels)
+                                const QString &effort, const QString &fallbackModels,
+                                int memoryLimitMb)
 {
     stop();
     m_buf.clear();
@@ -64,6 +67,9 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
     // from the CLI's own stream, but single-quote it defensively all the same.
     if (!resumeSessionId.isEmpty())
         cmd += QStringLiteral(" --resume '%1'").arg(resumeSessionId);
+    // Jail (adhoc #236): cap the agent's memory before handing the shell to
+    // claude. The rlimit survives the exec and is inherited by subprocesses.
+    cmd = AgentJail::wrapCommand(cmd, memoryLimitMb);
     m_proc->start(QStringLiteral("bash"), {QStringLiteral("-lc"), cmd});
 
     if (!initialPrompt.isEmpty())
