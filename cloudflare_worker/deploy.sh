@@ -568,15 +568,32 @@ publish_release_binary() {
         echo "Force-republishing existing release asset $asset."
     fi
 
-    local release_version release_tag
+    local release_version release_tag tag_commit build_commit
     release_version="$(app_version)"
     if ! printf '%s' "$release_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
         echo "ERROR: could not resolve a clean app version from qt_client/CMakeLists.txt." >&2
         return 1
     fi
     release_tag="${FORKMESH_TAG:-v${release_version}}"
+    # Release metadata is committed only after the artifact exists, so bind the
+    # binary and manifest to the newest commit that changed anything outside
+    # .forkmesh/releases/. This stays stable across the metadata-only publish
+    # commit while still changing for every subsequent source change.
+    build_commit="$(git -C .. log -1 --format=%H -- . \
+        ':(exclude).forkmesh/releases/**' 2>/dev/null || true)"
+    if ! printf '%s' "$build_commit" |
+         grep -Eq '^([0-9a-f]{40}|[0-9a-f]{64})$'; then
+        echo "ERROR: could not resolve the exact source commit for the release binary." >&2
+        return 1
+    fi
     if [ "$release_tag" != "v${release_version}" ]; then
         echo "ERROR: FORKMESH_TAG=$release_tag does not match app version v${release_version}." >&2
+        return 1
+    fi
+    tag_commit="$(git -C .. rev-list -n1 "$release_tag" 2>/dev/null || true)"
+    if ! printf '%s' "$tag_commit" |
+         grep -Eq '^([0-9a-f]{40}|[0-9a-f]{64})$'; then
+        echo "ERROR: $release_tag does not resolve to an exact Git commit." >&2
         return 1
     fi
 
@@ -586,12 +603,22 @@ publish_release_binary() {
             echo "       Refusing to publish metadata for bytes stored only in a throwaway default directory." >&2
             return 1
         fi
-        if ! git diff --quiet HEAD -- 2>/dev/null || \
-           [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
-            echo "ERROR: forced release republish requires a clean tracked worktree." >&2
-            echo "       Commit the exact code to publish, then retry so release.json can identify it." >&2
-            return 1
-        fi
+    fi
+    # Every artifact build—not only an explicit same-version refresh—must bind
+    # to committed bytes. Include untracked relevant files and ignore only the
+    # release metadata that this function itself produces.
+    local worktree_status
+    if ! worktree_status="$(git -C .. status --porcelain=v1 \
+            --untracked-files=all -- . \
+            ':(exclude).forkmesh/releases/**' 2>&1)"; then
+        echo "ERROR: could not verify that the release source worktree is clean." >&2
+        printf '%s\n' "$worktree_status" >&2
+        return 1
+    fi
+    if [ -n "$worktree_status" ]; then
+        echo "ERROR: release binary build requires a clean source worktree." >&2
+        echo "       Commit the exact code to publish, then retry." >&2
+        return 1
     fi
 
     echo "Building and publishing ForkMesh v${release_version} for ${os}/${arch}…"
@@ -605,6 +632,7 @@ publish_release_binary() {
     local configure_output
     if ! configure_output="$(cmake -S ../qt_client -B ../qt_client/build-release \
         -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF \
+        -DFORKMESH_BUILD_COMMIT_OVERRIDE="$build_commit" \
         -DFORKMESH_VERSION_OVERRIDE="$release_version" 2>&1)"; then
         printf '%s\n' "$configure_output" >&2
         echo "ERROR: failed to configure the release binary." >&2
@@ -632,10 +660,15 @@ publish_release_binary() {
     # Version is part of the artifact contract, not just UI text. Refuse to
     # update the manifest if the newly-built executable does not report exactly
     # the version/channel being replaced.
-    local reported_version
+    local reported_version reported_commit
     if ! reported_version="$("$built" --version 2>&1)" || \
        [ "$reported_version" != "ForkMesh ${release_version}" ]; then
         echo "ERROR: built release reports '${reported_version:-<no version>}' (expected 'ForkMesh ${release_version}')." >&2
+        return 1
+    fi
+    if ! reported_commit="$("$built" --build-commit 2>&1)" || \
+       [ "$reported_commit" != "$build_commit" ]; then
+        echo "ERROR: built release reports source commit '${reported_commit:-<unknown>}' (expected '$build_commit')." >&2
         return 1
     fi
 
@@ -656,6 +689,8 @@ publish_release_binary() {
     local publish_args=(
         --channel latest
         --tag "$release_tag"
+        --tag-commit "$tag_commit"
+        --build-commit "$build_commit"
         --cas-dir "$cas_dir"
     )
     if [ -n "${FORKMESH_REPO:-}" ]; then
@@ -673,8 +708,7 @@ publish_release_binary() {
     # Bind the mutable "latest" channel to the exact source revision just
     # compiled. A same-semver republish is only complete when release.json,
     # SHASUMS256.txt and the served CAS all agree on these new bytes.
-    local source_commit asset_hash
-    source_commit="$(git rev-parse HEAD 2>/dev/null)"
+    local asset_hash
     if command -v sha256sum >/dev/null 2>&1; then
         asset_hash="$(sha256sum "$asset" | awk '{print $1}')"
     else
@@ -684,7 +718,9 @@ publish_release_binary() {
             ../.forkmesh/releases/latest/SHASUMS256.txt ||
        ! grep -Fq "\"tag\": \"$release_tag\"" \
             ../.forkmesh/releases/latest/release.json ||
-       ! grep -Fq "\"tag_commit\": \"$source_commit\"" \
+       ! grep -Fq "\"tag_commit\": \"$tag_commit\"" \
+            ../.forkmesh/releases/latest/release.json ||
+       ! grep -Fq "\"build_commit\": \"$build_commit\"" \
             ../.forkmesh/releases/latest/release.json ||
        ! grep -Fq "\"name\":\"$asset\",\"blob_sha256\":\"$asset_hash\"" \
             ../.forkmesh/releases/latest/release.json ||
@@ -693,7 +729,7 @@ publish_release_binary() {
         echo "ERROR: release metadata/CAS verification did not match the freshly built commit and binary." >&2
         return 1
     fi
-    echo "Verified release metadata: v${release_version} @ ${source_commit:0:12}, sha256:${asset_hash:0:12}."
+    echo "Verified release metadata: v${release_version}, tag ${tag_commit:0:12}, build ${build_commit:0:12}, sha256:${asset_hash:0:12}."
     rm -f "$asset"
 
     # Stage the release metadata for commit.

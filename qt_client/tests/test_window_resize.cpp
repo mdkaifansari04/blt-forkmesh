@@ -21,6 +21,7 @@
 #include <QFileInfo>
 #include <QPointer>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QSemaphore>
 #include <QPushButton>
 #include <QSettings>
@@ -414,9 +415,39 @@ int main(int argc, char *argv[])
     // Fleet "Install from binary" must install the published release, not
     // upload this test process (or any other locally-built executable). The
     // target verifies the release checksum in install.sh, refuses source
-    // fallback, restarts in place, and checks the reported version before the
-    // per-host pane can turn green.
+    // fallback, restarts in place, and checks both the reported version and
+    // exact source revision before the per-host pane can turn green.
     {
+        const QString expectedBuildCommit =
+            QStringLiteral(FORKMESH_BUILD_COMMIT).trimmed().toLower();
+        const QRegularExpression exactCommit(
+            QStringLiteral("^(?:[0-9a-f]{40}|[0-9a-f]{64})$"));
+        const bool buildIsCommitted =
+            exactCommit.match(expectedBuildCommit).hasMatch();
+        if (!buildIsCommitted) {
+            qsizetype refusedBytes = -1;
+            QString refusedError;
+            const QString refusedCommand =
+                window.testFleetBinaryInstallRemoteCommand(
+                    false, &refusedBytes, &refusedError);
+            check(refusedCommand.isEmpty() && refusedBytes == 0 &&
+                      refusedError.contains(
+                          QStringLiteral("no exact source revision")),
+                  QStringLiteral("dirty or unknown-provenance builds refuse "
+                                 "fleet binary deployment"));
+        } else {
+            check(true,
+                  QStringLiteral("test binary embeds an exact Git source commit"));
+        }
+
+        // Exercise the successful command contract deterministically even when
+        // this suite is intentionally running from a dirty developer tree. This
+        // override exists only in the FORKMESH_WINDOW_TESTS target.
+        const QByteArray testCommit(
+            "0123456789abcdef0123456789abcdef01234567");
+        qputenv("FORKMESH_TEST_BUILD_COMMIT", testCommit);
+        const QString commandBuildCommit = QString::fromLatin1(testCommit);
+
         qsizetype uploadBytes = -1;
         QString commandError;
         const QString command = window.testFleetBinaryInstallRemoteCommand(
@@ -433,9 +464,14 @@ int main(int argc, char *argv[])
                   QStringLiteral("FORKMESH_RELEASE=latest")) &&
                   command.contains(
                       QStringLiteral("FORKMESH_NO_SOURCE_FALLBACK=1")) &&
+                  command.contains(
+                      QStringLiteral("FORKMESH_EXPECTED_BUILD_COMMIT=")) &&
+                  command.contains(
+                      QStringLiteral("FORKMESH_EXPECTED_RELEASE_VERSION=")) &&
+                  command.contains(commandBuildCommit) &&
                   !command.contains(QStringLiteral("FORKMESH_FROM_SOURCE=1")),
               QStringLiteral("fleet binary install is pinned to the published "
-                             "binary-only release path"));
+                             "binary-only release at this source commit"));
         check(command.contains(QStringLiteral("FORKMESH_RESTART=1")) &&
                   !command.contains(QStringLiteral("FORKMESH_REINSTALL=1")),
               QStringLiteral("normal fleet binary install restarts in place "
@@ -445,10 +481,22 @@ int main(int argc, char *argv[])
                   command.contains(
                       QStringLiteral("forkmesh-installer.XXXXXX")) &&
                   command.contains(QStringLiteral("--version")) &&
+                  command.contains(QStringLiteral("--build-commit")) &&
+                  command.contains(
+                      QStringLiteral("source-revision check failed")) &&
+                  command.contains(QStringLiteral("probe_ticks")) &&
+                  command.contains(QStringLiteral("sleep 0.1")) &&
+                  command.contains(QStringLiteral("sleep 0.2")) &&
+                  command.contains(QStringLiteral("kill -KILL")) &&
+                  command.contains(QStringLiteral("head -c 128")) &&
+                  command.contains(
+                      QStringLiteral("wait \"$commit_pid\" || "
+                                     "commit_status=$?")) &&
                   command.contains(
                       QStringLiteral("ForkMesh " FORKMESH_VERSION)),
               QStringLiteral("fleet binary install fetches a fresh installer "
-                             "and verifies the exact app version"));
+                             "and verifies the exact app version and source "
+                             "revision with a bounded legacy-binary probe"));
         QProcess shellSyntax;
         shellSyntax.start(QStringLiteral("/bin/sh"),
                           {QStringLiteral("-n"), QStringLiteral("-c"), command});
@@ -468,9 +516,14 @@ int main(int argc, char *argv[])
                   reinstallCommand.contains(
                       QStringLiteral("FORKMESH_REINSTALL=1")) &&
                   reinstallCommand.contains(
-                      QStringLiteral("FORKMESH_NO_SOURCE_FALLBACK=1")),
+                      QStringLiteral("FORKMESH_NO_SOURCE_FALLBACK=1")) &&
+                  reinstallCommand.contains(
+                      QStringLiteral("FORKMESH_EXPECTED_BUILD_COMMIT=")) &&
+                  reinstallCommand.contains(
+                      QStringLiteral("--build-commit")),
               QStringLiteral("explicit destructive fleet reinstall also uses "
-                             "the published binary-only release"));
+                             "the commit-matched published binary-only release"));
+        qunsetenv("FORKMESH_TEST_BUILD_COMMIT");
     }
     if (fleetBinaryInstallOnly)
         return failures == 0 ? 0 : 1;

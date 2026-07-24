@@ -50,9 +50,11 @@ def _load(*names):
 
 
 NS = _load(
-    "RELEASE_TAG_RE", "SHA256_HEX_RE", "RELEASE_SEMVER_RE", "RELEASE_BLOB_RE",
+    "RELEASE_TAG_RE", "SHA256_HEX_RE", "GIT_COMMIT_RE",
+    "RELEASE_SEMVER_RE", "RELEASE_BLOB_RE",
     "REPO_RELEASE_DOWNLOADS_RE",
     "valid_release_tag", "valid_asset_name", "valid_sha256_hex",
+    "valid_git_commit",
     "cas_blob_relpath", "release_asset_line", "release_manifest_content",
     "release_signing_message", "generate_shasums", "release_semver_key",
     "resolve_latest_release", "asset_upload_decision",
@@ -60,6 +62,7 @@ NS = _load(
 valid_release_tag = NS["valid_release_tag"]
 valid_asset_name = NS["valid_asset_name"]
 valid_sha256_hex = NS["valid_sha256_hex"]
+valid_git_commit = NS["valid_git_commit"]
 cas_blob_relpath = NS["cas_blob_relpath"]
 release_manifest_content = NS["release_manifest_content"]
 release_signing_message = NS["release_signing_message"]
@@ -108,6 +111,13 @@ def test_valid_sha256_hex():
     assert not valid_sha256_hex("a" * 63)
 
 
+def test_valid_git_commit():
+    assert valid_git_commit("a" * 40)
+    assert valid_git_commit("B" * 64)
+    assert not valid_git_commit("a" * 39)
+    assert not valid_git_commit("not-a-commit")
+
+
 # --- content-addressed storage layout -------------------------------------
 
 def test_cas_blob_relpath_layout():
@@ -125,6 +135,7 @@ def _manifest():
         "repo": "alice/widget",
         "tag": "v1.2.3",
         "tag_commit": "deadbeef" * 5,
+        "build_commit": "feedface" * 5,
         "name": "Widget 1.2.3",          # editable — must NOT affect content
         "body": "release notes here",    # editable — must NOT affect content
         "prerelease": False,             # editable — must NOT affect content
@@ -164,6 +175,19 @@ def test_manifest_content_changes_when_bytes_change():
     retagged = _manifest()
     retagged["tag_commit"] = "f" * 40  # force-moved tag → different signed body
     assert release_manifest_content(retagged) != base
+
+    rebuilt = _manifest()
+    rebuilt["build_commit"] = "0" * 40
+    assert release_manifest_content(rebuilt) != base
+
+
+def test_legacy_manifest_canonical_bytes_remain_compatible():
+    legacy = _manifest()
+    legacy.pop("build_commit")
+    content = release_manifest_content(legacy)
+    assert content.startswith(
+        "alice/widget\x00v1.2.3\x00%s\x002\n" % ("deadbeef" * 5)
+    )
 
 
 def test_signing_message_is_stable():

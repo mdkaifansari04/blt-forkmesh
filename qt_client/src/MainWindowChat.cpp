@@ -7269,7 +7269,8 @@ QWidget *MainWindow::buildHostsSection()
     m_hostInstallAllButton->setToolTip(QStringLiteral(
         "Install the published ForkMesh v" FORKMESH_VERSION
         " binary on every saved host. Each host verifies the release checksum, "
-        "keeps its identity, keys and mirrored data, and restarts its node."));
+        "version and exact source commit, keeps its identity, keys and mirrored "
+        "data, and restarts its node."));
     setOcticon(m_hostInstallAllButton, "download", 14);
     connect(m_hostInstallAllButton, &QPushButton::clicked, this,
             &MainWindow::runHostInstallAllFromBinary);
@@ -7312,7 +7313,8 @@ QWidget *MainWindow::buildHostsSection()
         "network and shows up in each repository's Mirror nodes list. Install "
         "(binary) on one saved host uploads this app's own binary. Install from "
         "binary (all hosts) instead makes every host download and checksum-verify "
-        "the current published release, then confirms the installed version."));
+        "the current published release, then confirms the installed version and "
+        "exact source commit."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
     outer->addWidget(subtitle);
@@ -10119,6 +10121,32 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
         out.replace(QStringLiteral("'"), QStringLiteral("'\\''"));
         return QStringLiteral("'") + out + QStringLiteral("'");
     };
+    QString expectedBuildCommit;
+    if (requirePublishedBinary) {
+        expectedBuildCommit =
+            QStringLiteral(FORKMESH_BUILD_COMMIT).trimmed().toLower();
+#ifdef FORKMESH_WINDOW_TESTS
+        const QString testBuildCommit =
+            qEnvironmentVariable("FORKMESH_TEST_BUILD_COMMIT")
+                .trimmed()
+                .toLower();
+        if (!testBuildCommit.isEmpty())
+            expectedBuildCommit = testBuildCommit;
+#endif
+        static const QRegularExpression exactCommit(
+            QStringLiteral("^(?:[0-9a-f]{40}|[0-9a-f]{64})$"));
+        if (!exactCommit.match(expectedBuildCommit).hasMatch()) {
+            if (errorOut) {
+                *errorOut = QString::fromUtf8(
+                    "This ForkMesh build has no exact source revision, so it "
+                    "cannot prove that a published same-version binary is "
+                    "current. Rebuild from a Git checkout (or configure a "
+                    "release archive with FORKMESH_BUILD_COMMIT_OVERRIDE), "
+                    "then retry.");
+            }
+            return false;
+        }
+    }
     // Pass the chosen name as FORKMESH_NODE_NAME (not FORKMESH_NODE): the
     // installer uses it to name the freshly-deployed node and leaves the
     // clone-source mirror to auto-resolve to a real online one. The headless
@@ -10146,7 +10174,11 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
     // exact version before its pane can report success.
     if (requirePublishedBinary) {
         envPrefix += QStringLiteral(
-            " FORKMESH_RELEASE=latest FORKMESH_NO_SOURCE_FALLBACK=1");
+            " FORKMESH_RELEASE=latest FORKMESH_NO_SOURCE_FALLBACK=1 "
+            "FORKMESH_EXPECTED_BUILD_COMMIT=%1 "
+            "FORKMESH_EXPECTED_RELEASE_VERSION=%2")
+                         .arg(shq(expectedBuildCommit),
+                              shq(QStringLiteral(FORKMESH_VERSION)));
         if (!reinstall)
             envPrefix += QStringLiteral(" FORKMESH_RESTART=1");
     }
@@ -10180,9 +10212,37 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
                 "if [ \"$actual\" != \"$expected\" ]; then "
                 "printf 'ForkMesh version check failed: expected %s, "
                 "got %s\\n' \"$expected\" \"$actual\" >&2; exit 65; fi; "
-                "printf 'Verified %s from the published checksum-verified "
-                "release.\\n' \"$actual\"")
-                .arg(shq(installUrl), envPrefix, shq(expected));
+                "commit_output=\"$(mktemp \"${TMPDIR:-/tmp}/"
+                "forkmesh-build-commit.XXXXXX\")\" || exit 63; "
+                "\"$bin\" --build-commit >\"$commit_output\" 2>&1 & "
+                "commit_pid=$!; "
+                "probe_ticks=0; "
+                "while kill -0 \"$commit_pid\" 2>/dev/null && "
+                "[ \"$probe_ticks\" -lt 50 ]; do sleep 0.1; "
+                "probe_ticks=$((probe_ticks + 1)); done; "
+                "commit_timed_out=0; "
+                "if kill -0 \"$commit_pid\" 2>/dev/null; then "
+                "commit_timed_out=1; "
+                "kill \"$commit_pid\" 2>/dev/null || true; "
+                "sleep 0.2; "
+                "kill -KILL \"$commit_pid\" 2>/dev/null || true; fi; "
+                "commit_status=0; "
+                "wait \"$commit_pid\" || commit_status=$?; "
+                "actual_commit=\"$(head -c 128 \"$commit_output\" | "
+                "tr -d '\\r\\n')\"; rm -f \"$commit_output\"; "
+                "expected_commit=%4; "
+                "if [ \"$commit_timed_out\" -ne 0 ] || "
+                "[ \"$commit_status\" -ne 0 ] || "
+                "[ \"$actual_commit\" != \"$expected_commit\" ]; then "
+                "printf 'ForkMesh source-revision check failed: the installed "
+                "artifact did not report expected commit %s.\\n' "
+                "\"$expected_commit\" >&2; "
+                "exit 64; fi; "
+                "printf 'Verified %s from source commit %s using the "
+                "published checksum-verified release.\\n' \"$actual\" "
+                "\"$actual_commit\"")
+                .arg(shq(installUrl), envPrefix, shq(expected),
+                     shq(expectedBuildCommit));
     } else {
         pipeline =
             QStringLiteral("curl -fsSL %1 | %2 bash")
@@ -10707,8 +10767,8 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
             session,
             QStringLiteral("Installing the published ForkMesh v"
                            FORKMESH_VERSION
-                           " binary; the host will verify its release checksum "
-                           "and reported version.\n"));
+                           " binary; the host will verify its release checksum, "
+                           "reported version and exact source commit.\n"));
     else if (options.uploadBinary && !options.fromSource)
         appendHostDeployLog(
             session, QString::fromUtf8("Uploading this app's release binary "

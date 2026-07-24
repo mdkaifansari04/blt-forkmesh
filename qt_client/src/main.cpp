@@ -15,6 +15,9 @@
 #ifndef FORKMESH_VERSION
 #define FORKMESH_VERSION "dev"
 #endif
+#ifndef FORKMESH_BUILD_COMMIT
+#define FORKMESH_BUILD_COMMIT "unknown"
+#endif
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -509,6 +512,18 @@ int main(int argc, char *argv[])
     if (rawArgs.contains(QStringLiteral("--version"))) {
         printf("ForkMesh %s\n", FORKMESH_VERSION);
         return 0;
+    }
+    // Machine-readable provenance used by the fleet binary installer.  Keep it
+    // separate from --version so existing scripts retain their exact output,
+    // while a same-semver artifact from an older commit can no longer pass the
+    // install verification.
+    if (rawArgs.contains(QStringLiteral("--build-commit"))) {
+        printf("%s\n", FORKMESH_BUILD_COMMIT);
+        static const QRegularExpression exactCommit(
+            QStringLiteral("^(?:[0-9a-f]{40}|[0-9a-f]{64})$"));
+        return exactCommit.match(QStringLiteral(FORKMESH_BUILD_COMMIT)).hasMatch()
+                   ? 0
+                   : 1;
     }
     if (rawArgs.contains(QStringLiteral("--sign-mirror-manifest")))
         return runMirrorManifestSigner(argc, argv);

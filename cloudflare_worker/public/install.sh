@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.12.15 (2026-07-12)"
+INSTALLER_VERSION="0.12.16 (2026-07-24)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -72,6 +72,11 @@ FORKMESH_LINK_CODE="${FORKMESH_LINK_CODE:-}"
 FORKMESH_LOCAL_BINARY="${FORKMESH_LOCAL_BINARY:-}"
 FORKMESH_LOCAL_OS="${FORKMESH_LOCAL_OS:-}"
 FORKMESH_LOCAL_ARCH="${FORKMESH_LOCAL_ARCH:-}"
+# Optional fail-closed release provenance pin. The desktop fleet installer
+# supplies both the version and build commit embedded in its controller binary.
+# A normal one-line install leaves these empty and keeps existing behavior.
+FORKMESH_EXPECTED_BUILD_COMMIT="${FORKMESH_EXPECTED_BUILD_COMMIT:-}"
+FORKMESH_EXPECTED_RELEASE_VERSION="${FORKMESH_EXPECTED_RELEASE_VERSION:-}"
 FORKMESH_NAME="${FORKMESH_NAME:-forkmesh}"
 FORKMESH_INSTALL_SOURCE_URL="${FORKMESH_INSTALL_SOURCE_URL:-${FORKMESH_HOST%/}/api/install-source}"
 FORKMESH_DIAG_URL="${FORKMESH_DIAG_URL:-${FORKMESH_HOST%/}/api/install-diag}"
@@ -103,6 +108,10 @@ INSTALLED_PREBUILT=0
 # desktop/launch tail can reference it even on the prebuilt fast path (where no
 # build ever runs) without tripping `set -u`.
 BUILD=""
+# A commit-pinned reinstall validates and stages its replacement before
+# honoring the destructive reinstall request. This keeps the old node running
+# when release metadata or candidate provenance is stale.
+DEFER_PINNED_REINSTALL=0
 
 # Whether to fall back to a source build when no prebuilt binary is published
 # for this platform/arch. A headless Linux box (no DISPLAY/WAYLAND_DISPLAY) is
@@ -136,6 +145,20 @@ die()  { printf '\033[31mError:\033[0m %s\n' "$1" >&2; exit 1; }
 # mirror list, the raw source response, the exact URLs being cloned) without
 # cluttering the normal install log.
 dbg()  { [ "${FORKMESH_DEBUG:-0}" = "1" ] && printf '\033[2m[debug]\033[0m %s\n' "$1" >&2 || true; }
+
+if [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ]; then
+  FORKMESH_EXPECTED_BUILD_COMMIT="$(
+    printf '%s' "$FORKMESH_EXPECTED_BUILD_COMMIT" | tr 'A-F' 'a-f'
+  )"
+  if ! printf '%s' "$FORKMESH_EXPECTED_BUILD_COMMIT" |
+      grep -Eq '^([0-9a-f]{40}|[0-9a-f]{64})$'; then
+    die "FORKMESH_EXPECTED_BUILD_COMMIT must be an exact 40- or 64-hex Git commit."
+  fi
+  if ! printf '%s' "$FORKMESH_EXPECTED_RELEASE_VERSION" |
+      grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9._+-]+)?$'; then
+    die "FORKMESH_EXPECTED_RELEASE_VERSION must be an exact release version."
+  fi
+fi
 
 # In debug mode, make git print the full HTTP exchange (request/response status
 # and headers) on stderr so a 5xx from the relay can be traced to its cause.
@@ -402,9 +425,14 @@ for arg in "$@"; do
   esac
 done
 if [ "$FORKMESH_REINSTALL" = "1" ]; then
-  CURRENT_STEP="reinstall"
-  say "Reinstall requested — clearing the existing install before reinstalling."
-  uninstall_forkmesh reinstall
+  if [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ]; then
+    DEFER_PINNED_REINSTALL=1
+    say "Reinstall requested — validating the replacement before clearing the existing node."
+  else
+    CURRENT_STEP="reinstall"
+    say "Reinstall requested — clearing the existing install before reinstalling."
+    uninstall_forkmesh reinstall
+  fi
 fi
 
 # Plain ASCII box (not Unicode box-drawing): the box-drawing characters are
@@ -713,6 +741,14 @@ _manifest_repo() {
   sed -n 's/.*"repo"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n 1
 }
 
+# Echo the exact revision embedded in release binaries. This is intentionally
+# distinct from tag_commit, which remains the peeled target of the release tag.
+_manifest_build_commit() {
+  [ -f "$1" ] || return 0
+  sed -n 's/.*"build_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" |
+    head -n 1 | tr 'A-F' 'a-f'
+}
+
 # Echo the sha256 of file $1 (Linux sha256sum / macOS shasum), or empty if no
 # checksum tool is available (download then installs unverified, with a warning).
 _sha256_file() {
@@ -721,10 +757,116 @@ _sha256_file() {
   else echo ""; fi
 }
 
-# Install binary file $1 to $BIN (mode 0755), creating $BIN_DIR. Non-zero on fail.
+# Run one provenance probe with a hard five-second bound. Old ForkMesh binaries
+# do not understand --build-commit and may enter the headless event loop; the
+# bounded poll keeps that compatibility case from hanging an SSH fleet deploy.
+# Output is retained only in the bounded PROBE_RESULT variable and never logged.
+PROBE_RESULT=""
+_bounded_binary_probe() {
+  local candidate="$1" flag="$2" output pid status ticks timed_out
+  output="$(mktemp "${TMPDIR:-/tmp}/forkmesh-probe.XXXXXX" 2>/dev/null)" ||
+    return 1
+  "$candidate" "$flag" >"$output" 2>&1 &
+  pid=$!
+  ticks=0
+  while kill -0 "$pid" 2>/dev/null && [ "$ticks" -lt 50 ]; do
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
+  timed_out=0
+  if kill -0 "$pid" 2>/dev/null; then
+    timed_out=1
+    kill "$pid" 2>/dev/null || true
+    # A candidate can trap or ignore SIGTERM. Give it one short cleanup grace
+    # period, then force termination before wait so the five-second bound is
+    # real for legacy and hostile executables alike.
+    sleep 0.2
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  status=0
+  wait "$pid" || status=$?
+  PROBE_RESULT="$(head -c 256 "$output" | tr -d '\r\n')"
+  rm -f "$output"
+  [ "$timed_out" -eq 0 ] && [ "$status" -eq 0 ]
+}
+
+_verify_release_candidate() {
+  local candidate="$1"
+  [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ] || return 0
+  # A fresh host may not have the dynamic Qt runtime needed even for an
+  # early-exit CLI probe. Installing runtime libraries does not touch the old
+  # ForkMesh binary, data, or process.
+  ensure_qt_runtime
+  chmod 0700 "$candidate" 2>/dev/null || return 1
+  if ! _bounded_binary_probe "$candidate" "--version" ||
+     [ "$PROBE_RESULT" != "ForkMesh $FORKMESH_EXPECTED_RELEASE_VERSION" ]; then
+    warn "Staged release candidate did not report the required ForkMesh version; leaving the existing node untouched."
+    return 1
+  fi
+  if ! _bounded_binary_probe "$candidate" "--build-commit" ||
+     [ "$PROBE_RESULT" != "$FORKMESH_EXPECTED_BUILD_COMMIT" ]; then
+    warn "Staged release candidate did not report the required build commit; leaving the existing node untouched."
+    return 1
+  fi
+  return 0
+}
+
+# Stage into the destination filesystem, validate those exact staged bytes, then
+# atomically rename over $BIN. The old inode/process remains intact on every
+# checksum or provenance failure.
 _install_binary() {
+  local candidate="$1" expected_hash="${2:-}" staged source_hash staged_hash
+  INSTALL_BINARY_FAILURE_KIND=""
   mkdir -p "$BIN_DIR" || return 1
-  install -m 0755 "$1" "$BIN" 2>/dev/null || { cp "$1" "$BIN" && chmod 0755 "$BIN"; }
+  # Direct uploads have no release-manifest hash. For a commit-pinned install,
+  # snapshot their source hash before the copy so a concurrent mutation cannot
+  # silently change which bytes are staged.
+  if [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ] && [ -z "$expected_hash" ]; then
+    source_hash="$(_sha256_file "$candidate")"
+    if ! printf '%s' "$source_hash" | grep -Eq '^[0-9a-f]{64}$'; then
+      warn "A working sha256 tool is required for a commit-pinned binary install."
+      INSTALL_BINARY_FAILURE_KIND="checksum"
+      return 1
+    fi
+    expected_hash="$source_hash"
+  fi
+  staged="$(mktemp "$BIN_DIR/.forkmesh-install.XXXXXX" 2>/dev/null)" ||
+    return 1
+  if ! install -m 0755 "$candidate" "$staged" 2>/dev/null; then
+    if ! cp "$candidate" "$staged" || ! chmod 0755 "$staged"; then
+      rm -f "$staged"
+      return 1
+    fi
+  fi
+  if [ -n "$expected_hash" ]; then
+    staged_hash="$(_sha256_file "$staged")"
+    if [ "$staged_hash" != "$expected_hash" ]; then
+      warn "Staged ForkMesh binary failed its sha256 check; leaving the existing node untouched."
+      INSTALL_BINARY_FAILURE_KIND="checksum"
+      rm -f "$staged"
+      return 1
+    fi
+  fi
+  if ! _verify_release_candidate "$staged"; then
+    INSTALL_BINARY_FAILURE_KIND="provenance"
+    rm -f "$staged"
+    return 1
+  fi
+  if ! chmod 0755 "$staged"; then
+    rm -f "$staged"
+    return 1
+  fi
+  if [ "$DEFER_PINNED_REINSTALL" = "1" ]; then
+    CURRENT_STEP="reinstall"
+    uninstall_forkmesh reinstall
+    DEFER_PINNED_REINSTALL=0
+    mkdir -p "$BIN_DIR" || { rm -f "$staged"; return 1; }
+  fi
+  if ! mv -f "$staged" "$BIN"; then
+    rm -f "$staged"
+    return 1
+  fi
+  return 0
 }
 
 # Install the prebuilt binary for this platform. New model (issue #304): release
@@ -739,10 +881,14 @@ install_prebuilt_release() {
   command -v git >/dev/null 2>&1 || return 1
   ensure_mirror_candidates
   local tmp repo sums manifest canon hash url bin got attempt attempt_url
+  local manifest_build_commit provenance_ok
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-prebuilt.XXXXXX" 2>/dev/null)" || return 1
   sums=".forkmesh/releases/${RELEASE_CHANNEL}/SHASUMS256.txt"
   manifest=".forkmesh/releases/${RELEASE_CHANNEL}/release.json"
+  RELEASE_FRESHNESS_MATCH=0
+  RELEASE_CANDIDATE_FAILURE=0
   for repo in "${REPO_CANDIDATES[@]}"; do
+    provenance_ok=0
     # The sparse-checkout clone below is silent (redirected to /dev/null so a
     # missing manifest isn't logged as an error) and can take a while over a
     # slow mirror, so announce the attempt here — otherwise the install appears
@@ -752,6 +898,17 @@ install_prebuilt_release() {
     # release.json in the same checkout so the blob can be requested from the repo
     # that staged it — not the mirror that happened to serve this clone.
     if command -v curl >/dev/null 2>&1 && _sparse_fetch_file "$repo" "$tmp" "$sums" "$manifest"; then
+      if [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ]; then
+        manifest_build_commit="$(_manifest_build_commit "$tmp/$manifest")"
+        if ! printf '%s' "$manifest_build_commit" |
+            grep -Eq '^([0-9a-f]{40}|[0-9a-f]{64})$' ||
+            [ "$manifest_build_commit" != "$FORKMESH_EXPECTED_BUILD_COMMIT" ]; then
+          warn "Published release on $repo does not match required build commit $FORKMESH_EXPECTED_BUILD_COMMIT; refusing the same-version artifact."
+          continue
+        fi
+        provenance_ok=1
+        RELEASE_FRESHNESS_MATCH=1
+      fi
       hash="$(awk -v n="$ASSET_NAME" '$2==n {print $1; exit}' "$tmp/$sums" 2>/dev/null)"
       if printf '%s' "$hash" | grep -Eq '^[0-9a-f]{64}$'; then
         # Prefer the canonical owner/repo the manifest records — only that node
@@ -776,18 +933,35 @@ install_prebuilt_release() {
             continue
           fi
           got="$(_sha256_file "$bin")"
-          if [ -n "$got" ] && [ "$got" != "$hash" ]; then
+          if [ -z "$got" ] && [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ]; then
+            warn "A working sha256 tool is required for a commit-pinned binary install."
+            RELEASE_CANDIDATE_FAILURE=1
+            rm -f "$bin"
+            continue
+          elif [ -n "$got" ] && [ "$got" != "$hash" ]; then
             warn "Checksum mismatch for $ASSET_NAME (expected $hash, got $got); skipping."
             rm -f "$bin"
             continue
-          elif _install_binary "$bin"; then
+          elif _install_binary "$bin" "${got:+$hash}"; then
             [ -n "$got" ] || warn "No sha256 tool found; installed $ASSET_NAME unverified."
             REPO="$repo"; rm -rf "$tmp"
             say "Installed prebuilt ForkMesh ${ASSET_OS}/${ASSET_ARCH} binary to $BIN"
             return 0
+          elif [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ] &&
+               [ -n "${INSTALL_BINARY_FAILURE_KIND:-}" ]; then
+            RELEASE_CANDIDATE_FAILURE=1
           fi
         done
       fi
+    fi
+    # A pinned fleet install may never use the legacy, manifest-free binary
+    # fallback: without release.json/build_commit there is no proof that a
+    # same-semver artifact was built from the controller's source revision.
+    if [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ]; then
+      if [ "$provenance_ok" != "1" ]; then
+        warn "No commit-matched release manifest was available from $repo."
+      fi
+      continue
     fi
     # Legacy model: binary committed directly into .forkmesh/releases/<channel>/.
     if _sparse_fetch_file "$repo" "$tmp" "$ASSET_REL_PATH" && _install_binary "$tmp/$ASSET_REL_PATH"; then
@@ -836,6 +1010,14 @@ if [ "${FORKMESH_FROM_SOURCE:-0}" != "1" ]; then
     INSTALLED_PREBUILT=1
     ensure_qt_runtime
     diag prebuilt 1 "$ASSET_NAME"
+  elif [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ] &&
+       [ "${RELEASE_FRESHNESS_MATCH:-0}" != "1" ]; then
+    diag prebuilt 0 "release-commit-mismatch"
+    die "No published ForkMesh artifact matches required build commit $FORKMESH_EXPECTED_BUILD_COMMIT. Publish that commit's release before retrying the fleet binary install."
+  elif [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ] &&
+       [ "${RELEASE_CANDIDATE_FAILURE:-0}" = "1" ]; then
+    diag prebuilt 0 "release-candidate-provenance"
+    die "The published ForkMesh candidate failed its staged checksum/version/build-commit checks. The existing binary and daemon were left untouched."
   elif [ "$FORKMESH_NO_SOURCE_FALLBACK" = "1" ]; then
     diag prebuilt 0 "$ASSET_NAME"
     die "No prebuilt ForkMesh binary is published for ${ASSET_OS}/${ASSET_ARCH}, and falling back to a source build is disabled (FORKMESH_NO_SOURCE_FALLBACK=1, the default on headless Linux). Publish a prebuilt binary for this platform, or re-run with FORKMESH_NO_SOURCE_FALLBACK=0 to allow a source build."

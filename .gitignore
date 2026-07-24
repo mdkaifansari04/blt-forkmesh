@@ -1,5 +1,6 @@
 qt_client/build-forkmesh/
 qt_client/build-ci/
+qt_client/build-release/
 cloudflare_worker/python_modules/
 .wrangler/
 

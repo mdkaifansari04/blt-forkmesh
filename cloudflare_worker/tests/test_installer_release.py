@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 
 
 INSTALLER = Path(__file__).resolve().parents[1] / "public" / "install.sh"
@@ -42,13 +43,28 @@ ASSET_OS="linux"
 ASSET_ARCH="x86_64"
 ASSET_REL_PATH=".forkmesh/releases/${RELEASE_CHANNEL}/${ASSET_NAME}"
 FORKMESH_HOST="https://relay.test"
+FORKMESH_EXPECTED_BUILD_COMMIT="${FORKMESH_EXPECTED_BUILD_COMMIT:-}"
+FORKMESH_EXPECTED_RELEASE_VERSION="${FORKMESH_EXPECTED_RELEASE_VERSION:-}"
+DEFER_PINNED_REINSTALL=0
+ensure_qt_runtime() { :; }
+uninstall_forkmesh() { :; }
 BIN_DIR="$OUT_DIR/bin"
 BIN="$BIN_DIR/forkmesh"
 REPO_CANDIDATES=("https://relay.test/alice/forkmesh")
 """
 
 
-def _run(sums_line, payload, *, omit_curl=False, manifest=None):
+def _run(
+    sums_line,
+    payload,
+    *,
+    omit_curl=False,
+    manifest=None,
+    expected_build_commit="",
+    expected_version="",
+    existing_binary=None,
+    no_checksum_tool=False,
+):
     """Run install_prebuilt_release with a fake git+curl.
 
     Returns (rc, BIN bytes, stderr, blob_url). When `manifest` is given it is
@@ -95,6 +111,11 @@ exit 0
             encoding="utf-8",
         )
         (bindir / "git").chmod(0o755)
+        if no_checksum_tool:
+            (bindir / "sha256sum").write_text(
+                "#!/bin/sh\nexit 127\n", encoding="utf-8"
+            )
+            (bindir / "sha256sum").chmod(0o755)
         if not omit_curl:
             # Fake curl: `curl -fsSL <url> -o <out>` → record the URL and write
             # the payload to <out>.
@@ -119,12 +140,19 @@ exit 0
 
         out_dir = tmp / "out"
         out_dir.mkdir()
+        if existing_binary is not None:
+            existing = out_dir / "bin" / "forkmesh"
+            existing.parent.mkdir()
+            existing.write_bytes(existing_binary)
+            existing.chmod(0o755)
         env = os.environ.copy()
         env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
         env["OUT_DIR"] = str(out_dir)
         env["FAKE_REPO"] = str(tmp / "fake_repo")
         env["FORKMESH_TEST_PAYLOAD"] = str(payload_file)
         env["FORKMESH_TEST_URL_FILE"] = str(url_file)
+        env["FORKMESH_EXPECTED_BUILD_COMMIT"] = expected_build_commit
+        env["FORKMESH_EXPECTED_RELEASE_VERSION"] = expected_version
 
         script = PREAMBLE + _release_functions() + "\ninstall_prebuilt_release\n"
         proc = subprocess.run(
@@ -141,6 +169,19 @@ def test_installs_verified_blob():
     rc, installed, _, _ = _run("%s  forkmesh-linux-x86_64\n" % digest, payload)
     assert rc == 0
     assert installed == payload
+
+
+def test_unpinned_install_keeps_legacy_no_checksum_tool_fallback():
+    payload = b"\x7fELF ordinary unpinned install" * 20
+    digest = hashlib.sha256(payload).hexdigest()
+    rc, installed, stderr, _ = _run(
+        "%s  forkmesh-linux-x86_64\n" % digest,
+        payload,
+        no_checksum_tool=True,
+    )
+    assert rc == 0
+    assert installed == payload
+    assert "installed forkmesh-linux-x86_64 unverified" in stderr.lower()
 
 
 def test_rejects_checksum_mismatch():
@@ -195,6 +236,277 @@ def test_blob_url_falls_back_to_mirror_without_manifest():
     assert blob_url == (
         "https://relay.test/api/repo/alice/forkmesh"
         "/releases/blob/sha256/%s" % digest)
+
+
+def test_commit_pinned_install_accepts_exact_release_revision():
+    commit = "a1" * 20
+    payload = (
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        '  --version) printf "ForkMesh 0.7.0\\n" ;;\n'
+        '  --build-commit) printf "%s\\n" ;;\n'
+        "  *) exit 2 ;;\n"
+        "esac\n" % commit
+    ).encode()
+    digest = hashlib.sha256(payload).hexdigest()
+    manifest = (
+        '{"schema":"forkmesh-release-v1","repo":"forkmesh/forkmesh",'
+        '"tag":"v0.7.0","tag_commit":"%s","build_commit":"%s",'
+        '"channel":"latest",'
+        '"assets":[{"name":"forkmesh-linux-x86_64",'
+        '"blob_sha256":"%s"}]}' % ("f0" * 20, commit, digest)
+    )
+    rc, installed, stderr, _ = _run(
+        "%s  forkmesh-linux-x86_64\n" % digest,
+        payload,
+        manifest=manifest,
+        expected_build_commit=commit,
+        expected_version="0.7.0",
+        existing_binary=b"old-known-good-binary",
+    )
+    assert rc == 0, stderr
+    assert installed == payload
+
+
+def test_pinned_reinstall_defers_destruction_until_verified_stage():
+    source = INSTALLER.read_text(encoding="utf-8")
+    dispatch = source[source.index('if [ "$FORKMESH_REINSTALL" = "1" ]'): ]
+    assert 'if [ -n "$FORKMESH_EXPECTED_BUILD_COMMIT" ]; then' in dispatch
+    assert "DEFER_PINNED_REINSTALL=1" in dispatch
+    install_start = source.index("_install_binary() {")
+    install_end = source.index("\n}\n", install_start)
+    install_fn = source[install_start:install_end]
+    assert install_fn.index('staged="$(mktemp') < install_fn.index(
+        "uninstall_forkmesh reinstall"
+    )
+    assert install_fn.index("uninstall_forkmesh reinstall") < install_fn.index(
+        'mv -f "$staged" "$BIN"'
+    )
+
+
+def test_commit_pinned_install_rejects_stale_same_semver_release():
+    # Version strings are deliberately absent from this gate: two v0.7.0
+    # artifacts can be different.  Even with valid bytes/checksum, release.json
+    # from an older commit must be rejected before installation.
+    payload = b"\x7fELF stale but checksum-valid v0.7.0 artifact" * 20
+    digest = hashlib.sha256(payload).hexdigest()
+    current_commit = "b2" * 20
+    stale_commit = "c3" * 20
+    manifest = (
+        '{"schema":"forkmesh-release-v1","repo":"forkmesh/forkmesh",'
+        '"tag":"v0.7.0","tag_commit":"%s","build_commit":"%s",'
+        '"channel":"latest",'
+        '"assets":[{"name":"forkmesh-linux-x86_64",'
+        '"blob_sha256":"%s"}]}' % ("f0" * 20, stale_commit, digest)
+    )
+    rc, installed, stderr, blob_url = _run(
+        "%s  forkmesh-linux-x86_64\n" % digest,
+        payload,
+        manifest=manifest,
+        expected_build_commit=current_commit,
+        expected_version="0.7.0",
+    )
+    assert rc != 0
+    assert installed is None
+    assert blob_url is None
+    assert "refusing the same-version artifact" in stderr
+
+
+def test_commit_pinned_install_rejects_manifest_free_legacy_release():
+    payload = b"\x7fELF unprovable legacy artifact" * 20
+    digest = hashlib.sha256(payload).hexdigest()
+    rc, installed, stderr, blob_url = _run(
+        "%s  forkmesh-linux-x86_64\n" % digest,
+        payload,
+        expected_build_commit="d4" * 20,
+        expected_version="0.7.0",
+    )
+    assert rc != 0
+    assert installed is None
+    assert blob_url is None
+    assert "does not match required build commit" in stderr
+
+
+def test_candidate_build_commit_mismatch_preserves_installed_binary():
+    required = "e5" * 20
+    payload = (
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        '  --version) printf "ForkMesh 0.7.0\\n" ;;\n'
+        '  --build-commit) printf "%s\\n" ;;\n'
+        "  *) exit 2 ;;\n"
+        "esac\n" % ("f6" * 20)
+    ).encode()
+    digest = hashlib.sha256(payload).hexdigest()
+    manifest = (
+        '{"schema":"forkmesh-release-v1","repo":"forkmesh/forkmesh",'
+        '"tag":"v0.7.0","tag_commit":"%s","build_commit":"%s",'
+        '"channel":"latest","assets":[{"name":"forkmesh-linux-x86_64",'
+        '"blob_sha256":"%s"}]}' % ("a7" * 20, required, digest)
+    )
+    old_binary = b"old-known-good-binary"
+    rc, installed, stderr, _ = _run(
+        "%s  forkmesh-linux-x86_64\n" % digest,
+        payload,
+        manifest=manifest,
+        expected_build_commit=required,
+        expected_version="0.7.0",
+        existing_binary=old_binary,
+    )
+    assert rc != 0
+    assert installed == old_binary
+    assert "leaving the existing node untouched" in stderr
+
+
+def test_candidate_version_mismatch_preserves_installed_binary():
+    required = "a8" * 20
+    payload = (
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        '  --version) printf "ForkMesh 0.6.20\\n" ;;\n'
+        '  --build-commit) printf "%s\\n" ;;\n'
+        "  *) exit 2 ;;\n"
+        "esac\n" % required
+    ).encode()
+    digest = hashlib.sha256(payload).hexdigest()
+    manifest = (
+        '{"schema":"forkmesh-release-v1","repo":"forkmesh/forkmesh",'
+        '"tag":"v0.7.0","tag_commit":"%s","build_commit":"%s",'
+        '"channel":"latest","assets":[{"name":"forkmesh-linux-x86_64",'
+        '"blob_sha256":"%s"}]}' % ("b9" * 20, required, digest)
+    )
+    old_binary = b"old-known-good-binary"
+    rc, installed, stderr, _ = _run(
+        "%s  forkmesh-linux-x86_64\n" % digest,
+        payload,
+        manifest=manifest,
+        expected_build_commit=required,
+        expected_version="0.7.0",
+        existing_binary=old_binary,
+    )
+    assert rc != 0
+    assert installed == old_binary
+    assert "required ForkMesh version" in stderr
+
+
+def test_commit_pinned_install_requires_a_working_checksum_tool():
+    required = "ca" * 20
+    payload = (
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        '  --version) printf "ForkMesh 0.7.0\\n" ;;\n'
+        '  --build-commit) printf "%s\\n" ;;\n'
+        "  *) exit 2 ;;\n"
+        "esac\n" % required
+    ).encode()
+    digest = hashlib.sha256(payload).hexdigest()
+    manifest = (
+        '{"schema":"forkmesh-release-v1","repo":"forkmesh/forkmesh",'
+        '"tag":"v0.7.0","tag_commit":"%s","build_commit":"%s",'
+        '"channel":"latest","assets":[{"name":"forkmesh-linux-x86_64",'
+        '"blob_sha256":"%s"}]}' % ("da" * 20, required, digest)
+    )
+    old_binary = b"old-known-good-binary"
+    rc, installed, stderr, _ = _run(
+        "%s  forkmesh-linux-x86_64\n" % digest,
+        payload,
+        manifest=manifest,
+        expected_build_commit=required,
+        expected_version="0.7.0",
+        existing_binary=old_binary,
+        no_checksum_tool=True,
+    )
+    assert rc != 0
+    assert installed == old_binary
+    assert "working sha256 tool is required" in stderr
+
+
+def test_exact_staged_copy_is_checked_before_atomic_swap(tmp_path):
+    out_dir = tmp_path / "out"
+    bin_dir = out_dir / "bin"
+    bin_dir.mkdir(parents=True)
+    old_binary = b"old-known-good-binary"
+    (bin_dir / "forkmesh").write_bytes(old_binary)
+    candidate = tmp_path / "candidate"
+    candidate.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    candidate.chmod(0o755)
+    digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+
+    stub_bin = tmp_path / "stubbin"
+    stub_bin.mkdir()
+    # Simulate bytes changing during the candidate -> destination-filesystem
+    # copy. Verification must run on the staged path, not only on candidate.
+    (stub_bin / "install").write_text(
+        """#!/bin/sh
+dest=""
+for arg in "$@"; do dest="$arg"; done
+printf '#!/bin/sh\\nexit 99\\n' > "$dest"
+chmod 0755 "$dest"
+""",
+        encoding="utf-8",
+    )
+    (stub_bin / "install").chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "OUT_DIR": str(out_dir),
+            "CANDIDATE": str(candidate),
+            "EXPECTED_HASH": digest,
+            "FORKMESH_EXPECTED_BUILD_COMMIT": "ab" * 20,
+            "FORKMESH_EXPECTED_RELEASE_VERSION": "0.7.0",
+            "PATH": str(stub_bin) + os.pathsep + env["PATH"],
+        }
+    )
+    script = (
+        PREAMBLE
+        + _release_functions()
+        + '\nif _install_binary "$CANDIDATE" "$EXPECTED_HASH"; then exit 9; fi\n'
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script], env=env, text=True, capture_output=True
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert (bin_dir / "forkmesh").read_bytes() == old_binary
+    assert "Staged ForkMesh binary failed its sha256 check" in proc.stderr
+
+
+def test_probe_force_kills_a_candidate_that_ignores_sigterm(tmp_path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    candidate = tmp_path / "ignores-term"
+    candidate.write_text(
+        "#!/bin/sh\ntrap '' TERM\nwhile :; do :; done\n", encoding="utf-8"
+    )
+    candidate.chmod(0o755)
+    stub_bin = tmp_path / "stubbin"
+    stub_bin.mkdir()
+    # Collapse the 50 polling sleeps so this regression proves SIGKILL behavior
+    # without adding five seconds to every test run.
+    (stub_bin / "sleep").write_text("#!/bin/sh\n:\n", encoding="utf-8")
+    (stub_bin / "sleep").chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "OUT_DIR": str(out_dir),
+            "CANDIDATE": str(candidate),
+            "PATH": str(stub_bin) + os.pathsep + env["PATH"],
+        }
+    )
+    script = (
+        PREAMBLE
+        + _release_functions()
+        + '\nif _bounded_binary_probe "$CANDIDATE" --version; then exit 9; fi\n'
+    )
+    started = time.monotonic()
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=3,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert time.monotonic() - started < 2
 
 
 # --- direct-upload install (adhoc #67) ---------------------------------------

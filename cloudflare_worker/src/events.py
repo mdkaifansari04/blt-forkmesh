@@ -23,7 +23,11 @@ from js import crypto as js_crypto
 from pyodide.ffi import to_js as _to_js
 
 from catalog import clean_string
-from releases import release_manifest_content, release_signing_message
+from releases import (
+    release_manifest_content,
+    release_signing_message,
+    valid_git_commit,
+)
 
 
 def to_js(value):
@@ -337,6 +341,9 @@ async def verify_release_manifest(manifest):
     repo = manifest.get("repo", "") or ""
     tag = manifest.get("tag", "") or ""
     if not author or not signature or not repo or not tag:
+        return False
+    build_commit = manifest.get("build_commit", "") or ""
+    if build_commit and not valid_git_commit(build_commit):
         return False
     try:
         ts = int(manifest.get("published_at", 0))

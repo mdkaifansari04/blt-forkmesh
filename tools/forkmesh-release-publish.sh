@@ -16,12 +16,22 @@
 #
 # Usage:
 #   tools/forkmesh-release-publish.sh [--channel latest] [--tag vX.Y.Z] \
-#       [--cas-dir DIR] [--repo owner/repo] BINARY [BINARY ...]
+#       [--tag-commit GIT_COMMIT] [--build-commit GIT_COMMIT] \
+#       [--cas-dir DIR] [--repo owner/repo] \
+#       BINARY [BINARY ...]
 #
 #   --channel   Release channel directory under .forkmesh/releases/ (default: latest, or
 #               $RELEASE_CHANNEL).
 #   --tag       Immutable git tag this release is cut from (default: $FORKMESH_TAG
 #               or the current `git describe --tags`).
+#   --tag-commit  Peeled commit targeted by --tag (default:
+#                 $FORKMESH_TAG_COMMIT, else `git rev-list -n1 <tag>`).
+#   --build-commit
+#                 Exact code-source commit embedded in the binaries (default:
+#                 $FORKMESH_BUILD_COMMIT, else the newest commit outside
+#                 .forkmesh/releases/). This is deliberately separate from the
+#                 immutable tag target so same-semver rebuild provenance does
+#                 not redefine an existing tag.
 #   --cas-dir   Where to write blob bytes — point this at the serving node's
 #               <mirror>/forkmesh-releases directory. Defaults to
 #               $FORKMESH_RELEASE_CAS, else .forkmesh/release-blobs (the node that
@@ -37,12 +47,16 @@ channel="${RELEASE_CHANNEL:-latest}"
 tag="${FORKMESH_TAG:-}"
 cas_dir="${FORKMESH_RELEASE_CAS:-}"
 repo="${FORKMESH_REPO:-forkmesh/forkmesh}"
+tag_commit="${FORKMESH_TAG_COMMIT:-}"
+build_commit="${FORKMESH_BUILD_COMMIT:-}"
 bins=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --channel) channel="$2"; shift 2 ;;
     --tag)     tag="$2"; shift 2 ;;
+    --tag-commit) tag_commit="$2"; shift 2 ;;
+    --build-commit) build_commit="$2"; shift 2 ;;
     --cas-dir) cas_dir="$2"; shift 2 ;;
     --repo)    repo="$2"; shift 2 ;;
     -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
@@ -55,11 +69,52 @@ done
 [ "${#bins[@]}" -gt 0 ] || { echo "Error: no binaries given." >&2; exit 2; }
 
 if [ -z "$tag" ]; then
-  tag="$(git describe --tags --exact-match 2>/dev/null || git describe --tags 2>/dev/null || echo "")"
+  tag="$(
+    git describe --tags --exact-match 2>/dev/null ||
+      git describe --tags --abbrev=0 2>/dev/null ||
+      echo ""
+  )"
 fi
+[ -n "$tag" ] || {
+  echo "Error: --tag must name an existing release tag." >&2
+  exit 2
+}
 [ -n "$cas_dir" ] || cas_dir=".forkmesh/release-blobs"
 
-tag_commit="$(git rev-parse HEAD 2>/dev/null || echo "")"
+resolved_tag_commit=""
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  resolved_tag_commit="$(
+    git rev-parse --verify "refs/tags/${tag}^{commit}" 2>/dev/null || true
+  )"
+  if [ -z "$resolved_tag_commit" ]; then
+    echo "Error: release tag '$tag' does not resolve through refs/tags/ to a commit." >&2
+    exit 2
+  fi
+  resolved_tag_commit="$(
+    printf '%s' "$resolved_tag_commit" | tr 'A-F' 'a-f'
+  )"
+  if [ -n "$tag_commit" ] &&
+     [ "$(printf '%s' "$tag_commit" | tr 'A-F' 'a-f')" != "$resolved_tag_commit" ]; then
+    echo "Error: --tag-commit does not match the peeled target of refs/tags/$tag." >&2
+    exit 2
+  fi
+  tag_commit="$resolved_tag_commit"
+fi
+[ -n "$build_commit" ] ||
+  build_commit="$(git log -1 --format=%H -- . \
+    ':(exclude).forkmesh/releases/**' 2>/dev/null || echo "")"
+tag_commit="$(printf '%s' "$tag_commit" | tr 'A-F' 'a-f')"
+build_commit="$(printf '%s' "$build_commit" | tr 'A-F' 'a-f')"
+if ! printf '%s' "$tag_commit" |
+    grep -Eq '^([0-9a-f]{40}|[0-9a-f]{64})$'; then
+  echo "Error: --tag-commit must identify the tag's exact 40- or 64-hex Git commit." >&2
+  exit 2
+fi
+if ! printf '%s' "$build_commit" |
+    grep -Eq '^([0-9a-f]{40}|[0-9a-f]{64})$'; then
+  echo "Error: --build-commit must identify the binary's exact 40- or 64-hex Git commit." >&2
+  exit 2
+fi
 meta_dir=".forkmesh/releases/${channel}"
 mkdir -p "$meta_dir" "$cas_dir"
 
@@ -126,6 +181,7 @@ rm -f "${sums_file}.tmp"
   printf '  "repo": "%s",\n' "$(json_escape "$repo")"
   printf '  "tag": "%s",\n' "$(json_escape "$tag")"
   printf '  "tag_commit": "%s",\n' "$(json_escape "$tag_commit")"
+  printf '  "build_commit": "%s",\n' "$(json_escape "$build_commit")"
   printf '  "channel": "%s",\n' "$(json_escape "$channel")"
   printf '  "created_at": %s,\n' "$(date +%s)000"
   printf '  "assets": [%s]\n' "$assets_json"
