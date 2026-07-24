@@ -836,6 +836,11 @@ async def edge_cache_delete(cache_key):
 # this TTL is only a backstop that lets a colo re-fetch if a state-hash update is
 # ever missed. See git_advert_cache_key and Default._clone_advert_cache_key.
 GIT_ADVERT_CACHE_TTL = 300
+REPOSITORY_METADATA_CACHE_TTL = 300
+REPOSITORY_METADATA_CACHE_MAX_BYTES = 8 * 1024 * 1024
+REPOSITORY_METADATA_CACHE_PREFIX = (
+    "https://forkmesh.internal/repository-metadata/v1/"
+)
 
 
 async def git_advert_cache_get(cache_key):
@@ -880,6 +885,127 @@ async def git_advert_cache_put(cache_key, response, ttl=GIT_ADVERT_CACHE_TTL):
                 "content-type": ctype
                 or "application/x-git-upload-pack-advertisement",
                 "cache-control": "public, max-age=%d" % ttl,
+            },
+        }))
+        await js_caches.default.put(cache_key, cacheable)
+    except Exception:
+        pass
+
+
+def repository_metadata_cache_key(context, operation, query):
+    """Key a small public metadata read by its attested repository state.
+
+    Only the fixed World/bootstrap surface is admitted. Source blobs, raw
+    files, private routes, moving un-attested refs, and arbitrary path queries
+    never enter the edge cache. The refs digest in ``context["pins"]`` changes
+    the key whenever any published head changes, including forkmesh/pulls.
+    """
+    if not isinstance(context, dict) or not isinstance(query, dict):
+        return ""
+    pins = sorted({
+        str(pin).lower()
+        for pin in context.get("pins", set())
+        if re.fullmatch(r"[0-9a-f]{64}", str(pin).lower())
+    })
+    repo_bi = str(context.get("repoBi") or "")
+    if not pins or not repo_bi:
+        return ""
+    ref = str(query.get("ref") or "").lower()
+    exact_ref = bool(re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", ref))
+    canonical_query = {}
+    if operation == "branches" and not query:
+        pass
+    elif operation == "tree":
+        path = str(query.get("path") or "")
+        if path not in {
+            "", "pulls", ".forkmesh/issues",
+            ".forkmesh/issues/open", ".forkmesh/issues/closed",
+        }:
+            return ""
+        if ref and not exact_ref:
+            return ""
+        canonical_query = {"path": path, "ref": ref}
+    elif operation in {"sizes", "stats"} and exact_ref:
+        canonical_query = {"ref": ref}
+    elif operation == "blobs" and exact_ref:
+        paths = query.get("path")
+        if not isinstance(paths, list) or not 1 <= len(paths) <= MAX_BLOB_BATCH:
+            return ""
+        normalized_paths = sorted(set(str(path) for path in paths))
+        if (
+            len(normalized_paths) != len(paths)
+            or any(
+                not re.fullmatch(
+                    r"pulls/[1-9][0-9]{0,8}/pull\.md", path
+                )
+                for path in normalized_paths
+            )
+        ):
+            return ""
+        canonical_query = {"path": normalized_paths, "ref": ref}
+    else:
+        return ""
+    digest = hashlib.sha256(json.dumps(
+        {
+            "repoBi": repo_bi,
+            "pins": pins,
+            "operation": operation,
+            "query": canonical_query,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    return REPOSITORY_METADATA_CACHE_PREFIX + digest
+
+
+async def repository_metadata_cache_get(cache_key):
+    """Return an edge-held public metadata body with browser no-store policy."""
+    if not cache_key:
+        return None
+    try:
+        hit = await js_caches.default.match(cache_key)
+    except Exception:
+        hit = None
+    if hit is None:
+        return None
+    try:
+        content_type = hit.headers.get("content-type")
+    except Exception:
+        content_type = None
+    return JsResponse.new(hit.body, to_js({
+        "status": 200,
+        "headers": {
+            "content-type": (
+                content_type or "application/json; charset=utf-8"
+            ),
+            "cache-control": "no-store, max-age=0, must-revalidate",
+        },
+    }))
+
+
+async def repository_metadata_cache_put(cache_key, response, status):
+    """Best-effort edge copy of one bounded public metadata response."""
+    if not cache_key or int(status or 0) != 200:
+        return
+    try:
+        js_resp = getattr(response, "js_object", None) or response
+        clone = js_resp.clone()
+        content_type = clone.headers.get("content-type")
+        content_length = int(clone.headers.get("content-length") or 0)
+        if not str(content_type or "").lower().startswith("application/json"):
+            return
+        if (
+            content_length <= 0
+            or content_length > REPOSITORY_METADATA_CACHE_MAX_BYTES
+        ):
+            return
+        cacheable = JsResponse.new(clone.body, to_js({
+            "status": 200,
+            "headers": {
+                "content-type": content_type,
+                "cache-control": (
+                    "public, max-age=%d" % REPOSITORY_METADATA_CACHE_TTL
+                ),
             },
         }))
         await js_caches.default.put(cache_key, cacheable)
@@ -28107,6 +28233,15 @@ async def _https_mirror_proxy(
         return json_response({"error": "method_not_allowed"}, status=405)
     if operation != "git-upload-pack" and method not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
+    query = _https_mirror_request_query(
+        urlparse(request.url), operation, release_sha=release_sha)
+    metadata_cache_key = (
+        repository_metadata_cache_key(context, operation, query)
+        if method == "GET" else ""
+    )
+    cached_metadata = await repository_metadata_cache_get(metadata_cache_key)
+    if cached_metadata is not None:
+        return cached_metadata
     body = b""
     if method == "POST":
         try:
@@ -28136,8 +28271,6 @@ async def _https_mirror_proxy(
         return json_response(
             {"error": "mirror_unavailable"}, status=503,
             cache_control="no-store")
-    query = _https_mirror_request_query(
-        urlparse(request.url), operation, release_sha=release_sha)
     from js import fetch as js_fetch
     for endpoint in candidates:
         if not await _https_mirror_repository_proof(
@@ -28232,6 +28365,8 @@ async def _https_mirror_proxy(
         response_headers = https_routing.response_headers(raw_headers)
         await _https_mirror_route_advance(
             env, context, endpoint["node"], operation)
+        await repository_metadata_cache_put(
+            metadata_cache_key, upstream, status)
         # The selected origin and node are deliberately omitted. This streams
         # the body; the Worker does not materialize repository bytes.
         return JsResponse.new(

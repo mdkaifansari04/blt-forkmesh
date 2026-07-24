@@ -812,6 +812,44 @@ def test_pull_metadata_branch_is_read_through_its_resolved_commit(application):
     assert "Metadata branch truth" in blob["content"]
 
 
+def test_collaboration_tree_avoids_whole_repo_analysis_and_per_entry_logs(
+    application, monkeypatch,
+):
+    app, _commit, _release_hash, _logs = application
+    repository = app.repositories[("alice", "project")]
+    summary_paths = []
+    original_summary = repository._commit_summary
+
+    def unavailable_analysis(_commit):
+        raise AssertionError(
+            "collaboration metadata must not occupy the analysis lock"
+        )
+
+    def counted_summary(commit, path=""):
+        summary_paths.append(path)
+        return original_summary(commit, path)
+
+    monkeypatch.setattr(repository, "_analysis", unavailable_analysis)
+    monkeypatch.setattr(repository, "_commit_summary", counted_summary)
+    metadata_commit = repository.resolve_commit("forkmesh/pulls")
+    payload = repository.tree({
+        "path": "pulls",
+        "ref": metadata_commit,
+    })
+
+    assert payload["ok"] is True
+    assert payload["commit"] == metadata_commit
+    assert payload["analysis"]["commit"] == metadata_commit
+    assert payload["analysis"]["dependency"]["status"] == "not-requested"
+    assert payload["analysis"]["coverage"]["status"] == "not-requested"
+    assert summary_paths == [""]
+    assert [(item["name"], item["type"]) for item in payload["entries"]] == [
+        ("42", "tree")
+    ]
+    assert payload["entries"][0]["analysisCommit"] == metadata_commit
+    assert payload["entries"][0]["dependencies"] == []
+
+
 def test_compare_returns_bounded_portable_pull_change_set(application):
     app, commit, _release_hash, _logs = application
     repository = app.repositories[("alice", "project")]

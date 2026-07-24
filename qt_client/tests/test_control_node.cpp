@@ -1028,6 +1028,122 @@ int main(int argc, char **argv)
                  QFileDevice::WriteOther | QFileDevice::ExeOther)),
           "mirror Actions summary remains strict JSON mode 0600");
     summaryFile.close();
+    const QString statePath =
+        QDir(summaryDirectory)
+            .filePath(QStringLiteral("actions-state.json"));
+    check(forkmesh::mirror_actions::writeStateFile(
+              statePath, QStringLiteral("mirror2"),
+              QStringLiteral("running"), summaryNow),
+          "mirror Actions state commits through the protected atomic writer");
+    QFile stateFile(statePath);
+    const QJsonObject writtenState =
+        stateFile.open(QIODevice::ReadOnly)
+            ? QJsonDocument::fromJson(stateFile.readAll()).object()
+            : QJsonObject();
+    const QSet<QString> expectedStateKeys{
+        QStringLiteral("schemaVersion"), QStringLiteral("type"),
+        QStringLiteral("node"), QStringLiteral("state"),
+        QStringLiteral("updatedAt"), QStringLiteral("expiresAt")};
+    QSet<QString> writtenStateKeys;
+    for (auto it = writtenState.constBegin();
+         it != writtenState.constEnd(); ++it) {
+        writtenStateKeys.insert(it.key());
+    }
+    check(writtenStateKeys == expectedStateKeys &&
+              writtenState.value(QStringLiteral("type")).toString() ==
+                  QStringLiteral("forkmesh.mirror-actions-state") &&
+              writtenState.value(QStringLiteral("state")).toString() ==
+                  QStringLiteral("running") &&
+              !(QFileInfo(statePath).permissions() &
+                (QFileDevice::ReadGroup | QFileDevice::WriteGroup |
+                 QFileDevice::ExeGroup | QFileDevice::ReadOther |
+                 QFileDevice::WriteOther | QFileDevice::ExeOther)),
+          "mirror Actions state remains exact bounded JSON mode 0600");
+    stateFile.close();
+    check(!forkmesh::mirror_actions::writeStateFile(
+              statePath, QStringLiteral("mirror2"),
+              QStringLiteral("unknown"), summaryNow),
+          "mirror Actions state rejects an unknown runtime state");
+
+    using forkmesh::mirror_actions::detail::SummaryWritePolicy;
+    const auto policy = [](
+                            const QString &path,
+                            quint64 effectiveUserId,
+                            quint64 parentUserId,
+                            quint64 parentGroupId,
+                            quint32 parentMode,
+                            bool targetExists,
+                            bool targetRegular,
+                            bool targetSymlink,
+                            quint64 targetUserId,
+                            quint64 targetGroupId,
+                            quint32 targetMode,
+                            quint64 targetLinks,
+                            bool realParent = true) {
+        return forkmesh::mirror_actions::detail::
+            classifySummaryWritePolicy(
+                path, effectiveUserId, parentUserId, parentGroupId,
+                parentMode, realParent, targetExists, targetRegular,
+                targetSymlink, targetUserId, targetGroupId, targetMode,
+                targetLinks);
+    };
+    check(policy(
+              summaryPath, 1000, 1000, 1000, 0700,
+              true, true, false, 1000, 1000, 0600, 1) ==
+              SummaryWritePolicy::SameAccount,
+          "same-account Actions handoff accepts only owner mode 0600");
+    for (const QString &fixedPath : {
+             QString::fromLatin1(
+                 forkmesh::mirror_actions::kSystemSummaryPath),
+             QString::fromLatin1(
+                 forkmesh::mirror_actions::kSystemStatePath)}) {
+        check(policy(
+                  fixedPath, 0, 991, 992, 0700,
+                  false, false, false, 0, 0, 0, 0) ==
+                  SummaryWritePolicy::RootGatewayHandoff &&
+                  policy(
+                      fixedPath, 0, 991, 992, 0700,
+                      true, true, false, 0, 992, 0640, 1) ==
+                  SummaryWritePolicy::RootGatewayHandoff,
+              "fixed Actions files accept root-to-gateway group handoff");
+    }
+    const QString fixedSummary = QString::fromLatin1(
+        forkmesh::mirror_actions::kSystemSummaryPath);
+    check(policy(
+              QStringLiteral("/tmp/actions-summary.json"),
+              0, 991, 992, 0700, false, false, false,
+              0, 0, 0, 0) == SummaryWritePolicy::Reject &&
+              policy(
+                  fixedSummary, 0, 991, 992, 0700,
+                  true, true, false, 991, 992, 0640, 1) ==
+                  SummaryWritePolicy::Reject,
+          "root Actions handoff rejects arbitrary paths and service-owned spoofs");
+    check(policy(
+              fixedSummary, 0, 991, 992, 0700,
+              true, true, false, 0, 991, 0640, 1) ==
+              SummaryWritePolicy::Reject &&
+              policy(
+                  fixedSummary, 0, 991, 992, 0700,
+                  true, true, false, 0, 992, 0600, 1) ==
+                  SummaryWritePolicy::Reject &&
+              policy(
+                  fixedSummary, 0, 991, 992, 0700,
+                  true, true, true, 0, 992, 0640, 1) ==
+                  SummaryWritePolicy::Reject &&
+              policy(
+                  fixedSummary, 0, 991, 992, 0700,
+                  true, true, false, 0, 992, 0640, 2) ==
+                  SummaryWritePolicy::Reject,
+          "root Actions handoff rejects wrong group, mode, symlink, and hardlink");
+    check(policy(
+              fixedSummary, 0, 991, 992, 0750,
+              false, false, false, 0, 0, 0, 0) ==
+              SummaryWritePolicy::Reject &&
+              policy(
+                  fixedSummary, 0, 991, 992, 0700,
+                  false, false, false, 0, 0, 0, 0, false) ==
+                  SummaryWritePolicy::Reject,
+          "root Actions handoff requires an exact mode-0700 real parent");
     check(forkmesh::mirror_actions::buildSummary(
               QStringLiteral("invalid node"), summaryRuns,
               summaryStore, summaryNow)

@@ -61,7 +61,7 @@
     "actionsSummaryPath": {
       "type": "string",
       "minLength": 1,
-      "description": "Owner-only short-lived redacted Actions summary. Required when a repository explicitly enables actions-status."
+      "description": "Absolute normalized path to the short-lived redacted Actions summary in the gateway account's mode-0700 directory. Same-account files are mode 0600; the packaged fixed path also accepts root:gateway-group mode 0640. Required when a repository explicitly enables actions-status."
     },
     "privateReplicaStore": {
       "type": "string",

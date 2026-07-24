@@ -913,6 +913,11 @@
     applyAvatar(avatar, session);
     applyAvatar($("[data-home-user-avatar]"), session);
     applyAvatar($("[data-home-compose-avatar]"), session);
+    const publicProfileLink = $("[data-account-menu-public-profile]");
+    if (publicProfileLink && session?.nodeName) {
+      publicProfileLink.href =
+        "/@" + encodeURIComponent(String(session.nodeName).toLowerCase());
+    }
     if (adminButton) {
       let adminUrl = session?.isAdmin ? (session?.adminUrl || "") : "";
       if (adminUrl && session?.nodeName && !/[?&]admin=/.test(adminUrl)) {

@@ -199,29 +199,44 @@ Actions publication is also explicit and off by default.
 `catalog.actionsEnabled` is the owner-approved upper bound; it does not by
 itself claim that a workflow is running. The local executor writes
 `actions-state.json` next to `gatewayConfigPath`, using the exact contract in
-`docs/mirror-actions-state.schema.json`. The publisher accepts only a regular,
-single-link, owner-only file whose node matches `nodeOwner`, whose state is
-exactly `disabled`, `enabled`, or `running`, and whose update/expiry timestamps
-fit a maximum 15-minute lease horizon. A disabled catalog setting can never be
-elevated by a lease. Missing, unsafe, malformed, stale, or implausibly dated
-leases fall back to the configured enabled/disabled state without breaking
-ordinary mirror renewal. Workflow definitions, variables, commands, paths,
-logs, and secret values are never copied into the signed public catalog.
+`docs/mirror-actions-state.schema.json`. A same-account deployment uses a
+regular, single-link, producer-owned mode-0600 file. The packaged root control
+daemon instead uses only the fixed
+`/var/lib/forkmesh-mirror/gateway/actions-state.json` handoff: the parent
+remains `forkmesh-mirror:forkmesh-mirror` mode 0700 and the atomically replaced
+file is `root:forkmesh-mirror` mode 0640. The service-account reader requires
+that exact parent owner/group/mode and accepts the group-readable form only at
+that fixed path with root ownership, its own effective group, one link, and no
+symbolic-link traversal. The service account can remove the file (causing a
+safe fallback), but cannot forge a root-owned replacement. The node must match
+`nodeOwner`, the state must be exactly `disabled`, `enabled`, or `running`, and
+the update/expiry timestamps must fit a maximum 15-minute lease horizon. A
+disabled catalog setting can never be elevated by a lease. Missing, unsafe,
+malformed, stale, or implausibly dated leases fall back to the configured
+enabled/disabled state without breaking ordinary mirror renewal. Workflow
+definitions, variables, commands, paths, logs, and secret values are never
+copied into the signed public catalog.
 
 `actions-status` is a separate explicit read operation. When it is present,
 the generated gateway configuration contains one fixed `actionsSummaryPath`
 next to `gatewayConfigPath`; without the operation, that path is omitted. The
-desktop executor atomically maintains `actions-summary.json` as a regular,
-single-link, owner-only mode-0600 file following
-`docs/mirror-actions-summary.schema.json`. It contains at most the 20 newest
-runs, exact lifecycle timestamps, and at most 16 KiB of valid UTF-8 from each
-ActionStore log tail. ActionRunner redacts configured variable values before
-the log reaches ActionStore. The summary never serializes workflow source,
-commands, variable maps, workflow paths, local paths, or private repository
-data. Its positive expiry is ten minutes, below the enforced 15-minute maximum;
-the desktop refreshes the lease periodically, publishes lifecycle changes on
-the next event-loop turn, and coalesces high-volume running output rather than
-writing once per line.
+desktop executor atomically maintains `actions-summary.json` following
+`docs/mirror-actions-summary.schema.json`. Same-account deployments retain
+producer-owned mode 0600. The packaged root daemon may cross the account
+boundary only through
+`/var/lib/forkmesh-mirror/gateway/actions-summary.json`, with the same protected
+parent and exact `root:forkmesh-mirror` mode-0640, regular, single-link contract
+as the state lease. The gateway rechecks parent and file metadata on every
+open, uses no-follow descriptors, and fails closed on replacement or spoofed
+ownership. It contains at most the 20 newest runs, exact lifecycle timestamps,
+and at most 16 KiB of valid UTF-8 from each ActionStore log tail. ActionRunner
+redacts configured variable values before the log reaches ActionStore. The
+summary never serializes workflow source, commands, variable maps, workflow
+paths, local paths, or private repository data. Its complete document is
+limited to 256 KiB. Its positive expiry is ten minutes, below the enforced
+15-minute maximum; the desktop refreshes the lease periodically, publishes
+lifecycle changes on the next event-loop turn, and coalesces high-volume
+running output rather than writing once per line.
 
 `releaseStore` is optional. When configured, it must be an existing owner-only
 directory containing the node's content-addressed `sha256/<prefix>/<digest>/data`
@@ -284,7 +299,7 @@ gateway service and manual refresh process:
 ```ini
 [Service]
 Environment=TMPDIR=/var/lib/forkmesh-mirror/runtime-tmp
-ReadWritePaths=/var/lib/forkmesh-mirror/runtime-tmp
+ReadWritePaths=/var/lib/forkmesh-mirror/identity /var/lib/forkmesh-mirror/encrypted /var/lib/forkmesh-mirror/gateway /var/lib/forkmesh-mirror/runtime-tmp -/var/lib/forkmesh-mirror/source -/srv/forkmesh-git
 ```
 
 The directory must already exist, be owned by the mirror service account, and
@@ -294,6 +309,18 @@ Size it for at least two expanded copies during validation. This storage is
 ephemeral materialized public-repository data, not a replacement for the
 encrypted archive, and should remain inside the service's protected local
 storage boundary.
+
+The packaged gateway keeps `ProtectSystem=strict` and makes only its identity,
+encrypted-generation, gateway-state, runtime-temporary, and bare-source
+subtrees writable. Release CAS data remains read-only. The leading `-` on each
+alternative bare-source layout tells systemd that an absent alternative is
+acceptable: packaged nodes use `/var/lib/forkmesh-mirror/source`, while some
+existing operators use `/srv/forkmesh-git`. This write boundary is required
+when `merge-pull` is enabled: the fixed executor records a terminal idempotency
+result, updates exact checked refs, reseals the new generation, and renews the
+signed catalog. A deployment using any other source or state location must
+replace these entries with its exact dedicated paths in a systemd drop-in; do
+not grant the gateway a broad filesystem path such as `/`.
 
 ## Register after restart
 
