@@ -1693,16 +1693,6 @@ function worldTemplate(identity, settings, mode) {
       }>${escapeHTML(option.label)}</option>`,
   ).join("");
 
-  const regionClocks = WORLD_REGIONS.map(
-    (region) => `
-      <span class="world-region-clock" data-world-region-clock="${escapeHTML(
-        region.id,
-      )}">
-        <strong>${escapeHTML(region.label)}</strong>
-        <span>${escapeHTML(region.phase)} · --:--</span>
-      </span>`,
-  ).join("");
-
   return `
     <div class="fm-world ${mode === "dashboard" ? "world-dashboard-embed" : ""}" data-world-root>
       <section
@@ -1743,13 +1733,6 @@ function worldTemplate(identity, settings, mode) {
               <span data-world-presence-copy>Joining world</span>
             </span>
           </a>
-
-          <div class="world-clock" aria-label="Shared ForkMesh world time">
-            <strong class="world-clock-time" data-world-clock>00:00</strong>
-            <span class="world-clock-label">World time</span>
-            <span class="world-clock-phase" data-world-phase>Synchronizing</span>
-            <div class="world-region-clocks" aria-label="Visual campus regions">${regionClocks}</div>
-          </div>
 
           <nav class="world-top-actions" aria-label="World tools">
             <span class="world-emote-bar" aria-label="Public emotes">
