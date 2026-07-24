@@ -903,10 +903,10 @@ test("UTC is display-only and local light level survives movement without becomi
     JSON.parse(localStorage.getItem("forkmesh.world.settings.v1") || "{}"),
   );
   expect(stored.lightLevel).toBe(65);
-  const publicBadge = await page.locator("forkmesh-world").evaluate(
-    (shell) => shell.world.player.userData.identity,
+  const publicIdentityState = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.identity,
   );
-  expect(publicBadge?.lightLevel).toBeUndefined();
+  expect(publicIdentityState.lightLevel).toBeUndefined();
 });
 
 test("two live clients synchronize movement without leaking disabled badge fields", async ({

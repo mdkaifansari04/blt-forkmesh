@@ -106,6 +106,7 @@ def test_world_contains_the_initial_city_districts_and_utc_clock():
     assert 'class="world-clock"' in APP
     assert 'aria-label="Current UTC time"' in APP
     assert 'data-world-clock>--:--:--' in APP
+    assert 'class="world-clock-label">UTC time' in APP
     assert 'data-world-phase>UTC · 24-hour clock' in APP
 
 

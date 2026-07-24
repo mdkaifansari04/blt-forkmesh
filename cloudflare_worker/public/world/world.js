@@ -1852,7 +1852,7 @@ function worldTemplate(identity, settings, mode) {
 
           <div class="world-clock" aria-label="Current UTC time">
             <strong class="world-clock-time" data-world-clock>--:--:--</strong>
-            <span class="world-clock-label">World time</span>
+            <span class="world-clock-label">UTC time</span>
             <span class="world-clock-phase" data-world-phase>UTC · 24-hour clock</span>
           </div>
 
