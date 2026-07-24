@@ -3831,6 +3831,10 @@ SCHEMA_ALTER_STATEMENTS = [
     # Operator-settable flag granting a user access to the /outreach console
     # without a roster row (migration 0040). Mirrors is_admin.
     "ALTER TABLE users ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0",
+    # Early local builds created membership rows before their encrypted display
+    # payload was added. Existing blind-index grants remain valid; new writes
+    # always provide this ciphertext column.
+    "ALTER TABLE chat_channel_members ADD COLUMN data TEXT",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a

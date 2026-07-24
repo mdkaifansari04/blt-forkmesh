@@ -104,6 +104,51 @@ def test_lazy_schema_upgrade_adds_columns_before_dependent_indexes():
     )
 
 
+def test_lazy_schema_upgrade_adds_encrypted_chat_member_payload_column():
+    entry_path = ROOT / "src" / "entry.py"
+    schema_path = ROOT / "src" / "schema.py"
+    schema_statements = _literal_assignment(schema_path, "SCHEMA_STATEMENTS")
+    post_alters = _literal_assignment(entry_path, "SCHEMA_ALTER_STATEMENTS")
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE chat_channels (
+                channel_id TEXT PRIMARY KEY,
+                name_bi TEXT NOT NULL UNIQUE,
+                data TEXT NOT NULL,
+                created_by_bi TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                key_version INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE chat_channel_members (
+                channel_id TEXT NOT NULL,
+                member_bi TEXT NOT NULL,
+                invited_by_bi TEXT NOT NULL,
+                joined_at INTEGER NOT NULL,
+                PRIMARY KEY (channel_id, member_bi)
+            );
+            """
+        )
+        for statement in schema_statements:
+            if "chat_channel" in statement:
+                connection.execute(statement)
+        for statement in post_alters:
+            if "chat_channel_members" in statement:
+                connection.execute(statement)
+        columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(chat_channel_members)"
+            )
+        }
+    finally:
+        connection.close()
+
+    assert "data" in columns
+
+
 def test_release_downloads_user_agent_migration_bootstraps_fresh_local_db():
     migration = (ROOT / "migrations" / "0034_release_downloads_ua.sql").read_text(
         encoding="utf-8"
