@@ -17,6 +17,7 @@ import tarfile
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
 )
+from cryptography.exceptions import InvalidSignature
 import pytest
 
 
@@ -428,6 +429,8 @@ def test_operator_only_payloads_match_worker_canonicals(identity):
                 "memTotalBytes": 800,
                 "diskUsedBytes": 300,
                 "diskTotalBytes": 1000,
+                "actionsEnabled": True,
+                "actionsState": "running",
             },
         },
     )
@@ -437,6 +440,8 @@ def test_operator_only_payloads_match_worker_canonicals(identity):
     assert record["cpuPercent"] == 100
     assert (record["memUsedBytes"], record["memTotalBytes"]) == (800, 800)
     assert (record["diskUsedBytes"], record["diskTotalBytes"]) == (300, 1000)
+    assert record["actionsEnabled"] is True
+    assert record["actionsState"] == "running"
     state_payload = (
         "forkmesh-repostate-v1\nforkmesh\nforkmesh\n" + state_hash + "\n1784840000002"
     ).encode()
@@ -455,6 +460,16 @@ def test_operator_only_payloads_match_worker_canonicals(identity):
         base64.urlsafe_b64decode(catalog_signature + "=="),
         ("forkmesh-catalog-v2\n" + record_hash).encode(),
     )
+    tampered = dict(normalized)
+    tampered["actionsState"] = "enabled"
+    tampered_hash = hashlib.sha256(
+        json.dumps(tampered, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    with pytest.raises(InvalidSignature):
+        node_public.verify(
+            base64.urlsafe_b64decode(catalog_signature + "=="),
+            ("forkmesh-catalog-v2\n" + tampered_hash).encode(),
+        )
 
     unreported = helper._normalized_public_catalog(
         {
@@ -473,7 +488,64 @@ def test_operator_only_payloads_match_worker_canonicals(identity):
         "memTotalBytes",
         "diskUsedBytes",
         "diskTotalBytes",
+        "actionsEnabled",
+        "actionsState",
     }.intersection(unreported)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    (
+        {"actionsEnabled": True},
+        {"actionsState": "enabled"},
+        {"actionsEnabled": 1, "actionsState": "enabled"},
+        {"actionsEnabled": False, "actionsState": "running"},
+        {"actionsEnabled": True, "actionsState": "queued"},
+    ),
+)
+def test_catalog_signer_rejects_invalid_actions_capability(identity, fields):
+    source = {
+        "owner": "forkmesh",
+        "name": "forkmesh",
+        "visibility": "public",
+        "updatedAt": "1784840000002",
+        "stateHash": hashlib.sha256(b"refs").hexdigest(),
+        **fields,
+    }
+    with pytest.raises(helper.HelperError, match="Actions capability"):
+        helper._normalized_public_catalog(
+            source,
+            identity["public"]["nodePublicKey"],
+            now_ms=1784840000002,
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "actionsVariables",
+        "actionsCommand",
+        "actionsWorkingDirectory",
+        "actionsLogs",
+    ),
+)
+def test_catalog_signer_rejects_non_status_actions_material(identity, field):
+    source = {
+        "owner": "forkmesh",
+        "name": "forkmesh",
+        "visibility": "public",
+        "updatedAt": "1784840000002",
+        "stateHash": hashlib.sha256(b"refs").hexdigest(),
+        "actionsEnabled": True,
+        "actionsState": "enabled",
+        field: "must-not-publish",
+    }
+    with pytest.raises(helper.HelperError, match="unsupported field"):
+        helper._normalized_public_catalog(
+            source,
+            identity["public"]["nodePublicKey"],
+            now_ms=1784840000002,
+        )
 
 
 def test_unsafe_state_permissions_fail_closed(identity):

@@ -182,6 +182,19 @@ def safe_catalog_record(data):
         data.get("memUsedBytes"), data.get("memTotalBytes"))
     disk_used, disk_total = clean_optional_usage(
         data.get("diskUsedBytes"), data.get("diskTotalBytes"))
+    actions_fields = {"actionsEnabled", "actionsState"}.intersection(data)
+    if actions_fields and actions_fields != {"actionsEnabled", "actionsState"}:
+        return None
+    actions_enabled = data.get("actionsEnabled")
+    actions_state = data.get("actionsState")
+    if actions_fields and (
+        not isinstance(actions_enabled, bool)
+        or (
+            (not actions_enabled and actions_state != "disabled")
+            or (actions_enabled and actions_state not in {"enabled", "running"})
+        )
+    ):
+        return None
     record = {
         "owner": owner,
         "name": name,
@@ -244,6 +257,12 @@ def safe_catalog_record(data):
         "stateHash": clean_string(data.get("stateHash", ""), 64),
         "stateSig": clean_string(data.get("stateSig", ""), 220),
     }
+    # Keep this pair absent on legacy records so their catalog-v2 signatures
+    # still verify. New reports are a strict, signed capability/status only:
+    # arbitrary Actions configuration never reaches the stored public record.
+    if actions_fields:
+        record["actionsEnabled"] = actions_enabled
+        record["actionsState"] = actions_state
     # Keep absent telemetry absent (rather than adding null fields) so a
     # catalog-v2 signature produced by an older, opted-out client continues to
     # verify after this schema extension. Consumers still expose unknown values

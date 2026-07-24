@@ -14,6 +14,8 @@
     selectedBranches: {},
     repoBranches: {},
     repoBranchQueries: {},
+    repoPullMetadataCommits: {},
+    repoPullMetadataInflight: {},
     repoCollectionPages: {},
     session: null,
     // Public-profile mode (/@name): the FOREIGN account whose profile the

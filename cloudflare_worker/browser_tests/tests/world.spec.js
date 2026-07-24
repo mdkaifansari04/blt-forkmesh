@@ -47,6 +47,7 @@ async function prepareWorldPage(
     notifications = [],
     events = [],
     chatPassphrase = "",
+    worldSocketHandler = null,
   } = {},
 ) {
   let mentionState = "review";
@@ -363,6 +364,10 @@ async function prepareWorldPage(
     });
   });
   await page.routeWebSocket("**/api/world/ws*", (socket) => {
+    if (worldSocketHandler) {
+      worldSocketHandler(socket, socketId);
+      return;
+    }
     socket.send(
       JSON.stringify({
         type: "welcome",
@@ -858,6 +863,145 @@ test("desktop camera uses visible-cursor drag look, capped movement acceleration
       (shell) => shell.world.getCameraState().zoom,
     ),
   ).toBeLessThan(zoomedOut);
+});
+
+test("refresh restores one bounded identity-local position without private history", async ({
+  page,
+}) => {
+  const serverArrival = {
+    id: "position-restore",
+    name: "visitor",
+    status: "exploring",
+    x: -8.1,
+    y: 0.38,
+    z: 30,
+    yaw: 0,
+    space: "town-square",
+  };
+  await prepareWorldPage(page, "position-restore", {
+    worldSocketHandler(socket, socketId) {
+      socket.send(JSON.stringify({
+        type: "welcome",
+        id: socketId,
+        self: serverArrival,
+        peers: [],
+      }));
+    },
+  });
+  await waitForWorld(page);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const position = {
+      x: 21.25,
+      y: 18.45,
+      z: -13.5,
+      heading: 1.2,
+      space: "space-station",
+      moving: false,
+      activity: "private/repository?token=must-not-persist",
+    };
+    shell.currentSpace = position.space;
+    shell.world.setSpawn(position);
+    shell.handleMovement(position);
+  });
+  const storedBeforeRefresh = await page.evaluate(() => {
+    const keys = Object.keys(localStorage).filter((key) =>
+      key.startsWith("forkmesh.world.position.v1."),
+    );
+    return {
+      keys,
+      record: JSON.parse(localStorage.getItem(keys[0]) || "{}"),
+    };
+  });
+  expect(storedBeforeRefresh.keys).toHaveLength(1);
+  expect(Object.keys(storedBeforeRefresh.record).sort()).toEqual(
+    ["heading", "space", "updatedAt", "x", "y", "z"].sort(),
+  );
+  expect(JSON.stringify(storedBeforeRefresh.record)).not.toContain("private");
+  expect(JSON.stringify(storedBeforeRefresh.record)).not.toContain("token");
+
+  await page.reload();
+  await waitForWorld(page);
+  const restored = await page.locator("forkmesh-world").evaluate((shell) => ({
+    position: shell.world.getPosition(),
+    currentSpace: shell.currentSpace,
+    storedRecords: Object.keys(localStorage).filter((key) =>
+      key.startsWith("forkmesh.world.position.v1."),
+    ).length,
+  }));
+  expect(restored.currentSpace).toBe("space-station");
+  expect(restored.position.space).toBe("space-station");
+  expect(restored.position.x).toBeCloseTo(21.25, 3);
+  expect(restored.position.y).toBeCloseTo(18.45, 3);
+  expect(restored.position.z).toBeCloseTo(-13.5, 3);
+  expect(restored.position.heading).toBeCloseTo(1.2, 3);
+  expect(restored.storedRecords).toBe(1);
+});
+
+test("busy walking stays connected while movement frames remain within the soft budget", async ({
+  page,
+}) => {
+  const frames = [];
+  let socketCount = 0;
+  let rateDisconnects = 0;
+  let rateWindowStartedAt = 0;
+  let rateWindowCount = 0;
+  await prepareWorldPage(page, "busy-movement", {
+    worldSocketHandler(socket, socketId) {
+      socketCount += 1;
+      socket.onMessage((raw) => {
+        const now = performance.now();
+        if (!rateWindowStartedAt || now - rateWindowStartedAt >= 1000) {
+          rateWindowStartedAt = now;
+          rateWindowCount = 0;
+        }
+        rateWindowCount += 1;
+        const frame = JSON.parse(String(raw));
+        frames.push({ frame, at: now });
+        if (rateWindowCount > 4) {
+          rateDisconnects += 1;
+          void socket.close({ code: 1008, reason: "soft rate budget" });
+        }
+      });
+      socket.send(JSON.stringify({
+        type: "welcome",
+        id: socketId,
+        self: {
+          id: socketId,
+          name: "visitor",
+          status: "exploring",
+          x: -8.1,
+          y: 0.38,
+          z: 30,
+          yaw: 0,
+          space: "town-square",
+        },
+        peers: [],
+      }));
+    },
+  });
+  await waitForWorld(page);
+
+  await page.keyboard.down("ArrowUp");
+  await page.waitForTimeout(3300);
+  await page.keyboard.up("ArrowUp");
+  await page.waitForTimeout(350);
+
+  const connection = await page.locator("forkmesh-world").evaluate((shell) => ({
+    readyState: shell.socket?.readyState,
+    openState: WebSocket.OPEN,
+    peerId: shell.serverPeerId,
+  }));
+  const movementFrames = frames.filter(({ frame }) => frame.type === "move");
+  const activeFrames = movementFrames.filter(({ frame }) => frame.moving);
+  expect(rateDisconnects).toBe(0);
+  expect(socketCount).toBe(1);
+  expect(connection.readyState).toBe(connection.openState);
+  expect(connection.peerId).toBe("busy-movement");
+  expect(activeFrames.length).toBeGreaterThanOrEqual(2);
+  expect(activeFrames.length).toBeLessThanOrEqual(4);
+  expect(movementFrames.at(-1).frame.moving).toBe(false);
+  expect(movementFrames.length).toBeLessThanOrEqual(6);
 });
 
 test("UTC is display-only and local light level survives movement without becoming presence data", async ({

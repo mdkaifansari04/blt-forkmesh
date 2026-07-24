@@ -1519,11 +1519,10 @@
       const value = current.get(key);
       if (value) query.set(key, value);
     });
-    // pulls/ metadata lives on its own dedicated branch (issue #399): the
-    // host resolves a pulls/ path to refs/heads/forkmesh/pulls only when the
-    // request names NO explicit ref, so pull readers pass ref:"" to defer to
-    // the host instead of pinning the stale pulls/ copy left on the selected
-    // code branch. Every other caller keeps the selected-branch default.
+    // Callers reading the dedicated pull-metadata branch first resolve its
+    // immutable OID with resolveRepoPullMetadataCommit(), then pass that exact
+    // value here. Explicitly empty refs retain the generic no-ref URL contract
+    // for compatibility callers; pull readers never rely on that ambiguity.
     if (!("ref" in (params || {}))) query.set("ref", repoSelectedBranch(repo));
     else if (!String(params.ref || "")) query.delete("ref");
     const version = repoDataVersion(repo);

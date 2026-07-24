@@ -119,6 +119,7 @@ class CatalogDefaults:
     branch: str
     platform: str
     version: str
+    actions_enabled: bool
     report_cpu: bool
     report_memory: bool
     report_disk: bool
@@ -514,6 +515,7 @@ def _parse_catalog(value: Any) -> CatalogDefaults:
             "branch",
             "platform",
             "version",
+            "actionsEnabled",
             "reportCpu",
             "reportMemory",
             "reportDisk",
@@ -545,6 +547,9 @@ def _parse_catalog(value: Any) -> CatalogDefaults:
     version = _clean_public_text(
         value.get("version", ""), maximum=32, label="catalog.version"
     )
+    actions_enabled = value.get("actionsEnabled", False)
+    if not isinstance(actions_enabled, bool):
+        raise RefreshError("catalog.actionsEnabled must be a boolean")
     for field in ("reportCpu", "reportMemory", "reportDisk"):
         if field in value and not isinstance(value[field], bool):
             raise RefreshError(f"catalog.{field} must be a boolean")
@@ -556,6 +561,7 @@ def _parse_catalog(value: Any) -> CatalogDefaults:
         branch=branch,
         platform=platform,
         version=version,
+        actions_enabled=actions_enabled,
         report_cpu=value.get("reportCpu", False),
         report_memory=value.get("reportMemory", False),
         report_disk=value.get("reportDisk", False),
@@ -2092,6 +2098,15 @@ def _catalog_unsigned(
         "branch": config.catalog.branch,
         "platform": config.catalog.platform,
         "version": config.catalog.version,
+        # Static refresh configuration can only advertise the operator-approved
+        # capability. It deliberately cannot claim "running": that state must
+        # eventually come from a live executor lease with an expiry. Workflow
+        # definitions, variables, commands, paths, and logs never enter this
+        # signed catalog publication.
+        "actionsEnabled": config.catalog.actions_enabled,
+        "actionsState": (
+            "enabled" if config.catalog.actions_enabled else "disabled"
+        ),
         "nodeId": config.node_owner,
         "stateHash": metadata.expected_refs_sha256,
         "commit": _source_branch_commit(config),

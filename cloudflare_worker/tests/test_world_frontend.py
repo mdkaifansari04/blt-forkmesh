@@ -296,8 +296,61 @@ def test_world_hud_counts_authoritative_connected_visitors_without_duplicates():
     render_peers = APP[APP.index("  renderPeers() {"):APP.index(
         "\n  destroy() {", APP.index("  renderPeers() {")
     )]
-    assert "if (!socketOnline)" in render_peers
+    assert "if (!socketOnline && !reconnectGrace)" in render_peers
     assert "this.world?.setRemotePlayers" in render_peers
+
+
+def test_world_position_is_one_fresh_bounded_identity_local_record():
+    for contract in (
+        'const POSITION_KEY_PREFIX = "forkmesh.world.position.v1."',
+        "const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000",
+        "function positionStorageKey(identityId)",
+        "function normalizedWorldPosition(record, now = Date.now())",
+        "Math.abs(x) > POSITION_RADIUS",
+        "Math.abs(z) > POSITION_RADIUS",
+        "Math.abs(y - floor) > POSITION_FLOOR_TOLERANCE",
+        "updatedAt < now - POSITION_MAX_AGE_MS",
+        "this.positionKey = positionStorageKey(this.identity.id)",
+        "this.world.setSpawn?.(this.restoredPosition)",
+        "this.captureWorldPosition(true)",
+    ):
+        assert contract in APP
+    writer = APP[APP.index("  flushWorldPosition() {"):APP.index(
+        "\n  queueMovementPresence(", APP.index("  flushWorldPosition() {")
+    )]
+    for field in ("x", "y", "z", "heading", "space", "updatedAt"):
+        assert f"      {field}," in writer
+    for forbidden in ("activity", "url", "history", "repository"):
+        assert forbidden not in writer.lower()
+    assert "Object.hasOwn(WORLD_SPACE_FLOORS, requestedSpace)" in SCENE
+    assert "currentFloorY = WORLD_SPACE_FLOORS[space]" in SCENE
+
+
+def test_world_client_coalesces_disposable_frames_and_reconnects_with_grace():
+    for contract in (
+        "const MOVEMENT_SEND_INTERVAL_MS = 1000",
+        "const PRESENCE_PROFILE_DEBOUNCE_MS = 300",
+        "const SOCKET_BUFFER_HIGH_WATER_BYTES = 64 * 1024",
+        "this.queueMovementPresence({",
+        "this.sendPresenceNow({",
+        "Number(this.socket.bufferedAmount || 0) > SOCKET_BUFFER_HIGH_WATER_BYTES",
+        "schedulePresenceReconnect()",
+        "const jitter = 0.75 + Math.random() * 0.5",
+        "this.schedulePresenceReconnect();",
+        "const reconnectGrace =",
+        "this.startPeerReconnectGrace();",
+        "this.socketRetry = 1000",
+    ):
+        assert contract in APP
+    assert "this.remotePlayers.clear();" not in APP[
+        APP.index('socket.addEventListener("close"'):APP.index(
+            'socket.addEventListener("error"',
+            APP.index('socket.addEventListener("close"'),
+        )
+    ]
+    assert "if (!walking && wasWalking)" in SCENE
+    assert "moving: true" in SCENE
+    assert "moving: false" in SCENE
 
 
 def test_avatar_faces_keyboard_travel_direction_and_intro_can_stay_dismissed():

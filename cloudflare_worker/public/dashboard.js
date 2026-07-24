@@ -14,6 +14,8 @@
     selectedBranches: {},
     repoBranches: {},
     repoBranchQueries: {},
+    repoPullMetadataCommits: {},
+    repoPullMetadataInflight: {},
     repoCollectionPages: {},
     session: null,
     // Public-profile mode (/@name): the FOREIGN account whose profile the
@@ -5622,11 +5624,10 @@
       const value = current.get(key);
       if (value) query.set(key, value);
     });
-    // pulls/ metadata lives on its own dedicated branch (issue #399): the
-    // host resolves a pulls/ path to refs/heads/forkmesh/pulls only when the
-    // request names NO explicit ref, so pull readers pass ref:"" to defer to
-    // the host instead of pinning the stale pulls/ copy left on the selected
-    // code branch. Every other caller keeps the selected-branch default.
+    // Callers reading the dedicated pull-metadata branch first resolve its
+    // immutable OID with resolveRepoPullMetadataCommit(), then pass that exact
+    // value here. Explicitly empty refs retain the generic no-ref URL contract
+    // for compatibility callers; pull readers never rely on that ambiguity.
     if (!("ref" in (params || {}))) query.set("ref", repoSelectedBranch(repo));
     else if (!String(params.ref || "")) query.delete("ref");
     const version = repoDataVersion(repo);
@@ -6633,6 +6634,54 @@
     return data;
   }
 
+  const PULL_METADATA_BRANCH = "forkmesh/pulls";
+
+  function immutableGitCommit(value) {
+    const commit = String(value || "").trim();
+    return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(commit) ? commit : "";
+  }
+
+  function repoPullMetadataCacheKey(repo) {
+    return [
+      repoKey(repo).toLowerCase(),
+      repoDataVersion(repo),
+    ].join("@");
+  }
+
+  async function resolveRepoPullMetadataCommit(repo) {
+    // Named private repository routes intentionally remain inert. Private
+    // bytes use the opaque encrypted-replica transport and must never become
+    // discoverable through this public branch lookup.
+    if (!repo || repo.isPrivate) {
+      throw new Error("pull_metadata_unavailable");
+    }
+    const key = repoPullMetadataCacheKey(repo);
+    const cached = immutableGitCommit(state.repoPullMetadataCommits[key]);
+    if (cached) return cached;
+    if (state.repoPullMetadataInflight[key]) {
+      return state.repoPullMetadataInflight[key];
+    }
+    const pending = (async () => {
+      const data = await fetchRepoJson(`${repoApiBase(repo)}/branches`);
+      const branch = (Array.isArray(data?.branches) ? data.branches : [])
+        .map(normalizeRepoBranch)
+        .filter(Boolean)
+        .find((candidate) => candidate.name === PULL_METADATA_BRANCH);
+      const commit = immutableGitCommit(branch?.commit);
+      if (!commit) throw new Error("pull_metadata_unavailable");
+      state.repoPullMetadataCommits[key] = commit;
+      return commit;
+    })();
+    state.repoPullMetadataInflight[key] = pending;
+    try {
+      return await pending;
+    } finally {
+      if (state.repoPullMetadataInflight[key] === pending) {
+        delete state.repoPullMetadataInflight[key];
+      }
+    }
+  }
+
   function isMissingMirrorFolder(error) {
     const message = String(error?.code || error?.message || "").toLowerCase();
     return message.includes("not_found")
@@ -6707,8 +6756,9 @@
       const value = current.get(key);
       if (value) query.set(key, value);
     });
-    // Same ref override contract as repoLiveUrl: pulls/ readers pass ref:""
-    // so the host resolves the forkmesh/pulls metadata branch (issue #399).
+    // Same ref override contract as repoLiveUrl. Pull readers pass the exact
+    // immutable forkmesh/pulls OID resolved by
+    // resolveRepoPullMetadataCommit().
     if (!("ref" in options)) query.set("ref", repoSelectedBranch(repo));
     else if (options.ref) query.set("ref", options.ref);
     const version = repoDataVersion(repo);
@@ -6721,11 +6771,12 @@
 
   async function loadRepoRecordsFromMirror(repo, config) {
     // Pull requests moved to the dedicated forkmesh/pulls metadata branch
-    // (issue #399). Sending ref:"" lets the host resolve that branch itself
-    // (with its own fallback to the default branch for pre-#399 mirrors);
-    // naming the selected code branch here is what kept serving the stale
-    // pulls/ folder frozen on main at migration time.
-    const refParams = config.dir === "pulls" ? { ref: "" } : {};
+    // (issue #399). Resolve it once, then pin the tree and every batched blob
+    // read to the same immutable commit. Never fall back to main: a missing
+    // metadata branch is unavailable, not an empty or stale pull collection.
+    const refParams = config.dir === "pulls"
+      ? { ref: await resolveRepoPullMetadataCommit(repo) }
+      : {};
     let tree;
     try {
       tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: config.dir, ...refParams }));
@@ -7083,11 +7134,15 @@
     return `<div data-repo-pull-patch>${renderDiffFiles(parseDiffFiles(patch))}</div>`;
   }
 
-  async function loadRepoPullPatch(repo, number) {
+  async function loadRepoPullPatch(repo, number, metadataCommit = "") {
     const patchPath = `pulls/${number}/changes.patch`;
     try {
-      // ref:"" — resolved by the host to the forkmesh/pulls metadata branch.
-      const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: patchPath, ref: "" }));
+      const commit = immutableGitCommit(metadataCommit)
+        || await resolveRepoPullMetadataCommit(repo);
+      const blob = await fetchRepoJson(repoLiveUrl(repo, "blob", {
+        path: patchPath,
+        ref: commit,
+      }));
       const patch = blobText(blob);
       return { patch, files: parsePatchStats(patch), unavailable: false };
     } catch (error) {
@@ -7177,11 +7232,15 @@
     return rows.map(renderPullConversationEvent).join("");
   }
 
-  async function loadRepoPullConversation(repo, number) {
+  async function loadRepoPullConversation(repo, number, metadataCommit = "") {
+    const commit = immutableGitCommit(metadataCommit)
+      || await resolveRepoPullMetadataCommit(repo);
     let tree;
     try {
-      // ref:"" — resolved by the host to the forkmesh/pulls metadata branch.
-      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: `pulls/${number}`, ref: "" }));
+      tree = await fetchRepoJson(repoLiveUrl(repo, "tree", {
+        path: `pulls/${number}`,
+        ref: commit,
+      }));
     } catch (_) {
       return [];
     }
@@ -7189,7 +7248,11 @@
       .filter((entry) => entry.type !== "tree" && /^\d+-/.test(String(entry.name || "")))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
     if (!files.length) return [];
-    const blobs = await fetchRepoBlobs(repo, files.map((entry) => `pulls/${number}/${entry.name}`), { ref: "" });
+    const blobs = await fetchRepoBlobs(
+      repo,
+      files.map((entry) => `pulls/${number}/${entry.name}`),
+      { ref: commit },
+    );
     return files.map((entry) => {
       const blob = blobs[`pulls/${number}/${entry.name}`];
       if (!blob) return null;
@@ -7590,8 +7653,12 @@
     const recordPath = `${config.dir}/${number}/${recordFile}`;
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml(`Loading ${escapeHtml(config.itemLabel)} #${escapeHtml(number)} from the live mirror...`)}</div>`;
     try {
-      // Pulls read with ref:"" so the host serves the forkmesh/pulls branch.
-      const refParams = kind === "pulls" ? { ref: "" } : {};
+      const pullMetadataCommit = kind === "pulls"
+        ? await resolveRepoPullMetadataCommit(repo)
+        : "";
+      const refParams = pullMetadataCommit
+        ? { ref: pullMetadataCommit }
+        : {};
       let blob;
       if (kind === "issues") {
         // The record lives under open/<n>/ or closed/<n>/ (pre-split mirrors:
@@ -7616,9 +7683,17 @@
       const parsed = kind === "issues"
         ? issueDetailParsed(blobText(blob), number)
         : parseFrontMatter(blobText(blob));
-      const pullPatch = kind === "pulls" ? await loadRepoPullPatch(repo, number) : null;
+      const pullPatch = kind === "pulls"
+        ? await loadRepoPullPatch(repo, number, pullMetadataCommit)
+        : null;
       if (pullPatch) parsed.pullPatch = pullPatch;
-      if (kind === "pulls") parsed.pullConversation = await loadRepoPullConversation(repo, number);
+      if (kind === "pulls") {
+        parsed.pullConversation = await loadRepoPullConversation(
+          repo,
+          number,
+          pullMetadataCommit,
+        );
+      }
       if (kind === "discussions") parsed.discussionConversation = await loadRepoDiscussionConversation(repo, number);
       state.repoRecordDetail = { repo, kind, number, parsed };
       container.innerHTML = renderRepoRecordDetail(repo, kind, number, parsed);
