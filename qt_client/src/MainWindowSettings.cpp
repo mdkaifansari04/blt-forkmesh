@@ -1005,6 +1005,34 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoFixFailuresSetting, enabled);
     });
 
+    // Jail agents at launch (adhoc #236): each run gets its own scratch
+    // environment (a private per-run tmp/cache) and a memory cap applied
+    // before the CLI starts. Off by default.
+    auto *jailAgentsCheck =
+        new QCheckBox("Jail agents (own environment + memory cap)");
+    jailAgentsCheck->setChecked(
+        QSettings().value(kAgentJailSetting, false).toBool());
+    jailAgentsCheck->setToolTip(
+        "Start every agent in its own scratch environment — a private per-run "
+        "tmp and cache instead of the shared system ones — with its memory "
+        "capped at the limit below. Off by default.");
+    connect(jailAgentsCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kAgentJailSetting, enabled);
+    });
+
+    auto *jailMemoryEdit = new QLineEdit;
+    jailMemoryEdit->setPlaceholderText(
+        QString::number(kDefaultAgentJailMemoryMb));
+    jailMemoryEdit->setText(QString::number(agentJailMemoryMb()));
+    jailMemoryEdit->setToolTip(
+        "Memory cap in MB applied to each agent when \"Jail agents\" is on.");
+    connect(jailMemoryEdit, &QLineEdit::editingFinished, this, [jailMemoryEdit] {
+        const int mb =
+            qMax(kMinAgentJailMemoryMb, jailMemoryEdit->text().toInt());
+        jailMemoryEdit->setText(QString::number(mb));
+        QSettings().setValue(kAgentJailMemoryMbSetting, mb);
+    });
+
     m_codexApiKeyEdit = new QLineEdit;
     m_codexApiKeyEdit->setEchoMode(QLineEdit::Password);
     m_codexApiKeyEdit->setPlaceholderText("OPENAI_API_KEY");
@@ -1155,6 +1183,7 @@ QWidget *MainWindow::buildSettingsSection()
 
     agentForm->addRow("Context window", m_agentContextEdit);
     agentForm->addRow("Max output", m_agentMaxOutputEdit);
+    agentForm->addRow("Jail memory cap (MB)", jailMemoryEdit);
     agentForm->addRow("Agent prompt", m_agentPromptPreambleEdit);
     agentForm->addRow("Prioritize prompt", m_prioritizePromptEdit);
 
@@ -1722,6 +1751,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addWidget(autoStallAgentCheck);
     agentsCol->addWidget(autoFixConflictsCheck);
     agentsCol->addWidget(autoFixFailuresCheck);
+    agentsCol->addWidget(jailAgentsCheck);
     agentsCol->addSpacing(6);
     agentsCol->addWidget(usageLabel);
     agentsCol->addWidget(usageHint);

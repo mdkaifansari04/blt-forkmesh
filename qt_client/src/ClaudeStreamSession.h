@@ -31,12 +31,17 @@ public:
     // effort ("low"/"medium"/"high"/"xhigh"/"max") and fallbackModels (a
     // comma-separated model list) pass through as `--effort`/`--fallback-model`
     // when non-empty — the footer slash-actions menu sets them (adhoc #116).
+    // memoryLimitMb > 0 jails the launch (adhoc #236): the shell caps the
+    // process tree's data memory at that many MB before exec'ing claude; the
+    // caller pairs it with AgentJail::envEntries in extraEnv for a private
+    // scratch environment. 0 launches unjailed.
     void start(const QString &cwd, const QStringList &extraEnv,
                const QString &initialPrompt, bool skipPermissions = true,
                const QString &resumeSessionId = QString(),
                const QString &model = QString(),
                const QString &effort = QString(),
-               const QString &fallbackModels = QString());
+               const QString &fallbackModels = QString(),
+               int memoryLimitMb = 0);
     // Send another user turn to a running session (steering).
     void sendUserText(const QString &text);
     // Answer a pending tool call (e.g. the AskUserQuestion clarifying-question
