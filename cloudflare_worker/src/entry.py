@@ -62,6 +62,7 @@ SENTRY_CRON_MAX_RUNTIME_MINUTES = 5
 CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000  # keep the last 7 days
 CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
 CHAT_HISTORY_MAX_BODY = 48 * 1024  # don't retain very large frames (e.g. files)
+CHAT_CHANNEL_TICKET_TTL_MS = 60 * 1000
 MAX_CATALOG_REPOS = 200
 MAX_ERROR_LOG = 500
 # Anonymous installer diagnostics: one row per reported install step. Bounded the
@@ -256,6 +257,10 @@ GENERAL_CHAT_EMAIL_MAX_RECIPIENTS = 200
 from urls import (  # noqa: E402
     ROOM_RE,
     REPO_ROOM_RE,
+    CHAT_CHANNELS_RE,
+    CHAT_CHANNEL_MEMBERS_RE,
+    CHAT_CHANNEL_ROOM_ACCESS_RE,
+    CHAT_CHANNEL_WS_RE,
     REPO_ISSUES_RE,
     REPO_PULLS_RE,
     REPO_COMMITS_RE,
@@ -464,6 +469,9 @@ import world_events_api  # noqa: E402
 # Persisted Code Workshop reports and participant events use the same narrow
 # authenticated/encrypted D1 adapter as the other World collaboration APIs.
 import world_workshops  # noqa: E402
+# Private administrator-created channel policy is kept in a pure module and
+# receives only this Worker's narrow session, crypto, D1, and audit adapter.
+import chat_channels_api  # noqa: E402
 # Pull-request badge (adhoc #44/#83): a pure, js-free generator for the visual
 # "fingerprint" attached to federated PR-opened notes. The federated copy is a
 # square PNG — fediverse clients won't preview an SVG attachment.
@@ -2976,6 +2984,147 @@ async def world_inactive_handler(env, request):
     )
 
 
+async def _chat_channel_passphrase(env, channel_id, key_version):
+    secret = (
+        _require_data_secret(env)
+        + ":private-chat-channel-v1:"
+        + str(channel_id)
+        + ":"
+        + str(int(key_version))
+    )
+    digest = await js_crypto.subtle.digest(
+        "SHA-256", _to_js(secret.encode()))
+    return bytes(Uint8Array.new(digest).to_py()).hex()
+
+
+def _chat_channel_ticket(env, channel_id, key_version, account_bi):
+    expires = int(Date.now()) + CHAT_CHANNEL_TICKET_TTL_MS
+    canonical = ".".join((
+        "v1",
+        str(channel_id),
+        str(int(key_version)),
+        str(account_bi),
+        str(expires),
+    ))
+    signature = hmac.new(
+        (_require_data_secret(env) + ":chat-channel-ticket-v1").encode(),
+        canonical.encode(),
+        "sha256",
+    ).hexdigest()
+    return canonical + "." + signature
+
+
+def _chat_channel_ticket_claims(env, token):
+    parts = str(token or "").split(".")
+    if len(parts) != 6:
+        return None
+    version_tag, channel_id, version_raw, account_bi, expires_raw, signature = (
+        parts
+    )
+    if version_tag != "v1" or not re.fullmatch(r"[0-9a-f]{32}", channel_id):
+        return None
+    if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+        return None
+    try:
+        key_version = int(version_raw)
+        expires = int(expires_raw)
+    except (TypeError, ValueError):
+        return None
+    now = int(Date.now())
+    if (
+        key_version < 1
+        or expires <= now
+        or expires - now > CHAT_CHANNEL_TICKET_TTL_MS
+    ):
+        return None
+    canonical = ".".join(parts[:5])
+    expected = hmac.new(
+        (_require_data_secret(env) + ":chat-channel-ticket-v1").encode(),
+        canonical.encode(),
+        "sha256",
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    return {
+        "channel_id": channel_id,
+        "key_version": key_version,
+        "account_bi": account_bi,
+    }
+
+
+async def _chat_channel_socket_handler(env, request, channel_id):
+    if (
+        method_name(request) != "GET"
+        or (request.headers.get("upgrade") or "").lower() != "websocket"
+    ):
+        return _private_replica_not_found()
+    url = urlparse(request.url)
+    ticket_values = parse_qs(
+        url.query, keep_blank_values=False).get("ticket") or []
+    claims = (
+        _chat_channel_ticket_claims(env, ticket_values[0])
+        if len(ticket_values) == 1 else None
+    )
+    if not claims or claims["channel_id"] != channel_id:
+        return _private_replica_not_found()
+    try:
+        await ensure_schema(env)
+        channel = await d1_first(
+            env,
+            "SELECT key_version FROM chat_channels WHERE channel_id=?",
+            channel_id,
+        )
+        if (
+            not channel
+            or int(channel.get("key_version") or 0)
+                != int(claims["key_version"])
+        ):
+            return _private_replica_not_found()
+        account = await d1_first(
+            env,
+            "SELECT data,is_admin FROM users WHERE user_bi=?",
+            claims["account_bi"],
+        )
+        if not account:
+            return _private_replica_not_found()
+        account_record = await decrypt_row(env, account.get("data"))
+        if (
+            not account_record
+            or account_record.get("status") != "active"
+            or _account_kind(account_record) != "user"
+        ):
+            return _private_replica_not_found()
+        is_admin = bool(int(account.get("is_admin") or 0))
+        if not is_admin:
+            membership = await d1_first(
+                env,
+                "SELECT 1 AS allowed FROM chat_channel_members "
+                "WHERE channel_id=? AND member_bi=?",
+                channel_id,
+                claims["account_bi"],
+            )
+            if not membership:
+                return _private_replica_not_found()
+    except Exception:
+        return _private_replica_not_found()
+
+    room_name = (
+        "chat-channel:" + channel_id + ":v" + str(claims["key_version"])
+    )
+    room_id = env.FORKMESH_MAINNODE_ROOM.idFromName(room_name)
+    target_url = url.scheme + "://" + url.netloc + url.path
+    last_error = None
+    for _attempt in range(2):
+        room_object = env.FORKMESH_MAINNODE_ROOM.get(room_id)
+        try:
+            return await room_object.fetch(
+                await durable_object_request(request, target_url=target_url))
+        except Exception as error:
+            last_error = error
+    await log_durable_object_abort(env, request, url.path, last_error)
+    return json_response({"error": "unavailable"}, status=503)
+
+
 class _WorldCommunityRuntime:
     """Narrow adapter from isolated world APIs to established Worker helpers."""
 
@@ -3194,6 +3343,24 @@ class _WorldCommunityRuntime:
 
     async def d1_run(self, sql, *args):
         return await d1_run(self.env, sql, *args)
+
+
+class _ChatChannelsRuntime(_WorldCommunityRuntime):
+    async def room_access(self, channel_id, key_version, account_bi):
+        room = (
+            "chat-channel:" + str(channel_id) + ":v" + str(int(key_version))
+        )
+        ticket = _chat_channel_ticket(
+            self.env, channel_id, key_version, account_bi)
+        return {
+            "room": room,
+            "passphrase": await _chat_channel_passphrase(
+                self.env, channel_id, key_version),
+            "webSocketUrl": (
+                "/api/chat/channels/" + str(channel_id) + "/ws?ticket="
+                + quote(ticket, safe="")
+            ),
+        }
 
 
 async def world_fediverse_directory_handler(env, request, path):
@@ -27993,6 +28160,21 @@ class Default(WorkerEntrypoint):
         # unread badge on the shared site header's chat icon.
         if url.path in ("/api/chat/activity", "/api/chat/activity/"):
             return await chat_activity_handler(self.env, request)
+
+        # Private channel API and socket admission are checked before the
+        # generic repository-room router. Authorization and current key-version
+        # validation therefore happen before any Durable Object is selected.
+        chat_channel_socket = CHAT_CHANNEL_WS_RE.match(url.path)
+        if chat_channel_socket:
+            return await _chat_channel_socket_handler(
+                self.env, request, chat_channel_socket.group(1))
+        if (
+            CHAT_CHANNELS_RE.match(url.path)
+            or CHAT_CHANNEL_MEMBERS_RE.match(url.path)
+            or CHAT_CHANNEL_ROOM_ACCESS_RE.match(url.path)
+        ):
+            return await chat_channels_api.handle(
+                _ChatChannelsRuntime(self.env, request), url.path)
 
         # Chat-triggered Cloudflare AI interface. Clients forward explicit
         # "forkbot ..." mentions here; the Worker queues compatible issue-inbox

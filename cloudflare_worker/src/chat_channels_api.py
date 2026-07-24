@@ -246,12 +246,13 @@ async def _remove_member(runtime, actor, channel_id, data):
     member_bi, _canonical = await runtime.account(username)
     if not member_bi:
         return _response(runtime, {"error": "user_not_found"}, status=404)
-    result = await runtime.d1_run(
-        "DELETE FROM chat_channel_members WHERE channel_id=? AND member_bi=?",
+    deleted = await runtime.d1_first(
+        "DELETE FROM chat_channel_members "
+        "WHERE channel_id=? AND member_bi=? RETURNING member_bi",
         channel_id,
         member_bi,
     )
-    removed = int((result or {}).get("changes") or 0) > 0
+    removed = bool(deleted)
     current = await runtime.d1_first(
         "SELECT key_version FROM chat_channels WHERE channel_id=?",
         channel_id,

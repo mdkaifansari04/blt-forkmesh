@@ -288,6 +288,26 @@ async def test_member_removal_rotates_once_and_revokes_access():
 
 
 @run_async_test
+async def test_member_removal_does_not_depend_on_d1_run_metadata():
+    class ProductionLikeRuntime(FakeRuntime):
+        async def d1_run(self, sql, *args):
+            await super().d1_run(sql, *args)
+            return None
+
+    runtime = ProductionLikeRuntime()
+    created = await create_channel(runtime, "release-team")
+    channel_id = created["data"]["channel"]["id"]
+    path = f"/api/chat/channels/{channel_id}/members"
+    await api.handle(
+        runtime.use("POST", "admin", {"username": "alice"}), path)
+
+    removed = await api.handle(
+        runtime.use("DELETE", "admin", {"username": "alice"}), path)
+    assert removed["data"]["removed"] is True
+    assert removed["data"]["keyVersion"] == 2
+
+
+@run_async_test
 async def test_all_admins_have_implicit_access_without_membership_rows():
     runtime = FakeRuntime()
     runtime.admins.add("bob")
