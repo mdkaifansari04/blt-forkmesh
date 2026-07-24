@@ -97,6 +97,12 @@ def test_activity_weeks_are_clamped_and_padded():
     assert len(rec["activityWeeks"]) == 52
 
 
+def test_public_catalog_preserves_signed_pull_count_for_world_consumers():
+    rec = safe_catalog_record(_base(visibility="public", pullCount="42"))
+    assert rec["pullCount"] == "42"
+    assert safe_catalog_record(_base(visibility="public"))["pullCount"] == ""
+
+
 def test_public_host_telemetry_is_bounded_and_absence_stays_unknown():
     unknown = safe_catalog_record(_base())
     assert not {

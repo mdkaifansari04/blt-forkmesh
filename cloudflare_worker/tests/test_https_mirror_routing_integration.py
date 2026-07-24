@@ -459,6 +459,7 @@ def test_public_browse_clone_and_release_are_intercepted_before_host_tunnel():
     assert '"release-blob"' in route
     assert "return await _https_mirror_proxy" in route
     assert '"tree", "blobs", "blob", "raw", "history", "commit"' in route
+    assert '"compare", "branches", "search", "stats", "sizes"' in route
 
     git_block = route.split("git_info = GIT_INFO_RE.match", 1)[1].split(
         'if url.path == "/"', 1)[0]

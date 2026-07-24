@@ -243,6 +243,8 @@ def test_alias_rewrite_rewrites_api_and_git_paths():
     rewrite = _alias_ns("jett")
     for path, expected in (
         ("/api/repo/acme/widget/tree", "/api/repo/jett/widget/tree"),
+        ("/api/repo/acme/widget/branches",
+         "/api/repo/jett/widget/branches"),
         ("/api/repo/acme/widget/issues", "/api/repo/jett/widget/issues"),
         ("/acme/widget/info/refs", "/jett/widget/info/refs"),
         ("/acme/widget/git-upload-pack", "/jett/widget/git-upload-pack"),

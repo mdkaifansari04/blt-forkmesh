@@ -77,8 +77,21 @@ def make_bare_repository(tmp_path):
     run(["git", "add", "."], source)
     run(["git", "commit", "-m", "Improve greeting"], source)
     run(["git", "branch", "release-preview"], source)
+    run(["git", "switch", "-c", "forkmesh/pulls"], source)
+    (source / "pulls" / "42").mkdir(parents=True)
+    (source / "pulls" / "42" / "pull.md").write_text(
+        "---\nnumber: 42\nstatus: open\n"
+        "title: Metadata branch truth\n---\n\nPinned review.\n",
+        encoding="utf-8",
+    )
+    run(["git", "add", "pulls/42/pull.md"], source)
+    run(["git", "commit", "-m", "Add pull metadata branch"], source)
+    run(["git", "switch", "main"], source)
     run(["git", "remote", "add", "origin", str(bare)], source)
-    run(["git", "push", "origin", "main", "release-preview"], source)
+    run([
+        "git", "push", "origin",
+        "main", "release-preview", "forkmesh/pulls",
+    ], source)
     run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], bare)
     commit = run(["git", "rev-parse", "HEAD"], source)
     return bare, commit
@@ -748,11 +761,54 @@ def test_branches_returns_main_and_additional_heads(application):
         )
     )
     assert [branch["name"] for branch in payload["branches"]] == [
+        "forkmesh/pulls",
         "main",
         "release-preview",
     ]
     assert all(branch["commit"] for branch in payload["branches"])
     assert all(branch["updatedAt"] for branch in payload["branches"])
+
+
+def test_pull_metadata_branch_is_read_through_its_resolved_commit(application):
+    app, _commit, _release_hash, _logs = application
+    branches = decode_json(
+        dispatch(
+            app,
+            "branches",
+            {},
+            request_id="pull_metadata_branches_01",
+        )
+    )["branches"]
+    metadata = next(
+        branch for branch in branches
+        if branch["name"] == "forkmesh/pulls"
+    )
+    assert len(metadata["commit"]) == 40
+
+    tree = decode_json(
+        dispatch(
+            app,
+            "tree",
+            {"path": "pulls", "ref": metadata["commit"]},
+            request_id="pull_metadata_tree_01",
+        )
+    )
+    assert tree["commit"] == metadata["commit"]
+    assert [(entry["name"], entry["type"]) for entry in tree["entries"]] == [
+        ("42", "tree")
+    ]
+    blob = decode_json(
+        dispatch(
+            app,
+            "blob",
+            {
+                "path": "pulls/42/pull.md",
+                "ref": metadata["commit"],
+            },
+            request_id="pull_metadata_blob_01",
+        )
+    )
+    assert "Metadata branch truth" in blob["content"]
 
 
 def test_compare_returns_bounded_portable_pull_change_set(application):
