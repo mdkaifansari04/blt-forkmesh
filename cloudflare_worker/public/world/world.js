@@ -19,6 +19,13 @@ import { createWorldScene } from "./world-scene.js";
 
 const THREE_MODULE_URL =
   "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js";
+// Kick off the heavy 3D runtime download the moment this module evaluates so it
+// streams in parallel with parsing, the initial data fetches, and scene setup
+// rather than only starting once bootstrap() reaches its await. bootstrap()
+// re-awaits this promise (handling any load failure there); the noop catch just
+// keeps a CDN failure from surfacing as an unhandled rejection before then.
+const THREE_MODULE = import(THREE_MODULE_URL);
+THREE_MODULE.catch(() => {});
 const SETTINGS_KEY = "forkmesh.world.settings.v1";
 const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const SOCKET_RETRY_MAX_MS = 20000;
@@ -2107,7 +2114,7 @@ class ForkMeshWorld extends HTMLElement {
       const contextPromise = this.loadContext();
       const dataPromise = this.loadWorldData();
       loadingCopy.textContent = "Building repositories, offices, and portals";
-      const THREE = await import(THREE_MODULE_URL);
+      const THREE = await THREE_MODULE;
       if (this.destroyed) return;
       this.world = createWorldScene({
         THREE,
@@ -2221,7 +2228,15 @@ class ForkMeshWorld extends HTMLElement {
   hideLoading() {
     const loading = this.$("[data-world-loading]");
     if (!loading) return;
-    window.setTimeout(() => loading.setAttribute("aria-hidden", "true"), 180);
+    // Reveal as soon as the renderer has actually painted a frame — two rAF
+    // ticks — instead of a fixed timeout, so we drop the loading curtain the
+    // instant the world is on screen without ever flashing a blank canvas.
+    const reveal = () => loading.setAttribute("aria-hidden", "true");
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(reveal));
+    } else {
+      reveal();
+    }
   }
 
   renderWebGLFallback() {
