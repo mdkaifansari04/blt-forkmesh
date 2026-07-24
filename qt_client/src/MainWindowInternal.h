@@ -3004,6 +3004,24 @@ const QString kAutoFixFailuresSetting =
 // opts in, since they surface another process's transcripts unprompted.
 const QString kExcludeExternalClaudeSetting =
     QStringLiteral("agents/excludeExternalClaude");
+// Jail agents at launch (adhoc #236): run each agent in its own scratch
+// environment (private per-session TMPDIR/cache, see AgentJail) with a memory
+// cap applied before the CLI starts. Off by default.
+const QString kAgentJailSetting = QStringLiteral("agents/jailEnabled");
+// Memory cap (MB) applied to jailed agents; clamped to a sane floor so a typo
+// can't make every agent die instantly at launch.
+const QString kAgentJailMemoryMbSetting = QStringLiteral("agents/jailMemoryMb");
+constexpr int kDefaultAgentJailMemoryMb = 4096;
+constexpr int kMinAgentJailMemoryMb = 256;
+
+// The configured jail memory cap, clamped to the floor above.
+inline int agentJailMemoryMb()
+{
+    return qMax(kMinAgentJailMemoryMb,
+                QSettings()
+                    .value(kAgentJailMemoryMbSetting, kDefaultAgentJailMemoryMb)
+                    .toInt());
+}
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
 // soon as a voice dictation finishes transcribing, without pressing Enter/Send.
 const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");
