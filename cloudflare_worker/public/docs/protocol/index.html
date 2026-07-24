@@ -280,25 +280,36 @@
           their bearer session; the passphrase response is never cacheable.
         </p>
 
-        <h3 id="private-chat-channels">2.2 Private administrator channels</h3>
+        <h3 id="private-chat-channels">2.2 Administrator-created channels</h3>
         <p>
-          Platform administrators can create named private chat channels and
-          invite active registered users. Administrators have implicit access
-          to every private channel; non-administrators see and can enter only
-          channels containing their encrypted membership record. Channel names
-          and member names are encrypted at rest, with blind indexes used for
-          lookup and uniqueness.
+          Platform administrators can create named public or private chat
+          channels. Public channels are available to every active registered
+          user, but not to guests or node-only sessions. Private channels are
+          available to administrators and explicitly selected active registered
+          users. Administrators can select those initial users in the creation
+          request, and D1 writes the channel and every membership in one atomic
+          batch. Channel names, visibility, and member names are encrypted at
+          rest, with blind indexes used for lookup and uniqueness.
+        </p>
+        <p>
+          The encrypted channel record contains a <code>visibility</code> value
+          of <code>public</code> or <code>private</code>. Records created before
+          this field existed default to private, so an upgrade never widens
+          channel access. A public creation request cannot include membership
+          rows. A private creation request can include up to 500 normalized
+          registered usernames, and any invalid user rejects the complete
+          operation without partial channel data.
         </p>
         <p>
           A browser first lists its authorized channels through
           <code>GET /api/chat/channels</code>, then requests a non-cacheable
           passphrase and a 60-second signed WebSocket ticket through
           <code>GET /api/chat/channels/&lt;channel-id&gt;/room-access</code>.
-          The WebSocket upgrade rechecks the active account, administrator or
-          membership status, and current key version before reaching the
-          Durable Object. Removing a member atomically increments the key
-          version, which selects a new passphrase and room namespace so the
-          removed user cannot enter the rotated room.
+          The WebSocket upgrade rechecks the active account, channel visibility,
+          administrator or membership status when required, and current key
+          version before reaching the Durable Object. Removing a private member
+          atomically increments the key version, which selects a new passphrase
+          and room namespace so the removed user cannot enter the rotated room.
         </p>
         <p>
           These channels use the same relay-readable AES-GCM model as default
@@ -440,10 +451,10 @@
           <tbody>
             <tr><td><code>GET /api/room/&lt;room&gt;/ws</code> | <code>/clients</code></td><td>bare room WebSocket / live client count</td></tr>
             <tr><td><code>GET /api/repo/&lt;owner&gt;/&lt;repo&gt;/rooms/&lt;room&gt;/ws</code> | <code>/clients</code></td><td>per-repo room WS / count (the mainnode <code>general</code> room lives here)</td></tr>
-            <tr><td><code>GET</code> | <code>POST /api/chat/channels</code></td><td>list the caller's authorized private channels or create one as a platform administrator</td></tr>
-            <tr><td><code>GET</code> | <code>POST</code> | <code>DELETE /api/chat/channels/&lt;id&gt;/members</code></td><td>administrator-only membership list, invitation, and revocation</td></tr>
-            <tr><td><code>GET /api/chat/channels/&lt;id&gt;/room-access</code></td><td>issue the current private-room passphrase and short-lived ticket to an administrator or invited user</td></tr>
-            <tr><td><code>GET /api/chat/channels/&lt;id&gt;/ws?ticket=…</code></td><td>ticketed private-channel WebSocket with current membership and key-version admission checks</td></tr>
+            <tr><td><code>GET</code> | <code>POST /api/chat/channels</code></td><td>list authorized public and private channels or atomically create one with its private initial members</td></tr>
+            <tr><td><code>GET</code> | <code>POST</code> | <code>DELETE /api/chat/channels/&lt;id&gt;/members</code></td><td>administrator-only private membership list, invitation, and revocation</td></tr>
+            <tr><td><code>GET /api/chat/channels/&lt;id&gt;/room-access</code></td><td>issue the current channel passphrase and short-lived ticket after visibility-aware authorization</td></tr>
+            <tr><td><code>GET /api/chat/channels/&lt;id&gt;/ws?ticket=…</code></td><td>ticketed channel WebSocket with active-account, visibility, membership, and key-version admission checks</td></tr>
             <tr><td><code>* /api/repo/&lt;owner&gt;/&lt;repo&gt;/host</code></td><td>legacy control channel; repository payload frames fail closed</td></tr>
             <tr><td><code>GET /api/repo/&lt;owner&gt;/&lt;repo&gt;/{tree,blob,blobs,raw,history,commit,branches,search}</code></td><td>website browse — proxied over ordinary HTTPS to a healthy authenticated mirror origin</td></tr>
           </tbody>

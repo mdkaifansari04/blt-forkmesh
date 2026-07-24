@@ -132,6 +132,7 @@ def _socket_harness(channel_version=1, member=True, admin=False,
         "log_durable_object_abort": lambda *_args: asyncio.sleep(0),
         "method_name": lambda request: request.method,
         "parse_qs": parse_qs,
+        "quote": quote,
         "re": re,
         "urlparse": urlparse,
     }
@@ -203,6 +204,7 @@ def _room_key_from_path(path):
             r"^/api/chat/channels/([0-9a-f]{32})/v([1-9][0-9]*)/"
             r"(ws|revoke)$"
         ),
+        "re": re,
         "safe_segment": lambda value, _limit=80: str(value or ""),
     }
     module = ast.fix_missing_locations(
@@ -297,7 +299,8 @@ def test_private_socket_routes_only_current_authorized_members():
     assert calls[0] == ("id", "chat-channel:" + "a" * 32 + ":v1")
     assert calls[-1][0] == "fetch"
     assert calls[-1][1]["target"] == (
-        "https://forkmesh.test/api/chat/channels/" + "a" * 32 + "/v1/ws"
+        "https://forkmesh.test/api/chat/channels/" + "a" * 32
+        + "/v1/ws?account=" + "b" * 64
     )
 
     for kwargs in (
@@ -416,6 +419,56 @@ def test_public_socket_allows_active_registered_user_without_membership_row():
 
     assert response["status"] == 101
     assert calls[0] == ("id", "chat-channel:" + "a" * 32 + ":v1")
+
+
+def test_live_private_socket_rechecks_current_account_membership():
+    async def d1_first(_env, sql, *args):
+        if "FROM chat_channels" in sql:
+            return {"data": "sealed-channel", "key_version": 1}
+        if "FROM users" in sql:
+            return {"data": "sealed-user", "is_admin": 0}
+        if "FROM chat_channel_members" in sql:
+            return None
+        raise AssertionError((sql, args))
+
+    async def decrypt_row(_env, data):
+        if data == "sealed-channel":
+            return {"visibility": "private"}
+        return {"status": "active", "kind": "user"}
+
+    attachment = type("Attachment", (), {
+        "channel_id": "a" * 32,
+        "channel_version": 1,
+        "account_bi": "b" * 64,
+    })()
+    ws = type("Socket", (), {
+        "deserializeAttachment": lambda self: attachment,
+    })()
+    room_type = _room_class({
+        "_account_kind": lambda record: record.get("kind", "user"),
+        "_ws_attr": lambda socket, name, default=None: getattr(
+            socket.deserializeAttachment(), name, default),
+        "d1_first": d1_first,
+        "decrypt_row": decrypt_row,
+        "ensure_schema": lambda _env: asyncio.sleep(0),
+    })
+    room = room_type()
+    room.env = object()
+
+    assert asyncio.run(room._private_room_current(ws)) is False
+
+
+def test_live_socket_attachment_carries_ticket_account_identity():
+    socket_source = _function_source("_chat_channel_socket_handler")
+    room_source = _function_source("room_key_from_path")
+    room_class_source = ast.unparse(next(
+        item for item in ast.parse(ENTRY_TEXT, filename=str(ENTRY)).body
+        if isinstance(item, ast.ClassDef) and item.name == "ForkMeshRoom"
+    ))
+
+    assert "account=" in socket_source
+    assert "account_bi" in room_source
+    assert "account_bi" in room_class_source
 
 
 def test_runtime_adapter_and_routes_use_private_channel_gates():

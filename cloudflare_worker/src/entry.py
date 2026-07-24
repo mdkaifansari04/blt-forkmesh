@@ -3134,7 +3134,8 @@ async def _chat_channel_socket_handler(env, request, channel_id):
     room_id = env.FORKMESH_MAINNODE_ROOM.idFromName(room_name)
     target_url = (
         url.scheme + "://" + url.netloc + "/api/chat/channels/"
-        + channel_id + "/v" + str(claims["key_version"]) + "/ws"
+        + channel_id + "/v" + str(claims["key_version"])
+        + "/ws?account=" + quote(claims["account_bi"], safe="")
     )
     last_error = None
     for _attempt in range(2):
@@ -3455,12 +3456,12 @@ async def cleanup_world_media_records(env):
 
 
 
-def room_key_from_path(pathname):
+def room_key_from_path(pathname, account_bi=""):
     match = CHAT_CHANNEL_DO_RE.match(pathname)
     if match and match.group(3) == "ws":
         channel_id = match.group(1)
         channel_version = int(match.group(2))
-        return {
+        info = {
             "key": (
                 "chat-channel:" + channel_id + ":v"
                 + str(channel_version)
@@ -3472,6 +3473,9 @@ def room_key_from_path(pathname):
             "channel_id": channel_id,
             "channel_version": channel_version,
         }
+        if re.fullmatch(r"[0-9a-f]{64}", str(account_bi or "")):
+            info["account_bi"] = str(account_bi)
+        return info
 
     match = REPO_ROOM_RE.match(pathname)
     if match:
@@ -29859,7 +29863,8 @@ class ForkMeshRoom(DurableObject):
     # survive eviction. The read-only "observer" count socket was retired: the
     # live count is now served over HTTP via the cached /api/network/stats.
     async def fetch(self, request):
-        path = urlparse(request.url).path
+        parsed_url = urlparse(request.url)
+        path = parsed_url.path
         private_path = CHAT_CHANNEL_DO_RE.match(path)
         if (
             private_path
@@ -29884,7 +29889,11 @@ class ForkMeshRoom(DurableObject):
 
         # The room key identifies this room across hibernation; stash it on the
         # socket so webSocketMessage can scope retained history to this room.
-        info = room_key_from_path(path)
+        account_values = parse_qs(
+            parsed_url.query, keep_blank_values=False
+        ).get("account") or []
+        account_bi = account_values[0] if len(account_values) == 1 else ""
+        info = room_key_from_path(path, account_bi)
         room_key = info["key"] if info else None
 
         client, server = WebSocketPair.new().object_values()
@@ -29893,6 +29902,7 @@ class ForkMeshRoom(DurableObject):
             "id": new_socket_id(), "room": room_key,
             "channel_id": (info or {}).get("channel_id", ""),
             "channel_version": (info or {}).get("channel_version", 0),
+            "account_bi": (info or {}).get("account_bi", ""),
             "last": int(Date.now()),
         }))
 
@@ -29954,6 +29964,7 @@ class ForkMeshRoom(DurableObject):
                 "id": _ws_attr(ws, "id"), "room": _ws_attr(ws, "room"),
                 "channel_id": _ws_attr(ws, "channel_id", ""),
                 "channel_version": _ws_attr(ws, "channel_version", 0),
+                "account_bi": _ws_attr(ws, "account_bi", ""),
                 "last": now, "rl_start": start, "rl_count": count,
             }))
         except Exception:
@@ -30018,16 +30029,51 @@ class ForkMeshRoom(DurableObject):
             return True
         try:
             channel_version = int(_ws_attr(ws, "channel_version", 0) or 0)
+            account_bi = str(_ws_attr(ws, "account_bi", "") or "")
+            if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+                return False
             await ensure_schema(self.env)
-            row = await d1_first(
+            channel = await d1_first(
                 self.env,
-                "SELECT key_version FROM chat_channels WHERE channel_id=?",
+                "SELECT data,key_version FROM chat_channels WHERE channel_id=?",
                 channel_id,
             )
-            return bool(
-                row
-                and int(row.get("key_version") or 0) == channel_version
+            if (
+                not channel
+                or int(channel.get("key_version") or 0) != channel_version
+            ):
+                return False
+            channel_record = await decrypt_row(
+                self.env, channel.get("data"))
+            if not isinstance(channel_record, dict):
+                return False
+            account = await d1_first(
+                self.env,
+                "SELECT data,is_admin FROM users WHERE user_bi=?",
+                account_bi,
             )
+            if not account:
+                return False
+            account_record = await decrypt_row(
+                self.env, account.get("data"))
+            if (
+                not account_record
+                or account_record.get("status") != "active"
+                or _account_kind(account_record) != "user"
+            ):
+                return False
+            if bool(int(account.get("is_admin") or 0)):
+                return True
+            if channel_record.get("visibility") == "public":
+                return True
+            membership = await d1_first(
+                self.env,
+                "SELECT 1 AS allowed FROM chat_channel_members "
+                "WHERE channel_id=? AND member_bi=?",
+                channel_id,
+                account_bi,
+            )
+            return bool(membership)
         except Exception:
             return False
 

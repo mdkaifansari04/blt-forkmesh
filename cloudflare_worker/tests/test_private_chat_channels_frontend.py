@@ -120,7 +120,7 @@ def test_protocol_documents_private_access_rotation_and_attachments():
         'id="private-chat-channels"',
         "/api/chat/channels/&lt;channel-id&gt;/room-access",
         "60-second signed WebSocket ticket",
-        "Removing a member atomically increments the key",
+        "Removing a private member\n          atomically increments the key",
         "fileName",
         "fileMime",
         "1 MiB",
