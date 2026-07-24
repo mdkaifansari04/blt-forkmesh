@@ -3373,12 +3373,11 @@ export function createWorldScene({
       2.5,
       office.position[2] - 0.4,
     );
-    moveTarget.set(
+    player.position.set(
       office.position[0],
       currentFloorY,
       office.position[2] + 2.2,
     );
-    hasMoveTarget = true;
     if (reducedMotion) {
       const target = cameraFocus.clone();
       camera.position.copy(target.clone().add(
