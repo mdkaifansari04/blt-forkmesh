@@ -16,7 +16,6 @@ import {
   normalizeWorldStatus,
   normalizeWorldStatusNote,
   sanitizePresenceText,
-  utcClock,
 } from "./world-data.js";
 import { buildLiveMirrorNodes } from "./world-mirror-nodes.js";
 import {
@@ -52,6 +51,9 @@ const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const POSITION_RADIUS = 72;
 const POSITION_FLOOR_TOLERANCE = 0.5;
+// Mirrors the server's WORLD_ARRIVAL_CLEARANCE: a restored spot this close to
+// another visitor is treated as occupied and the fresh server slot wins.
+const ARRIVAL_CLEARANCE = 0.9;
 const POSITION_FLOORS = Object.freeze({
   "town-square": 0.38,
   east: 0.38,
@@ -2367,18 +2369,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </span>
           </a>
 
-          <div class="world-clock" aria-label="Current UTC time">
-            <strong class="world-clock-time" data-world-clock>--:--:--</strong>
-            <span class="world-clock-label">UTC time</span>
-            <span class="world-clock-phase" data-world-phase>UTC · 24-hour clock</span>
-          </div>
-
           <nav class="world-top-actions" aria-label="World tools">
-            <span class="world-emote-bar" aria-label="Public emotes">
-              <button type="button" data-world-emote="wave" title="Wave" aria-label="Wave">◡</button>
-              <button type="button" data-world-emote="idea" title="Idea" aria-label="Share an idea">✦</button>
-              <button type="button" data-world-emote="celebrate" title="Celebrate" aria-label="Celebrate">★</button>
-            </span>
             <button
               class="world-top-link world-notification-button"
               type="button"
@@ -2523,7 +2514,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <span>WASD or arrows · drag to rotate · wheel to zoom</span>
           </div>
           <span class="world-location" data-world-location>Town Square</span>
-          <span class="world-location world-region-location" data-world-active-region>Central Campus · shared global time</span>
+          <span class="world-location world-region-location" data-world-active-region>Central Campus</span>
         </div>
 
         <div class="world-touch-controls" aria-label="Touch movement controls">
@@ -2549,6 +2540,24 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <div><dt>Coalescing</dt><dd data-world-diagnostics-queues>Movement idle · profile idle</dd></div>
               <div><dt>Build</dt><dd data-world-diagnostics-build>Loading current version…</dd></div>
             </dl>
+          </div>
+        </details>
+
+        <details class="world-diagnostics world-chat-terminal" data-world-chat-terminal>
+          <summary aria-label="Open World chat in a terminal panel">
+            <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
+            <strong>CHAT</strong>
+            <span>Chat stays inside ForkMesh World</span>
+            <span class="world-diagnostics-toggle" aria-hidden="true">⌃</span>
+          </summary>
+          <div class="world-chat-terminal-body">
+            <iframe
+              class="world-chat-terminal-frame"
+              data-world-chat-terminal-frame
+              title="ForkMesh World chat terminal"
+              sandbox="allow-forms allow-same-origin allow-scripts"
+              referrerpolicy="same-origin"
+            ></iframe>
           </div>
         </details>
 
@@ -2986,7 +2995,6 @@ class ForkMeshWorld extends HTMLElement {
     this.publicVisitCount = sessionVisitCount(true);
     this.visitedPlaces = new Set(["town-square"]);
     this.tourIndex = -1;
-    this.serverOffset = 0;
     this.lastMovement = {
       x: -8.5,
       y: 0.38,
@@ -3124,7 +3132,7 @@ class ForkMeshWorld extends HTMLElement {
   async bootstrap() {
     const loadingCopy = this.$("[data-world-loading-copy]");
     try {
-      loadingCopy.textContent = "Reading the current UTC time";
+      loadingCopy.textContent = "Contacting the World relay";
       const contextPromise = this.loadContext();
       const dataPromise = this.loadWorldData();
       loadingCopy.textContent = "Building repositories, offices, and portals";
@@ -3420,10 +3428,6 @@ class ForkMeshWorld extends HTMLElement {
       .slice(0, 2);
     this.identity.countryCode = /^[A-Z]{2}$/.test(country) ? country : "";
     this.identity.flag = flagEmoji(this.identity.countryCode);
-    const serverNow = Number(
-      context?.serverTimeMs || context?.now || context?.worldNow || 0,
-    );
-    if (serverNow > 0) this.serverOffset = serverNow - Date.now();
     const worldConnections = Number(context?.worldConnections);
     const worldMessagesPerSecond = Number(context?.worldMessagesPerSecond);
     const chatConnections = Number(context?.chatConnections);
@@ -3627,8 +3631,6 @@ class ForkMeshWorld extends HTMLElement {
         ? normalizeBuildDiagnostics(versionResult.value)
         : { version: "", revision: "" };
     this.renderDiagnostics();
-    const serverNow =
-      versionResult.status === "fulfilled" ? Number(versionResult.value?.now || 0) : 0;
     this.rewardState =
       rewardResult.status === "fulfilled" ? rewardResult.value || {} : {};
     this.pendingRewards =
@@ -3793,7 +3795,6 @@ class ForkMeshWorld extends HTMLElement {
       reason: LANDMARK_CONSTRUCTION_REASONS.workshops,
     };
     this.syncConstructionMarkers();
-    if (serverNow > 0 && !this.serverOffset) this.serverOffset = serverNow - Date.now();
     this.world?.updateNetworkNodes(
       liveMirrors,
     );
@@ -4285,6 +4286,10 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   bindUI() {
+    const chatTerminal = this.$("[data-world-chat-terminal]");
+    chatTerminal?.addEventListener("toggle", () => {
+      if (chatTerminal.open) this.loadChatTerminalFrame();
+    });
     this.addEventListener("click", (event) => {
       const chatLink = event.target.closest(
         "[data-world-chat-open], a[href^='/dashboard/chat']",
@@ -4646,15 +4651,6 @@ class ForkMeshWorld extends HTMLElement {
         );
         return;
       }
-      const emote = event.target.closest("[data-world-emote]");
-      if (emote) {
-        this.sendWorldInteraction(
-          "emote",
-          "",
-          emote.dataset.worldEmote,
-        );
-        return;
-      }
       const travel = event.target.closest("[data-world-travel]");
       if (travel) {
         this.travelTo(travel.dataset.worldTravel);
@@ -5013,22 +5009,9 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   startClock() {
+    // The World no longer shows a clock. This ticker only keeps the opt-in
+    // "Show local time" presence badge fresh while that privacy setting is on.
     const render = () => {
-      const clock = utcClock(Date.now() + this.serverOffset);
-      const time = this.$("[data-world-clock]");
-      const phase = this.$("[data-world-phase]");
-      if (time) time.textContent = clock.label;
-      if (phase) phase.textContent = `${clock.zone} · 24-hour clock`;
-      this.$$("[data-world-region-clock]").forEach((element) => {
-        const region = WORLD_REGIONS.find(
-          (item) => item.id === element.dataset.worldRegionClock,
-        );
-        if (!region) return;
-        const label = element.querySelector("span");
-        if (label) {
-          label.textContent = `${region.phase} · ${clock.label} ${clock.zone}`;
-        }
-      });
       if (this.settings?.privacy?.localTime) this.updateIdentityUI();
     };
     render();
@@ -5402,7 +5385,7 @@ class ForkMeshWorld extends HTMLElement {
   updateRegion(region) {
     const element = this.$("[data-world-active-region]");
     if (element && region) {
-      element.textContent = `${region.label} · shared global time`;
+      element.textContent = region.label;
     }
   }
 
@@ -7326,34 +7309,21 @@ class ForkMeshWorld extends HTMLElement {
       </section>`;
   }
 
-  sendWorldInteraction(kind, target = "", emote = "") {
-    if (kind === "emote" && ["wave", "idea", "celebrate"].includes(emote)) {
-      this.world?.playEmote?.(this.serverPeerId || this.identity.id, emote, true);
-    } else if (
-      !["knock", "home-grant", "home-decline"].includes(kind) ||
-      !target
-    ) {
+  sendWorldInteraction(kind, target = "") {
+    if (!["knock", "home-grant", "home-decline"].includes(kind) || !target) {
       return;
     }
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      this.toast(
-        kind === "emote"
-          ? "Realtime is offline; the emote played on this device only."
-          : "Realtime is offline; use the public lobby link instead.",
-      );
+      this.toast("Realtime is offline; use the public lobby link instead.");
       return;
     }
     try {
       this.socket.send(
-        JSON.stringify(
-          kind === "emote"
-            ? { type: "interaction", kind: "emote", emote }
-            : {
-                type: "interaction",
-                kind,
-                target: String(target).slice(0, 32),
-              },
-        ),
+        JSON.stringify({
+          type: "interaction",
+          kind,
+          target: String(target).slice(0, 32),
+        }),
       );
     } catch (_) {}
   }
@@ -11239,6 +11209,14 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
+  loadChatTerminalFrame() {
+    const frame = this.$("[data-world-chat-terminal-frame]");
+    if (!frame || frame.dataset.worldChatUrl) return;
+    const frameURL = "/dashboard/chat?worldEmbed=1";
+    frame.dataset.worldChatUrl = frameURL;
+    frame.src = frameURL;
+  }
+
   closeWorldChat() {
     const panel = this.$("[data-world-chat]");
     const backdrop = this.$(".world-chat-backdrop");
@@ -11261,7 +11239,7 @@ class ForkMeshWorld extends HTMLElement {
       button.setAttribute("aria-pressed", String(button.dataset.worldTheme === theme));
     });
     const label = THEME_OPTIONS.find((option) => option.id === theme)?.label || theme;
-    this.toast(`${label} is local to this device. UTC is display-only and never changes the lighting.`);
+    this.toast(`${label} is local to this device and never changes shared presence.`);
   }
 
   setLightLevel(value) {
@@ -12132,7 +12110,29 @@ class ForkMeshWorld extends HTMLElement {
     if (message.type === "welcome" && Array.isArray(message.peers)) {
       this.serverPeerId = String(message.id || "");
       const ownPresence = remotePlayer(message.self);
-      if (ownPresence?.id === this.serverPeerId && !this.spawnSelected) {
+      // A restored spot may have been handed out as an arrival cell while
+      // this browser was away. If another visitor is standing there, fall
+      // back to the fresh open cell the server just assigned.
+      const ownSpace = String(this.lastMovement?.space || this.currentSpace);
+      const spawnBlocked =
+        this.spawnSelected &&
+        ownSpace === "town-square" &&
+        message.peers.some((peer) => {
+          const player = remotePlayer(peer);
+          return (
+            player &&
+            player.id !== this.serverPeerId &&
+            player.space === ownSpace &&
+            Math.hypot(
+              player.x - Number(this.lastMovement?.x || 0),
+              player.z - Number(this.lastMovement?.z || 0),
+            ) < ARRIVAL_CLEARANCE
+          );
+        });
+      if (
+        ownPresence?.id === this.serverPeerId &&
+        (!this.spawnSelected || spawnBlocked)
+      ) {
         this.currentSpace = ownPresence.space;
         this.lastMovement = {
           ...this.lastMovement,

@@ -539,21 +539,6 @@ export function landmarkById(id) {
   return LANDMARKS.find((landmark) => landmark.id === id) || LANDMARKS[0];
 }
 
-export function utcClock(now = Date.now()) {
-  const date = new Date(Number(now));
-  const safeDate = Number.isFinite(date.getTime()) ? date : new Date();
-  const hour = safeDate.getUTCHours();
-  const minute = safeDate.getUTCMinutes();
-  const second = safeDate.getUTCSeconds();
-  return {
-    hour,
-    minute,
-    second,
-    zone: "UTC",
-    label: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`,
-  };
-}
-
 export function detectClient() {
   const ua = navigator.userAgent || "";
   const platform = navigator.userAgentData?.platform || navigator.platform || "";
