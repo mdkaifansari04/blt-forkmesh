@@ -69,8 +69,7 @@ def test_graph_fixture_builds_distinct_commit_matched_contributor_issue_pr_nodes
       process.stdout.write(JSON.stringify(nodes));
     """
     result = subprocess.run(
-        ["node", "--experimental-default-type=module", "--input-type=module",
-         "-e", script],
+        ["node", "--input-type=module", "-e", script],
         check=True,
         text=True,
         capture_output=True,
@@ -98,8 +97,7 @@ def test_entity_records_fail_closed_on_commit_mismatch_and_remain_bounded():
       process.stdout.write(JSON.stringify(buildRepositoryGraphEntities(active)));
     """
     result = subprocess.run(
-        ["node", "--experimental-default-type=module", "--input-type=module",
-         "-e", script],
+        ["node", "--input-type=module", "-e", script],
         check=True,
         text=True,
         capture_output=True,

@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import stat
 import subprocess
@@ -216,7 +217,12 @@ raise SystemExit(2)
     )
     manifest_path.chmod(0o600)
 
-    python_program = Path(sys.executable).resolve()
+    python_program = programs / "python"
+    python_program.write_text(
+        "#!/bin/sh\nexec " + shlex.quote(sys.executable) + " \"$@\"\n",
+        encoding="utf-8",
+    )
+    python_program.chmod(0o755)
     git_program = Path(shutil.which("git") or "/usr/bin/git").resolve()
     config_value = {
         "schemaVersion": 1,

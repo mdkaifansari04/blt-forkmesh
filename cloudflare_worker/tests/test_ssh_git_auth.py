@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import shutil
 import sqlite3
 import subprocess
 from types import SimpleNamespace
@@ -194,12 +195,13 @@ def _gateway_config(tmp_path, **overrides):
     root = tmp_path / "repos"
     root.mkdir(parents=True)
     root.chmod(0o755)
+    true_program = str(Path(shutil.which("true") or "/usr/bin/true").resolve())
     config = {
         "schemaVersion": 1,
         "authorizationSocket": str(tmp_path / "authorize.sock"),
         "authorizationBrokerUser": pwd.getpwuid(os.geteuid()).pw_name,
-        "gatewayExecutable": "/bin/true",
-        "refreshNotifier": "/bin/true",
+        "gatewayExecutable": true_program,
+        "refreshNotifier": true_program,
         "repositoryRoot": str(root),
         "repositories": [
             {
