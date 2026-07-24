@@ -86,6 +86,7 @@
       </div>
       <div class="fm-nav-group">
         <span class="fm-nav-group-title">Community</span>
+        <a href="/world">World</a>
         <a href="/chat">Chat</a>
         <a href="/network">Network</a>
       </div>
