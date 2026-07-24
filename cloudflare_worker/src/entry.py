@@ -3800,6 +3800,20 @@ _hmac_key_cache = {"secret": None, "key": None}
 _room_key_cache = {"secret": None, "value": None}
 
 
+# Compatibility columns required by indexes in SCHEMA_STATEMENTS. These run
+# before the CREATE statements so an existing table can be upgraded before an
+# index references its new columns. A fresh database has no table yet, so the
+# failed ALTER is ignored and the current CREATE TABLE supplies the columns.
+SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
+    "ALTER TABLE ap_outbox ADD COLUMN dedupe_bi TEXT",
+    "ALTER TABLE ap_comments ADD COLUMN parent_remote_id_bi TEXT",
+    """ALTER TABLE ap_comments ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active'
+       CHECK (lifecycle IN (
+         'active', 'edited', 'tombstoned', 'moderated',
+         'awaiting-redelivery'
+       ))""",
+]
+
 # Post-CREATE column additions for tables that predate them. Idempotent: a
 # re-run raises "duplicate column name", which the applier swallows.
 SCHEMA_ALTER_STATEMENTS = [
@@ -3822,7 +3836,11 @@ SCHEMA_ALTER_STATEMENTS = [
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
 # full apply so later cold isolates can skip the replay with one SELECT.
 _SCHEMA_FINGERPRINT = hashlib.sha256(
-    "\n".join(SCHEMA_STATEMENTS + SCHEMA_ALTER_STATEMENTS).encode("utf-8")
+    "\n".join(
+        SCHEMA_PRE_CREATE_ALTER_STATEMENTS
+        + SCHEMA_STATEMENTS
+        + SCHEMA_ALTER_STATEMENTS
+    ).encode("utf-8")
 ).hexdigest()
 
 
@@ -3900,6 +3918,11 @@ async def _apply_schema(env):
         # the overload into a death spiral.
         if "no such table" not in str(exc).lower():
             raise
+    for sql in SCHEMA_PRE_CREATE_ALTER_STATEMENTS:
+        try:
+            await env.DB.prepare(sql).run()
+        except Exception:
+            pass
     for sql in SCHEMA_STATEMENTS:
         await env.DB.prepare(sql).run()
     for sql in SCHEMA_ALTER_STATEMENTS:
