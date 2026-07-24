@@ -48,6 +48,8 @@ CAPABILITY_WINDOW_MS = 60_000
 MAX_REQUEST_BODY = 8 * 1024 * 1024
 MAX_JSON_BLOB = 2 * 1024 * 1024
 MAX_JSON_OUTPUT = 8 * 1024 * 1024
+MAX_COMPARE_BYTES = 4 * 1024 * 1024
+MAX_COMPARE_COMMITS = 500
 MAX_TREE_ENTRIES = 500
 MAX_SEARCH_RESULTS = 60
 MAX_ANALYSIS_FILES = 320
@@ -68,6 +70,7 @@ PUBLIC_OPERATIONS = frozenset(
         "raw",
         "history",
         "commit",
+        "compare",
         "branches",
         "search",
         "stats",
@@ -2059,6 +2062,90 @@ class GitRepository:
             "diffTruncated": len(diff) >= 2 * 1024 * 1024,
         }
 
+    def compare(self, query: Mapping[str, str]) -> dict[str, Any]:
+        """Return one immutable, portable pull-request change set.
+
+        The browser cannot safely hand the owner only mutable branch names:
+        by the time the inbox drains, either ref may have moved or may not
+        exist on the owner's node. Resolve both names once, then carry the
+        exact binary patch and (for linear histories) authored commit series
+        that the submitter signs. Merge commits fall back to the net patch
+        because ``format-patch`` intentionally omits merge commits and could
+        otherwise describe a different tree.
+        """
+        if not query.get("base") or not query.get("head"):
+            raise GatewayError("repository comparison requires base and head")
+        base = self.resolve_commit(query["base"])
+        head = self.resolve_commit(query["head"])
+        merge_base_raw = _run_git(
+            self.git_dir,
+            ["merge-base", base, head],
+            max_output=128,
+            allow_exit_one=True,
+        )
+        merge_base = merge_base_raw.decode("ascii", "ignore").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40,64}", merge_base):
+            raise GatewayError("repository refs do not share a merge base")
+
+        count_raw = _run_git(
+            self.git_dir,
+            [
+                "rev-list",
+                "--count",
+                f"--max-count={MAX_COMPARE_COMMITS + 1}",
+                base + ".." + head,
+            ],
+            max_output=32,
+        )
+        try:
+            commit_count = int(count_raw)
+        except ValueError as exc:
+            raise GitError("repository commit count is invalid") from exc
+        if commit_count > MAX_COMPARE_COMMITS:
+            raise GatewayError("repository comparison is too large")
+
+        patch = _run_git(
+            self.git_dir,
+            [
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--binary",
+                merge_base,
+                head,
+            ],
+            max_output=MAX_COMPARE_BYTES,
+        )
+        merges = _run_git(
+            self.git_dir,
+            ["rev-list", "--min-parents=2", "--max-count=1", base + ".." + head],
+            max_output=128,
+        ).strip()
+        commits = b""
+        if not merges:
+            commits = _run_git(
+                self.git_dir,
+                [
+                    "format-patch",
+                    "--binary",
+                    "--no-signature",
+                    "--stdout",
+                    base + ".." + head,
+                ],
+                max_output=MAX_COMPARE_BYTES,
+            )
+        if len(patch) + len(commits) > MAX_COMPARE_BYTES:
+            raise GatewayError("repository comparison is too large")
+        return {
+            "ok": True,
+            "baseOid": base,
+            "headOid": head,
+            "mergeBaseOid": merge_base,
+            "commitCount": commit_count,
+            "patch": patch.decode("utf-8", "replace"),
+            "commits": commits.decode("utf-8", "replace"),
+        }
+
     def branches(self, _query: Mapping[str, str]) -> dict[str, Any]:
         output = _run_git(
             self.git_dir,
@@ -2406,19 +2493,32 @@ class GatewayApplication:
         materializer = materializer or ArchiveMaterializer()
         self.repositories: dict[tuple[str, str], GitRepository] = {}
         self.quarantined_count = 0
+        materialized_archives: dict[EncryptedArchive, Path | None] = {}
         for index, repository in enumerate(config.repositories):
             if repository.visibility != "public" or not repository.enabled:
                 continue
             try:
                 git_dir = repository.git_dir
-                if repository.encrypted_archive is not None:
-                    destination = (
-                        Path(self._temporary_root.name) / f"repository-{index}"
-                    )
-                    destination.mkdir(mode=0o700)
-                    git_dir = materializer.materialize(
-                        repository.encrypted_archive, destination
-                    )
+                archive = repository.encrypted_archive
+                if archive is not None:
+                    if archive not in materialized_archives:
+                        destination = (
+                            Path(self._temporary_root.name)
+                            / f"repository-{index}"
+                        )
+                        destination.mkdir(mode=0o700)
+                        try:
+                            materialized_archives[archive] = (
+                                materializer.materialize(
+                                    archive, destination
+                                )
+                            )
+                        except (GatewayError, GitError, OSError):
+                            # One failed encrypted identity remains unavailable
+                            # for every alias during this application lifetime.
+                            materialized_archives[archive] = None
+                            raise
+                    git_dir = materialized_archives[archive]
                 if git_dir is None:
                     raise GatewayError("public repository storage is missing")
                 runtime = GitRepository(repository, git_dir)
@@ -2704,6 +2804,7 @@ class GatewayApplication:
                 "raw": frozenset({"path", "ref"}),
                 "history": frozenset({"ref"}),
                 "commit": frozenset({"path"}),
+                "compare": frozenset({"base", "head"}),
                 "branches": frozenset(),
                 "search": frozenset({"path", "ref"}),
                 "stats": frozenset({"ref"}),
@@ -2794,6 +2895,7 @@ class GatewayApplication:
                 "blob": repository.blob,
                 "history": repository.history,
                 "commit": repository.commit,
+                "compare": repository.compare,
                 "branches": repository.branches,
                 "search": repository.search,
                 "stats": repository.stats,

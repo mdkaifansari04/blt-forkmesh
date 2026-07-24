@@ -1092,6 +1092,7 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
     static const QStringList operations{
         QStringLiteral("blob"), QStringLiteral("blobs"),
         QStringLiteral("branches"), QStringLiteral("commit"),
+        QStringLiteral("compare"),
         QStringLiteral("git-info-refs"),
         QStringLiteral("git-upload-pack"),
         QStringLiteral("history"), QStringLiteral("raw"),

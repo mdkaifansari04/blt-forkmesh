@@ -105,6 +105,7 @@ was not run.
     "raw",
     "history",
     "commit",
+    "compare",
     "branches",
     "search",
     "stats",

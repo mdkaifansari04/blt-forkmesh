@@ -688,7 +688,9 @@ PullRequest PullRequest::fromJson(const QJsonObject &obj)
     PullRequest pr;
     pr.number = obj.value("number").toInt();
     pr.title = obj.value("title").toString();
-    pr.description = obj.value("description").toString();
+    pr.description = obj.contains("description")
+                         ? obj.value("description").toString()
+                         : obj.value("body").toString();
     pr.base = obj.value("base").toString();
     pr.head = obj.value("head").toString();
     pr.status = obj.value("status").toString("open");
