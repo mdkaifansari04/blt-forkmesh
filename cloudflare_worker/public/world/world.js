@@ -1995,6 +1995,89 @@ function liveNodeRecords(network, mirrorCatalogs = []) {
   return buildLiveMirrorNodes(network, mirrorCatalogs);
 }
 
+const LOCAL_LIVE_LANDMARKS = new Set([
+  "information",
+  "neighborhood",
+  "broadcast",
+  "support",
+]);
+
+const LANDMARK_CONSTRUCTION_REASONS = Object.freeze({
+  fountain:
+    "A configured public Solana reward-pool address has not been verified in this session.",
+  repositories:
+    "The live repository catalog has not been verified in this session.",
+  routing:
+    "No healthy, integrity-checked, clone-ready mirror route has been verified in this session.",
+  organizations:
+    "The organization directory integration has not been verified in this session.",
+  fediverse:
+    "The Mastodon and Lemmy directory integration has not been verified in this session.",
+  security:
+    "No completed commit-scoped public security scan has been verified.",
+  launchpad:
+    "The interactive destination renderer has not finished loading.",
+  events:
+    "The UTC event service has not been verified in this session.",
+  workshops:
+    "No live authorized repository is available for a code workshop.",
+});
+
+function initialLandmarkCapabilities() {
+  return Object.fromEntries(
+    LANDMARKS.map((landmark) => [
+      landmark.id,
+      {
+        live: LOCAL_LIVE_LANDMARKS.has(landmark.id),
+        reason:
+          LANDMARK_CONSTRUCTION_REASONS[landmark.id] ||
+          "This integration has not been verified in this session.",
+      },
+    ]),
+  );
+}
+
+function hasRepositoryCatalogSchema(payload) {
+  return ["repositories", "items", "repos", "data"].some((field) =>
+    Array.isArray(payload?.[field]),
+  );
+}
+
+function hasFediverseDirectorySchema(payload) {
+  return (
+    Array.isArray(payload?.mastodon) &&
+    Array.isArray(payload?.lemmy)
+  );
+}
+
+function hasCompletedSecurityScan(scan) {
+  const status = String(scan?.status || "").trim().toLowerCase();
+  const commit = String(scan?.commitHash || scan?.commit || "")
+    .trim()
+    .toLowerCase();
+  const scannedAt = Date.parse(String(scan?.scannedAt || scan?.timestamp || ""));
+  return (
+    !["", "scan unavailable", "scan failed", "scan outdated"].includes(status) &&
+    /^[0-9a-f]{40,64}$/.test(commit) &&
+    Number.isFinite(scannedAt)
+  );
+}
+
+function constructionMarkerHTML(id, capability, className = "") {
+  const live = capability?.live === true;
+  const reason =
+    String(capability?.reason || "").trim() ||
+    "This integration has not been verified in this session.";
+  return `<span
+    class="world-construction-mark ${escapeHTML(className)}"
+    data-world-construction-marker="${escapeHTML(id)}"
+    role="img"
+    aria-label="Under construction: ${escapeHTML(reason)}"
+    title="Under construction: ${escapeHTML(reason)}"
+    ${live ? "hidden" : ""}
+  ><span aria-hidden="true">🚧</span></span>`;
+}
+
 function accountBadgeCopy(identity, settings) {
   const availability = AVAILABILITY_OPTIONS.find(
     (option) => option.id === settings.availability,
@@ -2021,7 +2104,7 @@ function accountBadgeCopy(identity, settings) {
   return pieces.join(" · ");
 }
 
-function worldTemplate(identity, settings, mode) {
+function worldTemplate(identity, settings, mode, landmarkCapabilities) {
   const accountSession = readSession();
   const signedInName =
     accountSession?.sessionToken &&
@@ -2041,7 +2124,14 @@ function worldTemplate(identity, settings, mode) {
           aria-current="${landmark.id === "information" ? "true" : "false"}"
         >
           <span class="world-map-icon" aria-hidden="true">${escapeHTML(landmark.icon)}</span>
-          <span>${escapeHTML(landmark.shortLabel)}</span>
+          <span class="world-map-label-copy">
+            <span>${escapeHTML(landmark.shortLabel)}</span>
+            ${constructionMarkerHTML(
+              landmark.id,
+              landmarkCapabilities?.[landmark.id],
+              "world-construction-mark-map",
+            )}
+          </span>
           <span class="world-map-distance" data-world-distance="${escapeHTML(landmark.id)}">—</span>
         </button>
       </li>`,
@@ -2504,6 +2594,7 @@ class ForkMeshWorld extends HTMLElement {
     this.identity = null;
     this.settings = null;
     this.world = null;
+    this.landmarkCapabilities = initialLandmarkCapabilities();
     this.repositories = [];
     this.repositoryCatalogState = "loading";
     this.network = {};
@@ -2653,7 +2744,12 @@ class ForkMeshWorld extends HTMLElement {
     // for this identity. It has no movement history, URLs, or activity labels.
     this.mediaSpaces = [];
     this.mediaRoom = normalizeMediaRoom(null);
-    this.innerHTML = worldTemplate(this.identity, this.settings, this.mode);
+    this.innerHTML = worldTemplate(
+      this.identity,
+      this.settings,
+      this.mode,
+      this.landmarkCapabilities,
+    );
     this.syncViewportHeight();
     window.visualViewport?.addEventListener("resize", this.syncViewportHeight);
     window.addEventListener("orientationchange", this.syncViewportHeight);
@@ -2745,6 +2841,12 @@ class ForkMeshWorld extends HTMLElement {
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
       });
+      this.syncConstructionMarkers();
+      this.setLandmarkCapability(
+        "launchpad",
+        true,
+        "The interactive destination renderer is available.",
+      );
       this.world.setTheme(this.settings.theme);
       this.world.setLightLevel(this.settings.lightLevel);
       await Promise.allSettled([contextPromise, dataPromise]);
@@ -3293,9 +3395,67 @@ class ForkMeshWorld extends HTMLElement {
             persistedInactive: true,
           }))
         : [];
+    const liveMirrors = liveNodeRecords(this.network, this.mirrorCatalogs);
+    const rewardAddress = String(this.rewardState?.address || "").trim();
+    this.landmarkCapabilities.fountain = {
+      live:
+        rewardResult.status === "fulfilled" &&
+        /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(rewardAddress),
+      reason: LANDMARK_CONSTRUCTION_REASONS.fountain,
+    };
+    this.landmarkCapabilities.repositories = {
+      live:
+        reposResult.status === "fulfilled" &&
+        hasRepositoryCatalogSchema(reposResult.value),
+      reason: LANDMARK_CONSTRUCTION_REASONS.repositories,
+    };
+    this.landmarkCapabilities.routing = {
+      live:
+        mirrorResult.status === "fulfilled" &&
+        mirrorResult.value?.ok === true &&
+        Array.isArray(mirrorResult.value?.mirrors) &&
+        liveMirrors.some(
+          (node) =>
+            node.healthy === true &&
+            node.cloneAvailable === true &&
+            /^[0-9a-f]{40,64}$/.test(String(node.commit || "")),
+        ),
+      reason: LANDMARK_CONSTRUCTION_REASONS.routing,
+    };
+    this.landmarkCapabilities.organizations = {
+      live:
+        orgResult.status === "fulfilled" &&
+        Array.isArray(orgResult.value?.organizations),
+      reason: LANDMARK_CONSTRUCTION_REASONS.organizations,
+    };
+    this.landmarkCapabilities.fediverse = {
+      live:
+        directoryResult.status === "fulfilled" &&
+        hasFediverseDirectorySchema(directoryResult.value),
+      reason: LANDMARK_CONSTRUCTION_REASONS.fediverse,
+    };
+    this.landmarkCapabilities.security = {
+      live:
+        scanResult.status === "fulfilled" &&
+        hasCompletedSecurityScan(this.securityScan),
+      reason: LANDMARK_CONSTRUCTION_REASONS.security,
+    };
+    this.landmarkCapabilities.events = {
+      live:
+        eventsResult.status === "fulfilled" &&
+        Array.isArray(eventsResult.value?.events),
+      reason: LANDMARK_CONSTRUCTION_REASONS.events,
+    };
+    this.landmarkCapabilities.workshops = {
+      live:
+        this.landmarkCapabilities.repositories.live === true &&
+        this.repositories.some((repo) => repo.liveHost || repo.isPrivate),
+      reason: LANDMARK_CONSTRUCTION_REASONS.workshops,
+    };
+    this.syncConstructionMarkers();
     if (serverNow > 0 && !this.serverOffset) this.serverOffset = serverNow - Date.now();
     this.world?.updateNetworkNodes(
-      liveNodeRecords(this.network, this.mirrorCatalogs),
+      liveMirrors,
     );
     this.world?.updateFederatedInstances?.(this.federatedInstances);
     this.world?.updateBots(this.botDirectory);
@@ -4577,6 +4737,14 @@ class ForkMeshWorld extends HTMLElement {
       this.rewardState = pool.value || {};
       this.captureRewardEvents(true);
     }
+    this.setLandmarkCapability(
+      "fountain",
+      pool.status === "fulfilled" &&
+        /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(
+          String(pool.value?.address || "").trim(),
+        ),
+      LANDMARK_CONSTRUCTION_REASONS.fountain,
+    );
     if (pending.status === "fulfilled") {
       this.pendingRewards = Array.isArray(pending.value?.rewards)
         ? pending.value.rewards.slice(0, 100)
@@ -4702,9 +4870,20 @@ class ForkMeshWorld extends HTMLElement {
         requestedRepo: FLAGSHIP_REPOSITORY.repo,
       },
     ];
-    this.world?.updateNetworkNodes(
-      liveNodeRecords(this.network, this.mirrorCatalogs),
+    const liveMirrors = liveNodeRecords(this.network, this.mirrorCatalogs);
+    this.setLandmarkCapability(
+      "routing",
+      payload?.ok === true &&
+        Array.isArray(payload?.mirrors) &&
+        liveMirrors.some(
+          (node) =>
+            node.healthy === true &&
+            node.cloneAvailable === true &&
+            /^[0-9a-f]{40,64}$/.test(String(node.commit || "")),
+        ),
+      LANDMARK_CONSTRUCTION_REASONS.routing,
     );
+    this.world?.updateNetworkNodes(liveMirrors);
   }
 
   startMirrorPolling() {
@@ -4765,6 +4944,45 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  setLandmarkCapability(id, live, reason = "") {
+    if (!LANDMARKS.some((landmark) => landmark.id === id)) return;
+    this.landmarkCapabilities[id] = {
+      live: live === true,
+      reason:
+        String(reason || "").trim() ||
+        LANDMARK_CONSTRUCTION_REASONS[id] ||
+        "This integration has not been verified in this session.",
+    };
+    this.syncConstructionMarkers(id);
+  }
+
+  syncConstructionMarkers(id = "") {
+    const ids = id ? [id] : LANDMARKS.map((landmark) => landmark.id);
+    ids.forEach((landmarkId) => {
+      const capability = this.landmarkCapabilities[landmarkId] || {
+        live: false,
+        reason: "This integration has not been verified in this session.",
+      };
+      const reason = String(capability.reason || "");
+      this.$$(
+        `[data-world-construction-marker="${landmarkId}"]`,
+      ).forEach((marker) => {
+        marker.hidden = capability.live === true;
+        marker.setAttribute(
+          "aria-label",
+          `Under construction: ${reason}`,
+        );
+        marker.setAttribute("title", `Under construction: ${reason}`);
+      });
+      this.$$(`[data-world-landmark="${landmarkId}"]`).forEach((button) => {
+        button.dataset.worldUnderConstruction = String(
+          capability.live !== true,
+        );
+      });
+    });
+    this.world?.updateLandmarkConstruction?.(this.landmarkCapabilities);
+  }
+
   updateDistances() {
     const position = this.world?.getPosition?.();
     if (!position) return;
@@ -4780,6 +4998,10 @@ class ForkMeshWorld extends HTMLElement {
 
   openLandmark(id) {
     const landmark = landmarkById(id);
+    const capability = this.landmarkCapabilities[landmark.id] || {
+      live: false,
+      reason: "This integration has not been verified in this session.",
+    };
     const detail = this.$("[data-world-detail]");
     const backdrop = this.$("[data-world-detail-backdrop]");
     if (!detail || !backdrop) return;
@@ -4796,7 +5018,14 @@ class ForkMeshWorld extends HTMLElement {
       </header>
       <div class="world-detail-scroll">
         <p class="world-detail-summary">${escapeHTML(landmark.summary)}</p>
-        <span class="world-status-pill">${escapeHTML(landmark.status)}</span>
+        <div class="world-status-row">
+          <span class="world-status-pill">${escapeHTML(landmark.status)}</span>
+          ${constructionMarkerHTML(
+            landmark.id,
+            capability,
+            "world-construction-mark-panel",
+          )}
+        </div>
 
         <div class="world-truth-grid">
           <section class="world-truth-block">
@@ -6367,8 +6596,18 @@ class ForkMeshWorld extends HTMLElement {
       });
       this.events = normalizeCommunityEvents(payload);
       this.eventsState = this.events.length ? "ready" : "empty";
+      this.setLandmarkCapability(
+        "events",
+        Array.isArray(payload?.events),
+        LANDMARK_CONSTRUCTION_REASONS.events,
+      );
     } catch (_) {
       this.eventsState = "unavailable";
+      this.setLandmarkCapability(
+        "events",
+        false,
+        LANDMARK_CONSTRUCTION_REASONS.events,
+      );
     }
     this.updateNotificationBadge();
     this.announceWorldNotifications();

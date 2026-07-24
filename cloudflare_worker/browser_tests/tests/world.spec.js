@@ -50,6 +50,7 @@ async function prepareWorldPage(
     worldSocketHandler = null,
     repositoryFixture = null,
     accountFixture = null,
+    unavailablePaths = [],
   } = {},
 ) {
   let mentionState = "review";
@@ -89,6 +90,13 @@ async function prepareWorldPage(
   );
   await page.route("**/api/**", (route) => {
     const url = new URL(route.request().url());
+    if (unavailablePaths.includes(url.pathname)) {
+      return route.fulfill({
+        status: 503,
+        contentType: "application/json; charset=utf-8",
+        body: JSON.stringify({ ok: false, error: "fixture_unavailable" }),
+      });
+    }
     let status = 200;
     let body =
       url.pathname === "/api/world/context"
@@ -1471,6 +1479,90 @@ test("two-finger pinch traverses the complete bounded mobile camera range", asyn
   });
   await client.detach();
   await context.close();
+});
+
+test("construction markers distinguish verified live landmarks from unavailable ones", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "construction-truth");
+  await waitForWorld(page);
+
+  const mapMarker = (id) =>
+    page.locator(
+      `.world-map [data-world-construction-marker="${id}"]`,
+    );
+  await expect(mapMarker("information")).toBeHidden();
+  await expect(mapMarker("routing")).toBeHidden();
+  await expect(mapMarker("repositories")).toBeHidden();
+  await expect(mapMarker("fediverse")).toBeHidden();
+  await expect(mapMarker("events")).toBeHidden();
+  await expect(mapMarker("organizations")).toBeVisible();
+  await expect(mapMarker("security")).toBeVisible();
+  await expect(mapMarker("workshops")).toBeVisible();
+
+  const destinationMarker = (id) =>
+    page.locator(
+      `[data-landmark-label="${id}"] [data-world-construction-marker="${id}"]`,
+    );
+  await expect(destinationMarker("routing")).toHaveAttribute("hidden", "");
+  await expect(destinationMarker("organizations")).not.toHaveAttribute(
+    "hidden",
+    "",
+  );
+  await expect(destinationMarker("organizations")).toHaveAttribute(
+    "aria-label",
+    /Under construction:.*organization directory integration/i,
+  );
+
+  await page
+    .locator('.world-map [data-world-landmark="organizations"]')
+    .click();
+  const detail = page.locator("[data-world-detail]");
+  await expect(detail).toBeVisible();
+  await expect(detail.getByRole("heading", { name: "Organization quarter" }))
+    .toBeVisible();
+  await expect(
+    detail.locator(
+      '[data-world-construction-marker="organizations"]',
+    ),
+  ).toBeVisible();
+});
+
+test("failed live checks fail closed to construction without blocking navigation", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "construction-unavailable", {
+    unavailablePaths: [
+      "/api/repo/forkmesh/forkmesh/mirrors",
+      "/api/repositories",
+      "/api/world/fediverse",
+      "/api/world/events",
+    ],
+  });
+  await waitForWorld(page);
+
+  for (const id of ["routing", "repositories", "fediverse", "events"]) {
+    const marker = page.locator(
+      `.world-map [data-world-construction-marker="${id}"]`,
+    );
+    await expect(marker).toBeVisible();
+    await expect(marker).toHaveAttribute("aria-label", /^Under construction:/);
+  }
+  await expect(
+    page.locator(
+      '.world-map [data-world-construction-marker="support"]',
+    ),
+  ).toBeHidden();
+
+  await page.locator('.world-map [data-world-landmark="routing"]').click();
+  await expect(
+    page.getByRole("heading", { name: "Cloud routing station" }),
+  ).toBeVisible();
+  await expect(
+    page.locator(
+      '[data-world-detail] [data-world-construction-marker="routing"]',
+    ),
+  ).toBeVisible();
 });
 
 test("approved instances, local setup, and project support stay truthful", async ({

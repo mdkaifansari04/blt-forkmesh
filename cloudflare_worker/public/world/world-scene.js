@@ -2552,7 +2552,24 @@ function makeObjectLabel(landmark, labelLayer, onSelect) {
   wrapper.style.setProperty("--label-color", landmark.color);
   const button = document.createElement("button");
   button.type = "button";
-  button.textContent = landmark.shortLabel;
+  const copy = document.createElement("span");
+  copy.textContent = landmark.shortLabel;
+  const construction = document.createElement("span");
+  construction.className =
+    "world-construction-mark world-construction-mark-destination";
+  construction.dataset.worldConstructionMarker = landmark.id;
+  construction.setAttribute("role", "img");
+  construction.setAttribute(
+    "aria-label",
+    "Under construction: this integration has not been verified in this session.",
+  );
+  construction.title =
+    "Under construction: this integration has not been verified in this session.";
+  const icon = document.createElement("span");
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "🚧";
+  construction.appendChild(icon);
+  button.append(copy, construction);
   button.setAttribute("aria-label", `Open ${landmark.label}`);
   button.addEventListener("click", () => onSelect(landmark.id, { source: "label" }));
   wrapper.appendChild(button);
@@ -4822,6 +4839,32 @@ export function createWorldScene({
     }
   }
 
+  function updateLandmarkConstruction(capabilities = {}) {
+    LANDMARKS.forEach((landmark) => {
+      const label = landmarkLabels.get(landmark.id);
+      const marker = label?.querySelector(
+        `[data-world-construction-marker="${landmark.id}"]`,
+      );
+      const button = label?.querySelector("button");
+      if (!marker || !button) return;
+      const capability = capabilities?.[landmark.id];
+      const live = capability?.live === true;
+      const reason =
+        String(capability?.reason || "").trim() ||
+        "This integration has not been verified in this session.";
+      marker.hidden = live;
+      marker.setAttribute("aria-label", `Under construction: ${reason}`);
+      marker.title = `Under construction: ${reason}`;
+      button.dataset.worldUnderConstruction = String(!live);
+      button.setAttribute(
+        "aria-label",
+        live
+          ? `Open ${landmark.label}`
+          : `Open ${landmark.label} — under construction: ${reason}`,
+      );
+    });
+  }
+
   function dispose() {
     disposed = true;
     renderer.setAnimationLoop(null);
@@ -4883,6 +4926,7 @@ export function createWorldScene({
     updateMediaSpaces,
     updateIdentity,
     updateRepositoryGraph,
+    updateLandmarkConstruction,
     playEmote,
     playRewardEvent,
     setPaused,

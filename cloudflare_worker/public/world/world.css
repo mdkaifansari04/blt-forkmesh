@@ -1056,6 +1056,47 @@ forkmesh-world {
   font-size: 0.66rem;
 }
 
+.world-map-label-copy,
+.world-status-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.world-map-label-copy > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-construction-mark {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 1.35em;
+  height: 1.35em;
+  border: 1px solid rgb(247 201 107 / 0.68);
+  background: rgb(43 31 8 / 0.9);
+  color: #ffd56f;
+  font-size: 0.72rem;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.world-construction-mark[hidden] {
+  display: none;
+}
+
+.world-construction-mark-map {
+  font-size: 0.62rem;
+}
+
+.world-construction-mark-panel {
+  margin-top: 18px;
+  font-size: 0.84rem;
+}
+
 .world-map-distance {
   color: #71887c;
   font-family: "ForkMesh Mono", monospace;
@@ -1719,6 +1760,11 @@ forkmesh-world {
   font-size: 0.58rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.world-status-row {
+  flex-wrap: wrap;
+  width: fit-content;
 }
 
 .world-status-pill::before {
@@ -3712,6 +3758,9 @@ forkmesh-world {
 }
 
 .world-object-label button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   border: 1px solid var(--label-color, var(--world-line-strong));
   border-radius: 0;
   background: rgb(7 17 15 / 0.82);
@@ -3721,6 +3770,10 @@ forkmesh-world {
   font-size: 0.62rem;
   white-space: nowrap;
   backdrop-filter: blur(10px);
+}
+
+.world-construction-mark-destination {
+  font-size: 0.58rem;
 }
 
 .world-object-label button:hover,
@@ -3793,6 +3846,21 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 @media (max-width: 720px) {
+  .world-map-label-copy {
+    gap: 4px;
+  }
+
+  .world-construction-mark-map,
+  .world-construction-mark-destination {
+    width: 1.2em;
+    height: 1.2em;
+    font-size: 0.56rem;
+  }
+
+  .world-status-row {
+    max-width: 100%;
+  }
+
   .world-chat {
     top: var(--safe-top);
     bottom: var(--safe-bottom);
