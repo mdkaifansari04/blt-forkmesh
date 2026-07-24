@@ -210,7 +210,7 @@
       profile.textContent = "Public profile (@" + name + ")";
       const edit = document.createElement("a");
       edit.href = "/dashboard/settings";
-      edit.textContent = "Edit profile";
+      edit.textContent = "Settings";
       const out = document.createElement("button");
       out.type = "button";
       out.textContent = "Log out";
@@ -242,9 +242,11 @@
     const profile = document.createElement("a");
     profile.href = "/@" + encodeURIComponent(name.toLowerCase());
     profile.textContent = "Public profile";
+    // All account settings (profile, email, password, payout, nodes) live on
+    // the dashboard settings page — same entry the dashboard avatar menu has.
     const edit = document.createElement("a");
     edit.href = "/dashboard/settings";
-    edit.textContent = "Edit profile";
+    edit.textContent = "Settings";
     const out = document.createElement("button");
     out.type = "button";
     out.textContent = "Log out";
@@ -398,10 +400,22 @@
     const panel = header.querySelector(".fm-header-mobile");
     mount.replaceWith(header);
 
-    const session = readSession();
-    buildAccountArea(header.querySelector(".fm-header-account"), session);
-    buildAccountArea(panel.querySelector(".fm-header-mobile-account"), session,
-                     { stacked: true });
+    const renderAccountAreas = () => {
+      const session = readSession();
+      buildAccountArea(header.querySelector(".fm-header-account"), session);
+      buildAccountArea(panel.querySelector(".fm-header-mobile-account"), session,
+                       { stacked: true });
+    };
+    renderAccountAreas();
+    // Keep every open section in agreement about the login state: a login or
+    // logout in another tab (dashboard, chat, home, …) fires a storage event
+    // here, so this header flips between Sign Up / Log In and the account chip
+    // without a manual reload.
+    window.addEventListener("storage", (event) => {
+      if (event.key === "forkmesh.session" || event.key === null) {
+        renderAccountAreas();
+      }
+    });
 
     markCurrentPage(header);
 

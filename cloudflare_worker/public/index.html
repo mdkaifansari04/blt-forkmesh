@@ -650,6 +650,28 @@
         transform: translateY(1px);
       }
 
+      /* Logged-in account chip rendered into the hero auth buttons by
+         home-header-auth.js. */
+      .home-auth-avatar {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.1rem;
+        height: 1.1rem;
+        margin-right: 0.4rem;
+        border-radius: 9999px;
+        overflow: hidden;
+        background: color-mix(in oklab, var(--primary-foreground), transparent 82%);
+        font-size: 0.65rem;
+        font-weight: 700;
+      }
+
+      .home-auth-avatar img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+
       .app-mockup {
         --c: #000;
         --s: #0a0a0a;
@@ -1973,6 +1995,7 @@
     </style>
       <link rel="stylesheet" href="/site-footer.css" />
     <script src="/site-footer.js" defer></script>
+    <script src="/home-header-auth.js" defer></script>
   </head>
   <body class="min-h-full bg-background text-foreground">
     <main class="overflow-hidden">
@@ -2132,11 +2155,13 @@
                   class="flex w-full flex-col space-y-3 sm:flex-row sm:gap-3 sm:space-y-0 md:w-fit"
                 >
                   <a
+                    data-home-auth-secondary
                     class="button-outline hide-on-scroll h-7 rounded-lg px-2.5 text-[0.8rem]"
                     href="/login"
                     >Login</a
                   >
                   <a
+                    data-home-auth-primary
                     class="button-primary h-7 rounded-lg px-2.5 text-[0.8rem]"
                     href="/signup"
                     >Get Started</a
