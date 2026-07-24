@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 import hashlib
 import importlib.util
 import json
@@ -12,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from types import SimpleNamespace
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -358,8 +360,240 @@ def test_failed_staged_gateway_validation_preserves_last_good_pair(
     assert old_archive.read_bytes() == old_ciphertext
 
 
-def test_register_posts_endpoint_then_node_owner_catalog(installation):
+def test_catalog_host_telemetry_config_is_explicit_and_boolean(installation):
     config = installation["config"]
+    assert config.catalog.report_cpu is False
+    assert config.catalog.report_memory is False
+    assert config.catalog.report_disk is False
+
+    configured = json.loads(json.dumps(installation["config_value"]))
+    configured["catalog"].update({
+        "reportCpu": True,
+        "reportMemory": True,
+        "reportDisk": True,
+    })
+    configured_path = installation["config_path"].parent / "telemetry-refresh.json"
+    configured_path.write_text(
+        json.dumps(configured, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    configured_path.chmod(0o600)
+    loaded = refresh_tool.load_config(configured_path)
+    assert loaded.catalog.report_cpu is True
+    assert loaded.catalog.report_memory is True
+    assert loaded.catalog.report_disk is True
+
+    configured["catalog"]["reportCpu"] = "true"
+    configured_path.write_text(json.dumps(configured), encoding="utf-8")
+    with pytest.raises(refresh_tool.RefreshError, match="must be a boolean"):
+        refresh_tool.load_config(configured_path)
+
+
+def test_linux_host_metric_parsers_are_bounded_and_fail_closed(installation):
+    snapshots = iter([
+        b"cpu  100 0 100 800 0 0 0 0\n",
+        b"cpu  150 0 150 900 0 0 0 0\n",
+    ])
+    assert refresh_tool._sample_linux_cpu(
+        read_metric=lambda _path: next(snapshots),
+        sleeper=lambda _seconds: None,
+    ) == 50
+    assert refresh_tool._proc_cpu_snapshot(b"cpu malformed\n") is None
+
+    assert refresh_tool._parse_linux_memory(
+        b"MemTotal:       1000 kB\nMemAvailable:    250 kB\n"
+    ) == (750 * 1024, 1000 * 1024)
+    assert refresh_tool._parse_linux_memory(
+        b"MemTotal:       1000 kB\n"
+    ) is None
+
+    disk = refresh_tool._sample_linux_disk(
+        installation["bare"],
+        statvfs=lambda _path: SimpleNamespace(
+            f_frsize=4096,
+            f_bsize=4096,
+            f_blocks=1000,
+            f_bavail=250,
+        ),
+    )
+    assert disk == (750 * 4096, 1000 * 4096)
+
+
+def test_host_sampling_calls_only_opted_in_metrics_and_omits_unavailable(
+    installation,
+):
+    config = installation["config"]
+
+    def forbidden(*_args):
+        raise AssertionError("disabled sampler was called")
+
+    assert refresh_tool._sample_host_telemetry(
+        config,
+        cpu_sampler=forbidden,
+        memory_sampler=forbidden,
+        disk_sampler=forbidden,
+        platform="linux",
+    ) == {}
+
+    enabled = replace(
+        config,
+        catalog=replace(
+            config.catalog,
+            report_cpu=True,
+            report_memory=True,
+            report_disk=True,
+        ),
+    )
+    sampled = refresh_tool._sample_host_telemetry(
+        enabled,
+        cpu_sampler=lambda: 177,
+        memory_sampler=lambda: (900, 800),
+        disk_sampler=lambda _path: None,
+        platform="linux",
+    )
+    assert sampled == {
+        "cpuPercent": 100,
+        "memUsedBytes": 800,
+        "memTotalBytes": 800,
+    }
+    assert refresh_tool._sample_host_telemetry(
+        enabled,
+        cpu_sampler=lambda: None,
+        memory_sampler=lambda: (10, 0),
+        disk_sampler=lambda _path: (-1, 100),
+        platform="linux",
+    ) == {}
+
+
+def test_headless_catalog_samples_truthful_repository_statistics(installation):
+    work = installation["work"]
+
+    records = {
+        ".forkmesh/issues/open/1/issue-1.json": {
+            "status": "open",
+            "events": [{"type": "open", "author": "alice"}],
+        },
+        ".forkmesh/issues/open/2/issue-2.json": {
+            "status": "open",
+            "events": [
+                {"type": "open", "author": "bob"},
+                {
+                    "type": "delete",
+                    "target": "self",
+                    "author": "bob",
+                },
+            ],
+        },
+        ".forkmesh/issues/closed/3/issue-3.json": {
+            "status": "closed",
+            "events": [],
+        },
+        ".forkmesh/issues/4/issue-4.json": {
+            "status": "open",
+            "events": [],
+        },
+        ".forkmesh/discussions/5/discussion-5.json": {"title": "one"},
+        ".forkmesh/discussions/9/discussion-9.json": {"title": "two"},
+    }
+    for relative, value in records.items():
+        target = work / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(value), encoding="utf-8")
+    _run(["git", "add", ".forkmesh"], work)
+    _run(["git", "commit", "-m", "add collaboration metadata"], work)
+    _run(["git", "push", "mirror", "main"], work)
+
+    _run(["git", "switch", "-c", "forkmesh/pulls"], work)
+    for number in (7, 11):
+        target = work / "pulls" / str(number) / "pull.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"# Pull {number}\n", encoding="utf-8")
+    _run(["git", "add", "pulls"], work)
+    _run(["git", "commit", "-m", "add pull metadata"], work)
+    _run(["git", "push", "mirror", "forkmesh/pulls"], work)
+    _run(["git", "switch", "main"], work)
+    _run(["git", "branch", "feature/reliable-counts"], work)
+    _run(["git", "push", "mirror", "feature/reliable-counts"], work)
+
+    for digest in ("a" * 64, "b" * 64):
+        data = (
+            installation["release_store"]
+            / "sha256"
+            / digest[:2]
+            / digest
+            / "data"
+        )
+        data.parent.mkdir(parents=True, exist_ok=True)
+        data.write_bytes(digest.encode("ascii"))
+
+    stats = refresh_tool._sample_repository_statistics(
+        installation["config"]
+    )
+    assert stats == {
+        "commitCount": "2",
+        "branchCount": "3",
+        "issueCount": "2",
+        "issueMaxNumber": "4",
+        "pullCount": "2",
+        "discussionCount": "2",
+        "artifactCount": "2",
+    }
+    assert "worktreeCount" not in stats
+    assert "clonesServed" not in stats
+    assert "websiteServed" not in stats
+
+
+def test_headless_catalog_omits_unreadable_or_unavailable_statistics(
+    installation,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = replace(installation["config"], release_store=None)
+    monkeypatch.setattr(
+        refresh_tool,
+        "_source_blob_batch",
+        lambda *_args, **_kwargs: None,
+    )
+    issue = installation["work"] / ".forkmesh/issues/open/1/issue-1.json"
+    issue.parent.mkdir(parents=True, exist_ok=True)
+    issue.write_text('{"status":"open","events":[]}', encoding="utf-8")
+    _run(["git", "add", ".forkmesh"], installation["work"])
+    _run(["git", "commit", "-m", "add one issue"], installation["work"])
+    _run(["git", "push", "mirror", "main"], installation["work"])
+
+    stats = refresh_tool._sample_repository_statistics(config)
+    assert "issueCount" not in stats
+    assert "issueMaxNumber" not in stats
+    assert "artifactCount" not in stats
+    assert stats["commitCount"] == "2"
+    assert stats["branchCount"] == "1"
+    assert stats["pullCount"] == "0"
+    assert stats["discussionCount"] == "0"
+
+
+def test_register_posts_endpoint_then_node_owner_catalog(
+    installation,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = replace(
+        installation["config"],
+        catalog=replace(
+            installation["config"].catalog,
+            report_cpu=True,
+            report_memory=True,
+            report_disk=True,
+        ),
+    )
+    monkeypatch.setattr(
+        refresh_tool,
+        "_sample_host_telemetry",
+        lambda _config: {
+            "cpuPercent": 37,
+            "memUsedBytes": 300,
+            "memTotalBytes": 1000,
+            "diskUsedBytes": 800,
+            "diskTotalBytes": 2000,
+        },
+    )
     refresh_tool.refresh(config)
     calls: list[tuple[str, dict]] = []
 
@@ -420,6 +654,16 @@ def test_register_posts_endpoint_then_node_owner_catalog(installation):
     assert catalog["name"] == "forkmesh"
     assert catalog["visibility"] == "public"
     assert catalog["commit"] == expected_commit
+    assert catalog["commitCount"] == "1"
+    assert catalog["branchCount"] == "1"
+    assert catalog["issueCount"] == "0"
+    assert catalog["issueMaxNumber"] == "0"
+    assert catalog["pullCount"] == "0"
+    assert catalog["discussionCount"] == "0"
+    assert catalog["artifactCount"] == "0"
+    assert catalog["cpuPercent"] == 37
+    assert (catalog["memUsedBytes"], catalog["memTotalBytes"]) == (300, 1000)
+    assert (catalog["diskUsedBytes"], catalog["diskTotalBytes"]) == (800, 2000)
     assert catalog["catalogSigVersion"] == 2
     assert catalog["maintainer"] == installation["public"]["nodePublicKey"]
     assert re_fullmatch_base64_signature(catalog["catalogSig"])

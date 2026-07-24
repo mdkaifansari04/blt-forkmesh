@@ -119,7 +119,10 @@ was not run.
   "catalog": {
     "description": "ForkMesh mirror",
     "branch": "main",
-    "platform": "git"
+    "platform": "git",
+    "reportCpu": false,
+    "reportMemory": false,
+    "reportDisk": false
   }
 }
 ```
@@ -137,6 +140,17 @@ mapping; an alias does not grant organization membership or private access.
 identity must already pin `publicOrigin`. `catalog.solana`, when present, is
 only a public, self-custodial payout address. Never place a seed phrase, private
 key, API token, password, or wallet credential in this file.
+
+Host resource reporting is explicit and off by default. Set
+`catalog.reportCpu`, `catalog.reportMemory`, or `catalog.reportDisk` to `true`
+only when the operator wants that aggregate metric included in the node's
+public, signed catalog record and World mirror display. CPU is a short aggregate
+Linux `/proc/stat` sample; memory uses `MemTotal` and `MemAvailable`; disk uses
+the filesystem containing `sourceRepository`. ForkMesh publishes only bounded
+integer percentages or used/total byte pairs. Disabled, unavailable, partial,
+or malformed readings are omitted and remain “not shared”—they are never
+reported as zero. No process list, path, file name, repository content, or
+per-process activity is collected.
 
 `releaseStore` is optional. When configured, it must be an existing owner-only
 directory containing the node's content-addressed `sha256/<prefix>/<digest>/data`

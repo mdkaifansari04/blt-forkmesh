@@ -24,6 +24,14 @@ function knownNumber(value, minimum, maximum) {
   return number;
 }
 
+function omitUnknownValues(record) {
+  return Object.fromEntries(
+    Object.entries(record).filter(
+      ([, value]) => value !== null && value !== undefined,
+    ),
+  );
+}
+
 function commitHash(value) {
   const commit = String(value || "").trim().toLowerCase();
   return COMMIT_PATTERN.test(commit) ? commit : "";
@@ -35,7 +43,7 @@ function timestamp(value) {
 }
 
 function publicRepositoryRecord(mirror, payload) {
-  return {
+  return omitUnknownValues({
     owner: text(payload?.requestedOwner || payload?.owner, "", 80),
     name: text(
       payload?.requestedRepo || payload?.repo || mirror?.repo,
@@ -65,11 +73,11 @@ function publicRepositoryRecord(mirror, payload) {
     platform: text(mirror?.platform, "", 24).toLowerCase(),
     version: text(mirror?.version, "", 32),
     id: text(mirror?.id, "", 120),
-  };
+  });
 }
 
 function nodeAggregateRecord(node) {
-  return {
+  return omitUnknownValues({
     sizeBytes: knownInteger(node?.sizeBytes, 2 ** 50),
     issueCount: knownInteger(node?.issueCount, 1_000_000_000),
     commitCount: knownInteger(node?.commitCount, 1_000_000_000),
@@ -86,7 +94,7 @@ function nodeAggregateRecord(node) {
     platform: text(node?.platform, "", 24).toLowerCase(),
     version: text(node?.version, "", 32),
     nodeId: text(node?.nodeId || node?.id, "", 120),
-  };
+  });
 }
 
 function publicResourceRecord(record) {
@@ -100,7 +108,7 @@ function publicResourceRecord(record) {
   );
   const diskTotalBytes = knownInteger(record?.diskTotalBytes, 2 ** 50);
   const diskUsedBytes = knownInteger(record?.diskUsedBytes, 2 ** 50);
-  return {
+  return omitUnknownValues({
     cpuPercent: knownNumber(record?.cpuPercent, 0, 100),
     memoryUsedBytes:
       memoryTotalBytes !== null &&
@@ -116,7 +124,7 @@ function publicResourceRecord(record) {
         ? diskUsedBytes
         : null,
     diskTotalBytes,
-  };
+  });
 }
 
 /**
@@ -193,7 +201,7 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
           : {}),
       });
       const aggregate = nodeAggregateRecord(detail);
-      return {
+      return omitUnknownValues({
         name: displayName,
         online: true,
         healthy:
@@ -234,6 +242,6 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
           : aggregate.websiteServed,
         repositories,
         ...resources,
-      };
+      });
     });
 }

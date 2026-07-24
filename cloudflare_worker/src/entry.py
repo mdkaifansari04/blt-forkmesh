@@ -2168,6 +2168,11 @@ async def network_leaderboards(env):
     # branch/platform/version/sync-time from whichever of its repos reported in
     # most recently — so a multi-repo node shows one coherent "latest" state.
     node_details = {}
+    counter_fields = (
+        "issueCount", "commitCount", "branchCount", "pullCount",
+        "discussionCount", "artifactCount", "worktreeCount",
+        "clonesServed", "websiteServed",
+    )
     for row in repo_rows:
         if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
             continue
@@ -2191,20 +2196,24 @@ async def network_leaderboards(env):
             bytes_by_owner[owner] = bytes_by_owner.get(owner, 0) + size_bytes
         detail = node_details.setdefault(owner.lower(), {
             "name": owner, "sizeBytes": 0,
-            "issueCount": 0, "commitCount": 0, "branchCount": 0,
-            "pullCount": 0, "discussionCount": 0, "artifactCount": 0,
-            "worktreeCount": 0, "clonesServed": 0, "websiteServed": 0,
             "commit": "", "branch": "", "lastSync": "",
             "platform": "", "version": "", "nodeId": "", "_updatedMs": -1,
+            "_reportedCounters": set(),
         })
         detail["sizeBytes"] += size_bytes
-        for field in ("issueCount", "commitCount", "branchCount", "pullCount",
-                      "discussionCount", "artifactCount", "worktreeCount",
-                      "clonesServed", "websiteServed"):
+        for field in counter_fields:
+            raw_value = rec.get(field)
+            if raw_value is None or raw_value == "" or isinstance(
+                    raw_value, bool):
+                continue
             try:
-                detail[field] += max(0, int(rec.get(field, 0) or 0))
+                counter = int(raw_value)
             except (TypeError, ValueError):
-                pass
+                continue
+            if counter < 0:
+                continue
+            detail[field] = int(detail.get(field) or 0) + counter
+            detail["_reportedCounters"].add(field)
         updated_ms = _catalog_updated_ms(rec)
         if updated_ms > detail["_updatedMs"]:
             detail["_updatedMs"] = updated_ms
@@ -2224,10 +2233,19 @@ async def network_leaderboards(env):
                 hosted_board.append(
                     {"name": owner + "/" + name, "since": ts,
                      "ageMs": max(0, now - ts)})
-    node_board = [
-        {k: v for k, v in detail.items() if k != "_updatedMs"}
-        for detail in node_details.values()
-    ]
+    node_board = []
+    for detail in node_details.values():
+        reported = detail.get("_reportedCounters", set())
+        public_detail = {
+            k: v for k, v in detail.items()
+            if k not in ("_updatedMs", "_reportedCounters")
+        }
+        # Unknown stays JSON null instead of becoming a misleading aggregate
+        # zero. A real reported zero remains zero.
+        for field in counter_fields:
+            if field not in reported:
+                public_detail[field] = None
+        node_board.append(public_detail)
     node_board.sort(key=lambda n: (-n["sizeBytes"], n["name"]))
 
     repo_board = [{"name": o, "repos": c} for o, c in counts.items()]

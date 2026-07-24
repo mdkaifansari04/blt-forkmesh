@@ -194,6 +194,21 @@
         "version": {
           "type": "string",
           "maxLength": 32
+        },
+        "reportCpu": {
+          "description": "Opt in to publishing a bounded aggregate host CPU percentage. Defaults to false.",
+          "type": "boolean",
+          "default": false
+        },
+        "reportMemory": {
+          "description": "Opt in to publishing bounded host memory used/total bytes. Defaults to false.",
+          "type": "boolean",
+          "default": false
+        },
+        "reportDisk": {
+          "description": "Opt in to publishing bounded used/total bytes for the filesystem containing sourceRepository. Defaults to false.",
+          "type": "boolean",
+          "default": false
         }
       }
     }

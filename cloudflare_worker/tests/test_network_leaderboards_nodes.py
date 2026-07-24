@@ -163,6 +163,24 @@ def test_sums_counters_across_a_nodes_repos_and_keeps_latest_state():
     assert vm1["platform"] == "windows"
 
 
+def test_missing_counters_remain_unknown_while_reported_zero_stays_zero():
+    out = _run([
+        {
+            "owner": "mirror2", "name": "forkmesh", "sizeBytes": 100,
+            "issueCount": "0", "commitCount": "",
+            "pullCount": None, "clonesServed": -1,
+            "commit": "a" * 40, "branch": "main", "updatedAt": "1",
+        },
+    ])
+    node = out["nodes"][0]
+    assert node["issueCount"] == 0
+    assert node["commitCount"] is None
+    assert node["pullCount"] is None
+    assert node["clonesServed"] is None
+    assert node["websiteServed"] is None
+
+
 if __name__ == "__main__":
     test_sums_counters_across_a_nodes_repos_and_keeps_latest_state()
+    test_missing_counters_remain_unknown_while_reported_zero_stays_zero()
     print("ok")

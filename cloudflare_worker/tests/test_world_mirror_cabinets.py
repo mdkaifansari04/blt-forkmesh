@@ -71,18 +71,18 @@ def test_live_node_builder_preserves_signed_repo_facts_and_unknown_telemetry():
     assert mirror2["cpuPercent"] == 32
     assert mirror2["memoryUsedBytes"] == 25
     assert mirror2["memoryTotalBytes"] == 100
-    assert mirror2["diskUsedBytes"] is None
-    assert mirror2["diskTotalBytes"] is None
+    assert "diskUsedBytes" not in mirror2
+    assert "diskTotalBytes" not in mirror2
     assert mirror2["repositories"][0]["owner"] == "forkmesh"
     assert mirror2["repositories"][0]["name"] == "forkmesh"
     mirror3 = nodes[1]
     # A signed -1 means "not advertised"; a cached aggregate zero/positive must
     # not replace that explicit unknown state for this exact mirror record.
-    assert mirror3["pullCount"] is None
-    assert mirror3["issueCount"] is None
-    assert mirror3["cpuPercent"] is None
-    assert mirror3["memoryUsedBytes"] is None
-    assert mirror3["diskUsedBytes"] is None
+    assert "pullCount" not in mirror3
+    assert "issueCount" not in mirror3
+    assert "cpuPercent" not in mirror3
+    assert "memoryUsedBytes" not in mirror3
+    assert "diskUsedBytes" not in mirror3
 
 
 def test_live_node_builder_keeps_long_names_distinct_and_rejected_routes_blocked():

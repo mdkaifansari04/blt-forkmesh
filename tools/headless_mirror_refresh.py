@@ -54,6 +54,10 @@ MAX_HTTP_RESPONSE_BYTES = 256 * 1024
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024 * 1024
 PROCESS_TIMEOUT_SECONDS = 30 * 60
 HTTP_TIMEOUT_SECONDS = 30
+MAX_PUBLIC_REPOSITORY_COUNT = 999_999_999_999
+MAX_REPOSITORY_METADATA_PATHS = 100_000
+MAX_REPOSITORY_METADATA_BYTES = 32 * 1024 * 1024
+MAX_ISSUE_RECORD_BYTES = 1024 * 1024
 AGE_NATIVE_HEADER = b"age-encryption.org/v1\n"
 AGE_ARMORED_HEADER = b"-----BEGIN AGE ENCRYPTED FILE-----\n"
 NODE_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -115,6 +119,9 @@ class CatalogDefaults:
     branch: str
     platform: str
     version: str
+    report_cpu: bool
+    report_memory: bool
+    report_disk: bool
 
 
 @dataclass(frozen=True)
@@ -482,6 +489,9 @@ def _parse_catalog(value: Any) -> CatalogDefaults:
             "branch",
             "platform",
             "version",
+            "reportCpu",
+            "reportMemory",
+            "reportDisk",
         },
         label="catalog",
     )
@@ -510,14 +520,20 @@ def _parse_catalog(value: Any) -> CatalogDefaults:
     version = _clean_public_text(
         value.get("version", ""), maximum=32, label="catalog.version"
     )
+    for field in ("reportCpu", "reportMemory", "reportDisk"):
+        if field in value and not isinstance(value[field], bool):
+            raise RefreshError(f"catalog.{field} must be a boolean")
     return CatalogDefaults(
-        description,
-        solana,
-        channel,
-        hosted_since,
-        branch,
-        platform,
-        version,
+        description=description,
+        solana=solana,
+        channel=channel,
+        hosted_since=hosted_since,
+        branch=branch,
+        platform=platform,
+        version=version,
+        report_cpu=value.get("reportCpu", False),
+        report_memory=value.get("reportMemory", False),
+        report_disk=value.get("reportDisk", False),
     )
 
 
@@ -916,6 +932,384 @@ def _source_branch_commit(config: RefreshConfig) -> str:
     if not GIT_OBJECT_ID_RE.fullmatch(commit):
         raise RefreshError("source repository commit is invalid")
     return commit
+
+
+def _source_revision(config: RefreshConfig) -> str:
+    return (
+        "refs/heads/" + config.catalog.branch
+        if config.catalog.branch
+        else "HEAD"
+    )
+
+
+def _bounded_repository_count(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if number < 0 or number > MAX_PUBLIC_REPOSITORY_COUNT:
+        return None
+    return number
+
+
+def _source_commit_count(config: RefreshConfig) -> int | None:
+    try:
+        raw = _run_bounded(
+            _git_prefix(config)
+            + ["rev-list", "--count", _source_revision(config), "--"],
+            maximum_output=64,
+            timeout=60,
+        )
+        return _bounded_repository_count(raw.decode("ascii").strip())
+    except (RefreshError, UnicodeDecodeError):
+        return None
+
+
+def _source_branch_count(config: RefreshConfig) -> int | None:
+    try:
+        raw = _run_bounded(
+            _git_prefix(config)
+            + [
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/",
+            ],
+            maximum_output=MAX_REPOSITORY_METADATA_BYTES,
+            timeout=60,
+        )
+    except RefreshError:
+        return None
+    lines = [line for line in raw.splitlines() if line]
+    if len(lines) > MAX_REPOSITORY_METADATA_PATHS:
+        return None
+    return _bounded_repository_count(len(lines))
+
+
+def _source_revision_exists(config: RefreshConfig, revision: str) -> bool:
+    try:
+        _run_bounded(
+            _git_prefix(config)
+            + [
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                revision + "^{commit}",
+            ],
+            maximum_output=128,
+            timeout=60,
+        )
+        return True
+    except RefreshError:
+        return False
+
+
+def _source_tree_paths(
+    config: RefreshConfig,
+    revision: str,
+    path: str,
+) -> tuple[bytes, ...] | None:
+    """Return bounded raw paths below one repository metadata directory.
+
+    ``git ls-tree`` exits successfully with no output when the path does not
+    exist, which lets a genuine empty count stay distinct from a failed read.
+    Paths remain bytes: Git permits non-UTF-8 names, while the metadata records
+    selected below have strict ASCII names.
+    """
+    try:
+        raw = _run_bounded(
+            _git_prefix(config)
+            + [
+                "ls-tree",
+                "-r",
+                "-z",
+                "--name-only",
+                revision,
+                "--",
+                path,
+            ],
+            maximum_output=MAX_REPOSITORY_METADATA_BYTES,
+            timeout=60,
+        )
+    except RefreshError:
+        return None
+    paths = tuple(item for item in raw.split(b"\0") if item)
+    if len(paths) > MAX_REPOSITORY_METADATA_PATHS:
+        return None
+    return paths
+
+
+def _numbered_metadata_count(
+    paths: tuple[bytes, ...] | None,
+    prefix: bytes,
+) -> int | None:
+    if paths is None:
+        return None
+    pattern = re.compile(
+        rb"^" + re.escape(prefix) + rb"/([1-9][0-9]*)/"
+    )
+    numbers: set[int] = set()
+    for path in paths:
+        match = pattern.match(path)
+        if match:
+            number = _bounded_repository_count(match.group(1))
+            if number is None:
+                return None
+            numbers.add(number)
+    return _bounded_repository_count(len(numbers))
+
+
+def _source_blob_batch(
+    config: RefreshConfig,
+    revision: str,
+    paths: tuple[bytes, ...],
+) -> dict[bytes, bytes] | None:
+    if not paths:
+        return {}
+    requests = b"".join(
+        revision.encode("ascii") + b":" + path + b"\n" for path in paths
+    )
+    try:
+        raw = _run_bounded(
+            _git_prefix(config) + ["cat-file", "--batch"],
+            input_bytes=requests,
+            maximum_output=MAX_REPOSITORY_METADATA_BYTES,
+            timeout=60,
+        )
+    except (RefreshError, UnicodeEncodeError):
+        return None
+    result: dict[bytes, bytes] = {}
+    position = 0
+    for path in paths:
+        line_end = raw.find(b"\n", position)
+        if line_end < 0:
+            return None
+        header = raw[position:line_end].split()
+        position = line_end + 1
+        if len(header) != 3 or header[1] != b"blob":
+            return None
+        try:
+            size = int(header[2])
+        except ValueError:
+            return None
+        if size < 0 or size > MAX_ISSUE_RECORD_BYTES:
+            return None
+        content_end = position + size
+        if content_end >= len(raw) or raw[content_end:content_end + 1] != b"\n":
+            return None
+        result[path] = raw[position:content_end]
+        position = content_end + 1
+    if position != len(raw):
+        return None
+    return result
+
+
+def _issue_record_is_tombstoned(record: Mapping[str, Any]) -> bool | None:
+    events = record.get("events", [])
+    if not isinstance(events, list):
+        return None
+    creator = ""
+    for value in events:
+        if not isinstance(value, dict):
+            return None
+        if value.get("type") == "open" and not creator:
+            author = value.get("author")
+            if isinstance(author, str):
+                creator = author
+    if not creator:
+        return False
+    return any(
+        value.get("type") == "delete"
+        and value.get("target") == "self"
+        and value.get("author") == creator
+        for value in events
+    )
+
+
+def _source_issue_counts(
+    config: RefreshConfig,
+) -> tuple[int, int] | None:
+    revision = _source_revision(config)
+    paths = _source_tree_paths(
+        config, revision, ".forkmesh/issues"
+    )
+    if paths is None:
+        return None
+    patterns = (
+        (
+            "open",
+            re.compile(
+                rb"^\.forkmesh/issues/open/([1-9][0-9]*)/"
+                rb"issue-\1\.json$"
+            ),
+        ),
+        (
+            "closed",
+            re.compile(
+                rb"^\.forkmesh/issues/closed/([1-9][0-9]*)/"
+                rb"issue-\1\.json$"
+            ),
+        ),
+        (
+            "legacy",
+            re.compile(
+                rb"^\.forkmesh/issues/([1-9][0-9]*)/"
+                rb"issue-\1\.json$"
+            ),
+        ),
+    )
+    records: dict[int, tuple[str, bytes]] = {}
+    max_number = 0
+    for state, pattern in patterns:
+        for path in paths:
+            match = pattern.fullmatch(path)
+            if not match:
+                continue
+            number = _bounded_repository_count(match.group(1))
+            if number is None:
+                return None
+            max_number = max(max_number, number)
+            current = records.get(number)
+            # Modern status folders supersede a leftover pre-migration record,
+            # matching the desktop reader. Conflicting modern folders are not a
+            # trustworthy state and therefore suppress both issue counts.
+            if current and current[0] != "legacy" and state != "legacy":
+                return None
+            if not current or current[0] == "legacy":
+                records[number] = (state, path)
+    readable_paths = tuple(
+        path for state, path in records.values() if state != "closed"
+    )
+    blobs = _source_blob_batch(config, revision, readable_paths)
+    if blobs is None:
+        return None
+    open_count = 0
+    for state, path in records.values():
+        if state == "closed":
+            continue
+        try:
+            record = json.loads(blobs[path].decode("utf-8"))
+        except (KeyError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(record, dict):
+            return None
+        if state == "open":
+            tombstoned = _issue_record_is_tombstoned(record)
+            if tombstoned is None:
+                return None
+            if not tombstoned:
+                open_count += 1
+        elif record.get("status") != "closed":
+            open_count += 1
+    bounded_open = _bounded_repository_count(open_count)
+    bounded_max = _bounded_repository_count(max_number)
+    if bounded_open is None or bounded_max is None:
+        return None
+    return bounded_open, bounded_max
+
+
+def _source_pull_count(config: RefreshConfig) -> int | None:
+    revision = (
+        "refs/heads/forkmesh/pulls"
+        if _source_revision_exists(config, "refs/heads/forkmesh/pulls")
+        else _source_revision(config)
+    )
+    return _numbered_metadata_count(
+        _source_tree_paths(config, revision, "pulls"),
+        b"pulls",
+    )
+
+
+def _source_discussion_count(config: RefreshConfig) -> int | None:
+    return _numbered_metadata_count(
+        _source_tree_paths(
+            config,
+            _source_revision(config),
+            ".forkmesh/discussions",
+        ),
+        b".forkmesh/discussions",
+    )
+
+
+def _source_artifact_count(config: RefreshConfig) -> int | None:
+    """Count real release blobs in the configured mirror gateway CAS."""
+    if config.release_store is None:
+        return None
+    root = config.release_store / "sha256"
+    try:
+        root_info = root.lstat()
+    except FileNotFoundError:
+        return 0
+    except OSError:
+        return None
+    if (
+        not stat.S_ISDIR(root_info.st_mode)
+        or root_info.st_uid != os.geteuid()
+    ):
+        return None
+    count = 0
+    visited = 0
+    try:
+        with os.scandir(root) as shards:
+            for shard in shards:
+                visited += 1
+                if visited > MAX_REPOSITORY_METADATA_PATHS:
+                    return None
+                if (
+                    not re.fullmatch(r"[0-9a-f]{2}", shard.name)
+                    or not shard.is_dir(follow_symlinks=False)
+                ):
+                    continue
+                with os.scandir(shard.path) as hashes:
+                    for digest in hashes:
+                        visited += 1
+                        if visited > MAX_REPOSITORY_METADATA_PATHS:
+                            return None
+                        if (
+                            not SHA256_RE.fullmatch(digest.name)
+                            or not digest.name.startswith(shard.name)
+                            or not digest.is_dir(follow_symlinks=False)
+                        ):
+                            continue
+                        data = Path(digest.path) / "data"
+                        try:
+                            if data.is_file() and not data.is_symlink():
+                                count += 1
+                        except OSError:
+                            return None
+    except OSError:
+        return None
+    return _bounded_repository_count(count)
+
+
+def _sample_repository_statistics(
+    config: RefreshConfig,
+) -> dict[str, str]:
+    """Read public, repository-scoped facts from the validated bare source.
+
+    Each fact fails independently. Headless mirrors have no controller working
+    copy and the gateway currently has no durable per-repository request
+    counters, so worktree/clones/website fields intentionally remain absent
+    instead of being published as misleading zeroes.
+    """
+    result: dict[str, str] = {}
+
+    def include(field: str, value: int | None) -> None:
+        if value is not None:
+            result[field] = str(value)
+
+    include("commitCount", _source_commit_count(config))
+    include("branchCount", _source_branch_count(config))
+    issue_counts = _source_issue_counts(config)
+    if issue_counts is not None:
+        include("issueCount", issue_counts[0])
+        include("issueMaxNumber", issue_counts[1])
+    include("pullCount", _source_pull_count(config))
+    include("discussionCount", _source_discussion_count(config))
+    include("artifactCount", _source_artifact_count(config))
+    return result
 
 
 def _validate_seal_response(value: Mapping[str, Any]) -> SealMetadata:
@@ -1417,6 +1811,197 @@ def _sign_endpoint(
     return response
 
 
+MAX_PUBLIC_TELEMETRY_BYTES = 1 << 50
+MAX_PROC_METRIC_BYTES = 64 * 1024
+
+
+def _read_proc_metric(path: Path) -> bytes | None:
+    """Read one fixed Linux proc metric without following a replacement link."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        data = os.read(descriptor, MAX_PROC_METRIC_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    if not data or len(data) > MAX_PROC_METRIC_BYTES:
+        return None
+    return data
+
+
+def _proc_cpu_snapshot(raw: bytes | None) -> tuple[int, int] | None:
+    """Return Linux aggregate (idle ticks, total ticks) from /proc/stat."""
+    if not raw:
+        return None
+    try:
+        first = raw.decode("ascii", "strict").splitlines()[0].split()
+    except (UnicodeDecodeError, IndexError):
+        return None
+    if not first or first[0] != "cpu" or len(first) < 5:
+        return None
+    values = []
+    for item in first[1:9]:
+        if not re.fullmatch(r"[0-9]{1,20}", item):
+            return None
+        number = int(item)
+        if number > (1 << 63) - 1:
+            return None
+        values.append(number)
+    if len(values) < 4:
+        return None
+    total = sum(values)
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    return (idle, total) if total > 0 and idle <= total else None
+
+
+def _sample_linux_cpu(
+    *,
+    read_metric: Callable[[Path], bytes | None] = _read_proc_metric,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> int | None:
+    first = _proc_cpu_snapshot(read_metric(Path("/proc/stat")))
+    if first is None:
+        return None
+    sleeper(0.1)
+    second = _proc_cpu_snapshot(read_metric(Path("/proc/stat")))
+    if second is None:
+        return None
+    idle_delta = second[0] - first[0]
+    total_delta = second[1] - first[1]
+    if total_delta <= 0 or idle_delta < 0 or idle_delta > total_delta:
+        return None
+    busy_delta = total_delta - idle_delta
+    return max(0, min(100, (busy_delta * 100 + total_delta // 2) // total_delta))
+
+
+def _parse_linux_memory(raw: bytes | None) -> tuple[int, int] | None:
+    """Return used/total bytes from bounded MemTotal and MemAvailable values."""
+    if not raw:
+        return None
+    values: dict[str, int] = {}
+    try:
+        lines = raw.decode("ascii", "strict").splitlines()
+    except UnicodeDecodeError:
+        return None
+    for line in lines:
+        match = re.fullmatch(
+            r"(MemTotal|MemAvailable):[ \t]+([0-9]{1,20})[ \t]+kB[ \t]*",
+            line,
+        )
+        if not match:
+            continue
+        kibibytes = int(match.group(2))
+        if kibibytes > MAX_PUBLIC_TELEMETRY_BYTES // 1024:
+            return None
+        values[match.group(1)] = kibibytes * 1024
+    total = values.get("MemTotal")
+    available = values.get("MemAvailable")
+    if (
+        total is None
+        or available is None
+        or total <= 0
+        or available < 0
+        or available > total
+    ):
+        return None
+    return total - available, total
+
+
+def _sample_linux_memory(
+    *,
+    read_metric: Callable[[Path], bytes | None] = _read_proc_metric,
+) -> tuple[int, int] | None:
+    return _parse_linux_memory(read_metric(Path("/proc/meminfo")))
+
+
+def _sample_linux_disk(
+    path: Path,
+    *,
+    statvfs: Callable[[Path], Any] = os.statvfs,
+) -> tuple[int, int] | None:
+    try:
+        info = statvfs(path)
+        block_size = int(info.f_frsize or info.f_bsize)
+        blocks = int(info.f_blocks)
+        available_blocks = int(info.f_bavail)
+    except (AttributeError, OSError, TypeError, ValueError, OverflowError):
+        return None
+    if (
+        block_size <= 0
+        or blocks <= 0
+        or available_blocks < 0
+        or available_blocks > blocks
+    ):
+        return None
+    total_raw = blocks * block_size
+    used_raw = total_raw - available_blocks * block_size
+    total = min(total_raw, MAX_PUBLIC_TELEMETRY_BYTES)
+    return min(max(0, used_raw), total), total
+
+
+def _bounded_optional_metric(value: Any, maximum: int) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return min(value, maximum)
+
+
+def _bounded_optional_usage(value: Any) -> tuple[int, int] | None:
+    if not isinstance(value, tuple) or len(value) != 2:
+        return None
+    used = _bounded_optional_metric(value[0], MAX_PUBLIC_TELEMETRY_BYTES)
+    total = _bounded_optional_metric(value[1], MAX_PUBLIC_TELEMETRY_BYTES)
+    if used is None or total is None or total <= 0:
+        return None
+    return min(used, total), total
+
+
+def _sample_host_telemetry(
+    config: RefreshConfig,
+    *,
+    cpu_sampler: Callable[[], int | None] = _sample_linux_cpu,
+    memory_sampler: Callable[[], tuple[int, int] | None] = _sample_linux_memory,
+    disk_sampler: Callable[[Path], tuple[int, int] | None] = _sample_linux_disk,
+    platform: str = sys.platform,
+) -> dict[str, int]:
+    """Collect only explicitly enabled public host metrics.
+
+    Sampling is best-effort and content-free. A disabled, unsupported, or
+    malformed reading is omitted, which the catalog/World represents as
+    unknown rather than zero.
+    """
+    if not platform.startswith("linux"):
+        return {}
+    result: dict[str, int] = {}
+    if config.catalog.report_cpu:
+        try:
+            cpu = _bounded_optional_metric(cpu_sampler(), 100)
+        except Exception:
+            cpu = None
+        if cpu is not None:
+            result["cpuPercent"] = cpu
+    if config.catalog.report_memory:
+        try:
+            memory = _bounded_optional_usage(memory_sampler())
+        except Exception:
+            memory = None
+        if memory is not None:
+            result["memUsedBytes"], result["memTotalBytes"] = memory
+    if config.catalog.report_disk:
+        try:
+            disk = _bounded_optional_usage(
+                disk_sampler(config.source_repository))
+        except Exception:
+            disk = None
+        if disk is not None:
+            result["diskUsedBytes"], result["diskTotalBytes"] = disk
+    return result
+
+
 def _catalog_unsigned(
     config: RefreshConfig,
     metadata: SealMetadata,
@@ -1453,6 +2038,8 @@ def _catalog_unsigned(
         record["solana"] = config.catalog.solana
     if config.catalog.hosted_since:
         record["hostedSince"] = config.catalog.hosted_since
+    record.update(_sample_repository_statistics(config))
+    record.update(_sample_host_telemetry(config))
     return record
 
 
