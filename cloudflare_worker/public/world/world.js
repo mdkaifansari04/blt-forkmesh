@@ -2847,6 +2847,7 @@ class ForkMeshWorld extends HTMLElement {
     this.remotePlayers = new Map();
     this.localPeers = new Map();
     this.inactivePlayers = [];
+    this.memberDirectory = [];
     this.pendingKnocks = new Map();
     this.serverPeerId = "";
     this.worldTicket = "";
@@ -3068,6 +3069,7 @@ class ForkMeshWorld extends HTMLElement {
       this.world.updateBots(this.botDirectory);
       this.world.updateFediverseDirectory(this.fediverseDirectory);
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
+      this.syncMemberLounge();
       if (this.repositories.length) {
         // The scene and authenticated live catalog are both ready. Populate
         // the repository district from the canonical flagship route without
@@ -3359,6 +3361,7 @@ class ForkMeshWorld extends HTMLElement {
       eventsResult,
       placementResult,
       mentionResult,
+      membersResult,
     ] =
       await Promise.allSettled([
         this.fetchJSON("/api/network/overview", { auth: false }),
@@ -3443,6 +3446,10 @@ class ForkMeshWorld extends HTMLElement {
           auth: false,
           timeout: 5000,
           cache: "no-store",
+        }),
+        this.fetchJSON("/api/accounts/users", {
+          auth: false,
+          timeout: 5000,
         }),
       ]);
     this.network = networkResult.status === "fulfilled" ? networkResult.value : {};
@@ -3609,6 +3616,19 @@ class ForkMeshWorld extends HTMLElement {
             heading: 0,
             persistedInactive: true,
           }))
+        : [];
+    // Public chat roster directory (user profiles only) doubles as the Member
+    // Lounge population: every public registered account gets a seat, and the
+    // roster length feeds the total-members sign at the lounge front.
+    this.memberDirectory =
+      membersResult.status === "fulfilled" &&
+      Array.isArray(membersResult.value?.users)
+        ? membersResult.value.users
+            .map((user) => ({
+              name: sanitizePresenceText(user?.name, "", 32),
+              nodes: Array.isArray(user?.nodes) ? user.nodes.slice(0, 6) : [],
+            }))
+            .filter((user) => user.name)
         : [];
     const liveMirrors = liveNodeRecords(this.network, this.mirrorCatalogs);
     const rewardAddress = String(this.rewardState?.address || "").trim();
@@ -12130,8 +12150,31 @@ class ForkMeshWorld extends HTMLElement {
       });
     }
     this.world?.setRemotePlayers([...combined.values()]);
+    this.syncMemberLounge();
     this.updatePlayerCount();
     this.updateDurableObjectMetrics();
+  }
+
+  syncMemberLounge() {
+    if (!this.world?.updateMemberLounge) return;
+    // Seat every public registered account in the Member Lounge, except the
+    // ones already rendered as live or opted-in idle avatars — those keep
+    // their richer presence avatar instead of a duplicate directory figure.
+    const present = new Set([
+      String(this.identity?.name || "").trim().toLowerCase(),
+    ]);
+    this.remotePlayers.forEach((player) =>
+      present.add(String(player?.name || "").trim().toLowerCase()),
+    );
+    this.inactivePlayers.forEach((player) =>
+      present.add(String(player?.name || "").trim().toLowerCase()),
+    );
+    this.world.updateMemberLounge(
+      this.memberDirectory.filter(
+        (member) => !present.has(member.name.toLowerCase()),
+      ),
+      this.memberDirectory.length,
+    );
   }
 
   destroy() {

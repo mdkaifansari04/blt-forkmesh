@@ -265,7 +265,14 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert 'this.fetchJSON("/api/world/inactive"' in APP
     assert 'this.fetchJSON("/api/network/overview"' in APP
     assert 'this.fetchJSON("/api/repositories")' in APP
-    assert "/api/accounts/users" not in APP
+    # The Member Lounge (adhoc #228) reads the same public roster the chat
+    # page uses — profile names only, fetched without credentials. Anything
+    # beyond that anonymous directory stays off-limits to the world client.
+    assert (
+        'this.fetchJSON("/api/accounts/users", {\n          auth: false,'
+        in APP
+    )
+    assert APP.count("/api/accounts/users") == 1
     assert 'type: "presence"' in APP
     assert "shareCountry: Boolean(this.settings.privacy.country)" in APP
     assert "shareName: Boolean(this.settings.privacy.name)" in APP
@@ -1184,6 +1191,22 @@ def test_world_uses_nonhuman_infrastructure_a_member_lounge_and_city_grid():
         assert status in SCENE
     assert "useRegisteredLounge" in SCENE
     assert 'avatar.userData.loungeActivity === "recent"' in SCENE
+
+
+def test_world_member_lounge_seats_directory_users_with_total_count():
+    # The lounge is populated from the public users directory (adhoc #228):
+    # registered accounts appear seated even when offline, and a sign at the
+    # lounge front shows the total registered-user count.
+    assert "function updateMemberLounge" in SCENE
+    assert "memberCountSign" in SCENE
+    assert "total registered users" in SCENE
+    assert "MEMBER${total === 1" in SCENE
+    assert "const loungeMembers = new Map();" in SCENE
+    # world.js feeds it the public roster (no email/device material) and
+    # dedupes accounts already rendered as live or opted-in idle avatars.
+    assert '"/api/accounts/users"' in APP
+    assert "syncMemberLounge" in APP
+    assert "this.memberDirectory.length" in APP
 
     nodes = SCENE[
         SCENE.index("  function updateNetworkNodes"):
