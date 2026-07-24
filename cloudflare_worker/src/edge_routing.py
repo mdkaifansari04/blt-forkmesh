@@ -31,7 +31,7 @@ OPAQUE_REPLICA_RE = re.compile(r"^[0-9a-f]{64}$")
 PUBLIC_OPERATIONS = frozenset({
     "git-info-refs", "git-upload-pack", "tree", "blobs", "blob", "raw", "history",
     "commit", "compare", "branches", "search", "stats", "sizes", "release-blob",
-    "merge-pull",
+    "merge-pull", "actions-status",
 })
 
 

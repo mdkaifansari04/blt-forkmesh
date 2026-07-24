@@ -63,6 +63,11 @@ STREAM_TIMEOUT_SECONDS = 10 * 60
 MERGE_EXECUTOR_TIMEOUT_SECONDS = 10 * 60
 MAX_MERGE_REQUEST_BODY = 8 * 1024
 MAX_MERGE_JOB_CACHE = 10_000
+MAX_ACTIONS_SUMMARY_BYTES = 256 * 1024
+MAX_ACTIONS_SUMMARY_RUNS = 20
+MAX_ACTIONS_LOG_TAIL_BYTES = 16 * 1024
+MAX_ACTIONS_SUMMARY_LEASE_MS = 15 * 60 * 1000
+MAX_ACTIONS_SUMMARY_CLOCK_SKEW_MS = 60 * 1000
 PUBLIC_OPERATIONS = frozenset(
     {
         "git-info-refs",
@@ -80,9 +85,13 @@ PUBLIC_OPERATIONS = frozenset(
         "sizes",
         "release-blob",
         "merge-pull",
+        "actions-status",
     }
 )
-DEFAULT_PUBLIC_OPERATIONS = PUBLIC_OPERATIONS - {"merge-pull"}
+DEFAULT_PUBLIC_OPERATIONS = PUBLIC_OPERATIONS - {
+    "merge-pull",
+    "actions-status",
+}
 INTERNAL_GIT_REF_NAMESPACE = "refs/forkmesh/"
 LOG_OPERATIONS = PUBLIC_OPERATIONS | {"private-replica"}
 NODE_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -618,6 +627,7 @@ class GatewayConfig:
     health_signer_command: tuple[str, ...]
     merge_executor_command: tuple[str, ...]
     repositories: tuple[RepositoryConfig, ...]
+    actions_summary_path: Path | None = None
     max_release_bytes: int = 2 * 1024 * 1024 * 1024
     private_replica_store: Path | None = None
     max_private_replica_bytes: int = 512 * 1024 * 1024
@@ -684,6 +694,7 @@ def load_config(path: Path) -> GatewayConfig:
         "requestVerifierCommand",
         "healthSignerCommand",
         "mergeExecutorCommand",
+        "actionsSummaryPath",
         "repositories",
         "privateReplicaStore",
         "limits",
@@ -744,6 +755,23 @@ def load_config(path: Path) -> GatewayConfig:
         if merge_executor_raw is not None
         else ()
     )
+    actions_summary_path = None
+    actions_summary_raw = source.get("actionsSummaryPath")
+    if actions_summary_raw is not None:
+        if not isinstance(actions_summary_raw, str) or not actions_summary_raw:
+            raise GatewayError("actionsSummaryPath must be a path string")
+        actions_summary_path = (base / actions_summary_raw).resolve()
+        parent = actions_summary_path.parent
+        if (
+            not parent.is_dir()
+            or parent.is_symlink()
+            or stat.S_IMODE(parent.stat().st_mode)
+            & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            raise GatewayError(
+                "actionsSummaryPath must have a protected real parent")
+        if actions_summary_path.exists() and actions_summary_path.is_symlink():
+            raise GatewayError("actionsSummaryPath must not be a symbolic link")
     limits = source.get("limits", {})
     if not isinstance(limits, dict) or set(limits) - {
         "maxReleaseBytes", "maxPrivateReplicaBytes"
@@ -877,6 +905,10 @@ def load_config(path: Path) -> GatewayConfig:
             raise GatewayError(
                 "merge-pull requires an operator-owned mergeExecutorCommand"
             )
+        if "actions-status" in operations and actions_summary_path is None:
+            raise GatewayError(
+                "actions-status requires an owner-only actionsSummaryPath"
+            )
 
         git_dir: Path | None = None
         encrypted_archive: EncryptedArchive | None = None
@@ -973,6 +1005,7 @@ def load_config(path: Path) -> GatewayConfig:
         verifier_command=verifier,
         health_signer_command=signer,
         merge_executor_command=merge_executor,
+        actions_summary_path=actions_summary_path,
         repositories=tuple(repositories),
         max_release_bytes=max_release,
         private_replica_store=private_replica_store,
@@ -2563,6 +2596,185 @@ def json_response(value: Any, status: int = 200) -> GatewayResponse:
     return GatewayResponse(status, "application/json; charset=utf-8", body)
 
 
+def _load_actions_summary(
+    path: Path,
+    *,
+    node: str,
+    owner: str,
+    repository: str,
+    now_ms: int,
+) -> dict[str, Any]:
+    """Read one short-lived, owner-only, already-redacted Actions summary."""
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
+    try:
+        descriptor = os.open(path, flags)
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) & (stat.S_IRWXG | stat.S_IRWXO)
+            or not 0 < info.st_size <= MAX_ACTIONS_SUMMARY_BYTES
+        ):
+            raise GatewayError("Actions summary is unavailable")
+        raw = b""
+        while len(raw) <= MAX_ACTIONS_SUMMARY_BYTES:
+            chunk = os.read(
+                descriptor,
+                min(64 * 1024, MAX_ACTIONS_SUMMARY_BYTES + 1 - len(raw)),
+            )
+            if not chunk:
+                break
+            raw += chunk
+        if len(raw) > MAX_ACTIONS_SUMMARY_BYTES:
+            raise GatewayError("Actions summary is unavailable")
+    except (OSError, GatewayError) as exc:
+        if isinstance(exc, GatewayError):
+            raise
+        raise GatewayError("Actions summary is unavailable") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        output: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in output:
+                raise ValueError("duplicate")
+            output[key] = value
+        return output
+
+    try:
+        value = json.loads(raw, object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+        raise GatewayError("Actions summary is unavailable") from exc
+    required = {
+        "schemaVersion",
+        "type",
+        "node",
+        "updatedAt",
+        "expiresAt",
+        "runs",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise GatewayError("Actions summary is unavailable")
+    if (
+        value.get("schemaVersion") != 1
+        or value.get("type") != "forkmesh.mirror-actions-summary"
+        or value.get("node") != node
+        or isinstance(value.get("updatedAt"), bool)
+        or isinstance(value.get("expiresAt"), bool)
+    ):
+        raise GatewayError("Actions summary is unavailable")
+    try:
+        updated_at = int(value["updatedAt"])
+        expires_at = int(value["expiresAt"])
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise GatewayError("Actions summary is unavailable") from exc
+    if (
+        updated_at < now_ms - MAX_ACTIONS_SUMMARY_LEASE_MS
+        or updated_at > now_ms + MAX_ACTIONS_SUMMARY_CLOCK_SKEW_MS
+        or expires_at <= now_ms
+        or expires_at <= updated_at
+        or expires_at - updated_at > MAX_ACTIONS_SUMMARY_LEASE_MS
+    ):
+        raise GatewayError("Actions summary is unavailable")
+    runs = value.get("runs")
+    if (
+        not isinstance(runs, list)
+        or len(runs) > MAX_ACTIONS_SUMMARY_RUNS
+    ):
+        raise GatewayError("Actions summary is unavailable")
+    allowed_statuses = {
+        "awaiting-approval",
+        "queued",
+        "running",
+        "success",
+        "failed",
+        "rejected",
+        "cancelled",
+        "skipped",
+    }
+    expected_run_fields = {
+        "id",
+        "owner",
+        "repository",
+        "workflow",
+        "commit",
+        "ref",
+        "status",
+        "createdAt",
+        "startedAt",
+        "finishedAt",
+        "logTail",
+    }
+    output_runs = []
+    for item in runs:
+        if not isinstance(item, dict) or set(item) != expected_run_fields:
+            raise GatewayError("Actions summary is unavailable")
+        if any(
+            isinstance(item.get(field), bool)
+            for field in ("id", "createdAt", "startedAt", "finishedAt")
+        ):
+            raise GatewayError("Actions summary is unavailable")
+        try:
+            run_id = int(item.get("id"))
+            created_at = int(item.get("createdAt"))
+            started_at = int(item.get("startedAt"))
+            finished_at = int(item.get("finishedAt"))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise GatewayError("Actions summary is unavailable") from exc
+        run_owner = str(item.get("owner") or "").strip().lower()
+        run_repository = str(item.get("repository") or "").strip()
+        workflow = str(item.get("workflow") or "").strip()
+        commit = str(item.get("commit") or "").strip().lower()
+        ref = str(item.get("ref") or "").strip()
+        status_value = str(item.get("status") or "")
+        log_tail = str(item.get("logTail") or "")
+        if (
+            not 1 <= run_id <= 2_147_483_647
+            or not NODE_RE.fullmatch(run_owner)
+            or not REPO_RE.fullmatch(run_repository)
+            or not 1 <= len(workflow) <= 160
+            or any(character in workflow for character in ("\x00", "\r", "\n"))
+            or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit)
+            or not 1 <= len(ref) <= 160
+            or any(character in ref for character in ("\x00", "\r", "\n"))
+            or status_value not in allowed_statuses
+            or min(created_at, started_at, finished_at) < 0
+            or max(created_at, started_at, finished_at) >
+                now_ms + MAX_ACTIONS_SUMMARY_CLOCK_SKEW_MS
+            or len(log_tail.encode("utf-8")) > MAX_ACTIONS_LOG_TAIL_BYTES
+            or "\x00" in log_tail
+        ):
+            raise GatewayError("Actions summary is unavailable")
+        if (
+            run_owner != owner.lower()
+            or run_repository.lower() != repository.lower()
+        ):
+            continue
+        output_runs.append({
+            "id": run_id,
+            "workflow": workflow,
+            "commit": commit,
+            "ref": ref,
+            "status": status_value,
+            "createdAt": created_at,
+            "startedAt": started_at,
+            "finishedAt": finished_at,
+            "logTail": log_tail,
+        })
+    return {
+        "ok": True,
+        "node": node,
+        "updatedAt": updated_at,
+        "expiresAt": expires_at,
+        "runs": output_runs,
+    }
+
+
 class ReplayCache:
     def __init__(self, maximum: int = 10_000) -> None:
         self.maximum = maximum
@@ -2743,6 +2955,8 @@ class GatewayApplication:
             or new_config.public_origin != self.config.public_origin
             or new_config.merge_executor_command
             != self.config.merge_executor_command
+            or new_config.actions_summary_path
+            != self.config.actions_summary_path
         ):
             raise GatewayError("merge refresh changed the gateway identity")
         replacement = GatewayApplication(
@@ -2896,6 +3110,22 @@ class GatewayApplication:
             "status": "processing",
             "requestId": request_id,
         })
+
+    def _actions_status(
+        self, owner: str, repository: str
+    ) -> GatewayResponse:
+        path = self.config.actions_summary_path
+        if path is None:
+            raise GatewayError("repository route was not found")
+        response = json_response(_load_actions_summary(
+            path,
+            node=self.config.node,
+            owner=owner,
+            repository=repository,
+            now_ms=self.clock_ms(),
+        ))
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @staticmethod
     def _default_log(event: dict[str, Any]) -> None:
@@ -3174,6 +3404,7 @@ class GatewayApplication:
                 "sizes": frozenset({"ref"}),
                 "release-blob": frozenset({"sha256", "path"}),
                 "merge-pull": frozenset(),
+                "actions-status": frozenset(),
             }
             if operation == "blobs":
                 try:
@@ -3206,6 +3437,10 @@ class GatewayApplication:
                 if method != "POST" or query:
                     raise GatewayError("merge request is invalid")
                 return self._dispatch_merge_pull(owner, name, body)
+            if operation == "actions-status":
+                if method != "GET" or query or body:
+                    raise GatewayError("Actions status request is invalid")
+                return self._actions_status(owner, name)
             if operation == "git-info-refs":
                 if method not in ("GET", "HEAD") or query != {
                     "service": "git-upload-pack"

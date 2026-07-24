@@ -36,6 +36,11 @@ REPO_PULLS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pulls$")
 # authorizes and dispatches against the canonical backing-node namespace.
 REPO_PULL_MERGE_RE = re.compile(
     r"^/api/repo/([^/]+)/([^/]+)/pulls/([1-9][0-9]{0,8})/merge$")
+# Owner/write-authorized, bounded redacted run summaries from an attested
+# mirror Actions executor. No workflow variables or public catalog data use
+# this endpoint.
+REPO_ACTION_RUNS_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/actions/runs$")
 # Commit-comment inbox: signed per-commit comments from any node.
 REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")
 # Discussion inbox: signed discussion open/comment submissions from any node.

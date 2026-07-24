@@ -276,6 +276,7 @@ from urls import (  # noqa: E402
     REPO_ISSUES_RE,
     REPO_PULLS_RE,
     REPO_PULL_MERGE_RE,
+    REPO_ACTION_RUNS_RE,
     REPO_COMMITS_RE,
     REPO_DISCUSSIONS_RE,
     REPO_PENDING_RE,
@@ -25972,6 +25973,11 @@ HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS = 20
 HTTPS_MIRROR_BODY_MAX_BYTES = 8 * 1024 * 1024
 HTTPS_MIRROR_MERGE_BODY_MAX_BYTES = 8 * 1024
 HTTPS_MIRROR_MERGE_RESULT_MAX_BYTES = 16 * 1024
+HTTPS_MIRROR_ACTIONS_RESULT_MAX_BYTES = 256 * 1024
+HTTPS_MIRROR_ACTIONS_RUN_LIMIT = 20
+HTTPS_MIRROR_ACTIONS_LOG_TAIL_MAX_BYTES = 16 * 1024
+HTTPS_MIRROR_ACTIONS_LEASE_MAX_MS = 15 * 60 * 1000
+HTTPS_MIRROR_ACTIONS_CLOCK_SKEW_MS = 60 * 1000
 HTTPS_MIRROR_MERGE_REQUEST_RE = re.compile(r"^[A-Za-z0-9_-]{12,80}$")
 HTTPS_MIRROR_MERGE_JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 HTTPS_MIRROR_MERGE_JOB_REPO_LIMIT = 256
@@ -27610,6 +27616,208 @@ async def _https_mirror_merge_proxy(env, endpoint, context, request):
     return status, checked
 
 
+def _https_mirror_actions_result(value, expected_node, now):
+    """Validate and reduce one owner-authorized, already-redacted run summary."""
+    required = {"ok", "node", "updatedAt", "expiresAt", "runs"}
+    if (
+        not isinstance(value, dict)
+        or set(value) != required
+        or value.get("ok") is not True
+        or value.get("node") != expected_node
+        or isinstance(value.get("updatedAt"), bool)
+        or isinstance(value.get("expiresAt"), bool)
+    ):
+        return None
+    try:
+        updated_at = int(value.get("updatedAt"))
+        expires_at = int(value.get("expiresAt"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        updated_at < now - HTTPS_MIRROR_ACTIONS_LEASE_MAX_MS
+        or updated_at > now + HTTPS_MIRROR_ACTIONS_CLOCK_SKEW_MS
+        or expires_at <= now
+        or expires_at <= updated_at
+        or expires_at - updated_at > HTTPS_MIRROR_ACTIONS_LEASE_MAX_MS
+    ):
+        return None
+    runs = value.get("runs")
+    if (
+        not isinstance(runs, list)
+        or len(runs) > HTTPS_MIRROR_ACTIONS_RUN_LIMIT
+    ):
+        return None
+    statuses = {
+        "awaiting-approval", "queued", "running", "success", "failed",
+        "rejected", "cancelled", "skipped",
+    }
+    fields = {
+        "id", "workflow", "commit", "ref", "status",
+        "createdAt", "startedAt", "finishedAt", "logTail",
+    }
+    output_runs = []
+    for item in runs:
+        if not isinstance(item, dict) or set(item) != fields:
+            return None
+        if any(
+            isinstance(item.get(field), bool)
+            for field in ("id", "createdAt", "startedAt", "finishedAt")
+        ):
+            return None
+        try:
+            run_id = int(item.get("id"))
+            created_at = int(item.get("createdAt"))
+            started_at = int(item.get("startedAt"))
+            finished_at = int(item.get("finishedAt"))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        workflow = str(item.get("workflow") or "").strip()
+        commit = str(item.get("commit") or "").strip().lower()
+        ref = str(item.get("ref") or "").strip()
+        status_value = str(item.get("status") or "")
+        log_tail = str(item.get("logTail") or "")
+        if (
+            not 1 <= run_id <= 2147483647
+            or not 1 <= len(workflow) <= 160
+            or any(char in workflow for char in ("\x00", "\r", "\n"))
+            or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit)
+            or not 1 <= len(ref) <= 160
+            or any(char in ref for char in ("\x00", "\r", "\n"))
+            or status_value not in statuses
+            or min(created_at, started_at, finished_at) < 0
+            or max(created_at, started_at, finished_at)
+                > now + HTTPS_MIRROR_ACTIONS_CLOCK_SKEW_MS
+            or len(log_tail.encode("utf-8"))
+                > HTTPS_MIRROR_ACTIONS_LOG_TAIL_MAX_BYTES
+            or "\x00" in log_tail
+        ):
+            return None
+        output_runs.append({
+            "id": run_id,
+            "workflow": workflow,
+            "commit": commit,
+            "ref": ref,
+            "status": status_value,
+            "createdAt": created_at,
+            "startedAt": started_at,
+            "finishedAt": finished_at,
+            "logTail": log_tail,
+        })
+    return {
+        "ok": True,
+        "node": expected_node,
+        "updatedAt": updated_at,
+        "expiresAt": expires_at,
+        "runs": output_runs,
+    }
+
+
+async def _https_mirror_actions_proxy(env, endpoint, context):
+    """Read one bounded summary through an attested operation-specific route."""
+    if not await _https_mirror_repository_proof(
+            env, endpoint, context, "actions-status"):
+        return None
+    target = https_routing.masked_target_url(
+        endpoint["baseUrl"], context["owner"], context["repo"],
+        "actions-status")
+    parsed_target = urlparse(target)
+    request_id = _b64url_encode(_random_bytes(18))
+    issued_at = int(Date.now())
+    body_digest = hashlib.sha256(b"").hexdigest()
+    message = https_routing.request_message(
+        endpoint["node"], "GET", parsed_target.path, body_digest, request_id,
+        issued_at)
+    router_public_key = _https_mirror_router_public_key(env)
+    router_seed = _https_mirror_router_seed(env)
+    signature = (
+        await ed25519_sign(
+            router_public_key, router_seed, message.encode("utf-8"))
+        if target and message and router_public_key and router_seed else "")
+    if not signature:
+        return None
+    headers = {
+        "X-ForkMesh-Node": endpoint["node"],
+        "X-ForkMesh-Request-Id": request_id,
+        "X-ForkMesh-Issued-At": str(issued_at),
+        "X-ForkMesh-Body-Sha256": body_digest,
+        "X-ForkMesh-Signature": signature,
+    }
+    try:
+        upstream = await asyncio.wait_for(
+            js_fetch(JsRequest.new(
+                target,
+                to_js({
+                    "method": "GET",
+                    "headers": headers,
+                    "redirect": "manual",
+                }),
+            )),
+            timeout=HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        )
+        if int(getattr(upstream, "status", 0) or 0) != 200:
+            return None
+        announced = int(upstream.headers.get("content-length") or 0)
+        if announced > HTTPS_MIRROR_ACTIONS_RESULT_MAX_BYTES:
+            return None
+        raw = str(await upstream.text())
+        if len(raw.encode("utf-8")) > HTTPS_MIRROR_ACTIONS_RESULT_MAX_BYTES:
+            return None
+        value = json.loads(raw)
+    except Exception:
+        return None
+    return _https_mirror_actions_result(
+        value, endpoint["node"], int(Date.now()))
+
+
+async def repository_actions_status_handler(env, request, owner, repo):
+    """Return private redacted executor state to the owner or org writer."""
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    context = await _https_mirror_public_context(env, owner, repo)
+    if context is None:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    _, actor_record = await _account_session_record(env, request)
+    actor = clean_string(
+        (actor_record or {}).get("name", ""), MAX_NODE_NAME).strip().lower()
+    if not actor:
+        return json_response(
+            {"error": "invalid_session"}, status=401,
+            cache_control="no-store")
+    try:
+        authorized = bool(
+            actor == context["owner"]
+            or await _account_owns_node(env, actor, context["owner"])
+            or await _org_write_allowed(
+                env, context["owner"], context["repo"], actor)
+        )
+    except Exception:
+        authorized = False
+    target = context["owner"] + "/" + context["repo"]
+    if not authorized:
+        await _audit_sensitive_action(
+            env, actor, "repository.actions_status", "repository", target,
+            "denied", {})
+        return json_response(
+            {"error": "forbidden"}, status=403,
+            cache_control="no-store")
+    candidates = await _https_mirror_candidates(
+        env, context, world_request_country(request))
+    for candidate in candidates:
+        result = await _https_mirror_actions_proxy(
+            env, candidate, context)
+        if result is not None:
+            await _audit_sensitive_action(
+                env, actor, "repository.actions_status", "repository",
+                target, "success", {"node": candidate["node"]})
+            return json_response(
+                result,
+                cache_control="private, no-store, max-age=0, must-revalidate")
+    return json_response(
+        {"error": "actions_status_unavailable"}, status=503,
+        cache_control="no-store")
+
+
 def _https_mirror_merge_response(value):
     status = str((value or {}).get("status") or "")
     if status == "processing":
@@ -29071,6 +29279,15 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await repository_pull_merge_handler(
                 self.env, request, owner, repo, pull_number)
+
+        action_runs_match = REPO_ACTION_RUNS_RE.match(url.path)
+        if action_runs_match:
+            owner = safe_segment(action_runs_match.group(1))
+            repo = safe_segment(action_runs_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repository_actions_status_handler(
+                self.env, request, owner, repo)
 
         pulls_match = REPO_PULLS_RE.match(url.path)
         if pulls_match:

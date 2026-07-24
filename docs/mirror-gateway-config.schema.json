@@ -58,6 +58,11 @@
       "$ref": "#/$defs/command",
       "description": "Required when an encrypted public repository explicitly enables merge-pull; receives only typed bounded JSON on stdin."
     },
+    "actionsSummaryPath": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Owner-only short-lived redacted Actions summary. Required when a repository explicitly enables actions-status."
+    },
     "privateReplicaStore": {
       "type": "string",
       "minLength": 1,
@@ -142,7 +147,8 @@
           "stats",
           "sizes",
           "release-blob",
-          "merge-pull"
+          "merge-pull",
+          "actions-status"
         ]
       }
     },

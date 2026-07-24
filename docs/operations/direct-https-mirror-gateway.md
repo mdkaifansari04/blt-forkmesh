@@ -707,6 +707,7 @@ external verifier.
 | --- | --- | --- | --- |
 | `git-info-refs` | GET/HEAD | `service=git-upload-pack` | Git upload-pack advertisement |
 | `merge-pull` | POST | none; bounded typed JSON body | Asynchronous exact-OID pull merge through an explicitly configured node executor |
+| `actions-status` | GET | none | Owner/write-authorized bounded redacted run summaries from this executor |
 | `git-upload-pack` | POST | none | streamed Git upload-pack result |
 | `tree` | GET/HEAD | `path`, `ref` | bounded JSON tree with sizes/commit activity |
 | `blobs` | GET/HEAD | repeated `path`, optional `ref` | bounded compatibility batch for the web UI |
@@ -719,6 +720,14 @@ external verifier.
 | `stats` | GET/HEAD | `ref` | files, extensions, contributors |
 | `sizes` | GET/HEAD | `ref` | bounded directory-size tree |
 | `release-blob` | GET/HEAD | `sha256` | verified streamed release bytes |
+
+`actions-status` is never enabled by default. Its gateway configuration must
+name an `actionsSummaryPath` in an owner-protected real directory. The file is
+limited to 256 KiB, twenty runs, 16 KiB of already-redacted log tail per run,
+and a fifteen-minute lease. The gateway filters it to the exact requested
+repository, and the Worker independently revalidates every field and disables
+caching. Workflow variables, commands, local paths, and full logs are not part
+of this response or the public mirror catalog.
 
 For upload-pack, require:
 
