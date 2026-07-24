@@ -949,6 +949,13 @@
     toggle?.setAttribute("aria-expanded", open ? "true" : "false");
   }
 
+  function setAccountMenuOpen(open) {
+    const toggle = $("#accountMenuToggle");
+    const dropdown = $("#accountMenuDropdown");
+    dropdown?.classList.toggle("hidden", !open);
+    toggle?.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
   function setNotificationModalOpen(open) {
     const modal = $("#notificationModal");
     if (!modal) return;
@@ -1377,6 +1384,19 @@
       return;
     }
 
+    const accountMenuToggle = event.target.closest("#accountMenuToggle");
+    if (accountMenuToggle) {
+      event.stopPropagation();
+      const dropdown = $("#accountMenuDropdown");
+      setAccountMenuOpen(dropdown?.classList.contains("hidden"));
+      return;
+    }
+    const accountMenuLogout = event.target.closest("[data-account-menu-logout]");
+    if (accountMenuLogout) {
+      logout();
+      return;
+    }
+
     const mirrorAccept = event.target.closest("[data-mirror-request-accept]");
     if (mirrorAccept) {
       event.stopPropagation();
@@ -1573,6 +1593,9 @@
     }
     if (!event.target.closest("#notificationToggle, #notificationDropdown")) {
       setNotificationDropdownOpen(false);
+    }
+    if (!event.target.closest("#accountMenuToggle, #accountMenuDropdown")) {
+      setAccountMenuOpen(false);
     }
     if (!event.target.closest("#agentModal, #agentModalToggle")) {
       setAgentModalOpen(false);
