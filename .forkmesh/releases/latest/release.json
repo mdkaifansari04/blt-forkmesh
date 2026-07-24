@@ -3,8 +3,8 @@
   "repo": "forkmesh/forkmesh",
   "tag": "v0.7.0",
   "tag_commit": "4d535adb8432fddc21cecfe874d287bd6f6a526d",
-  "build_commit": "2e611ed5fd3a485c9800ec698fe8cdae285479d6",
+  "build_commit": "ff50fbc91b0ec61cda3e659d28174e53d60655b2",
   "channel": "latest",
-  "created_at": 1784926561000,
-  "assets": [{"name":"forkmesh-linux-x86_64","blob_sha256":"eadff17b1d2fcd06c299819b031e367b0ce3a28709f61bdf77ccd3cc1d61b5d4","size":22221800,"os":"linux","arch":"x86_64"}]
+  "created_at": 1784929522000,
+  "assets": [{"name":"forkmesh-linux-x86_64","blob_sha256":"e123baebbec2dded2e713ce34b6b7c8ece5ffd4a0aa3f8a5fdc12114ce6350ab","size":22221800,"os":"linux","arch":"x86_64"}]
 }
