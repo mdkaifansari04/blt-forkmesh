@@ -88,6 +88,7 @@ PUBLIC_OPERATIONS = frozenset(
         "raw",
         "history",
         "commit",
+        "compare",
         "branches",
         "search",
         "stats",

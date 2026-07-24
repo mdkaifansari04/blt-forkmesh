@@ -620,6 +620,61 @@ def test_branches_returns_main_and_additional_heads(application):
     assert all(branch["updatedAt"] for branch in payload["branches"])
 
 
+def test_compare_returns_bounded_portable_pull_change_set(application):
+    app, commit, _release_hash, _logs = application
+    repository = app.repositories[("alice", "project")]
+    base = gateway._run_git(
+        repository.git_dir,
+        ["rev-parse", commit + "^"],
+        max_output=128,
+    ).decode().strip()
+    payload = decode_json(
+        dispatch(
+            app,
+            "compare",
+            {"base": base, "head": "main"},
+            request_id="compare_change_set_01",
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["baseOid"] == base
+    assert payload["headOid"] == commit
+    assert payload["mergeBaseOid"] == base
+    assert payload["commitCount"] == 1
+    assert "src/main.py" in payload["patch"]
+    assert "Improve greeting" in payload["commits"]
+    assert payload["commits"].startswith("From ")
+
+
+def test_compare_requires_both_refs_and_enforces_byte_cap(
+    application, monkeypatch
+):
+    app, commit, _release_hash, _logs = application
+    missing = dispatch(
+        app,
+        "compare",
+        {"head": commit},
+        request_id="compare_missing_ref_01",
+    )
+    assert missing.status == 404
+
+    repository = app.repositories[("alice", "project")]
+    base = gateway._run_git(
+        repository.git_dir,
+        ["rev-parse", commit + "^"],
+        max_output=128,
+    ).decode().strip()
+    monkeypatch.setattr(gateway, "MAX_COMPARE_BYTES", 8)
+    oversized = dispatch(
+        app,
+        "compare",
+        {"base": base, "head": commit},
+        request_id="compare_byte_cap_01",
+    )
+    assert oversized.status == 503
+    assert decode_json(oversized)["error"] == "mirror_unavailable"
+
+
 def test_sizes_exposes_bounded_file_leaves_with_full_paths(application):
     app, _commit, _release_hash, _logs = application
     payload = decode_json(

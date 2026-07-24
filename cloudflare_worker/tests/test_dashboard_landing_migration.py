@@ -18,7 +18,7 @@ URLS_TEXT = (ROOT / "src" / "urls.py").read_text(encoding="utf-8")
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
 REDIRECTS = (PUBLIC / "_redirects").read_text(encoding="utf-8")
 REPO_HOST_ROUTE_RE = (
-    'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|branches|search|stats|sizes)$"'
+    'r"^/api/repo/([^/]+)/([^/]+)/(host|tree|blobs|blob|raw|history|commit|compare|branches|search|stats|sizes)$"'
 )
 REPO_DIRECT_BROWSE_GATE = "and action in {"
 
@@ -1356,6 +1356,33 @@ def test_dashboard_repository_issue_and_pull_tabs_match_github_lists():
     assert "data-repo-collection-sidebar" not in dashboard_js
     assert 'renderRepoCollectionPanel("issues", repo, issuesCount, repoCount(repo, ["closedIssues", "closedIssueCount"]))' in render
     assert 'renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))' in render
+
+
+def test_web_pull_submission_signs_a_portable_mirror_comparison():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    submit = dashboard_js[
+        dashboard_js.index("async function submitWebPullOpen")
+        : dashboard_js.index("async function handleDiscussionReplySubmit")
+    ]
+
+    for marker in (
+        'repoLiveUrl(repo, "compare", {',
+        "const patch = String(comparison.patch || \"\");",
+        "const commits = String(comparison.commits || \"\");",
+        "const content = [title, base, head, patch, commits].join(NUL);",
+        "description: cleanBody",
+        "creationBaseOid",
+        "creationHeadOid",
+    ):
+        if marker.startswith("creation"):
+            assert marker not in submit
+        else:
+            assert marker in submit
+    assert "const patch = \"\";" not in submit
+    assert "body: cleanBody" not in submit
+    assert 'throw new Error("no_changes")' in submit
+    assert '"compare", "branches"' in ENTRY_TEXT
+    assert 'elif operation == "compare":' in ENTRY_TEXT
 
 
 def test_dashboard_repository_issue_and_pull_tabs_paginate_records_at_the_bottom():
