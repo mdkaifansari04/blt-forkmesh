@@ -190,3 +190,29 @@ def test_tunnel_restarts_with_the_mirror_gateway():
     ).read_text(encoding="utf-8")
     assert "Requires=forkmesh-mirror.service" in tunnel_service
     assert "PartOf=forkmesh-mirror.service" in tunnel_service
+
+
+def test_signed_health_renewal_timer_is_bounded_and_gateway_coupled():
+    service = (
+        PROJECT_ROOT
+        / "packaging"
+        / "systemd"
+        / "forkmesh-mirror-renew.service"
+    ).read_text(encoding="utf-8")
+    timer = (
+        PROJECT_ROOT
+        / "packaging"
+        / "systemd"
+        / "forkmesh-mirror-renew.timer"
+    ).read_text(encoding="utf-8")
+
+    assert "User=forkmesh-mirror" in service
+    assert "Requires=forkmesh-mirror.service" in service
+    assert "PartOf=forkmesh-mirror.service" in service
+    assert "headless_mirror_refresh.py" in service
+    assert " renew" in service
+    assert "ProtectSystem=strict" in service
+    assert "ReadWritePaths=/var/lib/forkmesh-mirror/gateway" in service
+    assert "OnUnitActiveSec=4min" in timer
+    assert "RandomizedDelaySec=30s" in timer
+    assert "Persistent=true" in timer

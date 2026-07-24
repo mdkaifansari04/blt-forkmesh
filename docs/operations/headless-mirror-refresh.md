@@ -6,7 +6,7 @@ node private key, an age identity, a Cloudflare token, or a wallet key. All
 signing and encryption operations go through the bounded protocols in
 `headless_mirror_identity.py`.
 
-The three modes form an intentional deployment sequence:
+The four modes form an intentional deployment and renewal sequence:
 
 1. `refresh` checks the exact bare source with `git fsck --full --strict`,
    creates a new age-encrypted snapshot, validates a staged gateway
@@ -15,6 +15,9 @@ The three modes form an intentional deployment sequence:
    configuration.
 3. `register` validates the active source/archive/configuration, registers the
    HTTPS endpoint, and then publishes the node-owner catalog-v2 record.
+4. `renew` re-authenticates the immutable active generation and republishes the
+   signed endpoint/catalog lease without a full Git fsck or a second encrypted
+   repository materialization.
 
 `check` performs the active-state validation from step 3 but makes no network
 request and does not reseal the repository. It is suitable for a gateway
@@ -209,6 +212,30 @@ signed manifest must be publicly reachable, and its node key must already be
 bound to the registered node account. The Worker will reject registration
 otherwise.
 
+## Renew the signed health lease
+
+Healthy endpoints are deliberately short-lived so a dead or disconnected
+mirror falls out of routing. Each mirror therefore renews its own signed lease
+every four minutes:
+
+```bash
+/usr/bin/python3 /opt/forkmesh-mirror/headless_mirror_refresh.py \
+  --config /var/lib/forkmesh-mirror/gateway/mirror-refresh.json \
+  renew
+```
+
+`renew` verifies the owner-local identity, active configuration, complete
+encrypted-archive digest, exact source refs, and signatures before publishing.
+It omits only the expensive full Git fsck and second gateway materialization;
+the Worker still performs a fresh signed repository challenge and leaves the
+endpoint fail-closed if the gateway or Tunnel is unavailable.
+
+Install and enable `forkmesh-mirror-renew.service` and
+`forkmesh-mirror-renew.timer` from `packaging/systemd/`. The timer runs after
+boot and every four minutes, below the ten-minute routing freshness window.
+Renewal and repository refresh share the same exclusive owner-only lock, so a
+push refresh completes before a queued renewal can publish.
+
 ## SSH post-receive integration
 
 The SSH forced-command gateway may write the bare source, but it must not
@@ -234,7 +261,7 @@ successful receive-pack
 Do not place this sequence behind `sh -c` with user-controlled repository
 arguments. Use fixed command arrays and a fixed config path. A service manager
 should serialize the sequence; the tool also takes an owner-only advisory lock
-so overlapping refresh/check/register invocations cannot interleave.
+so overlapping refresh/check/register/renew invocations cannot interleave.
 
 Concurrent Git ref movement is detected by comparing the refs before sealing,
 the helper's sealed-snapshot digest, and the refs after a second strict fsck.

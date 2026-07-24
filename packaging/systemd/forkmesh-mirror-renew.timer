@@ -1,0 +1,14 @@
+[Unit]
+Description=Keep the signed ForkMesh mirror health lease fresh
+Documentation=https://forkmesh.com/docs/operations/direct-https-mirror-gateway
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=4min
+AccuracySec=15s
+RandomizedDelaySec=30s
+Persistent=true
+Unit=forkmesh-mirror-renew.service
+
+[Install]
+WantedBy=timers.target

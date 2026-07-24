@@ -1206,6 +1206,29 @@ def _validate_active(
     return identity, metadata, archive_path
 
 
+def _validate_active_renewal(
+    config: RefreshConfig,
+) -> tuple[PublicIdentity, SealMetadata, Path]:
+    """Validate the immutable active generation without materializing it.
+
+    A health-lease renewal runs every few minutes, so repeating a full Git fsck
+    and encrypted gateway materialization would consume most of a small mirror
+    host.  The active configuration and ciphertext are still authenticated
+    here, and the exact source refs must still match the sealed state.  The
+    Worker then performs its normal fresh signed repository challenge before it
+    marks the renewed endpoint healthy.
+    """
+    identity = _load_public_identity(config)
+    _require_bare_source(config)
+    metadata, archive_path = _active_metadata(config, identity)
+    if not secrets.compare_digest(
+        _source_refs_sha256(config),
+        metadata.expected_refs_sha256,
+    ):
+        raise RefreshError("active archive does not match the exact source refs")
+    return identity, metadata, archive_path
+
+
 def refresh(config: RefreshConfig) -> dict[str, Any]:
     with _refresh_lock(config, shared=False):
         identity = _load_public_identity(config)
@@ -1459,6 +1482,49 @@ def _sign_catalog(
     return response
 
 
+def _publish_registration(
+    config: RefreshConfig,
+    identity: PublicIdentity,
+    metadata: SealMetadata,
+    *,
+    post_json: Callable[
+        [str, Mapping[str, Any]], tuple[int, dict[str, Any]]
+    ] = _post_json,
+) -> dict[str, Any]:
+    endpoint = _sign_endpoint(config, identity)
+    endpoint_status, endpoint_response = post_json(
+        config.worker_origin + "/api/mirrors/https",
+        endpoint,
+    )
+    if (
+        endpoint_status not in {200, 201}
+        or endpoint_response.get("ok") is not True
+        or endpoint_response.get("node") != config.node_owner
+        or endpoint_response.get("baseUrl") != config.public_origin
+    ):
+        raise RefreshError("endpoint registration was not accepted")
+
+    catalog = _sign_catalog(config, identity, metadata)
+    catalog_status, catalog_response = post_json(
+        config.worker_origin + "/api/repositories",
+        catalog,
+    )
+    repository = catalog_response.get("repository")
+    if (
+        catalog_status not in {200, 201}
+        or catalog_response.get("ok") is not True
+        or not isinstance(repository, dict)
+        or repository.get("owner") != config.node_owner
+        or repository.get("name") != config.repository_name
+        or repository.get("stateHash") != metadata.expected_refs_sha256
+    ):
+        raise RefreshError("catalog publication was not accepted")
+    return {
+        "ok": True,
+        "aliasCount": len(config.owner_aliases),
+    }
+
+
 def register(
     config: RefreshConfig,
     *,
@@ -1468,40 +1534,25 @@ def register(
 ) -> dict[str, Any]:
     with _refresh_lock(config, shared=False):
         identity, metadata, _archive_path = _validate_active(config)
+        result = _publish_registration(
+            config, identity, metadata, post_json=post_json)
+        result["event"] = "registration_complete"
+        return result
 
-        endpoint = _sign_endpoint(config, identity)
-        endpoint_status, endpoint_response = post_json(
-            config.worker_origin + "/api/mirrors/https",
-            endpoint,
-        )
-        if (
-            endpoint_status not in {200, 201}
-            or endpoint_response.get("ok") is not True
-            or endpoint_response.get("node") != config.node_owner
-            or endpoint_response.get("baseUrl") != config.public_origin
-        ):
-            raise RefreshError("endpoint registration was not accepted")
 
-        catalog = _sign_catalog(config, identity, metadata)
-        catalog_status, catalog_response = post_json(
-            config.worker_origin + "/api/repositories",
-            catalog,
-        )
-        repository = catalog_response.get("repository")
-        if (
-            catalog_status not in {200, 201}
-            or catalog_response.get("ok") is not True
-            or not isinstance(repository, dict)
-            or repository.get("owner") != config.node_owner
-            or repository.get("name") != config.repository_name
-            or repository.get("stateHash") != metadata.expected_refs_sha256
-        ):
-            raise RefreshError("catalog publication was not accepted")
-        return {
-            "ok": True,
-            "event": "registration_complete",
-            "aliasCount": len(config.owner_aliases),
-        }
+def renew(
+    config: RefreshConfig,
+    *,
+    post_json: Callable[
+        [str, Mapping[str, Any]], tuple[int, dict[str, Any]]
+    ] = _post_json,
+) -> dict[str, Any]:
+    with _refresh_lock(config, shared=False):
+        identity, metadata, _archive_path = _validate_active_renewal(config)
+        result = _publish_registration(
+            config, identity, metadata, post_json=post_json)
+        result["event"] = "renewal_complete"
+        return result
 
 
 def check(config: RefreshConfig) -> dict[str, Any]:
@@ -1528,7 +1579,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="absolute owner-only refresh JSON configuration",
     )
-    parser.add_argument("mode", choices=("refresh", "check", "register"))
+    parser.add_argument(
+        "mode", choices=("refresh", "check", "register", "renew"))
     return parser
 
 
@@ -1540,6 +1592,7 @@ def main(argv: list[str] | None = None) -> int:
             "refresh": refresh,
             "check": check,
             "register": register,
+            "renew": renew,
         }[args.mode](config)
         print(_canonical_json(result).decode("utf-8"), flush=True)
         return 0

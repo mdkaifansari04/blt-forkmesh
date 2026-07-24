@@ -423,6 +423,72 @@ def test_register_posts_endpoint_then_node_owner_catalog(installation):
     }
 
 
+def test_renew_republishes_valid_active_generation_without_full_preflight(
+    installation,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = installation["config"]
+    refresh_tool.refresh(config)
+    calls: list[tuple[str, dict]] = []
+
+    def post(url: str, payload):
+        calls.append((url, dict(payload)))
+        if url.endswith("/api/mirrors/https"):
+            return 201, {
+                "ok": True,
+                "node": payload["node"],
+                "baseUrl": payload["baseUrl"],
+            }
+        return 201, {
+            "ok": True,
+            "repository": {
+                "owner": payload["owner"],
+                "name": payload["name"],
+                "stateHash": payload["stateHash"],
+            },
+        }
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("renew must not run the full gateway preflight")
+
+    monkeypatch.setattr(refresh_tool, "_fsck_source", forbidden)
+    monkeypatch.setattr(refresh_tool, "_invoke_gateway_check", forbidden)
+
+    result = refresh_tool.renew(config, post_json=post)
+
+    assert [url.rsplit("/", 1)[-1] for url, _ in calls] == [
+        "https",
+        "repositories",
+    ]
+    expected_commit = _run(
+        ["git", "--git-dir", str(installation["bare"]), "rev-parse", "main"]
+    )
+    assert calls[1][1]["commit"] == expected_commit
+    assert result == {
+        "ok": True,
+        "event": "renewal_complete",
+        "aliasCount": 2,
+    }
+
+
+def test_renew_fails_closed_when_source_refs_changed(installation):
+    config = installation["config"]
+    refresh_tool.refresh(config)
+    (installation["work"] / "README.md").write_text(
+        "renewal must not advertise changed refs\n", encoding="utf-8"
+    )
+    _run(["git", "add", "README.md"], installation["work"])
+    _run(["git", "commit", "-m", "unsealed change"], installation["work"])
+    _run(["git", "push", "mirror", "main"], installation["work"])
+
+    with pytest.raises(
+        refresh_tool.RefreshError,
+        match="active archive does not match the exact source refs",
+    ):
+        refresh_tool.renew(config, post_json=lambda *_args: pytest.fail(
+            "renew must not publish changed refs"))
+
+
 def re_fullmatch_base64_signature(value: str) -> bool:
     return (
         isinstance(value, str)
