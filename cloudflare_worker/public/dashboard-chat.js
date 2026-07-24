@@ -823,6 +823,30 @@
     return true;
   }
 
+  // Inside the World embed, mirror each live chat line to the parent page so
+  // it can float the message above the speaker's avatar and fade it out
+  // (world.js handleWorldChatMessage). Same-origin only; history replays are
+  // excluded so reconnects do not resurrect old bubbles.
+  const WORLD_EMBED_BUBBLES =
+    requestedParams.get("worldEmbed") === "1" && window.parent !== window;
+
+  function emitWorldChatBubble(sender, senderId, text) {
+    if (!WORLD_EMBED_BUBBLES) return;
+    const line = String(text || "").trim().slice(0, 200);
+    if (!line) return;
+    try {
+      window.parent.postMessage(
+        {
+          type: "forkmesh:world-chat",
+          sender: String(sender || "").slice(0, MAX_NAME),
+          self: senderId === selfId,
+          text: line,
+        },
+        location.origin
+      );
+    } catch (_) {}
+  }
+
   function allowedChatAccountKind(value) {
     return value === "user" || (PUBLIC_WORLD_GENERAL && value === "guest");
   }
@@ -838,7 +862,7 @@
     };
   }
 
-  function renderChatEntry(entry, kind) {
+  function renderChatEntry(entry, kind, live = false) {
     if (!entry || !allowedChatAccountKind(entry.accountKind)) return;
     entry = normalizedPublicWorldFrame(entry);
     if (!once(entry.id)) return;
@@ -849,6 +873,7 @@
     kind = entry.senderId === selfId ? "self" : kind;
     appendMessage(kind, who, text, entry.id, entry.senderId,
                   Number(entry.ts) || Date.now(), attachment);
+    if (live) emitWorldChatBubble(who, entry.senderId, text);
   }
 
   async function verifyAdminDelete(plain) {
@@ -904,7 +929,7 @@
     plain = normalizedPublicWorldFrame(plain);
     const sender = String(plain.sender || "peer").slice(0, MAX_NAME);
     if (type === "chat") {
-      if (plain.channel === CHANNEL) renderChatEntry(plain, "peer");
+      if (plain.channel === CHANNEL) renderChatEntry(plain, "peer", true);
     } else if (type === "history") {
       for (const entry of plain.entries || []) {
         if (
@@ -1213,6 +1238,7 @@
       send(plain);
       seen.add(plain.id);
       appendMessage("self", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
+      emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
       maybeAskForkbot(clipped);
     });
   }

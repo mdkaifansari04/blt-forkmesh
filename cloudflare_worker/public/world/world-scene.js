@@ -288,6 +288,50 @@ function wordTexture(THREE, title, subtitle, color = "#9ef7c6") {
   });
 }
 
+function chatBubbleTexture(THREE, name, text) {
+  return canvasTexture(THREE, 768, 256, (context) => {
+    context.clearRect(0, 0, 768, 256);
+    roundedRect(context, 4, 4, 760, 216, 26);
+    context.fillStyle = "rgba(6,17,14,0.94)";
+    context.fill();
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 4;
+    context.stroke();
+    // Speech-bubble tail pointing down toward the speaker's head.
+    context.beginPath();
+    context.moveTo(354, 214);
+    context.lineTo(384, 250);
+    context.lineTo(414, 214);
+    context.closePath();
+    context.fillStyle = "rgba(6,17,14,0.94)";
+    context.fill();
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillStyle = "#9ef7c6";
+    context.font = '700 26px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(String(name || "visitor").toUpperCase().slice(0, 24), 42, 50);
+    context.fillStyle = "#f1fff6";
+    context.font = '600 38px "ForkMesh Favorit", system-ui, sans-serif';
+    const words = String(text || "").split(/\s+/).filter(Boolean);
+    const lines = [""];
+    for (const word of words) {
+      const current = lines[lines.length - 1];
+      const candidate = current ? `${current} ${word}` : word;
+      if (!current || context.measureText(candidate).width <= 680) {
+        lines[lines.length - 1] = candidate;
+      } else if (lines.length < 3) {
+        lines.push(word);
+      } else {
+        lines[2] += "…";
+        break;
+      }
+    }
+    lines.forEach((line, index) => {
+      context.fillText(line, 42, 102 + index * 50, 680);
+    });
+  });
+}
+
 function moderationControlTexture(THREE, title, subtitle, color) {
   return canvasTexture(THREE, 512, 160, (context) => {
     context.clearRect(0, 0, 512, 160);
@@ -4690,6 +4734,54 @@ export function createWorldScene({
     });
   }
 
+  function showChatBubble(peerId, text, local = false) {
+    const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 140);
+    if (!message) return false;
+    const avatar =
+      local || peerId === identity.id
+        ? player
+        : remotePlayers.get(String(peerId || ""));
+    if (!avatar) return false;
+    // One bubble per speaker: a rapid follow-up message replaces the first
+    // instead of stacking on top of it.
+    for (let index = emoteSprites.length - 1; index >= 0; index -= 1) {
+      const existing = emoteSprites[index];
+      if (existing.chat && existing.avatar === avatar) {
+        world.remove(existing.sprite);
+        existing.sprite.material?.map?.dispose?.();
+        existing.sprite.material?.dispose?.();
+        emoteSprites.splice(index, 1);
+      }
+    }
+    const sprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: chatBubbleTexture(
+          THREE,
+          avatar.userData?.name || "visitor",
+          message,
+        ),
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+      }),
+    );
+    sprite.renderOrder = 11;
+    sprite.scale.set(6.6, 2.2, 1);
+    world.add(sprite);
+    emoteSprites.push({
+      sprite,
+      avatar,
+      chat: true,
+      startedAt: performance.now(),
+      // Longer messages linger longer before fading out.
+      duration: Math.min(7500, 3200 + message.length * 30),
+      baseHeight: 5.2,
+      rise: 0.5,
+      fadeStart: 0.75,
+    });
+    return true;
+  }
+
   function playRewardEvent(targetHint = "") {
     let targetPylon = null;
     nodeInfrastructure.forEach((pylon) => {
@@ -5033,9 +5125,12 @@ export function createWorldScene({
         1,
         (performance.now() - flight.startedAt) / flight.duration,
       );
+      const fadeStart = flight.fadeStart ?? 0.65;
       flight.sprite.position.copy(flight.avatar.position);
-      flight.sprite.position.y += 4.7 + progress * 1.1;
-      flight.sprite.material.opacity = 1 - Math.max(0, progress - 0.65) / 0.35;
+      flight.sprite.position.y +=
+        (flight.baseHeight ?? 4.7) + progress * (flight.rise ?? 1.1);
+      flight.sprite.material.opacity =
+        1 - Math.max(0, progress - fadeStart) / (1 - fadeStart);
       if (progress >= 1) {
         world.remove(flight.sprite);
         flight.sprite.material?.map?.dispose?.();
@@ -5244,6 +5339,7 @@ export function createWorldScene({
     updateRepositoryGraph,
     updateLandmarkConstruction,
     playEmote,
+    showChatBubble,
     playRewardEvent,
     setPaused,
     dispose,
