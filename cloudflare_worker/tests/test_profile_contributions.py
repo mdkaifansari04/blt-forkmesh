@@ -1228,6 +1228,9 @@ def test_ingest_catalog_handler_keeps_repository_write_on_optional_failure():
         "safe_catalog_record": lambda _data: dict(record),
         "_is_blocked_catalog_identity": lambda *_args: False,
         "_account_row": account_row,
+        "_catalog_publication_key": (
+            lambda _env, _owner, maintainer: asyncio.sleep(
+                0, result=maintainer)),
         "clean_string": lambda value, maximum=240: str(value or "")[:maximum],
         "ed25519_verify": always_verify,
         "blind_index": lambda _env, value: asyncio.sleep(0, result=_blind(value)),
@@ -1239,6 +1242,7 @@ def test_ingest_catalog_handler_keeps_repository_write_on_optional_failure():
         "decrypt_row": lambda _env, value: asyncio.sleep(0, result=value),
         "encrypt_row": lambda _env, value: asyncio.sleep(0, result=value),
         "purge_catalog_related_caches": noop,
+        "_https_mirror_refresh_catalog_publisher_health": noop,
         "_contribution_ingest_snapshot": contribution_failure,
         "_contribution_write_catalog_state": catalog_state,
         "json_response": response,
