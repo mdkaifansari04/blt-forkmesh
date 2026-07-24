@@ -4667,6 +4667,79 @@ int main(int argc, char *argv[])
                   loadedPulls.first().reviewSummary() == "approved",
               "PR review summary folds to approved");
 
+        // A browser-created pull carries portable, signed change bytes rather
+        // than only mutable branch names. Exercise the exact Worker -> Qt wire
+        // shape (including legacy `body`) and prove the drained record merges.
+        const QString webBase = QString::fromUtf8(
+            gitOutput({"rev-parse", "--abbrev-ref", "HEAD"})).trimmed();
+        const QString webBaseOid = QString::fromUtf8(
+            gitOutput({"rev-parse", "HEAD"})).trimmed();
+        git({"checkout", "-q", "-b", "web-wire-feature"});
+        check(writeTestFile(tmp.path() + "/web-wire.txt",
+                            QByteArrayLiteral("portable browser change\n")),
+              "write browser pull fixture");
+        git({"add", "web-wire.txt"});
+        git({"commit", "-q", "-m", "portable browser commit"});
+        const QString webHeadOid = QString::fromUtf8(
+            gitOutput({"rev-parse", "HEAD"})).trimmed();
+        const QString webPatch = QString::fromUtf8(
+            gitOutput({"diff", "--binary",
+                       webBase + "...web-wire-feature"}));
+        const QString webCommits = QString::fromUtf8(
+            gitOutput({"format-patch", "--binary", "--no-signature", "--stdout",
+                       webBase + "..web-wire-feature"}));
+        git({"checkout", "-q", webBase});
+
+        PullRequest browserPull;
+        browserPull.title = "Portable browser pull";
+        browserPull.description = "Browser description";
+        browserPull.base = webBase;
+        browserPull.head = "web-wire-feature";
+        browserPull.patch = webPatch;
+        browserPull.commits = webCommits;
+        browserPull = pulls.makeSignedPull(browserPull);
+        QJsonObject browserWire = browserPull.toJson();
+        browserWire.remove("description");
+        browserWire.insert("body", "Browser description");
+        const PullRequest drainedBrowserPull =
+            PullRequest::fromJson(browserWire);
+        check(drainedBrowserPull.description == "Browser description",
+              "PullRequest wire reader preserves legacy browser body text");
+        check(drainedBrowserPull.patch == webPatch &&
+                  drainedBrowserPull.commits == webCommits &&
+                  !drainedBrowserPull.patch.isEmpty() &&
+                  !drainedBrowserPull.commits.isEmpty(),
+              "PullRequest wire reader retains the signed portable change set");
+        check(verifyEd25519(drainedBrowserPull.author,
+                            drainedBrowserPull.sig,
+                            PullStore::canonicalString(drainedBrowserPull)),
+              "drained browser change bytes retain their valid signature");
+        check(pulls.applyRemotePull(drainedBrowserPull, &err),
+              "owner drain stores a portable browser pull");
+        int browserPullNumber = 0;
+        for (const PullRequest &candidate : pulls.loadAll()) {
+            if (candidate.title == browserPull.title) {
+                browserPullNumber = candidate.number;
+                check(candidate.description == "Browser description" &&
+                          candidate.patch == webPatch &&
+                          candidate.commits == webCommits,
+                      "stored browser pull keeps description, patch, and commits");
+                break;
+            }
+        }
+        check(browserPullNumber > 0,
+              "owner drain assigns the browser pull a local number");
+        check(browserPullNumber > 0 &&
+                  pulls.mergePull(browserPullNumber, &err),
+              "portable browser pull merges after inbox drain");
+        QFile mergedWebFile(tmp.path() + "/web-wire.txt");
+        check(mergedWebFile.open(QIODevice::ReadOnly) &&
+                  mergedWebFile.readAll() ==
+                      QByteArrayLiteral("portable browser change\n"),
+              "merged browser pull lands its signed repository change");
+        check(webBaseOid != webHeadOid,
+              "browser pull fixture resolves distinct immutable commits");
+
         // A remote node files a review event via the inbox; it must append+commit.
         PullEvent remoteReview;
         remoteReview.type = "review";

@@ -112,6 +112,27 @@ bool prepareOwnerDirectory(const QString &path, QString *error)
     return true;
 }
 
+// Common install locations that a desktop-launched GUI often misses because it
+// inherits a minimal PATH (no login-shell profile). age/age-keygen land here
+// when installed via Homebrew, Go, Cargo, or a per-user prefix, so we fall back
+// to them when the PATH lookup comes up empty. Absolute-path lookups above and
+// the on-PATH lookup are unaffected; this only adds candidate directories.
+QStringList extraProgramSearchDirs()
+{
+    QStringList dirs{QStringLiteral("/opt/homebrew/bin"),
+                     QStringLiteral("/usr/local/bin"),
+                     QStringLiteral("/usr/bin"),
+                     QStringLiteral("/bin")};
+    const QString home = QDir::homePath();
+    if (!home.isEmpty()) {
+        dirs << QDir(home).filePath(QStringLiteral(".local/bin"))
+             << QDir(home).filePath(QStringLiteral("bin"))
+             << QDir(home).filePath(QStringLiteral("go/bin"))
+             << QDir(home).filePath(QStringLiteral(".cargo/bin"));
+    }
+    return dirs;
+}
+
 QString resolveProgram(const QString &configured)
 {
     const QString value = configured.trimmed();
@@ -127,7 +148,10 @@ QString resolveProgram(const QString &configured)
                    ? explicitInfo.absoluteFilePath()
                    : QString();
     }
-    return QStandardPaths::findExecutable(value);
+    const QString onPath = QStandardPaths::findExecutable(value);
+    if (!onPath.isEmpty())
+        return onPath;
+    return QStandardPaths::findExecutable(value, extraProgramSearchDirs());
 }
 
 QProcessEnvironment safeEnvironment()

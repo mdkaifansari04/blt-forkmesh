@@ -21015,6 +21015,24 @@ async def pulls_handler(env, request, owner, repo):
         pull = data.get("pull")
         if not isinstance(pull, dict):
             return json_response({"error": "pull_required"}, status=400)
+        signed_fields = ("title", "base", "head", "patch", "commits")
+        if any(
+                field in pull and not isinstance(pull.get(field), str)
+                for field in signed_fields):
+            return json_response({"error": "pull_invalid"}, status=400)
+        description = (
+            pull.get("description")
+            if "description" in pull else pull.get("body", ""))
+        if not isinstance(description, str):
+            return json_response({"error": "pull_invalid"}, status=400)
+        if len(description.encode("utf-8")) > MAX_ISSUE_BYTES:
+            return json_response(
+                {"error": "description_too_large"}, status=413)
+        # `description` is the native Qt wire name. Normalize legacy browser
+        # `body` submissions before encrypting the inbox item so either kind of
+        # sender drains into the same lossless PullRequest representation.
+        pull["description"] = description
+        pull.pop("body", None)
         pull_bytes = len((pull.get("patch", "") or "").encode("utf-8")) + len(
             (pull.get("commits", "") or "").encode("utf-8"))
         if pull_bytes > MAX_PULL_BYTES:
@@ -21043,7 +21061,7 @@ async def pulls_handler(env, request, owner, repo):
         actor = clean_string(pull.get("authorName", "") or pull.get("author", ""), MAX_NODE_NAME).lower()
         title = clean_string(pull.get("title", "") or pull.get("subject", ""), 240)
         await notify_pending_inbox(env, owner, repo, "pull", actor, title, 0)
-        await notify_mentions(env, owner, repo, actor, title, pull.get("body", ""),
+        await notify_mentions(env, owner, repo, actor, title, description,
                               repo_web_href(owner, repo), "pull")
         await notify_repo_host(env, owner, repo, "pulls")
         # Badge (adhoc #44): render the PR's visual fingerprint from the
@@ -21063,7 +21081,7 @@ async def pulls_handler(env, request, owner, repo):
             badge = None
         await _best_effort_inbox_side_effect(_ap_publish_repo_event(
             env, request, owner, repo, "pull", "open", 0, title,
-            pull.get("body", ""), pull.get("authorName", ""),
+            description, pull.get("authorName", ""),
             extra_images=[badge] if badge else None))
         return json_response({"ok": True}, status=201)
 
@@ -26419,6 +26437,10 @@ def _https_mirror_request_query(url, operation, release_sha=""):
         query = params.get("q", params.get("path", [""]))[0]
         if query:
             output["path"] = query
+    elif operation == "compare":
+        for key in ("base", "head"):
+            if params.get(key):
+                output[key] = params[key][0]
     elif operation in ("tree", "blob", "raw", "commit"):
         if params.get("path"):
             output["path"] = params["path"][0]
@@ -27912,7 +27934,7 @@ class Default(WorkerEntrypoint):
                 upgrade != "websocket"
                 and action in {
                     "tree", "blobs", "blob", "raw", "history", "commit",
-                    "branches", "search", "stats", "sizes",
+                    "compare", "branches", "search", "stats", "sizes",
                 }
             ):
                 if await _repo_is_private(self.env, owner, repo):

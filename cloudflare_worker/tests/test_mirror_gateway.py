@@ -176,6 +176,19 @@ def write_config(
     return config_path
 
 
+def write_alias_config(tmp_path, bare):
+    config_path = write_config(tmp_path, bare)
+    value = json.loads(config_path.read_text(encoding="utf-8"))
+    source = value["repositories"][0]
+    value["repositories"] = []
+    for owner in ("mirror-two", "forkmesh"):
+        repository = json.loads(json.dumps(source))
+        repository["owner"] = owner
+        value["repositories"].append(repository)
+    config_path.write_text(json.dumps(value), encoding="utf-8")
+    return config_path
+
+
 class AcceptVerifier:
     def __init__(self):
         self.messages = []
@@ -198,9 +211,11 @@ class FakeArchiveMaterializer:
     def __init__(self, repository):
         self.repository = repository
         self.archives = []
+        self.destinations = []
 
-    def materialize(self, archive, _destination):
+    def materialize(self, archive, destination):
         self.archives.append(archive)
+        self.destinations.append(destination)
         return self.repository
 
 
@@ -339,6 +354,126 @@ def test_config_requires_loopback_public_integrity_and_no_secret_fields(tmp_path
         gateway.GatewayError, match="age-encrypted-tar-v1"
     ):
         gateway.load_config(ambiguous_path)
+
+
+def test_identical_alias_archives_materialize_once_with_distinct_configs(
+    tmp_path,
+):
+    bare, _commit = make_bare_repository(tmp_path)
+    config = gateway.load_config(write_alias_config(tmp_path, bare))
+    materializer = FakeArchiveMaterializer(bare)
+    app = gateway.GatewayApplication(
+        config,
+        verifier=AcceptVerifier(),
+        health_signer=HealthSigner(),
+        materializer=materializer,
+    )
+    try:
+        mirror = app.repositories[("mirror-two", "project")]
+        organization = app.repositories[("forkmesh", "project")]
+        assert len(materializer.archives) == 1
+        assert len(materializer.destinations) == 1
+        assert mirror is not organization
+        assert mirror.git_dir == organization.git_dir == bare
+        assert mirror.config is config.repositories[0]
+        assert organization.config is config.repositories[1]
+        assert app.quarantined_count == 0
+    finally:
+        app.close()
+
+
+def test_alias_archive_metadata_difference_materializes_separately(tmp_path):
+    bare, _commit = make_bare_repository(tmp_path)
+    config_path = write_alias_config(tmp_path, bare)
+    value = json.loads(config_path.read_text(encoding="utf-8"))
+    value["repositories"][1]["encryptedArchive"]["keyReference"] = (
+        "keychain:test/forkmesh-project"
+    )
+    config_path.write_text(json.dumps(value), encoding="utf-8")
+    materializer = FakeArchiveMaterializer(bare)
+    app = gateway.GatewayApplication(
+        gateway.load_config(config_path),
+        verifier=AcceptVerifier(),
+        health_signer=HealthSigner(),
+        materializer=materializer,
+    )
+    try:
+        assert len(materializer.archives) == 2
+        assert materializer.archives[0] != materializer.archives[1]
+        assert len(set(materializer.destinations)) == 2
+        assert len(app.repositories) == 2
+        assert app.quarantined_count == 0
+    finally:
+        app.close()
+
+
+def test_bad_alias_integrity_is_quarantined_without_poisoning_shared_archive(
+    tmp_path,
+):
+    bare, _commit = make_bare_repository(tmp_path)
+    config_path = write_alias_config(tmp_path, bare)
+    value = json.loads(config_path.read_text(encoding="utf-8"))
+    value["repositories"][0]["integrity"]["expectedRefsSha256"] = "0" * 64
+    config_path.write_text(json.dumps(value), encoding="utf-8")
+    materializer = FakeArchiveMaterializer(bare)
+    app = gateway.GatewayApplication(
+        gateway.load_config(config_path),
+        verifier=AcceptVerifier(),
+        health_signer=HealthSigner(),
+        materializer=materializer,
+        clock_ms=lambda: NOW,
+    )
+    try:
+        assert len(materializer.archives) == 1
+        assert ("mirror-two", "project") not in app.repositories
+        assert ("forkmesh", "project") in app.repositories
+        assert app.quarantined_count == 1
+
+        responses = []
+        for index, name in enumerate(("project", "missing")):
+            target = f"/v1/repositories/mirror-two/{name}/tree"
+            response = app.dispatch(
+                "GET",
+                target,
+                capability_headers(
+                    target, request_id=f"quarantined_req_{index:02d}"
+                ),
+                b"",
+            )
+            responses.append((response.status, response.body))
+        assert responses[0] == responses[1]
+        assert responses[0][0] == 404
+    finally:
+        app.close()
+
+
+def test_failed_archive_identity_is_materialized_once_and_quarantines_aliases(
+    tmp_path,
+):
+    bare, _commit = make_bare_repository(tmp_path)
+    config = gateway.load_config(write_alias_config(tmp_path, bare))
+
+    class FailingMaterializer:
+        def __init__(self):
+            self.calls = []
+
+        def materialize(self, archive, destination):
+            self.calls.append((archive, destination))
+            raise gateway.GatewayError("test materialization failure")
+
+    materializer = FailingMaterializer()
+    app = gateway.GatewayApplication(
+        config,
+        verifier=AcceptVerifier(),
+        health_signer=HealthSigner(),
+        materializer=materializer,
+    )
+    try:
+        assert len(materializer.calls) == 1
+        assert app.repositories == {}
+        assert app.quarantined_count == 2
+    finally:
+        app.close()
 
 
 def test_manifest_digest_identity_and_origin_are_validated(tmp_path):
@@ -618,6 +753,61 @@ def test_branches_returns_main_and_additional_heads(application):
     ]
     assert all(branch["commit"] for branch in payload["branches"])
     assert all(branch["updatedAt"] for branch in payload["branches"])
+
+
+def test_compare_returns_bounded_portable_pull_change_set(application):
+    app, commit, _release_hash, _logs = application
+    repository = app.repositories[("alice", "project")]
+    base = gateway._run_git(
+        repository.git_dir,
+        ["rev-parse", commit + "^"],
+        max_output=128,
+    ).decode().strip()
+    payload = decode_json(
+        dispatch(
+            app,
+            "compare",
+            {"base": base, "head": "main"},
+            request_id="compare_change_set_01",
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["baseOid"] == base
+    assert payload["headOid"] == commit
+    assert payload["mergeBaseOid"] == base
+    assert payload["commitCount"] == 1
+    assert "src/main.py" in payload["patch"]
+    assert "Improve greeting" in payload["commits"]
+    assert payload["commits"].startswith("From ")
+
+
+def test_compare_requires_both_refs_and_enforces_byte_cap(
+    application, monkeypatch
+):
+    app, commit, _release_hash, _logs = application
+    missing = dispatch(
+        app,
+        "compare",
+        {"head": commit},
+        request_id="compare_missing_ref_01",
+    )
+    assert missing.status == 404
+
+    repository = app.repositories[("alice", "project")]
+    base = gateway._run_git(
+        repository.git_dir,
+        ["rev-parse", commit + "^"],
+        max_output=128,
+    ).decode().strip()
+    monkeypatch.setattr(gateway, "MAX_COMPARE_BYTES", 8)
+    oversized = dispatch(
+        app,
+        "compare",
+        {"base": base, "head": commit},
+        request_id="compare_byte_cap_01",
+    )
+    assert oversized.status == 503
+    assert decode_json(oversized)["error"] == "mirror_unavailable"
 
 
 def test_sizes_exposes_bounded_file_leaves_with_full_paths(application):
