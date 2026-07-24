@@ -76,6 +76,8 @@ const WORLD_SCORE_LOOP_MS = 4 * 60 * 60 * 1000;
 const WORLD_LIGHT_LEVEL_MIN = 40;
 const WORLD_LIGHT_LEVEL_MAX = 140;
 const WORLD_LIGHT_LEVEL_DEFAULT = 100;
+const WORLD_DIAGNOSTICS_INTERVAL_MS = 1000;
+const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
 const WORLD_ACCOUNT_NAME_RE =
   /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const FLAGSHIP_REPOSITORY = Object.freeze({
@@ -117,6 +119,25 @@ function escapeHTML(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function incrementDiagnosticCounter(value) {
+  return Math.min(
+    WORLD_DIAGNOSTICS_COUNTER_MAX,
+    Math.max(0, Number(value) || 0) + 1,
+  );
+}
+
+function normalizeBuildDiagnostics(payload) {
+  const version = String(payload?.version || "")
+    .trim()
+    .replace(/[^a-z0-9._+-]/gi, "")
+    .slice(0, 32);
+  const rawRevision = String(payload?.rev || "").trim();
+  const revision = /^[a-f0-9]{7,64}$/i.test(rawRevision)
+    ? rawRevision.toLowerCase()
+    : "";
+  return { version, revision };
 }
 
 function readJSON(storage, key, fallback) {
@@ -2446,6 +2467,25 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <button class="world-touch-button" type="button" data-move="right" aria-label="Move right">→</button>
         </div>
 
+        <details class="world-diagnostics" data-world-diagnostics>
+          <summary aria-label="Open local World performance and connection details">
+            <span class="world-diagnostics-light" data-world-diagnostics-light data-state="connecting" aria-hidden="true"></span>
+            <strong>DEBUG</strong>
+            <span data-world-diagnostics-summary>Renderer starting · socket connecting · 1 peer</span>
+            <span class="world-diagnostics-toggle" aria-hidden="true">⌃</span>
+          </summary>
+          <div class="world-diagnostics-details" aria-live="off">
+            <p>Local one-second samples only. No diagnostics are transmitted, and no URLs, locations, form contents, or activity history are collected.</p>
+            <dl>
+              <div><dt>Renderer</dt><dd data-world-diagnostics-renderer>Starting…</dd></div>
+              <div><dt>Connection</dt><dd data-world-diagnostics-connection>Connecting…</dd></div>
+              <div><dt>Socket frames</dt><dd data-world-diagnostics-traffic>Inbound 0 · outbound 0</dd></div>
+              <div><dt>Coalescing</dt><dd data-world-diagnostics-queues>Movement idle · profile idle</dd></div>
+              <div><dt>Build</dt><dd data-world-diagnostics-build>Loading current version…</dd></div>
+            </dl>
+          </div>
+        </details>
+
         <div class="world-toast" data-world-toast role="status"></div>
         <div class="world-detail-backdrop" data-world-detail-backdrop></div>
         <aside
@@ -2794,6 +2834,18 @@ class ForkMeshWorld extends HTMLElement {
     this.socketRetry = 1000;
     this.socketTimer = 0;
     this.socketStableTimer = 0;
+    this.socketConnectionAttempts = 0;
+    this.socketInboundFrames = 0;
+    this.socketOutboundFrames = 0;
+    this.socketBackpressureEvents = 0;
+    this.movementCoalescedFrames = 0;
+    this.profileCoalescedFrames = 0;
+    this.diagnosticsTimer = 0;
+    this.diagnosticsSampleAt = performance.now();
+    this.diagnosticsInboundSample = 0;
+    this.diagnosticsOutboundSample = 0;
+    this.lastDiagnosticsSnapshot = null;
+    this.buildDiagnostics = { version: "", revision: "" };
     this.peerGraceTimer = 0;
     this.peerGraceUntil = 0;
     this.pingTimer = 0;
@@ -2883,6 +2935,7 @@ class ForkMeshWorld extends HTMLElement {
     window.addEventListener("keydown", this.handlePublicInputActivity);
     this.bindUI();
     this.startClock();
+    this.startDiagnostics();
     this.bootstrap();
     this.startWorldTicketRefresh();
   }
@@ -3420,6 +3473,11 @@ class ForkMeshWorld extends HTMLElement {
       this.notificationsState = hasSession ? "unavailable" : "signed-out";
     }
     this.updateNotificationBadge();
+    this.buildDiagnostics =
+      versionResult.status === "fulfilled"
+        ? normalizeBuildDiagnostics(versionResult.value)
+        : { version: "", revision: "" };
+    this.renderDiagnostics();
     const serverNow =
       versionResult.status === "fulfilled" ? Number(versionResult.value?.now || 0) : 0;
     this.rewardState =
@@ -10841,6 +10899,195 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.clearFocus();
   }
 
+  startDiagnostics() {
+    window.clearInterval(this.diagnosticsTimer);
+    this.renderDiagnostics();
+    this.diagnosticsTimer = window.setInterval(
+      () => this.renderDiagnostics(),
+      WORLD_DIAGNOSTICS_INTERVAL_MS,
+    );
+  }
+
+  collectDiagnostics(now = performance.now()) {
+    const sampleNow = Number.isFinite(Number(now))
+      ? Number(now)
+      : performance.now();
+    const elapsedMs = Math.max(1, sampleNow - this.diagnosticsSampleAt);
+    const inboundFrames = Math.max(0, Number(this.socketInboundFrames) || 0);
+    const outboundFrames = Math.max(0, Number(this.socketOutboundFrames) || 0);
+    const inboundRate = Math.min(
+      10_000,
+      (Math.max(0, inboundFrames - this.diagnosticsInboundSample) * 1000) /
+        elapsedMs,
+    );
+    const outboundRate = Math.min(
+      10_000,
+      (Math.max(0, outboundFrames - this.diagnosticsOutboundSample) * 1000) /
+        elapsedMs,
+    );
+    this.diagnosticsSampleAt = sampleNow;
+    this.diagnosticsInboundSample = inboundFrames;
+    this.diagnosticsOutboundSample = outboundFrames;
+
+    const readyState = Number(this.socket?.readyState);
+    let socketState = "offline";
+    if (this.presenceConnecting || readyState === 0) {
+      socketState = "connecting";
+    } else if (readyState === 1) {
+      socketState = this.serverPeerId ? "online" : "handshaking";
+    } else if (readyState === 2) {
+      socketState = "closing";
+    } else if (this.socketTimer) {
+      socketState = "reconnecting";
+    }
+    const socketOnline = readyState === 1 && Boolean(this.serverPeerId);
+    const peerCount =
+      1 +
+      this.remotePlayers.size +
+      (socketOnline ? 0 : this.localPeers.size);
+    const scene = this.world?.getDiagnostics?.(sampleNow) || null;
+    const snapshot = {
+      renderer: scene
+        ? {
+            fps: Math.max(0, Math.min(1000, Number(scene.fps) || 0)),
+            frameTimeMs: Math.max(
+              0,
+              Math.min(60_000, Number(scene.frameTimeMs) || 0),
+            ),
+            calls: Math.max(
+              0,
+              Math.min(10_000_000, Number(scene.rendererCalls) || 0),
+            ),
+            triangles: Math.max(
+              0,
+              Math.min(1_000_000_000, Number(scene.rendererTriangles) || 0),
+            ),
+            paused: scene.paused === true,
+          }
+        : null,
+      connection: {
+        state: socketState,
+        peers: Math.max(1, Math.min(10_000, peerCount)),
+        reconnects: Math.max(
+          0,
+          Math.min(
+            WORLD_DIAGNOSTICS_COUNTER_MAX,
+            this.socketConnectionAttempts - 1,
+          ),
+        ),
+        bufferedBytes: Math.max(
+          0,
+          Math.min(
+            64 * 1024 * 1024,
+            Number(this.socket?.bufferedAmount) || 0,
+          ),
+        ),
+      },
+      traffic: {
+        inboundFrames,
+        outboundFrames,
+        inboundRate,
+        outboundRate,
+      },
+      queues: {
+        movement:
+          this.pendingMovement && this.movementSendTimer
+            ? "coalescing"
+            : this.pendingMovement
+              ? "queued"
+              : "idle",
+        profile:
+          this.profilePresencePending && this.profilePresenceTimer
+            ? "coalescing"
+            : this.profilePresencePending
+              ? "queued"
+              : "idle",
+        movementCoalesced: Math.max(
+          0,
+          Math.min(
+            WORLD_DIAGNOSTICS_COUNTER_MAX,
+            Number(this.movementCoalescedFrames) || 0,
+          ),
+        ),
+        profileCoalesced: Math.max(
+          0,
+          Math.min(
+            WORLD_DIAGNOSTICS_COUNTER_MAX,
+            Number(this.profileCoalescedFrames) || 0,
+          ),
+        ),
+        backpressureEvents: Math.max(
+          0,
+          Math.min(
+            WORLD_DIAGNOSTICS_COUNTER_MAX,
+            Number(this.socketBackpressureEvents) || 0,
+          ),
+        ),
+      },
+      build: { ...this.buildDiagnostics },
+    };
+    this.lastDiagnosticsSnapshot = snapshot;
+    return snapshot;
+  }
+
+  renderDiagnostics() {
+    const root = this.$("[data-world-diagnostics]");
+    if (!root) return;
+    const snapshot = this.collectDiagnostics();
+    const { renderer, connection, traffic, queues, build } = snapshot;
+    const formatRate = (value) =>
+      `${Math.max(0, Number(value) || 0).toFixed(1)}/s`;
+    const rendererSummary = renderer
+      ? renderer.paused
+        ? "renderer paused"
+        : `${renderer.fps.toFixed(0)} FPS · ${renderer.frameTimeMs.toFixed(1)} ms`
+      : "renderer unavailable";
+    const version = build.version
+      ? `${/^v/i.test(build.version) ? "" : "v"}${build.version}`
+      : "build pending";
+    const summary = this.$("[data-world-diagnostics-summary]");
+    if (summary) {
+      summary.textContent = `${rendererSummary} · socket ${connection.state} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${version}`;
+    }
+    const light = this.$("[data-world-diagnostics-light]");
+    if (light) {
+      light.dataset.state =
+        connection.state === "online"
+          ? "online"
+          : ["connecting", "handshaking", "reconnecting"].includes(
+                connection.state,
+              )
+            ? "connecting"
+            : "offline";
+    }
+    const rendererDetail = this.$("[data-world-diagnostics-renderer]");
+    if (rendererDetail) {
+      rendererDetail.textContent = renderer
+        ? `${renderer.paused ? "Paused" : `${renderer.fps.toFixed(1)} FPS · ${renderer.frameTimeMs.toFixed(1)} ms/frame`} · ${Math.round(renderer.calls).toLocaleString()} calls · ${Math.round(renderer.triangles).toLocaleString()} triangles`
+        : "WebGL renderer unavailable";
+    }
+    const connectionDetail = this.$(
+      "[data-world-diagnostics-connection]",
+    );
+    if (connectionDetail) {
+      connectionDetail.textContent = `${connection.state} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${connection.reconnects} reconnect attempts · ${Math.round(connection.bufferedBytes).toLocaleString()} buffered bytes`;
+    }
+    const trafficDetail = this.$("[data-world-diagnostics-traffic]");
+    if (trafficDetail) {
+      trafficDetail.textContent = `Inbound ${Math.round(traffic.inboundFrames).toLocaleString()} (${formatRate(traffic.inboundRate)}) · outbound ${Math.round(traffic.outboundFrames).toLocaleString()} (${formatRate(traffic.outboundRate)})`;
+    }
+    const queueDetail = this.$("[data-world-diagnostics-queues]");
+    if (queueDetail) {
+      queueDetail.textContent = `Movement ${queues.movement} (${queues.movementCoalesced} coalesced) · profile ${queues.profile} (${queues.profileCoalesced} coalesced) · ${queues.backpressureEvents} backpressure events`;
+    }
+    const buildDetail = this.$("[data-world-diagnostics-build]");
+    if (buildDetail) {
+      buildDetail.textContent = build.version
+        ? `${version}${build.revision ? ` · ${build.revision.slice(0, 12)}` : " · revision unavailable"}`
+        : "Version endpoint unavailable";
+    }
+  }
+
   startActivityTicker() {
     const messages = () => {
       const nodes = liveNodeRecords(this.network, this.mirrorCatalogs);
@@ -10952,6 +11199,11 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   queueMovementPresence(movement) {
+    if (this.pendingMovement) {
+      this.movementCoalescedFrames = incrementDiagnosticCounter(
+        this.movementCoalescedFrames,
+      );
+    }
     this.pendingMovement = {
       ...movement,
       moving: movement?.moving !== false,
@@ -11104,6 +11356,9 @@ class ForkMeshWorld extends HTMLElement {
     );
     if (this.worldTicket) socketURL.searchParams.set("ticket", this.worldTicket);
     let socket;
+    this.socketConnectionAttempts = incrementDiagnosticCounter(
+      this.socketConnectionAttempts,
+    );
     try {
       socket = new WebSocket(socketURL.href);
     } catch (_) {
@@ -11140,6 +11395,9 @@ class ForkMeshWorld extends HTMLElement {
       );
     });
     socket.addEventListener("message", (event) => {
+      this.socketInboundFrames = incrementDiagnosticCounter(
+        this.socketInboundFrames,
+      );
       let message = null;
       try {
         message = JSON.parse(event.data);
@@ -11182,6 +11440,11 @@ class ForkMeshWorld extends HTMLElement {
     if (message?.type !== "presence") {
       return this.sendPresenceNow(message);
     }
+    if (this.profilePresencePending) {
+      this.profileCoalescedFrames = incrementDiagnosticCounter(
+        this.profileCoalescedFrames,
+      );
+    }
     this.profilePresencePending = true;
     window.clearTimeout(this.profilePresenceTimer);
     this.profilePresenceTimer = window.setTimeout(
@@ -11214,6 +11477,9 @@ class ForkMeshWorld extends HTMLElement {
       ["presence", "move", "ping"].includes(String(message?.type || "")) &&
       Number(this.socket.bufferedAmount || 0) > SOCKET_BUFFER_HIGH_WATER_BYTES
     ) {
+      this.socketBackpressureEvents = incrementDiagnosticCounter(
+        this.socketBackpressureEvents,
+      );
       return false;
     }
     let safe;
@@ -11278,6 +11544,9 @@ class ForkMeshWorld extends HTMLElement {
     }
     try {
       this.socket.send(JSON.stringify(safe));
+      this.socketOutboundFrames = incrementDiagnosticCounter(
+        this.socketOutboundFrames,
+      );
       return true;
     } catch (_) {
       return false;
@@ -11513,6 +11782,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.mediaTimer);
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);
+    window.clearInterval(this.diagnosticsTimer);
     this.peerGraceTimer = 0;
     this.profilePresenceTimer = 0;
     this.movementSendTimer = 0;

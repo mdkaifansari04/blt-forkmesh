@@ -364,6 +364,13 @@ async function prepareWorldPage(
             ? { mastodon: [], lemmy: [], x: [], reddit: [] }
           : url.pathname === "/api/world/media/spaces"
             ? { spaces: [] }
+            : url.pathname === "/api/version"
+              ? {
+                  ok: true,
+                  version: "0.7.0",
+                  rev: "d".repeat(40),
+                  now: FIXED_NOW,
+                }
             : url.pathname === "/api/repositories"
               ? { repositories: [] }
               : {};
@@ -1289,6 +1296,84 @@ test("busy walking stays connected while movement frames remain within the soft 
   expect(activeFrames.length).toBeLessThanOrEqual(4);
   expect(movementFrames.at(-1).frame.moving).toBe(false);
   expect(movementFrames.length).toBeLessThanOrEqual(6);
+});
+
+test("local diagnostics report renderer and existing socket state without new telemetry", async ({
+  page,
+}) => {
+  let socketCount = 0;
+  await prepareWorldPage(page, "world-diagnostics", {
+    worldSocketHandler(socket, socketId) {
+      socketCount += 1;
+      socket.send(JSON.stringify({
+        type: "welcome",
+        id: socketId,
+        peers: [],
+      }));
+    },
+  });
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.lastMovementSentAt = performance.now();
+    shell.queueMovementPresence({
+      x: 1,
+      y: 0.38,
+      z: 1,
+      heading: 0,
+      moving: true,
+    });
+    shell.queueMovementPresence({
+      x: 2,
+      y: 0.38,
+      z: 2,
+      heading: 0,
+      moving: true,
+    });
+    shell.sendPresence({ type: "presence" });
+    shell.sendPresence({ type: "presence" });
+  });
+  await page.waitForTimeout(1150);
+
+  const diagnostics = page.locator("[data-world-diagnostics]");
+  await expect(diagnostics.locator("summary")).toContainText("FPS");
+  await expect(diagnostics.locator("summary")).toContainText("socket online");
+  await expect(diagnostics.locator("summary")).toContainText("1 peer");
+  await expect(diagnostics.locator("summary")).toContainText("v0.7.0");
+  await diagnostics.locator("summary").click();
+  await expect(diagnostics).toHaveAttribute("open", "");
+  await expect(diagnostics).toContainText("ms/frame");
+  await expect(diagnostics).toContainText("triangles");
+  await expect(diagnostics).toContainText("Socket frames");
+  await expect(diagnostics).toContainText("coalesced");
+  await expect(diagnostics).toContainText("dddddddddddd");
+  await expect(diagnostics).toContainText("No diagnostics are transmitted");
+
+  const snapshot = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.lastDiagnosticsSnapshot,
+  );
+  expect(snapshot.renderer.fps).toBeGreaterThan(0);
+  expect(snapshot.renderer.frameTimeMs).toBeGreaterThan(0);
+  expect(snapshot.renderer.calls).toBeGreaterThan(0);
+  expect(snapshot.renderer.triangles).toBeGreaterThan(0);
+  expect(snapshot.connection).toMatchObject({
+    state: "online",
+    peers: 1,
+    reconnects: 0,
+  });
+  expect(snapshot.traffic.inboundFrames).toBeGreaterThanOrEqual(1);
+  expect(snapshot.traffic.outboundFrames).toBeGreaterThanOrEqual(1);
+  expect(snapshot.queues.movementCoalesced).toBeGreaterThanOrEqual(1);
+  expect(snapshot.queues.profileCoalesced).toBeGreaterThanOrEqual(1);
+  expect(snapshot.build).toEqual({
+    version: "0.7.0",
+    revision: "d".repeat(40),
+  });
+  expect(Object.keys(snapshot).sort()).toEqual(
+    ["build", "connection", "queues", "renderer", "traffic"].sort(),
+  );
+  expect(JSON.stringify(snapshot)).not.toContain("127.0.0.1");
+  expect(JSON.stringify(snapshot)).not.toContain("/world/");
+  expect(socketCount).toBe(1);
 });
 
 test("UTC is display-only and local light level survives movement without becoming presence data", async ({

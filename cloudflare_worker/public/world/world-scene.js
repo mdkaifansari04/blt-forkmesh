@@ -2952,6 +2952,10 @@ export function createWorldScene({
   let running = true;
   let disposed = false;
   let lastFrame = performance.now();
+  let diagnosticsSampleAt = lastFrame;
+  let diagnosticsFrameCount = 0;
+  let diagnosticsRendererCalls = 0;
+  let diagnosticsRendererTriangles = 0;
   let lastMovementEmit = 0;
   let lastPosition = player.position.clone();
   let wasWalking = false;
@@ -4940,6 +4944,18 @@ export function createWorldScene({
       );
     });
     renderer.render(scene, camera);
+    diagnosticsFrameCount = Math.min(
+      1_000_000,
+      diagnosticsFrameCount + 1,
+    );
+    diagnosticsRendererCalls = Math.max(
+      0,
+      Math.min(10_000_000, Number(renderer.info?.render?.calls) || 0),
+    );
+    diagnosticsRendererTriangles = Math.max(
+      0,
+      Math.min(1_000_000_000, Number(renderer.info?.render?.triangles) || 0),
+    );
   }
 
   function setPaused(paused) {
@@ -4950,6 +4966,30 @@ export function createWorldScene({
     } else {
       renderer.setAnimationLoop(null);
     }
+  }
+
+  function getDiagnostics(now = performance.now()) {
+    const sampleNow = Number.isFinite(Number(now))
+      ? Number(now)
+      : performance.now();
+    const elapsedMs = Math.max(1, sampleNow - diagnosticsSampleAt);
+    const frames = diagnosticsFrameCount;
+    const fps = running
+      ? Math.max(0, Math.min(1000, (frames * 1000) / elapsedMs))
+      : 0;
+    const frameTimeMs =
+      running && frames
+        ? Math.max(0, Math.min(60_000, elapsedMs / frames))
+        : 0;
+    diagnosticsSampleAt = sampleNow;
+    diagnosticsFrameCount = 0;
+    return {
+      fps,
+      frameTimeMs,
+      rendererCalls: diagnosticsRendererCalls,
+      rendererTriangles: diagnosticsRendererTriangles,
+      paused: !running,
+    };
   }
 
   function updateLandmarkConstruction(capabilities = {}) {
@@ -5060,6 +5100,7 @@ export function createWorldScene({
       maxSpeed: PLAYER_MAX_SPEED,
       keyboardActive: [...keys].some((code) => MOVEMENT_KEYS.has(code)),
     }),
+    getDiagnostics,
     getEnvironmentState: () => ({
       theme: currentTheme,
       lightLevel,

@@ -51,6 +51,7 @@
   --safe-right: max(14px, env(safe-area-inset-right));
   --safe-bottom: max(14px, env(safe-area-inset-bottom));
   --safe-left: max(14px, env(safe-area-inset-left));
+  --world-diagnostics-height: 28px;
   font-family: "ForkMesh Lato", system-ui, sans-serif;
 }
 
@@ -226,7 +227,7 @@ forkmesh-world {
   position: absolute;
   z-index: 9;
   left: 50%;
-  bottom: var(--safe-bottom);
+  bottom: calc(var(--safe-bottom) + var(--world-diagnostics-height));
   display: flex;
   overflow: hidden;
   transform: translateX(-50%);
@@ -1128,7 +1129,7 @@ forkmesh-world {
 .world-identity {
   position: absolute;
   left: var(--safe-left);
-  bottom: var(--safe-bottom);
+  bottom: calc(var(--safe-bottom) + var(--world-diagnostics-height));
   display: grid;
   grid-template-columns: 50px minmax(0, 1fr) auto;
   align-items: center;
@@ -1232,7 +1233,7 @@ forkmesh-world {
 .world-controls {
   position: absolute;
   left: 50%;
-  bottom: var(--safe-bottom);
+  bottom: calc(var(--safe-bottom) + var(--world-diagnostics-height));
   display: flex;
   align-items: center;
   gap: 11px;
@@ -1286,6 +1287,126 @@ forkmesh-world {
   font-size: 0.58rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.world-diagnostics {
+  position: absolute;
+  z-index: 45;
+  right: 0;
+  bottom: 0;
+  width: min(720px, 100%);
+  max-width: 100vw;
+  border-top: 1px solid var(--world-line-strong);
+  border-left: 1px solid var(--world-line);
+  background: rgb(5 13 11 / 0.94);
+  color: var(--world-muted);
+  font-family: "ForkMesh Mono", monospace;
+  font-size: 0.58rem;
+  line-height: 1.35;
+  backdrop-filter: blur(18px);
+  pointer-events: auto;
+}
+
+.world-diagnostics summary {
+  display: flex;
+  min-height: var(--world-diagnostics-height);
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  padding:
+    5px max(9px, env(safe-area-inset-right))
+    max(5px, env(safe-area-inset-bottom)) 9px;
+  cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+}
+
+.world-diagnostics summary::-webkit-details-marker {
+  display: none;
+}
+
+.world-diagnostics summary:focus-visible {
+  outline: 1px solid var(--world-mint);
+  outline-offset: -2px;
+}
+
+.world-diagnostics summary strong {
+  flex: 0 0 auto;
+  color: var(--world-mint);
+  font-size: 0.55rem;
+  letter-spacing: 0.1em;
+}
+
+.world-diagnostics summary [data-world-diagnostics-summary] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.world-diagnostics-light {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--world-danger);
+  box-shadow: 0 0 7px rgb(255 142 120 / 0.7);
+}
+
+.world-diagnostics-light[data-state="online"] {
+  background: var(--world-mint);
+  box-shadow: 0 0 7px rgb(158 247 198 / 0.72);
+}
+
+.world-diagnostics-light[data-state="connecting"] {
+  background: var(--world-sun);
+  box-shadow: 0 0 7px rgb(247 201 107 / 0.72);
+}
+
+.world-diagnostics-toggle {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--world-copy);
+  transition: transform 140ms ease;
+}
+
+.world-diagnostics[open] .world-diagnostics-toggle {
+  transform: rotate(180deg);
+}
+
+.world-diagnostics-details {
+  max-height: min(46vh, 330px);
+  overflow: auto;
+  border-top: 1px solid var(--world-line);
+  padding: 10px max(12px, env(safe-area-inset-right)) 11px 12px;
+}
+
+.world-diagnostics-details > p {
+  margin: 0 0 8px;
+  color: #80978b;
+  line-height: 1.5;
+}
+
+.world-diagnostics dl {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+}
+
+.world-diagnostics dl > div {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.world-diagnostics dt {
+  color: var(--world-mint);
+}
+
+.world-diagnostics dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--world-copy);
 }
 
 .world-toast {
@@ -4215,13 +4336,17 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
   .world-touch-controls {
     right: calc(var(--safe-right) + 8px);
-    bottom: calc(var(--safe-bottom) + 8px);
+    bottom: calc(
+      var(--safe-bottom) + var(--world-diagnostics-height) + 8px
+    );
     grid-template-columns: repeat(3, 40px);
     grid-template-rows: repeat(2, 40px);
   }
 
   .world-identity {
-    bottom: calc(var(--safe-bottom) + 8px);
+    bottom: calc(
+      var(--safe-bottom) + var(--world-diagnostics-height) + 8px
+    );
   }
 
   .world-detail {
@@ -4233,6 +4358,19 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 @media (max-width: 480px) {
+  .world-diagnostics summary strong {
+    display: none;
+  }
+
+  .world-diagnostics-details {
+    max-height: min(52vh, 300px);
+    padding-left: max(10px, env(safe-area-inset-left));
+  }
+
+  .world-diagnostics dl > div {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
   .world-status-fields {
     grid-template-columns: 1fr;
   }
