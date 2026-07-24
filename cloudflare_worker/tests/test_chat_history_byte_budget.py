@@ -106,6 +106,13 @@ def test_store_prunes_oldest_frames_by_count_and_total_bytes():
 def test_room_retention_ingress_budget_is_byte_based_and_resets_by_window():
     clock = [1_800_000_000_000]
 
+    class _JsValue:
+        def __init__(self, value):
+            self.value = dict(value)
+
+        def to_py(self):
+            return dict(self.value)
+
     class _Date:
         @staticmethod
         def now():
@@ -115,6 +122,7 @@ def test_room_retention_ingress_budget_is_byte_based_and_resets_by_window():
         "CHAT_HISTORY_INGRESS_MAX_BYTES": 10,
         "CHAT_HISTORY_INGRESS_WINDOW_MS": 1_000,
         "Date": _Date,
+        "to_js": lambda value: _JsValue(value),
     })
 
     class _Storage:
@@ -127,7 +135,8 @@ def test_room_retention_ingress_budget_is_byte_based_and_resets_by_window():
 
         async def put(self, key, value):
             assert key == "chat_history_ingress"
-            self.value = dict(value)
+            assert isinstance(value, _JsValue)
+            self.value = value
 
     room = room_type()
     room.ctx = type("Context", (), {"storage": _Storage()})()

@@ -373,6 +373,7 @@ def test_login_without_desktop_pubkey_still_allows_plain_web_session():
 
 def test_local_demo_credentials_bootstrap_a_real_admin_account():
     saved = []
+    sql_null = object()
 
     async def blind_index(_env, value):
         return "bi:" + str(value).strip().lower()
@@ -400,6 +401,7 @@ def test_local_demo_credentials_bootstrap_a_real_admin_account():
         "d1_first": d1_first,
         "decrypt_row": lambda *_args: asyncio.sleep(0, result=None),
         "hash_password": hash_password,
+        "to_js": lambda value: sql_null if value is None else value,
         "urlparse": urlparse,
         "verify_password": lambda *_args: asyncio.sleep(0, result=False),
     }
@@ -438,7 +440,11 @@ def test_local_demo_credentials_bootstrap_a_real_admin_account():
             "email_verified": True,
             "created_at": 1_800_000_000_000,
         },
-        {"email_bi": "bi:demo@forkmesh.local", "is_admin": 1},
+        {
+            "email_bi": "bi:demo@forkmesh.local",
+            "ip_bi": sql_null,
+            "is_admin": 1,
+        },
     )]
 
     login_source = ENTRY.read_text(encoding="utf-8")

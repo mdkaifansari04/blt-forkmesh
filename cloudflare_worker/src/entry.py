@@ -9448,6 +9448,7 @@ async def _ensure_local_demo_account(
             "created_at": int(Date.now()),
         },
         email_bi=email_bi,
+        ip_bi=to_js(None),
         is_admin=1,
     )
 
@@ -30028,6 +30029,8 @@ class ForkMeshRoom(DurableObject):
             state = await self.ctx.storage.get("chat_history_ingress")
         except Exception:
             return False
+        if hasattr(state, "to_py"):
+            state = state.to_py()
         if not isinstance(state, dict):
             state = {}
         try:
@@ -30044,14 +30047,16 @@ class ForkMeshRoom(DurableObject):
         ):
             try:
                 await self.ctx.storage.put(
-                    "chat_history_ingress", {"start": start, "bytes": used})
+                    "chat_history_ingress",
+                    to_js({"start": start, "bytes": used}),
+                )
             except Exception:
                 pass
             return False
         try:
             await self.ctx.storage.put(
                 "chat_history_ingress",
-                {"start": start, "bytes": used + message_bytes},
+                to_js({"start": start, "bytes": used + message_bytes}),
             )
         except Exception:
             return False
