@@ -32,7 +32,7 @@ def _asset_versions() -> dict:
     # Reproduce the build tool's content-hash cache-busting off the same source
     # so composed pages match the built documents byte-for-byte.
     return dashboard_shell.asset_versions(
-        dashboard_bundle.compose_from_reader(_read), _read("dashboard-chat.js"))
+        _read, {"dashboard.js": dashboard_bundle.compose_from_reader(_read)})
 
 
 def assembled_dashboard_page(page_id: str) -> str:

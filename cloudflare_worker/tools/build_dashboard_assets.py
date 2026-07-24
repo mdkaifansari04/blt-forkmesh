@@ -38,12 +38,12 @@ def _write_if_changed(rel, text):
 
 def main():
     dashboard_js = dashboard_bundle.compose_from_reader(_read)
-    # Content-hash the client bundles into the <script> ?v= query so a changed
-    # deploy always serves fresh JS (see dashboard_shell.stamp_asset_versions).
-    # dashboard-chat.js is an authored file, not composed here, but still needs
-    # busting when it changes.
+    # Content-hash every cache-busted bundle into its <script> ?v= query so a
+    # changed deploy always serves fresh JS (see dashboard_shell). Authored
+    # bundles are read off disk; dashboard.js is composed here, so hand it over
+    # in-memory rather than re-reading it.
     versions = dashboard_shell.asset_versions(
-        dashboard_js, _read("dashboard-chat.js"))
+        _read, {"dashboard.js": dashboard_js})
     outputs = {
         meta["asset"]: dashboard_shell.stamp_asset_versions(
             dashboard_shell.compose_page_from_reader(_read, page_id), versions)

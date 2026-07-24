@@ -42,8 +42,8 @@ def test_client_bundles_carry_content_hash_cache_busters():
     # week-old cached bundle. The hash must match the bundle's actual content, and
     # the old never-changing ?v=public-profiles query must be gone.
     versions = dashboard_shell.asset_versions(
-        assembled_dashboard_js(),
-        (PUBLIC / "dashboard-chat.js").read_text(encoding="utf-8"))
+        lambda rel: (PUBLIC / rel).read_text(encoding="utf-8"),
+        {"dashboard.js": assembled_dashboard_js()})
     assert versions["dashboard.js"] != versions["dashboard-chat.js"]
     for meta in dashboard_shell.PAGES.values():
         html = (PUBLIC / meta["asset"]).read_text(encoding="utf-8")
