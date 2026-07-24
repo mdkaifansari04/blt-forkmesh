@@ -333,6 +333,19 @@ def test_world_position_is_one_fresh_bounded_identity_local_record():
     assert "currentFloorY = WORLD_SPACE_FLOORS[space]" in SCENE
 
 
+def test_world_welcome_relocates_a_restored_spawn_blocked_by_a_visitor():
+    for contract in (
+        "const ARRIVAL_CLEARANCE = 0.9",
+        "const spawnBlocked =",
+        'ownSpace === "town-square"',
+        "player.space === ownSpace",
+        ") < ARRIVAL_CLEARANCE",
+        "(!this.spawnSelected || spawnBlocked)",
+    ):
+        assert contract in APP
+    assert "arrival_slot_near_position" in ENTRY
+
+
 def test_world_client_coalesces_disposable_frames_and_reconnects_with_grace():
     for contract in (
         "const MOVEMENT_SEND_INTERVAL_MS = 1000",
