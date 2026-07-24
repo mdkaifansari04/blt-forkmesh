@@ -89,3 +89,13 @@ def test_office_controller_exposes_deliberate_entry_lifecycle():
         "world.enterOffice()",
     ):
         assert contract in source
+
+
+def test_world_scene_builds_and_reports_the_interactive_office():
+    source = SCENE_PATH.read_text(encoding="utf-8")
+    assert "function createForkMeshOffice(" in source
+    assert "office: createForkMeshOffice" in source
+    assert 'userData.landmark = "office"' in source
+    assert "onOfficeProximity" in source
+    assert "enterOffice()" in source
+    assert 'fillText("FORKMESH OFFICE"' in source

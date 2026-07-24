@@ -4,6 +4,7 @@ import {
   landmarkById,
   normalizeWorldStatus,
 } from "./world-data.js";
+import { nextOfficeZoneState } from "./world-office.js";
 
 const WORLD_RADIUS = 72;
 const WORLD_GROUND_RADIUS = 88;
@@ -2396,6 +2397,163 @@ function createSupportCenter(THREE, position, interactive, animated) {
   return group;
 }
 
+function createForkMeshOffice(THREE, position, interactive, animated) {
+  const group = new THREE.Group();
+  const concrete = makeMaterial(THREE, "#18231f", {
+    metalness: 0.08,
+    roughness: 0.88,
+  });
+  const structure = makeMaterial(THREE, "#163f32", {
+    metalness: 0.48,
+    roughness: 0.42,
+  });
+  const glass = makeMaterial(THREE, "#9ef7c6", {
+    transparent: true,
+    opacity: 0.42,
+    metalness: 0.08,
+    roughness: 0.22,
+  });
+  const wood = makeMaterial(THREE, "#7b5a38", {
+    roughness: 0.72,
+  });
+  const warm = makeMaterial(THREE, "#ffd18a", {
+    emissive: "#e28b35",
+    emissiveIntensity: 0.85,
+    roughness: 0.4,
+  });
+
+  const slab = new THREE.Mesh(
+    new THREE.BoxGeometry(8.4, 0.46, 7.4),
+    concrete,
+  );
+  slab.position.y = 0.23;
+  group.add(slab);
+
+  const rearWall = new THREE.Mesh(
+    new THREE.BoxGeometry(8.4, 5.7, 0.36),
+    concrete,
+  );
+  rearWall.position.set(0, 3.05, -3.45);
+  group.add(rearWall);
+
+  for (const x of [-4.02, 4.02]) {
+    const sideWall = new THREE.Mesh(
+      new THREE.BoxGeometry(0.36, 5.7, 7.1),
+      concrete,
+    );
+    sideWall.position.set(x, 3.05, 0);
+    group.add(sideWall);
+    const frontColumn = new THREE.Mesh(
+      new THREE.BoxGeometry(0.42, 6.3, 0.42),
+      structure,
+    );
+    frontColumn.position.set(x, 3.25, 3.3);
+    group.add(frontColumn);
+  }
+
+  const roof = new THREE.Mesh(
+    new THREE.BoxGeometry(8.7, 0.38, 7.5),
+    structure,
+  );
+  roof.position.y = 6.05;
+  group.add(roof);
+
+  for (const x of [-2.9, 2.9]) {
+    const window = new THREE.Mesh(
+      new THREE.BoxGeometry(1.9, 3.7, 0.12),
+      glass,
+    );
+    window.position.set(x, 3.15, 3.34);
+    group.add(window);
+  }
+
+  const reception = new THREE.Mesh(
+    new THREE.BoxGeometry(3.15, 1.18, 0.95),
+    wood,
+  );
+  reception.position.set(-1.9, 1.05, 1.35);
+  reception.rotation.y = -0.12;
+  group.add(reception);
+
+  const sharedTable = new THREE.Mesh(
+    new THREE.BoxGeometry(3.8, 0.28, 1.5),
+    wood,
+  );
+  sharedTable.position.set(0.65, 1.55, -0.65);
+  group.add(sharedTable);
+  for (const x of [-0.75, 2.05]) {
+    for (const z of [-1.05, -0.25]) {
+      const leg = new THREE.Mesh(
+        new THREE.BoxGeometry(0.18, 1.25, 0.18),
+        structure,
+      );
+      leg.position.set(x, 0.9, z);
+      group.add(leg);
+    }
+  }
+
+  const terminal = new THREE.Mesh(
+    new THREE.BoxGeometry(1.3, 0.82, 0.16),
+    warm,
+  );
+  terminal.position.set(0.65, 2.22, -0.78);
+  terminal.rotation.x = -0.12;
+  group.add(terminal);
+
+  const wallDisplay = new THREE.Mesh(
+    new THREE.BoxGeometry(3.5, 1.65, 0.14),
+    glass,
+  );
+  wallDisplay.position.set(1.6, 3.55, -3.22);
+  group.add(wallDisplay);
+
+  for (const x of [-2.55, 0, 2.55]) {
+    const light = new THREE.Mesh(
+      new THREE.BoxGeometry(1.2, 0.08, 0.22),
+      warm,
+    );
+    light.position.set(x, 5.72, 0.25);
+    group.add(light);
+  }
+
+  const signTexture = canvasTexture(THREE, 1024, 192, (context) => {
+    context.fillStyle = "#0b1713";
+    context.fillRect(0, 0, 1024, 192);
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 10;
+    context.strokeRect(8, 8, 1008, 176);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '800 72px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#d9ffea";
+    context.fillText("FORKMESH OFFICE", 512, 96);
+  });
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(6.4, 1.2),
+    new THREE.MeshBasicMaterial({
+      map: signTexture,
+      transparent: false,
+      toneMapped: false,
+    }),
+  );
+  sign.position.set(0, 6.15, 3.73);
+  group.add(sign);
+
+  group.position.set(...position);
+  group.userData.landmark = "office";
+  group.traverse((child) => {
+    if (!child.isMesh) return;
+    child.userData.landmark = "office";
+    interactive.push(child);
+  });
+  setShadows(group);
+  sign.castShadow = false;
+  animated.push((time) => {
+    terminal.material.emissiveIntensity = 0.72 + Math.sin(time * 0.002) * 0.13;
+  });
+  return group;
+}
+
 function createSkyOffice(THREE, animated) {
   const group = new THREE.Group();
   const cloudMaterial = makeMaterial(THREE, "#d8edf2", {
@@ -2715,6 +2873,7 @@ export function createWorldScene({
   identity,
   reducedMotion = false,
   onLandmarkSelect = () => {},
+  onOfficeProximity = () => {},
   onLocationChange = () => {},
   onRegionChange = () => {},
   onMovement = () => {},
@@ -2873,6 +3032,7 @@ export function createWorldScene({
     workshops: createCodeWorkshops,
     broadcast: createBroadcastGarden,
     support: createSupportCenter,
+    office: createForkMeshOffice,
   };
   LANDMARKS.forEach((landmark) => {
     const object = landmarkFactories[landmark.id](
@@ -2975,6 +3135,7 @@ export function createWorldScene({
   let lastPosition = player.position.clone();
   let wasWalking = false;
   let cameraFocus = null;
+  let officeZoneState = "distant";
   let cameraZoom = 1;
   let cameraYaw = Math.atan2(CAMERA_OFFSET[0], CAMERA_OFFSET[2]);
   let cameraPitch = Math.asin(CAMERA_OFFSET[1] / CAMERA_DISTANCE);
@@ -3081,6 +3242,10 @@ export function createWorldScene({
     if (
       !["town-square", "east", "central", "west"].includes(currentSpace)
     ) {
+      if (officeZoneState !== "distant") {
+        officeZoneState = "distant";
+        onOfficeProximity(officeZoneState);
+      }
       return;
     }
     let nearest = null;
@@ -3095,6 +3260,19 @@ export function createWorldScene({
         distance = next;
       }
     });
+    const office = landmarkById("office");
+    const officeEntranceDistance = Math.hypot(
+      player.position.x - office.position[0],
+      player.position.z - (office.position[2] + 3.3),
+    );
+    const nextOfficeState = nextOfficeZoneState(
+      officeZoneState,
+      officeEntranceDistance,
+    );
+    if (nextOfficeState !== officeZoneState) {
+      officeZoneState = nextOfficeState;
+      onOfficeProximity(officeZoneState);
+    }
     const nextLocation = distance < 7.5 ? nearest.label : "Town Square";
     if (nextLocation !== currentLocation) {
       currentLocation = nextLocation;
@@ -3182,6 +3360,33 @@ export function createWorldScene({
       1.5,
       landmark.position[2],
     );
+  }
+
+  function enterOffice() {
+    if (officeZoneState !== "nearby") return false;
+    const office = landmarkById("office");
+    selectedLandmark = "office";
+    currentSpace = "town-square";
+    currentFloorY = 0.38;
+    cameraFocus = new THREE.Vector3(
+      office.position[0],
+      2.5,
+      office.position[2] - 0.4,
+    );
+    moveTarget.set(
+      office.position[0],
+      currentFloorY,
+      office.position[2] + 2.2,
+    );
+    hasMoveTarget = true;
+    if (reducedMotion) {
+      const target = cameraFocus.clone();
+      camera.position.copy(target.clone().add(
+        new THREE.Vector3(9.5, 8.2, 11.5),
+      ));
+      camera.lookAt(target);
+    }
+    return true;
   }
 
   function clearFocus() {
@@ -3351,7 +3556,8 @@ export function createWorldScene({
         Math.cos(cameraYaw) * horizontalDistance,
       ),
     );
-    camera.position.lerp(desired, 1 - Math.pow(0.0008, delta));
+    if (reducedMotion) camera.position.copy(desired);
+    else camera.position.lerp(desired, 1 - Math.pow(0.0008, delta));
     camera.lookAt(target);
   }
 
@@ -5040,6 +5246,7 @@ export function createWorldScene({
       const element = landmarkLabels.get(landmark.id);
       const height =
         landmark.id === "organizations" ? 10.2 :
+        landmark.id === "office" ? 8.1 :
         landmark.id === "repositories" ? 7.6 :
         landmark.id === "fountain" ? 6.9 : 6.5;
       updateScreenLabel(THREE, object, element, camera, rect.width, rect.height, height);
@@ -5182,6 +5389,7 @@ export function createWorldScene({
     player,
     renderer,
     focusLandmark,
+    enterOffice,
     clearFocus,
     setTheme,
     setLightLevel,
