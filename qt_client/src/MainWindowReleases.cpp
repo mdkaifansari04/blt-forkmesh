@@ -1237,6 +1237,7 @@ void MainWindow::loadMirrorNodesPanel()
         if (m_relayRadar)
             static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips({});
         m_mirrorNodesTable->setSortingEnabled(true);
+        updateMirrorNodeLightTimer(); // empty table: stops the beacon spinner
         return;
     }
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
@@ -1605,11 +1606,19 @@ void MainWindow::loadMirrorNodesPanel()
             nodeDisplay + (node.self ? QStringLiteral("  (you)") : QString()) +
             (isSource ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
                       : QString()));
-        // Green when online and in sync, amber when online but out of sync
-        // (behind the source of truth), grey when offline.
-        nameItem->setIcon(themedOcticon(
-            "broadcast",
-            QColor(!online ? "#8b949e" : behind ? "#d29922" : "#3fb950"), 14));
+        // Status light on top of the node (adhoc #230): steady green when
+        // everything is green, a spinning orange beacon for caution (online but
+        // out of sync), a spinning red beacon on error (failing the integrity
+        // pin — kept spinning even offline so the warning stays visible, per
+        // adhoc #196), and a steady grey lamp when plainly offline.
+        const int light = integrityFailing ? 2 : behind ? 1 : 0;
+        const QColor lightColor = integrityFailing ? QColor("#f85149")
+                                  : !online          ? QColor("#8b949e")
+                                  : behind           ? QColor("#d29922")
+                                                     : QColor("#3fb950");
+        nameItem->setIcon(
+            QIcon(nodeStatusLightPixmap(lightColor, 14, 0.0, light != 0)));
+        nameItem->setData(kNodeLightRole, light);
         nameItem->setData(Qt::UserRole, node.id);
         // Source-of-truth rows sort to the top (★ < letters), then by name.
         nameItem->setData(kTableSortRole,
@@ -1884,10 +1893,16 @@ void MainWindow::loadMirrorNodesPanel()
                 nodeName + (isSource
                                 ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
                                 : QString()));
-            nameItem->setIcon(themedOcticon(
-                "broadcast",
-                QColor(!online ? "#8b949e" : behind ? "#d29922" : "#3fb950"),
-                14));
+            // Same status light as the live-roster rows (adhoc #230): steady
+            // green / spinning orange caution / spinning red error / grey.
+            const int light = integrityFailing ? 2 : behind ? 1 : 0;
+            const QColor lightColor = integrityFailing ? QColor("#f85149")
+                                      : !online          ? QColor("#8b949e")
+                                      : behind           ? QColor("#d29922")
+                                                         : QColor("#3fb950");
+            nameItem->setIcon(
+                QIcon(nodeStatusLightPixmap(lightColor, 14, 0.0, light != 0)));
+            nameItem->setData(kNodeLightRole, light);
             nameItem->setData(kTableSortRole,
                               (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
                                   nodeName.toLower());
@@ -2128,6 +2143,57 @@ void MainWindow::loadMirrorNodesPanel()
                 : "No other nodes are advertising a mirror of this repository yet.");
         empty->setForeground(QColor("#8b949e"));
         m_mirrorNodesTable->setItem(0, MirrorNodeColNode, empty);
+    }
+    updateMirrorNodeLightTimer();
+}
+
+// Advance the spinning caution/error beacons on the Mirror nodes rows (adhoc
+// #230), mirroring animateRunningAgentIcons()'s treatment of the Agents table.
+// Steady lamps (green in-sync, grey offline) carry kNodeLightRole 0 and are
+// never touched here.
+void MainWindow::animateMirrorNodeLights()
+{
+    if (!m_mirrorNodesTable)
+        return;
+    m_nodeLightFrame = (m_nodeLightFrame + 1) % 10;
+    const qreal angle = m_nodeLightFrame * 36.0;
+    const QIcon caution(nodeStatusLightPixmap(QColor("#d29922"), 14, angle, true));
+    const QIcon error(nodeStatusLightPixmap(QColor("#f85149"), 14, angle, true));
+    QSignalBlocker block(m_mirrorNodesTable);
+    for (int r = 0; r < m_mirrorNodesTable->rowCount(); ++r) {
+        QTableWidgetItem *item = m_mirrorNodesTable->item(r, MirrorNodeColNode);
+        if (!item)
+            continue;
+        const int light = item->data(kNodeLightRole).toInt();
+        if (light == 1)
+            item->setIcon(caution);
+        else if (light == 2)
+            item->setIcon(error);
+    }
+}
+
+// Keep m_nodeLightTimer running only while at least one row's light is
+// spinning, so an all-green (or empty) table costs nothing. Called from both
+// exits of loadMirrorNodesPanel after the rows are (re)built.
+void MainWindow::updateMirrorNodeLightTimer()
+{
+    bool spinning = false;
+    if (m_mirrorNodesTable) {
+        for (int r = 0; r < m_mirrorNodesTable->rowCount() && !spinning; ++r) {
+            QTableWidgetItem *item = m_mirrorNodesTable->item(r, MirrorNodeColNode);
+            spinning = item && item->data(kNodeLightRole).toInt() != 0;
+        }
+    }
+    if (spinning) {
+        if (!m_nodeLightTimer) {
+            m_nodeLightTimer = new QTimer(this);
+            connect(m_nodeLightTimer, &QTimer::timeout, this,
+                    &MainWindow::animateMirrorNodeLights);
+        }
+        if (!m_nodeLightTimer->isActive())
+            m_nodeLightTimer->start(120);
+    } else if (m_nodeLightTimer) {
+        m_nodeLightTimer->stop();
     }
 }
 
