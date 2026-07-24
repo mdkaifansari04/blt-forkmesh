@@ -289,6 +289,19 @@ def build_repo_mirrors_payload(
         except (TypeError, ValueError):
             return -1
 
+    def _optional_metric(rec, name, maximum):
+        value = rec.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        return min(value, maximum)
+
+    def _optional_usage(rec, used_name, total_name):
+        used = _optional_metric(rec, used_name, 1 << 50)
+        total = _optional_metric(rec, total_name, 1 << 50)
+        if used is None or total is None or total <= 0:
+            return None, None
+        return min(used, total), total
+
     mirrors = []
     for row in members:
         rec = row["data"]
@@ -323,6 +336,11 @@ def build_repo_mirrors_payload(
         # (older peer or a record predating the counters), shown as an em-dash.
         clones_served = _int_field(rec, "clonesServed")
         website_served = _int_field(rec, "websiteServed")
+        cpu_percent = _optional_metric(rec, "cpuPercent", 100)
+        mem_used, mem_total = _optional_usage(
+            rec, "memUsedBytes", "memTotalBytes")
+        disk_used, disk_total = _optional_usage(
+            rec, "diskUsedBytes", "diskTotalBytes")
         # Would the clone integrity gate serve this node right now? Its published
         # refs fingerprint (stateHash, the same one it signs on publish) must be
         # a state the group's trust anchor attested: normally a working-copy
@@ -384,6 +402,15 @@ def build_repo_mirrors_payload(
             "id": str(rec.get("nodeId") or "").strip(),
             "clonesServed": clones_served,
             "websiteServed": website_served,
+            # Optional, operator-approved public host telemetry. These values
+            # were bounded and signed as part of catalog-v2; preserve None as
+            # "not shared" rather than inventing a zero for an older/opted-out
+            # node.
+            "cpuPercent": cpu_percent,
+            "memUsedBytes": mem_used,
+            "memTotalBytes": mem_total,
+            "diskUsedBytes": disk_used,
+            "diskTotalBytes": disk_total,
             "integrity": integrity,
         })
 

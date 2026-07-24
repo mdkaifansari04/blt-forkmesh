@@ -48,7 +48,8 @@ def _load(*names, extra_globals=None):
 def _row(key, owner, name, *, root="", visibility="public", hosted="", synced="",
          size=0, commit="", branch="", issue_count=None, platform="", version="",
          node_id="", clones_served=None, website_served=None, artifact_count=None,
-         state_hash="", source="local-node", owner_user=""):
+         state_hash="", source="local-node", owner_user="", cpu_percent=None,
+         mem_used=None, mem_total=None, disk_used=None, disk_total=None):
     data = {
         "owner": owner,
         "name": name,
@@ -78,6 +79,15 @@ def _row(key, owner, name, *, root="", visibility="public", hosted="", synced=""
         data["artifactCount"] = artifact_count
     if owner_user:
         data["ownerUser"] = owner_user
+    for field, value in (
+        ("cpuPercent", cpu_percent),
+        ("memUsedBytes", mem_used),
+        ("memTotalBytes", mem_total),
+        ("diskUsedBytes", disk_used),
+        ("diskTotalBytes", disk_total),
+    ):
+        if value is not None:
+            data[field] = value
     return {
         "key_bi": key,
         "is_private": 1 if visibility == "private" else 0,
@@ -271,7 +281,8 @@ def test_payload_carries_node_facts_for_offline_mirrors():
              commit="686d7ebd1ef0", branch="main", issue_count=302,
              platform="linux", version="0.5.22", node_id="7ZMh_2s_IOTPxYz",
              clones_served=42, website_served=118, artifact_count=3,
-             owner_user="alice"),
+             owner_user="alice", cpu_percent=37, mem_used=300,
+             mem_total=1000, disk_used=800, disk_total=2000),
         _row("b", "legacy", "forkmesh", root="abc", synced="980000", size=20),
     ]
     payload = build_repo_mirrors_payload(
@@ -290,6 +301,9 @@ def test_payload_carries_node_facts_for_offline_mirrors():
     assert rich["websiteServed"] == 118
     # Release artifacts the node is hosting for download (adhoc #77).
     assert rich["artifactCount"] == 3
+    assert rich["cpuPercent"] == 37
+    assert (rich["memUsedBytes"], rich["memTotalBytes"]) == (300, 1000)
+    assert (rich["diskUsedBytes"], rich["diskTotalBytes"]) == (800, 2000)
     # Legacy record (no node facts): empty strings and the -1 "unknown" sentinels.
     legacy = payload["mirrors"][1]
     assert legacy["commit"] == ""
@@ -300,6 +314,40 @@ def test_payload_carries_node_facts_for_offline_mirrors():
     assert legacy["clonesServed"] == -1
     assert legacy["websiteServed"] == -1
     assert legacy["artifactCount"] == -1
+    assert legacy["cpuPercent"] is None
+    assert legacy["memUsedBytes"] is None
+    assert legacy["memTotalBytes"] is None
+    assert legacy["diskUsedBytes"] is None
+    assert legacy["diskTotalBytes"] is None
+
+
+def test_payload_defensively_bounds_or_hides_invalid_host_telemetry():
+    now = 1_000_000
+    rows = [
+        _row(
+            "a", "mainnode", "forkmesh", root="abc", synced="990000",
+            cpu_percent=1000, mem_used=2000, mem_total=1000,
+            disk_used=5, disk_total=0,
+        ),
+        _row(
+            "b", "bad", "forkmesh", root="abc", synced="980000",
+            cpu_percent=True, mem_used=-1, mem_total=1000,
+        ),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
+    )
+    by_node = {mirror["node"]: mirror for mirror in payload["mirrors"]}
+    assert by_node["mainnode"]["cpuPercent"] == 100
+    assert (
+        by_node["mainnode"]["memUsedBytes"],
+        by_node["mainnode"]["memTotalBytes"],
+    ) == (1000, 1000)
+    assert by_node["mainnode"]["diskUsedBytes"] is None
+    assert by_node["mainnode"]["diskTotalBytes"] is None
+    assert by_node["bad"]["cpuPercent"] is None
+    assert by_node["bad"]["memUsedBytes"] is None
+    assert by_node["bad"]["memTotalBytes"] is None
 
 
 def test_payload_marks_mirrors_the_integrity_gate_rejects():

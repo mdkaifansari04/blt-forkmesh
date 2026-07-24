@@ -14,6 +14,7 @@ import {
   sanitizePresenceText,
   worldClock,
 } from "./world-data.js";
+import { buildLiveMirrorNodes } from "./world-mirror-nodes.js";
 import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
 import { createWorldScene } from "./world-scene.js";
 
@@ -35,6 +36,7 @@ const SOCKET_RETRY_MAX_MS = 20000;
 const PRESENCE_STALE_MS = 22000;
 const WORLD_TICKET_REFRESH_MS = 5 * 60 * 1000;
 const WORLD_NOTIFICATION_POLL_MS = 30 * 1000;
+const MIRROR_STATUS_POLL_MS = 30 * 1000;
 const WORLD_MANUAL_BLOCK_DURATION_MS = 60 * 60 * 1000;
 const FLAGSHIP_REPOSITORY = Object.freeze({
   owner: "forkmesh",
@@ -1697,26 +1699,8 @@ function normalizeWorldNotifications(payload) {
     .sort((left, right) => right.ts - left.ts);
 }
 
-function liveNodeRecords(network) {
-  const stats = network?.stats || network || {};
-  const names = Array.isArray(stats.onlineNodes) ? stats.onlineNodes : [];
-  if (names.length) {
-    return names.slice(0, 20).map((name) => ({
-      name: sanitizePresenceText(name, "mirror node", 30),
-      online: true,
-    }));
-  }
-  const nodes =
-    network?.history?.nodes ||
-    network?.nodes ||
-    network?.leaderboards?.uptime ||
-    [];
-  return Array.isArray(nodes)
-    ? nodes.slice(0, 20).map((node) => ({
-        name: sanitizePresenceText(node?.label || node?.name, "mirror node", 30),
-        online: node?.online !== false,
-      }))
-    : [];
+function liveNodeRecords(network, mirrorCatalogs = []) {
+  return buildLiveMirrorNodes(network, mirrorCatalogs);
 }
 
 function accountBadgeCopy(identity, settings) {
@@ -2113,6 +2097,7 @@ class ForkMeshWorld extends HTMLElement {
     this.repositories = [];
     this.repositoryCatalogState = "loading";
     this.network = {};
+    this.mirrorCatalogs = [];
     this.federatedInstances = [];
     this.communityPlacement = null;
     this.fediverseMentions = [];
@@ -2182,6 +2167,7 @@ class ForkMeshWorld extends HTMLElement {
     this.socketTimer = 0;
     this.pingTimer = 0;
     this.rewardTimer = 0;
+    this.mirrorTimer = 0;
     this.eventsTimer = 0;
     this.notificationsTimer = 0;
     this.mediaTimer = 0;
@@ -2299,6 +2285,10 @@ class ForkMeshWorld extends HTMLElement {
         identity: publicIdentity(this.identity, this.settings),
         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
         onLandmarkSelect: (id, meta = {}) => {
+          if (meta.nodeCabinet) {
+            this.openMirrorNodeDetail(meta.nodeCabinet);
+            return;
+          }
           if (id === "repositories" && meta.graphNode) {
             this.selectRepositoryGraphNode(meta.graphNode);
             return;
@@ -2318,7 +2308,9 @@ class ForkMeshWorld extends HTMLElement {
       await Promise.allSettled([contextPromise, dataPromise]);
       this.world.setClockOffset(this.serverOffset);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
-      this.world.updateNetworkNodes(liveNodeRecords(this.network));
+      this.world.updateNetworkNodes(
+        liveNodeRecords(this.network, this.mirrorCatalogs),
+      );
       this.world.updateFederatedInstances?.(this.federatedInstances);
       this.world.updateBots(this.botDirectory);
       this.world.updateFediverseDirectory(this.fediverseDirectory);
@@ -2342,6 +2334,7 @@ class ForkMeshWorld extends HTMLElement {
       this.updateDistances();
       this.startActivityTicker();
       this.startRewardPolling();
+      this.startMirrorPolling();
       this.startEventPolling();
       this.startNotificationPolling();
       this.startMediaPlaybackPolling();
@@ -2385,6 +2378,7 @@ class ForkMeshWorld extends HTMLElement {
     } else if (!this.socket) {
       this.refreshWorldTicket();
       this.connectPresence();
+      void this.refreshMirrorCatalogs();
     }
   };
 
@@ -2581,6 +2575,7 @@ class ForkMeshWorld extends HTMLElement {
     const hasSession = Boolean(session?.sessionToken);
     const [
       networkResult,
+      mirrorResult,
       instancesResult,
       reposResult,
       versionResult,
@@ -2599,6 +2594,11 @@ class ForkMeshWorld extends HTMLElement {
     ] =
       await Promise.allSettled([
         this.fetchJSON("/api/network/overview", { auth: false }),
+        this.fetchJSON("/api/repo/forkmesh/forkmesh/mirrors", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
         this.fetchJSON("/api/world/instances", {
           auth: false,
           timeout: 5000,
@@ -2678,6 +2678,16 @@ class ForkMeshWorld extends HTMLElement {
         }),
       ]);
     this.network = networkResult.status === "fulfilled" ? networkResult.value : {};
+    this.mirrorCatalogs =
+      mirrorResult.status === "fulfilled"
+        ? [
+            {
+              ...mirrorResult.value,
+              requestedOwner: FLAGSHIP_REPOSITORY.owner,
+              requestedRepo: FLAGSHIP_REPOSITORY.repo,
+            },
+          ]
+        : [];
     this.federatedInstances =
       instancesResult.status === "fulfilled"
         ? normalizeFederatedInstances(instancesResult.value)
@@ -2826,7 +2836,9 @@ class ForkMeshWorld extends HTMLElement {
         : [];
     if (serverNow > 0 && !this.serverOffset) this.serverOffset = serverNow - Date.now();
     this.world?.setClockOffset(this.serverOffset);
-    this.world?.updateNetworkNodes(liveNodeRecords(this.network));
+    this.world?.updateNetworkNodes(
+      liveNodeRecords(this.network, this.mirrorCatalogs),
+    );
     this.world?.updateFederatedInstances?.(this.federatedInstances);
     this.world?.updateBots(this.botDirectory);
     this.world?.updateOrganizations(this.organizations);
@@ -3351,6 +3363,21 @@ class ForkMeshWorld extends HTMLElement {
         const id = landmarkButton.dataset.worldLandmark;
         this.world?.focusLandmark(id);
         this.openLandmark(id);
+        return;
+      }
+      const mirrorNodeButton = event.target.closest("[data-world-mirror-node]");
+      if (mirrorNodeButton) {
+        const nodeName = String(
+          mirrorNodeButton.dataset.worldMirrorNode || "",
+        ).toLowerCase();
+        const node = liveNodeRecords(
+          this.network,
+          this.mirrorCatalogs,
+        ).find((candidate) => candidate.name.toLowerCase() === nodeName);
+        if (node) {
+          this.world?.focusNetworkNode?.(node.name);
+          this.openMirrorNodeDetail(node);
+        }
         return;
       }
       if (event.target.closest("[data-world-action='tour']")) {
@@ -3897,7 +3924,11 @@ class ForkMeshWorld extends HTMLElement {
   updateMetrics() {
     const stats = this.network?.stats || this.network || {};
     const repoCount = Number(stats.repos || stats.repositories || this.repositories.length);
-    const nodes = Number(stats.hosts || stats.nodes || liveNodeRecords(this.network).length);
+    const nodes = Number(
+      stats.hosts ||
+        stats.nodes ||
+        liveNodeRecords(this.network, this.mirrorCatalogs).length,
+    );
     const reposEl = this.$("[data-world-repos]");
     const nodesEl = this.$("[data-world-nodes]");
     if (reposEl) reposEl.textContent = compactNumber(repoCount);
@@ -4141,6 +4172,37 @@ class ForkMeshWorld extends HTMLElement {
     }, 60000);
   }
 
+  async refreshMirrorCatalogs() {
+    const payload = await this.fetchJSON(
+      "/api/repo/forkmesh/forkmesh/mirrors",
+      {
+        auth: false,
+        timeout: 5000,
+        cache: "no-store",
+      },
+    );
+    this.mirrorCatalogs = [
+      {
+        ...payload,
+        requestedOwner: FLAGSHIP_REPOSITORY.owner,
+        requestedRepo: FLAGSHIP_REPOSITORY.repo,
+      },
+    ];
+    this.world?.updateNetworkNodes(
+      liveNodeRecords(this.network, this.mirrorCatalogs),
+    );
+  }
+
+  startMirrorPolling() {
+    window.clearInterval(this.mirrorTimer);
+    this.mirrorTimer = window.setInterval(() => {
+      if (this.destroyed || document.visibilityState !== "visible") return;
+      void this.refreshMirrorCatalogs().catch(() => {
+        // Preserve the last verified snapshot during a transient HTTPS failure.
+      });
+    }, MIRROR_STATUS_POLL_MS);
+  }
+
   updatePlayerCount() {
     // BroadcastChannel is an offline/same-device fallback. Once the
     // authoritative World socket is live, counting both maps would show the
@@ -4333,7 +4395,52 @@ class ForkMeshWorld extends HTMLElement {
     const instances = Array.isArray(this.federatedInstances)
       ? this.federatedInstances
       : [];
+    const mirrorNodes = liveNodeRecords(this.network, this.mirrorCatalogs);
     return `
+      <section class="world-feature-card" aria-label="Live mirror server cabinets">
+        <h3>Live mirror server cabinets</h3>
+        <div class="world-instance-list" data-world-mirror-node-list>
+          ${
+            mirrorNodes.length
+              ? mirrorNodes
+                  .map((node) => {
+                    const commit = /^[0-9a-f]{40,64}$/.test(
+                      String(node.commit || ""),
+                    )
+                      ? String(node.commit).slice(0, 12)
+                      : "HEAD not reported";
+                    const route =
+                      node.cloneAvailable === true
+                        ? "verified clone route"
+                        : String(node.integrity || "") === "rejected"
+                          ? "integrity blocked"
+                          : "route not verified";
+                    return `<article>
+                      <span class="world-instance-icon" aria-hidden="true">${
+                        node.healthy ? "●" : "◐"
+                      }</span>
+                      <div>
+                        <strong>${escapeHTML(node.name)}</strong>
+                        <span>${escapeHTML(
+                          [node.platform, node.version ? `v${String(node.version).replace(/^v/i, "")}` : ""]
+                            .filter(Boolean)
+                            .join(" · ") || "platform/version not reported",
+                        )}</span>
+                        <p>${escapeHTML(`${commit} · ${route}`)}</p>
+                      </div>
+                      <button
+                        type="button"
+                        class="world-secondary-action"
+                        data-world-mirror-node="${escapeHTML(node.name)}"
+                      >Inspect live server</button>
+                    </article>`;
+                  })
+                  .join("")
+              : '<p class="world-empty-state">No live public mirror has a current presence record. ForkMesh does not invent server cabinets.</p>'
+          }
+        </div>
+        <p class="world-panel-footnote">CPU, memory, and disk are optional operator-reported values signed into the public catalog. A signature establishes publisher provenance, not automatic trust. Missing values remain “not shared.”</p>
+      </section>
       <section class="world-feature-card" aria-label="Approved ForkMesh relay instances">
         <h3>Approved federated instances</h3>
         <div class="world-instance-list">
@@ -4367,6 +4474,183 @@ class ForkMeshWorld extends HTMLElement {
         </div>
         <p class="world-panel-footnote">This projection includes only an approved public origin, generalized health, and a random public display id. Federation keys, signatures, tokens, wallets, node identities, raw IPs, private repositories, and exact activity are excluded.</p>
       </section>`;
+  }
+
+  mirrorNodeTechnicalHTML(node) {
+    const known = (value, maximum = Number.MAX_SAFE_INTEGER) => {
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 && number <= maximum
+        ? number
+        : null;
+    };
+    const count = (value) => {
+      const number = known(value, 1_000_000_000);
+      return number === null ? "Not reported" : compactNumber(number);
+    };
+    const bytes = (value) => {
+      const number = known(value, 2 ** 50);
+      return number === null ? "Not shared" : formatBytes(number);
+    };
+    const usage = (usedValue, totalValue) => {
+      const used = known(usedValue, 2 ** 50);
+      const total = known(totalValue, 2 ** 50);
+      if (used === null || total === null || total <= 0 || used > total) {
+        return "Not shared";
+      }
+      return `${formatBytes(used)} / ${formatBytes(total)} · ${(
+        (used / total) *
+        100
+      ).toFixed(1)}%`;
+    };
+    const date = (value) => {
+      const timestamp = known(value);
+      if (timestamp === null || timestamp <= 0) return "Not reported";
+      const parsed = new Date(timestamp);
+      return Number.isNaN(parsed.getTime())
+        ? "Not reported"
+        : parsed.toLocaleString();
+    };
+    const syncAge = known(node?.syncAgeMs);
+    const syncAgeLabel =
+      syncAge === null
+        ? "Not reported"
+        : syncAge < 60_000
+          ? "Less than one minute"
+          : `${Math.floor(syncAge / 60_000)} minutes`;
+    const cpu = known(node?.cpuPercent, 100);
+    const commit = /^[0-9a-f]{40,64}$/.test(String(node?.commit || ""))
+      ? String(node.commit)
+      : "Not reported";
+    const route =
+      node?.cloneAvailable === true
+        ? "Verified and clone-ready"
+        : String(node?.integrity || "") === "rejected"
+          ? "Blocked by integrity policy"
+          : String(node?.integrity || "") === "healing"
+            ? "Online; integrity is being re-verified"
+            : "Not currently verified for cloning";
+    const repositories = Array.isArray(node?.repositories)
+      ? node.repositories.slice(0, 32)
+      : [];
+    return `
+      <section class="world-feature-card" data-world-mirror-node-detail>
+        <div class="world-notice ${
+          node?.cloneAvailable === true
+            ? "world-notice-safe"
+            : "world-notice-warning"
+        }">
+          <strong>${escapeHTML(route)}</strong>
+          <span>Online presence, signed repository publication, content integrity, and route eligibility are separate checks. An online node is not automatically trustworthy.</span>
+        </div>
+        <dl class="world-technical-list">
+          <div><dt>Node</dt><dd>${escapeHTML(node?.name || "Not reported")}</dd></div>
+          <div><dt>Node id</dt><dd class="world-break">${escapeHTML(
+            node?.nodeId || "Not reported",
+          )}</dd></div>
+          <div><dt>Platform / version</dt><dd>${escapeHTML(
+            [node?.platform, node?.version ? `v${String(node.version).replace(/^v/i, "")}` : ""]
+              .filter(Boolean)
+              .join(" · ") || "Not reported",
+          )}</dd></div>
+          <div><dt>Git HEAD</dt><dd class="world-break"><code>${escapeHTML(
+            commit,
+          )}</code></dd></div>
+          <div><dt>Branch</dt><dd>${escapeHTML(node?.branch || "Not reported")}</dd></div>
+          <div><dt>Integrity</dt><dd>${escapeHTML(
+            node?.integrity || "unknown",
+          )}${node?.behind === true ? " · behind current state" : ""}</dd></div>
+          <div><dt>Last seen</dt><dd>${escapeHTML(date(node?.lastSeen))}</dd></div>
+          <div><dt>Last sync</dt><dd>${escapeHTML(
+            date(node?.lastSync),
+          )}${
+            syncAge === null
+              ? ""
+              : ` · ${escapeHTML(syncAgeLabel)} ago`
+          }</dd></div>
+          <div><dt>CPU</dt><dd>${escapeHTML(
+            cpu === null ? "Not shared" : `${cpu.toFixed(1)}%`,
+          )}</dd></div>
+          <div><dt>Memory</dt><dd>${escapeHTML(
+            usage(node?.memoryUsedBytes, node?.memoryTotalBytes),
+          )}</dd></div>
+          <div><dt>Disk</dt><dd>${escapeHTML(
+            usage(node?.diskUsedBytes, node?.diskTotalBytes),
+          )}</dd></div>
+          <div><dt>Repository bytes</dt><dd>${escapeHTML(
+            bytes(node?.sizeBytes),
+          )}</dd></div>
+          <div><dt>Commits</dt><dd>${escapeHTML(count(node?.commitCount))}</dd></div>
+          <div><dt>Branches</dt><dd>${escapeHTML(count(node?.branchCount))}</dd></div>
+          <div><dt>Pull requests</dt><dd>${escapeHTML(
+            count(node?.pullCount),
+          )}</dd></div>
+          <div><dt>Issues</dt><dd>${escapeHTML(count(node?.issueCount))}</dd></div>
+          <div><dt>Discussions</dt><dd>${escapeHTML(
+            count(node?.discussionCount),
+          )}</dd></div>
+          <div><dt>Artifacts</dt><dd>${escapeHTML(
+            count(node?.artifactCount),
+          )}</dd></div>
+          <div><dt>Worktrees</dt><dd>${escapeHTML(
+            count(node?.worktreeCount),
+          )}</dd></div>
+          <div><dt>Clones served</dt><dd>${escapeHTML(
+            count(node?.clonesServed),
+          )}</dd></div>
+          <div><dt>Web requests served</dt><dd>${escapeHTML(
+            count(node?.websiteServed),
+          )}</dd></div>
+        </dl>
+        <h3>Public mirrored repositories</h3>
+        ${
+          repositories.length
+            ? `<ul class="world-detail-list">${repositories
+                .map(
+                  (repository) =>
+                    `<li><strong>${escapeHTML(
+                      repository.owner && repository.name
+                        ? `${repository.owner}/${repository.name}`
+                        : "Repository identity not reported",
+                    )}</strong> · ${escapeHTML(
+                      repository.cloneAvailable && repository.integrity === "ok"
+                        ? "clone-ready"
+                        : repository.integrity || "unverified",
+                    )} · ${escapeHTML(bytes(repository.sizeBytes))}</li>`,
+                )
+                .join("")}</ul>`
+            : '<p class="world-empty-state">Repository identity was not reported for this live node.</p>'
+        }
+        <p class="world-panel-footnote">Resource measurements and repository counters are operator-reported, bounded values signed into the public catalog. They are not independent performance audits and may be stale between publications.</p>
+      </section>`;
+  }
+
+  openMirrorNodeDetail(node) {
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop || !node) return;
+    detail.dataset.openLandmark = "routing";
+    detail.style.setProperty("--detail-color", "#80e8ff");
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div>
+          <p class="world-eyebrow">MIRROR SERVER / LIVE PUBLIC STATUS</p>
+          <h2 id="world-detail-title">${escapeHTML(
+            node.name || "Mirror node",
+          )}</h2>
+        </div>
+        <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close mirror server details">×</button>
+      </header>
+      <div class="world-detail-scroll">
+        <p class="world-detail-summary">The readable technical equivalent of this server cabinet’s front display.</p>
+        ${this.mirrorNodeTechnicalHTML(node)}
+      </div>`;
+    detail.dataset.open = "true";
+    detail.setAttribute("aria-hidden", "false");
+    backdrop.dataset.open = "true";
+    window.setTimeout(
+      () => detail.querySelector("[data-world-detail-close]")?.focus(),
+      120,
+    );
   }
 
   rewardPanelHTML() {
@@ -8378,7 +8662,7 @@ class ForkMeshWorld extends HTMLElement {
 
   startActivityTicker() {
     const messages = () => {
-      const nodes = liveNodeRecords(this.network);
+      const nodes = liveNodeRecords(this.network, this.mirrorCatalogs);
       const repos = this.repositories;
       const output = [
         nodes.length
@@ -8801,6 +9085,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.distanceTimer);
     window.clearInterval(this.pingTimer);
     window.clearInterval(this.rewardTimer);
+    window.clearInterval(this.mirrorTimer);
     window.clearInterval(this.eventsTimer);
     window.clearInterval(this.notificationsTimer);
     window.clearInterval(this.mediaTimer);

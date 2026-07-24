@@ -131,6 +131,12 @@ QByteArray pythonCanonicalJson(const QJsonValue &value,
 QByteArray catalogV2SigningPayload(QJsonObject normalizedRecord,
                                    QString *error = nullptr);
 
+// Normalize the optional public CPU/RAM/disk fields embedded in a catalog-v2
+// record. Every returned key is present; a JSON null means the operator did not
+// share that metric. Numbers are bounded integers so Python and C++ produce the
+// same canonical signing bytes.
+QJsonObject normalizedCatalogHostTelemetry(const QJsonObject &data);
+
 // Exact owner signature payload for a blind private-replica route.
 QByteArray privateReplicaRouteSigningPayload(
     const QString &owner, const QString &repository, const QString &node,

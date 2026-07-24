@@ -272,6 +272,36 @@ int main(int argc, char **argv)
                   "2a5d6a869bf7835724b35f3a16660dfc8f683adcc60ca2b367cd669d7fc03e97"),
           "catalog-v2 signing payload matches the cross-language hash vector");
 
+    const QJsonObject boundedTelemetry =
+        forkmesh::control::normalizedCatalogHostTelemetry(
+            QJsonObject{
+                {QStringLiteral("cpuPercent"), 149},
+                {QStringLiteral("memUsedBytes"), 900},
+                {QStringLiteral("memTotalBytes"), 800},
+                {QStringLiteral("diskUsedBytes"), 300},
+                {QStringLiteral("diskTotalBytes"), 1000},
+            });
+    check(boundedTelemetry.value(QStringLiteral("cpuPercent")).toInt() == 100 &&
+              boundedTelemetry.value(QStringLiteral("memUsedBytes")).toInt() == 800 &&
+              boundedTelemetry.value(QStringLiteral("memTotalBytes")).toInt() == 800 &&
+              boundedTelemetry.value(QStringLiteral("diskUsedBytes")).toInt() == 300 &&
+              boundedTelemetry.value(QStringLiteral("diskTotalBytes")).toInt() == 1000,
+          "catalog telemetry is bounded before canonical signing");
+    const QJsonObject unknownTelemetry =
+        forkmesh::control::normalizedCatalogHostTelemetry(
+            QJsonObject{
+                {QStringLiteral("cpuPercent"), -1},
+                {QStringLiteral("memUsedBytes"), 100},
+                {QStringLiteral("diskUsedBytes"), 10},
+                {QStringLiteral("diskTotalBytes"), 0},
+            });
+    check(unknownTelemetry.value(QStringLiteral("cpuPercent")).isNull() &&
+              unknownTelemetry.value(QStringLiteral("memUsedBytes")).isNull() &&
+              unknownTelemetry.value(QStringLiteral("memTotalBytes")).isNull() &&
+              unknownTelemetry.value(QStringLiteral("diskUsedBytes")).isNull() &&
+              unknownTelemetry.value(QStringLiteral("diskTotalBytes")).isNull(),
+          "unshared or partial catalog telemetry stays null");
+
     const QByteArray routePayload =
         forkmesh::control::privateReplicaRouteSigningPayload(
             QStringLiteral("alice"), QStringLiteral("private-project"),

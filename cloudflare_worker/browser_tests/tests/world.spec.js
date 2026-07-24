@@ -99,9 +99,66 @@ async function prepareWorldPage(
         : url.pathname === "/api/network/overview"
           ? {
               ok: true,
-              stats: { repos: 0, hosts: 0, clients: 0 },
-              leaderboards: {},
+              stats: {
+                repos: 1,
+                hosts: 2,
+                clients: 0,
+                onlineNodes: ["mirror2", "mirror3"],
+              },
+              leaderboards: {
+                nodes: [
+                  { name: "mirror2", pullCount: 5, issueCount: 7 },
+                  { name: "mirror3", pullCount: 5, issueCount: 7 },
+                ],
+              },
               history: {},
+            }
+        : url.pathname === "/api/repo/forkmesh/forkmesh/mirrors"
+          ? {
+              ok: true,
+              owner: "forkmesh",
+              repo: "forkmesh",
+              mirrors: [
+                {
+                  node: "mirror2",
+                  status: "online",
+                  integrity: "ok",
+                  cloneAvailable: true,
+                  commit: "a".repeat(40),
+                  branch: "main",
+                  sizeBytes: 75_139_176,
+                  issueCount: 47,
+                  commitCount: 8661,
+                  branchCount: 18,
+                  pullCount: 42,
+                  discussionCount: 2,
+                  artifactCount: 1,
+                  platform: "linux",
+                  version: "0.7.0",
+                  cpuPercent: 25,
+                  memUsedBytes: 536_870_912,
+                  memTotalBytes: 1_073_741_824,
+                  diskUsedBytes: 5_368_709_120,
+                  diskTotalBytes: 10_737_418_240,
+                },
+                {
+                  node: "mirror3",
+                  status: "online",
+                  integrity: "ok",
+                  cloneAvailable: true,
+                  commit: "a".repeat(40),
+                  branch: "main",
+                  sizeBytes: 74_944_512,
+                  issueCount: 47,
+                  commitCount: 8661,
+                  branchCount: 18,
+                  pullCount: 42,
+                  discussionCount: 2,
+                  artifactCount: 1,
+                  platform: "linux",
+                  version: "0.7.0",
+                },
+              ],
             }
         : url.pathname === "/api/world/instances"
           ? {
@@ -960,6 +1017,63 @@ test("approved instances, local setup, and project support stay truthful", async
   await expect(page.getByRole("link", { name: "Open Patreon" })).toHaveAttribute(
     "href",
     "https://www.patreon.com/16434219/join",
+  );
+});
+
+test("live mirror cabinets expose a readable truthful technical panel", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "mirror-cabinets");
+  await waitForWorld(page);
+
+  const cabinets = await page.locator("forkmesh-world").evaluate((shell) => {
+    const items = [];
+    shell.world.scene.traverse((object) => {
+      if (String(object.name || "").startsWith("mirror-server-cabinet:")) {
+        items.push({
+          name: object.name,
+          x: object.position.x,
+          z: object.position.z,
+        });
+      }
+    });
+    return items;
+  });
+  expect(cabinets).toHaveLength(2);
+  expect(cabinets[0].name).not.toBe(cabinets[1].name);
+  expect(
+    Math.hypot(
+      cabinets[0].x - cabinets[1].x,
+      cabinets[0].z - cabinets[1].z,
+    ),
+  ).toBeGreaterThan(2);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.focusNetworkNode("mirror2");
+    shell.world.setCameraZoom(0.32);
+  });
+  await page.waitForTimeout(450);
+  await expect(page).toHaveScreenshot("world-mirror-cabinets.png", {
+    animations: "disabled",
+    maxDiffPixelRatio: 0.015,
+  });
+
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("routing"),
+  );
+  await page
+    .getByRole("button", { name: "Inspect live server" })
+    .first()
+    .click();
+  const detail = page.locator("[data-world-mirror-node-detail]");
+  await expect(detail).toBeVisible();
+  await expect(detail).toContainText("mirror2");
+  await expect(detail).toContainText("25.0%");
+  await expect(detail).toContainText("42");
+  await expect(detail).toContainText("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  await expect(detail).toContainText("forkmesh/forkmesh");
+  await expect(detail).toContainText(
+    "operator-reported, bounded values signed into the public catalog",
   );
 });
 

@@ -773,53 +773,359 @@ function mirrorNodeIsOnline(node) {
   );
 }
 
-function createMirrorNodePylon(THREE, node, id) {
+function mirrorMetric(value, maximum = Number.MAX_SAFE_INTEGER) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 && number <= maximum
+    ? number
+    : null;
+}
+
+function compactMirrorCount(value) {
+  const number = mirrorMetric(value, 1_000_000_000);
+  if (number === null) return "—";
+  if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(1)}M`;
+  if (number >= 1_000) return `${(number / 1_000).toFixed(1)}K`;
+  return String(Math.round(number));
+}
+
+function compactMirrorBytes(value) {
+  const bytes = mirrorMetric(value, 2 ** 50);
+  if (bytes === null) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let amount = bytes;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`;
+}
+
+function mirrorRatio(used, total) {
+  const safeUsed = mirrorMetric(used, 2 ** 50);
+  const safeTotal = mirrorMetric(total, 2 ** 50);
+  if (safeUsed === null || safeTotal === null || safeTotal <= 0 || safeUsed > safeTotal) {
+    return null;
+  }
+  return safeUsed / safeTotal;
+}
+
+function nodeDataKey(node) {
+  return JSON.stringify({
+    name: node?.name,
+    online: mirrorNodeIsOnline(node),
+    healthy: node?.healthy,
+    integrity: node?.integrity,
+    cloneAvailable: node?.cloneAvailable,
+    commit: node?.commit,
+    branch: node?.branch,
+    version: node?.version,
+    platform: node?.platform,
+    lastSync: node?.lastSync,
+    sizeBytes: node?.sizeBytes,
+    issueCount: node?.issueCount,
+    commitCount: node?.commitCount,
+    branchCount: node?.branchCount,
+    pullCount: node?.pullCount,
+    discussionCount: node?.discussionCount,
+    worktreeCount: node?.worktreeCount,
+    artifactCount: node?.artifactCount,
+    clonesServed: node?.clonesServed,
+    websiteServed: node?.websiteServed,
+    cpuPercent: node?.cpuPercent,
+    memoryUsedBytes: node?.memoryUsedBytes,
+    memoryTotalBytes: node?.memoryTotalBytes,
+    diskUsedBytes: node?.diskUsedBytes,
+    diskTotalBytes: node?.diskTotalBytes,
+    repositories: node?.repositories,
+  });
+}
+
+function serverPanelTexture(THREE, node) {
+  const online = mirrorNodeIsOnline(node);
+  const integrity = String(node?.integrity || "unknown").toLowerCase();
+  const repo = Array.isArray(node?.repositories) ? node.repositories[0] : null;
+  const repositoryLabel =
+    repo?.owner && repo?.name
+      ? `${String(repo.owner).slice(0, 32)}/${String(repo.name).slice(0, 44)}`
+      : "REPOSITORY NOT REPORTED";
+  const commit = String(node?.commit || repo?.commit || "").toLowerCase();
+  const shortCommit = /^[0-9a-f]{40,64}$/.test(commit)
+    ? commit.slice(0, 12)
+    : "NOT REPORTED";
+  const cpu = mirrorMetric(node?.cpuPercent, 100);
+  const memory = mirrorRatio(node?.memoryUsedBytes, node?.memoryTotalBytes);
+  const disk = mirrorRatio(node?.diskUsedBytes, node?.diskTotalBytes);
+  const statusColor =
+    online && integrity === "ok"
+      ? "#73f0ad"
+      : integrity === "rejected" || integrity === "degraded"
+        ? "#ff7e88"
+        : online
+          ? "#f7c96b"
+          : "#91a39a";
+  const routeLabel = !online
+    ? "ROUTE OFFLINE"
+    : node?.cloneAvailable === true && integrity === "ok"
+      ? "CLONE READY"
+      : integrity === "rejected" || integrity === "degraded"
+        ? "ROUTE BLOCKED"
+        : integrity === "healing"
+          ? "ROUTE VERIFYING"
+          : "ROUTE UNVERIFIED";
+  // 512² keeps the worst-case 64-cabinet texture budget bounded on mobile.
+  // Draw in a 1024-unit coordinate system so typography stays easy to tune.
+  return canvasTexture(THREE, 512, 512, (context) => {
+    context.scale(0.5, 0.5);
+    context.fillStyle = "#07110f";
+    context.fillRect(0, 0, 1024, 1024);
+    context.strokeStyle = "#526c61";
+    context.lineWidth = 12;
+    roundedRect(context, 10, 10, 1004, 1004, 28);
+    context.stroke();
+
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.font = '800 52px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#f1fff6";
+    context.fillText(String(node?.name || "MIRROR").toUpperCase().slice(0, 24), 58, 70);
+    context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = statusColor;
+    context.fillText(
+      `${online ? "ONLINE" : "OFFLINE"} · ${integrity.toUpperCase()} · ${routeLabel}`,
+      58,
+      124,
+    );
+
+    context.strokeStyle = "#294339";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(58, 158);
+    context.lineTo(966, 158);
+    context.stroke();
+
+    const drawBar = (label, ratio, value, y, color) => {
+      context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = "#cce9d8";
+      context.fillText(label, 58, y);
+      roundedRect(context, 170, y - 19, 520, 38, 9);
+      context.fillStyle = "#15271f";
+      context.fill();
+      if (ratio !== null) {
+        roundedRect(context, 170, y - 19, Math.max(12, 520 * ratio), 38, 9);
+        context.fillStyle = color;
+        context.fill();
+      } else {
+        context.strokeStyle = "#53665e";
+        context.lineWidth = 3;
+        for (let x = 178; x < 682; x += 24) {
+          context.beginPath();
+          context.moveTo(x, y + 16);
+          context.lineTo(x + 18, y - 16);
+          context.stroke();
+        }
+      }
+      context.textAlign = "right";
+      context.fillStyle = ratio === null ? "#91a39a" : "#f1fff6";
+      context.fillText(ratio === null ? "NOT SHARED" : value, 966, y);
+      context.textAlign = "left";
+    };
+    drawBar(
+      "CPU",
+      cpu === null ? null : cpu / 100,
+      cpu === null ? "" : `${cpu.toFixed(1)}%`,
+      216,
+      "#77d9ff",
+    );
+    drawBar(
+      "MEM",
+      memory,
+      memory === null
+        ? ""
+        : `${compactMirrorBytes(node?.memoryUsedBytes)} / ${compactMirrorBytes(
+            node?.memoryTotalBytes,
+          )}`,
+      278,
+      "#d5b6ff",
+    );
+    drawBar(
+      "DISK",
+      disk,
+      disk === null
+        ? ""
+        : `${compactMirrorBytes(node?.diskUsedBytes)} / ${compactMirrorBytes(
+            node?.diskTotalBytes,
+          )}`,
+      340,
+      "#f7c96b",
+    );
+
+    context.fillStyle = "#10251d";
+    roundedRect(context, 42, 386, 940, 170, 14);
+    context.fill();
+    context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#9ef7c6";
+    context.fillText(repositoryLabel, 62, 426);
+    context.fillStyle = "#f1fff6";
+    context.font = '700 30px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(`HEAD ${shortCommit}`, 62, 475);
+    context.font = '600 23px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#b4cabd";
+    context.fillText(
+      `${String(node?.branch || repo?.branch || "branch not reported").slice(
+        0,
+        30,
+      )} · ${String(node?.platform || "platform —").slice(0, 18)} · v${
+        String(node?.version || "—").replace(/^v/i, "").slice(0, 20)
+      }`,
+      62,
+      522,
+    );
+
+    const rows = [
+      ["COMMITS", node?.commitCount],
+      ["BRANCHES", node?.branchCount],
+      ["PULL REQUESTS", node?.pullCount],
+      ["ISSUES", node?.issueCount],
+      ["DISCUSSIONS", node?.discussionCount],
+      ["ARTIFACTS", node?.artifactCount],
+      ["WORKTREES", node?.worktreeCount],
+      ["CLONES SERVED", node?.clonesServed],
+      ["WEB SERVED", node?.websiteServed],
+      ["REPO BYTES", compactMirrorBytes(node?.sizeBytes)],
+    ];
+    context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
+    rows.forEach(([label, value], index) => {
+      const column = index % 2;
+      const row = Math.floor(index / 2);
+      const x = column === 0 ? 58 : 536;
+      const y = 604 + row * 62;
+      context.fillStyle = "#8ca99a";
+      context.fillText(label, x, y);
+      context.textAlign = "right";
+      context.fillStyle = "#f1fff6";
+      context.fillText(
+        typeof value === "string" ? value : compactMirrorCount(value),
+        x + 414,
+        y,
+      );
+      context.textAlign = "left";
+    });
+
+    context.fillStyle = "#91a39a";
+    context.font = '600 19px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "OPERATOR-REPORTED, SIGNED REPO DATA · UNAVAILABLE VALUES ARE NEVER ESTIMATED",
+      58,
+      958,
+    );
+  });
+}
+
+function createMirrorServerCabinet(THREE, node, id) {
   const group = new THREE.Group();
-  group.name = `mirror-node-pylon:${id}`;
+  group.name = `mirror-server-cabinet:${id}`;
   group.userData.infrastructureKind = "mirror-node";
   group.userData.nodeId = id;
   const online = mirrorNodeIsOnline(node);
-  const base = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.65, 0.84, 0.34, 10),
-    makeMaterial(THREE, "#112b25", {
-      metalness: 0.34,
-      roughness: 0.48,
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(2.24, 3.28, 1.42),
+    makeMaterial(THREE, online ? "#17221e" : "#252b28", {
+      emissive: online ? "#0b2d20" : "#171b19",
+      emissiveIntensity: online ? 0.24 : 0.1,
+      metalness: 0.72,
+      roughness: 0.28,
     }),
   );
-  base.position.y = 0.17;
-  group.add(base);
-  const mast = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.16, 0.32, 2.8, 8),
-    makeMaterial(THREE, online ? "#73f0ad" : "#71837a", {
-      emissive: online ? "#23885a" : "#28352f",
-      emissiveIntensity: online ? 0.9 : 0.2,
-      metalness: 0.48,
-      roughness: 0.32,
+  body.position.y = 1.64;
+  group.add(body);
+
+  const trimMaterial = makeMaterial(THREE, "#485950", {
+    emissive: "#15271f",
+    emissiveIntensity: 0.18,
+    metalness: 0.88,
+    roughness: 0.22,
+  });
+  for (const x of [-1.04, 1.04]) {
+    const rail = new THREE.Mesh(
+      new THREE.BoxGeometry(0.075, 3.14, 1.5),
+      trimMaterial,
+    );
+    rail.position.set(x, 1.64, 0);
+    group.add(rail);
+  }
+  for (const x of [-0.84, 0.84]) {
+    const foot = new THREE.Mesh(
+      new THREE.BoxGeometry(0.28, 0.18, 0.8),
+      trimMaterial,
+    );
+    foot.position.set(x, 0.08, 0);
+    group.add(foot);
+  }
+
+  const panelGeometry = new THREE.PlaneGeometry(1.9, 2.46);
+  const panelMaterial = new THREE.MeshBasicMaterial({
+    map: serverPanelTexture(THREE, node),
+    toneMapped: false,
+  });
+  const panel = new THREE.Mesh(panelGeometry, panelMaterial);
+  // Keep a real depth gap in front of the 0.71 cabinet face. A near-coplanar
+  // display flickers at oblique camera angles on mobile GPUs.
+  panel.position.set(0, 1.72, 0.735);
+  panel.name = "mirror-server-front-panel";
+  panel.userData.nodeCabinet = { ...node };
+  group.add(panel);
+  // A mirrored service panel on the rear keeps the technical display readable
+  // from the third-person camera while the physical front remains oriented
+  // toward the routing-station walkway.
+  const rearPanel = new THREE.Mesh(panelGeometry, panelMaterial);
+  rearPanel.position.set(0, 1.72, -0.735);
+  rearPanel.rotation.y = Math.PI;
+  rearPanel.name = "mirror-server-rear-panel";
+  rearPanel.userData.nodeCabinet = { ...node };
+  group.add(rearPanel);
+
+  const integrity = String(node?.integrity || "unknown").toLowerCase();
+  const statusColors = [
+    online ? "#73f0ad" : "#71837a",
+    node?.cloneAvailable === true ? "#77d9ff" : online ? "#f7c96b" : "#71837a",
+    integrity === "ok"
+      ? "#73f0ad"
+      : integrity === "rejected" || integrity === "degraded"
+        ? "#ff7e88"
+        : integrity === "healing"
+          ? "#f7c96b"
+          : "#71837a",
+  ];
+  const statusLights = new THREE.Group();
+  statusColors.forEach((color, index) => {
+    const light = new THREE.Mesh(
+      new THREE.SphereGeometry(0.075, 12, 10),
+      makeMaterial(THREE, color, {
+        emissive: color,
+        emissiveIntensity: online ? 1.25 : 0.25,
+        metalness: 0.22,
+        roughness: 0.26,
+      }),
+    );
+    light.position.set(-0.24 + index * 0.24, 3.08, 0.76);
+    statusLights.add(light);
+  });
+  group.add(statusLights);
+
+  const vent = new THREE.Mesh(
+    new THREE.BoxGeometry(1.42, 0.26, 0.05),
+    makeMaterial(THREE, "#35463e", {
+      metalness: 0.76,
+      roughness: 0.38,
     }),
   );
-  mast.position.y = 1.62;
-  group.add(mast);
-  const signalRing = new THREE.Mesh(
-    new THREE.TorusGeometry(0.58, 0.08, 8, 28),
-    makeMaterial(THREE, online ? "#9ef7c6" : "#87968e", {
-      emissive: online ? "#39c783" : "#313d37",
-      emissiveIntensity: online ? 1.15 : 0.18,
-    }),
-  );
-  signalRing.position.y = 2.7;
-  signalRing.rotation.x = Math.PI / 2;
-  group.add(signalRing);
-  const label = makeLabelSprite(
-    THREE,
-    String(node.name || node.label).slice(0, 22),
-    online ? "mirror pylon · online" : "mirror pylon · health unavailable",
-    online ? "#9ef7c6" : "#91a39a",
-  );
-  label.scale.set(2.5, 0.84, 1);
-  label.position.y = 3.7;
-  group.add(label);
-  group.userData.signalRing = signalRing;
+  vent.position.set(0, 0.22, 0.75);
+  group.add(vent);
+  group.userData.signalRing = statusLights.children[0];
   group.userData.online = online;
+  group.userData.dataKey = nodeDataKey(node);
+  group.userData.nodeRecord = { ...node };
   setShadows(group);
   return group;
 }
@@ -3219,48 +3525,106 @@ export function createWorldScene({
   }
 
   function updateNetworkNodes(nodes = []) {
+    const routingPosition = landmarkById("routing").position;
+    const routingX = Number(routingPosition?.[0]) || 32;
+    const routingZ = Number(routingPosition?.[2]) || 16;
+    // A dedicated 8×8 server aisle east of the routing station keeps all 64
+    // bounded live slots separate without expanding rings through neighboring
+    // repository and launchpad landmarks. Fill closest-to-routing slots first.
+    const serverSlots = [];
+    for (let column = 0; column < 8; column += 1) {
+      for (let row = 0; row < 8; row += 1) {
+        const x = routingX + 9.5 + column * 3;
+        const z = routingZ - 10.5 + row * 3;
+        serverSlots.push({
+          x,
+          z,
+          distance: Math.hypot(x - routingX, z - routingZ),
+        });
+      }
+    }
+    serverSlots.sort(
+      (left, right) =>
+        left.distance - right.distance || left.z - right.z || left.x - right.x,
+    );
     const seen = new Set();
+    const removeCabinet = (cabinet) => {
+      cabinet?.traverse?.((child) => {
+        if (!child.userData?.nodeCabinet) return;
+        const interactiveIndex = interactive.indexOf(child);
+        if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
+      });
+      world.remove(cabinet);
+      disposeObject3D(cabinet);
+    };
     const usableNodes = (Array.isArray(nodes) ? nodes : [])
       .filter((node) => String(node?.name || node?.label || "").trim())
-      .slice(0, 10);
+      .slice(0, 64);
     usableNodes.forEach((node, index) => {
-      const nodeName = String(node.name || node.label).trim().slice(0, 48);
-      const id = `node:${nodeName}`;
+      const nodeName = String(node.name || node.label).trim().slice(0, 80);
+      const id = `node:${nodeName.toLowerCase()}`;
+      const dataKey = nodeDataKey({ ...node, name: nodeName });
       seen.add(id);
-      let pylon = nodeInfrastructure.get(id);
+      let cabinet = nodeInfrastructure.get(id);
       if (
-        pylon &&
-        pylon.userData.online !== mirrorNodeIsOnline(node)
+        cabinet &&
+        cabinet.userData.dataKey !== dataKey
       ) {
-        world.remove(pylon);
-        disposeObject3D(pylon);
+        removeCabinet(cabinet);
         nodeInfrastructure.delete(id);
-        pylon = null;
+        cabinet = null;
       }
-      if (!pylon) {
-        pylon = createMirrorNodePylon(
+      if (!cabinet) {
+        cabinet = createMirrorServerCabinet(
           THREE,
           { ...node, name: nodeName },
           id,
         );
-        world.add(pylon);
-        nodeInfrastructure.set(id, pylon);
+        world.add(cabinet);
+        for (const panelName of [
+          "mirror-server-front-panel",
+          "mirror-server-rear-panel",
+        ]) {
+          const panel = cabinet.getObjectByName(panelName);
+          if (panel) interactive.push(panel);
+        }
+        nodeInfrastructure.set(id, cabinet);
       }
-      const angle =
-        (index / Math.max(1, usableNodes.length)) * Math.PI * 2;
-      pylon.position.set(
-          25 + Math.cos(angle) * 6.2,
-          0.38,
-          16 + Math.sin(angle) * 6.2,
+      const slot = serverSlots[index];
+      cabinet.position.set(slot.x, 0.38, slot.z);
+      // The front display faces inward toward the routing station, so each
+      // cabinet remains individually readable from the surrounding walkway.
+      cabinet.rotation.y = Math.atan2(
+        routingX - slot.x,
+        routingZ - slot.z,
       );
-      pylon.rotation.y = -angle;
     });
-    nodeInfrastructure.forEach((pylon, id) => {
+    nodeInfrastructure.forEach((cabinet, id) => {
       if (seen.has(id)) return;
-      world.remove(pylon);
-      disposeObject3D(pylon);
+      removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
+  }
+
+  function focusNetworkNode(name) {
+    const targetName = String(name || "").trim().toLowerCase();
+    let target = null;
+    nodeInfrastructure.forEach((cabinet) => {
+      if (
+        !target &&
+        String(cabinet.userData?.nodeRecord?.name || "")
+          .trim()
+          .toLowerCase() === targetName
+      ) {
+        target = cabinet;
+      }
+    });
+    if (!target) return false;
+    selectedLandmark = "routing";
+    cameraFocus = target.position.clone();
+    cameraFocus.y += 1.65;
+    hasMoveTarget = false;
+    return true;
   }
 
   function updateFederatedInstances(instances = []) {
@@ -4307,6 +4671,14 @@ export function createWorldScene({
       });
       return;
     }
+    if (hit?.object?.userData?.nodeCabinet) {
+      focusNetworkNode(hit.object.userData.nodeCabinet.name);
+      onLandmarkSelect("routing", {
+        source: "world",
+        nodeCabinet: { ...hit.object.userData.nodeCabinet },
+      });
+      return;
+    }
     if (hit?.object?.userData?.landmark) {
       const id = hit.object.userData.landmark;
       focusLandmark(id);
@@ -4569,6 +4941,7 @@ export function createWorldScene({
     visitNeighborhoodHome,
     setRemotePlayers,
     updateNetworkNodes,
+    focusNetworkNode,
     updateFederatedInstances,
     updateBots,
     updateDurableObjects,

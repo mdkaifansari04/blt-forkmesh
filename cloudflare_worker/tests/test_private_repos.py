@@ -21,7 +21,8 @@ CATALOG = ENTRY.parent / "catalog.py"
 # Names pulled verbatim from entry.py; the rest of the module (JS imports, async
 # crypto) is never executed.
 _WANT_FUNCS = (
-    "clean_string", "clean_int_series", "clean_logo_metadata", "safe_segment",
+    "clean_string", "clean_int_series", "clean_optional_integer",
+    "clean_optional_usage", "clean_logo_metadata", "safe_segment",
     "safe_catalog_record", "safe_contribution_transport")
 
 
@@ -94,6 +95,57 @@ def test_activity_weeks_are_clamped_and_padded():
     rec = safe_catalog_record(_base(activityWeeks=[1, "2", -5, "bad", 2_000_000]))
     assert rec["activityWeeks"][-5:] == [1, 2, 0, 0, 1_000_000]
     assert len(rec["activityWeeks"]) == 52
+
+
+def test_public_host_telemetry_is_bounded_and_absence_stays_unknown():
+    unknown = safe_catalog_record(_base())
+    assert not {
+        "cpuPercent",
+        "memUsedBytes",
+        "memTotalBytes",
+        "diskUsedBytes",
+        "diskTotalBytes",
+    }.intersection(unknown)
+    assert unknown.get("cpuPercent") is None
+    assert unknown.get("memUsedBytes") is None
+    assert unknown.get("memTotalBytes") is None
+    assert unknown.get("diskUsedBytes") is None
+    assert unknown.get("diskTotalBytes") is None
+
+    reported = safe_catalog_record(_base(
+        cpuPercent=149,
+        memUsedBytes=900,
+        memTotalBytes=800,
+        diskUsedBytes=300,
+        diskTotalBytes=1000,
+    ))
+    assert reported["cpuPercent"] == 100
+    assert (reported["memUsedBytes"], reported["memTotalBytes"]) == (800, 800)
+    assert (reported["diskUsedBytes"], reported["diskTotalBytes"]) == (300, 1000)
+
+
+def test_partial_or_malformed_host_telemetry_stays_unknown():
+    record = safe_catalog_record(_base(
+        cpuPercent=-1,
+        memUsedBytes=100,
+        # no total: an isolated "used" number is not meaningful
+        diskUsedBytes=10,
+        diskTotalBytes=0,
+    ))
+    assert record.get("cpuPercent") is None
+    assert record.get("memUsedBytes") is None
+    assert record.get("memTotalBytes") is None
+    assert record.get("diskUsedBytes") is None
+    assert record.get("diskTotalBytes") is None
+
+    record = safe_catalog_record(_base(
+        cpuPercent=12.5,
+        memUsedBytes=True,
+        memTotalBytes=1024,
+    ))
+    assert record.get("cpuPercent") is None
+    assert record.get("memUsedBytes") is None
+    assert record.get("memTotalBytes") is None
 
 
 def test_native_logo_metadata_is_bounded_and_source_content_is_dropped():

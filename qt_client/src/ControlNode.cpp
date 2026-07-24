@@ -233,6 +233,34 @@ bool appendPythonCanonicalJson(const QJsonValue &value, QByteArray *output,
     return false;
 }
 
+QJsonValue optionalBoundedTelemetryInteger(const QJsonValue &value,
+                                           qint64 maximum)
+{
+    if (!value.isDouble())
+        return QJsonValue(QJsonValue::Null);
+    const double raw = value.toDouble();
+    if (!std::isfinite(raw) || raw < 0.0 || std::floor(raw) != raw)
+        return QJsonValue(QJsonValue::Null);
+    return QJsonValue(qMin(raw, double(maximum)));
+}
+
+QPair<QJsonValue, QJsonValue> normalizedTelemetryUsagePair(
+    const QJsonValue &usedValue, const QJsonValue &totalValue)
+{
+    constexpr qint64 kMaximumReportedBytes = qint64(1) << 50;
+    QJsonValue used =
+        optionalBoundedTelemetryInteger(usedValue, kMaximumReportedBytes);
+    const QJsonValue total =
+        optionalBoundedTelemetryInteger(totalValue, kMaximumReportedBytes);
+    if (used.isNull() || total.isNull() || total.toDouble() <= 0.0) {
+        return {QJsonValue(QJsonValue::Null),
+                QJsonValue(QJsonValue::Null)};
+    }
+    if (used.toDouble() > total.toDouble())
+        used = total;
+    return {used, total};
+}
+
 } // namespace
 
 QString validateCloudflareBootstrapRequest(
@@ -420,6 +448,25 @@ QByteArray catalogV2SigningPayload(QJsonObject normalizedRecord,
     if (error)
         error->clear();
     return QByteArrayLiteral("forkmesh-catalog-v2\n") + digest;
+}
+
+QJsonObject normalizedCatalogHostTelemetry(const QJsonObject &data)
+{
+    const auto memoryUsage = normalizedTelemetryUsagePair(
+        data.value(QStringLiteral("memUsedBytes")),
+        data.value(QStringLiteral("memTotalBytes")));
+    const auto diskUsage = normalizedTelemetryUsagePair(
+        data.value(QStringLiteral("diskUsedBytes")),
+        data.value(QStringLiteral("diskTotalBytes")));
+    return {
+        {QStringLiteral("cpuPercent"),
+         optionalBoundedTelemetryInteger(
+             data.value(QStringLiteral("cpuPercent")), 100)},
+        {QStringLiteral("memUsedBytes"), memoryUsage.first},
+        {QStringLiteral("memTotalBytes"), memoryUsage.second},
+        {QStringLiteral("diskUsedBytes"), diskUsage.first},
+        {QStringLiteral("diskTotalBytes"), diskUsage.second},
+    };
 }
 
 QByteArray privateReplicaRouteSigningPayload(

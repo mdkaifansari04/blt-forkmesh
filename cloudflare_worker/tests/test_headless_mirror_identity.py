@@ -423,9 +423,20 @@ def test_operator_only_payloads_match_worker_canonicals(identity):
                 "description": "Living code city \N{SNOWMAN}",
                 "updatedAt": "1784840000002",
                 "stateHash": state_hash,
+                "cpuPercent": 126,
+                "memUsedBytes": 900,
+                "memTotalBytes": 800,
+                "diskUsedBytes": 300,
+                "diskTotalBytes": 1000,
             },
         },
     )
+    # The helper and Worker share the same integer/null catalog-v2 shape:
+    # opt-in metrics are bounded before signing and byte-pair usage cannot
+    # exceed its total.
+    assert record["cpuPercent"] == 100
+    assert (record["memUsedBytes"], record["memTotalBytes"]) == (800, 800)
+    assert (record["diskUsedBytes"], record["diskTotalBytes"]) == (300, 1000)
     state_payload = (
         "forkmesh-repostate-v1\nforkmesh\nforkmesh\n" + state_hash + "\n1784840000002"
     ).encode()
@@ -444,6 +455,25 @@ def test_operator_only_payloads_match_worker_canonicals(identity):
         base64.urlsafe_b64decode(catalog_signature + "=="),
         ("forkmesh-catalog-v2\n" + record_hash).encode(),
     )
+
+    unreported = helper._normalized_public_catalog(
+        {
+            "owner": "forkmesh",
+            "name": "forkmesh",
+            "visibility": "public",
+            "updatedAt": "1784840000002",
+            "stateHash": state_hash,
+        },
+        identity["public"]["nodePublicKey"],
+        now_ms=1784840000002,
+    )
+    assert not {
+        "cpuPercent",
+        "memUsedBytes",
+        "memTotalBytes",
+        "diskUsedBytes",
+        "diskTotalBytes",
+    }.intersection(unreported)
 
 
 def test_unsafe_state_permissions_fail_closed(identity):

@@ -1075,7 +1075,7 @@ def test_world_uses_nonhuman_infrastructure_a_member_lounge_and_city_grid():
     ]
     assert "createAvatar(" not in nodes
     assert "createAvatar(" not in bots
-    assert "createMirrorNodePylon" in nodes
+    assert "createMirrorServerCabinet" in nodes
     assert "createAgentRobot" in bots
     assert "nodeInfrastructure" in nodes
     assert "botAgents" in bots
