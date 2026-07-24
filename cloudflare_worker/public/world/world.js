@@ -3048,6 +3048,7 @@ class ForkMeshWorld extends HTMLElement {
       passive: true,
     });
     window.addEventListener("keydown", this.handlePublicInputActivity);
+    window.addEventListener("message", this.handleWorldChatMessage);
     this.bindUI();
     this.startClock();
     this.startDiagnostics();
@@ -3083,6 +3084,40 @@ class ForkMeshWorld extends HTMLElement {
       this.sendPresence({ type: "presence" });
       this.broadcastLocalPresence();
     }, 12000);
+  };
+
+  // The embedded /dashboard/chat iframe mirrors every live chat line to this
+  // page (dashboard-chat.js, emitWorldChatBubble). Float it above the
+  // speaker's avatar so nearby visitors see who is talking. Chat identity is
+  // separate from presence, so peers are matched by shared display name —
+  // best effort only, and unmatched senders simply show no bubble.
+  handleWorldChatMessage = (event) => {
+    if (this.destroyed || event.origin !== location.origin) return;
+    const data = event.data;
+    if (!data || data.type !== "forkmesh:world-chat") return;
+    const text = String(data.text || "").trim();
+    if (!text) return;
+    if (data.self === true) {
+      this.world?.showChatBubble?.(this.identity?.id, text, true);
+      return;
+    }
+    const senderName = String(data.sender || "")
+      .replace(/^World visitor\s*·\s*/i, "")
+      .trim()
+      .toLowerCase();
+    if (!senderName) return;
+    for (const [id, peer] of this.remotePlayers) {
+      const peerName = String(peer?.name || "").trim().toLowerCase();
+      // The public room truncates asserted names to 16 characters, so a
+      // truncated sender may only be a prefix of the presence name.
+      if (
+        peerName === senderName ||
+        (senderName.length >= 16 && peerName.startsWith(senderName))
+      ) {
+        this.world?.showChatBubble?.(id, text);
+        return;
+      }
+    }
   };
 
   recordPublicVisit(place) {
@@ -12324,6 +12359,7 @@ class ForkMeshWorld extends HTMLElement {
     window.removeEventListener("pointerdown", this.handlePublicInputActivity);
     window.removeEventListener("pointermove", this.handlePublicInputActivity);
     window.removeEventListener("keydown", this.handlePublicInputActivity);
+    window.removeEventListener("message", this.handleWorldChatMessage);
     window.clearTimeout(this.socketTimer);
     window.clearTimeout(this.socketStableTimer);
     window.clearTimeout(this.peerGraceTimer);
