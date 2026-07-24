@@ -3083,7 +3083,7 @@ async def _chat_channel_socket_handler(env, request, channel_id):
         await ensure_schema(env)
         channel = await d1_first(
             env,
-            "SELECT key_version FROM chat_channels WHERE channel_id=?",
+            "SELECT data,key_version FROM chat_channels WHERE channel_id=?",
             channel_id,
         )
         if (
@@ -3092,6 +3092,14 @@ async def _chat_channel_socket_handler(env, request, channel_id):
                 != int(claims["key_version"])
         ):
             return _private_replica_not_found()
+        channel_record = await decrypt_row(env, channel.get("data"))
+        if not isinstance(channel_record, dict):
+            return _private_replica_not_found()
+        visibility = (
+            "public"
+            if channel_record.get("visibility") == "public"
+            else "private"
+        )
         account = await d1_first(
             env,
             "SELECT data,is_admin FROM users WHERE user_bi=?",
@@ -3107,7 +3115,7 @@ async def _chat_channel_socket_handler(env, request, channel_id):
         ):
             return _private_replica_not_found()
         is_admin = bool(int(account.get("is_admin") or 0))
-        if not is_admin:
+        if not is_admin and visibility != "public":
             membership = await d1_first(
                 env,
                 "SELECT 1 AS allowed FROM chat_channel_members "

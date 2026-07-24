@@ -74,7 +74,9 @@ def _helpers():
     return namespace, clock
 
 
-def _socket_harness(channel_version=1, member=True, admin=False):
+def _socket_harness(channel_version=1, member=True, admin=False,
+                    visibility="private", account_status="active",
+                    account_kind="user"):
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
     names = FUNCTIONS | {"_chat_channel_socket_handler"}
     selected = [
@@ -94,12 +96,20 @@ def _socket_harness(channel_version=1, member=True, admin=False):
 
     async def d1_first(_env, sql, *args):
         if "FROM chat_channels" in sql:
-            return {"key_version": channel_version}
+            return {
+                "data": "sealed-channel",
+                "key_version": channel_version,
+            }
         if "FROM users" in sql:
             return {"data": "sealed-user", "is_admin": 1 if admin else 0}
         if "FROM chat_channel_members" in sql:
             return {"allowed": 1} if member else None
         raise AssertionError(sql)
+
+    async def decrypt_row(_env, data):
+        if data == "sealed-channel":
+            return {"visibility": visibility}
+        return {"status": account_status, "kind": account_kind}
 
     namespace = {
         "CHAT_CHANNEL_TICKET_TTL_MS": 60 * 1000,
@@ -111,8 +121,7 @@ def _socket_harness(channel_version=1, member=True, admin=False):
             "status": 404, "data": {"error": "not_found"}},
         "_to_js": lambda value: value,
         "d1_first": d1_first,
-        "decrypt_row": lambda _env, _data: asyncio.sleep(0, result={
-            "status": "active", "kind": "user"}),
+        "decrypt_row": decrypt_row,
         "durable_object_request": lambda request, target_url=None: asyncio.sleep(
             0, result={"request": request, "target": target_url}),
         "ensure_schema": lambda _env: asyncio.sleep(0),
@@ -394,6 +403,19 @@ def test_private_socket_allows_current_admin_without_membership_row():
         env, request_type(token), "a" * 32))
     assert response["status"] == 101
     assert calls[0][0] == "id"
+
+
+def test_public_socket_allows_active_registered_user_without_membership_row():
+    namespace, env, request_type, calls = _socket_harness(
+        member=False, visibility="public")
+    token = namespace["_chat_channel_ticket"](
+        env, "a" * 32, 1, "b" * 64)
+
+    response = asyncio.run(namespace["_chat_channel_socket_handler"](
+        env, request_type(token), "a" * 32))
+
+    assert response["status"] == 101
+    assert calls[0] == ("id", "chat-channel:" + "a" * 32 + ":v1")
 
 
 def test_runtime_adapter_and_routes_use_private_channel_gates():
