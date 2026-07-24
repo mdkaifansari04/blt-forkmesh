@@ -44,8 +44,9 @@ def test_member_deletion_rotates_the_channel_key_once():
     )
     db.execute(
         "INSERT INTO chat_channel_members "
-        "(channel_id,member_bi,invited_by_bi,joined_at) VALUES (?,?,?,?)",
-        (channel_id, "alice-bi", "admin-bi", 2),
+        "(channel_id,member_bi,data,invited_by_bi,joined_at) "
+        "VALUES (?,?,?,?,?)",
+        (channel_id, "alice-bi", "sealed-member", "admin-bi", 2),
     )
     db.execute(
         "DELETE FROM chat_channel_members WHERE channel_id=? AND member_bi=?",

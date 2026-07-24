@@ -306,6 +306,7 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS chat_channel_members (
         channel_id TEXT NOT NULL,
         member_bi TEXT NOT NULL,
+        data TEXT NOT NULL,
         invited_by_bi TEXT NOT NULL,
         joined_at INTEGER NOT NULL,
         PRIMARY KEY (channel_id, member_bi))""",
