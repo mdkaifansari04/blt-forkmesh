@@ -1879,6 +1879,11 @@ private:
     void syncMirrorActionsConfiguration();
     void scanExternalActionsSources();
     void updateMirrorActionsRuntimeState();
+    // Atomically publish a bounded, redacted Actions run summary for the
+    // gateway. Live log lines are coalesced; lifecycle changes publish on the
+    // next event-loop turn and the lease is refreshed periodically.
+    void scheduleMirrorActionsSummary(int delayMs = 0);
+    void writeMirrorActionsSummary();
     void enqueuePushEvent(const QString &owner, const QString &name,
                           const QString &commit, const QString &ref);
     void processActionQueue();
@@ -4578,6 +4583,8 @@ private:
     QString m_mirrorActionsConfigGeneration;
     QString m_mirrorActionsRuntimeState;
     qint64 m_mirrorActionsRuntimeStateWrittenAtMs = 0;
+    QTimer *m_mirrorActionsSummaryTimer = nullptr;
+    qint64 m_mirrorActionsSummaryAttemptedAtMs = 0;
     qint64 m_lastExternalActionsScanMs = 0;
     QList<AppNotification> m_notifications;
     QPushButton *m_notificationButton = nullptr;

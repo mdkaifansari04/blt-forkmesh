@@ -1,5 +1,6 @@
 #include "ControlNode.h"
 #include "MirrorActionsConfiguration.h"
+#include "MirrorActionsSummary.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -9,6 +10,7 @@
 #include <QJsonDocument>
 #include <QProcess>
 #include <QSettings>
+#include <QSet>
 #include <QTemporaryDir>
 
 #include <cstdio>
@@ -791,20 +793,63 @@ int main(int argc, char **argv)
               }},
          }},
     };
+    bool catalogPublisherCalled = false;
+    bool catalogPublishedAfterLocalSetup = false;
+    QString publishedRefreshConfiguration;
+    bool publishedActionsEnabled = false;
     const QJsonObject applied =
         forkmesh::mirror_actions::applyConfiguration(
-            nodeActionsRequest, actionSettings);
+            nodeActionsRequest, actionSettings,
+            [&](const QString &path, bool enabled) {
+                catalogPublisherCalled = true;
+                publishedRefreshConfiguration = path;
+                publishedActionsEnabled = enabled;
+                catalogPublishedAfterLocalSetup =
+                    actionSettings
+                            .value(QString::fromLatin1(
+                                forkmesh::mirror_actions::
+                                    kGenerationSetting))
+                            .toString() ==
+                        nodeActionsRequest
+                            .value(QStringLiteral("requestId"))
+                            .toString() &&
+                    actionSettings
+                        .value(QString::fromLatin1(
+                            forkmesh::mirror_actions::kEnabledSetting))
+                        .toBool();
+                return true;
+            });
     check(applied.value(QStringLiteral("ok")).toBool() &&
               applied.value(QStringLiteral("actionsEnabled")).toBool() &&
               applied.value(QStringLiteral("variablesReplaced")).toBool() &&
               applied.value(QStringLiteral("variableCount")).toInt() == 2 &&
+              catalogPublisherCalled &&
+              catalogPublishedAfterLocalSetup &&
+              publishedRefreshConfiguration == gatewayConfig &&
+              publishedActionsEnabled &&
               !QJsonDocument(applied)
                    .toJson(QJsonDocument::Compact)
                    .contains("DEPLOY_TOKEN") &&
               !QJsonDocument(applied)
                    .toJson(QJsonDocument::Compact)
                    .contains("node-local-only-value"),
-          "node helper returns only bounded metadata and never variable data");
+          "node helper publishes the catalog toggle after local setup and returns only bounded metadata");
+    QJsonObject unconfirmedRequest = nodeActionsRequest;
+    unconfirmedRequest.insert(
+        QStringLiteral("requestId"),
+        QStringLiteral("fedcba9876543210fedcba9876543210"));
+    unconfirmedRequest.remove(QStringLiteral("variables"));
+    const QJsonObject unconfirmed =
+        forkmesh::mirror_actions::applyConfiguration(
+            unconfirmedRequest, actionSettings,
+            [](const QString &, bool) { return false; });
+    check(!unconfirmed.value(QStringLiteral("ok")).toBool() &&
+              unconfirmed.value(QStringLiteral("errorCode")).toString() ==
+                  QStringLiteral("catalog_update_failed") &&
+              !QJsonDocument(unconfirmed)
+                   .toJson(QJsonDocument::Compact)
+                   .contains("DEPLOY_TOKEN"),
+          "node helper fails closed when the signed catalog toggle is not confirmed");
     const QJsonObject savedVariables =
         QJsonDocument::fromJson(
             actionSettings
@@ -816,8 +861,14 @@ int main(int argc, char **argv)
               actionSettings
                       .value(QString::fromLatin1(
                           forkmesh::mirror_actions::kEnabledSetting))
-                      .toBool(),
-          "node helper stores variables only in the target device settings");
+                      .toBool() &&
+              actionSettings
+                      .value(QString::fromLatin1(
+                          forkmesh::mirror_actions::kSummaryPathSetting))
+                      .toString() ==
+                  QDir(QFileInfo(gatewayConfig).absolutePath())
+                      .filePath(QStringLiteral("actions-summary.json")),
+          "node helper stores device-only variables and the fixed adjacent summary path");
     const int repositoryCount = actionSettings.beginReadArray(
         QStringLiteral("repositories/items"));
     actionSettings.setArrayIndex(0);
@@ -850,6 +901,139 @@ int main(int argc, char **argv)
             (QFileDevice::ReadGroup | QFileDevice::WriteGroup |
              QFileDevice::ReadOther | QFileDevice::WriteOther)),
           "node helper restricts its device-local settings file");
+
+    const QString summaryStoreRoot =
+        mirrorActionsRoot.filePath(QStringLiteral("summary-store"));
+    ActionStore summaryStore(summaryStoreRoot);
+    const qint64 summaryNow = 1784900000000LL;
+    for (int index = 1; index <= 25; ++index) {
+        ActionRun run;
+        run.owner = QStringLiteral("forkmesh");
+        run.name = QStringLiteral("forkmesh");
+        run.workflowPath =
+            QStringLiteral(".forkmesh/private-command-%1.yml").arg(index);
+        run.workflowName = QStringLiteral("Build %1").arg(index);
+        run.workflowContent =
+            QStringLiteral("run: never-publish-command-%1").arg(index);
+        run.commit = QStringLiteral("%1").arg(
+            index, 40, 16, QLatin1Char('0'));
+        run.ref = QStringLiteral("refs/heads/main");
+        run.status = index == 25 ? ActionStatus::Running
+                                 : ActionStatus::Success;
+        run = summaryStore.createRun(run);
+        run.createdAtMs = summaryNow - (25 - index) * 1000;
+        run.startedAtMs = run.createdAtMs + 10;
+        run.finishedAtMs =
+            run.status == ActionStatus::Running
+                ? 0
+                : run.createdAtMs + 500;
+        summaryStore.saveRun(run);
+        const QString log =
+            QString(20 * 1024, QLatin1Char('x')) +
+            (index == 25
+                 ? QString::fromUtf8(
+                       "\nredacted=***\nvalid utf8 \xF0\x9F\x9A\x80")
+                 : QStringLiteral("\nalready-redacted run log"));
+        summaryStore.appendLog(run, log);
+    }
+    const QList<ActionRun> summaryRuns = summaryStore.loadAllRuns();
+    const QJsonObject summary =
+        forkmesh::mirror_actions::buildSummary(
+            QStringLiteral("mirror2"), summaryRuns, summaryStore,
+            summaryNow);
+    QSet<QString> summaryKeys;
+    for (auto it = summary.constBegin(); it != summary.constEnd(); ++it)
+        summaryKeys.insert(it.key());
+    const QSet<QString> expectedSummaryKeys{
+        QStringLiteral("schemaVersion"), QStringLiteral("type"),
+        QStringLiteral("node"), QStringLiteral("updatedAt"),
+        QStringLiteral("expiresAt"), QStringLiteral("runs")};
+    const QJsonArray summaryItems =
+        summary.value(QStringLiteral("runs")).toArray();
+    const QJsonObject latestSummaryRun =
+        summaryItems.isEmpty() ? QJsonObject()
+                               : summaryItems.at(0).toObject();
+    QSet<QString> summaryRunKeys;
+    for (auto it = latestSummaryRun.constBegin();
+         it != latestSummaryRun.constEnd(); ++it) {
+        summaryRunKeys.insert(it.key());
+    }
+    const QSet<QString> expectedSummaryRunKeys{
+        QStringLiteral("id"), QStringLiteral("owner"),
+        QStringLiteral("repository"), QStringLiteral("workflow"),
+        QStringLiteral("commit"), QStringLiteral("ref"),
+        QStringLiteral("status"), QStringLiteral("createdAt"),
+        QStringLiteral("startedAt"), QStringLiteral("finishedAt"),
+        QStringLiteral("logTail")};
+    const QByteArray summaryJson =
+        QJsonDocument(summary).toJson(QJsonDocument::Compact);
+    check(summaryKeys == expectedSummaryKeys &&
+              summary.value(QStringLiteral("type")).toString() ==
+                  QStringLiteral("forkmesh.mirror-actions-summary") &&
+              summary.value(QStringLiteral("node")).toString() ==
+                  QStringLiteral("mirror2") &&
+              summary.value(QStringLiteral("expiresAt")).toVariant()
+                      .toLongLong() >
+                  summary.value(QStringLiteral("updatedAt")).toVariant()
+                      .toLongLong() &&
+              summary.value(QStringLiteral("expiresAt")).toVariant()
+                          .toLongLong() -
+                      summary.value(QStringLiteral("updatedAt")).toVariant()
+                          .toLongLong() <=
+                  15 * 60 * 1000 &&
+              summaryItems.size() == 20 &&
+              summaryJson.size() + 1 <= 256 * 1024 &&
+              summaryRunKeys == expectedSummaryRunKeys &&
+              latestSummaryRun.value(QStringLiteral("id")).toInt() == 25 &&
+              latestSummaryRun.value(QStringLiteral("status")).toString() ==
+                  ActionStatus::Running &&
+              latestSummaryRun.value(QStringLiteral("logTail"))
+                      .toString()
+                      .toUtf8()
+                      .size() <=
+                  forkmesh::mirror_actions::
+                      kMaximumSummaryLogTailBytes &&
+              latestSummaryRun.value(QStringLiteral("logTail"))
+                  .toString()
+                  .contains(QString::fromUtf8("\xF0\x9F\x9A\x80")) &&
+              latestSummaryRun.value(QStringLiteral("logTail"))
+                  .toString()
+                  .contains(QStringLiteral("redacted=***")) &&
+              !summaryJson.contains("workflowContent") &&
+              !summaryJson.contains("workflowPath") &&
+              !summaryJson.contains("never-publish-command") &&
+              !summaryJson.contains("private-command"),
+          "mirror Actions summary is exact, fresh, bounded, UTF-8, and secret-free");
+
+    const QString summaryDirectory =
+        mirrorActionsRoot.filePath(QStringLiteral("summary-public"));
+    QDir().mkpath(summaryDirectory);
+    QFile::setPermissions(
+        summaryDirectory,
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner);
+    const QString summaryPath =
+        QDir(summaryDirectory)
+            .filePath(QStringLiteral("actions-summary.json"));
+    check(forkmesh::mirror_actions::writeSummaryFile(
+              summaryPath, QStringLiteral("mirror2"), summaryRuns,
+              summaryStore, summaryNow),
+          "mirror Actions summary commits through an owner-only QSaveFile");
+    QFile summaryFile(summaryPath);
+    check(summaryFile.open(QIODevice::ReadOnly) &&
+              QJsonDocument::fromJson(summaryFile.readAll()).isObject() &&
+              !(QFileInfo(summaryPath).permissions() &
+                (QFileDevice::ReadGroup | QFileDevice::WriteGroup |
+                 QFileDevice::ExeGroup | QFileDevice::ReadOther |
+                 QFileDevice::WriteOther | QFileDevice::ExeOther)),
+          "mirror Actions summary remains strict JSON mode 0600");
+    summaryFile.close();
+    check(forkmesh::mirror_actions::buildSummary(
+              QStringLiteral("invalid node"), summaryRuns,
+              summaryStore, summaryNow)
+              .isEmpty(),
+          "mirror Actions summary rejects an invalid node identity");
+
     QJsonObject wrongNodeRequest = nodeActionsRequest;
     wrongNodeRequest.insert(QStringLiteral("node"),
                             QStringLiteral("mirror3"));

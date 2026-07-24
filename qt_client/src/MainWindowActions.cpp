@@ -9,6 +9,7 @@
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
 #include "MirrorActionsConfiguration.h"
+#include "MirrorActionsSummary.h"
 
 #include <QCryptographicHash>
 #include <QSaveFile>
@@ -513,6 +514,8 @@ void MainWindow::syncMirrorActionsConfiguration()
     m_mirrorActionsConfigGeneration = generation;
     m_mirrorActionsRuntimeState.clear();
     m_mirrorActionsRuntimeStateWrittenAtMs = 0;
+    m_mirrorActionsSummaryAttemptedAtMs = 0;
+    scheduleMirrorActionsSummary(0);
     logSystem(
         QStringLiteral("Actions: mirror executor configuration %1.")
             .arg(enabled ? QStringLiteral("enabled")
@@ -587,6 +590,10 @@ void MainWindow::updateMirrorActionsRuntimeState()
                  : running ? QStringLiteral("running")
                            : QStringLiteral("enabled");
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now - m_mirrorActionsSummaryAttemptedAtMs >=
+        3 * 60 * 1000) {
+        scheduleMirrorActionsSummary(0);
+    }
     const bool changed = state != m_mirrorActionsRuntimeState;
     if (!changed &&
         now - m_mirrorActionsRuntimeStateWrittenAtMs < 3 * 60 * 1000)
@@ -641,6 +648,48 @@ void MainWindow::updateMirrorActionsRuntimeState()
              QStringLiteral("forkmesh-mirror-renew.service")});
     }
 #endif
+}
+
+void MainWindow::scheduleMirrorActionsSummary(int delayMs)
+{
+    if (m_mirrorActionsConfigGeneration.isEmpty() || !m_actionStore)
+        return;
+    if (!m_mirrorActionsSummaryTimer) {
+        m_mirrorActionsSummaryTimer = new QTimer(this);
+        m_mirrorActionsSummaryTimer->setSingleShot(true);
+        connect(m_mirrorActionsSummaryTimer, &QTimer::timeout, this,
+                &MainWindow::writeMirrorActionsSummary);
+    }
+    const int boundedDelay = qBound(0, delayMs, 3000);
+    if (m_mirrorActionsSummaryTimer->isActive()) {
+        const int remaining = m_mirrorActionsSummaryTimer->remainingTime();
+        if (remaining >= 0 && remaining <= boundedDelay)
+            return;
+    }
+    m_mirrorActionsSummaryTimer->start(boundedDelay);
+}
+
+void MainWindow::writeMirrorActionsSummary()
+{
+    if (m_mirrorActionsConfigGeneration.isEmpty() || !m_actionStore)
+        return;
+    QSettings settings;
+    const QString path =
+        settings
+            .value(QString::fromLatin1(
+                forkmesh::mirror_actions::kSummaryPathSetting))
+            .toString()
+            .trimmed();
+    const QString node =
+        settings
+            .value(QString::fromLatin1(
+                forkmesh::mirror_actions::kNodeSetting))
+            .toString()
+            .trimmed();
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    m_mirrorActionsSummaryAttemptedAtMs = now;
+    forkmesh::mirror_actions::writeSummaryFile(
+        path, node, m_actionRuns, *m_actionStore, now);
 }
 
 void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
@@ -804,6 +853,7 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
 
         const ActionRun created = m_actionStore->createRun(run);
         m_actionRuns.prepend(created);
+        scheduleMirrorActionsSummary(0);
         cancelSupersededRuns(created);
         if (approved)
             m_actionQueue.append(created.id);
@@ -938,6 +988,7 @@ void MainWindow::processActionQueue()
         if (repoIndex < 0) {
             run->status = ActionStatus::Failed;
             m_actionStore->saveRun(*run);
+            scheduleMirrorActionsSummary(0);
             continue;
         }
         const QString mirror = m_repositories.at(repoIndex).mirrorPath;
@@ -947,6 +998,7 @@ void MainWindow::processActionQueue()
         if (!wf.valid) {
             run->status = ActionStatus::Failed;
             m_actionStore->saveRun(*run);
+            scheduleMirrorActionsSummary(0);
             continue;
         }
         // start() emits statusChanged synchronously (which reloads m_actionRuns),
@@ -1007,6 +1059,7 @@ void MainWindow::cancelSupersededRuns(const ActionRun &newRun)
                 live->status = ActionStatus::Cancelled;
                 live->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
                 m_actionStore->saveRun(*live);
+                scheduleMirrorActionsSummary(0);
             }
             logSystem(QStringLiteral(
                           "Actions: cancelled %1 \"%2\" for %3/%4 @ %5 \xE2\x80\x94 "
@@ -1021,6 +1074,10 @@ void MainWindow::cancelSupersededRuns(const ActionRun &newRun)
 
 void MainWindow::onRunLog(int runId, const QString &text)
 {
+    // ActionRunner has already redacted configured variable values before it
+    // appends this line to ActionStore. Batch live-tail publication to at most
+    // once every two seconds even when a process emits thousands of chunks.
+    scheduleMirrorActionsSummary(2000);
     if (runId != m_selectedRunId || !m_actionLog)
         return;
     m_actionLog->moveCursor(QTextCursor::End);
@@ -1031,6 +1088,7 @@ void MainWindow::onRunLog(int runId, const QString &text)
 void MainWindow::onRunStatusChanged(int runId, const QString &status)
 {
     m_actionRuns = m_actionStore->loadAllRuns();
+    scheduleMirrorActionsSummary(0);
     refreshActionsTable();
     refreshCommitStatusGlyphs();
     if (runId == m_selectedRunId && m_actionRunMeta) {
@@ -1056,6 +1114,7 @@ void MainWindow::onRunStatusChanged(int runId, const QString &status)
 void MainWindow::onRunFinished(int runId, bool ok)
 {
     m_actionRuns = m_actionStore->loadAllRuns();
+    scheduleMirrorActionsSummary(0);
     refreshActionsTable();
     refreshCommitStatusGlyphs();
     updateNotificationButton();
@@ -2426,6 +2485,7 @@ void MainWindow::runSelectedWorkflowManually()
 
     const ActionRun created = m_actionStore->createRun(run);
     m_actionRuns.prepend(created);
+    scheduleMirrorActionsSummary(0);
     cancelSupersededRuns(created);
     if (approved)
         m_actionQueue.append(created.id);
@@ -2586,6 +2646,7 @@ void MainWindow::approveSelectedRun()
     ActionStore::approve(run->repoKey(), run->workflowPath, run->workflowContent);
     run->status = ActionStatus::Queued;
     m_actionStore->saveRun(*run);
+    scheduleMirrorActionsSummary(0);
     m_actionQueue.append(run->id);
     logSystem(QStringLiteral("Actions: approved \"%1\" for %2/%3.")
                   .arg(run->workflowName, run->owner, run->name));
@@ -2604,6 +2665,7 @@ void MainWindow::rejectSelectedRun()
     run->status = ActionStatus::Rejected;
     run->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
     m_actionStore->saveRun(*run);
+    scheduleMirrorActionsSummary(0);
     logSystem(QStringLiteral("Actions: rejected \"%1\" for %2/%3.")
                   .arg(run->workflowName, run->owner, run->name));
     m_actionRuns = m_actionStore->loadAllRuns();
@@ -2635,6 +2697,7 @@ void MainWindow::rerunSelectedRun()
 
     const ActionRun created = m_actionStore->createRun(run);
     m_actionRuns.prepend(created);
+    scheduleMirrorActionsSummary(0);
     cancelSupersededRuns(created);
     if (approved)
         m_actionQueue.append(created.id);
@@ -2675,6 +2738,7 @@ void MainWindow::stopSelectedRun()
         run->status = ActionStatus::Cancelled;
         run->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
         m_actionStore->saveRun(*run);
+        scheduleMirrorActionsSummary(0);
         logSystem(QStringLiteral("Actions: cancelled queued \"%1\" for %2/%3.")
                       .arg(run->workflowName, run->owner, run->name));
         m_actionRuns = m_actionStore->loadAllRuns();
@@ -2701,6 +2765,7 @@ void MainWindow::skipSelectedRun()
     run->status = ActionStatus::Skipped;
     run->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
     m_actionStore->saveRun(*run);
+    scheduleMirrorActionsSummary(0);
     logSystem(QStringLiteral("Actions: skipped \"%1\" for %2/%3.")
                   .arg(run->workflowName, run->owner, run->name));
     m_actionRuns = m_actionStore->loadAllRuns();
@@ -2786,6 +2851,7 @@ void MainWindow::clearActionRuns()
         m_actionStore->deleteRun(run);
 
     m_actionRuns = m_actionStore->loadAllRuns();
+    scheduleMirrorActionsSummary(0);
     if (!findRun(m_selectedRunId)) {
         m_selectedRunId = -1;
         showRun(-1);

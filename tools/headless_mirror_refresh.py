@@ -62,12 +62,20 @@ MAX_REPOSITORY_METADATA_BYTES = 32 * 1024 * 1024
 MAX_ISSUE_RECORD_BYTES = 1024 * 1024
 MAX_MERGE_REQUEST_BYTES = 8 * 1024
 MAX_PULL_METADATA_BYTES = 256 * 1024
+MAX_ACTIONS_CONFIGURATION_BYTES = 1024
+MAX_ACTIONS_STATE_BYTES = 4096
+MAX_ACTIONS_STATE_LEASE_MS = 15 * 60 * 1000
 MAX_MERGE_QUARANTINE_OBJECTS = 100_000
 MAX_MERGE_QUARANTINE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_LOCAL_MERGE_JOBS = 10_000
 LOCAL_MERGE_JOB_RETENTION_SECONDS = 30 * 24 * 60 * 60
+MAX_SAFE_JSON_INTEGER = (1 << 53) - 1
 AGE_NATIVE_HEADER = b"age-encryption.org/v1\n"
 AGE_ARMORED_HEADER = b"-----BEGIN AGE ENCRYPTED FILE-----\n"
+ACTIONS_CONFIGURATION_TYPE = "forkmesh.mirror-actions-catalog-configuration"
+ACTIONS_STATE_TYPE = "forkmesh.mirror-actions-state"
+ACTIONS_STATE_FILE = "actions-state.json"
+ACTIONS_SUMMARY_FILE = "actions-summary.json"
 NODE_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -110,6 +118,7 @@ PUBLIC_OPERATIONS = frozenset(
         "sizes",
         "release-blob",
         "merge-pull",
+        "actions-status",
     }
 )
 REQUIRED_ROUTING_OPERATIONS = frozenset(
@@ -1540,6 +1549,11 @@ def _render_gateway_config(
                 "merge-execute",
             ],
         } if "merge-pull" in config.operations else {}),
+        **({
+            "actionsSummaryPath": str(
+                config.gateway_config_path.parent / ACTIONS_SUMMARY_FILE
+            ),
+        } if "actions-status" in config.operations else {}),
         "repositories": repositories,
     }
 
@@ -1585,6 +1599,115 @@ def _fsync_directory(path: Path) -> None:
             os.close(descriptor)
     except OSError as exc:
         raise RefreshError("durable state update failed") from exc
+
+
+def _same_regular_file(
+    left: os.stat_result,
+    right: os.stat_result,
+) -> bool:
+    return (
+        stat.S_ISREG(left.st_mode)
+        and stat.S_ISREG(right.st_mode)
+        and left.st_dev == right.st_dev
+        and left.st_ino == right.st_ino
+        and left.st_uid == right.st_uid
+        and left.st_gid == right.st_gid
+        and left.st_nlink == right.st_nlink == 1
+        and stat.S_IMODE(left.st_mode) == stat.S_IMODE(right.st_mode)
+        and left.st_size == right.st_size
+        and left.st_mtime_ns == right.st_mtime_ns
+    )
+
+
+def _replace_catalog_actions_enabled(
+    config: RefreshConfig,
+    enabled: bool,
+) -> RefreshConfig:
+    """Atomically change only catalog.actionsEnabled in the refresh config."""
+    path = config.config_path
+    before = _lstat_no_symlink(path, "configuration")
+    source = _read_secure_json(
+        path,
+        label="configuration",
+        maximum=MAX_CONFIG_BYTES,
+        owner_only=True,
+    )
+    _assert_no_secret_fields(source)
+    # Re-run the complete configuration validator before preserving and
+    # rewriting any owner-controlled fields.
+    validated = load_config(path)
+    after_read = _lstat_no_symlink(path, "configuration")
+    if (
+        not _same_regular_file(before, after_read)
+        or validated.node_owner != config.node_owner
+        or validated.repository_name != config.repository_name
+        or validated.identity_state_directory
+        != config.identity_state_directory
+    ):
+        raise RefreshError("configuration changed during Actions update")
+
+    catalog = source.get("catalog", {})
+    if not isinstance(catalog, dict):
+        # load_config() already rejects this, but retain a fixed local failure
+        # if the implementation is changed independently later.
+        raise RefreshError("catalog must be an object")
+    updated = dict(source)
+    updated_catalog = dict(catalog)
+    updated_catalog["actionsEnabled"] = enabled
+    updated["catalog"] = updated_catalog
+
+    staged: Path | None = None
+    try:
+        staged = _write_staged_json(path.parent, path.name, updated)
+        try:
+            os.chmod(
+                staged,
+                stat.S_IMODE(before.st_mode),
+                follow_symlinks=False,
+            )
+            staged_descriptor, staged_info = _open_bounded_file(
+                staged,
+                label="staged Actions configuration",
+                maximum=MAX_CONFIG_BYTES,
+                owner_only=True,
+            )
+            try:
+                if (
+                    stat.S_IMODE(staged_info.st_mode)
+                    != stat.S_IMODE(before.st_mode)
+                ):
+                    raise RefreshError(
+                        "configuration permissions could not be preserved"
+                    )
+                os.fsync(staged_descriptor)
+            finally:
+                os.close(staged_descriptor)
+            current = _lstat_no_symlink(path, "configuration")
+        except OSError as exc:
+            raise RefreshError(
+                "configuration permissions could not be preserved"
+            ) from exc
+        if not _same_regular_file(before, current):
+            raise RefreshError("configuration changed during Actions update")
+        _fsync_directory(path.parent)
+        os.replace(staged, path)
+        staged = None
+        try:
+            _fsync_directory(path.parent)
+        except RefreshError:
+            # The atomic rename already committed a complete owner-only file.
+            # As with refresh(), do not misreport that committed state as a
+            # rollback-safe failure.
+            pass
+    except OSError as exc:
+        raise RefreshError("Actions configuration update failed") from exc
+    finally:
+        if staged is not None:
+            try:
+                staged.unlink()
+            except FileNotFoundError:
+                pass
+    return load_config(path)
 
 
 def _install_content_addressed_archive(
@@ -2097,11 +2220,85 @@ def _sample_host_telemetry(
     return result
 
 
+def _actions_catalog_state(
+    config: RefreshConfig,
+    now_ms: int,
+) -> tuple[bool, str]:
+    """Return the bounded public Actions capability and live state.
+
+    ``catalog.actionsEnabled`` is the owner-controlled upper bound. A local
+    executor lease can narrow that capability to disabled or report enabled /
+    running, but it can never elevate a statically disabled node. Missing,
+    malformed, unsafe, stale, or implausibly future-dated leases fall back to
+    the truthful static enabled/disabled state and never interrupt catalog
+    renewal.
+    """
+    fallback = (
+        config.catalog.actions_enabled,
+        "enabled" if config.catalog.actions_enabled else "disabled",
+    )
+    if not config.catalog.actions_enabled:
+        return fallback
+    path = config.gateway_config_path.parent / ACTIONS_STATE_FILE
+    try:
+        _reject_symlink_components(path, "Actions state lease")
+        value = _read_secure_json(
+            path,
+            label="Actions state lease",
+            maximum=MAX_ACTIONS_STATE_BYTES,
+            owner_only=True,
+        )
+        _expect_fields(
+            value,
+            {
+                "schemaVersion",
+                "type",
+                "node",
+                "state",
+                "updatedAt",
+                "expiresAt",
+            },
+            label="Actions state lease",
+        )
+    except (OSError, RefreshError):
+        return fallback
+
+    state = value.get("state")
+    updated_at = value.get("updatedAt")
+    expires_at = value.get("expiresAt")
+    if (
+        value.get("schemaVersion") != SCHEMA_VERSION
+        or value.get("type") != ACTIONS_STATE_TYPE
+        or value.get("node") != config.node_owner
+        or state not in {"disabled", "enabled", "running"}
+        or isinstance(updated_at, bool)
+        or not isinstance(updated_at, int)
+        or isinstance(expires_at, bool)
+        or not isinstance(expires_at, int)
+        or not 0 <= updated_at <= MAX_SAFE_JSON_INTEGER
+        or not 0 <= expires_at <= MAX_SAFE_JSON_INTEGER
+        or updated_at < now_ms - MAX_ACTIONS_STATE_LEASE_MS
+        or updated_at > now_ms + MAX_ACTIONS_STATE_LEASE_MS
+        or expires_at <= now_ms
+        or expires_at > now_ms + MAX_ACTIONS_STATE_LEASE_MS
+        or expires_at <= updated_at
+        or expires_at - updated_at > MAX_ACTIONS_STATE_LEASE_MS
+    ):
+        return fallback
+    if state == "disabled":
+        # The public catalog contract keeps actionsEnabled/actionsState
+        # internally consistent: a live disabled executor advertises no current
+        # capability even though the owner configuration permits re-enabling it.
+        return False, "disabled"
+    return True, state
+
+
 def _catalog_unsigned(
     config: RefreshConfig,
     metadata: SealMetadata,
     now_ms: int,
 ) -> dict[str, Any]:
+    actions_enabled, actions_state = _actions_catalog_state(config, now_ms)
     record: dict[str, Any] = {
         "owner": config.node_owner,
         "name": config.repository_name,
@@ -2125,15 +2322,12 @@ def _catalog_unsigned(
         "branch": config.catalog.branch,
         "platform": config.catalog.platform,
         "version": config.catalog.version,
-        # Static refresh configuration can only advertise the operator-approved
-        # capability. It deliberately cannot claim "running": that state must
-        # eventually come from a live executor lease with an expiry. Workflow
+        # The owner configuration caps this capability; the live state comes
+        # only from a strict, short owner-local executor lease. Workflow
         # definitions, variables, commands, paths, and logs never enter this
         # signed catalog publication.
-        "actionsEnabled": config.catalog.actions_enabled,
-        "actionsState": (
-            "enabled" if config.catalog.actions_enabled else "disabled"
-        ),
+        "actionsEnabled": actions_enabled,
+        "actionsState": actions_state,
         "nodeId": config.node_owner,
         "stateHash": metadata.expected_refs_sha256,
         "commit": _source_branch_commit(config),
@@ -2275,6 +2469,44 @@ def renew(
             config, identity, metadata, post_json=post_json)
         result["event"] = "renewal_complete"
         return result
+
+
+def configure_actions(
+    config: RefreshConfig,
+    value: Mapping[str, Any],
+    *,
+    post_json: Callable[
+        [str, Mapping[str, Any]], tuple[int, dict[str, Any]]
+    ] = _post_json,
+) -> dict[str, Any]:
+    """Apply one secret-free Actions toggle and republish signed state."""
+    _expect_fields(
+        value,
+        {"schemaVersion", "type", "actionsEnabled"},
+        label="Actions configuration request",
+    )
+    enabled = value.get("actionsEnabled")
+    if (
+        value.get("schemaVersion") != SCHEMA_VERSION
+        or value.get("type") != ACTIONS_CONFIGURATION_TYPE
+        or not isinstance(enabled, bool)
+    ):
+        raise RefreshError("Actions configuration request is invalid")
+
+    with _refresh_lock(config, shared=False):
+        updated = _replace_catalog_actions_enabled(config, enabled)
+        identity, metadata, _archive_path = _validate_active_renewal(updated)
+        _publish_registration(
+            updated,
+            identity,
+            metadata,
+            post_json=post_json,
+        )
+    return {
+        "ok": True,
+        "event": "actions_configuration_complete",
+        "actionsEnabled": enabled,
+    }
 
 
 def check(config: RefreshConfig) -> dict[str, Any]:
@@ -3669,7 +3901,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "mode",
-        choices=("refresh", "check", "register", "renew", "merge-execute"),
+        choices=(
+            "refresh",
+            "check",
+            "register",
+            "renew",
+            "configure-actions",
+            "merge-execute",
+        ),
     )
     return parser
 
@@ -3678,14 +3917,27 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         config = load_config(args.config)
-        if args.mode == "merge-execute":
-            raw = sys.stdin.buffer.read(MAX_MERGE_REQUEST_BYTES + 1)
+        if args.mode in {"merge-execute", "configure-actions"}:
+            maximum = (
+                MAX_MERGE_REQUEST_BYTES
+                if args.mode == "merge-execute"
+                else MAX_ACTIONS_CONFIGURATION_BYTES
+            )
+            raw = sys.stdin.buffer.read(maximum + 1)
             request = _parse_json(
                 raw,
-                maximum=MAX_MERGE_REQUEST_BYTES,
-                label="merge executor request",
+                maximum=maximum,
+                label=(
+                    "merge executor request"
+                    if args.mode == "merge-execute"
+                    else "Actions configuration request"
+                ),
             )
-            result = merge_executor(config, request)
+            result = (
+                merge_executor(config, request)
+                if args.mode == "merge-execute"
+                else configure_actions(config, request)
+            )
         else:
             result = {
                 "refresh": refresh,

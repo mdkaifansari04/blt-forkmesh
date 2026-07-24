@@ -11,6 +11,7 @@
 #include <QJsonParseError>
 #include <QMap>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QSet>
 #include <QSettings>
@@ -19,6 +20,10 @@
 
 #include <cstdio>
 
+#if defined(Q_OS_UNIX)
+#include <unistd.h>
+#endif
+
 namespace forkmesh::mirror_actions {
 namespace {
 
@@ -26,6 +31,10 @@ constexpr qsizetype kMaximumRequestBytes = 64 * 1024;
 constexpr qsizetype kMaximumVariableValueBytes = 16 * 1024;
 constexpr qsizetype kMaximumVariableBytes = 48 * 1024;
 constexpr int kMaximumVariables = 64;
+constexpr qsizetype kMaximumCatalogResponseBytes = 4096;
+constexpr auto kPythonProgram = "/usr/bin/python3";
+constexpr auto kRefreshProgram =
+    "/opt/forkmesh-mirror/headless_mirror_refresh.py";
 
 const QRegularExpression kRequestId(
     QStringLiteral("^[a-f0-9]{32}$"));
@@ -295,10 +304,105 @@ bool restrictSettingsFile(QSettings &settings)
         fileName, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
 }
 
+bool publishCatalogConfiguration(const QString &refreshConfigurationPath,
+                                 bool enabled)
+{
+    const QFileInfo script(QString::fromLatin1(kRefreshProgram));
+    if (!script.isFile() || script.isSymLink() ||
+        script.permissions().testFlag(QFileDevice::WriteGroup) ||
+        script.permissions().testFlag(QFileDevice::WriteOther)) {
+        return false;
+    }
+#if defined(Q_OS_UNIX)
+    if (script.ownerId() != 0 &&
+        script.ownerId() != static_cast<uint>(::geteuid())) {
+        return false;
+    }
+#endif
+
+    const QJsonObject request{
+        {QStringLiteral("schemaVersion"), 1},
+        {QStringLiteral("type"),
+         QStringLiteral(
+             "forkmesh.mirror-actions-catalog-configuration")},
+        {QStringLiteral("actionsEnabled"), enabled},
+    };
+    QByteArray input =
+        QJsonDocument(request).toJson(QJsonDocument::Compact);
+    input.append('\n');
+
+    QProcess process;
+    process.setProcessChannelMode(QProcess::SeparateChannels);
+    QProcessEnvironment environment;
+    environment.insert(QStringLiteral("PATH"),
+                       QStringLiteral(
+                           "/usr/local/sbin:/usr/local/bin:/usr/sbin:"
+                           "/usr/bin:/sbin:/bin"));
+    environment.insert(QStringLiteral("LANG"), QStringLiteral("C"));
+    environment.insert(QStringLiteral("LC_ALL"), QStringLiteral("C"));
+    process.setProcessEnvironment(environment);
+    process.start(
+        QString::fromLatin1(kPythonProgram),
+        {QStringLiteral("-I"), QString::fromLatin1(kRefreshProgram),
+         QStringLiteral("--config"), refreshConfigurationPath,
+         QStringLiteral("configure-actions")});
+    if (!process.waitForStarted(5000) ||
+        process.write(input) != input.size() ||
+        !process.waitForBytesWritten(5000)) {
+        process.kill();
+        process.waitForFinished(1000);
+        input.fill('\0');
+        return false;
+    }
+    input.fill('\0');
+    input.clear();
+    process.closeWriteChannel();
+    if (!process.waitForFinished(5 * 60 * 1000)) {
+        process.kill();
+        process.waitForFinished(1000);
+        QByteArray discarded = process.readAll();
+        discarded.fill('\0');
+        return false;
+    }
+    QByteArray output = process.readAllStandardOutput();
+    QByteArray errors = process.readAllStandardError();
+    errors.fill('\0');
+    errors.clear();
+    if (process.exitStatus() != QProcess::NormalExit ||
+        process.exitCode() != 0 ||
+        output.isEmpty() ||
+        output.size() > kMaximumCatalogResponseBytes) {
+        output.fill('\0');
+        return false;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document =
+        QJsonDocument::fromJson(output, &parseError);
+    output.fill('\0');
+    output.clear();
+    if (parseError.error != QJsonParseError::NoError ||
+        !document.isObject()) {
+        return false;
+    }
+    const QJsonObject response = document.object();
+    return exactFields(
+               response,
+               {QStringLiteral("ok"), QStringLiteral("event"),
+                QStringLiteral("actionsEnabled")}) &&
+           response.value(QStringLiteral("ok")).toBool(false) &&
+           response.value(QStringLiteral("event")).toString() ==
+               QLatin1String("actions_configuration_complete") &&
+           response.value(QStringLiteral("actionsEnabled")).isBool() &&
+           response.value(QStringLiteral("actionsEnabled")).toBool() ==
+               enabled;
+}
+
 } // namespace
 
 QJsonObject applyConfiguration(const QJsonObject &request,
-                               QSettings &settings)
+                               QSettings &settings,
+                               const CatalogConfigurationPublisher &publisher)
 {
     const QString requestId = safeRequestId(request);
     const QString node = safeNode(request);
@@ -423,6 +527,10 @@ QJsonObject applyConfiguration(const QJsonObject &request,
     settings.setValue(QStringLiteral("actions/mirrorStatePath"),
                       QDir(QFileInfo(gatewayPath).absolutePath())
                           .filePath(QStringLiteral("actions-state.json")));
+    settings.setValue(
+        QString::fromLatin1(kSummaryPathSetting),
+        QDir(QFileInfo(gatewayPath).absolutePath())
+            .filePath(QStringLiteral("actions-summary.json")));
     settings.setValue(QStringLiteral("actions/mirrorConfiguredAt"),
                       QDateTime::currentMSecsSinceEpoch());
     if (replaceVariables) {
@@ -439,17 +547,20 @@ QJsonObject applyConfiguration(const QJsonObject &request,
                       QStringLiteral("settings_write_failed"));
     }
 
+    const int variableCount = replaceVariables ? variables.size() : 0;
     for (QString &value : variables)
         value.fill(QChar::Null);
     variables.clear();
+    const bool published =
+        publisher ? publisher(gatewayPath, requestedEnabled)
+                  : publishCatalogConfiguration(gatewayPath,
+                                                requestedEnabled);
+    if (!published) {
+        return result(requestId, node, requestedEnabled, false, 0, false,
+                      QStringLiteral("catalog_update_failed"));
+    }
     return result(requestId, node, requestedEnabled, replaceVariables,
-                  replaceVariables
-                      ? request.value(QStringLiteral("variables"))
-                            .toObject()
-                            .value(QStringLiteral("values"))
-                            .toObject()
-                            .size()
-                      : 0,
+                  variableCount,
                   true);
 }
 

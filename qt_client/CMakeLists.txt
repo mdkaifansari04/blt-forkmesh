@@ -140,6 +140,8 @@ set(FORKMESH_APP_SOURCES
     src/ControlNode.cpp
     src/MirrorActionsConfiguration.h
     src/MirrorActionsConfiguration.cpp
+    src/MirrorActionsSummary.h
+    src/MirrorActionsSummary.cpp
     src/RewardPoolSigner.h
     src/RewardPoolSigner.cpp
     src/RepoHost.h
@@ -502,6 +504,10 @@ if(FORKMESH_BUILD_TESTS)
         src/ControlNode.cpp
         src/MirrorActionsConfiguration.h
         src/MirrorActionsConfiguration.cpp
+        src/MirrorActionsSummary.h
+        src/MirrorActionsSummary.cpp
+        src/ActionStore.h
+        src/ActionStore.cpp
     )
     target_include_directories(forkmesh-control-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)

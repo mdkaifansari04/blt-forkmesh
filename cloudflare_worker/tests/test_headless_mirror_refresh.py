@@ -63,6 +63,40 @@ def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
+def _write_actions_lease(
+    installation,
+    *,
+    now_ms: int,
+    state: str,
+    node: str = "mirror-two",
+    updated_at: int | None = None,
+    expires_at: int | None = None,
+) -> Path:
+    path = installation["gateway_state"] / "actions-state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "type": "forkmesh.mirror-actions-state",
+                "node": node,
+                "state": state,
+                "updatedAt": now_ms if updated_at is None else updated_at,
+                "expiresAt": (
+                    now_ms + 10 * 60 * 1000
+                    if expires_at is None
+                    else expires_at
+                ),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    return path
+
+
 def test_safe_environment_allows_only_owner_private_tmpdir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -292,6 +326,7 @@ def test_refresh_renders_one_archive_for_all_aliases_and_check_is_dry(
     gateway_path = installation["gateway_config"]
     assert stat.S_IMODE(gateway_path.stat().st_mode) == 0o600
     rendered = json.loads(gateway_path.read_text(encoding="utf-8"))
+    assert "actionsSummaryPath" not in rendered
     repositories = rendered["repositories"]
     assert [item["owner"] for item in repositories] == [
         "mirror-two",
@@ -348,6 +383,45 @@ def test_refresh_renders_one_archive_for_all_aliases_and_check_is_dry(
     assert "forkmesh" not in combined
     assert str(installation["bare"]) not in combined
     assert installation["age_secret"] not in gateway_path.read_text()
+
+
+def test_actions_status_operation_renders_only_fixed_adjacent_summary_path(
+    installation,
+):
+    configured = json.loads(json.dumps(installation["config_value"]))
+    configured["operations"].append("actions-status")
+    path = installation["config_path"].with_name(
+        "actions-status-refresh.json")
+    path.write_text(
+        json.dumps(configured, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    config = refresh_tool.load_config(path)
+    rendered = refresh_tool._render_gateway_config(
+        config,
+        refresh_tool._load_public_identity(config),
+        refresh_tool.SealMetadata(
+            ciphertext_sha256="a" * 64,
+            ciphertext_bytes=100,
+            key_reference="forkmesh-headless-age:test",
+            expected_refs_sha256="b" * 64,
+        ),
+        installation["archive"] / ("archive-" + "a" * 64 + ".age"),
+    )
+    expected = (
+        installation["gateway_config"].parent / "actions-summary.json")
+    assert rendered["actionsSummaryPath"] == str(expected)
+    assert all(
+        "actions-status" in repository["operations"]
+        for repository in rendered["repositories"]
+    )
+    schema = json.loads(
+        (ROOT / "docs" / "headless-mirror-refresh.schema.json")
+        .read_text(encoding="utf-8"))
+    operations = schema["properties"]["operations"]
+    assert operations["maxItems"] == len(refresh_tool.PUBLIC_OPERATIONS)
+    assert "actions-status" in operations["items"]["enum"]
 
 
 def test_check_never_creates_a_missing_refresh_lock(installation):
@@ -474,6 +548,175 @@ def test_catalog_actions_capability_is_explicit_bounded_and_disabled_by_default(
     assert refresh_tool._catalog_unsigned(
         loaded, metadata, 1784840000000
     )["actionsState"] == "enabled"
+
+    now_ms = 1784840000000
+    lease = _write_actions_lease(
+        installation, now_ms=now_ms, state="running")
+    disabled_catalog = refresh_tool._catalog_unsigned(
+        config, metadata, now_ms)
+    assert (
+        disabled_catalog["actionsEnabled"],
+        disabled_catalog["actionsState"],
+    ) == (False, "disabled")
+    running_catalog = refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms)
+    assert (
+        running_catalog["actionsEnabled"],
+        running_catalog["actionsState"],
+    ) == (True, "running")
+
+    _write_actions_lease(installation, now_ms=now_ms, state="disabled")
+    live_disabled = refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms)
+    assert (
+        live_disabled["actionsEnabled"],
+        live_disabled["actionsState"],
+    ) == (False, "disabled")
+
+    _write_actions_lease(
+        installation,
+        now_ms=now_ms,
+        state="running",
+        updated_at=now_ms - refresh_tool.MAX_ACTIONS_STATE_LEASE_MS - 1,
+    )
+    stale_fallback = refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms)
+    assert (
+        stale_fallback["actionsEnabled"],
+        stale_fallback["actionsState"],
+    ) == (True, "enabled")
+
+    _write_actions_lease(
+        installation,
+        now_ms=now_ms,
+        state="running",
+        expires_at=now_ms + refresh_tool.MAX_ACTIONS_STATE_LEASE_MS + 1,
+    )
+    future_fallback = refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms)
+    assert (
+        future_fallback["actionsEnabled"],
+        future_fallback["actionsState"],
+    ) == (True, "enabled")
+
+    _write_actions_lease(
+        installation,
+        now_ms=now_ms,
+        state="running",
+        updated_at=now_ms + 1000,
+        expires_at=now_ms + 1000,
+    )
+    zero_interval_fallback = refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms)
+    assert (
+        zero_interval_fallback["actionsEnabled"],
+        zero_interval_fallback["actionsState"],
+    ) == (True, "enabled")
+
+    _write_actions_lease(
+        installation,
+        now_ms=now_ms,
+        state="running",
+        node="another-node",
+    )
+    assert refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms
+    )["actionsState"] == "enabled"
+    _write_actions_lease(installation, now_ms=now_ms, state="running")
+    lease.chmod(0o640)
+    assert refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms
+    )["actionsState"] == "enabled"
+    lease.unlink()
+    lease_target = installation["gateway_state"] / "actions-state-target.json"
+    lease_target.write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "type": "forkmesh.mirror-actions-state",
+            "node": "mirror-two",
+            "state": "running",
+            "updatedAt": now_ms,
+            "expiresAt": now_ms + 10 * 60 * 1000,
+        }),
+        encoding="utf-8",
+    )
+    lease_target.chmod(0o600)
+    lease.symlink_to(lease_target)
+    assert refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms
+    )["actionsState"] == "enabled"
+    lease.unlink()
+    os.link(lease_target, lease)
+    assert refresh_tool._catalog_unsigned(
+        loaded, metadata, now_ms
+    )["actionsState"] == "enabled"
+
+
+def test_configure_actions_atomically_preserves_config_and_renews_public_state(
+    installation,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = installation["config"]
+    refresh_tool.refresh(config)
+    before = json.loads(
+        installation["config_path"].read_text(encoding="utf-8"))
+    installation["config_path"].chmod(0o400)
+    published = []
+
+    def capture_publish(updated, identity, metadata, *, post_json):
+        published.append((updated, identity, metadata, post_json))
+        return {"ok": True, "aliasCount": len(updated.owner_aliases)}
+
+    monkeypatch.setattr(
+        refresh_tool, "_publish_registration", capture_publish)
+    request = {
+        "schemaVersion": 1,
+        "type": "forkmesh.mirror-actions-catalog-configuration",
+        "actionsEnabled": True,
+    }
+    result = refresh_tool.configure_actions(config, request)
+
+    after = json.loads(
+        installation["config_path"].read_text(encoding="utf-8"))
+    expected = json.loads(json.dumps(before))
+    expected.setdefault("catalog", {})["actionsEnabled"] = True
+    assert after == expected
+    assert stat.S_IMODE(installation["config_path"].stat().st_mode) == 0o400
+    assert result == {
+        "ok": True,
+        "event": "actions_configuration_complete",
+        "actionsEnabled": True,
+    }
+    assert len(published) == 1
+    updated = published[0][0]
+    assert updated.catalog.actions_enabled is True
+    metadata = published[0][2]
+    catalog = refresh_tool._catalog_unsigned(
+        updated, metadata, 1784840000000)
+    assert (catalog["actionsEnabled"], catalog["actionsState"]) == (
+        True,
+        "enabled",
+    )
+
+    unchanged = installation["config_path"].read_bytes()
+    for invalid in (
+        {
+            **request,
+            "actionsEnabled": 1,
+        },
+        {
+            **request,
+            "secret": "must-not-be-accepted",
+        },
+        {
+            "schemaVersion": 1,
+            "type": "forkmesh.mirror-actions-catalog-configuration",
+        },
+    ):
+        with pytest.raises(refresh_tool.RefreshError):
+            refresh_tool.configure_actions(updated, invalid)
+        assert installation["config_path"].read_bytes() == unchanged
+    assert len(published) == 1
 
 
 def test_linux_host_metric_parsers_are_bounded_and_fail_closed(installation):
