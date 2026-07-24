@@ -110,6 +110,19 @@ def test_world_contains_the_initial_city_districts_and_utc_clock():
     assert 'data-world-phase>UTC · 24-hour clock' in APP
 
 
+def test_forkmesh_office_is_a_navigable_world_landmark():
+    assert 'id: "office"' in DATA
+    assert 'label: "ForkMesh Office"' in DATA
+    assert 'shortLabel: "Office"' in DATA
+    assert "position: [11, 0, -21]" in DATA
+    assert 'id: "visiting-office"' in DATA
+
+
+def test_static_world_fallback_links_to_chat():
+    assert 'href="/chat"' in INDEX
+    assert "Open ForkMesh chat" in INDEX
+
+
 def test_scene_builds_playable_landmarks_and_badged_avatars():
     for builder in (
         "createAvatar",

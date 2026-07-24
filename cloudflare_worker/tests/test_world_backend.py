@@ -438,6 +438,16 @@ def test_arrival_slots_fill_unique_forward_facing_rows_of_ten():
     assert world.first_available_arrival_slot(range(63)) == 63
 
 
+def test_world_presence_allows_the_consent_aware_office_activity():
+    current = world.default_presence("peer", 1000)
+    _, result = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "visiting-office",
+    }, current, 2000)
+
+    assert result["activityCategory"] == "visiting-office"
+
+
 def test_public_door_state_is_explicit_and_allowlisted():
     current = world.default_presence("peer", 1000)
     assert current["publicDoor"] == "closed"

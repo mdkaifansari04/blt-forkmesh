@@ -276,7 +276,7 @@ export const LANDMARKS = [
       "Video rooms use official embeds and preserve each provider’s controls and terms.",
     ],
     primary: { label: "Open media controls", action: "broadcast" },
-    secondary: { label: "Open community chat", href: "/dashboard/chat" },
+    secondary: { label: "Open community chat", href: "/chat" },
   },
   {
     id: "support",
@@ -300,6 +300,31 @@ export const LANDMARKS = [
     ],
     primary: { label: "Compare support options", action: "support" },
     secondary: { label: "Contribute code", href: "/dashboard/repos" },
+  },
+  {
+    id: "office",
+    label: "ForkMesh Office",
+    shortLabel: "Office",
+    eyebrow: "COLLABORATION / 14",
+    icon: "⌁",
+    color: "#9ef7c6",
+    position: [11, 0, -21],
+    summary:
+      "Meet collaborators through ForkMesh's existing encrypted channel system.",
+    metaphor:
+      "An open office lobby where the chat terminal becomes available after deliberate entry.",
+    reality:
+      "The office embeds the normal authorized chat client. Avatar position never grants room access or exposes private membership.",
+    status: "Encrypted chat available",
+    statusTone: "live",
+    bullets: [
+      "Guests can use only public World #general.",
+      "Registered users see only public and authorized private channels.",
+      "Messages, room keys, tokens, and attachments never enter world presence.",
+      "The hidden chat iframe disconnects after leaving the office.",
+    ],
+    primary: { label: "Walk to the office", action: "office" },
+    secondary: { label: "Open full chat", href: "/chat" },
   },
 ];
 
@@ -329,6 +354,11 @@ export const TOUR_STEPS = [
     title: "Trust stays inspectable",
     copy: "Every metaphor has a technical panel. Scan results, mirror health, and reward visuals disclose their scope and limitations.",
   },
+  {
+    landmark: "office",
+    title: "Collaboration has a place",
+    copy: "Enter the Office deliberately to use the same encrypted, authorization-aware chat available outside the World.",
+  },
 ];
 
 export const THEME_OPTIONS = [
@@ -355,6 +385,7 @@ export const ACTIVITY_OPTIONS = [
   { id: "viewing-repository", label: "Viewing a repository" },
   { id: "reading-documentation", label: "Reading documentation" },
   { id: "visiting-organization", label: "Visiting an organization" },
+  { id: "visiting-office", label: "Visiting the ForkMesh Office" },
   { id: "browsing-code-visualization", label: "Browsing a code visualization" },
 ];
 
