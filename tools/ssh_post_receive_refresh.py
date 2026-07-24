@@ -56,6 +56,7 @@ SERVICE_TIMEOUT_SECONDS = 2 * 60
 DEFAULT_HEALTH_TIMEOUT_SECONDS = 180
 HEALTH_REQUEST_TIMEOUT_SECONDS = 3.0
 HEALTH_RETRY_SECONDS = 0.5
+HEALTH_USER_AGENT = "ForkMesh-ssh-refresh-health/1.0"
 NAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,62}$")
 SERVICE_RE = re.compile(r"^[A-Za-z0-9@_.:-]{1,200}\.service$")
 PUBLIC_HOST_RE = re.compile(
@@ -527,7 +528,10 @@ def _signed_health_once(
     request = Request(
         origin + "/health?" + query,
         method="GET",
-        headers={"accept": "application/json"},
+        headers={
+            "Accept": "application/json",
+            "User-Agent": HEALTH_USER_AGENT,
+        },
     )
     try:
         with opener.open(request, timeout=timeout_seconds) as response:

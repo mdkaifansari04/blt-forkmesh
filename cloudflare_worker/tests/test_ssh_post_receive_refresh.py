@@ -158,6 +158,7 @@ def test_signed_health_binds_both_origins_to_nonce_node_key_and_signature(tmp_pa
 
         def open(self, request, timeout):
             assert timeout == 3
+            assert request.get_header("User-agent") == bridge.HEALTH_USER_AGENT
             self.origins.append(
                 f"{urlsplit(request.full_url).scheme}://"
                 f"{urlsplit(request.full_url).netloc}"
