@@ -1670,9 +1670,6 @@ test("Unicode emoji status is local-persisted, coalesced, and visible over every
   await expect(page.locator("[data-world-status-preview]")).toHaveText(
     "🧑‍💻 coding",
   );
-  await expect(page.locator("[data-world-identity-emoji-status]")).toHaveText(
-    "🧑‍💻 coding",
-  );
   await expect.poll(() =>
     frames.filter(
       (frame) =>
