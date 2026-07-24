@@ -51,6 +51,9 @@ const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const POSITION_RADIUS = 72;
 const POSITION_FLOOR_TOLERANCE = 0.5;
+// Mirrors the server's WORLD_ARRIVAL_CLEARANCE: a restored spot this close to
+// another visitor is treated as occupied and the fresh server slot wins.
+const ARRIVAL_CLEARANCE = 0.9;
 const POSITION_FLOORS = Object.freeze({
   "town-square": 0.38,
   east: 0.38,
@@ -12107,7 +12110,29 @@ class ForkMeshWorld extends HTMLElement {
     if (message.type === "welcome" && Array.isArray(message.peers)) {
       this.serverPeerId = String(message.id || "");
       const ownPresence = remotePlayer(message.self);
-      if (ownPresence?.id === this.serverPeerId && !this.spawnSelected) {
+      // A restored spot may have been handed out as an arrival cell while
+      // this browser was away. If another visitor is standing there, fall
+      // back to the fresh open cell the server just assigned.
+      const ownSpace = String(this.lastMovement?.space || this.currentSpace);
+      const spawnBlocked =
+        this.spawnSelected &&
+        ownSpace === "town-square" &&
+        message.peers.some((peer) => {
+          const player = remotePlayer(peer);
+          return (
+            player &&
+            player.id !== this.serverPeerId &&
+            player.space === ownSpace &&
+            Math.hypot(
+              player.x - Number(this.lastMovement?.x || 0),
+              player.z - Number(this.lastMovement?.z || 0),
+            ) < ARRIVAL_CLEARANCE
+          );
+        });
+      if (
+        ownPresence?.id === this.serverPeerId &&
+        (!this.spawnSelected || spawnBlocked)
+      ) {
         this.currentSpace = ownPresence.space;
         this.lastMovement = {
           ...this.lastMovement,
