@@ -73,6 +73,14 @@ const PRESENCE_PROFILE_DEBOUNCE_MS = 300;
 const MOVEMENT_SEND_INTERVAL_MS = 1000;
 const PRESENCE_STALE_MS = 22000;
 const WORLD_TICKET_REFRESH_MS = 5 * 60 * 1000;
+// Gentle self-update: the relay stamps a new BUILD_REV on every deploy and
+// echoes it from /api/version. A slow watcher notices the flip, saves the
+// player's position, and reloads once — the restored position makes the new
+// build appear in place without the player ever touching refresh.
+const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
+const WORLD_UPDATE_RELOAD_DELAY_MS = 1400;
+const WORLD_UPDATE_RELOADED_REV_KEY = "forkmesh.world.updateReloadedRev.v1";
 const WORLD_NOTIFICATION_POLL_MS = 30 * 1000;
 const MIRROR_STATUS_POLL_MS = 30 * 1000;
 const WORLD_MANUAL_BLOCK_DURATION_MS = 60 * 60 * 1000;
@@ -2995,6 +3003,9 @@ class ForkMeshWorld extends HTMLElement {
     this.diagnosticsOutboundSample = 0;
     this.lastDiagnosticsSnapshot = null;
     this.buildDiagnostics = { version: "", revision: "" };
+    this.updateCheckTimer = 0;
+    this.lastUpdateCheckAt = 0;
+    this.updateReloadPending = false;
     this.peerGraceTimer = 0;
     this.peerGraceUntil = 0;
     this.pingTimer = 0;
@@ -3087,6 +3098,7 @@ class ForkMeshWorld extends HTMLElement {
     this.startDiagnostics();
     this.bootstrap();
     this.startWorldTicketRefresh();
+    this.startUpdateWatch();
   }
 
   disconnectedCallback() {
@@ -3292,7 +3304,10 @@ class ForkMeshWorld extends HTMLElement {
       try {
         this.socket?.close(1000, "page hidden");
       } catch (_) {}
-    } else if (!this.socket) {
+      return;
+    }
+    void this.checkForWorldUpdate();
+    if (!this.socket) {
       this.refreshWorldTicket();
       this.connectPresence();
       void this.refreshMirrorCatalogs();
@@ -11484,6 +11499,56 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.clearFocus();
   }
 
+  startUpdateWatch() {
+    window.clearInterval(this.updateCheckTimer);
+    this.updateCheckTimer = window.setInterval(
+      () => void this.checkForWorldUpdate(),
+      WORLD_UPDATE_CHECK_INTERVAL_MS,
+    );
+  }
+
+  async checkForWorldUpdate() {
+    if (this.destroyed || this.updateReloadPending || document.hidden) return;
+    // Visibility flips can arrive in bursts; keep the check to at most one
+    // relay request per minute so hidden/visible churn never adds load.
+    const now = Date.now();
+    if (now - this.lastUpdateCheckAt < WORLD_UPDATE_CHECK_MIN_GAP_MS) return;
+    this.lastUpdateCheckAt = now;
+    let build;
+    try {
+      build = normalizeBuildDiagnostics(
+        await this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
+      );
+    } catch (_) {
+      return; // Offline or relay backpressure: a later quiet tick retries.
+    }
+    if (this.destroyed || this.updateReloadPending || !build.revision) return;
+    const known = String(this.buildDiagnostics?.revision || "");
+    if (!known) {
+      // The boot fetch failed or has not landed yet: adopt this revision as
+      // the baseline instead of treating it as an update.
+      this.buildDiagnostics = { ...this.buildDiagnostics, ...build };
+      this.renderDiagnostics();
+      return;
+    }
+    if (build.revision === known) return;
+    let reloadedFor = "";
+    try {
+      reloadedFor =
+        sessionStorage.getItem(WORLD_UPDATE_RELOADED_REV_KEY) || "";
+    } catch (_) {}
+    // One reload per revision: if a cache keeps reporting a revision this tab
+    // already reloaded for, stay put rather than reload-looping the player.
+    if (reloadedFor === build.revision) return;
+    this.updateReloadPending = true;
+    try {
+      sessionStorage.setItem(WORLD_UPDATE_RELOADED_REV_KEY, build.revision);
+    } catch (_) {}
+    this.captureWorldPosition(true);
+    this.toast("✨ The World just updated — bringing you along in place…");
+    window.setTimeout(() => location.reload(), WORLD_UPDATE_RELOAD_DELAY_MS);
+  }
+
   startDiagnostics() {
     window.clearInterval(this.diagnosticsTimer);
     this.renderDiagnostics();
@@ -12414,6 +12479,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);
     window.clearInterval(this.diagnosticsTimer);
+    window.clearInterval(this.updateCheckTimer);
     this.peerGraceTimer = 0;
     this.profilePresenceTimer = 0;
     this.movementSendTimer = 0;
