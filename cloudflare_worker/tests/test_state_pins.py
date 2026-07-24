@@ -34,7 +34,8 @@ def _load(*names):
 (
     clone_state_pins,
     repo_mirror_same_group,
-) = _load("clone_state_pins", "repo_mirror_same_group")
+    STATE_PIN_HISTORY,
+) = _load("clone_state_pins", "repo_mirror_same_group", "STATE_PIN_HISTORY")
 
 
 def _rec(owner, *, source="local-node", state="", root="root1", name="forkmesh"):
@@ -79,6 +80,25 @@ def test_mirror_lagging_the_source_matches_pin_history():
     rows = [_row("kS", _rec("source", state="new")), _row("kM", mirror)]
     pins = clone_state_pins(mirror, "kM", rows, {"kS": ["old"]})
     assert pins == {"new", "old"}
+
+
+def test_pin_history_window_absorbs_active_issue_churn():
+    # Every issue/PR/discussion action republishes the catalog with a fresh
+    # state hash, so a repo under active collaboration churns pins fast. The
+    # window must be deep enough that a mirror lagging by many issue edits
+    # between its periodic re-syncs still serves .forkmesh/issues/ instead of
+    # falling out of the accepted set and forcing the "unavailable until a live
+    # desktop host serves" fallback. Guard against the window regressing to the
+    # handful-of-publishes depth that produced that symptom.
+    assert STATE_PIN_HISTORY >= 100
+
+    # A mirror pinned to a state that is dozens of publishes behind the source
+    # still resolves as long as that state is inside the retained history.
+    history = ["s%d" % i for i in range(STATE_PIN_HISTORY)]
+    mirror = _rec("mirror", source="remote-clone", state="s90")
+    rows = [_row("kS", _rec("source", state="newest")), _row("kM", mirror)]
+    pins = clone_state_pins(mirror, "kM", rows, {"kS": history})
+    assert "s90" in pins
 
 
 def test_fork_source_does_not_pin_the_mirror():

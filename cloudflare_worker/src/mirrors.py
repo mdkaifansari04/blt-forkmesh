@@ -601,9 +601,21 @@ def ack_mirror_requests(requests, ids):
 
 # How many recent owner-attested state pins are kept (and accepted) per repo.
 # The window is the availability/rollback trade: a mirror may lag the source by
-# up to this many publishes and still clone, while a rollback older than the
+# up to this many publishes and still serve, while a rollback older than the
 # window is rejected.
-STATE_PIN_HISTORY = 10
+#
+# Every issue/PR/discussion action commits to a served branch and therefore
+# republishes the catalog with a fresh state hash, so a repo with active
+# collaboration churns pins fast. A 10-deep window let a mirror fall out of the
+# accepted set after only a handful of issue edits between its ~5-minute
+# re-syncs, at which point the relay refused to route ANY read to it and the
+# web UI reported "Issues are unavailable until a live desktop host serves the
+# .forkmesh/issues/ folder" even though healthy mirrors held the folder. A
+# deeper window keeps those mirrors serving issues (and every other read) across
+# far more source publishes. Only states the owner genuinely attested are ever
+# admitted, so widening the window does not weaken the anti-tamper guarantee —
+# it only accepts older-but-real rollbacks over a longer span.
+STATE_PIN_HISTORY = 100
 
 
 def clone_state_pins(target, target_key, rows, history=None):
