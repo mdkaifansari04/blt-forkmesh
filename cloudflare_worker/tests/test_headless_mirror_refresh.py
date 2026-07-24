@@ -62,6 +62,28 @@ def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
+def test_safe_environment_allows_only_owner_private_tmpdir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    private = tmp_path / "mirror-runtime"
+    private.mkdir(mode=0o700)
+    monkeypatch.setenv("TMPDIR", str(private))
+    assert refresh_tool._safe_environment()["TMPDIR"] == str(private)
+
+    private.chmod(0o755)
+    assert "TMPDIR" not in refresh_tool._safe_environment()
+
+    private.chmod(0o700)
+    link = tmp_path / "runtime-link"
+    link.symlink_to(private, target_is_directory=True)
+    monkeypatch.setenv("TMPDIR", str(link))
+    assert "TMPDIR" not in refresh_tool._safe_environment()
+
+    monkeypatch.setenv("TMPDIR", "relative-runtime")
+    assert "TMPDIR" not in refresh_tool._safe_environment()
+
+
 @pytest.fixture()
 def installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     tmp_path.chmod(0o700)

@@ -204,6 +204,26 @@ ExecStart=/usr/bin/python3 /opt/forkmesh/tools/mirror_gateway.py --config /var/l
 Keep the gateway listener on loopback. Cloudflare Tunnel is the public TLS
 boundary.
 
+The gateway materializes one authenticated working copy of the encrypted bare
+repository for its process lifetime, and `refresh` materializes a second copy
+before the atomic cutover. On hosts where `/tmp` is a small tmpfs, create an
+owner-only directory on a disk-backed filesystem and set `TMPDIR` for both the
+gateway service and manual refresh process:
+
+```ini
+[Service]
+Environment=TMPDIR=/var/lib/forkmesh-mirror/runtime-tmp
+ReadWritePaths=/var/lib/forkmesh-mirror/runtime-tmp
+```
+
+The directory must already exist, be owned by the mirror service account, and
+have mode `0700`. The refresh subprocess forwards `TMPDIR` only when it is an
+absolute, normalized, real owner-only directory; unsafe values are ignored.
+Size it for at least two expanded copies during validation. This storage is
+ephemeral materialized public-repository data, not a replacement for the
+encrypted archive, and should remain inside the service's protected local
+storage boundary.
+
 ## Register after restart
 
 After the gateway and Tunnel are running with the new generation:

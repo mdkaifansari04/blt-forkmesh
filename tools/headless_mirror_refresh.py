@@ -248,7 +248,7 @@ def _safe_environment() -> dict[str, str]:
     # Keep the child environment allowlisted.  In particular, do not pass
     # cloud credentials, Python import hooks, dynamic-loader options, Git
     # configuration injection, SSH agents, or wallet-related variables.
-    return {
+    environment = {
         "PATH": os.environ.get(
             "PATH",
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -261,6 +261,31 @@ def _safe_environment() -> dict[str, str]:
         "GIT_PROTOCOL_FROM_USER": "0",
         "GIT_OPTIONAL_LOCKS": "0",
     }
+    # A materialized mirror can be several times larger than its encrypted
+    # archive. Small hosts frequently mount /tmp as a bounded tmpfs, so permit
+    # an operator to select disk-backed temporary storage without weakening the
+    # otherwise allowlisted child environment. Only an existing, normalized,
+    # owner-only real directory is trusted; unsafe TMPDIR values are ignored
+    # and Python retains its normal fail-closed temporary-directory behavior.
+    temporary_raw = os.environ.get("TMPDIR", "")
+    if temporary_raw:
+        temporary = Path(temporary_raw)
+        try:
+            info = temporary.lstat()
+        except OSError:
+            info = None
+        if (
+            temporary.is_absolute()
+            and temporary == Path(os.path.normpath(str(temporary)))
+            and info is not None
+            and stat.S_ISDIR(info.st_mode)
+            and not stat.S_ISLNK(info.st_mode)
+            and info.st_uid == os.geteuid()
+            and not stat.S_IMODE(info.st_mode)
+            & (stat.S_IRWXG | stat.S_IRWXO)
+        ):
+            environment["TMPDIR"] = str(temporary)
+    return environment
 
 
 def _absolute_path(value: Any, label: str) -> Path:
