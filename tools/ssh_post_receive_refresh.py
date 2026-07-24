@@ -59,6 +59,7 @@ DEFAULT_HEALTH_TIMEOUT_SECONDS = 180
 HEALTH_REQUEST_TIMEOUT_SECONDS = 3.0
 HEALTH_RETRY_SECONDS = 0.5
 HEALTH_USER_AGENT = "ForkMesh-ssh-refresh-health/1.0"
+FIXED_RUNTIME_TMPDIR = "/var/lib/forkmesh-mirror/runtime-tmp"
 NAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,62}$")
 SERVICE_RE = re.compile(r"^[A-Za-z0-9@_.:-]{1,200}\.service$")
 PUBLIC_HOST_RE = re.compile(
@@ -275,6 +276,9 @@ def _safe_environment() -> dict[str, str]:
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "LANG": "C",
         "LC_ALL": "C",
+        # This is the packaged, service-owned disk-backed materialization
+        # directory. Never forward an ambient or config-derived TMPDIR.
+        "TMPDIR": FIXED_RUNTIME_TMPDIR,
     }
 
 

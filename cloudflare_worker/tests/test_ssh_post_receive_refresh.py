@@ -104,6 +104,54 @@ def test_run_uses_only_fixed_refresh_restart_health_register_order(
     assert not config.trigger_path.exists()
 
 
+def test_run_gives_every_child_only_the_fixed_disk_backed_tmpdir(
+    tmp_path, monkeypatch
+):
+    config = _config(tmp_path)
+    config.trigger_path.write_text("forkmesh-refresh-v1\n", encoding="ascii")
+    monkeypatch.setattr(bridge.os, "geteuid", lambda: 0)
+    monkeypatch.setenv("TMPDIR", "/tmp/attacker-controlled")
+    monkeypatch.setenv("PATH", "/tmp/untrusted-bin")
+    monkeypatch.setenv("PUSH_SECRET", "must-not-be-forwarded")
+    children = []
+
+    def runner(command, **kwargs):
+        operation = (
+            "restart"
+            if command[0] == "/usr/bin/systemctl"
+            else command[-1]
+        )
+        children.append((operation, kwargs["env"]))
+        return SimpleNamespace(returncode=0)
+
+    bridge.run(
+        config,
+        runner=runner,
+        health_waiter=lambda _config: None,
+        refresh_sleeper=lambda _seconds: pytest.fail(
+            "a successful refresh must not sleep"
+        ),
+    )
+
+    assert [operation for operation, _environment in children] == [
+        "refresh",
+        "restart",
+        "register",
+    ]
+    expected = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "TMPDIR": "/var/lib/forkmesh-mirror/runtime-tmp",
+    }
+    assert all(environment == expected for _operation, environment in children)
+    assert all(
+        environment["TMPDIR"] != "/tmp/attacker-controlled"
+        for _operation, environment in children
+    )
+    assert not config.trigger_path.exists()
+
+
 def test_run_retries_only_refresh_once_then_publishes_in_exact_order(
     tmp_path, monkeypatch
 ):
