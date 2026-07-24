@@ -59,6 +59,7 @@ AGE_ARMORED_HEADER = b"-----BEGIN AGE ENCRYPTED FILE-----\n"
 NODE_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+GIT_OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 BASE64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 SOLANA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 KEY_REFERENCE_RE = re.compile(r"^[A-Za-z0-9._:/@+-]{3,240}$")
@@ -881,6 +882,32 @@ def _source_refs_sha256(config: RefreshConfig) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _source_branch_commit(config: RefreshConfig) -> str:
+    revision = (
+        "refs/heads/" + config.catalog.branch
+        if config.catalog.branch
+        else "HEAD"
+    )
+    raw = _run_bounded(
+        _git_prefix(config)
+        + [
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            revision + "^{commit}",
+        ],
+        maximum_output=256,
+        timeout=60,
+    )
+    try:
+        commit = raw.decode("ascii").strip().lower()
+    except UnicodeDecodeError as exc:
+        raise RefreshError("source repository commit is invalid") from exc
+    if not GIT_OBJECT_ID_RE.fullmatch(commit):
+        raise RefreshError("source repository commit is invalid")
+    return commit
+
+
 def _validate_seal_response(value: Mapping[str, Any]) -> SealMetadata:
     _expect_fields(
         value,
@@ -1386,6 +1413,7 @@ def _catalog_unsigned(
         "version": config.catalog.version,
         "nodeId": config.node_owner,
         "stateHash": metadata.expected_refs_sha256,
+        "commit": _source_branch_commit(config),
     }
     if config.catalog.solana:
         record["solana"] = config.catalog.solana

@@ -405,9 +405,13 @@ def test_register_posts_endpoint_then_node_owner_catalog(installation):
     assert re_fullmatch_base64_signature(endpoint["signature"])
 
     catalog = calls[1][1]
+    expected_commit = _run(
+        ["git", "--git-dir", str(installation["bare"]), "rev-parse", "main"]
+    )
     assert catalog["owner"] == "mirror-two"
     assert catalog["name"] == "forkmesh"
     assert catalog["visibility"] == "public"
+    assert catalog["commit"] == expected_commit
     assert catalog["catalogSigVersion"] == 2
     assert catalog["maintainer"] == installation["public"]["nodePublicKey"]
     assert re_fullmatch_base64_signature(catalog["catalogSig"])
