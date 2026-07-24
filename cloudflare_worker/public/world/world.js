@@ -71,6 +71,8 @@ const WORLD_SCORE_LOOP_MS = 4 * 60 * 60 * 1000;
 const WORLD_LIGHT_LEVEL_MIN = 40;
 const WORLD_LIGHT_LEVEL_MAX = 140;
 const WORLD_LIGHT_LEVEL_DEFAULT = 100;
+const WORLD_ACCOUNT_NAME_RE =
+  /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const FLAGSHIP_REPOSITORY = Object.freeze({
   owner: "forkmesh",
   repo: "forkmesh",
@@ -248,6 +250,64 @@ function randomId() {
 
 function readSession() {
   return readJSON(localStorage, "forkmesh.session", null);
+}
+
+function storeWorldSession(body) {
+  const nodeName = String(body?.nodeName || "").trim().toLowerCase();
+  const sessionToken = String(body?.sessionToken || "").trim();
+  if (
+    !WORLD_ACCOUNT_NAME_RE.test(nodeName) ||
+    !sessionToken ||
+    sessionToken.length > 2048
+  ) {
+    return false;
+  }
+  writeJSON(localStorage, "forkmesh.session", {
+    nodeName,
+    email: String(body?.email || "").slice(0, 320),
+    status: String(body?.status || "").slice(0, 32),
+    pubkey: String(body?.pubkey || "").slice(0, 256),
+    emailVerified: Boolean(body?.emailVerified),
+    isAdmin: Boolean(body?.isAdmin),
+    adminUrl: String(body?.adminUrl || "").slice(0, 300),
+    solana: String(body?.solana || "").slice(0, 80),
+    hasPayoutAddress: Boolean(body?.hasPayoutAddress),
+    sessionToken,
+    avatarPng: String(body?.avatarPng || "").slice(0, 600),
+    avatarUpdatedAt: Number(body?.avatarUpdatedAt) || 0,
+    profileBio: String(body?.profileBio || "").slice(0, 500),
+    profileAbout: String(
+      body?.profileAbout || body?.profileReadme || "",
+    ).slice(0, 20_000),
+    profileReadme: String(
+      body?.profileReadme || body?.profileAbout || "",
+    ).slice(0, 20_000),
+    profileLocation: String(body?.profileLocation || "").slice(0, 160),
+    profileTimezone: String(body?.profileTimezone || "").slice(0, 80),
+    profileLinks: Array.isArray(body?.profileLinks)
+      ? body.profileLinks.slice(0, 12).map((link) => ({
+          label: String(link?.label || "").slice(0, 80),
+          url: String(link?.url || "").slice(0, 500),
+        }))
+      : [],
+    profileFollowers: Math.max(0, Number(body?.followers) || 0),
+    profileFollowing: Math.max(0, Number(body?.following) || 0),
+    profileMirrorCount: Math.max(0, Number(body?.mirrorCount) || 0),
+    kind: String(body?.kind || "").slice(0, 32),
+    owner: String(body?.owner || "").slice(0, 80),
+    nodes: Array.isArray(body?.nodes)
+      ? body.nodes
+          .slice(0, 64)
+          .map((node) => String(node || "").slice(0, 80))
+      : [],
+    at: Date.now(),
+  });
+  try {
+    document.cookie =
+      "forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax" +
+      (location.protocol === "https:" ? "; Secure" : "");
+  } catch (_) {}
+  return true;
 }
 
 function guestId() {
@@ -1962,6 +2022,14 @@ function accountBadgeCopy(identity, settings) {
 }
 
 function worldTemplate(identity, settings, mode) {
+  const accountSession = readSession();
+  const signedInName =
+    accountSession?.sessionToken &&
+    WORLD_ACCOUNT_NAME_RE.test(
+      String(accountSession.nodeName || "").trim().toLowerCase(),
+    )
+      ? String(accountSession.nodeName).trim().toLowerCase()
+      : "";
   const mapItems = LANDMARKS.map(
     (landmark) => `
       <li>
@@ -2099,6 +2167,19 @@ function worldTemplate(identity, settings, mode) {
               title="Enable World sounds"
             >
               <span aria-hidden="true">♪</span><span data-world-sound-label>Sound</span>
+            </button>
+            <button
+              class="world-top-link"
+              type="button"
+              data-world-account-open
+              title="${
+                signedInName
+                  ? `Account: ${escapeHTML(signedInName)}`
+                  : "Log in or create an account inside the World"
+              }"
+            >
+              <span aria-hidden="true">${signedInName ? "✓" : "○"}</span>
+              <span>${signedInName ? "Account" : "Login"}</span>
             </button>
             <a class="world-top-link" href="/dashboard" title="Open operations console">
               <span aria-hidden="true">▦</span><span>Console</span>
@@ -2254,6 +2335,86 @@ function worldTemplate(identity, settings, mode) {
           ></iframe>
         </section>
 
+        <button
+          class="world-account-backdrop"
+          type="button"
+          data-world-account-close
+          aria-label="Close account panel"
+          tabindex="-1"
+        ></button>
+        <section
+          class="world-account"
+          data-world-account
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="world-account-title"
+          aria-hidden="true"
+        >
+          <header class="world-account-heading">
+            <div>
+              <p class="world-eyebrow">FORKMESH IDENTITY</p>
+              <h2 id="world-account-title">${
+                signedInName ? "Your account" : "Join from the World"
+              }</h2>
+              <span>Passwords, verification codes, and form contents never enter multiplayer presence.</span>
+            </div>
+            <button type="button" data-world-account-close aria-label="Close account panel">×</button>
+          </header>
+          ${
+            signedInName
+              ? `<div class="world-account-signed-in">
+                  <span>Signed in on this device as</span>
+                  <strong>${escapeHTML(signedInName)}</strong>
+                  <p>The server still verifies your session before granting an account badge, private repository visibility, notifications, or organization permissions.</p>
+                  <button type="button" data-world-account-logout>Log out on this device</button>
+                </div>`
+              : `<div class="world-account-tabs" role="tablist" aria-label="Account action">
+                  <button type="button" role="tab" aria-selected="true" data-world-account-mode="login">Log in</button>
+                  <button type="button" role="tab" aria-selected="false" data-world-account-mode="signup">Create account</button>
+                </div>
+                <form class="world-account-form" data-world-login-form data-world-account-view="login">
+                  <label>
+                    <span>Email</span>
+                    <input type="email" name="email" maxlength="320" autocomplete="username" required />
+                  </label>
+                  <label>
+                    <span>Password</span>
+                    <input type="password" name="password" maxlength="1024" autocomplete="current-password" required />
+                  </label>
+                  <label>
+                    <span>Authenticator code <small>only if enabled</small></span>
+                    <input type="text" name="totp" maxlength="12" inputmode="numeric" autocomplete="one-time-code" />
+                  </label>
+                  <button type="submit" data-world-account-submit>Log in inside the World</button>
+                </form>
+                <form class="world-account-form" data-world-signup-form data-world-account-view="signup" hidden>
+                  <label>
+                    <span>Public username</span>
+                    <input type="text" name="nodeName" minlength="1" maxlength="63" autocomplete="username" autocapitalize="none" spellcheck="false" required />
+                  </label>
+                  <label>
+                    <span>Email</span>
+                    <input type="email" name="email" maxlength="320" autocomplete="email" required />
+                  </label>
+                  <label>
+                    <span>Password <small>at least 8 characters</small></span>
+                    <input type="password" name="password" minlength="8" maxlength="1024" autocomplete="new-password" required />
+                  </label>
+                  <label class="world-account-consent">
+                    <input type="checkbox" name="terms" required />
+                    <span>I agree to the ForkMesh <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.</span>
+                  </label>
+                  <button type="submit" data-world-account-submit>Create account inside the World</button>
+                </form>
+                <div class="world-account-verification" data-world-account-verification hidden>
+                  <strong>Check your inbox</strong>
+                  <p>ForkMesh created <span data-world-account-created-name></span> and sent a verification message to <span data-world-account-created-email></span>. You may close this panel and keep exploring as a guest.</p>
+                </div>
+                <p class="world-account-status" data-world-account-status role="status" aria-live="polite"></p>`
+          }
+          <p class="world-account-privacy">ForkMesh sends these forms only over same-origin HTTPS. Credentials are never placed in URLs, public activity, World sockets, analytics events, or repository logs.</p>
+        </section>
+
         <section class="world-settings" data-world-settings aria-labelledby="world-settings-title" aria-hidden="true">
           <div class="world-settings-heading">
             <div>
@@ -2404,6 +2565,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldTicketExpires = 0;
     this.worldTicketTimer = 0;
     this.chatReturnFocus = null;
+    this.accountReturnFocus = null;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -3641,6 +3803,24 @@ class ForkMeshWorld extends HTMLElement {
         this.closeWorldChat();
         return;
       }
+      const accountOpen = event.target.closest("[data-world-account-open]");
+      if (accountOpen) {
+        this.toggleWorldAccount(true, "login", accountOpen);
+        return;
+      }
+      if (event.target.closest("[data-world-account-close]")) {
+        this.toggleWorldAccount(false);
+        return;
+      }
+      const accountMode = event.target.closest("[data-world-account-mode]");
+      if (accountMode) {
+        this.selectWorldAccountMode(accountMode.dataset.worldAccountMode);
+        return;
+      }
+      if (event.target.closest("[data-world-account-logout]")) {
+        void this.logoutFromWorld();
+        return;
+      }
       if (event.target.closest("[data-world-arrival-dismiss]")) {
         try {
           localStorage.setItem(INTRO_DISMISSED_KEY, "1");
@@ -4073,6 +4253,15 @@ class ForkMeshWorld extends HTMLElement {
       }
     });
 
+    this.$("[data-world-login-form]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void this.submitWorldLogin(event.currentTarget);
+    });
+    this.$("[data-world-signup-form]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void this.submitWorldSignup(event.currentTarget);
+    });
+
     this.$$("[data-move]").forEach((button) => {
       const start = (event) => {
         event.preventDefault();
@@ -4093,6 +4282,8 @@ class ForkMeshWorld extends HTMLElement {
       if (event.code !== "Escape") return;
       if (this.$("[data-world-chat]")?.dataset.open === "true") {
         this.closeWorldChat();
+      } else if (this.$("[data-world-account]")?.dataset.open === "true") {
+        this.toggleWorldAccount(false);
       } else if (this.$("[data-world-settings]")?.dataset.open === "true") {
         this.toggleSettings(false);
       } else if (this.$("[data-world-detail]")?.dataset.open === "true") {
@@ -9719,6 +9910,242 @@ class ForkMeshWorld extends HTMLElement {
         "Project support is voluntary, separate from node rewards, and never promises returns or governance dominance.",
     };
     this.toast(messages[action] || "This district is being connected to its technical backend.");
+  }
+
+  setWorldAccountStatus(message, state = "") {
+    const status = this.$("[data-world-account-status]");
+    if (!status) return;
+    status.textContent = String(message || "");
+    status.dataset.state = ["error", "success"].includes(state) ? state : "";
+  }
+
+  selectWorldAccountMode(mode) {
+    const selected = mode === "signup" ? "signup" : "login";
+    const tabs = this.$(".world-account-tabs");
+    if (tabs) tabs.hidden = false;
+    this.$$("[data-world-account-mode]").forEach((button) => {
+      button.setAttribute(
+        "aria-selected",
+        String(button.dataset.worldAccountMode === selected),
+      );
+    });
+    this.$$("[data-world-account-view]").forEach((view) => {
+      view.hidden = view.dataset.worldAccountView !== selected;
+    });
+    this.$("[data-world-account-verification]")?.setAttribute("hidden", "");
+    this.setWorldAccountStatus("");
+    window.setTimeout(
+      () =>
+        this.$(
+          `[data-world-account-view="${selected}"]:not([hidden]) input`,
+        )?.focus(),
+      0,
+    );
+  }
+
+  toggleWorldAccount(open, mode = "login", returnFocus = null) {
+    const panel = this.$("[data-world-account]");
+    const backdrop = this.$(".world-account-backdrop");
+    if (!panel || !backdrop) return;
+    if (open) {
+      this.accountReturnFocus =
+        returnFocus instanceof HTMLElement ? returnFocus : null;
+      this.closeWorldChat();
+      this.closeLandmark();
+      this.toggleSettings(false);
+      if (this.tourIndex >= 0) this.stopTour();
+      this.selectWorldAccountMode(mode);
+    } else {
+      this.$$(
+        "[data-world-login-form] input[type='password'], " +
+          "[data-world-signup-form] input[type='password'], " +
+          "[data-world-login-form] input[name='totp']",
+      ).forEach((input) => {
+        input.value = "";
+      });
+      this.setWorldAccountStatus("");
+    }
+    panel.dataset.open = String(open);
+    panel.setAttribute("aria-hidden", String(!open));
+    backdrop.dataset.open = String(open);
+    if (open) {
+      window.setTimeout(
+        () =>
+          panel.querySelector(
+            "input:not([hidden]), [data-world-account-close]",
+          )?.focus(),
+        80,
+      );
+    } else {
+      const focus = this.accountReturnFocus;
+      this.accountReturnFocus = null;
+      window.setTimeout(() => focus?.focus?.(), 0);
+    }
+  }
+
+  async submitWorldLogin(form) {
+    if (!(form instanceof HTMLFormElement)) return;
+    const email = String(form.elements.email?.value || "").trim();
+    const password = String(form.elements.password?.value || "");
+    const totp = String(form.elements.totp?.value || "").trim();
+    if (!/.+@.+\..+/.test(email) || !password) {
+      this.setWorldAccountStatus(
+        "Enter a valid email address and password.",
+        "error",
+      );
+      return;
+    }
+    const submit = form.querySelector("[data-world-account-submit]");
+    if (submit) {
+      submit.disabled = true;
+      submit.textContent = "Logging in…";
+    }
+    this.setWorldAccountStatus("Verifying this account…");
+    try {
+      const body = await this.postJSON(
+        "/api/accounts/login",
+        { email, password, totp },
+        { auth: false, timeout: 12_000 },
+      );
+      if (!storeWorldSession(body)) {
+        throw new Error("invalid_session");
+      }
+      form.elements.password.value = "";
+      form.elements.totp.value = "";
+      this.captureWorldPosition(true);
+      this.setWorldAccountStatus(
+        `Logged in as ${String(body.nodeName || "").toLowerCase()}. Reloading the same World position…`,
+        "success",
+      );
+      window.setTimeout(() => location.reload(), 350);
+    } catch (error) {
+      const code = String(error?.message || "");
+      const messages = {
+        invalid_credentials: "Incorrect email or password.",
+        bad_totp: "Enter the current authenticator code.",
+        too_many_attempts:
+          "Too many failed attempts. Wait a few minutes and try again.",
+        account_disabled: "This account has been disabled.",
+      };
+      this.setWorldAccountStatus(
+        messages[code] || "Could not log in. Please try again.",
+        "error",
+      );
+      form.elements.password.value = "";
+      form.elements.totp.value = "";
+      form.elements.password.focus();
+      if (submit) {
+        submit.disabled = false;
+        submit.textContent = "Log in inside the World";
+      }
+    }
+  }
+
+  async submitWorldSignup(form) {
+    if (!(form instanceof HTMLFormElement)) return;
+    const nodeName = String(form.elements.nodeName?.value || "")
+      .trim()
+      .toLowerCase();
+    const email = String(form.elements.email?.value || "").trim();
+    const password = String(form.elements.password?.value || "");
+    const terms = Boolean(form.elements.terms?.checked);
+    form.elements.nodeName.value = nodeName;
+    if (!WORLD_ACCOUNT_NAME_RE.test(nodeName)) {
+      this.setWorldAccountStatus(
+        "Use lowercase letters, numbers, and hyphens; start with a letter and end with a letter or number.",
+        "error",
+      );
+      return;
+    }
+    if (!/.+@.+\..+/.test(email)) {
+      this.setWorldAccountStatus("Enter a valid email address.", "error");
+      return;
+    }
+    if (password.length < 8) {
+      this.setWorldAccountStatus(
+        "Password must contain at least 8 characters.",
+        "error",
+      );
+      return;
+    }
+    if (!terms) {
+      this.setWorldAccountStatus(
+        "Accept the Terms and Privacy Policy to continue.",
+        "error",
+      );
+      return;
+    }
+    const submit = form.querySelector("[data-world-account-submit]");
+    if (submit) {
+      submit.disabled = true;
+      submit.textContent = "Creating…";
+    }
+    this.setWorldAccountStatus("Creating the account securely…");
+    try {
+      await this.postJSON(
+        "/api/accounts/signup",
+        { nodeName, email, password },
+        { auth: false, timeout: 12_000 },
+      );
+      form.elements.password.value = "";
+      this.$$("[data-world-account-view]").forEach((view) => {
+        view.hidden = true;
+      });
+      const tabs = this.$(".world-account-tabs");
+      if (tabs) tabs.hidden = true;
+      const verification = this.$("[data-world-account-verification]");
+      if (verification) verification.hidden = false;
+      const createdName = this.$("[data-world-account-created-name]");
+      const createdEmail = this.$("[data-world-account-created-email]");
+      if (createdName) createdName.textContent = nodeName;
+      if (createdEmail) createdEmail.textContent = email;
+      this.setWorldAccountStatus(
+        "Account created. Verification is required before account permissions appear in the World.",
+        "success",
+      );
+    } catch (error) {
+      const code = String(error?.message || "");
+      const messages = {
+        node_name_taken: "That username is already taken.",
+        email_taken: "That email is already registered.",
+        password_too_short:
+          "Password must contain at least 8 characters.",
+      };
+      this.setWorldAccountStatus(
+        messages[code] || "Could not create the account. Please try again.",
+        "error",
+      );
+      form.elements.password.value = "";
+      form.elements.password.focus();
+      if (submit) {
+        submit.disabled = false;
+        submit.textContent = "Create account inside the World";
+      }
+    }
+  }
+
+  async logoutFromWorld() {
+    const session = readSession();
+    try {
+      await fetch("/api/accounts/logout", {
+        method: "POST",
+        headers: session?.sessionToken
+          ? { Authorization: `Bearer ${session.sessionToken}` }
+          : {},
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+    } catch (_) {
+      // Local logout must still complete if the network is unavailable.
+    }
+    try {
+      localStorage.removeItem("forkmesh.session");
+      document.cookie =
+        "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax" +
+        (location.protocol === "https:" ? "; Secure" : "");
+    } catch (_) {}
+    this.captureWorldPosition(true);
+    location.reload();
   }
 
   toggleSettings(open) {

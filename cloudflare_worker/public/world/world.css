@@ -1451,6 +1451,255 @@ forkmesh-world {
   background: #081511;
 }
 
+.world-account-backdrop {
+  position: absolute;
+  z-index: 33;
+  inset: 0;
+  border: 0;
+  background: rgb(0 0 0 / 0.68);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 180ms ease, visibility 180ms ease;
+  pointer-events: none;
+}
+
+.world-account-backdrop[data-open="true"] {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.world-account {
+  position: absolute;
+  z-index: 34;
+  top: max(18px, var(--safe-top));
+  bottom: max(18px, var(--safe-bottom));
+  left: 50%;
+  width: min(520px, calc(100vw - 36px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--world-line-strong);
+  background: #081511;
+  padding: 18px;
+  box-shadow: 0 30px 100px rgb(0 0 0 / 0.62);
+  transform: translate(-50%, 18px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 180ms ease, transform 180ms ease, visibility 180ms ease;
+  pointer-events: none;
+}
+
+.world-account[data-open="true"] {
+  transform: translate(-50%, 0);
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.world-account-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid var(--world-line);
+  padding-bottom: 14px;
+}
+
+.world-account-heading h2 {
+  margin: 3px 0 0;
+  font-family: "ForkMesh Favorit", sans-serif;
+  font-size: 1.8rem;
+  letter-spacing: -0.04em;
+}
+
+.world-account-heading span {
+  display: block;
+  max-width: 420px;
+  margin-top: 5px;
+  color: var(--world-muted);
+  font-size: 0.64rem;
+  line-height: 1.45;
+}
+
+.world-account-heading > button {
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--world-line);
+  background: transparent;
+  color: var(--world-copy);
+  cursor: pointer;
+  font-size: 1.1rem;
+}
+
+.world-account-heading > button:hover,
+.world-account-heading > button:focus-visible {
+  border-color: var(--world-mint);
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-account-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  margin-top: 16px;
+  border: 1px solid var(--world-line);
+}
+
+.world-account-tabs button {
+  min-height: 40px;
+  border: 0;
+  background: #0a1915;
+  color: var(--world-muted);
+  cursor: pointer;
+  font: 0.66rem "ForkMesh Mono", monospace;
+}
+
+.world-account-tabs button + button {
+  border-left: 1px solid var(--world-line);
+}
+
+.world-account-tabs button[aria-selected="true"],
+.world-account-tabs button:hover,
+.world-account-tabs button:focus-visible {
+  background: #12332a;
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-account-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.world-account-form[hidden] {
+  display: none;
+}
+
+.world-account-form > label:not(.world-account-consent) {
+  display: grid;
+  gap: 6px;
+}
+
+.world-account-form label > span {
+  color: var(--world-muted);
+  font: 0.6rem "ForkMesh Mono", monospace;
+}
+
+.world-account-form label small {
+  color: #6f8c7e;
+  font: inherit;
+}
+
+.world-account-form input[type="email"],
+.world-account-form input[type="password"],
+.world-account-form input[type="text"] {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--world-line);
+  border-radius: 0;
+  background: #0b1c17;
+  padding: 0 11px;
+  color: var(--world-copy);
+  font: 0.76rem "ForkMesh Mono", monospace;
+}
+
+.world-account-form input:focus-visible {
+  border-color: var(--world-mint);
+  outline: 1px solid var(--world-mint);
+}
+
+.world-account-consent {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  line-height: 1.5;
+}
+
+.world-account-consent input {
+  margin-top: 2px;
+  accent-color: var(--world-mint-deep);
+}
+
+.world-account-consent a {
+  color: var(--world-mint);
+}
+
+.world-account-form > button,
+.world-account-signed-in > button {
+  min-height: 42px;
+  border: 1px solid var(--world-mint);
+  border-radius: 0;
+  background: #174d3b;
+  color: #e8fff5;
+  cursor: pointer;
+  font: 0.68rem "ForkMesh Mono", monospace;
+}
+
+.world-account-form > button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.world-account-status {
+  min-height: 1.25em;
+  margin: 12px 0 0;
+  color: var(--world-muted);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.world-account-status[data-state="error"] {
+  color: #ffb1aa;
+}
+
+.world-account-status[data-state="success"] {
+  color: var(--world-mint);
+}
+
+.world-account-verification,
+.world-account-signed-in {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  border: 1px solid var(--world-line);
+  background: #0b1c17;
+  padding: 16px;
+}
+
+.world-account-verification[hidden] {
+  display: none;
+}
+
+.world-account-verification strong,
+.world-account-signed-in strong {
+  color: var(--world-mint);
+  font: 1.1rem "ForkMesh Favorit", sans-serif;
+}
+
+.world-account-verification p,
+.world-account-signed-in p,
+.world-account-signed-in span,
+.world-account-privacy {
+  margin: 0;
+  color: var(--world-muted);
+  font-size: 0.68rem;
+  line-height: 1.55;
+}
+
+.world-account-verification span {
+  color: var(--world-copy);
+  font-family: "ForkMesh Mono", monospace;
+}
+
+.world-account-privacy {
+  margin-top: 16px;
+  border-top: 1px solid var(--world-line);
+  padding-top: 12px;
+}
+
 .world-detail-summary {
   margin: 0;
   color: var(--world-copy);

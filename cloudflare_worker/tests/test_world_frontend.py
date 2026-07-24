@@ -626,6 +626,20 @@ def test_world_autoloads_the_live_catalog_attested_flagship_repository_map():
     assert "record?.stateHash" in catalog
 
 
+def test_login_and_signup_stay_inside_the_world_and_out_of_presence():
+    assert "data-world-account-open" in APP
+    assert "data-world-login-form" in APP
+    assert "data-world-signup-form" in APP
+    assert '"/api/accounts/login"' in APP
+    assert '"/api/accounts/signup"' in APP
+    assert "storeWorldSession(body)" in APP
+    assert "location.reload()" in APP
+    assert "password, totp" in APP
+    assert "password },\n        { auth: false" in APP
+    assert "Credentials are never placed in URLs" in APP
+    assert ".world-account" in CSS
+
+
 def test_flagship_graph_requires_commit_matched_tree_sizes_stats_and_entities():
     fetch_map = APP[
         APP.index("  async fetchRepositoryMapSnapshot("):

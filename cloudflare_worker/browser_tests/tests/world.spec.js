@@ -49,6 +49,7 @@ async function prepareWorldPage(
     chatPassphrase = "",
     worldSocketHandler = null,
     repositoryFixture = null,
+    accountFixture = null,
   } = {},
 ) {
   let mentionState = "review";
@@ -358,6 +359,25 @@ async function prepareWorldPage(
             : url.pathname === "/api/repositories"
               ? { repositories: [] }
               : {};
+    if (accountFixture && url.pathname === "/api/accounts/signup") {
+      body = {
+        ok: true,
+        nodeName: "world-user",
+        email: "world-user@example.test",
+        emailVerified: false,
+      };
+    } else if (accountFixture && url.pathname === "/api/accounts/login") {
+      body = {
+        ok: true,
+        nodeName: "world-user",
+        email: "world-user@example.test",
+        status: "registered",
+        emailVerified: true,
+        isAdmin: false,
+        sessionToken: "world-session-token",
+        nodes: [],
+      };
+    }
     if (repositoryFixture) {
       const codeOid = "a".repeat(40);
       const pullOid = "b".repeat(40);
@@ -713,6 +733,96 @@ test("signed-in World receives private and global notifications", async ({
   await expect(panel).not.toContainText("Mirror refresh completed");
   await expect(panel).not.toContainText("Issue #17 / forkmesh/forkmesh");
   await expect(panel).toContainText("Sign in to receive");
+});
+
+test("account signup and login complete inside the World without leaking into URLs", async ({
+  page,
+  context,
+}) => {
+  const accountRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/api/accounts/")) {
+      accountRequests.push({
+        path: url.pathname,
+        method: request.method(),
+        body: request.postDataJSON(),
+      });
+    }
+    expect(request.url()).not.toContain("world-user@example.test");
+    expect(request.url()).not.toContain("correct-horse-battery-staple");
+  });
+  await prepareWorldPage(page, "world-account", {
+    accountFixture: true,
+  });
+  await waitForWorld(page);
+  const originalPages = context.pages().length;
+
+  await page.getByRole("button", { name: "Login" }).click();
+  const account = page.locator("[data-world-account]");
+  await expect(account).toBeVisible();
+  await expect(account).toContainText(
+    "form contents never enter multiplayer presence",
+  );
+  await account.getByRole("tab", { name: "Create account" }).click();
+  const signup = account.locator("[data-world-signup-form]");
+  await signup.locator("[name='nodeName']").fill("world-user");
+  await signup.locator("[name='email']").fill("world-user@example.test");
+  await signup
+    .locator("[name='password']")
+    .fill("correct-horse-battery-staple");
+  await signup.locator("[name='terms']").check();
+  await signup.getByRole("button", { name: /Create account inside/ }).click();
+  await expect(account.locator("[data-world-account-verification]")).toBeVisible();
+  await expect(account).toContainText("world-user@example.test");
+  expect(accountRequests.find((item) => item.path.endsWith("/signup"))).toEqual({
+    path: "/api/accounts/signup",
+    method: "POST",
+    body: {
+      nodeName: "world-user",
+      email: "world-user@example.test",
+      password: "correct-horse-battery-staple",
+    },
+  });
+
+  await account.getByRole("button", { name: "Close account panel" }).click();
+  await page.getByRole("button", { name: "Login" }).click();
+  const login = account.locator("[data-world-login-form]");
+  await login.locator("[name='email']").fill("world-user@example.test");
+  await login
+    .locator("[name='password']")
+    .fill("correct-horse-battery-staple");
+  const reloaded = page.waitForNavigation({ waitUntil: "domcontentloaded" });
+  await login.getByRole("button", { name: /Log in inside/ }).click();
+  await reloaded;
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector("forkmesh-world")
+        ?.getAttribute("data-world-ready") === "true",
+  );
+  await expect(
+    page.getByRole("button", { name: "Account" }),
+  ).toBeVisible();
+  const stored = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("forkmesh.session") || "null"),
+  );
+  expect(stored).toMatchObject({
+    nodeName: "world-user",
+    email: "world-user@example.test",
+    sessionToken: "world-session-token",
+  });
+  expect(accountRequests.find((item) => item.path.endsWith("/login"))).toEqual({
+    path: "/api/accounts/login",
+    method: "POST",
+    body: {
+      email: "world-user@example.test",
+      password: "correct-horse-battery-staple",
+      totp: "",
+    },
+  });
+  expect(context.pages()).toHaveLength(originalPages);
+  expect(new URL(page.url()).pathname).toBe("/world/");
 });
 
 test("World chat stays embedded without navigating or opening a tab", async ({
