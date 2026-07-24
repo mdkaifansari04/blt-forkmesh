@@ -50,6 +50,25 @@ and writes `.forkmesh/releases/<channel>/SHASUMS256.txt` + `release.json`. Commi
 that metadata** and publish it — the asset goes live immediately. Run it once on a
 node of each OS to publish all three platform builds.
 
+### Refreshing a same-version binary
+
+Do not delete a checksum line or copy a local development executable into the
+CAS. When fixes must ship under the current app version, first commit the exact
+source to publish, then run the explicit refresh from a clean worktree:
+
+```sh
+FORKMESH_RELEASE_CAS=/absolute/path/to/the/served/forkmesh-releases \
+  cloudflare_worker/deploy.sh republish-release-binary
+```
+
+The command refuses a dirty tracked worktree or an unspecified served CAS. It
+rebuilds the current platform in Release mode, pins the version from
+`qt_client/CMakeLists.txt`, verifies the executable's `--version`, replaces the
+content-addressed bytes, and checks that `release.json`, `SHASUMS256.txt`, the
+CAS hash, and the source commit all agree. It then commits the small release
+metadata update. Push that commit and let mirror catalogs refresh before using
+the desktop client's fleet binary-install action.
+
 ## Installing
 
 The installer autodetects the platform, reads `SHASUMS256.txt` over the git

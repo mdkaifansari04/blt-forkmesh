@@ -8,6 +8,9 @@
 #   ./deploy.sh secrets  (re)push only the .env.production secrets, no redeploy
 #   ./deploy.sh dev      run the Worker locally instead of deploying
 #   ./deploy.sh dry-run   build and validate without uploading
+#   ./deploy.sh republish-release-binary
+#                        explicitly replace this platform's existing release
+#                        asset with a clean build of the current commit
 #
 # A production deploy stamps a BUILD_REV var and then VERIFIES the live origin is
 # serving it (GET /api/version). If the public site never reports the new rev the
@@ -520,9 +523,17 @@ push_secrets() {
 
 # Build and publish a prebuilt release binary for the current platform. This
 # makes install.sh downloads fast (no recompile) instead of falling back to a
-# full source build. Silently skips if already published for this platform.
+# full source build. Normal Worker deploys skip an asset name that is already in
+# the manifest. The explicit republish-release-binary command passes force=1 so
+# maintainers can refresh bytes after a same-version fix without deleting
+# metadata by hand or silently reusing an older vX.Y.Z executable.
 publish_release_binary() {
+    local force="${1:-0}"
     if ! command -v cmake >/dev/null 2>&1; then
+        if [ "$force" = "1" ]; then
+            echo "ERROR: cmake is required to force-republish a release binary." >&2
+            return 1
+        fi
         echo "note: cmake not found — skipping release binary build." >&2
         return 0
     fi
@@ -544,20 +555,62 @@ publish_release_binary() {
     local asset="forkmesh-${os}-${arch}"
     [ "$os" = "windows" ] && asset="${asset}.exe"
 
-    # Check if this asset is already published.
+    # Check if this asset is already published. Only the dedicated, explicit
+    # republish command may replace it; an ordinary Worker deploy remains cheap
+    # and idempotent.
     if [ -f ../.forkmesh/releases/latest/SHASUMS256.txt ] && grep -q "  $asset" ../.forkmesh/releases/latest/SHASUMS256.txt 2>/dev/null; then
-        echo "Release binary for $asset is already published."
-        return 0
+        if [ "$force" != "1" ]; then
+            echo "Release binary for $asset is already published."
+            echo "To rebuild the same version from the current clean commit, run:" >&2
+            echo "  FORKMESH_RELEASE_CAS=/path/to/served/cas ./deploy.sh republish-release-binary" >&2
+            return 0
+        fi
+        echo "Force-republishing existing release asset $asset."
     fi
 
-    echo "Building and publishing release binary for ${os}/${arch}…"
+    local release_version release_tag
+    release_version="$(app_version)"
+    if ! printf '%s' "$release_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        echo "ERROR: could not resolve a clean app version from qt_client/CMakeLists.txt." >&2
+        return 1
+    fi
+    release_tag="${FORKMESH_TAG:-v${release_version}}"
+    if [ "$release_tag" != "v${release_version}" ]; then
+        echo "ERROR: FORKMESH_TAG=$release_tag does not match app version v${release_version}." >&2
+        return 1
+    fi
+
+    if [ "$force" = "1" ]; then
+        if [ -z "${FORKMESH_RELEASE_CAS:-}" ]; then
+            echo "ERROR: forced republish requires FORKMESH_RELEASE_CAS to name the served release CAS." >&2
+            echo "       Refusing to publish metadata for bytes stored only in a throwaway default directory." >&2
+            return 1
+        fi
+        if ! git diff --quiet HEAD -- 2>/dev/null || \
+           [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+            echo "ERROR: forced release republish requires a clean tracked worktree." >&2
+            echo "       Commit the exact code to publish, then retry so release.json can identify it." >&2
+            return 1
+        fi
+    fi
+
+    echo "Building and publishing ForkMesh v${release_version} for ${os}/${arch}…"
 
     # Build the Qt client in Release mode (same as release.yml). Note: we are
-    # in cloudflare_worker/ so qt_client is at ../qt_client.
+    # in cloudflare_worker/ so qt_client is at ../qt_client. Always overwrite a
+    # cached release override: a reused build-release directory must not stamp a
+    # prior tag into the new executable.
     local jobs
     jobs="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )"
-    cmake -S ../qt_client -B ../qt_client/build-release \
-        -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF 2>&1 | grep -v "^--" || true
+    local configure_output
+    if ! configure_output="$(cmake -S ../qt_client -B ../qt_client/build-release \
+        -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF \
+        -DFORKMESH_VERSION_OVERRIDE="$release_version" 2>&1)"; then
+        printf '%s\n' "$configure_output" >&2
+        echo "ERROR: failed to configure the release binary." >&2
+        return 1
+    fi
+    printf '%s\n' "$configure_output" | grep -v "^--" || true
     if ! cmake --build ../qt_client/build-release -j"$jobs" 2>&1 | tail -5; then
         echo "ERROR: failed to build release binary." >&2
         return 1
@@ -576,21 +629,71 @@ publish_release_binary() {
         return 1
     fi
 
-    # Publish via content-addressed store and write release metadata.
+    # Version is part of the artifact contract, not just UI text. Refuse to
+    # update the manifest if the newly-built executable does not report exactly
+    # the version/channel being replaced.
+    local reported_version
+    if ! reported_version="$("$built" --version 2>&1)" || \
+       [ "$reported_version" != "ForkMesh ${release_version}" ]; then
+        echo "ERROR: built release reports '${reported_version:-<no version>}' (expected 'ForkMesh ${release_version}')." >&2
+        return 1
+    fi
+
+    # Publish via the content-addressed store and write release metadata. Run the
+    # publisher from the repository root: it writes `.forkmesh/releases/...`
+    # relative to its working directory, while deploy.sh itself runs from
+    # cloudflare_worker/. The old child-directory invocation wrote metadata to
+    # cloudflare_worker/.forkmesh and then staged the untouched root manifest.
     cp "$built" "$asset"
     chmod 0755 "$asset" || true
-    mkdir -p "${FORKMESH_RELEASE_CAS:-.forkmesh/release-blobs}"
+    local cas_dir="${FORKMESH_RELEASE_CAS:-../.forkmesh/release-blobs}"
+    case "$cas_dir" in
+        /*) ;;
+        *) cas_dir="$PWD/$cas_dir" ;;
+    esac
+    mkdir -p "$cas_dir"
     local publish_output
-    if ! publish_output="$(../tools/forkmesh-release-publish.sh \
-        --channel latest \
-        --tag "${FORKMESH_TAG:-}" \
-        --cas-dir "${FORKMESH_RELEASE_CAS:-.forkmesh/release-blobs}" \
-        ${FORKMESH_REPO:+--repo "$FORKMESH_REPO"} \
-        "$asset" 2>&1)"; then
+    local publish_args=(
+        --channel latest
+        --tag "$release_tag"
+        --cas-dir "$cas_dir"
+    )
+    if [ -n "${FORKMESH_REPO:-}" ]; then
+        publish_args+=(--repo "$FORKMESH_REPO")
+    fi
+    publish_args+=("cloudflare_worker/$asset")
+    if ! publish_output="$(cd .. && tools/forkmesh-release-publish.sh \
+        "${publish_args[@]}" 2>&1)"; then
+        rm -f "$asset"
         echo "ERROR: failed to publish release binary." >&2
         return 1
     fi
     printf '%s\n' "$publish_output" | tail -3
+
+    # Bind the mutable "latest" channel to the exact source revision just
+    # compiled. A same-semver republish is only complete when release.json,
+    # SHASUMS256.txt and the served CAS all agree on these new bytes.
+    local source_commit asset_hash
+    source_commit="$(git rev-parse HEAD 2>/dev/null)"
+    if command -v sha256sum >/dev/null 2>&1; then
+        asset_hash="$(sha256sum "$asset" | awk '{print $1}')"
+    else
+        asset_hash="$(shasum -a 256 "$asset" | awk '{print $1}')"
+    fi
+    if ! grep -Fqx "$asset_hash  $asset" \
+            ../.forkmesh/releases/latest/SHASUMS256.txt ||
+       ! grep -Fq "\"tag\": \"$release_tag\"" \
+            ../.forkmesh/releases/latest/release.json ||
+       ! grep -Fq "\"tag_commit\": \"$source_commit\"" \
+            ../.forkmesh/releases/latest/release.json ||
+       ! grep -Fq "\"name\":\"$asset\",\"blob_sha256\":\"$asset_hash\"" \
+            ../.forkmesh/releases/latest/release.json ||
+       [ ! -f "$cas_dir/sha256/${asset_hash:0:2}/$asset_hash/data" ]; then
+        rm -f "$asset"
+        echo "ERROR: release metadata/CAS verification did not match the freshly built commit and binary." >&2
+        return 1
+    fi
+    echo "Verified release metadata: v${release_version} @ ${source_commit:0:12}, sha256:${asset_hash:0:12}."
     rm -f "$asset"
 
     # Stage the release metadata for commit.
@@ -645,13 +748,28 @@ case "${1:-deploy}" in
         # This is optional: if it fails, the deploy still succeeds (users can build
         # from source), but install.sh will be much faster with prebuilts.
         echo
-        if publish_release_binary; then
+        if publish_release_binary 0; then
             commit_release_metadata
         else
             echo "note: prebuilt binary build failed, but deploy succeeded." >&2
             echo "      install.sh will fall back to building from source." >&2
         fi
         echo "Done. Live at https://forkmesh.com (and any custom domain)."
+        ;;
+    republish-release-binary)
+        # Deliberately separate from `deploy`: replacing bytes under the same
+        # semver is an operator decision, and it must point at the real served
+        # CAS. The function also requires a clean tracked worktree, stamps the
+        # project version explicitly, verifies `<binary> --version`, and writes
+        # the current HEAD into release.json before this metadata is committed.
+        source_rev="$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+        if publish_release_binary 1; then
+            commit_release_metadata
+            echo "Release binary republished from source commit $source_rev."
+            echo "Push the release metadata commit, then refresh mirror catalogs before using the fleet install button."
+        else
+            exit 1
+        fi
         ;;
     secrets)
         require_cloudflare_account
@@ -672,7 +790,7 @@ case "${1:-deploy}" in
         pywrangler deploy --env "" --dry-run
         ;;
     *)
-        echo "Usage: $0 [deploy|secrets|dev|dry-run]" >&2
+        echo "Usage: $0 [deploy|republish-release-binary|secrets|dev|dry-run]" >&2
         exit 2
         ;;
 esac

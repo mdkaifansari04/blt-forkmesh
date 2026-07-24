@@ -7270,11 +7270,18 @@ QWidget *MainWindow::buildHostsSection()
     title->setFont(titleFont);
     titleRow->addWidget(title);
     titleRow->addStretch(1);
-    // Bulk one-click install: upload this app's own release binary to every
-    // saved host in turn, instead of clicking Install (binary) on each row.
+    // Bulk one-click install: make every saved host install the current
+    // published, checksum-verified release in parallel. This deliberately does
+    // not upload QCoreApplication::applicationFilePath(): a developer may be
+    // running an un-packaged source build even though it reports the release
+    // version.
     m_hostInstallAllButton = new QPushButton(QStringLiteral("Install from binary (all hosts)"));
     m_hostInstallAllButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_hostInstallAllButton, "upload", 14);
+    m_hostInstallAllButton->setToolTip(QStringLiteral(
+        "Install the published ForkMesh v" FORKMESH_VERSION
+        " binary on every saved host. Each host verifies the release checksum, "
+        "keeps its identity, keys and mirrored data, and restarts its node."));
+    setOcticon(m_hostInstallAllButton, "download", 14);
     connect(m_hostInstallAllButton, &QPushButton::clicked, this,
             &MainWindow::runHostInstallAllFromBinary);
     titleRow->addWidget(m_hostInstallAllButton);
@@ -7286,8 +7293,8 @@ QWidget *MainWindow::buildHostsSection()
     m_hostReinstallAllButton->setCursor(Qt::PointingHandCursor);
     m_hostReinstallAllButton->setToolTip(QStringLiteral(
         "For every saved host: remove ForkMesh and ALL of its data, then "
-        "install a fresh copy from this app's binary and re-link it to your "
-        "account."));
+        "install the published ForkMesh v" FORKMESH_VERSION
+        " binary and re-link it to your account."));
     setOcticon(m_hostReinstallAllButton, "sync", 14);
     connect(m_hostReinstallAllButton, &QPushButton::clicked, this,
             &MainWindow::runHostReinstallAllFromBinary);
@@ -7314,9 +7321,9 @@ QWidget *MainWindow::buildHostsSection()
         "host saved, click Install ForkMesh and it will SSH in and run the hosted "
         "installer in a plain shell. When it finishes the new node joins the "
         "network and shows up in each repository's Mirror nodes list. Install "
-        "(binary) on a saved host, or Install from binary (all hosts) above, "
-        "uploads this app's own release binary to the host instead of having it "
-        "download the release itself."));
+        "(binary) on one saved host uploads this app's own binary. Install from "
+        "binary (all hosts) instead makes every host download and checksum-verify "
+        "the current published release, then confirms the installed version."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
     outer->addWidget(subtitle);
@@ -10075,6 +10082,7 @@ const QString kHostUploadMarker = QStringLiteral("__FORKMESH_UPLOAD__");
 bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
                                          const QString &node, bool uploadBinary,
                                          bool reinstall, bool fromSource,
+                                         bool requirePublishedBinary,
                                          QStringList *sshArgs, QString *remoteCmd,
                                          QByteArray *uploadBytes,
                                          QString *errorOut)
@@ -10092,7 +10100,12 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
     // missing binary fails here, before anything touches the remote machine.
     // A source build compiles on the host itself, so there is no binary to
     // upload — fromSource forces the direct-upload path off.
-    const bool doUpload = uploadBinary && !fromSource;
+    // A published-binary fleet deploy and a local-executable upload are
+    // mutually exclusive contracts. The former is deliberately resolved on
+    // each target from the release manifest so a development build can never be
+    // mistaken for the release merely because both report the same version.
+    const bool doUpload =
+        uploadBinary && !fromSource && !requirePublishedBinary;
     QByteArray bytes;
     if (doUpload) {
         QFile self(QCoreApplication::applicationFilePath());
@@ -10138,8 +10151,54 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
     // is left untouched, unlike a reinstall).
     if (fromSource)
         envPrefix += QStringLiteral(" FORKMESH_FROM_SOURCE=1 FORKMESH_RESTART=1");
-    QString pipeline =
-        QStringLiteral("curl -fsSL %1 | %2 bash").arg(shq(installUrl), envPrefix);
+    // Fleet binary installs must never silently turn into a source build. Pin
+    // the current release channel, preserve all node data, stop the old daemon
+    // only after the new artifact is installed, and have the target verify the
+    // exact version before its pane can report success.
+    if (requirePublishedBinary) {
+        envPrefix += QStringLiteral(
+            " FORKMESH_RELEASE=latest FORKMESH_NO_SOURCE_FALLBACK=1");
+        if (!reinstall)
+            envPrefix += QStringLiteral(" FORKMESH_RESTART=1");
+    }
+
+    QString pipeline;
+    if (requirePublishedBinary) {
+        const QString expected =
+            QStringLiteral("ForkMesh " FORKMESH_VERSION);
+        // Download the installer into a temporary file rather than piping it
+        // directly to bash. Without pipefail, `curl | bash` can return success
+        // when curl failed and bash merely received an empty script.
+        pipeline =
+            QStringLiteral(
+                "installer=\"$(mktemp \"${TMPDIR:-/tmp}/"
+                "forkmesh-installer.XXXXXX\")\" || exit 70; "
+                "if ! command -v sha256sum >/dev/null 2>&1 && "
+                "! command -v shasum >/dev/null 2>&1; then "
+                "printf 'A SHA-256 tool is required for a verified ForkMesh "
+                "binary install.\\n' >&2; rm -f \"$installer\"; exit 67; fi; "
+                "if ! curl -fsSL -H 'Cache-Control: no-cache' %1 "
+                "-o \"$installer\"; then "
+                "printf 'ForkMesh installer download failed.\\n' >&2; "
+                "rm -f \"$installer\"; exit 70; fi; "
+                "%2 bash \"$installer\"; st=$?; rm -f \"$installer\"; "
+                "if [ \"$st\" -ne 0 ]; then exit \"$st\"; fi; "
+                "bin=\"$HOME/.local/bin/forkmesh\"; "
+                "if [ ! -x \"$bin\" ]; then "
+                "printf 'ForkMesh binary missing after install: %s\\n' "
+                "\"$bin\" >&2; exit 66; fi; "
+                "actual=\"$(\"$bin\" --version 2>&1)\"; expected=%3; "
+                "if [ \"$actual\" != \"$expected\" ]; then "
+                "printf 'ForkMesh version check failed: expected %s, "
+                "got %s\\n' \"$expected\" \"$actual\" >&2; exit 65; fi; "
+                "printf 'Verified %s from the published checksum-verified "
+                "release.\\n' \"$actual\"")
+                .arg(shq(installUrl), envPrefix, shq(expected));
+    } else {
+        pipeline =
+            QStringLiteral("curl -fsSL %1 | %2 bash")
+                .arg(shq(installUrl), envPrefix);
+    }
     const bool needSudo = user != QStringLiteral("root");
     if (doUpload) {
         // The binary follows on the SSH session's stdin. Everything before the
@@ -10241,8 +10300,8 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     QByteArray uploadBytes;
     QString buildErr;
     if (!buildHostInstallCommand(ip, user, node, uploadBinary, reinstall,
-                                 fromSource, &sshArgs, &remoteCmd, &uploadBytes,
-                                 &buildErr)) {
+                                 fromSource, false, &sshArgs, &remoteCmd,
+                                 &uploadBytes, &buildErr)) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(buildErr);
         if (onFinished)
@@ -10394,6 +10453,50 @@ void MainWindow::runHostInstallAllFromBinary()
     runHostDeployAllParallel(FleetDeployMode::InstallBinary);
 }
 
+MainWindow::FleetDeployOptions
+MainWindow::fleetDeployOptions(FleetDeployMode mode)
+{
+    switch (mode) {
+    case FleetDeployMode::InstallBinary:
+        // Download the published artifact on each target. Never upload the
+        // current process: it may be a developer build rather than the packaged
+        // release even when its version string is identical.
+        return {/*uploadBinary=*/false, /*reinstall=*/false,
+                /*fromSource=*/false, /*requirePublishedBinary=*/true};
+    case FleetDeployMode::Reinstall:
+        return {/*uploadBinary=*/false, /*reinstall=*/true,
+                /*fromSource=*/false, /*requirePublishedBinary=*/true};
+    case FleetDeployMode::UpdateSource:
+        return {/*uploadBinary=*/false, /*reinstall=*/false,
+                /*fromSource=*/true, /*requirePublishedBinary=*/false};
+    }
+    return {};
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testFleetBinaryInstallRemoteCommand(
+    bool reinstall, qsizetype *uploadByteCount, QString *errorOut)
+{
+    const FleetDeployOptions options = fleetDeployOptions(
+        reinstall ? FleetDeployMode::Reinstall
+                  : FleetDeployMode::InstallBinary);
+    QStringList sshArgs;
+    QString remoteCommand;
+    QByteArray uploadBytes;
+    QString error;
+    const bool ok = buildHostInstallCommand(
+        QStringLiteral("host.example"), QStringLiteral("root"),
+        QStringLiteral("test-node"), options.uploadBinary, options.reinstall,
+        options.fromSource, options.requirePublishedBinary, &sshArgs,
+        &remoteCommand, &uploadBytes, &error);
+    if (uploadByteCount)
+        *uploadByteCount = uploadBytes.size();
+    if (errorOut)
+        *errorOut = error;
+    return ok ? remoteCommand : QString();
+}
+#endif
+
 void MainWindow::runHostReinstallAllFromBinary()
 {
     if (!m_hostsTable || m_hostsTable->rowCount() == 0) {
@@ -10410,8 +10513,9 @@ void MainWindow::runHostReinstallAllFromBinary()
         QString::fromUtf8(
             "This will REMOVE ForkMesh and ALL of its data (identity key, "
             "mirrors, chat) from every one of your %1 saved host(s), then "
-            "install a fresh copy from this app's binary and re-link each one "
-            "to your account.\n\nThis cannot be undone. Continue?")
+            "install the published ForkMesh v" FORKMESH_VERSION
+            " binary and re-link each one to your account.\n\nThis cannot be "
+            "undone. Continue?")
             .arg(rowCount),
         QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
     if (choice != QMessageBox::Yes)
@@ -10503,9 +10607,7 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
         delete item;
     }
 
-    const bool uploadBinary = mode != FleetDeployMode::UpdateSource;
-    const bool reinstall = mode == FleetDeployMode::Reinstall;
-    const bool fromSource = mode == FleetDeployMode::UpdateSource;
+    const FleetDeployOptions options = fleetDeployOptions(mode);
 
     QFont mono(QStringLiteral("monospace"));
     mono.setStyleHint(QFont::Monospace);
@@ -10582,12 +10684,11 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
     // finished callback can fire re-entrantly), so iterate a stable copy.
     const QList<HostDeploySession *> toStart = m_hostDeploySessions;
     for (HostDeploySession *s : toStart)
-        startHostDeploySession(s, uploadBinary, reinstall, fromSource);
+        startHostDeploySession(s, options);
 }
 
 void MainWindow::startHostDeploySession(HostDeploySession *session,
-                                        bool uploadBinary, bool reinstall,
-                                        bool fromSource)
+                                        const FleetDeployOptions &options)
 {
     if (!session)
         return;
@@ -10597,7 +10698,9 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
     QByteArray uploadBytes;
     QString buildErr;
     if (!buildHostInstallCommand(session->ip, session->user, session->node,
-                                 uploadBinary, reinstall, fromSource, &sshArgs,
+                                 options.uploadBinary, options.reinstall,
+                                 options.fromSource,
+                                 options.requirePublishedBinary, &sshArgs,
                                  &remoteCmd, &uploadBytes, &buildErr)) {
         appendHostDeployLog(session,
                             QString::fromUtf8("\n\xE2\x9C\x98 %1\n").arg(buildErr));
@@ -10610,7 +10713,14 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
         session, QString::fromUtf8("$ ssh %1@%2 \xE2\x80\xA6\nConnecting and "
                                    "running the installer\xE2\x80\xA6\n\n")
                      .arg(session->user, session->ip));
-    if (uploadBinary && !fromSource)
+    if (options.requirePublishedBinary)
+        appendHostDeployLog(
+            session,
+            QStringLiteral("Installing the published ForkMesh v"
+                           FORKMESH_VERSION
+                           " binary; the host will verify its release checksum "
+                           "and reported version.\n"));
+    else if (options.uploadBinary && !options.fromSource)
         appendHostDeployLog(
             session, QString::fromUtf8("Uploading this app's release binary "
                                        "(%1 MB) over the SSH session\xE2\x80\xA6\n")
@@ -10693,7 +10803,7 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
     proc->start(QStringLiteral("sshpass"), sshArgs);
     if (needSudo)
         proc->write((session->pass + QStringLiteral("\n")).toUtf8());
-    if (uploadBinary && !fromSource) {
+    if (options.uploadBinary && !options.fromSource) {
         proc->write((kHostUploadMarker + QStringLiteral("\n")).toUtf8());
         proc->write(uploadBytes);
     }

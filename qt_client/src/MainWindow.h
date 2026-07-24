@@ -454,6 +454,12 @@ public:
     void testSetMirrorNodesOnlineOnly(bool checked);
     QString testMirrorNodeCellText(const QString &nodeName, int column) const;
     QString testMirrorNodeCellToolTip(const QString &nodeName, int column) const;
+    // Build the exact command used by the fleet-wide binary action without
+    // starting SSH. Tests use this to keep that action pinned to the published,
+    // checksum-verified release rather than the currently-running executable.
+    QString testFleetBinaryInstallRemoteCommand(bool reinstall,
+                                                qsizetype *uploadByteCount,
+                                                QString *errorOut);
     // Rebuild the Branches panel, then read back the Worktree column (column 3)
     // for `branch`, so a test can prove the branches list surfaces the worktree a
     // branch is checked out in (issue #172).
@@ -1070,8 +1076,9 @@ private:
                           const QString &pass, const QString &node);
     // Fleet-wide deploys (adhoc): each runs against EVERY saved host in
     // parallel, streaming into its own pane of the split live-output grid — a
-    // direct-upload binary install (#257), an uninstall+reinstall (#258), or an
-    // update straight from source. Thin wrappers over runHostDeployAllParallel.
+    // published, checksum-verified binary install (#257), an
+    // uninstall+reinstall (#258), or an update straight from source. Thin
+    // wrappers over runHostDeployAllParallel.
     void runHostInstallAllFromBinary();
     void runHostReinstallAllFromBinary();
     void runHostUpdateAllFromSource();
@@ -1083,6 +1090,13 @@ private:
     // update-from-source; the runHost*All* drivers above are thin wrappers that
     // confirm and then call this.
     enum class FleetDeployMode { InstallBinary, Reinstall, UpdateSource };
+    struct FleetDeployOptions {
+        bool uploadBinary = false;
+        bool reinstall = false;
+        bool fromSource = false;
+        bool requirePublishedBinary = false;
+    };
+    static FleetDeployOptions fleetDeployOptions(FleetDeployMode mode);
     // One host's slice of a parallel fleet deploy: its own SSH process, output
     // pane and its own copy of the ANSI-render + link-detect state that the
     // single-log path keeps in the m_hostInstall* members.
@@ -1102,17 +1116,21 @@ private:
         bool finished = false;
     };
     void runHostDeployAllParallel(FleetDeployMode mode);
-    void startHostDeploySession(HostDeploySession *session, bool uploadBinary,
-                                bool reinstall, bool fromSource);
+    void startHostDeploySession(HostDeploySession *session,
+                                const FleetDeployOptions &options);
     void appendHostDeployLog(HostDeploySession *session, const QString &text);
     void onHostDeploySessionFinished(HostDeploySession *session, bool ok);
     // Shared SSH command builder used by both the single-host runHostInstall and
     // the parallel fleet path. Fills sshArgs/remoteCmd (and, for a binary upload,
     // the bytes to stream on stdin); returns false with a message in *errorOut on
-    // failure (unresolved installer URL, unreadable local binary).
+    // failure (unresolved installer URL, unreadable local binary). When
+    // requirePublishedBinary is true, the remote installer is forced to use the
+    // latest published checksum-verified release and its reported version is
+    // checked before that host is marked successful.
     bool buildHostInstallCommand(const QString &ip, const QString &user,
                                  const QString &node, bool uploadBinary,
                                  bool reinstall, bool fromSource,
+                                 bool requirePublishedBinary,
                                  QStringList *sshArgs, QString *remoteCmd,
                                  QByteArray *uploadBytes, QString *errorOut);
     // Save the host's server info (name/IP/user/password) from the form without running
@@ -3478,8 +3496,8 @@ private:
     QCheckBox *m_hostUploadBinaryCheck = nullptr;
     QPushButton *m_hostAddButton = nullptr;
     QPushButton *m_hostInstallButton = nullptr;
-    // Bulk direct-upload install (adhoc #257): runs the upload-binary install
-    // against every saved host, one after another.
+    // Bulk published-binary install (adhoc #257): every saved host downloads
+    // the current checksum-verified release and reports its installed version.
     QPushButton *m_hostInstallAllButton = nullptr;
     // Bulk uninstall + reinstall from binary (adhoc #258).
     QPushButton *m_hostReinstallAllButton = nullptr;

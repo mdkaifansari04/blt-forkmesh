@@ -1,5 +1,6 @@
 #include "../src/MainWindow.h"
 #include "../src/PlatformLogFilter.h"
+#include "ForkMeshVersion.h"
 
 #include <QAction>
 #include <QAbstractItemView>
@@ -351,6 +352,8 @@ int main(int argc, char *argv[])
     const QString testApplicationName =
         QStringLiteral("WindowResize-") + QFileInfo(dataDir.path()).fileName();
     app.setApplicationName(testApplicationName);
+    const bool fleetBinaryInstallOnly =
+        app.arguments().contains(QStringLiteral("--fleet-binary-install-only"));
 
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -407,6 +410,70 @@ int main(int argc, char *argv[])
                          QStringLiteral("wallet"));
 
     MainWindow window;
+
+    // Fleet "Install from binary" must install the published release, not
+    // upload this test process (or any other locally-built executable). The
+    // target verifies the release checksum in install.sh, refuses source
+    // fallback, restarts in place, and checks the reported version before the
+    // per-host pane can turn green.
+    {
+        qsizetype uploadBytes = -1;
+        QString commandError;
+        const QString command = window.testFleetBinaryInstallRemoteCommand(
+            false, &uploadBytes, &commandError);
+        check(!command.isEmpty() && commandError.isEmpty(),
+              QStringLiteral("fleet binary install command builds without an "
+                             "installer error"));
+        check(uploadBytes == 0 &&
+                  !command.contains(QStringLiteral("FORKMESH_LOCAL_BINARY")) &&
+                  !command.contains(QStringLiteral("__FORKMESH_UPLOAD__")),
+              QStringLiteral("fleet binary install never uploads the locally "
+                             "running source/test executable"));
+        check(command.contains(
+                  QStringLiteral("FORKMESH_RELEASE=latest")) &&
+                  command.contains(
+                      QStringLiteral("FORKMESH_NO_SOURCE_FALLBACK=1")) &&
+                  !command.contains(QStringLiteral("FORKMESH_FROM_SOURCE=1")),
+              QStringLiteral("fleet binary install is pinned to the published "
+                             "binary-only release path"));
+        check(command.contains(QStringLiteral("FORKMESH_RESTART=1")) &&
+                  !command.contains(QStringLiteral("FORKMESH_REINSTALL=1")),
+              QStringLiteral("normal fleet binary install restarts in place "
+                             "without deleting node keys or data"));
+        check(command.contains(QStringLiteral("Cache-Control: no-cache")) &&
+                  command.contains(QStringLiteral("command -v sha256sum")) &&
+                  command.contains(
+                      QStringLiteral("forkmesh-installer.XXXXXX")) &&
+                  command.contains(QStringLiteral("--version")) &&
+                  command.contains(
+                      QStringLiteral("ForkMesh " FORKMESH_VERSION)),
+              QStringLiteral("fleet binary install fetches a fresh installer "
+                             "and verifies the exact app version"));
+        QProcess shellSyntax;
+        shellSyntax.start(QStringLiteral("/bin/sh"),
+                          {QStringLiteral("-n"), QStringLiteral("-c"), command});
+        const bool syntaxFinished = shellSyntax.waitForFinished(5000);
+        check(syntaxFinished && shellSyntax.exitStatus() == QProcess::NormalExit &&
+                  shellSyntax.exitCode() == 0,
+              QStringLiteral("fleet binary remote command is valid shell "
+                             "syntax"));
+
+        uploadBytes = -1;
+        commandError.clear();
+        const QString reinstallCommand =
+            window.testFleetBinaryInstallRemoteCommand(
+                true, &uploadBytes, &commandError);
+        check(!reinstallCommand.isEmpty() && commandError.isEmpty() &&
+                  uploadBytes == 0 &&
+                  reinstallCommand.contains(
+                      QStringLiteral("FORKMESH_REINSTALL=1")) &&
+                  reinstallCommand.contains(
+                      QStringLiteral("FORKMESH_NO_SOURCE_FALLBACK=1")),
+              QStringLiteral("explicit destructive fleet reinstall also uses "
+                             "the published binary-only release"));
+    }
+    if (fleetBinaryInstallOnly)
+        return failures == 0 ? 0 : 1;
 
     // Account credentials are never portable ForkMesh data.  The retired
     // claude-auth export/import command names must fail closed without reading
