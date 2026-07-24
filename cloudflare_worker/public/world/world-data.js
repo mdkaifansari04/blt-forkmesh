@@ -1,5 +1,3 @@
-export const WORLD_DAY_MS = 4 * 60 * 60 * 1000;
-
 export const LANDMARKS = [
   {
     id: "information",
@@ -176,12 +174,12 @@ export const LANDMARKS = [
     summary: "Portals lead to repository worlds, sky campuses, events, and workshops.",
     metaphor: "Launch pads turn URLs and collaboration rooms into destinations.",
     reality:
-      "Each destination keeps standard permission checks and graceful HTML fallbacks. Every region now follows the same smooth four-hour world clock; scheduled events remain UTC.",
+      "Each destination keeps standard permission checks and graceful HTML fallbacks. Travel never changes the viewer’s lighting; scheduled events remain UTC.",
     status: "Route preview",
     statusTone: "prototype",
     bullets: [
-      "Shared world time keeps events synchronized.",
-      "Personal weather overlays stay local while shared sunlight continues to follow the global clock.",
+      "UTC timestamps keep events synchronized without simulating a separate World day.",
+      "Lighting and weather choices stay on the viewer’s device and never alter shared state.",
       "Live collaboration can degrade to polling when realtime transport is unavailable.",
       "Large transfers and releases remain ordinary HTTPS downloads.",
     ],
@@ -309,7 +307,7 @@ export const TOUR_STEPS = [
   {
     landmark: "information",
     title: "Welcome to ForkMesh",
-    copy: "You entered as a guest immediately. Move with WASD, arrow keys, a click on the plaza, or the touch controls.",
+    copy: "You entered as a guest immediately. Move with WASD, arrow keys, or the touch controls. Drag with a visible cursor to rotate the camera.",
   },
   {
     landmark: "fountain",
@@ -334,12 +332,12 @@ export const TOUR_STEPS = [
 ];
 
 export const THEME_OPTIONS = [
-  { id: "world", label: "Shared four-hour cycle" },
-  { id: "rain", label: "Shared cycle + rain" },
-  { id: "snow", label: "Shared cycle + snow" },
-  { id: "winter", label: "Shared cycle + winter" },
-  { id: "cyberpunk", label: "Shared cycle + cyberpunk" },
-  { id: "low-light", label: "Shared cycle + low light" },
+  { id: "world", label: "Full daylight" },
+  { id: "rain", label: "Daylight + rain" },
+  { id: "snow", label: "Daylight + snow" },
+  { id: "winter", label: "Daylight + winter" },
+  { id: "cyberpunk", label: "Local cyberpunk" },
+  { id: "low-light", label: "Local low light" },
 ];
 
 export const AVAILABILITY_OPTIONS = [
@@ -361,9 +359,9 @@ export const ACTIVITY_OPTIONS = [
 ];
 
 export const WORLD_REGIONS = [
-  { id: "east", label: "East Campus", phase: "Shared world time" },
-  { id: "central", label: "Central Campus", phase: "Shared world time" },
-  { id: "west", label: "West Campus", phase: "Shared world time" },
+  { id: "east", label: "East Campus", phase: "Local daylight view" },
+  { id: "central", label: "Central Campus", phase: "Local daylight view" },
+  { id: "west", label: "West Campus", phase: "Local daylight view" },
 ];
 
 export const RADIO_STATIONS = [
@@ -372,7 +370,7 @@ export const RADIO_STATIONS = [
     name: "ForkMesh Focus Tones",
     provider: "ForkMesh",
     description:
-      "Original four-hour procedural score generated locally under CC0-1.0; no streamed media.",
+      "Original four-hour local procedural score under CC0-1.0; no streamed media or shared-clock synchronization.",
     playMode: "generated",
     homepageUrl:
       "https://github.com/forkmesh/forkmesh/blob/main/docs/world-soundtrack-license.md",
@@ -412,21 +410,18 @@ export function landmarkById(id) {
   return LANDMARKS.find((landmark) => landmark.id === id) || LANDMARKS[0];
 }
 
-export function worldClock(now = Date.now()) {
-  const progress = (now % WORLD_DAY_MS) / WORLD_DAY_MS;
-  const virtualMinutes = Math.floor(progress * 24 * 60);
-  const hour = Math.floor(virtualMinutes / 60);
-  const minute = virtualMinutes % 60;
-  let phase = "Day";
-  if (hour < 5 || hour >= 22) phase = "Night";
-  else if (hour < 7) phase = "Sunrise";
-  else if (hour >= 19) phase = "Sunset";
+export function utcClock(now = Date.now()) {
+  const date = new Date(Number(now));
+  const safeDate = Number.isFinite(date.getTime()) ? date : new Date();
+  const hour = safeDate.getUTCHours();
+  const minute = safeDate.getUTCMinutes();
+  const second = safeDate.getUTCSeconds();
   return {
-    progress,
     hour,
     minute,
-    phase,
-    label: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
+    second,
+    zone: "UTC",
+    label: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`,
   };
 }
 

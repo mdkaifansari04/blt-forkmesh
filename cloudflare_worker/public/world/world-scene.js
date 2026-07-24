@@ -2,12 +2,13 @@ import {
   LANDMARKS,
   WORLD_REGIONS,
   landmarkById,
-  worldClock,
 } from "./world-data.js";
 
 const WORLD_RADIUS = 72;
 const WORLD_GROUND_RADIUS = 88;
-const PLAYER_SPEED = 6.2;
+const PLAYER_SPEED = 4.8;
+const PLAYER_MAX_SPEED = 10.4;
+const PLAYER_ACCELERATION = 3.2;
 const CAMERA_OFFSET = [17, 16, 21];
 const CAMERA_DISTANCE = Math.hypot(...CAMERA_OFFSET);
 const CAMERA_ZOOM_MIN = 0.12;
@@ -15,6 +16,19 @@ const CAMERA_ZOOM_MAX = 3.2;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
 const CAMERA_PITCH_MIN = 0.08;
 const CAMERA_PITCH_MAX = 1.24;
+const LIGHT_LEVEL_MIN = 40;
+const LIGHT_LEVEL_MAX = 140;
+const LIGHT_LEVEL_DEFAULT = 100;
+const MOVEMENT_KEYS = new Set([
+  "KeyW",
+  "KeyA",
+  "KeyS",
+  "KeyD",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+]);
 const CITY_GRID_EXTENT = 64;
 const CITY_GRID_COORDINATES = Object.freeze([-48, -32, -16, 0, 16, 32, 48]);
 const REGISTERED_LOUNGE_POSITION = Object.freeze([-48, 0, 32]);
@@ -61,6 +75,17 @@ const LOCAL_ENVIRONMENT_OVERLAYS = Object.freeze({
     exposureMultiplier: 0.7,
     fogMultiplier: 1.05,
   },
+});
+const DAYLIGHT_ENVIRONMENT = Object.freeze({
+  background: "#9ed2bd",
+  fog: "#9bc6b5",
+  hemiSky: "#d8fff1",
+  hemiGround: "#25493a",
+  sun: "#fff0bd",
+  sunPower: 3.7,
+  hemiPower: 2.1,
+  exposure: 1.12,
+  fogDensity: 0.0068,
 });
 const ACCOUNT_STATUS_ICONS = Object.freeze({
   Guest: "○",
@@ -2578,6 +2603,8 @@ export function createWorldScene({
   renderer.domElement.className = "world-canvas";
   renderer.domElement.setAttribute("aria-hidden", "true");
   renderer.domElement.tabIndex = -1;
+  renderer.domElement.dataset.cameraControl = "drag";
+  renderer.domElement.dataset.dragging = "false";
   container.appendChild(renderer.domElement);
 
   const hemisphere = new THREE.HemisphereLight("#d5fff1", "#19362d", 2.1);
@@ -2792,8 +2819,7 @@ export function createWorldScene({
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   const pointerStart = new THREE.Vector2();
-  const moveTarget = new THREE.Vector3();
-  let hasMoveTarget = false;
+  const pointerLast = new THREE.Vector2();
   let selectedLandmark = "information";
   let currentLocation = "Town Square";
   let currentRegion = "central";
@@ -2809,147 +2835,27 @@ export function createWorldScene({
   let cameraZoom = 1;
   let cameraYaw = Math.atan2(CAMERA_OFFSET[0], CAMERA_OFFSET[2]);
   let cameraPitch = Math.asin(CAMERA_OFFSET[1] / CAMERA_DISTANCE);
+  let keyboardMovementSpeed = PLAYER_SPEED;
   let primaryPointerId = null;
   let pointerGestureMoved = false;
-  let pointerStartedLocked = false;
   let pinchStartDistance = 0;
   let pinchStartZoom = cameraZoom;
   let pinchActive = false;
-  let clockOffset = 0;
+  let lightLevel = LIGHT_LEVEL_DEFAULT;
   const weather = createWeather(THREE, scene);
 
-  function setClockOffset(offset) {
-    clockOffset = Number(offset) || 0;
-  }
-
-  function sharedEnvironmentState(now = Date.now()) {
-    const synced = worldClock(now + clockOffset);
-    const frames = [
-      {
-        at: 0,
-        background: "#071322",
-        fog: "#0a1723",
-        hemiSky: "#31527a",
-        hemiGround: "#101b1b",
-        sun: "#83a7ff",
-        sunPower: 0.72,
-        hemiPower: 0.72,
-        exposure: 0.68,
-        fogDensity: 0.011,
-      },
-      {
-        at: 5 / 24,
-        background: "#101d2d",
-        fog: "#172635",
-        hemiSky: "#45688c",
-        hemiGround: "#15251f",
-        sun: "#a9bcff",
-        sunPower: 0.9,
-        hemiPower: 0.9,
-        exposure: 0.74,
-        fogDensity: 0.01,
-      },
-      {
-        at: 7 / 24,
-        background: "#bd9f8e",
-        fog: "#a88f82",
-        hemiSky: "#ffd1aa",
-        hemiGround: "#442e39",
-        sun: "#ffd19a",
-        sunPower: 3.2,
-        hemiPower: 1.72,
-        exposure: 0.98,
-        fogDensity: 0.008,
-      },
-      {
-        at: 9 / 24,
-        background: "#9ed2bd",
-        fog: "#9bc6b5",
-        hemiSky: "#d8fff1",
-        hemiGround: "#25493a",
-        sun: "#fff0bd",
-        sunPower: 3.7,
-        hemiPower: 2.1,
-        exposure: 1.12,
-        fogDensity: 0.0068,
-      },
-      {
-        at: 18 / 24,
-        background: "#9ed2bd",
-        fog: "#9bc6b5",
-        hemiSky: "#d8fff1",
-        hemiGround: "#25493a",
-        sun: "#fff0bd",
-        sunPower: 3.7,
-        hemiPower: 2.1,
-        exposure: 1.12,
-        fogDensity: 0.0068,
-      },
-      {
-        at: 20.5 / 24,
-        background: "#ce9174",
-        fog: "#a17469",
-        hemiSky: "#ffd1aa",
-        hemiGround: "#442e39",
-        sun: "#ffad68",
-        sunPower: 4.2,
-        hemiPower: 1.55,
-        exposure: 1.0,
-        fogDensity: 0.0085,
-      },
-      {
-        at: 22 / 24,
-        background: "#071322",
-        fog: "#0a1723",
-        hemiSky: "#31527a",
-        hemiGround: "#101b1b",
-        sun: "#83a7ff",
-        sunPower: 0.82,
-        hemiPower: 0.78,
-        exposure: 0.72,
-        fogDensity: 0.0105,
-      },
-      {
-        at: 1,
-        background: "#071322",
-        fog: "#0a1723",
-        hemiSky: "#31527a",
-        hemiGround: "#101b1b",
-        sun: "#83a7ff",
-        sunPower: 0.72,
-        hemiPower: 0.72,
-        exposure: 0.68,
-        fogDensity: 0.011,
-      },
-    ];
-    const upperIndex = Math.max(
-      1,
-      frames.findIndex((frame) => frame.at >= synced.progress),
-    );
-    const from = frames[upperIndex - 1];
-    const to = frames[upperIndex];
-    const linear =
-      (synced.progress - from.at) / Math.max(0.000001, to.at - from.at);
-    const blend = linear * linear * (3 - 2 * linear);
-    const mixColor = (key) =>
-      new THREE.Color(from[key]).lerp(new THREE.Color(to[key]), blend);
-    const mixNumber = (key) => from[key] + (to[key] - from[key]) * blend;
-    return {
-      clock: synced,
-      background: mixColor("background"),
-      fog: mixColor("fog"),
-      hemiSky: mixColor("hemiSky"),
-      hemiGround: mixColor("hemiGround"),
-      sun: mixColor("sun"),
-      sunPower: mixNumber("sunPower"),
-      hemiPower: mixNumber("hemiPower"),
-      exposure: mixNumber("exposure"),
-      fogDensity: mixNumber("fogDensity"),
+  function updateWorldEnvironment() {
+    const state = {
+      background: new THREE.Color(DAYLIGHT_ENVIRONMENT.background),
+      fog: new THREE.Color(DAYLIGHT_ENVIRONMENT.fog),
+      hemiSky: new THREE.Color(DAYLIGHT_ENVIRONMENT.hemiSky),
+      hemiGround: new THREE.Color(DAYLIGHT_ENVIRONMENT.hemiGround),
+      sun: new THREE.Color(DAYLIGHT_ENVIRONMENT.sun),
+      sunPower: DAYLIGHT_ENVIRONMENT.sunPower,
+      hemiPower: DAYLIGHT_ENVIRONMENT.hemiPower,
+      exposure: DAYLIGHT_ENVIRONMENT.exposure,
+      fogDensity: DAYLIGHT_ENVIRONMENT.fogDensity,
     };
-  }
-
-  function updateWorldEnvironment(now = Date.now()) {
-    const state = sharedEnvironmentState(now);
     const overlay = LOCAL_ENVIRONMENT_OVERLAYS[currentTheme];
     if (overlay) {
       const tint = new THREE.Color(overlay.tint);
@@ -2962,20 +2868,18 @@ export function createWorldScene({
     scene.fog.color.copy(state.fog);
     scene.fog.density =
       state.fogDensity * (overlay?.fogMultiplier || 1);
+    const lightMultiplier = lightLevel / LIGHT_LEVEL_DEFAULT;
     hemisphere.color.copy(state.hemiSky);
     hemisphere.groundColor.copy(state.hemiGround);
     hemisphere.intensity =
-      state.hemiPower * (overlay?.lightMultiplier || 1);
+      state.hemiPower * (overlay?.lightMultiplier || 1) * lightMultiplier;
     sun.color.copy(state.sun);
-    sun.intensity = state.sunPower * (overlay?.lightMultiplier || 1);
+    sun.intensity =
+      state.sunPower * (overlay?.lightMultiplier || 1) * lightMultiplier;
     renderer.toneMappingExposure =
-      state.exposure * (overlay?.exposureMultiplier || 1);
-    const angle = state.clock.progress * Math.PI * 2 - Math.PI / 2;
-    sun.position.set(
-      Math.cos(angle) * 56,
-      5 + Math.max(0, Math.sin(angle)) * 42,
-      Math.sin(angle) * 36,
-    );
+      state.exposure *
+      (overlay?.exposureMultiplier || 1) *
+      lightMultiplier;
   }
 
   function setTheme(theme) {
@@ -2985,7 +2889,18 @@ export function createWorldScene({
         : "world";
     weather.rain.visible = currentTheme === "rain";
     weather.snow.visible = currentTheme === "snow" || currentTheme === "winter";
-    updateWorldEnvironment(Date.now());
+    updateWorldEnvironment();
+  }
+
+  function setLightLevel(value) {
+    const numeric = Number(value);
+    lightLevel = clamp(
+      Number.isFinite(numeric) ? numeric : LIGHT_LEVEL_DEFAULT,
+      LIGHT_LEVEL_MIN,
+      LIGHT_LEVEL_MAX,
+    );
+    updateWorldEnvironment();
+    return lightLevel;
   }
 
   function nearestLandmark() {
@@ -3035,8 +2950,6 @@ export function createWorldScene({
     currentSpace = regionId;
     currentFloorY = 0.38;
     player.position.copy(destination);
-    moveTarget.copy(destination);
-    hasMoveTarget = false;
     cameraFocus = null;
     nearestLandmark();
     onMovement({
@@ -3062,8 +2975,6 @@ export function createWorldScene({
     currentSpace = spaceId;
     currentFloorY = destination.y;
     player.position.copy(destination);
-    moveTarget.copy(destination);
-    hasMoveTarget = false;
     cameraFocus = null;
     currentLocation = spaceId
       .split("-")
@@ -3081,7 +2992,7 @@ export function createWorldScene({
     return true;
   }
 
-  function focusLandmark(id, options = {}) {
+  function focusLandmark(id) {
     const landmark = landmarkById(id);
     const object = landmarkObjects.get(landmark.id);
     if (!object) return;
@@ -3094,19 +3005,6 @@ export function createWorldScene({
       1.5,
       landmark.position[2],
     );
-    const direction = new THREE.Vector3(
-      player.position.x - landmark.position[0],
-      0,
-      player.position.z - landmark.position[2],
-    );
-    if (direction.lengthSq() < 0.1) direction.set(1, 0, 1);
-    direction.normalize().multiplyScalar(options.distance || 5.2);
-    moveTarget.set(
-      clamp(landmark.position[0] + direction.x, -WORLD_RADIUS, WORLD_RADIUS),
-      player.position.y,
-      clamp(landmark.position[2] + direction.z, -WORLD_RADIUS, WORLD_RADIUS),
-    );
-    hasMoveTarget = options.move !== false;
   }
 
   function clearFocus() {
@@ -3125,7 +3023,7 @@ export function createWorldScene({
     else touchKeys.delete(normalized);
   }
 
-  function movementVector() {
+  function movementInput() {
     const movement = new THREE.Vector3();
     const forwardInput =
       Number(keys.has("KeyW") || keys.has("ArrowUp")) -
@@ -3152,34 +3050,36 @@ export function createWorldScene({
     }
 
     // The coarse-pointer direction pad remains a predictable screen-independent
-    // fallback and does not require pointer lock or a mouse.
+    // fallback and does not require a mouse.
     if (touchKeys.has("KeyW")) movement.z -= 1;
     if (touchKeys.has("KeyS")) movement.z += 1;
     if (touchKeys.has("KeyA")) movement.x -= 1;
     if (touchKeys.has("KeyD")) movement.x += 1;
-    return movement.lengthSq() ? movement.normalize() : movement;
+    return {
+      keyboardActive: Boolean(forwardInput || rightInput),
+      movement: movement.lengthSq() ? movement.normalize() : movement,
+    };
   }
 
   function walkPlayer(delta, time) {
-    const movement = movementVector();
+    const { keyboardActive, movement } = movementInput();
     let walking = false;
     if (movement.lengthSq()) {
-      hasMoveTarget = false;
       cameraFocus = null;
-      player.position.addScaledVector(movement, PLAYER_SPEED * delta);
+      keyboardMovementSpeed = keyboardActive
+        ? Math.min(
+            PLAYER_MAX_SPEED,
+            keyboardMovementSpeed + PLAYER_ACCELERATION * delta,
+          )
+        : PLAYER_SPEED;
+      player.position.addScaledVector(
+        movement,
+        keyboardMovementSpeed * delta,
+      );
       player.rotation.y = Math.atan2(-movement.x, -movement.z);
       walking = true;
-    } else if (hasMoveTarget) {
-      const toTarget = moveTarget.clone().sub(player.position);
-      toTarget.y = 0;
-      if (toTarget.length() < 0.18) {
-        hasMoveTarget = false;
-      } else {
-        toTarget.normalize();
-        player.position.addScaledVector(toTarget, PLAYER_SPEED * 0.86 * delta);
-        player.rotation.y = Math.atan2(-toTarget.x, -toTarget.z);
-        walking = true;
-      }
+    } else {
+      keyboardMovementSpeed = PLAYER_SPEED;
     }
 
     const radius = Math.hypot(player.position.x, player.position.z);
@@ -3268,8 +3168,6 @@ export function createWorldScene({
     player.position.set(x, y, z);
     player.rotation.y = heading;
     lastPosition.copy(player.position);
-    moveTarget.copy(player.position);
-    hasMoveTarget = false;
     cameraFocus = null;
   }
 
@@ -3508,8 +3406,6 @@ export function createWorldScene({
     currentSpace = "town-square";
     currentFloorY = 0.38;
     player.position.copy(destination);
-    moveTarget.copy(destination);
-    hasMoveTarget = false;
     cameraFocus = null;
     currentLocation = `${home.name}'s front yard`;
     onLocationChange(currentLocation, "neighborhood");
@@ -3623,7 +3519,6 @@ export function createWorldScene({
     selectedLandmark = "routing";
     cameraFocus = target.position.clone();
     cameraFocus.y += 1.65;
-    hasMoveTarget = false;
     return true;
   }
 
@@ -4555,20 +4450,14 @@ export function createWorldScene({
     renderer.domElement.dataset.dragging = "true";
   }
 
-  function requestDesktopPointerLock(event) {
-    if (
-      event.pointerType !== "mouse" ||
-      event.button !== 0 ||
-      document.pointerLockElement === renderer.domElement ||
-      !window.matchMedia("(pointer: fine)").matches ||
-      typeof renderer.domElement.requestPointerLock !== "function"
-    ) {
-      return;
-    }
-    try {
-      const pending = renderer.domElement.requestPointerLock();
-      pending?.catch?.(() => {});
-    } catch (_) {}
+  function rotateCamera(deltaX, deltaY) {
+    if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return;
+    cameraYaw -= deltaX * CAMERA_LOOK_SENSITIVITY;
+    cameraPitch = clamp(
+      cameraPitch + deltaY * CAMERA_LOOK_SENSITIVITY,
+      CAMERA_PITCH_MIN,
+      CAMERA_PITCH_MAX,
+    );
   }
 
   function handlePointerDown(event) {
@@ -4586,11 +4475,12 @@ export function createWorldScene({
     if (primaryPointerId !== null) return;
     primaryPointerId = event.pointerId;
     pointerStart.set(event.clientX, event.clientY);
+    pointerLast.copy(pointerStart);
     pointerGestureMoved = false;
-    pointerStartedLocked =
-      document.pointerLockElement === renderer.domElement;
     renderer.domElement.dataset.dragging = "true";
-    requestDesktopPointerLock(event);
+    try {
+      renderer.domElement.setPointerCapture(event.pointerId);
+    } catch (_) {}
   }
 
   function handlePointerMove(event) {
@@ -4613,28 +4503,41 @@ export function createWorldScene({
         }
       }
     }
-    if (
-      event.pointerId === primaryPointerId &&
-      pointerStart.distanceTo(
-        new THREE.Vector2(event.clientX, event.clientY),
-      ) > 9
-    ) {
+    if (event.pointerId !== primaryPointerId) return;
+    const currentPointer = new THREE.Vector2(event.clientX, event.clientY);
+    const movedDistance = pointerStart.distanceTo(currentPointer);
+    if (event.pointerType === "mouse" && movedDistance > 4) {
+      if (pointerGestureMoved) {
+        rotateCamera(
+          currentPointer.x - pointerLast.x,
+          currentPointer.y - pointerLast.y,
+        );
+      } else {
+        pointerGestureMoved = true;
+        rotateCamera(
+          currentPointer.x - pointerStart.x,
+          currentPointer.y - pointerStart.y,
+        );
+      }
+      event.preventDefault();
+    } else if (movedDistance > 9) {
       pointerGestureMoved = true;
     }
+    pointerLast.copy(currentPointer);
   }
 
   function finishPointer(event, cancelled = false) {
     const wasPinching = pinchActive || touchPointers.size > 1;
     if (event.pointerType === "touch") {
       touchPointers.delete(event.pointerId);
-      try {
-        renderer.domElement.releasePointerCapture(event.pointerId);
-      } catch (_) {}
       if (touchPointers.size < 2) {
         pinchActive = false;
         pinchStartDistance = 0;
       }
     }
+    try {
+      renderer.domElement.releasePointerCapture(event.pointerId);
+    } catch (_) {}
     if (event.pointerId !== primaryPointerId) {
       if (!touchPointers.size) renderer.domElement.dataset.dragging = "false";
       return;
@@ -4645,14 +4548,12 @@ export function createWorldScene({
     const suppressTap =
       cancelled ||
       wasPinching ||
-      pointerGestureMoved ||
-      pointerStartedLocked;
+      pointerGestureMoved;
     pointerGestureMoved = false;
-    pointerStartedLocked = false;
     if (suppressTap) return;
 
-    // Use the down coordinates: once pointer lock succeeds, some browsers
-    // report a synthetic centre coordinate for the matching pointerup.
+    // Use the down coordinates so a small amount of click jitter cannot select
+    // an object that was not underneath the visible cursor at press time.
     pointerCoordinates({
       clientX: pointerStart.x,
       clientY: pointerStart.y,
@@ -4694,13 +4595,6 @@ export function createWorldScene({
       });
       return;
     }
-    const groundHit = raycaster.intersectObject(ground, false)[0];
-    if (groundHit) {
-      moveTarget.copy(groundHit.point);
-      moveTarget.y = player.position.y;
-      hasMoveTarget = true;
-      cameraFocus = null;
-    }
   }
 
   function handlePointerUp(event) {
@@ -4709,22 +4603,6 @@ export function createWorldScene({
 
   function handlePointerCancel(event) {
     finishPointer(event, true);
-  }
-
-  function handleMouseLook(event) {
-    if (document.pointerLockElement !== renderer.domElement) return;
-    cameraYaw -= Number(event.movementX || 0) * CAMERA_LOOK_SENSITIVITY;
-    cameraPitch = clamp(
-      cameraPitch + Number(event.movementY || 0) * CAMERA_LOOK_SENSITIVITY,
-      CAMERA_PITCH_MIN,
-      CAMERA_PITCH_MAX,
-    );
-  }
-
-  function handlePointerLockChange() {
-    const locked = document.pointerLockElement === renderer.domElement;
-    renderer.domElement.dataset.pointerLocked = String(locked);
-    if (!locked) keys.clear();
   }
 
   function handleWheel(event) {
@@ -4748,20 +4626,35 @@ export function createWorldScene({
       event.target instanceof HTMLSelectElement ||
       event.target?.isContentEditable
     ) return;
-    if (["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.code)) {
+    if (MOVEMENT_KEYS.has(event.code)) {
       keys.add(event.code);
       event.preventDefault();
     }
     if (event.code === "Escape") {
       clearFocus();
-      if (document.pointerLockElement === renderer.domElement) {
-        document.exitPointerLock?.();
-      }
     }
   }
 
   function handleKeyUp(event) {
     keys.delete(event.code);
+    if (
+      MOVEMENT_KEYS.has(event.code) &&
+      ![...keys].some((code) => MOVEMENT_KEYS.has(code))
+    ) {
+      keyboardMovementSpeed = PLAYER_SPEED;
+    }
+  }
+
+  function handleWindowBlur() {
+    keys.clear();
+    touchKeys.clear();
+    touchPointers.clear();
+    keyboardMovementSpeed = PLAYER_SPEED;
+    primaryPointerId = null;
+    pointerGestureMoved = false;
+    pinchActive = false;
+    pinchStartDistance = 0;
+    renderer.domElement.dataset.dragging = "false";
   }
 
   renderer.domElement.addEventListener("pointerdown", handlePointerDown);
@@ -4775,8 +4668,7 @@ export function createWorldScene({
   window.addEventListener("pointercancel", handlePointerCancel);
   window.addEventListener("keydown", handleKeyDown);
   window.addEventListener("keyup", handleKeyUp);
-  document.addEventListener("mousemove", handleMouseLook);
-  document.addEventListener("pointerlockchange", handlePointerLockChange);
+  window.addEventListener("blur", handleWindowBlur);
 
   const resizeObserver = new ResizeObserver(() => {
     const rect = container.getBoundingClientRect();
@@ -4851,7 +4743,6 @@ export function createWorldScene({
     }
     updateCamera(delta);
     nearestLandmark();
-    updateWorldEnvironment(Date.now());
     if (!reducedMotion) {
       animated.forEach((callback) => callback(time, delta));
       animateWeather(weather.rain, time, delta, "rain");
@@ -4889,9 +4780,6 @@ export function createWorldScene({
     disposed = true;
     renderer.setAnimationLoop(null);
     resizeObserver.disconnect();
-    if (document.pointerLockElement === renderer.domElement) {
-      document.exitPointerLock?.();
-    }
     renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
     renderer.domElement.removeEventListener("pointermove", handlePointerMove);
     renderer.domElement.removeEventListener("wheel", handleWheel);
@@ -4899,8 +4787,7 @@ export function createWorldScene({
     window.removeEventListener("pointercancel", handlePointerCancel);
     window.removeEventListener("keydown", handleKeyDown);
     window.removeEventListener("keyup", handleKeyUp);
-    document.removeEventListener("mousemove", handleMouseLook);
-    document.removeEventListener("pointerlockchange", handlePointerLockChange);
+    window.removeEventListener("blur", handleWindowBlur);
     touchPointers.clear();
     keys.clear();
     touchKeys.clear();
@@ -4933,7 +4820,7 @@ export function createWorldScene({
     focusLandmark,
     clearFocus,
     setTheme,
-    setClockOffset,
+    setLightLevel,
     setControl,
     setSpawn,
     travelToRegion,
@@ -4961,7 +4848,22 @@ export function createWorldScene({
       maxZoom: CAMERA_ZOOM_MAX,
       yaw: cameraYaw,
       pitch: cameraPitch,
-      pointerLocked: document.pointerLockElement === renderer.domElement,
+      dragging: primaryPointerId !== null,
+      pointerLocked: false,
+    }),
+    getMovementState: () => ({
+      speed: keyboardMovementSpeed,
+      baseSpeed: PLAYER_SPEED,
+      maxSpeed: PLAYER_MAX_SPEED,
+      keyboardActive: [...keys].some((code) => MOVEMENT_KEYS.has(code)),
+    }),
+    getEnvironmentState: () => ({
+      theme: currentTheme,
+      lightLevel,
+      sunIntensity: sun.intensity,
+      hemisphereIntensity: hemisphere.intensity,
+      exposure: renderer.toneMappingExposure,
+      sunPosition: sun.position.toArray(),
     }),
     getPosition: () => ({
       x: player.position.x,

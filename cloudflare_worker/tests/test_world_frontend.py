@@ -76,7 +76,7 @@ def test_world_is_an_immediate_accessible_game_shell():
     assert "JavaScript and WebGL enhance this page" in INDEX
 
 
-def test_world_contains_the_initial_city_districts_and_shared_clock():
+def test_world_contains_the_initial_city_districts_and_utc_clock():
     for landmark in (
         "information",
         "fountain",
@@ -89,7 +89,11 @@ def test_world_contains_the_initial_city_districts_and_shared_clock():
         "support",
     ):
         assert f'id: "{landmark}"' in DATA
-    assert "export const WORLD_DAY_MS = 4 * 60 * 60 * 1000" in DATA
+    assert "export function utcClock" in DATA
+    assert "getUTCHours()" in DATA
+    assert "getUTCMinutes()" in DATA
+    assert "getUTCSeconds()" in DATA
+    assert "WORLD_DAY_MS" not in DATA
     for theme in (
         "world",
         "rain",
@@ -100,8 +104,9 @@ def test_world_contains_the_initial_city_districts_and_shared_clock():
     ):
         assert f'id: "{theme}"' in DATA
     assert 'class="world-clock"' in APP
-    assert 'data-world-clock>--:--' in APP
-    assert 'data-world-phase>Shared · 4h day' in APP
+    assert 'aria-label="Current UTC time"' in APP
+    assert 'data-world-clock>--:--:--' in APP
+    assert 'data-world-phase>UTC · 24-hour clock' in APP
 
 
 def test_scene_builds_playable_landmarks_and_badged_avatars():
@@ -294,9 +299,9 @@ def test_world_hud_counts_authoritative_connected_visitors_without_duplicates():
     assert "this.world?.setRemotePlayers" in render_peers
 
 
-def test_avatar_faces_travel_direction_and_intro_can_stay_dismissed():
+def test_avatar_faces_keyboard_travel_direction_and_intro_can_stay_dismissed():
     assert "player.rotation.y = Math.atan2(-movement.x, -movement.z)" in SCENE
-    assert "player.rotation.y = Math.atan2(-toTarget.x, -toTarget.z)" in SCENE
+    assert "toTarget" not in SCENE
     assert "player.rotation.y = 0" in SCENE
     assert "INTRO_DISMISSED_KEY" in APP
     assert "data-world-arrival-dismiss" in APP
@@ -328,7 +333,9 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
     assert "WORLD_REGIONS" in DATA
     assert "travelToRegion" in SCENE
     assert "travelToSpace" in SCENE
-    assert "worldClock(now + clockOffset)" in SCENE
+    assert "utcClock(Date.now() + this.serverOffset)" in APP
+    assert "worldClock" not in SCENE
+    assert "setClockOffset" not in SCENE
     assert "utcOffsetHours" not in SCENE
     assert 'data-world-travel="sky-campus"' in APP
     assert 'data-world-travel="code-planet"' in APP
@@ -1004,7 +1011,7 @@ def test_world_has_responsive_and_reduced_motion_fallbacks():
     assert "BroadcastChannel" in APP
 
 
-def test_world_supports_bounded_pinch_wheel_and_fps_controls():
+def test_world_supports_bounded_pinch_wheel_and_drag_controls():
     # Pinch and wheel share one explicit near/far camera range rather than
     # changing page scale or maintaining two controls that can drift apart.
     for contract in (
@@ -1021,17 +1028,38 @@ def test_world_supports_bounded_pinch_wheel_and_fps_controls():
         assert contract in SCENE
     assert 'addEventListener("pointermove", handlePointerMove, {' in SCENE
     assert "passive: false" in SCENE
+    assert 'aria-label="Movement and camera controls"' in APP
+    assert "drag to rotate" in APP
+    assert "click the plaza" not in APP
+    assert "click on the plaza" not in DATA
 
-    # Fine-pointer navigation locks the pointer for mouse look and rotates WASD
-    # into camera space. Touch arrows remain an independent fallback.
+    # Fine-pointer navigation keeps the cursor visible and rotates only while
+    # the primary pointer is dragged. WASD stays camera-relative, while touch
+    # arrows remain an independent fallback.
     for contract in (
-        "requestPointerLock",
-        "pointerLockElement",
-        "function handleMouseLook",
+        'dataset.cameraControl = "drag"',
+        "function rotateCamera",
+        "pointerLast.copy(pointerStart)",
+        "setPointerCapture(event.pointerId)",
         "CAMERA_LOOK_SENSITIVITY",
         "movement.addScaledVector(forward, forwardInput)",
         "movement.addScaledVector(right, rightInput)",
         'if (touchKeys.has("KeyW")) movement.z -= 1',
+    ):
+        assert contract in SCENE
+    assert "requestPointerLock" not in SCENE
+    assert "pointerLockElement" not in SCENE
+    assert "raycaster.intersectObject(ground" not in SCENE
+
+    # Keyboard movement accelerates gradually to a named cap and resets as
+    # soon as movement input is released or the browser loses focus.
+    for contract in (
+        "PLAYER_MAX_SPEED",
+        "PLAYER_ACCELERATION",
+        "keyboardMovementSpeed + PLAYER_ACCELERATION * delta",
+        "keyboardMovementSpeed = PLAYER_SPEED",
+        'window.addEventListener("blur", handleWindowBlur)',
+        "getMovementState",
     ):
         assert contract in SCENE
 
@@ -1041,8 +1069,7 @@ def test_world_supports_bounded_pinch_wheel_and_fps_controls():
         'removeEventListener("pointermove", handlePointerMove)',
         'removeEventListener("wheel", handleWheel)',
         'removeEventListener("pointercancel", handlePointerCancel)',
-        'removeEventListener("mousemove", handleMouseLook)',
-        'removeEventListener("pointerlockchange", handlePointerLockChange)',
+        'removeEventListener("blur", handleWindowBlur)',
     ):
         assert cleanup in SCENE
 
@@ -1095,16 +1122,29 @@ def test_durable_object_scene_requires_explicit_current_usage_and_limits():
     assert "updateDurableObjects," in SCENE
 
 
-def test_world_lighting_uses_one_smooth_server_offset_clock():
-    assert "worldClock(now + clockOffset)" in SCENE
-    assert "new THREE.Color(from[key]).lerp(" in SCENE
-    assert "linear * linear * (3 - 2 * linear)" in SCENE
+def test_world_lighting_is_static_daylight_with_a_local_persisted_control():
+    assert "DAYLIGHT_ENVIRONMENT" in SCENE
     assert "function updateWorldEnvironment" in SCENE
-    assert "updateWorldEnvironment(Date.now());" in SCENE
+    assert "function setLightLevel" in SCENE
+    assert "lightLevel / LIGHT_LEVEL_DEFAULT" in SCENE
+    assert "setLightLevel," in SCENE
+    assert "getEnvironmentState" in SCENE
+    assert "updateWorldEnvironment(Date.now())" not in SCENE
+    assert "sharedEnvironmentState" not in SCENE
+    assert "worldClock" not in SCENE
+    assert "setClockOffset" not in SCENE
     assert "regionalOffset" not in SCENE
     assert "utcOffsetHours" not in SCENE
     assert "Math.floor(now / 30000)" not in SCENE
     assert "LOCAL_ENVIRONMENT_OVERLAYS" in SCENE
+    assert "data-world-light-level" in APP
+    assert "data-world-light-level-output" in APP
+    assert "this.settings.lightLevel = next" in APP
+    assert "this.world?.setLightLevel(next)" in APP
+    assert "writeJSON(localStorage, SETTINGS_KEY, this.settings)" in APP
+    assert "lightLevel" not in APP[
+        APP.index("function publicIdentity"):APP.index("function presenceBrowser")
+    ]
     for overlay in ("rain", "snow", "winter", "cyberpunk", '"low-light"'):
         assert overlay in SCENE
 
@@ -1213,12 +1253,13 @@ def test_verified_fediverse_feedback_is_manual_pending_and_owner_confirmed():
 
 def test_generated_world_score_is_opt_in_four_hour_and_redistributable():
     assert "function createProceduralWorldSoundtrack" in APP
-    assert "durationMs: WORLD_DAY_MS" in APP
+    assert "durationMs: WORLD_SCORE_LOOP_MS" in APP
     assert "15 * 60 * 1000" in APP
     assert "CC0-1.0" in APP
-    assert "World-day offset" in APP
+    assert "Local score offset" in APP
+    assert "loops independently of the UTC display" in APP
     assert "Audio never starts automatically" in APP
-    assert "Original four-hour procedural score generated locally" in DATA
+    assert "Original four-hour local procedural score" in DATA
     assert "world-soundtrack-license.md" in DATA
 
 

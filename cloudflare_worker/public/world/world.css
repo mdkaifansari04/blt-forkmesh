@@ -293,7 +293,7 @@ forkmesh-world {
 .world-canvas {
   display: block;
   touch-action: none;
-  cursor: crosshair;
+  cursor: grab;
 }
 
 .world-canvas[data-dragging="true"] {
@@ -2858,6 +2858,40 @@ forkmesh-world {
   border-color: var(--world-mint);
   color: var(--world-copy);
   outline: none;
+}
+
+.world-light-control {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--world-line);
+  color: var(--world-muted);
+  font-size: 0.7rem;
+}
+
+.world-light-control > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.world-light-control strong,
+.world-light-control output {
+  color: var(--world-copy);
+  font-family: "ForkMesh Mono", monospace;
+}
+
+.world-light-control input {
+  width: 100%;
+  accent-color: var(--world-mint-deep);
+  cursor: pointer;
+}
+
+.world-light-control small {
+  color: #80978b;
+  line-height: 1.45;
 }
 
 .world-privacy-option {

@@ -6,13 +6,12 @@ import {
   THEME_OPTIONS,
   TOUR_STEPS,
   WORKSHOP_TYPES,
-  WORLD_DAY_MS,
   WORLD_REGIONS,
   detectClient,
   flagEmoji,
   landmarkById,
   sanitizePresenceText,
-  worldClock,
+  utcClock,
 } from "./world-data.js";
 import { buildLiveMirrorNodes } from "./world-mirror-nodes.js";
 import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
@@ -38,6 +37,10 @@ const WORLD_TICKET_REFRESH_MS = 5 * 60 * 1000;
 const WORLD_NOTIFICATION_POLL_MS = 30 * 1000;
 const MIRROR_STATUS_POLL_MS = 30 * 1000;
 const WORLD_MANUAL_BLOCK_DURATION_MS = 60 * 60 * 1000;
+const WORLD_SCORE_LOOP_MS = 4 * 60 * 60 * 1000;
+const WORLD_LIGHT_LEVEL_MIN = 40;
+const WORLD_LIGHT_LEVEL_MAX = 140;
+const WORLD_LIGHT_LEVEL_DEFAULT = 100;
 const FLAGSHIP_REPOSITORY = Object.freeze({
   owner: "forkmesh",
   repo: "forkmesh",
@@ -205,6 +208,7 @@ function hashSuffix(value) {
 function defaultSettings() {
   return {
     theme: "world",
+    lightLevel: WORLD_LIGHT_LEVEL_DEFAULT,
     availability: "online",
     activityCategory: "automatic",
     publicDoor: "knock",
@@ -234,6 +238,15 @@ function mergeSettings(stored) {
     ...defaults,
     ...(stored || {}),
     theme,
+    lightLevel: Math.min(
+      WORLD_LIGHT_LEVEL_MAX,
+      Math.max(
+        WORLD_LIGHT_LEVEL_MIN,
+        Number.isFinite(Number(stored?.lightLevel))
+          ? Number(stored.lightLevel)
+          : WORLD_LIGHT_LEVEL_DEFAULT,
+      ),
+    ),
     privacy: {
       ...defaults.privacy,
       ...(stored?.privacy || {}),
@@ -482,7 +495,7 @@ function providerMetadataCopy(item) {
   return "Current provider track metadata unavailable: ForkMesh did not receive a permitted provider metadata event. The playlist title is user supplied.";
 }
 
-function createProceduralWorldSoundtrack(AudioContext, worldOffsetMs) {
+function createProceduralWorldSoundtrack(AudioContext, scoreOffsetMs) {
   const context = new AudioContext();
   const master = context.createGain();
   master.gain.setValueAtTime(0.0001, context.currentTime);
@@ -495,8 +508,8 @@ function createProceduralWorldSoundtrack(AudioContext, worldOffsetMs) {
   const stepSeconds = 60 / 72 / 2;
   const roots = [110, 98, 82.41, 92.5, 73.42, 82.41, 98, 87.31];
   let step = Math.floor(
-    (worldOffsetMs / 1000 / stepSeconds) %
-      Math.floor(WORLD_DAY_MS / 1000 / stepSeconds),
+    (scoreOffsetMs / 1000 / stepSeconds) %
+      Math.floor(WORLD_SCORE_LOOP_MS / 1000 / stepSeconds),
   );
   let nextWhen = context.currentTime + 0.08;
   let stopped = false;
@@ -522,11 +535,13 @@ function createProceduralWorldSoundtrack(AudioContext, worldOffsetMs) {
   const schedule = () => {
     const horizon = context.currentTime + 1.6;
     while (!stopped && nextWhen < horizon) {
-      const worldStepCount = Math.floor(WORLD_DAY_MS / 1000 / stepSeconds);
-      const normalizedStep = ((step % worldStepCount) + worldStepCount) %
-        worldStepCount;
-      const worldMs = normalizedStep * stepSeconds * 1000;
-      const chapter = Math.floor(worldMs / (15 * 60 * 1000));
+      const scoreStepCount = Math.floor(
+        WORLD_SCORE_LOOP_MS / 1000 / stepSeconds,
+      );
+      const normalizedStep = ((step % scoreStepCount) + scoreStepCount) %
+        scoreStepCount;
+      const scoreMs = normalizedStep * stepSeconds * 1000;
+      const chapter = Math.floor(scoreMs / (15 * 60 * 1000));
       const bar = Math.floor(normalizedStep / 8);
       const root = roots[(bar + chapter * 3) % roots.length];
       const color = [1, 6 / 5, 3 / 2, 9 / 5][
@@ -574,8 +589,8 @@ function createProceduralWorldSoundtrack(AudioContext, worldOffsetMs) {
     context,
     gain: master,
     timer,
-    worldOffsetMs,
-    durationMs: WORLD_DAY_MS,
+    scoreOffsetMs,
+    durationMs: WORLD_SCORE_LOOP_MS,
     license: "ForkMesh Procedural World Score · CC0-1.0",
     stop() {
       if (stopped) return;
@@ -1835,10 +1850,10 @@ function worldTemplate(identity, settings, mode) {
             </span>
           </a>
 
-          <div class="world-clock" aria-label="Shared four-hour World clock">
-            <strong class="world-clock-time" data-world-clock>--:--</strong>
+          <div class="world-clock" aria-label="Current UTC time">
+            <strong class="world-clock-time" data-world-clock>--:--:--</strong>
             <span class="world-clock-label">World time</span>
-            <span class="world-clock-phase" data-world-phase>Shared · 4h day</span>
+            <span class="world-clock-phase" data-world-phase>UTC · 24-hour clock</span>
           </div>
 
           <nav class="world-top-actions" aria-label="World tools">
@@ -1959,7 +1974,7 @@ function worldTemplate(identity, settings, mode) {
           <button class="world-identity-edit" type="button" data-world-settings-open aria-label="Edit public badge">✎</button>
         </section>
 
-        <div class="world-controls" aria-label="Movement controls">
+        <div class="world-controls" aria-label="Movement and camera controls">
           <div class="world-control-keys" aria-hidden="true">
             <span class="world-control-key">W</span>
             <span class="world-control-key">A</span>
@@ -1967,8 +1982,8 @@ function worldTemplate(identity, settings, mode) {
             <span class="world-control-key">D</span>
           </div>
           <div class="world-controls-copy">
-            <strong>Move around</strong>
-            <span>WASD, arrows, or click the plaza</span>
+            <strong>Move and look around</strong>
+            <span>WASD or arrows · drag to rotate · wheel to zoom</span>
           </div>
           <span class="world-location" data-world-location>Town Square</span>
           <span class="world-location world-region-location" data-world-active-region>Central Campus · shared global time</span>
@@ -2034,6 +2049,23 @@ function worldTemplate(identity, settings, mode) {
           <fieldset class="world-setting-group">
             <legend>Personal environment · only changes this device</legend>
             <div class="world-theme-grid">${themes}</div>
+            <label class="world-light-control">
+              <span>
+                <strong>Light level</strong>
+                <output data-world-light-level-output>${escapeHTML(
+                  settings.lightLevel,
+                )}%</output>
+              </span>
+              <input
+                type="range"
+                min="${WORLD_LIGHT_LEVEL_MIN}"
+                max="${WORLD_LIGHT_LEVEL_MAX}"
+                step="5"
+                value="${escapeHTML(settings.lightLevel)}"
+                data-world-light-level
+              />
+              <small>Full daylight is the default. This adjustment stays on this device and never changes the shared world.</small>
+            </label>
           </fieldset>
 
           <fieldset class="world-setting-group">
@@ -2272,7 +2304,7 @@ class ForkMeshWorld extends HTMLElement {
   async bootstrap() {
     const loadingCopy = this.$("[data-world-loading-copy]");
     try {
-      loadingCopy.textContent = "Synchronizing the shared world clock";
+      loadingCopy.textContent = "Reading the current UTC time";
       const contextPromise = this.loadContext();
       const dataPromise = this.loadWorldData();
       loadingCopy.textContent = "Building repositories, offices, and portals";
@@ -2305,8 +2337,8 @@ class ForkMeshWorld extends HTMLElement {
         onModeration: (action) => this.moderateWorldPeer(action),
       });
       this.world.setTheme(this.settings.theme);
+      this.world.setLightLevel(this.settings.lightLevel);
       await Promise.allSettled([contextPromise, dataPromise]);
-      this.world.setClockOffset(this.serverOffset);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
       this.world.updateNetworkNodes(
         liveNodeRecords(this.network, this.mirrorCatalogs),
@@ -2565,7 +2597,6 @@ class ForkMeshWorld extends HTMLElement {
           }
         : null;
     this.updateIdentityUI();
-    this.world?.setClockOffset(this.serverOffset);
     this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
     this.updateDurableObjectMetrics();
   }
@@ -2835,7 +2866,6 @@ class ForkMeshWorld extends HTMLElement {
           }))
         : [];
     if (serverNow > 0 && !this.serverOffset) this.serverOffset = serverNow - Date.now();
-    this.world?.setClockOffset(this.serverOffset);
     this.world?.updateNetworkNodes(
       liveNodeRecords(this.network, this.mirrorCatalogs),
     );
@@ -3745,6 +3775,11 @@ class ForkMeshWorld extends HTMLElement {
     });
 
     this.addEventListener("input", (event) => {
+      const lightLevel = event.target.closest("[data-world-light-level]");
+      if (lightLevel) {
+        this.setLightLevel(lightLevel.value);
+        return;
+      }
       if (event.target.closest("[data-world-repo-filter='directory']")) {
         this.applyRepositoryFilters();
       }
@@ -3879,11 +3914,11 @@ class ForkMeshWorld extends HTMLElement {
 
   startClock() {
     const render = () => {
-      const clock = worldClock(Date.now() + this.serverOffset);
+      const clock = utcClock(Date.now() + this.serverOffset);
       const time = this.$("[data-world-clock]");
       const phase = this.$("[data-world-phase]");
       if (time) time.textContent = clock.label;
-      if (phase) phase.textContent = `${clock.phase} · 4h shared day`;
+      if (phase) phase.textContent = `${clock.zone} · 24-hour clock`;
       this.$$("[data-world-region-clock]").forEach((element) => {
         const region = WORLD_REGIONS.find(
           (item) => item.id === element.dataset.worldRegionClock,
@@ -3891,7 +3926,7 @@ class ForkMeshWorld extends HTMLElement {
         if (!region) return;
         const label = element.querySelector("span");
         if (label) {
-          label.textContent = `${region.phase} · ${clock.label}`;
+          label.textContent = `${region.phase} · ${clock.label} ${clock.zone}`;
         }
       });
       if (this.settings?.privacy?.localTime) this.updateIdentityUI();
@@ -5626,7 +5661,7 @@ class ForkMeshWorld extends HTMLElement {
               <article>
                 <span>${escapeHTML(region.phase)}</span>
                 <strong>${escapeHTML(region.label)}</strong>
-                <p>Uses the same smooth four-hour cycle as every campus · events remain UTC-synchronized.</p>
+                <p>Walking here never changes your lighting. Events use the same UTC schedule everywhere.</p>
                 <button type="button" data-world-travel="${escapeHTML(
                   region.id,
                 )}">Teleport to campus</button>
@@ -5660,7 +5695,7 @@ class ForkMeshWorld extends HTMLElement {
       if (this.world?.travelToRegion(destination)) {
         const region = WORLD_REGIONS.find((item) => item.id === destination);
         this.toast(
-          `Arrived in ${region.label}. The global four-hour day remains continuous; shared events stay UTC-synchronized.`,
+          `Arrived in ${region.label}. Your local light level is unchanged; shared events stay UTC-synchronized.`,
         );
         this.closeLandmark();
       }
@@ -8368,20 +8403,20 @@ class ForkMeshWorld extends HTMLElement {
       now.innerHTML = `<span>Local audio synthesis is unavailable in this browser.</span><button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
       return;
     }
-    const worldOffsetMs =
-      ((Date.now() + this.serverOffset) % WORLD_DAY_MS + WORLD_DAY_MS) %
-      WORLD_DAY_MS;
+    const scoreOffsetMs =
+      ((Date.now() % WORLD_SCORE_LOOP_MS) + WORLD_SCORE_LOOP_MS) %
+      WORLD_SCORE_LOOP_MS;
     const soundtrack = createProceduralWorldSoundtrack(
       AudioContext,
-      worldOffsetMs,
+      scoreOffsetMs,
     );
     this.activeAudio = soundtrack;
     now.innerHTML = `
       <span><strong>${escapeHTML(station.name)}</strong> · ${escapeHTML(
         station.provider,
-      )}<small data-world-track>Original four-hour procedural downtempo score · World-day offset ${escapeHTML(
-        formatMediaPosition(worldOffsetMs),
-      )} · loops with the shared World day · CC0-1.0 · local playback only.</small></span>
+      )}<small data-world-track>Original four-hour procedural downtempo score · Local score offset ${escapeHTML(
+        formatMediaPosition(scoreOffsetMs),
+      )} · loops independently of the UTC display · CC0-1.0 · local playback only.</small></span>
       <button type="button" data-world-radio-stop>Mute / stop</button>`;
     try {
       await soundtrack.context.resume();
@@ -8519,7 +8554,26 @@ class ForkMeshWorld extends HTMLElement {
       button.setAttribute("aria-pressed", String(button.dataset.worldTheme === theme));
     });
     const label = THEME_OPTIONS.find((option) => option.id === theme)?.label || theme;
-    this.toast(`${label} is local to this device. Global sunlight keeps following the shared four-hour clock.`);
+    this.toast(`${label} is local to this device. UTC is display-only and never changes the lighting.`);
+  }
+
+  setLightLevel(value) {
+    const numeric = Number(value);
+    const next = Math.min(
+      WORLD_LIGHT_LEVEL_MAX,
+      Math.max(
+        WORLD_LIGHT_LEVEL_MIN,
+        Number.isFinite(numeric) ? numeric : WORLD_LIGHT_LEVEL_DEFAULT,
+      ),
+    );
+    this.settings.lightLevel = next;
+    this.saveSettings();
+    this.world?.setLightLevel(next);
+    const input = this.$("[data-world-light-level]");
+    const output = this.$("[data-world-light-level-output]");
+    if (input && Number(input.value) !== next) input.value = String(next);
+    if (output) output.textContent = `${next}%`;
+    return next;
   }
 
   async toggleWorldSound() {
@@ -8631,7 +8685,7 @@ class ForkMeshWorld extends HTMLElement {
   renderTourStep() {
     const step = TOUR_STEPS[this.tourIndex];
     if (!step) return;
-    this.world?.focusLandmark(step.landmark, { move: false });
+    this.world?.focusLandmark(step.landmark);
     const title = this.$("[data-world-tour-title]");
     const copy = this.$("[data-world-tour-copy]");
     const progress = this.$("[data-world-tour-progress]");

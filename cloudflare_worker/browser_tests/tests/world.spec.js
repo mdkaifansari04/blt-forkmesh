@@ -674,10 +674,10 @@ test("reward-program links deep-link to the self-custodial fountain controls", a
 
 async function freezeWorld(page) {
   await page.locator("forkmesh-world").evaluate((shell) => {
-    // Keep the one shared clock authoritative. FIXED_NOW is 08:00 in the
-    // four-hour cycle; visual tests must not revive a conflicting fixed-day
-    // theme merely to stabilize the lighting.
+    // The default theme is fixed full daylight. UTC remains a display clock
+    // and never participates in scene lighting.
     shell.world.setTheme("world");
+    shell.world.setLightLevel(100);
   });
   // The camera intentionally eases from its spawn position. Let that bounded
   // interpolation converge before pausing so the WebGL baseline does not
@@ -743,10 +743,10 @@ test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async
   );
 });
 
-test("desktop camera supports pointer-lock mouse look, camera-relative WASD, and wheel zoom", async ({
+test("desktop camera uses visible-cursor drag look, capped movement acceleration, and wheel zoom", async ({
   page,
 }) => {
-  await prepareWorldPage(page, "desktop-fps-controls");
+  await prepareWorldPage(page, "desktop-drag-controls");
   await waitForWorld(page);
 
   const canvas = page.locator("[data-world-canvas-wrap] canvas");
@@ -757,41 +757,66 @@ test("desktop camera supports pointer-lock mouse look, camera-relative WASD, and
     y: Math.round(box.y + box.height / 2),
   };
 
+  const beforeGroundClick = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getPosition(),
+  );
   await page.mouse.click(centre.x, centre.y);
-  await expect.poll(() =>
-    page.locator("forkmesh-world").evaluate(
-      (shell) => shell.world.getCameraState().pointerLocked,
+  await page.waitForTimeout(160);
+  const afterGroundClick = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getPosition(),
+  );
+  expect(
+    Math.hypot(
+      afterGroundClick.x - beforeGroundClick.x,
+      afterGroundClick.z - beforeGroundClick.z,
     ),
-  ).toBe(true);
+  ).toBeLessThan(0.01);
+  await expect(canvas).toHaveCSS("cursor", "grab");
+  expect(await page.evaluate(() => document.pointerLockElement)).toBeNull();
 
   const beforeLook = await page.locator("forkmesh-world").evaluate(
     (shell) => shell.world.getCameraState(),
   );
-  // Playwright keeps its virtual cursor stationary while Chromium owns the
-  // pointer. Dispatch the relative values that a real locked mousemove carries.
-  await page.evaluate(() => {
-    const relativeMove = new MouseEvent("mousemove", { bubbles: true });
-    Object.defineProperties(relativeMove, {
-      movementX: { value: 120 },
-      movementY: { value: 35 },
-    });
-    document.dispatchEvent(relativeMove);
-  });
+  await page.mouse.move(centre.x, centre.y);
+  await page.mouse.down({ button: "left" });
+  await expect(canvas).toHaveCSS("cursor", "grabbing");
+  await page.mouse.move(centre.x + 120, centre.y + 35, { steps: 4 });
+  await page.mouse.up({ button: "left" });
   const afterLook = await page.locator("forkmesh-world").evaluate(
     (shell) => shell.world.getCameraState(),
   );
   expect(afterLook.yaw).not.toBeCloseTo(beforeLook.yaw, 4);
   expect(afterLook.pitch).not.toBeCloseTo(beforeLook.pitch, 4);
+  expect(afterLook.dragging).toBe(false);
+  expect(afterLook.pointerLocked).toBe(false);
+  expect(await page.evaluate(() => document.pointerLockElement)).toBeNull();
+  await expect(canvas).toHaveCSS("cursor", "grab");
 
   const beforeMove = await page.locator("forkmesh-world").evaluate(
     (shell) => shell.world.getPosition(),
   );
-  await page.keyboard.down("w");
-  await page.waitForTimeout(240);
-  await page.keyboard.up("w");
+  await page.keyboard.down("ArrowUp");
+  await page.waitForTimeout(120);
+  const earlyMovement = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getMovementState(),
+  );
+  await page.waitForTimeout(760);
+  const acceleratedMovement = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getMovementState(),
+  );
+  await page.keyboard.up("ArrowUp");
   const afterMove = await page.locator("forkmesh-world").evaluate(
     (shell) => shell.world.getPosition(),
   );
+  expect(acceleratedMovement.speed).toBeGreaterThan(earlyMovement.speed);
+  expect(acceleratedMovement.speed).toBeLessThanOrEqual(
+    acceleratedMovement.maxSpeed,
+  );
+  const releasedMovement = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getMovementState(),
+  );
+  expect(releasedMovement.speed).toBe(releasedMovement.baseSpeed);
+  expect(releasedMovement.keyboardActive).toBe(false);
   const displacement = {
     x: afterMove.x - beforeMove.x,
     z: afterMove.z - beforeMove.z,
@@ -804,12 +829,15 @@ test("desktop camera supports pointer-lock mouse look, camera-relative WASD, and
     displacement.x * cameraForward.x + displacement.z * cameraForward.z,
   ).toBeGreaterThan(0.05);
 
-  await page.keyboard.press("Escape");
-  await expect.poll(() =>
-    page.locator("forkmesh-world").evaluate(
-      (shell) => shell.world.getCameraState().pointerLocked,
-    ),
-  ).toBe(false);
+  await page.keyboard.down("w");
+  await page.waitForTimeout(180);
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  const blurredMovement = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getMovementState(),
+  );
+  expect(blurredMovement.speed).toBe(blurredMovement.baseSpeed);
+  expect(blurredMovement.keyboardActive).toBe(false);
+  await page.keyboard.up("w");
 
   await page.mouse.move(centre.x, centre.y);
   const initialZoom = await page.locator("forkmesh-world").evaluate(
@@ -830,6 +858,55 @@ test("desktop camera supports pointer-lock mouse look, camera-relative WASD, and
       (shell) => shell.world.getCameraState().zoom,
     ),
   ).toBeLessThan(zoomedOut);
+});
+
+test("UTC is display-only and local light level survives movement without becoming presence data", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "local-light-level");
+  await waitForWorld(page);
+
+  await expect(page.locator("[data-world-clock]")).toHaveText("17:20:00");
+  await expect(page.locator("[data-world-phase]")).toHaveText(
+    "UTC · 24-hour clock",
+  );
+  const initial = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getEnvironmentState(),
+  );
+  expect(initial.theme).toBe("world");
+  expect(initial.lightLevel).toBe(100);
+
+  await page.keyboard.down("ArrowRight");
+  await page.waitForTimeout(320);
+  await page.keyboard.up("ArrowRight");
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.travelToRegion("east");
+  });
+  const afterMovement = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getEnvironmentState(),
+  );
+  expect(afterMovement).toEqual(initial);
+
+  await page.locator("[data-world-settings-open]").first().click();
+  const light = page.locator("[data-world-light-level]");
+  await light.fill("65");
+  await expect(page.locator("[data-world-light-level-output]")).toHaveText(
+    "65%",
+  );
+  const adjusted = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getEnvironmentState(),
+  );
+  expect(adjusted.lightLevel).toBe(65);
+  expect(adjusted.sunIntensity).toBeLessThan(initial.sunIntensity);
+  expect(adjusted.sunPosition).toEqual(initial.sunPosition);
+  const stored = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("forkmesh.world.settings.v1") || "{}"),
+  );
+  expect(stored.lightLevel).toBe(65);
+  const publicBadge = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.player.userData.identity,
+  );
+  expect(publicBadge?.lightLevel).toBeUndefined();
 });
 
 test("two live clients synchronize movement without leaking disabled badge fields", async ({
@@ -1283,15 +1360,15 @@ test("four-hour procedural soundtrack starts only after consent and stops locall
   await page.locator("[data-world-radio='forkmesh-focus']").click();
   const playback = await page.locator("forkmesh-world").evaluate((shell) => ({
     durationMs: shell.activeAudio?.durationMs,
-    worldOffsetMs: shell.activeAudio?.worldOffsetMs,
+    scoreOffsetMs: shell.activeAudio?.scoreOffsetMs,
     license: shell.activeAudio?.license,
   }));
   expect(playback.durationMs).toBe(4 * 60 * 60 * 1000);
-  expect(playback.worldOffsetMs).toBeGreaterThanOrEqual(0);
-  expect(playback.worldOffsetMs).toBeLessThan(playback.durationMs);
+  expect(playback.scoreOffsetMs).toBeGreaterThanOrEqual(0);
+  expect(playback.scoreOffsetMs).toBeLessThan(playback.durationMs);
   expect(playback.license).toContain("CC0-1.0");
   await expect(page.locator("[data-world-track]")).toContainText(
-    "loops with the shared World day",
+    "loops independently of the UTC display",
   );
   expect(mediaRequests).toEqual([]);
 
