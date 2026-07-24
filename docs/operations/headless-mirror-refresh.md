@@ -284,7 +284,7 @@ gateway service and manual refresh process:
 ```ini
 [Service]
 Environment=TMPDIR=/var/lib/forkmesh-mirror/runtime-tmp
-ReadWritePaths=/var/lib/forkmesh-mirror/runtime-tmp
+ReadWritePaths=/var/lib/forkmesh-mirror/identity /var/lib/forkmesh-mirror/encrypted /var/lib/forkmesh-mirror/gateway /var/lib/forkmesh-mirror/runtime-tmp -/var/lib/forkmesh-mirror/source -/srv/forkmesh-git
 ```
 
 The directory must already exist, be owned by the mirror service account, and
@@ -294,6 +294,18 @@ Size it for at least two expanded copies during validation. This storage is
 ephemeral materialized public-repository data, not a replacement for the
 encrypted archive, and should remain inside the service's protected local
 storage boundary.
+
+The packaged gateway keeps `ProtectSystem=strict` and makes only its identity,
+encrypted-generation, gateway-state, runtime-temporary, and bare-source
+subtrees writable. Release CAS data remains read-only. The leading `-` on each
+alternative bare-source layout tells systemd that an absent alternative is
+acceptable: packaged nodes use `/var/lib/forkmesh-mirror/source`, while some
+existing operators use `/srv/forkmesh-git`. This write boundary is required
+when `merge-pull` is enabled: the fixed executor records a terminal idempotency
+result, updates exact checked refs, reseals the new generation, and renews the
+signed catalog. A deployment using any other source or state location must
+replace these entries with its exact dedicated paths in a systemd drop-in; do
+not grant the gateway a broad filesystem path such as `/`.
 
 ## Register after restart
 

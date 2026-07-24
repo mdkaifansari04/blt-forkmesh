@@ -462,9 +462,37 @@ def test_refresh_packaging_has_no_user_derived_commands():
             in unit
         )
     assert (
-        "ReadWritePaths=/var/lib/forkmesh-mirror/runtime-tmp"
+        "ReadWritePaths=/var/lib/forkmesh-mirror/identity "
+        "/var/lib/forkmesh-mirror/encrypted "
+        "/var/lib/forkmesh-mirror/gateway "
+        "/var/lib/forkmesh-mirror/runtime-tmp "
+        "-/var/lib/forkmesh-mirror/source -/srv/forkmesh-git"
         in gateway_service
     )
+
+
+def test_gateway_merge_executor_is_writable_only_inside_service_data_roots():
+    service = (
+        PROJECT_ROOT / "packaging" / "systemd" / "forkmesh-mirror.service"
+    ).read_text(encoding="utf-8")
+    directives = [
+        shlex.split(line.split("=", 1)[1])
+        for line in service.splitlines()
+        if line.startswith("ReadWritePaths=")
+    ]
+
+    assert directives == [[
+        "/var/lib/forkmesh-mirror/identity",
+        "/var/lib/forkmesh-mirror/encrypted",
+        "/var/lib/forkmesh-mirror/gateway",
+        "/var/lib/forkmesh-mirror/runtime-tmp",
+        "-/var/lib/forkmesh-mirror/source",
+        "-/srv/forkmesh-git",
+    ]]
+    assert "ProtectSystem=strict" in service
+    assert "/var/lib/forkmesh-mirror/releases" not in directives[0]
+    assert "/var/lib/forkmesh-mirror" not in directives[0]
+    assert "/" not in directives[0]
 
 
 def test_gateway_startup_uses_fast_integrity_precheck():
