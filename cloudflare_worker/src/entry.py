@@ -6111,6 +6111,13 @@ async def repo_mirrors_handler(env, request, owner, repo):
         for r in hist_rows:
             history.setdefault(str(r.get("key_bi") or ""), []).append(
                 r.get("state_hash"))
+    linked_row = await d1_first(
+        env,
+        "SELECT 1 AS linked FROM org_repos "
+        "WHERE node_owner=? AND repo=? LIMIT 1",
+        str(owner or "").strip().lower(),
+        str(repo or "").strip().lower(),
+    )
     payload = build_repo_mirrors_payload(
         owner,
         repo,
@@ -6121,6 +6128,7 @@ async def repo_mirrors_handler(env, request, owner, repo):
         HOST_PRESENCE_STALE_MS,
         5 * 1000,
         history,
+        linked_canonical=bool(linked_row),
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
@@ -18033,7 +18041,12 @@ async def repo_card_handler(env, request, owner, repo):
                     env, candidate_owner, candidate_repo) == owner:
                 display_owner = candidate_owner
             display_repo = candidate_repo
+    card_version = parse_qs(parts.query).get("v", [""])[0]
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", card_version):
+        card_version = ""
     cache_key = _ap_origin(env, request) + parts.path
+    if card_version:
+        cache_key += "?v=" + quote(card_version, safe="")
     cached = await edge_cache_match_media(cache_key, "image/png")
     if cached is not None:
         return cached
@@ -28246,8 +28259,9 @@ class Default(WorkerEntrypoint):
             # (adhoc #46, see repo_card_handler / og_card.py) — instead of a
             # full-bleed logo. og:description carries the catalog description
             # so the unfurl text matches the repo, not the generic shell copy.
-            og_image = "%s/api/repo/%s/%s/card.png" % (
-                origin, quote(owner), quote(repo))
+            og_image = "%s/api/repo/%s/%s/card.png?v=%s" % (
+                origin, quote(owner), quote(repo),
+                quote(_build_rev(self.env), safe=""))
             og_description = ""
             try:
                 await ensure_schema(self.env)

@@ -15,7 +15,7 @@ import re
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -150,6 +150,7 @@ def test_crawler_gets_alias_canonical_card_and_backing_catalog_metadata():
         "d1_first": d1_first,
         "decrypt_row": decrypt_row,
         "_html_escape": html.escape,
+        "_build_rev": lambda _env: "test-rev",
         "og_card": SimpleNamespace(CARD_W=1200, CARD_H=630),
     })
     subject = page_class()
@@ -173,11 +174,13 @@ def test_crawler_gets_alias_canonical_card_and_backing_catalog_metadata():
         in response.body)
     assert (
         '<meta property="og:image" '
-        'content="https://forkmesh.com/api/repo/forkmesh/forkmesh/card.png">'
+        'content="https://forkmesh.com/api/repo/forkmesh/forkmesh/card.png'
+        '?v=test-rev">'
         in response.body)
     assert (
         '<meta name="twitter:image" '
-        'content="https://forkmesh.com/api/repo/forkmesh/forkmesh/card.png">'
+        'content="https://forkmesh.com/api/repo/forkmesh/forkmesh/card.png'
+        '?v=test-rev">'
         in response.body)
     assert "Current organization repository" in response.body
     assert "mirror2" not in response.body
@@ -234,6 +237,9 @@ def test_alias_card_renders_public_identity_after_internal_route_rewrite():
         "ensure_schema": lambda _env: _async_none(),
         "_repo_is_private": repo_is_private,
         "urlparse": urlparse,
+        "parse_qs": parse_qs,
+        "re": re,
+        "quote": quote,
         "REPO_CARD_RE": urls.REPO_CARD_RE,
         "safe_segment": catalog.safe_segment,
         "_org_repo_node": org_repo_node,
@@ -260,7 +266,9 @@ def test_alias_card_renders_public_identity_after_internal_route_rewrite():
     })
     request = SimpleNamespace(
         method="GET",
-        url="https://forkmesh.com/api/repo/forkmesh/forkmesh/card.png",
+        url=(
+            "https://forkmesh.com/api/repo/forkmesh/forkmesh/card.png"
+            "?v=test-rev"),
         headers={"user-agent": "facebookexternalhit/1.1"},
     )
     response = _run(handler(None, request, "mirror2", "forkmesh"))
@@ -270,7 +278,7 @@ def test_alias_card_renders_public_identity_after_internal_route_rewrite():
     assert rendered[0]["repo"] == "forkmesh"
     assert rendered[0]["description"] == "Catalog from mirror2"
     assert cache_puts[0][0] == (
-        "https://forkmesh.com/api/repo/forkmesh/forkmesh/card.png")
+        "https://forkmesh.com/api/repo/forkmesh/forkmesh/card.png?v=test-rev")
 
 
 async def _async_none():
@@ -294,4 +302,3 @@ def test_alias_html_stays_out_of_internal_path_rewrite():
     assert "REPO_API_PREFIX_RE.match" in rewrite
     assert not re.search(
         r"(?:REPO_PAGE|DASHBOARD_REPO).*\\.match", rewrite)
-

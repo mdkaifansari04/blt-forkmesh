@@ -494,7 +494,10 @@ def _response(data, status=200, **_kwargs):
     return {"status": status, "data": data}
 
 
-def _load_handler(*, rows, presence=None, first_hosted=None, live_hosts=None):
+def _load_handler(
+    *, rows, presence=None, first_hosted=None, live_hosts=None,
+    linked_canonical=False,
+):
     calls = []
 
     async def ensure_schema(_env):
@@ -509,6 +512,12 @@ def _load_handler(*, rows, presence=None, first_hosted=None, live_hosts=None):
         if "FROM repo_first_hosted" in sql:
             return first_hosted or []
         return []
+
+    async def d1_first(_env, sql, *args):
+        calls.append(sql)
+        if "FROM org_repos" in sql:
+            return {"linked": 1} if linked_canonical else None
+        raise AssertionError(sql)
 
     async def decrypt_row(_env, data):
         return data
@@ -534,6 +543,7 @@ def _load_handler(*, rows, presence=None, first_hosted=None, live_hosts=None):
         "HYDRATE_PROBE_MAX": 8,
         "ensure_schema": ensure_schema,
         "d1_all": d1_all,
+        "d1_first": d1_first,
         "decrypt_row": decrypt_row,
         "repo_live_host_count": repo_live_host_count,
         "_is_blocked_catalog_identity": lambda _env, _owner, _name: False,
@@ -591,6 +601,50 @@ def test_repo_mirrors_handler_get_returns_public_mirrors_payload():
     # its clone-integrity verdict.
     assert any("FROM repo_state_history" in call for call in calls)
     assert all("integrity" in mirror for mirror in response["data"]["mirrors"])
+
+
+def test_repo_mirrors_handler_applies_linked_org_integrity_anchor():
+    handler, calls = _load_handler(
+        rows=[
+            {
+                "key_bi": "source",
+                "data": _row(
+                    "source", "jett", "forkmesh", root="abc",
+                    state_hash="a" * 64,
+                )["data"],
+            },
+            {
+                "key_bi": "canonical",
+                "data": _row(
+                    "canonical", "mirror2", "forkmesh", root="",
+                    state_hash="c" * 64, source="remote-clone",
+                )["data"],
+            },
+            {
+                "key_bi": "peer",
+                "data": _row(
+                    "peer", "mirror3", "forkmesh", root="",
+                    state_hash="c" * 64, source="remote-clone",
+                )["data"],
+            },
+        ],
+        linked_canonical=True,
+    )
+
+    response = asyncio.run(
+        handler(object(), _Request("GET"), "mirror2", "forkmesh")
+    )
+
+    assert response["status"] == 200
+    assert {
+        item["node"]: item["integrity"]
+        for item in response["data"]["mirrors"]
+    } == {
+        "mirror2": "ok",
+        "mirror3": "ok",
+        "jett": "rejected",
+    }
+    assert any("FROM org_repos" in call for call in calls)
 
 
 def test_repo_mirrors_handler_uses_live_host_probe_for_online_status():
