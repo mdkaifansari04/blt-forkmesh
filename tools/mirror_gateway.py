@@ -2065,7 +2065,7 @@ class GitRepository:
             [
                 "for-each-ref",
                 "--sort=refname",
-                "--format=%(refname)%x1f%(objectname)%x1f"
+                "--format=%(refname)%00%(objectname)%00"
                 "%(committerdate:iso8601)",
                 "refs/heads/",
                 "refs/remotes/",
@@ -2075,7 +2075,7 @@ class GitRepository:
         branches = []
         seen: set[str] = set()
         for row in output.decode("utf-8", "replace").splitlines():
-            fields = row.split("\x1f", 2)
+            fields = row.split("\x00", 2)
             if len(fields) != 3:
                 continue
             name = fields[0]

@@ -76,8 +76,9 @@ def make_bare_repository(tmp_path):
     )
     run(["git", "add", "."], source)
     run(["git", "commit", "-m", "Improve greeting"], source)
+    run(["git", "branch", "release-preview"], source)
     run(["git", "remote", "add", "origin", str(bare)], source)
-    run(["git", "push", "origin", "main"], source)
+    run(["git", "push", "origin", "main", "release-preview"], source)
     run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], bare)
     commit = run(["git", "rev-parse", "HEAD"], source)
     return bare, commit
@@ -599,6 +600,24 @@ def test_tree_blob_history_commit_branches_search_stats_and_sizes(application):
         )
     )
     assert "searchable mirror gateway" in blob["content"]
+
+
+def test_branches_returns_main_and_additional_heads(application):
+    app, _commit, _release_hash, _logs = application
+    payload = decode_json(
+        dispatch(
+            app,
+            "branches",
+            {},
+            request_id="branches_records_01",
+        )
+    )
+    assert [branch["name"] for branch in payload["branches"]] == [
+        "main",
+        "release-preview",
+    ]
+    assert all(branch["commit"] for branch in payload["branches"])
+    assert all(branch["updatedAt"] for branch in payload["branches"])
 
 
 def test_sizes_exposes_bounded_file_leaves_with_full_paths(application):
