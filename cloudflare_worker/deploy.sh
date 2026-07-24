@@ -369,7 +369,60 @@ verify_public_assets() {
         echo "       upload (and not_found_handling routing) and redeploy." >&2
         return 1
     fi
+
+    # The World loads as an ES-module graph. Content-type checks alone cannot
+    # distinguish a newly deployed module from an older cached copy, so compare
+    # every executable/style entrypoint byte-for-byte with this checkout and
+    # require the explicit browser no-store policy. A query tied to BUILD_REV
+    # also prevents an intermediary from answering this verification with an
+    # object selected under an earlier deployment URL.
+    local world_checks=(
+        "/world|public/world/index.html"
+        "/world/world.js|public/world/world.js"
+        "/world/world-data.js|public/world/world-data.js"
+        "/world/world-scene.js|public/world/world-scene.js"
+        "/world/world-mirror-nodes.js|public/world/world-mirror-nodes.js"
+        "/world/world-repository-graph.js|public/world/world-repository-graph.js"
+        "/world/world-speech.js|public/world/world-speech.js"
+        "/world/world.css|public/world/world.css"
+        "/world/world-speech.css|public/world/world-speech.css"
+    )
+    local local_asset local_hash remote_hash cache_control
+    for check in "${world_checks[@]}"; do
+        path="${check%%|*}"
+        local_asset="${check#*|}"
+        url="$base$path?deploy-rev=$BUILD_REV"
+        if command -v sha256sum >/dev/null 2>&1; then
+            local_hash="$(sha256sum "$local_asset" | awk '{print $1}')"
+            remote_hash="$(curl -fsS --max-time 30 "$url" | sha256sum | awk '{print $1}')"
+        else
+            local_hash="$(shasum -a 256 "$local_asset" | awk '{print $1}')"
+            remote_hash="$(curl -fsS --max-time 30 "$url" | shasum -a 256 | awk '{print $1}')"
+        fi
+        if [ "$remote_hash" != "$local_hash" ]; then
+            echo "ERROR: $url is not the World asset from BUILD_REV=$BUILD_REV." >&2
+            echo "       Local sha256=$local_hash; live sha256=$remote_hash." >&2
+            failed=1
+        fi
+        headers="$(curl -sSI --max-time 15 "$url" 2>/dev/null || true)"
+        cache_control="$(
+            printf '%s\n' "$headers" |
+                awk -F': *' 'tolower($1) == "cache-control" { value=tolower($2) } END { sub(/\r$/, "", value); print value }'
+        )"
+        case "$cache_control" in
+            *no-store*) ;;
+            *)
+                echo "ERROR: $url permits stale browser reuse ('$cache_control')." >&2
+                failed=1
+                ;;
+        esac
+    done
+    if [ "$failed" != "0" ]; then
+        echo "       World refresh freshness verification failed; deployment is incomplete." >&2
+        return 1
+    fi
     echo "Verified: public static assets are serving expected content types."
+    echo "Verified: World runtime assets exactly match $BUILD_REV and are browser no-store."
 }
 
 # Remove the superseded script only after the relay build and its public assets
