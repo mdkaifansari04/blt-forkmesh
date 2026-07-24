@@ -394,7 +394,7 @@ selected zone, and Cloudflare Tunnel/Connector write. Supply it through
 `CLOUDFLARE_API_TOKEN`, a hidden terminal prompt, or one line on stdin:
 
 ```bash
-export CLOUDFLARE_API_TOKEN="locally-supplied-token"
+export CLOUDFLARE_API_TOKEN="locally-supplied-token"  # forkmesh-secret-scan:ignore-line
 export CLOUDFLARE_ACCOUNT_ID="account-id"
 export FORKMESH_NODE_PUBLIC_KEY="<public Ed25519 key>"
 export FORKMESH_MIRROR_MANIFEST_SIGNER="/path/to/local-manifest-signer"

@@ -28,7 +28,7 @@ Create a scoped Cloudflare API token with only:
 Then run:
 
 ```bash
-export CLOUDFLARE_API_TOKEN="locally-supplied-token"
+export CLOUDFLARE_API_TOKEN="locally-supplied-token"  # forkmesh-secret-scan:ignore-line
 python3 tools/cloudflare_bootstrap.py --auto-configure
 ```
 
@@ -40,7 +40,7 @@ It fails closed instead of choosing among multiple accounts or zones.
 For a broader token or custom topology, provide the advanced fields explicitly:
 
 ```bash
-export CLOUDFLARE_API_TOKEN="locally-supplied-token"
+export CLOUDFLARE_API_TOKEN="locally-supplied-token"  # forkmesh-secret-scan:ignore-line
 export CLOUDFLARE_ACCOUNT_ID="account-id"
 export FORKMESH_NODE_PUBLIC_KEY="base64url-ed25519-public-key"
 export FORKMESH_MIRROR_MANIFEST_SIGNER="local-forkmesh-identity-signer"

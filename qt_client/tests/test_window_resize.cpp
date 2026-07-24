@@ -421,7 +421,7 @@ int main(int argc, char *argv[])
         const QString importPath =
             transferDir.filePath(QStringLiteral("incoming.json"));
         const QString liveToken =
-            QStringLiteral("sk-ant-live-regression-secret-1234567890");
+            QStringLiteral("sk-ant-live-regression-secret-1234567890");  // forkmesh-secret-scan:ignore-line
         {
             QFile input(importPath);
             check(input.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
