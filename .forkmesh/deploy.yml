@@ -34,7 +34,9 @@ jobs:
         run: |
           [ -f .forkmesh-skip-deploy ] && exit 0
           python3 -m venv .forkmesh-pytest-venv
-          .forkmesh-pytest-venv/bin/python -m pip install pytest
+          # The mirror-identity / SSH post-receive tests sign fixtures with
+          # Ed25519 keys, so the suite needs `cryptography` alongside pytest.
+          .forkmesh-pytest-venv/bin/python -m pip install pytest cryptography
           .forkmesh-pytest-venv/bin/python -m pytest -q cloudflare_worker/tests
       # .env.production is gitignored, so materialize it from this node's ForkMesh
       # Variables/Secrets (Settings -> Secrets & Coves). ForkMesh fills in the
