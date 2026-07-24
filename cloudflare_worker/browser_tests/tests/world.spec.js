@@ -555,33 +555,51 @@ ${longContext}
           }
         }
       } else if (url.pathname === "/api/repositories") {
+        const repositoryOwners = repositoryFixture.staleOfflineAlias
+          ? ["jett", "mirror2", "mirror3"]
+          : ["mirror2", "mirror3"];
         body = {
-          repositories: ["mirror2", "mirror3"].map((owner) => ({
-            owner,
-            name: "forkmesh",
-            source: "remote-clone",
-            liveHost: true,
-            commit: codeOid,
-            stateHash,
-            pullCount: 2,
-            updatedAt: FIXED_NOW,
-          })),
+          repositories: repositoryOwners.map((owner) => {
+            const stale = owner === "jett";
+            const conflicting =
+              repositoryFixture.conflictingHealthyAlias &&
+              owner === "mirror3";
+            return {
+              owner,
+              name: "forkmesh",
+              source: stale ? "local-node" : "remote-clone",
+              liveHost: !stale,
+              commit: stale || conflicting ? "d".repeat(40) : codeOid,
+              stateHash: stale || conflicting ? "e".repeat(64) : stateHash,
+              pullCount: stale ? 1 : 2,
+              updatedAt: stale ? FIXED_NOW + 1000 : FIXED_NOW,
+            };
+          }),
         };
       } else if (url.pathname === `${repoBase}/mirrors`) {
+        const mirrorNodes = ["mirror2", "mirror3"];
+        if (repositoryFixture.staleOfflineAlias) mirrorNodes.push("jett");
         body = {
           ok: true,
           owner: "forkmesh",
           repo: "forkmesh",
-          mirrors: ["mirror2", "mirror3"].map((node) => ({
-            node,
-            status: "online",
-            integrity: "ok",
-            cloneAvailable: true,
-            commit: codeOid,
-            branch: "main",
-            pullCount: 2,
-            version: "0.7.0",
-          })),
+          mirrors: mirrorNodes.map((node) => {
+            const stale = node === "jett";
+            const conflicting =
+              repositoryFixture.conflictingHealthyAlias &&
+              node === "mirror3";
+            return {
+              node,
+              status: stale ? "offline" : "online",
+              integrity: stale ? "healing" : "ok",
+              cloneAvailable: !stale,
+              behind: stale,
+              commit: stale || conflicting ? "d".repeat(40) : codeOid,
+              branch: "main",
+              pullCount: stale ? 1 : 2,
+              version: "0.7.0",
+            };
+          }),
         };
       } else if (url.pathname === `${repoBase}/branches`) {
         if (
@@ -1145,8 +1163,8 @@ test("reward-program links deep-link to the self-custodial fountain controls", a
 
 async function freezeWorld(page) {
   await page.locator("forkmesh-world").evaluate((shell) => {
-    // The default theme is fixed full daylight. UTC remains a display clock
-    // and never participates in scene lighting.
+    // The default theme is fixed full daylight. Wall-clock time never
+    // participates in scene lighting.
     shell.world.setTheme("world");
     shell.world.setLightLevel(100);
   });
@@ -1548,16 +1566,14 @@ test("local diagnostics report renderer and existing socket state without new te
   expect(socketCount).toBe(1);
 });
 
-test("UTC is display-only and local light level survives movement without becoming presence data", async ({
+test("the topbar has no clock or emote actions and local light level survives movement without becoming presence data", async ({
   page,
 }) => {
   await prepareWorldPage(page, "local-light-level");
   await waitForWorld(page);
 
-  await expect(page.locator("[data-world-clock]")).toHaveText("17:20:00");
-  await expect(page.locator("[data-world-phase]")).toHaveText(
-    "UTC · 24-hour clock",
-  );
+  await expect(page.locator("[data-world-clock]")).toHaveCount(0);
+  await expect(page.locator("[data-world-emote]")).toHaveCount(0);
   const initial = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.world.getEnvironmentState(),
   );
@@ -2004,6 +2020,97 @@ test("approved instances, local setup, and project support stay truthful", async
     "href",
     "https://www.patreon.com/16434219/join",
   );
+});
+
+test("a stale offline alias cannot erase the live mirrors' flagship pin", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await prepareWorldPage(page, "world-stale-offline-alias", {
+    repositoryFixture: { staleOfflineAlias: true },
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready";
+  });
+
+  const snapshot = await page.locator("forkmesh-world").evaluate((shell) => {
+    const alias = shell.repositories.find(
+      (record) =>
+        record.owner === "forkmesh" &&
+        record.name === "forkmesh" &&
+        record.source === "organization-alias",
+    );
+    return {
+      alias: alias
+        ? {
+            commit: alias.commit,
+            stateHash: alias.stateHash,
+            servingOwner: alias.servingOwner,
+            mirrorAliases: alias.mirrorAliases,
+          }
+        : null,
+      mapState: shell.repositoryMapState,
+      activeCommit: shell.activeRepository?.commit || "",
+    };
+  });
+  expect(snapshot).toEqual({
+    alias: {
+      commit: "a".repeat(40),
+      stateHash: "c".repeat(64),
+      servingOwner: "mirror2",
+      mirrorAliases: [
+        { owner: "jett", name: "forkmesh" },
+        { owner: "mirror2", name: "forkmesh" },
+        { owner: "mirror3", name: "forkmesh" },
+      ],
+    },
+    mapState: "ready",
+    activeCommit: "a".repeat(40),
+  });
+});
+
+test("disagreeing eligible mirrors leave the automatic flagship map unpinned", async ({
+  page,
+}) => {
+  const repositoryReads = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/api/repo/forkmesh/forkmesh/")) {
+      repositoryReads.push(url.pathname);
+    }
+  });
+  await prepareWorldPage(page, "world-conflicting-live-alias", {
+    repositoryFixture: { conflictingHealthyAlias: true },
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "unavailable";
+  });
+
+  const snapshot = await page.locator("forkmesh-world").evaluate((shell) => {
+    const alias = shell.repositories.find(
+      (record) =>
+        record.owner === "forkmesh" &&
+        record.name === "forkmesh" &&
+        record.source === "organization-alias",
+    );
+    return {
+      commit: alias?.commit || "",
+      stateHash: alias?.stateHash || "",
+      activeRepository: shell.activeRepository,
+    };
+  });
+  expect(snapshot).toEqual({
+    commit: "",
+    stateHash: "",
+    activeRepository: null,
+  });
+  expect(
+    repositoryReads.filter((path) => path.endsWith("/tree")),
+  ).toHaveLength(0);
 });
 
 test("pull requests open and become viewed entirely inside the repository World", async ({

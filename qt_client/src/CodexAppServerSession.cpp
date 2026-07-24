@@ -1,5 +1,7 @@
 #include "CodexAppServerSession.h"
 
+#include "AgentJail.h"
+
 #include <QCoreApplication>
 #include <QJsonDocument>
 #include <QJsonParseError>
@@ -111,7 +113,7 @@ void CodexAppServerSession::start(const QString &cwd,
                                   const QString &initialPrompt,
                                   const QString &resumeThreadId,
                                   const QString &model, const QString &mode,
-                                  const QString &effort)
+                                  const QString &effort, int memoryLimitMb)
 {
     stop();
     resetProtocolState();
@@ -171,7 +173,9 @@ void CodexAppServerSession::start(const QString &cwd,
 #else
     // A login shell gives GUI launches the same PATH as an interactive terminal.
     proc->start(QStringLiteral("bash"),
-                {QStringLiteral("-lc"), QStringLiteral("exec codex app-server")});
+                {QStringLiteral("-lc"),
+                 AgentJail::wrapCommand(QStringLiteral("exec codex app-server"),
+                                        memoryLimitMb)});
 #endif
 }
 

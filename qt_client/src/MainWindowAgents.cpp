@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "AgentJail.h"
 #include "KebabHeaderView.h"
 #include "CodexAppServerSession.h"
 
@@ -4527,6 +4528,10 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
     config.maxOutputTokens =
         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
     config.promptPreamble = agentPromptPreamble();
+    // Jail (adhoc #236): the headless runner wraps its command and scratch env
+    // when a cap is set; 0 leaves the run unjailed.
+    if (QSettings().value(kAgentJailSetting, false).toBool())
+        config.jailMemoryMb = agentJailMemoryMb();
     if (provider == QLatin1String("claude-code")) {
         // Claude Code: the real `claude` CLI, run headlessly in the worktree.
         // Authenticate via the CLI's own claude.ai login, never an API key:
@@ -6510,12 +6515,18 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             // Codex should use the user's normal ChatGPT/Codex login just like
             // the official IDE extension. Do not let inherited API-key variables
             // silently switch this path to API billing.
-            live->start(workdir,
-                        {QStringLiteral("OPENAI_API_KEY"),
-                         QStringLiteral("CODEX_API_KEY"),
-                         QStringLiteral("OPENAI_ACCESS_TOKEN"),
-                         QStringLiteral("OPENAI_ADMIN_KEY")},
-                        prompt, resumeId, selectedModel, mode, effort);
+            QStringList codexEnv{QStringLiteral("OPENAI_API_KEY"),
+                                 QStringLiteral("CODEX_API_KEY"),
+                                 QStringLiteral("OPENAI_ACCESS_TOKEN"),
+                                 QStringLiteral("OPENAI_ADMIN_KEY")};
+            // Jail (adhoc #236): private scratch env + memory cap for this run.
+            int jailMb = 0;
+            if (QSettings().value(kAgentJailSetting, false).toBool()) {
+                jailMb = agentJailMemoryMb();
+                codexEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
+            }
+            live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
+                        effort, jailMb);
             return;
         }
 
@@ -6557,8 +6568,14 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             QStringList launchEnv = env;
             if (!QSettings().value(kClaudeThinkingSetting, true).toBool())
                 launchEnv << QStringLiteral("MAX_THINKING_TOKENS=0");
+            // Jail (adhoc #236): private scratch env + memory cap for this run.
+            int jailMb = 0;
+            if (QSettings().value(kAgentJailSetting, false).toBool()) {
+                jailMb = agentJailMemoryMb();
+                launchEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
+            }
             live->start(workdir, launchEnv, prompt, /*skipPermissions=*/autoMode,
-                        resumeId, chosenModel, effort, fallback);
+                        resumeId, chosenModel, effort, fallback, jailMb);
         };
         if (selectedModel == kClaudeAutoModelId)
             resolveAutoClaudeModel(sid, routeTask, workdir, live, std::move(begin));
