@@ -22,7 +22,8 @@ style as test_ap_repo_settings.py) and pin:
     token (forkmesh-org-push-v1, signed with the pusher's OWN key);
   * the org and account namespaces reject each other's names, so the alias
     rewrite can never shadow a real node's URL;
-  * linking a repo under an org requires the caller's OWN node namespace.
+  * linking a repo under an org requires the caller's own account namespace or
+    a node that account demonstrably owns.
 
 Run: python3 -m pytest cloudflare_worker/tests/test_orgs_teams.py
 """
@@ -253,7 +254,16 @@ def test_alias_rewrite_rewrites_api_and_git_paths():
         request, new_url = result
         assert new_url.path == expected
         assert new_url.query == "service=git-upload-pack"  # query survives
-        assert request.url.startswith("https://forkmesh.com" + expected)
+        assert request == "req"  # original body/headers/cf metadata survive
+
+
+def test_alias_rewrite_does_not_reconstruct_the_worker_request():
+    source = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def org_alias_rewrite"):
+        ENTRY_TEXT.index("\n\n\nclass _OrganizationSuccessionRuntime")
+    ]
+    assert "return request, urlparse(new_url)" in source
+    assert "JsRequest.new" not in source
 
 
 def test_alias_rewrite_leaves_other_paths_and_plain_nodes_alone():
@@ -339,11 +349,136 @@ def test_org_and_account_namespaces_reject_each_other():
     assert "if org_holder:" in ENTRY_TEXT
 
 
-def test_linking_a_repo_requires_the_callers_own_node():
+def test_linking_a_repo_requires_the_callers_own_account_or_fleet_node():
     assert '"error": "not_your_node"' in ENTRY_TEXT
-    assert "if node != account:" in ENTRY_TEXT
+    assert "if not await _account_owns_node(env, account, node):" in ENTRY_TEXT
     # ...and the repo must actually be published by that node.
     assert '"error": "unknown_repo"' in ENTRY_TEXT
+
+
+def _org_repo_link_harness(owns_node):
+    writes = []
+    audits = []
+    ownership_checks = []
+
+    class Request:
+        method = "POST"
+
+        async def json(self):
+            return {
+                "sessionToken": "valid",
+                "repo": "forkmesh",
+                "node": "mirror2",
+            }
+
+    class Clock:
+        @staticmethod
+        def now():
+            return 123456
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def org_row(env, org):
+        assert org == "forkmesh"
+        return "org-bi", {"name": "forkmesh"}
+
+    async def session_record(env, request, data):
+        return "jett-bi", {"name": "jett"}
+
+    async def org_role(env, org_bi, account):
+        assert (org_bi, account) == ("org-bi", "jett")
+        return "owner"
+
+    async def account_owns_node(env, account, node):
+        ownership_checks.append((account, node))
+        return owns_node
+
+    async def blind_index(env, value):
+        return "bi:" + value
+
+    async def d1_first(env, sql, *params):
+        if "FROM repositories" in sql:
+            return {"one": 1}
+        if "FROM org_repos" in sql:
+            return {"one": 1}
+        raise AssertionError("unexpected d1_first: " + sql)
+
+    async def d1_run(env, sql, *params):
+        writes.append((sql, params))
+
+    async def audit(env, actor, action, target_type, target, outcome,
+                    details=None):
+        audits.append({
+            "actor": actor,
+            "action": action,
+            "target": target,
+            "outcome": outcome,
+            "details": details or {},
+        })
+
+    def response(data, status=200, **kwargs):
+        return {"status": status, "data": data}
+
+    namespace = _load(
+        "org_repos_handler",
+        extra_globals={
+            "MAX_NODE_NAME": 63,
+            "MAX_REPO_SEGMENT": 80,
+            "MAX_ORG_REPOS": 200,
+            "Date": Clock,
+            "_ORG_ALIAS_MEMO": {},
+            "ensure_schema": noop,
+            "method_name": lambda request: request.method,
+            "_org_row": org_row,
+            "_account_session_record": session_record,
+            "_org_role": org_role,
+            "_account_owns_node": account_owns_node,
+            "_audit_sensitive_action": audit,
+            "clean_string": catalog.clean_string,
+            "safe_segment": catalog.safe_segment,
+            "blind_index": blind_index,
+            "d1_first": d1_first,
+            "d1_run": d1_run,
+            "json_response": response,
+        },
+    )
+    return namespace["org_repos_handler"], Request(), writes, audits, ownership_checks
+
+
+def test_org_owner_can_link_a_published_node_in_their_fleet():
+    handler, request, writes, audits, checks = _org_repo_link_harness(True)
+    response = _run(handler(None, request, "forkmesh"))
+    assert response["status"] == 200
+    assert response["data"] == {
+        "ok": True,
+        "repo": "forkmesh",
+        "node": "mirror2",
+        "linked": True,
+    }
+    assert checks == [("jett", "mirror2")]
+    assert len(writes) == 1
+    assert "INSERT INTO org_repos" in writes[0][0]
+    assert writes[0][1][2] == "mirror2"
+    assert audits[-1]["outcome"] == "success"
+
+
+def test_org_owner_cannot_link_an_unowned_node_namespace():
+    handler, request, writes, audits, checks = _org_repo_link_harness(False)
+    response = _run(handler(None, request, "forkmesh"))
+    assert response == {
+        "status": 403,
+        "data": {"error": "not_your_node"},
+    }
+    assert checks == [("jett", "mirror2")]
+    assert writes == []
+    assert audits == [{
+        "actor": "jett",
+        "action": "organization.repo_link",
+        "target": "forkmesh/forkmesh",
+        "outcome": "denied",
+        "details": {"reason": "not_your_node"},
+    }]
 
 
 def test_org_admin_guards_and_caps_are_present():

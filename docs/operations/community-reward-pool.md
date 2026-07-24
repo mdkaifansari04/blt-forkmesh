@@ -106,7 +106,6 @@ Eligibility requires all of the following:
 - signed node identity registration;
 - an independently challenged `forkmesh/forkmesh` refs proof matching the
   configured integrity pin;
-- no abuse block;
 - a valid public self-custodial payout address;
 - minimum server-observed continuous uptime; and
 - the optional minimum contribution-unit threshold.
@@ -116,7 +115,7 @@ Approved federated relays use the same frozen snapshot for both randomized and
 It must forward the node's original signed HTTPS registration and exact
 node-signed, nonce-bound `forkmesh/forkmesh` repository-health message. The
 main relay independently verifies both signatures, freshness, the current refs
-digest, integrity, required-operation claim, abuse state, relay approval, and
+digest, integrity, required-operation claim, relay approval, and
 its own consecutive-observation history before the row can be eligible.
 Migration 0057 deletes all pre-attestation federated presence rows.
 The approved relay remains a disclosed, revocable trust boundary for whether
@@ -126,7 +125,7 @@ forwarded nodes from future snapshots.
 
 The policy de-duplicates node identity, operator identity, device public key,
 and wallet. Signup throttles, signed device identity, external health checks,
-server-observed uptime, integrity proofs, abuse controls, and those
+server-observed uptime, integrity proofs, and those
 de-duplication gates raise the cost of fake nodes, repeated accounts,
 artificial uptime, wallet farming, and reward manipulation. They reduce but do
 not eliminate Sybil risk; the public policy says so explicitly.

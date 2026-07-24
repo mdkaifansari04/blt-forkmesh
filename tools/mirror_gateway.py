@@ -960,13 +960,14 @@ def _git_environment() -> dict[str, str]:
 
 def _git_prefix(git_dir: Path) -> list[str]:
     # Command-line values override executable local configuration that could
-    # otherwise start helper programs while serving a repository.
+    # otherwise start helper programs while serving a repository. Git ignores
+    # repository-scoped uploadpack.packObjectsHook because it is protected
+    # configuration; setting that key to an empty command makes upload-pack
+    # try to execute an empty program instead of disabling the hook.
     return [
         "git",
         "-c",
-        "uploadpack.packObjectsHook=",
-        "-c",
-        "core.alternateRefsCommand=",
+        "core.alternateRefsCommand=/usr/bin/true",
         "-c",
         "core.fsmonitor=",
         "-c",

@@ -743,7 +743,7 @@ def test_batched_blobs_preserve_repeated_paths_and_bound_missing_files(applicati
 
 
 def test_raw_release_and_git_upload_pack_are_stream_specs(application):
-    app, _commit, release_hash, _logs = application
+    app, commit, release_hash, _logs = application
     raw = dispatch(
         app,
         "raw",
@@ -780,17 +780,37 @@ def test_raw_release_and_git_upload_pack_are_stream_specs(application):
     assert advert.status == 200
     assert advert.body.startswith(b"001e# service=git-upload-pack\n0000")
 
+    def pkt_line(value):
+        payload = value.encode("ascii")
+        return f"{len(payload) + 4:04x}".encode("ascii") + payload
+
+    upload_request = (
+        pkt_line(
+            f"want {commit} multi_ack_detailed no-done side-band-64k "
+            "thin-pack no-progress include-tag ofs-delta deepen-since "
+            "deepen-not agent=git/test"
+        )
+        + pkt_line("deepen 1")
+        + b"0000"
+        + pkt_line("done\n")
+        + b"0000"
+    )
     upload = dispatch(
         app,
         "git-upload-pack",
         request_id="git_upload_0001",
         method="POST",
-        body=b"0000",
+        body=upload_request,
     )
     assert upload.status == 200
     assert upload.stream.kind == "process"
     assert "upload-pack" in upload.stream.command
     assert "receive-pack" not in upload.stream.command
+    assert not any(
+        item.startswith("uploadpack.packObjectsHook")
+        for item in upload.stream.command
+    )
+    assert "core.alternateRefsCommand=/usr/bin/true" in upload.stream.command
     completed = subprocess.run(
         upload.stream.command,
         input=upload.stream.input_bytes,
@@ -800,6 +820,7 @@ def test_raw_release_and_git_upload_pack_are_stream_specs(application):
         check=False,
     )
     assert completed.returncode == 0
+    assert b"PACK" in completed.stdout
 
 
 def test_git_upload_pack_decodes_gzip_after_verifying_transport_digest(application):

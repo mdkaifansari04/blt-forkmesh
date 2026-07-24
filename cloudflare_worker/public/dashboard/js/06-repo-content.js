@@ -2933,7 +2933,11 @@
     try {
       let tree;
       try {
-        tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: "releases" }));
+        tree = await fetchRepoJson(repoLiveUrl(
+          repo,
+          "tree",
+          { path: ".forkmesh/releases" },
+        ));
       } catch (_) { return; }
       const channels = (Array.isArray(tree?.entries) ? tree.entries : [])
         .filter((entry) => entry.type === "tree" && entry.name)

@@ -63,6 +63,9 @@ Python's standard library does not provide Ed25519. ForkMesh does not substitute
 an invented cipher or a shared HMAC. Two direct, shell-free local commands
 provide the cryptographic boundary:
 
+For a non-GUI VPS, the production implementation and command-array examples
+are in [Headless mirror identity](headless-mirror-identity.md).
+
 1. `healthSignerCommand` holds or accesses the node identity in the Qt client,
    OS keychain, HSM, or another owner-controlled signer.
 2. `requestVerifierCommand` verifies signatures made by the routing Worker's
@@ -566,7 +569,7 @@ Store or update `mirror_https_endpoints`:
 
 ```text
 node_bi, node_name, base_url, public_key, registration_sig, issued_at,
-checked_at, latency_ms, region, healthy, integrity, abuse_blocked,
+checked_at, latency_ms, region, healthy, integrity,
 health_sig, forkmesh_verified_at, forkmesh_refs_sha256,
 forkmesh_operations_sha256, forkmesh_active, updated_at
 ```
@@ -645,8 +648,7 @@ Set `forkmesh_active=1` only after checking freshness, node signature,
 `available=true`, `integrity=ok`, observed refs against the owner-signed
 canonical refs state, and the required operation set. Clear it after a failed or
 stale proof. Reward selection must additionally require endpoint
-`healthy=1`, fresh `checked_at`, general `integrity='ok'`, and
-`abuse_blocked=0`.
+`healthy=1`, fresh `checked_at`, and general `integrity='ok'`.
 
 The every-minute cron challenges an oldest-first bounded batch. A failed,
 expired, revoked-key, malformed, or invalidly signed response immediately clears
@@ -741,7 +743,7 @@ back to sending repository bytes over the multiplayer socket.
 The Worker applies this path to public smart-HTTP upload-pack clone traffic,
 repository browse APIs, raw files, and release blobs. Endpoint candidates must
 belong to the same public catalog mirror group, pass owner-attested refs pins,
-have fresh signed health, report integrity `ok`, and not be abuse-blocked.
+have fresh signed health, and report integrity `ok`.
 Approximate request country and measured challenge latency influence ordering;
 the per-repository cursor rotates ties, and the clone advertisement pins its
 node briefly so the following upload-pack request starts with the same mirror.
@@ -803,7 +805,7 @@ The Worker first resolves the random id to exactly one encrypted private
 catalog record, then checks the owner/share signature. Unknown, inactive,
 ambiguous, and unauthorized ids all return the same no-store `404` response.
 Only after that authorization does the Worker select a healthy,
-non-abuse-blocked endpoint and internally request:
+integrity-verified endpoint and internally request:
 
 ```text
 /v1/private-replicas/<opaqueId>

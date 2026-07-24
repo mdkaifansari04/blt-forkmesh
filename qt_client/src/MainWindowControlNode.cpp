@@ -1114,8 +1114,7 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
         QJsonArray operationArray;
         for (const QString &operation : operations)
             operationArray.append(operation);
-        repositories.append(QJsonObject{
-            {QStringLiteral("owner"), catalogOwner(repo)},
+        QJsonObject repository{
             {QStringLiteral("name"),
              repoSegment(repo.name,
                          QStringLiteral("repository"))},
@@ -1142,7 +1141,15 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
                   QJsonArray{app,
                              QStringLiteral(
                                  "--materialize-public-mirror")}}}},
-        });
+        };
+        const QStringList owners =
+            forkmesh::control::directMirrorRepositoryOwners(
+                repoSegment(repo.owner, QStringLiteral("owner")),
+                repoSegment(catalogOwner(repo), QStringLiteral("owner")));
+        for (const QString &owner : owners) {
+            repository.insert(QStringLiteral("owner"), owner);
+            repositories.append(repository);
+        }
     }
     QJsonObject config{
         {QStringLiteral("schemaVersion"), 1},

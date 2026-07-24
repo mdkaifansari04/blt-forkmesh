@@ -2,7 +2,9 @@
 
 import ast
 import asyncio
+import re
 import sqlite3
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -69,6 +71,39 @@ def test_registration_is_signed_account_bound_and_manifest_verified():
     assert "ed25519_verify" in manifest
 
 
+def test_dns_over_https_requests_cloudflare_json_media_type(monkeypatch):
+    calls = []
+
+    class Response:
+        status = 200
+        headers = {}
+
+        async def text(self):
+            return '{"Status":0,"Answer":[]}'
+
+    async def fetch(url, options):
+        calls.append((url, options))
+        return Response()
+
+    monkeypatch.setitem(sys.modules, "js", SimpleNamespace(fetch=fetch))
+    namespace = {
+        "asyncio": asyncio,
+        "to_js": lambda value: value,
+    }
+    exec(_function_source("_https_mirror_fetch_text"), namespace)
+    result = asyncio.run(namespace["_https_mirror_fetch_text"](
+        "https://cloudflare-dns.com/dns-query?name=mirror.example&type=A",
+        4096,
+        5,
+        "application/dns-json",
+    ))
+    assert result == (200, '{"Status":0,"Answer":[]}')
+    assert calls[0][1]["headers"]["accept"] == "application/dns-json"
+
+    dns_check = _function_source("_https_mirror_cloudflare_dns_ok")
+    assert '"application/dns-json"' in dns_check
+
+
 def test_cron_verifies_fresh_forkmesh_proof_and_clears_failed_state():
     scheduled = _method_source("Default", "scheduled")
     health = _function_source("_https_mirror_health_one")
@@ -82,6 +117,82 @@ def test_cron_verifies_fresh_forkmesh_proof_and_clears_failed_state():
     assert "HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS" in health
     assert "forkmesh_active=0" in failed
     assert "healthy=0" in failed
+
+
+def test_flagship_state_pin_resolves_org_alias_but_health_challenges_public_alias():
+    namespace = {"re": re}
+    exec(_function_source("_https_mirror_expected_forkmesh_refs"), namespace)
+    looked_up = []
+    state_hash = "a" * 64
+
+    async def org_repo_node(env, owner, repo):
+        assert (owner, repo) == ("forkmesh", "forkmesh")
+        return "mirror2"
+
+    async def blind_index(env, value):
+        looked_up.append(value)
+        return "repo-bi"
+
+    async def d1_first(env, sql, *params):
+        assert "FROM repositories" in sql
+        assert params == ("repo-bi",)
+        return {"data": "encrypted", "is_private": 0}
+
+    async def decrypt_row(env, value):
+        assert value == "encrypted"
+        return {
+            "owner": "mirror2",
+            "name": "forkmesh",
+            "visibility": "public",
+            "stateHash": state_hash,
+        }
+
+    namespace.update({
+        "_org_repo_node": org_repo_node,
+        "blind_index": blind_index,
+        "d1_first": d1_first,
+        "decrypt_row": decrypt_row,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+    })
+    result = asyncio.run(
+        namespace["_https_mirror_expected_forkmesh_refs"](object()))
+    assert result == state_hash
+    assert looked_up == ["mirror2/forkmesh"]
+
+    health = _function_source("_https_mirror_health_one")
+    assert '"&owner=forkmesh&repo=forkmesh"' in health
+
+
+def test_flagship_state_pin_falls_back_to_account_namespace_without_org_alias():
+    namespace = {"re": re}
+    exec(_function_source("_https_mirror_expected_forkmesh_refs"), namespace)
+    looked_up = []
+    state_hash = "b" * 64
+
+    async def org_repo_node(env, owner, repo):
+        return ""
+
+    async def blind_index(env, value):
+        looked_up.append(value)
+        return "repo-bi"
+
+    async def d1_first(env, sql, *params):
+        return {"data": "encrypted", "is_private": 0}
+
+    async def decrypt_row(env, value):
+        return {"visibility": "public", "stateHash": state_hash}
+
+    namespace.update({
+        "_org_repo_node": org_repo_node,
+        "blind_index": blind_index,
+        "d1_first": d1_first,
+        "decrypt_row": decrypt_row,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+    })
+    result = asyncio.run(
+        namespace["_https_mirror_expected_forkmesh_refs"](object()))
+    assert result == state_hash
+    assert looked_up == ["forkmesh/forkmesh"]
 
 
 def test_public_browse_clone_and_release_are_intercepted_before_host_tunnel():
@@ -124,6 +235,9 @@ def test_public_browse_clone_and_release_are_intercepted_before_host_tunnel():
     assert "authorization" not in proxy.lower()
     assert "cookie" not in proxy.lower()
     assert '"redirect": "manual"' in proxy
+    assert "status in HTTPS_MIRROR_RETRY_STATUSES" in proxy
+    assert "if status in (401, 403):" in proxy
+    assert "if status in (401, 403, 500, 502, 503, 504):" not in proxy
 
 
 def test_authorized_private_reads_stream_only_opaque_ciphertext_over_https():
@@ -291,6 +405,9 @@ def test_selection_is_public_group_scoped_fresh_integrity_and_abuse_gated():
     assert "visibility" in context
     assert "repo_mirror_same_group" in context
     assert "clone_state_pins" in context
+    assert "FROM org_repos" in context
+    assert 'target.get("stateHash", "")' in context
+    assert '"remote-clone"' in context
     assert "context[\"nodes\"]" in candidates
     assert "preferred_region" in candidates
     assert "select_endpoints" in candidates
@@ -302,6 +419,14 @@ def test_selection_is_public_group_scoped_fresh_integrity_and_abuse_gated():
     assert "refs_digest in context[\"pins\"]" in proof
     assert "operations_digest == claimed_operations_digest" in proof
     assert "ed25519_verify" in proof
+
+
+def test_clone_round_robin_advances_once_per_two_request_git_clone():
+    advance = _function_source("_https_mirror_route_advance")
+    assert 'if operation != "git-upload-pack"' in advance
+    assert "cursor=edge_route_cursor.cursor+1" in advance
+    assert 'if operation == "git-info-refs"' in advance
+    assert "clone_sticky" in advance
 
 
 def test_d1_schema_is_metadata_only_and_contains_no_repository_bytes():

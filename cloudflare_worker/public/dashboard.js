@@ -4681,9 +4681,9 @@
     const container = $("[data-home-changelog-list]");
     if (!container) return;
     const items = [
+      { label: "The Living Code City", meta: "v0.7.0 · July 2026", href: "/changelog" },
       { label: "The Agent Mesh", meta: "v0.5.0 · June 2026", href: "/changelog" },
       { label: "Autonomous agents", meta: "v0.4.0 · June 2026", href: "/changelog" },
-      { label: "Signed patch pull requests", meta: "Blog", href: "/blog/signed-patch-pull-requests/" },
     ];
     container.innerHTML = items.map((item) => `
       <article class="relative">
@@ -8912,7 +8912,11 @@
     try {
       let tree;
       try {
-        tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: "releases" }));
+        tree = await fetchRepoJson(repoLiveUrl(
+          repo,
+          "tree",
+          { path: ".forkmesh/releases" },
+        ));
       } catch (_) { return; }
       const channels = (Array.isArray(tree?.entries) ? tree.entries : [])
         .filter((entry) => entry.type === "tree" && entry.name)
@@ -10786,6 +10790,22 @@
       const data = await fetchJson(`${repoApiBase(repo)}/mirrors`);
       const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
       const mirrorCount = normalizedCount(data.summary?.mirrors) ?? mirrors.length;
+      const onlineMirrors = mirrors.filter(
+        (mirror) =>
+          mirror?.status === "online" &&
+          mirror?.cloneAvailable !== false,
+      );
+      if (onlineMirrors.length) {
+        repo.cloneOnline = true;
+        const availability = $("[data-repo-availability-status]");
+        if (availability) {
+          availability.textContent = repo.liveHost
+            ? "host online"
+            : "served by mirror";
+          availability.classList.remove("text-muted-foreground");
+          availability.classList.add("text-primary");
+        }
+      }
       updateRepoLiveCounts(repo, { mirrors: mirrorCount });
       setRepoTabCount("mirrors", mirrors.length);
       state.repoMirrors = mirrors;
@@ -10908,7 +10928,11 @@
       // tunnel round-trip so opening the tab doesn't fan out N blob requests.
       let tree;
       try {
-        tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: "releases" }));
+        tree = await fetchRepoJson(repoLiveUrl(
+          repo,
+          "tree",
+          { path: ".forkmesh/releases" },
+        ));
       } catch (error) {
         if (isMissingMirrorFolder(error)) {
           container.innerHTML = empty;
@@ -11442,7 +11466,7 @@
                 <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
                 <h2 class="min-w-0 truncate text-lg font-semibold text-foreground"><span class="text-muted-foreground"><a href="/@${encodeURIComponent(String(repo.owner || "").toLowerCase())}" data-repo-owner-link class="hover:text-foreground hover:underline">${escapeHtml(repo.owner || "owner")}</a>/</span>${escapeHtml(repo.name || "repository")}</h2>
                 <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${repo.isPrivate ? "private" : "public"}</span>
-                <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "served by mirror" : live ? "host online" : "host offline"}</span>
+                <span data-repo-availability-status class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "served by mirror" : live ? "host online" : "host offline"}</span>
               </div>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
             </div>
@@ -11797,6 +11821,58 @@
       if ((group.members || []).some((member) => repoMatchesKey(member, wanted))) {
         return origin;
       }
+    }
+    return null;
+  }
+
+  async function findOrganizationRepository(key) {
+    const wanted = String(key || "").trim();
+    const parts = wanted.split("/");
+    if (parts.length !== 2) return null;
+    const organization = normalizeRepoSegment(parts[0]);
+    const repository = normalizeRepoSegment(parts[1]);
+    if (!organization || !repository) return null;
+
+    let data;
+    try {
+      data = await fetchJson(
+        `/api/orgs/${encodeURIComponent(organization)}/repos`,
+      );
+    } catch (_) {
+      return null;
+    }
+    const linked = (Array.isArray(data?.repos) ? data.repos : []).find(
+      (item) =>
+        String(item?.repo || "").trim().toLowerCase() === repository.toLowerCase() &&
+        normalizeRepoSegment(item?.node),
+    );
+    if (!linked) return null;
+
+    const linkedOwner = normalizeRepoSegment(linked.node);
+    const linkedRepository = normalizeRepoSegment(linked.repo);
+    const linkedKey = `${linkedOwner}/${linkedRepository}`.toLowerCase();
+    for (const group of groupRepositories(state.repositories)) {
+      const member = (group.members || []).find(
+        (item) => repoKey(item).toLowerCase() === linkedKey,
+      );
+      if (!member) continue;
+      const origin = sourceOfTruth(group);
+      const aliases = new Set(
+        (Array.isArray(origin?._repoAliases) ? origin._repoAliases : [])
+          .map((alias) => String(alias || "").toLowerCase()),
+      );
+      aliases.add(wanted.toLowerCase());
+      aliases.add(linkedKey);
+      return {
+        ...origin,
+        owner: organization,
+        name: repository,
+        canonicalOwner: organization,
+        canonicalName: repository,
+        servingOwner: linkedOwner,
+        servingName: linkedRepository,
+        _repoAliases: [...aliases],
+      };
     }
     return null;
   }
@@ -12589,7 +12665,15 @@
     // findRepository needs the catalog (alias/canonical grouping), so this page
     // does wait on the shared fetch before rendering the detail body.
     await (repositoriesReady || loadRepositories());
-    const repo = requested ? findRepository(requested) : null;
+    let repo = requested ? findRepository(requested) : null;
+    if (!repo && requested) {
+      // Organization URLs are public aliases backed by a node-owned catalog
+      // record. The catalog deliberately publishes only the signing node's
+      // identity, so resolve the public org link on a direct-page visit and
+      // keep the requested organization identity while every data request
+      // continues through the Worker's existing org-alias authorization path.
+      repo = await findOrganizationRepository(requested);
+    }
     if (repo) {
       // The owner-only Agents tab is only a recognized route when the session
       // can assign agents, which is decided from nodes/isAdmin that only land

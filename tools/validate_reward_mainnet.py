@@ -15,7 +15,9 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 
-MAINNET_GENESIS_HASH = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+MAINNET_GENESIS_HASH = (
+    "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+)
 SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
 

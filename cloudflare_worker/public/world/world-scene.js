@@ -314,36 +314,6 @@ function createAvatar(THREE, identity, options = {}) {
   badge.rotation.y = Math.PI;
   group.add(badge);
 
-  // Guests land in the world immediately with the phone/laptop affordance from
-  // the product model. It is a local visual cue only — no browsing details are
-  // attached to it or sent through presence.
-  if (String(identity.accountStatus || "").toLowerCase().startsWith("guest")) {
-    const device = new THREE.Group();
-    const screen = new THREE.Mesh(
-      new THREE.BoxGeometry(0.78, 0.5, 0.08),
-      makeMaterial(THREE, "#17211f", { metalness: 0.36, roughness: 0.32 }),
-    );
-    screen.position.set(0, 1.95, -0.72);
-    screen.rotation.x = -0.18;
-    device.add(screen);
-    const display = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.58, 0.32),
-      new THREE.MeshBasicMaterial({ color: "#77d9ff" }),
-    );
-    display.position.set(0, 1.95, -0.765);
-    display.rotation.y = Math.PI;
-    display.rotation.x = 0.18;
-    device.add(display);
-    const keyboard = new THREE.Mesh(
-      new THREE.BoxGeometry(0.82, 0.07, 0.48),
-      makeMaterial(THREE, "#283633", { metalness: 0.28, roughness: 0.44 }),
-    );
-    keyboard.position.set(0, 1.67, -0.48);
-    keyboard.rotation.x = 0.28;
-    device.add(keyboard);
-    group.add(device);
-  }
-
   group.scale.setScalar(scale);
   group.userData = {
     id: identity.id,
@@ -995,60 +965,6 @@ function createSecurityWorkshop(THREE, position, interactive, animated) {
   setShadows(group);
   animated.push((time) => {
     scan.position.y = 2.15 + ((time * 0.0011) % 2.9);
-  });
-  return group;
-}
-
-function createQuarantine(THREE, position, interactive, animated) {
-  const group = new THREE.Group();
-  const pad = new THREE.Mesh(
-    new THREE.CylinderGeometry(3.7, 4.1, 0.4, 8),
-    makeMaterial(THREE, "#3a2521"),
-  );
-  pad.position.y = 0.2;
-  group.add(pad);
-  const barMaterial = makeMaterial(THREE, "#ff8e78", {
-    emissive: "#8b2d24",
-    emissiveIntensity: 0.52,
-    metalness: 0.48,
-    roughness: 0.3,
-  });
-  for (let index = 0; index < 12; index += 1) {
-    const angle = (index / 12) * Math.PI * 2;
-    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 4.4, 8), barMaterial);
-    bar.position.set(Math.cos(angle) * 2.5, 2.4, Math.sin(angle) * 2.5);
-    group.add(bar);
-  }
-  for (const y of [0.55, 4.45]) {
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(2.5, 0.09, 8, 48), barMaterial);
-    ring.rotation.x = Math.PI / 2;
-    ring.position.y = y;
-    group.add(ring);
-  }
-  const warning = new THREE.Mesh(
-    new THREE.OctahedronGeometry(0.75, 0),
-    makeMaterial(THREE, "#ff8e78", {
-      emissive: "#ff4e3a",
-      emissiveIntensity: 1.1,
-    }),
-  );
-  warning.position.y = 2.35;
-  group.add(warning);
-  const sign = makeLabelSprite(THREE, "QUARANTINE", "private evidence · public safeguards", "#ff8e78");
-  sign.position.set(0, 6.3, 0);
-  group.add(sign);
-  group.position.set(...position);
-  group.userData.landmark = "quarantine";
-  group.traverse((child) => {
-    if (child.isMesh) {
-      child.userData.landmark = "quarantine";
-      interactive.push(child);
-    }
-  });
-  setShadows(group);
-  animated.push((time) => {
-    warning.rotation.y = time * 0.0008;
-    warning.position.y = 2.35 + Math.sin(time * 0.0018) * 0.22;
   });
   return group;
 }
@@ -1775,7 +1691,6 @@ export function createWorldScene({
     organizations: createOrganizationQuarter,
     fediverse: createFediverseCenter,
     security: createSecurityWorkshop,
-    quarantine: createQuarantine,
     launchpad: createLaunchpad,
     events: createCommunityStage,
     neighborhood: createNeighborhood,
@@ -2693,76 +2608,6 @@ export function createWorldScene({
     center.userData.instanceProfiles = layer;
   }
 
-  function updateQuarantine(quarantine = {}) {
-    const jail = landmarkObjects.get("quarantine");
-    if (!jail) return;
-    const existing = jail.userData.liveRestrictionLayer;
-    if (existing) {
-      jail.remove(existing);
-      existing.traverse((child) => {
-        child.geometry?.dispose?.();
-        child.material?.map?.dispose?.();
-        child.material?.dispose?.();
-      });
-    }
-    const layer = new THREE.Group();
-    layer.name = "privacy-safe-live-quarantine";
-    const summary = Array.isArray(quarantine.summary)
-      ? quarantine.summary.slice(0, 12)
-      : [];
-    const restrictions = Array.isArray(quarantine.restrictions)
-      ? quarantine.restrictions.slice(0, 24)
-      : [];
-    const aggregateTotal = summary.reduce(
-      (total, item) => total + Math.max(0, Number(item?.count) || 0),
-      0,
-    );
-    const markers = restrictions.length
-      ? restrictions
-      : Array.from(
-          { length: Math.min(24, aggregateTotal) },
-          (_, index) => summary[index % Math.max(1, summary.length)] || {},
-        );
-    markers.forEach((item, index) => {
-      const angle = (index / Math.max(1, markers.length)) * Math.PI * 2;
-      const marker = new THREE.Mesh(
-        new THREE.DodecahedronGeometry(0.16, 0),
-        makeMaterial(
-          THREE,
-          item?.status === "revoked" || item?.status === "expired"
-            ? "#9da8aa"
-            : "#ff8e78",
-          {
-            emissive:
-              item?.status === "revoked" || item?.status === "expired"
-                ? "#354044"
-                : "#8b2d24",
-            emissiveIntensity: 0.52,
-          },
-        ),
-      );
-      marker.position.set(
-        Math.cos(angle) * (1.1 + (index % 3) * 0.32),
-        0.95 + (index % 4) * 0.42,
-        Math.sin(angle) * (1.1 + (index % 3) * 0.32),
-      );
-      layer.add(marker);
-    });
-    const statusLabel = makeLabelSprite(
-      THREE,
-      `${aggregateTotal} RETAINED`,
-      restrictions.length
-        ? "role-gated generalized records"
-        : "public aggregate only",
-      "#ffb3a4",
-    );
-    statusLabel.scale.set(2.4, 0.8, 1);
-    statusLabel.position.set(0, 5.35, 0);
-    layer.add(statusLabel);
-    jail.add(layer);
-    jail.userData.liveRestrictionLayer = layer;
-  }
-
   function updateMediaSpaces(spaces = [], activeSpace = {}) {
     const garden = landmarkObjects.get("broadcast");
     if (!garden) return;
@@ -3469,7 +3314,6 @@ export function createWorldScene({
     updateBots,
     updateOrganizations,
     updateFediverseDirectory,
-    updateQuarantine,
     updateMediaSpaces,
     updateIdentity,
     updateRepositoryGraph,

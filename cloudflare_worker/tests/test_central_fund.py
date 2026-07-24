@@ -305,6 +305,8 @@ def test_worker_signing_and_broadcast_symbols_are_absent():
 
 
 def test_shared_solana_rpc_rejects_transaction_submission_methods():
+    assert '"getAccountInfo"' in SOLANA_TEXT
+    assert '"getGenesisHash"' in SOLANA_TEXT
     tree = ast.parse(SOLANA_TEXT, filename=str(SOLANA))
     node = next(
         item for item in tree.body
@@ -313,8 +315,8 @@ def test_shared_solana_rpc_rejects_transaction_submission_methods():
     )
     namespace = {
         "_SOLANA_READ_ONLY_METHODS": {
-            "getAccountInfo", "getBalance", "getLatestBlockhash",
-            "getSignatureStatuses", "getTransaction",
+            "getAccountInfo", "getBalance", "getGenesisHash",
+            "getLatestBlockhash", "getSignatureStatuses", "getTransaction",
         },
     }
     exec(compile(ast.fix_missing_locations(ast.Module(

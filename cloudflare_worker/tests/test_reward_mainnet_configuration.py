@@ -76,6 +76,26 @@ def test_production_defaults_mainnet_and_invalid_or_mismatched_config_fails():
         "api.devnet.solana.com")
 
 
+def test_cluster_fingerprints_are_complete_canonical_genesis_hashes():
+    expected = {
+        "mainnet-beta": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+        "devnet": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+        "testnet": "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY",
+    }
+    tree = ast.parse(SOURCE)
+    assignment = next(
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "REWARD_CLUSTER_GENESIS_HASHES"
+            for target in node.targets
+        )
+    )
+    assert ast.literal_eval(assignment.value) == expected
+    assert preflight.MAINNET_GENESIS_HASH == expected["mainnet-beta"]
+
+
 class _RpcResponse:
     status = 200
 

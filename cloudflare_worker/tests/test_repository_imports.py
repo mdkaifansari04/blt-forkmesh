@@ -10,6 +10,7 @@ import json
 import sqlite3
 import threading
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
 
@@ -343,6 +344,10 @@ def test_generated_logo_is_stable_original_and_model_free():
     lowered = first["dataUrl"].lower()
     assert "github" not in lowered
     assert "gitlab" not in lowered
+    assert "#" not in first["dataUrl"]
+    assert unquote(first["dataUrl"]).startswith(
+        'data:image/svg+xml;charset=utf-8,<svg '
+        'xmlns="http://www.w3.org/2000/svg"')
     assert "original abstract geometry" in first["copyrightNotice"].lower()
 
     other = copy.deepcopy(record)

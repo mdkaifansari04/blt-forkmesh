@@ -943,6 +943,13 @@ def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
         assert marker in dashboard_js
 
 
+def test_dashboard_release_probes_use_the_committed_forkmesh_directory():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+
+    assert dashboard_js.count('{ path: ".forkmesh/releases" }') == 2
+    assert '{ path: "releases" }' not in dashboard_js
+
+
 def test_dashboard_repository_cards_are_clickable_metric_summaries():
     dashboard_js = _read(PUBLIC / "dashboard.js")
     card = dashboard_js[
@@ -1912,12 +1919,17 @@ def test_dashboard_network_chat_uses_real_room_integration_without_mock_messages
     assert 'src="/dashboard-chat.js?v=' in dashboard
     assert "const CHAT_WS_PATH =" in chat_js
     assert "`/api/repo/${encodeURIComponent(ROOM_OWNER)}`" in chat_js
-    assert "`/${encodeURIComponent(ROOM_REPO)}/rooms/general/ws`" in chat_js
+    assert (
+        "`/${encodeURIComponent(ROOM_REPO)}/rooms/"
+        "${encodeURIComponent(ACTIVE_ROOM)}/ws`"
+    ) in chat_js
     # The room key is fetched from the relay (server-derived from DATA_KEY), not a
     # public baked-in constant.
     assert 'forkmesh-shared-room-key-v1' not in chat_js
     assert "`/api/chat/room-key?owner=${encodeURIComponent(ROOM_OWNER)}`" in chat_js
     assert "`&repo=${encodeURIComponent(ROOM_REPO)}`" in chat_js
+    assert "`&room=${encodeURIComponent(ACTIVE_ROOM)}`" in chat_js
+    assert 'PUBLIC_WORLD_GENERAL_ROOM = "world-general"' in chat_js
     assert "fetchRoomPassphrase" in chat_js
     assert "deriveRoomKey" in chat_js
     assert "encryptObject" in chat_js

@@ -199,6 +199,22 @@ int main(int argc, char **argv)
     check(world.toString() == QStringLiteral("https://relay.example.com/world/"),
           "websocket relay becomes the HTTPS World portal");
 
+    const QStringList mirrorOwners =
+        forkmesh::control::directMirrorRepositoryOwners(
+            QStringLiteral("forkmesh"), QStringLiteral("jett"));
+    check(mirrorOwners ==
+              QStringList{QStringLiteral("forkmesh"),
+                          QStringLiteral("jett")},
+          "direct mirror exposes canonical and catalog owner aliases");
+    check(forkmesh::control::directMirrorRepositoryOwners(
+              QStringLiteral("ForkMesh"), QStringLiteral("forkmesh")) ==
+              QStringList{QStringLiteral("forkmesh")},
+          "identical normalized direct mirror aliases are emitted once");
+    check(forkmesh::control::directMirrorRepositoryOwners(
+              QStringLiteral("../private"), QStringLiteral("jett")) ==
+              QStringList{QStringLiteral("jett")},
+          "invalid direct mirror owner aliases fail closed");
+
     const QString publicKey = base64Url(QByteArray(32, 'K'));
     const QByteArray payload =
         QJsonDocument(QJsonObject{

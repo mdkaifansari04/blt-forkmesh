@@ -865,6 +865,22 @@
       const data = await fetchJson(`${repoApiBase(repo)}/mirrors`);
       const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
       const mirrorCount = normalizedCount(data.summary?.mirrors) ?? mirrors.length;
+      const onlineMirrors = mirrors.filter(
+        (mirror) =>
+          mirror?.status === "online" &&
+          mirror?.cloneAvailable !== false,
+      );
+      if (onlineMirrors.length) {
+        repo.cloneOnline = true;
+        const availability = $("[data-repo-availability-status]");
+        if (availability) {
+          availability.textContent = repo.liveHost
+            ? "host online"
+            : "served by mirror";
+          availability.classList.remove("text-muted-foreground");
+          availability.classList.add("text-primary");
+        }
+      }
       updateRepoLiveCounts(repo, { mirrors: mirrorCount });
       setRepoTabCount("mirrors", mirrors.length);
       state.repoMirrors = mirrors;
@@ -987,7 +1003,11 @@
       // tunnel round-trip so opening the tab doesn't fan out N blob requests.
       let tree;
       try {
-        tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: "releases" }));
+        tree = await fetchRepoJson(repoLiveUrl(
+          repo,
+          "tree",
+          { path: ".forkmesh/releases" },
+        ));
       } catch (error) {
         if (isMissingMirrorFolder(error)) {
           container.innerHTML = empty;

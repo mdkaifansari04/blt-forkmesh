@@ -753,6 +753,22 @@ QUrl worldUrlForRelay(const QString &relayUrl)
     return url;
 }
 
+QStringList directMirrorRepositoryOwners(const QString &canonicalOwner,
+                                         const QString &catalogOwner)
+{
+    static const QRegularExpression ownerPattern(
+        QStringLiteral("^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"));
+    QStringList owners;
+    for (const QString &raw : {canonicalOwner, catalogOwner}) {
+        const QString owner = raw.trimmed().toLower();
+        if (ownerPattern.match(owner).hasMatch() &&
+            !owners.contains(owner)) {
+            owners.append(owner);
+        }
+    }
+    return owners;
+}
+
 QByteArray mirrorManifestSigningPayload(const QJsonObject &request,
                                         const QString &expectedPublicKey,
                                         QString *error)

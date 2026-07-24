@@ -162,22 +162,6 @@ time, and an optimistic revision. It coordinates clients but cannot start
 playback on their devices. Every client must open the provider and consent
 locally.
 
-## Privacy-safe visual quarantine
-
-The visual jail reads `GET /api/security/quarantine` with the
-`x-forkmesh-world-view: generalized` reduction header. Anonymous visitors
-receive reason/status aggregates. Moderators and security reviewers receive
-the existing generalized restriction projection and the audited `revoke`
-action; reviewers do not receive decrypted `privateEvidence` through this
-world view. The browser independently allowlists the generalized fields before
-rendering them.
-
-The 3D jail turns only aggregate counts or those role-gated generalized rows
-into markers. It never renders raw IP addresses, request paths, form data,
-search terms, decrypted evidence, or a private incident narrative. The full
-reviewer endpoint remains available outside the visual-world reduction for
-authorized investigations.
-
 ### UTC schedules and retention
 
 Schedules use UTC millisecond `startsAt` and `endsAt` values. They may be at

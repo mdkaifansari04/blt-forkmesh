@@ -101,6 +101,14 @@ bool isValidSolanaPublicAddress(const QString &address);
 // Convert a configured ws/wss/http(s) relay URL into its browser world portal.
 QUrl worldUrlForRelay(const QString &relayUrl);
 
+// Return the distinct, normalized repository-owner aliases a direct mirror
+// must expose. A mirror account can publish an imported repository under its
+// own catalog namespace while the Worker continues routing and challenging the
+// canonical source namespace; both names must resolve to the same sealed
+// archive.
+QStringList directMirrorRepositoryOwners(const QString &canonicalOwner,
+                                         const QString &catalogOwner);
+
 // Validate the JSON request emitted by cloudflare_bootstrap.py's external
 // manifest signer and return the exact canonical manifest bytes to sign.
 // Nothing from the request is persisted or logged.

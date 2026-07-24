@@ -961,7 +961,7 @@ SCHEMA_STATEMENTS = [
         created_at INTEGER NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_world_workshop_events_session "
     "ON world_workshop_events(session_id, event_no)",
-    # --- Security control plane (migration 0043) -----------------------------
+    # --- Security authorization and audit plane (migration 0043) -------------
     # Explicit least-privilege grants. Guest/registered-user are derived states;
     # this table holds elevated or scoped roles only. scope_bi is a blind index
     # of the organization/repository identifier, never a private repo name.
@@ -977,57 +977,6 @@ SCHEMA_STATEMENTS = [
         PRIMARY KEY (account_bi, role, scope_type, scope_bi))""",
     "CREATE INDEX IF NOT EXISTS idx_role_grants_role "
     "ON role_grants(role, scope_type, scope_bi, revoked_at, expires_at)",
-    # Repeated, high-signal abuse counters. subject_token is a keyed blind index
-    # of the transient network identifier or account; raw IPs are never stored.
-    """CREATE TABLE IF NOT EXISTS security_signals (
-        subject_token TEXT NOT NULL,
-        rule TEXT NOT NULL,
-        reason TEXT NOT NULL,
-        confidence TEXT NOT NULL,
-        hits INTEGER NOT NULL DEFAULT 1,
-        first_seen INTEGER NOT NULL,
-        last_seen INTEGER NOT NULL,
-        country_code TEXT NOT NULL DEFAULT '',
-        client_category TEXT NOT NULL DEFAULT '',
-        PRIMARY KEY (subject_token, rule))""",
-    "CREATE INDEX IF NOT EXISTS idx_security_signals_last "
-    "ON security_signals(last_seen)",
-    # Restriction records contain only generalized public/admin metadata. Any
-    # additional reviewer evidence is encrypted separately in evidence_data.
-    """CREATE TABLE IF NOT EXISTS security_restrictions (
-        incident_id TEXT PRIMARY KEY,
-        subject_token TEXT NOT NULL,
-        subject_kind TEXT NOT NULL DEFAULT 'network',
-        reason TEXT NOT NULL,
-        rule TEXT NOT NULL,
-        detected_at INTEGER NOT NULL,
-        duration_ms INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL DEFAULT 0,
-        confidence TEXT NOT NULL,
-        evidence_data TEXT,
-        automatic INTEGER NOT NULL DEFAULT 1,
-        reviewed INTEGER NOT NULL DEFAULT 0,
-        reviewer_bi TEXT,
-        appeal_status TEXT NOT NULL DEFAULT 'none',
-        status TEXT NOT NULL DEFAULT 'quarantined',
-        created_at INTEGER NOT NULL)""",
-    "CREATE INDEX IF NOT EXISTS idx_security_restrictions_subject "
-    "ON security_restrictions(subject_token, status, expires_at)",
-    "CREATE INDEX IF NOT EXISTS idx_security_restrictions_created "
-    "ON security_restrictions(created_at)",
-    # Appeals are private reviewer material, encrypted under DATA_KEY and never
-    # included in public jail/world responses.
-    """CREATE TABLE IF NOT EXISTS security_appeals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        incident_id TEXT NOT NULL,
-        appellant_bi TEXT,
-        data TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
-        created_at INTEGER NOT NULL,
-        reviewed_at INTEGER NOT NULL DEFAULT 0,
-        reviewer_bi TEXT)""",
-    "CREATE INDEX IF NOT EXISTS idx_security_appeals_incident "
-    "ON security_appeals(incident_id, created_at)",
     # Append-only, content-free audit trail for sensitive state changes. Targets
     # are blind indexes and details are an allowlisted JSON object with no
     # credentials, bodies, addresses, private repo names, or raw IPs.
@@ -1609,7 +1558,9 @@ SCHEMA_STATEMENTS = [
     """CREATE TRIGGER IF NOT EXISTS trg_org_succession_approval_authorized
         BEFORE INSERT ON org_succession_approvals
         BEGIN
-            SELECT CASE WHEN NOT EXISTS (
+            SELECT RAISE(
+                ABORT, 'succession_approver_not_authorized')
+            WHERE NOT EXISTS (
                 SELECT 1 FROM org_succession_cases c
                 JOIN org_members m
                   ON m.org_bi=c.org_bi AND m.member_bi=NEW.approver_bi
@@ -1619,8 +1570,7 @@ SCHEMA_STATEMENTS = [
                   AND m.role IN ('owner','admin','member')
                   AND NEW.approver_bi<>c.owner_bi
                   AND NEW.approver_bi<>c.successor_bi
-            ) THEN RAISE(
-                ABORT, 'succession_approver_not_authorized') END;
+            );
         END""",
     """CREATE TRIGGER IF NOT EXISTS trg_org_succession_approval_no_update
         BEFORE UPDATE ON org_succession_approvals
@@ -1677,20 +1627,24 @@ SCHEMA_STATEMENTS = [
         BEFORE UPDATE OF status ON org_succession_cases
         WHEN NEW.status='completed' AND OLD.status='grace'
         BEGIN
-            SELECT CASE WHEN NEW.resolved_at<OLD.grace_ends_at
-                THEN RAISE(ABORT, 'succession_grace_active') END;
-            SELECT CASE WHEN NOT EXISTS (
+            SELECT RAISE(ABORT, 'succession_grace_active')
+            WHERE NEW.resolved_at<OLD.grace_ends_at;
+            SELECT RAISE(ABORT, 'succession_owner_changed')
+            WHERE NOT EXISTS (
                 SELECT 1 FROM org_members
                 WHERE org_bi=OLD.org_bi
                   AND member_bi=OLD.owner_bi AND role='owner'
-            ) THEN RAISE(ABORT, 'succession_owner_changed') END;
-            SELECT CASE WHEN NOT EXISTS (
+            );
+            SELECT RAISE(ABORT, 'succession_successor_changed')
+            WHERE NOT EXISTS (
                 SELECT 1 FROM org_members
                 WHERE org_bi=OLD.org_bi
                   AND member_bi=OLD.successor_bi
                   AND role IN ('admin','member')
-            ) THEN RAISE(ABORT, 'succession_successor_changed') END;
-            SELECT CASE WHEN (
+            );
+            SELECT RAISE(
+                ABORT, 'succession_approval_threshold_not_met')
+            WHERE (
                 SELECT COUNT(*) FROM org_succession_approvals a
                 JOIN org_members m
                   ON m.org_bi=OLD.org_bi
@@ -1699,9 +1653,7 @@ SCHEMA_STATEMENTS = [
                   AND m.role IN ('owner','admin','member')
                   AND a.approver_bi<>OLD.owner_bi
                   AND a.approver_bi<>OLD.successor_bi
-            )<OLD.approval_threshold
-                THEN RAISE(
-                    ABORT, 'succession_approval_threshold_not_met') END;
+            )<OLD.approval_threshold;
         END""",
     """CREATE TRIGGER IF NOT EXISTS trg_org_succession_role_transfer
         AFTER UPDATE OF status ON org_succession_cases

@@ -338,6 +338,18 @@ def test_routes_schema_migration_and_admin_boundary_are_integrated():
     assert "allow_admin" not in api_text
 
 
+def test_migration_triggers_do_not_embed_case_end_terminators():
+    """Wrangler's D1 migration splitter treats an inner ``END;`` as the end of
+    a trigger body.  Express conditional aborts as ``RAISE ... WHERE`` so the
+    production migration remains one complete statement per trigger.
+    """
+
+    migration = (
+        MIGRATIONS / "0064_organization_succession.sql"
+    ).read_text(encoding="utf-8")
+    assert "SELECT CASE" not in migration
+
+
 def test_schema_has_no_sensitive_transfer_columns():
     runtime = Runtime()
     forbidden = {

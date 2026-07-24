@@ -60,6 +60,13 @@ def test_owner_device_capabilities_never_claim_browser_or_worker_secret_control(
         assert item.get("exception")
 
 
+def test_capability_inventory_has_no_retired_quarantine_surface():
+    matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+    rendered = json.dumps(matrix).lower()
+    for retired in ("quarantine", "visual jail", "security appeal"):
+        assert retired not in rendered
+
+
 def test_world_has_entry_points_from_qt_flutter_and_dashboard():
     qt = (ROOT / "qt_client" / "src" / "MainWindowControlNode.cpp").read_text(
         encoding="utf-8"

@@ -36,8 +36,8 @@ cannot prove possession of the private half. OpenSSH proves possession on every
 connection before the forced command can run. Use a fresh, account-specific key
 instead of reusing a publicly listed key. A globally duplicate key returns the
 same generic conflict whether it is active or revoked, so the API does not
-disclose which account registered it; rotate to a fresh key and use the abuse
-reporting path if a known key was reserved without permission.
+disclose which account registered it; rotate to a fresh key and contact the
+account-support channel if a known key was reserved without permission.
 
 When a gateway is configured, repository Code menus show:
 
@@ -91,89 +91,112 @@ authorizations, produce metadata-only sensitive-action audit entries.
 
 ## Node-side configuration
 
-Create `/etc/forkmesh/ssh-gateway.json` using
+The production boundary uses four distinct non-root identities:
+
+- `forkmesh-ssh-auth` owns the Worker bearer and runs the local authorization
+  broker. It cannot read repositories or mirror identity material.
+- `forkmesh-ssh-lookup` is used only by `AuthorizedKeysCommand`. It may submit
+  `lookup` requests but cannot authorize repositories.
+- `git` runs the forced Git service. It may submit `authorize`
+  requests and write the selected bare repository, but cannot read the bearer
+  or the mirror's node/age private material.
+- `forkmesh-mirror` reads the bare repository and owns all encryption and node
+  signing material. It is not an SSH login account.
+
+The broker in
+[`tools/ssh_authorization_broker.py`](../../tools/ssh_authorization_broker.py)
+creates a group-readable Unix socket in a directory that neither SSH-facing
+account can write. It checks Linux `SO_PEERCRED` on every connection, permits
+one role-specific bounded request, adds a fresh request ID, disables redirects
+and ambient HTTP proxies, and validates the exact Worker response. The Git
+gateway checks the broker's kernel-reported uid in the other direction. Thus a
+Git process or repository hook cannot read or inherit the infrastructure
+bearer.
+
+Create `/etc/forkmesh/ssh-gateway.json` from the tracked
+[`ssh-gateway.json.example`](../../packaging/ssh/ssh-gateway.json.example) and
+validate it with
 [`ssh-gateway-config.schema.json`](../ssh-gateway-config.schema.json):
 
 ```json
 {
   "schemaVersion": 1,
-  "apiOrigin": "https://forkmesh.example.org",
-  "gatewayExecutable": "/opt/forkmesh/tools/ssh_gateway.py",
-  "gatewayTokenFile": "/etc/forkmesh/ssh-gateway.token",
-  "repositoryRoot": "/srv/forkmesh/git",
+  "authorizationSocket": "/run/forkmesh-ssh-auth/authorize.sock",
+  "authorizationBrokerUser": "forkmesh-ssh-auth",
+  "gatewayExecutable": "/opt/forkmesh-mirror/ssh-gateway-entrypoint",
+  "refreshNotifier": "/opt/forkmesh-mirror/ssh-refresh-notify",
+  "repositoryRoot": "/srv/forkmesh-git",
   "repositories": [
     {
-      "owner": "alice-node",
-      "name": "widget",
-      "path": "alice-node/widget.git",
+      "owner": "mirror2",
+      "name": "forkmesh",
+      "path": "mirror2/forkmesh.git",
       "access": "read-write"
     }
   ]
 }
 ```
 
-The executable must be one canonical absolute path containing only letters,
-digits, `_`, `.`, `/`, `+`, or `-`; forced commands run through the account's
-shell, so whitespace, shell metacharacters, empty components, `.` and `..` are
-rejected. A nondefault configuration path needs a root-owned executable wrapper
-that sets `FORKMESH_SSH_GATEWAY_CONFIG` and then `exec`s the Python tool; do not
-put command-line arguments in `gatewayExecutable`.
+Create the broker config from
+[`ssh-authorization-broker.json.example`](../../packaging/ssh/ssh-authorization-broker.json.example).
+Only its dedicated account may read `/etc/forkmesh/ssh-gateway.token` (`0600`).
+The token is never present in JSON, an environment variable, a Git process, or
+an SSH wrapper. Configs, programs, wrappers, and every executable parent
+directory are root-owned and not writable by the Git account.
 
-The JSON config must be a regular nonsymlink file owned by root or the executing
-user and must not be group/world writable. The token file must be a regular
-nonsymlink file readable only by its owner (`0600`). It contains exactly the
-same `SSH_GATEWAY_TOKEN` configured at the Worker. Keep repository paths
-relative to `repositoryRoot`; the gateway resolves them, rejects traversal and
-symlink escapes, and verifies each target is a bare Git repository.
+Use a root-owned `0750` repository root and a dedicated repository-sharing
+group. The bare repository itself can be owned by `forkmesh-mirror` with that
+group and mode `2770`; add only `git` and `forkmesh-mirror` to the
+group. Do not recursively make a private repository world-readable.
 
-Example installation:
-
-```bash
-sudo install -d -m 0755 /etc/forkmesh /opt/forkmesh /srv/forkmesh/git
-sudo cp -a /path/to/forkmesh /opt/forkmesh/source
-sudo install -D -o root -g root -m 0755 \
-  /opt/forkmesh/source/tools/ssh_gateway.py /opt/forkmesh/tools/ssh_gateway.py
-sudo useradd --system --create-home --home-dir /var/lib/forkmesh-git --shell /bin/sh git
-sudo install -o root -g root -m 0644 ssh-gateway.json /etc/forkmesh/ssh-gateway.json
-sudo install -o git -g git -m 0600 ssh-gateway.token /etc/forkmesh/ssh-gateway.token
-sudo chown -R git:git /srv/forkmesh/git
-```
-
-Install an sshd drop-in (syntax varies slightly by distribution):
-
-```text
-Match User git
-    AuthenticationMethods publickey
-    PubkeyAuthentication yes
-    PasswordAuthentication no
-    KbdInteractiveAuthentication no
-    AuthorizedKeysFile none
-    AuthorizedKeysCommand /opt/forkmesh/tools/ssh_gateway.py --config /etc/forkmesh/ssh-gateway.json authorized-key --key-type %t --key-blob %k
-    AuthorizedKeysCommandUser git
-    PermitTTY no
-    AllowTcpForwarding no
-    X11Forwarding no
-    PermitTunnel no
-    GatewayPorts no
-```
+Install the tracked broker service, fixed wrappers, and
+[`99-forkmesh-git.conf`](../../packaging/ssh/99-forkmesh-git.conf). The Match
+block affects only `git`, retains the host's existing administrative
+SSH policy, denies passwords, forwarding, TTYs, user rc files, and trusted-user
+CA authentication, and uses the separate lookup account. A dedicated
+SSH-only daemon should additionally use global `PermitRootLogin no`,
+`PermitUserEnvironment no`, no broad `AcceptEnv`, and an `AllowUsers` list.
+Those global settings must not be copied into a shared administrative daemon
+without an explicit access migration.
 
 The emitted authorized-key line also carries OpenSSH's `restrict` option and a
 forced `serve --key-id …` command. The helper parses `SSH_ORIGINAL_COMMAND`
 without a shell, accepts one `<owner>/<repository>.git` path, asks the Worker
 for authorization, resolves the Worker's canonical namespace through the local
-allowlist, strips ambient credential environment variables, and `exec`s Git
-with an argument array.
+allowlist, and runs Git with a fixed argument array and a clean environment.
+The root-owned entrypoint rebuilds the pre-Python environment from scratch,
+carrying forward only OpenSSH's required `SSH_ORIGINAL_COMMAND` and the optional
+`GIT_PROTOCOL` hint; the Python gateway then accepts only Git protocol versions
+1 or 2 and an exact upload-pack/receive-pack command.
+Command-line configuration disables repository hooks, pack-object hooks,
+alternate-ref commands, fsmonitor programs, credential helpers, and the `ext`
+transport. After a successful receive only, the gateway invokes the fixed
+root-owned notifier with no arguments or inherited push data. A failed
+notification never rewrites an already-committed push as failed.
+
+The notifier atomically coalesces pushes into one marker. The tracked systemd
+path/service then runs refresh as `forkmesh-mirror`, restarts only
+`forkmesh-mirror.service`, verifies its loopback health response using the
+pinned Ed25519 node key, and registers the active generation. It never derives
+a command, path, unit, or argument from a pushed ref, push option, repository
+content, or SSH environment. See
+[`ssh-post-receive-refresh.schema.json`](../ssh-post-receive-refresh.schema.json).
 
 Validate before reloading sshd:
 
 ```bash
-sudo -u git /opt/forkmesh/tools/ssh_gateway.py \
-  --config /etc/forkmesh/ssh-gateway.json check
-sudo -u git /opt/forkmesh/tools/ssh_gateway.py \
-  --config /etc/forkmesh/ssh-gateway.json worker-allowlist
+sudo systemctl start forkmesh-ssh-authorization-broker.service
+sudo -u git /opt/forkmesh-mirror/ssh-gateway-entrypoint check
+sudo -u git \
+  /opt/forkmesh-mirror/ssh-gateway-entrypoint worker-allowlist
 sudo sshd -t
+sudo sshd -T -C user=git,host=localhost,addr=127.0.0.1
 sudo systemctl reload sshd
 ```
+
+Keep an existing administrative session open, confirm its effective
+configuration is unchanged, and open a second administrative connection before
+closing the first. Never install the Match block until `sshd -t` succeeds.
 
 Copy the single `worker-allowlist` output line into
 `SSH_GATEWAY_REPOSITORIES`, then run `./deploy.sh secrets`. Regenerate and
@@ -214,11 +237,15 @@ boundary.
 
 - Unknown, revoked, malformed, and wrong-account keys all fail authentication
   without revealing the owning account.
-- Missing repositories and insufficient permissions both fail closed.
+- Missing, locally absent, read-only, and unauthorized repositories produce the
+  same generic forced-command denial.
 - The gateway never invokes an interactive shell, accepts arbitrary commands,
   or constructs a shell command from a repository path.
 - Request paths, repository bytes, client IPs, SSH key material, and the bearer
   token are not written by the helper.
+- The broker authenticates before schema or database work, returns no account
+  principal, and binds each success to a fresh request ID plus the exact key,
+  operation, and canonical repository response.
 - Account rename retargets the key's blind-index account link; gateway lookup
   resolves the current account name rather than trusting registration-time
   encrypted metadata.

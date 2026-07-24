@@ -2,16 +2,14 @@
 
 The Worker imports this module, but it intentionally has no Workers/JavaScript
 dependencies so the security boundary can be unit-tested with normal CPython.
-Only generalized, allowlisted incident metadata may reach public/admin APIs.
+Only generalized, allowlisted audit metadata may reach administrative APIs.
 Raw network identifiers and owner-sealed payload plaintext never belong here.
 """
 
 import base64
-from collections import deque
 import hashlib
 import json
 import re
-from urllib.parse import unquote
 
 
 ROLE_VALUES = frozenset({
@@ -50,35 +48,10 @@ ROLE_SCOPE_TYPES = {
     "automated_agent": frozenset({"platform", "repository"}),
 }
 
-RESTRICTION_REASONS = frozenset({
-    "endpoint_probing",
-    "credential_abuse",
-    "path_traversal",
-    "injection_attempt",
-    "excessive_scraping",
-    "denial_of_service",
-    "exploit_signature",
-    "access_control_bypass",
-    "other_security_abuse",
-})
-
-RESTRICTION_CONFIDENCE = frozenset({"low", "medium", "high"})
-RESTRICTION_STATUSES = frozenset({
-    "monitoring", "quarantined", "blocked", "expired", "revoked",
-})
-APPEAL_STATUSES = frozenset({
-    "none", "pending", "accepted", "denied", "needs_information",
-})
-
-AUTO_RESTRICTION_MAX_MS = 24 * 60 * 60 * 1000
-MANUAL_RESTRICTION_MAX_MS = 365 * 24 * 60 * 60 * 1000
-DEFAULT_QUARANTINE_MS = 15 * 60 * 1000
-MAX_APPEAL_TEXT = 4000
-MAX_EVIDENCE_SUMMARY = 500
+MAX_AUDIT_DETAIL = 500
 MAX_OWNER_ENVELOPE_BODY = 1024 * 1024
 
 _INCIDENT_RE = re.compile(r"^[a-f0-9]{32}$")
-_TOKEN_RE = re.compile(r"^[a-f0-9]{64}$")
 _KEY_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _B64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -118,321 +91,13 @@ def normalize_incident_id(value):
     return incident if _INCIDENT_RE.fullmatch(incident) else ""
 
 
-def normalize_subject_token(value):
-    token = str(value or "").strip().lower()
-    return token if _TOKEN_RE.fullmatch(token) else ""
-
-
-def normalize_reason(value):
-    reason = str(value or "").strip().lower().replace("-", "_")
-    return reason if reason in RESTRICTION_REASONS else ""
-
-
-def normalize_confidence(value):
-    confidence = str(value or "").strip().lower()
-    return confidence if confidence in RESTRICTION_CONFIDENCE else ""
-
-
-def normalize_appeal_status(value):
-    status = str(value or "").strip().lower()
-    return status if status in APPEAL_STATUSES else ""
-
-
-def bounded_restriction_duration(value, automatic=False):
-    try:
-        duration = int(value)
-    except (TypeError, ValueError):
-        return 0
-    if duration <= 0:
-        # Automatic decisions can never become permanent. A zero-duration
-        # manual restriction is handled by the caller only after human review.
-        return 0
-    maximum = (
-        AUTO_RESTRICTION_MAX_MS if automatic else MANUAL_RESTRICTION_MAX_MS
-    )
-    return min(duration, maximum)
-
-
 def generalized_evidence_summary(value):
-    """Return a bounded summary with control characters removed.
-
-    Callers must pass a generalized description, never a raw request path,
-    query, form body, address, credential, or source identifier.
-    """
-    raw = str(value or "")[:MAX_EVIDENCE_SUMMARY * 2]
+    """Return bounded, single-line audit text with controls removed."""
+    raw = str(value or "")[:MAX_AUDIT_DETAIL * 2]
     clean = "".join(
         ch for ch in raw if ch in ("\n", "\t") or ord(ch) >= 32
     )
-    return " ".join(clean.split())[:MAX_EVIDENCE_SUMMARY]
-
-
-def security_signal_for_path(path, method="GET"):
-    """Classify a narrow set of high-signal malicious endpoint probes.
-
-    The returned record never contains the path. Country, browser and OS are
-    intentionally absent: none is evidence of malicious intent.
-    """
-    raw = str(path or "")[:2048]
-    decoded = unquote(raw).lower()
-    raw_lower = raw.lower()
-    method = str(method or "GET").upper()
-
-    traversal = (
-        "../" in decoded or "..\\" in decoded or "%2e%2e" in raw.lower()
-    )
-    if traversal:
-        return {
-            "rule": "path-traversal-v1",
-            "reason": "path_traversal",
-            "confidence": "high",
-            "summary": "Repeated traversal syntax was requested.",
-        }
-
-    # These are executable or administrative exploit targets, not merely a
-    # product-specific 404. Keep the rule narrow and require repetition in the
-    # Worker before a temporary quarantine is created.
-    exploit_markers = (
-        "/vendor/phpunit/phpunit/src/util/php/eval-stdin.php",
-        "/boaform/admin/formlogin",
-        "/hudson/script",
-        "/solr/admin/cores",
-        "/actuator/gateway/routes",
-        "/cgi-bin/.%2e/",
-        "${jndi:",
-    )
-    if any(
-        marker in decoded or marker in raw_lower
-        for marker in exploit_markers
-    ):
-        return {
-            "rule": "known-exploit-signature-v1",
-            "reason": "exploit_signature",
-            "confidence": "high",
-            "summary": "A known exploit request signature was detected.",
-        }
-
-    probe_markers = (
-        "/wp-admin", "/wp-login", "/xmlrpc.php", "/phpmyadmin",
-        "/.env", "/.git/config", "/vendor/phpunit", "/cgi-bin/",
-        "/actuator/env",
-    )
-    if any(marker in decoded for marker in probe_markers):
-        return {
-            "rule": "known-endpoint-probe-v1",
-            "reason": "endpoint_probing",
-            "confidence": "medium",
-            "summary": "A known unrelated administration or secret path was probed.",
-        }
-
-    injection_markers = (
-        "<script", "union select", "' or 1=1", "\" or 1=1",
-        "${jndi:", ";drop table",
-    )
-    if any(marker in decoded for marker in injection_markers):
-        return {
-            "rule": "injection-signature-v1",
-            "reason": "injection_attempt",
-            "confidence": "high",
-            "summary": "A known injection signature was detected in a path.",
-        }
-
-    if method not in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
-        return {
-            "rule": "unexpected-method-v1",
-            "reason": "access_control_bypass",
-            "confidence": "low",
-            "summary": "An unsupported HTTP method was repeatedly attempted.",
-        }
-    return None
-
-
-def security_signal_for_response(
-        path, method, status, authorization_present=False):
-    """Classify repeated authentication failures without inspecting secrets.
-
-    The caller invokes this only after a response exists. No request body,
-    credential, account name, query string, country, browser, or OS is accepted
-    by this interface, so none can influence or enter the resulting evidence.
-    """
-    path = str(path or "").split("?", 1)[0][:512]
-    method = str(method or "GET").upper()
-    try:
-        status = int(status)
-    except (TypeError, ValueError):
-        return None
-    if status not in (401, 403, 404):
-        return None
-    credential_paths = frozenset({
-        "/api/accounts/login",
-        "/api/accounts/admin-session",
-        "/api/accounts/reset-password",
-    })
-    if method == "POST" and path.rstrip("/") in credential_paths:
-        return {
-            "rule": "credential-stuffing-failures-v1",
-            "reason": "credential_abuse",
-            "confidence": "low",
-            "summary": (
-                "Repeated failed credential submissions were observed at an "
-                "authentication boundary."
-            ),
-        }
-    sensitive_boundary = bool(
-        path.startswith("/api/private-replicas/")
-        or path.startswith("/api/security/")
-        or path.rstrip("/") == "/api/mirrors/private"
-        or path.endswith("/security-scans/ingest")
-    )
-    signed_request_boundary = bool(
-        method == "POST"
-        and (
-            path.rstrip("/") == "/api/mirrors/private"
-            or path.endswith("/security-scans/ingest")
-        )
-    ) or bool(
-        method == "GET"
-        and re.fullmatch(r"/api/repo/[^/]+/[^/]+/host", path)
-    )
-    if sensitive_boundary and (
-            authorization_present or signed_request_boundary):
-        return {
-            "rule": "protected-boundary-bypass-v1",
-            "reason": "access_control_bypass",
-            "confidence": "low",
-            "summary": (
-                "Repeated rejected proofs were observed at a protected "
-                "authorization boundary."
-            ),
-        }
-    if authorization_present and (
-        (path.startswith("/api/") and status in (401, 403))
-    ):
-        return {
-            "rule": "repeated-auth-failures-v1",
-            "reason": "credential_abuse",
-            "confidence": "low",
-            "summary": (
-                "Repeated rejected authorization proofs were observed at a "
-                "protected boundary."
-            ),
-        }
-    return None
-
-
-class BoundedTrafficDetector:
-    """Per-isolate bounded burst detector for scraping and denial-of-service.
-
-    Only keyed subject tokens and timestamps are retained. Paths, queries,
-    user-agent data, country, browser, and operating system are neither stored
-    nor accepted. D1 receives a generalized signal only after a high request
-    threshold is crossed.
-    """
-
-    def __init__(
-            self, max_subjects=2048, scrape_window_ms=60_000,
-            scrape_requests=90, dos_window_ms=10_000, dos_requests=240):
-        self.max_subjects = max(1, min(8192, int(max_subjects)))
-        self.scrape_window_ms = max(1000, int(scrape_window_ms))
-        self.scrape_requests = max(3, int(scrape_requests))
-        self.dos_window_ms = max(1000, int(dos_window_ms))
-        self.dos_requests = max(
-            self.scrape_requests + 1, int(dos_requests))
-        self._subjects = {}
-
-    @property
-    def subject_count(self):
-        return len(self._subjects)
-
-    @staticmethod
-    def _prune(values, cutoff):
-        while values and values[0] < cutoff:
-            values.popleft()
-
-    def _state(self, subject_token, now):
-        state = self._subjects.get(subject_token)
-        if state is not None:
-            state["last"] = now
-            return state
-        if len(self._subjects) >= self.max_subjects:
-            oldest = min(
-                self._subjects,
-                key=lambda token: self._subjects[token]["last"],
-            )
-            self._subjects.pop(oldest, None)
-        state = {
-            "last": now,
-            "all": deque(maxlen=self.dos_requests + 1),
-            "reads": deque(maxlen=self.scrape_requests + 1),
-        }
-        self._subjects[subject_token] = state
-        return state
-
-    def observe(self, subject_token, method, now):
-        subject_token = normalize_subject_token(subject_token)
-        method = str(method or "GET").upper()
-        try:
-            now = int(now)
-        except (TypeError, ValueError):
-            return None
-        if not subject_token or now <= 0:
-            return None
-        state = self._state(subject_token, now)
-        self._prune(state["all"], now - self.dos_window_ms)
-        self._prune(state["reads"], now - self.scrape_window_ms)
-        state["all"].append(now)
-        if method in ("GET", "HEAD"):
-            state["reads"].append(now)
-        if len(state["all"]) >= self.dos_requests:
-            return {
-                "rule": "request-flood-v1",
-                "reason": "denial_of_service",
-                "confidence": "high",
-                "summary": (
-                    "A sustained request flood exceeded the bounded service "
-                    "threshold."
-                ),
-            }
-        if len(state["reads"]) >= self.scrape_requests:
-            return {
-                "rule": "excessive-read-automation-v1",
-                "reason": "excessive_scraping",
-                "confidence": "medium",
-                "summary": (
-                    "Automated read volume exceeded the bounded scraping "
-                    "threshold."
-                ),
-            }
-        return None
-
-
-def public_restriction(record, now=None):
-    """Project a restriction to the non-sensitive administrative/world shape."""
-    record = record if isinstance(record, dict) else {}
-    detected = _safe_int(record.get("detectedAt"))
-    expires = _safe_int(record.get("expiresAt"))
-    if now is not None and expires and expires <= int(now):
-        status = "expired"
-    else:
-        status = str(record.get("status") or "quarantined")
-        if status not in RESTRICTION_STATUSES:
-            status = "quarantined"
-    return {
-        "incidentId": normalize_incident_id(record.get("incidentId")),
-        "reason": normalize_reason(record.get("reason")) or "other_security_abuse",
-        "rule": _short_label(record.get("rule"), 80),
-        "detectedAt": detected,
-        "durationMs": max(0, _safe_int(record.get("durationMs"))),
-        "expiresAt": expires,
-        "confidence": normalize_confidence(record.get("confidence")) or "low",
-        "automatic": bool(record.get("automatic")),
-        "reviewed": bool(record.get("reviewed")),
-        "appealStatus": (
-            normalize_appeal_status(record.get("appealStatus")) or "none"
-        ),
-        "status": status,
-        "countryCode": _country(record.get("countryCode")),
-        "clientCategory": _short_label(record.get("clientCategory"), 40),
-    }
+    return " ".join(clean.split())[:MAX_AUDIT_DETAIL]
 
 
 def sanitize_audit_details(details):
@@ -623,16 +288,3 @@ def _safe_int(value):
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
-
-
-def _short_label(value, maximum):
-    raw = str(value or "")[:maximum * 2]
-    clean = "".join(
-        ch for ch in raw if ch.isalnum() or ch in (" ", ".", "_", "-", ":")
-    )
-    return " ".join(clean.split())[:maximum]
-
-
-def _country(value):
-    value = str(value or "").strip().upper()
-    return value if re.fullmatch(r"[A-Z]{2}", value) and value not in ("XX",) else ""

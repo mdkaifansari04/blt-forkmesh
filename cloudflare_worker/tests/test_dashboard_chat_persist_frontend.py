@@ -45,7 +45,7 @@ def test_durable_type_set_matches_the_node():
         ]
 
 
-def test_dashboard_chat_requires_user_session_and_marks_user_frames():
+def test_dashboard_chat_allows_guests_only_in_public_world_general():
     assert "function userSession()" in CHAT
     assert "function isUserLikeSession(session)" in CHAT
     assert 'session.kind === "user"' in CHAT
@@ -53,12 +53,24 @@ def test_dashboard_chat_requires_user_session_and_marks_user_frames():
     assert "return Boolean(session.email)" in CHAT
     assert "async function hydrateUserSession()" in CHAT
     assert 'fetch("/api/accounts/" + encodeURIComponent(session.nodeName)' in CHAT
-    assert 'accountKind: "user"' in CHAT
-    assert 'plain.accountKind !== "user"' in CHAT
-    assert 'entry.accountKind !== "user"' in CHAT
+    assert 'PUBLIC_WORLD_GENERAL_ROOM = "world-general"' in CHAT
+    assert (
+        "PUBLIC_WORLD_GENERAL =\n"
+        "    !ACTIVE_SPACE && !scopedWorkshop && !requestedOrganization"
+    ) in CHAT
+    assert "return PUBLIC_WORLD_GENERAL || Boolean(userSession())" in CHAT
+    assert 'return PUBLIC_WORLD_GENERAL ? "guest" : "user"' in CHAT
+    assert 'value === "user" || (PUBLIC_WORLD_GENERAL && value === "guest")' in CHAT
+    assert "function normalizedPublicWorldFrame(entry)" in CHAT
+    assert 'accountKind: "guest"' in CHAT
+    assert "sender: worldVisitorName(entry.sender)" in CHAT
+    assert "World visitor · ${asserted}" in CHAT
+    assert "Guests can use only public World #general" in CHAT
+    assert "`&room=${encodeURIComponent(ACTIVE_ROOM)}`" in CHAT
+    assert "`/${encodeURIComponent(ROOM_REPO)}/rooms/${encodeURIComponent(ACTIVE_ROOM)}/ws`" in CHAT
 
 
-def test_public_chat_requires_user_session_and_marks_user_frames():
+def test_public_chat_splits_guest_general_from_authenticated_channels():
     assert "function userSession()" in PUBLIC_CHAT
     assert "function isUserLikeSession(session)" in PUBLIC_CHAT
     assert 'session.kind === "user"' in PUBLIC_CHAT
@@ -66,9 +78,26 @@ def test_public_chat_requires_user_session_and_marks_user_frames():
     assert "return Boolean(session.email)" in PUBLIC_CHAT
     assert "async function hydrateUserSession()" in PUBLIC_CHAT
     assert 'fetch("/api/accounts/" + encodeURIComponent(session.nodeName)' in PUBLIC_CHAT
-    assert 'accountKind: "user"' in PUBLIC_CHAT
-    assert 'plain.accountKind !== "user"' in PUBLIC_CHAT
-    assert 'entry.accountKind !== "user"' in PUBLIC_CHAT
+    assert 'PUBLIC_WORLD_GENERAL_ROOM = "world-general"' in PUBLIC_CHAT
+    assert 'channel === "#general"' in PUBLIC_CHAT
+    assert '"public-world-general"' in PUBLIC_CHAT
+    assert 'normalized !== "#general"' in PUBLIC_CHAT
+    assert (
+        'roomScopeForChannel() === "public-world-general" ? "guest" : "user"'
+        in PUBLIC_CHAT
+    )
+    assert 'scope === "public-world-general" && value === "guest"' in PUBLIC_CHAT
+    assert "function normalizedPublicWorldFrame(" in PUBLIC_CHAT
+    assert 'accountKind: "guest"' in PUBLIC_CHAT
+    assert "sender: worldVisitorName(plain.sender)" in PUBLIC_CHAT
+    assert "World visitor · ${asserted}" in PUBLIC_CHAT
+    assert "PUBLIC_WORLD_ROOM_KEY_ENDPOINT" in PUBLIC_CHAT
+    assert "AUTHENTICATED_ROOM_KEY_ENDPOINT" in PUBLIC_CHAT
+    assert "PUBLIC_WORLD_CHAT_WS_PATH" in PUBLIC_CHAT
+    assert "AUTHENTICATED_CHAT_WS_PATH" in PUBLIC_CHAT
+    assert "switchChatRoom" in PUBLIC_CHAT
+    assert "frameMatchesScope" in PUBLIC_CHAT
+    assert "Guests can participate only in public World #general" in PUBLIC_CHAT
     assert "lockChatForNonUser" in PUBLIC_CHAT
 
 
@@ -110,8 +139,8 @@ def test_public_chat_has_rooms_conversation_and_people_panes():
     assert 'id="chat-channel-title"' in PUBLIC_CHAT_HTML
     assert ".chat-rooms-pane" in PUBLIC_CHAT_HTML
     assert ".chat-people-pane" in PUBLIC_CHAT_HTML
-    # Channels multiplex over the one room socket via each message's channel
-    # field, exactly like the desktop; sends carry the active room.
+    # Sends carry the active channel; #general uses the isolated public room,
+    # while authenticated channels retain the desktop-compatible room.
     assert "channel: activeChannel" in PUBLIC_CHAT
     assert "function setActiveChannel(" in PUBLIC_CHAT
     assert 'DEFAULT_CHANNELS = ["#general", "#welcome", "#random"]' in PUBLIC_CHAT
@@ -185,13 +214,15 @@ def test_public_chat_usernames_link_to_relay_profile_pages():
     # Clicking a message author, their avatar, or a people-pane row opens
     # /@username — a RELATIVE URL, so the link lands on whichever relay is
     # serving the page (forkmesh.com or a self-hosted mainnode). ForkBot is
-    # not an account, so its rows stay unlinked.
+    # not an account, and public World guests are explicitly unverified, so
+    # those rows stay unlinked.
     assert 'return key ? "/@" + encodeURIComponent(key) : "#";' in PUBLIC_CHAT
     assert "author.href = mentionProfilePath(record.sender)" in PUBLIC_CHAT
     assert "avatarLink.href = mentionProfilePath(record.sender)" in PUBLIC_CHAT
     assert "row.href = mentionProfilePath(person.name)" in PUBLIC_CHAT
     assert 'document.createElement(isBot ? "span" : "a")' in PUBLIC_CHAT
-    assert 'document.createElement(isBot ? "div" : "a")' in PUBLIC_CHAT
+    assert 'const hasProfile = person.kind === "user"' in PUBLIC_CHAT
+    assert 'document.createElement(hasProfile ? "a" : "div")' in PUBLIC_CHAT
     assert "a.chat-author:hover" in PUBLIC_CHAT_HTML
     assert "a.chat-person:hover" in PUBLIC_CHAT_HTML
 

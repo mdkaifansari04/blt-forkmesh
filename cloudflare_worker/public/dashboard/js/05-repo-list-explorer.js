@@ -602,9 +602,9 @@
     const container = $("[data-home-changelog-list]");
     if (!container) return;
     const items = [
+      { label: "The Living Code City", meta: "v0.7.0 · July 2026", href: "/changelog" },
       { label: "The Agent Mesh", meta: "v0.5.0 · June 2026", href: "/changelog" },
       { label: "Autonomous agents", meta: "v0.4.0 · June 2026", href: "/changelog" },
-      { label: "Signed patch pull requests", meta: "Blog", href: "/blog/signed-patch-pull-requests/" },
     ];
     container.innerHTML = items.map((item) => `
       <article class="relative">

@@ -1122,8 +1122,10 @@ def deterministic_logo(record):
     return {
         "kind": "forkmesh_generated",
         "contentType": "image/svg+xml",
-        "dataUrl": "data:image/svg+xml;charset=utf-8," + quote(
-            svg, safe="(),%:#;=\"'"),
+        # Encode every reserved byte. In particular, raw ``#`` truncates a data
+        # URL as a fragment and raw ``%`` is parsed as an escape introducer;
+        # either makes the otherwise valid generated SVG fail to render.
+        "dataUrl": "data:image/svg+xml;charset=utf-8," + quote(svg, safe=""),
         "generated": True,
         "aiGenerated": False,
         "generatedLocally": True,

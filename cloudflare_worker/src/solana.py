@@ -67,7 +67,9 @@ SOLANA_RPC_TIMEOUT_MS = 2500
 # transaction or invoking an arbitrary method, even if a future caller passes a
 # dynamic string. Add new entries only for independently reviewed public reads.
 _SOLANA_READ_ONLY_METHODS = frozenset({
+    "getAccountInfo",
     "getBalance",
+    "getGenesisHash",
     "getLatestBlockhash",
     "getSignatureStatuses",
     "getTransaction",

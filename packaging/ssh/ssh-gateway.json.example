@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "authorizationSocket": "/run/forkmesh-ssh-auth/authorize.sock",
+  "authorizationBrokerUser": "forkmesh-ssh-auth",
+  "gatewayExecutable": "/opt/forkmesh-mirror/ssh-gateway-entrypoint",
+  "refreshNotifier": "/opt/forkmesh-mirror/ssh-refresh-notify",
+  "repositoryRoot": "/srv/forkmesh-git",
+  "repositories": [
+    {
+      "owner": "forkmesh",
+      "name": "forkmesh",
+      "path": "mirror2/forkmesh.git",
+      "access": "read-write"
+    },
+    {
+      "owner": "mirror2",
+      "name": "forkmesh",
+      "path": "mirror2/forkmesh.git",
+      "access": "read-write"
+    }
+  ]
+}

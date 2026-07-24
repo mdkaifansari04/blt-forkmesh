@@ -85,7 +85,6 @@ def test_world_contains_the_initial_city_districts_and_shared_clock():
         "organizations",
         "fediverse",
         "security",
-        "quarantine",
         "launchpad",
         "support",
     ):
@@ -114,7 +113,6 @@ def test_scene_builds_playable_landmarks_and_badged_avatars():
         "createOrganizationQuarter",
         "createFediverseCenter",
         "createSecurityWorkshop",
-        "createQuarantine",
         "createLaunchpad",
         "createSupportCenter",
         "createSkyOffice",
@@ -137,7 +135,7 @@ def test_scene_builds_playable_landmarks_and_badged_avatars():
     ):
         assert status_icon in APP
         assert status_icon in SCENE
-    assert "Guests land in the world immediately" in SCENE
+    assert "You entered as a guest immediately" in DATA
     assert "function updateOrganizations" in SCENE
     assert "organization-profiles" in SCENE
     assert "organization.memberList" in SCENE
@@ -152,6 +150,13 @@ def test_scene_builds_playable_landmarks_and_badged_avatars():
     assert "data-world-home-decline" in APP
     assert "data-world-enter-home" in APP
     assert "pendingKnocks" in APP
+
+
+def test_avatars_do_not_render_laptop_or_phone_props():
+    assert "phone/laptop affordance" not in SCENE
+    assert 'startsWith("guest")' not in SCENE
+    assert "const device = new THREE.Group()" not in SCENE
+    assert "const keyboard = new THREE.Mesh(" not in SCENE
 
 
 def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
@@ -174,6 +179,8 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert "serverPeerId" in APP
     assert 'this.socket?.close(1000, "page hidden")' in APP
     assert 'socketURL.searchParams.set("ticket", this.worldTicket)' in APP
+    assert "socket = new WebSocket(socketURL.href)" in APP
+    assert '`${protocol}//${location.host}/api/world/ws`' in APP
     assert "WORLD_TICKET_REFRESH_MS = 5 * 60 * 1000" in APP
     assert "startWorldTicketRefresh" in APP
     assert "if (!document.hidden && readSession()?.sessionToken)" in APP
@@ -250,6 +257,21 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
     assert "data-world-radio-stop" in APP
     assert "Audio never starts automatically" in APP
     assert "ice5.somafm.com" not in DATA
+
+
+def test_chat_opens_inside_the_world_without_popup_permission():
+    assert "data-world-chat-open" in APP
+    assert "data-world-chat-frame" in APP
+    assert 'role="dialog"' in APP
+    assert 'sandbox="allow-forms allow-same-origin allow-scripts"' in APP
+    assert "allow-popups" not in APP
+    assert "openWorldChat(" in APP
+    assert "closeWorldChat()" in APP
+    assert "destination.origin !== location.origin" in APP
+    assert '["/dashboard/chat", "/dashboard/chat/"]' in APP
+    assert 'destination.searchParams.set("worldEmbed", "1")' in APP
+    assert 'a[href^=\'/dashboard/chat\']' in APP
+    assert 'href="/dashboard/chat" target="_blank"' not in APP
     assert 'playMode: "external"' in DATA
     assert "does not embed, restream, record" in APP
     for media_feature in (
@@ -296,6 +318,29 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
         assert workshop_feature in APP
     assert "/blobs?" in APP
     assert "did not send private code to an external model" in APP
+
+
+def test_world_receives_private_notifications_and_global_announcements():
+    assert "WORLD_NOTIFICATION_POLL_MS = 30 * 1000" in APP
+    assert "normalizeWorldNotifications" in APP
+    assert "/api/notifications?node=${encodeURIComponent(" in APP
+    assert 'this.fetchJSON("/api/world/events"' in APP
+    assert 'this.postJSON("/api/notifications"' in APP
+    assert "data-world-notification-count" in APP
+    assert "data-world-notifications-refresh" in APP
+    assert "data-world-notifications-read" in APP
+    assert "World announcement:" in APP
+    assert "It is never included in multiplayer presence." in APP
+    assert "safeNotificationURL" in APP
+    assert "sanitizeNotificationText" in APP
+    assert "item.description" in APP
+    assert "this.refreshOpenEventsPanel()" in APP
+    assert 'window.addEventListener("storage", this.handleStorage)' in APP
+    assert 'window.removeEventListener("storage", this.handleStorage)' in APP
+    assert "window.clearInterval(this.notificationsTimer)" in APP
+    assert ".world-notification-button [data-world-notification-count]" in CSS
+    assert '.world-notification-list article[data-unread="true"]' in CSS
+    assert ".world-event-list article p" in CSS
 
 
 def test_organization_buildings_load_role_checked_floors_and_offices():
@@ -630,16 +675,13 @@ def test_fediverse_directory_is_public_only_and_consent_aware():
     assert "oauthVerifiedByForkMesh" in APP
 
 
-def test_visual_jail_consumes_only_generalized_live_quarantine_data():
-    assert 'this.fetchJSON("/api/security/quarantine"' in APP
-    assert '"x-forkmesh-world-view": "generalized"' in APP
-    assert "normalizeQuarantinePayload" in APP
-    assert "privateEvidence" not in APP
-    assert "data-world-quarantine-refresh" in APP
-    assert "data-world-quarantine-revoke" in APP
-    assert "function updateQuarantine" in SCENE
-    assert "privacy-safe-live-quarantine" in SCENE
-    assert "updateQuarantine," in SCENE
+def test_world_has_no_abuse_quarantine_ui_or_api_integration():
+    for source in (APP, DATA, SCENE, CSS):
+        assert "quarantine" not in source.lower()
+    assert "/api/security/quarantine" not in APP
+    assert "data-world-quarantine" not in APP
+    assert "createQuarantine" not in SCENE
+    assert "updateQuarantine" not in SCENE
 
 
 def test_known_bots_are_verified_from_a_deployed_public_directory():

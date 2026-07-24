@@ -22,27 +22,26 @@ import base64
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import shlex
+import socket
 import stat
+import struct
 import subprocess
 import sys
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
 
 
 CONFIG_VERSION = 1
 MAX_CONFIG_BYTES = 1024 * 1024
-MAX_API_RESPONSE_BYTES = 64 * 1024
-API_TIMEOUT_SECONDS = 8
+MAX_BROKER_FRAME_BYTES = 64 * 1024
+BROKER_TIMEOUT_SECONDS = 12
 OWNER_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 KEY_ID_RE = re.compile(r"^sk_[A-Za-z0-9_-]{16,80}$")
 KEY_TYPE_RE = re.compile(r"^[A-Za-z0-9@._+-]{1,80}$")
 EXECUTABLE_RE = re.compile(r"^/[A-Za-z0-9_./+-]{1,511}$")
-GATEWAY_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,512}$")
 SUPPORTED_KEY_TYPES = frozenset(
     {
         "ssh-ed25519",
@@ -54,13 +53,20 @@ SUPPORTED_KEY_TYPES = frozenset(
         "ssh-rsa",
     }
 )
-ORIGINAL_COMMAND_RE = re.compile(
-    r"^git-(upload|receive)-pack\s+(.+)$"
-)
+ORIGINAL_COMMAND_RE = re.compile(r"^git-(upload|receive)-pack\s+(.+)$")
 
 
 class GatewayError(RuntimeError):
     """A safe, generic gateway failure."""
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise GatewayError("invalid gateway configuration")
+        value[key] = item
+    return value
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -72,12 +78,27 @@ def _read_json(path: Path) -> dict[str, Any]:
         if (
             not stat.S_ISREG(info.st_mode)
             or info.st_uid not in (0, os.geteuid())
+            or info.st_nlink != 1
             or info.st_mode & 0o022
+            or info.st_size <= 0
             or info.st_size > MAX_CONFIG_BYTES
         ):
             raise GatewayError("invalid gateway configuration")
-        raw = os.read(descriptor, MAX_CONFIG_BYTES + 1)
-        value = json.loads(raw)
+        chunks = bytearray()
+        while len(chunks) <= MAX_CONFIG_BYTES:
+            chunk = os.read(
+                descriptor,
+                min(64 * 1024, MAX_CONFIG_BYTES + 1 - len(chunks)),
+            )
+            if not chunk:
+                break
+            chunks.extend(chunk)
+        if len(chunks) != info.st_size or len(chunks) > MAX_CONFIG_BYTES:
+            raise GatewayError("invalid gateway configuration")
+        raw = bytes(chunks)
+        value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+    except GatewayError:
+        raise
     except (OSError, ValueError, TypeError) as error:
         raise GatewayError("invalid gateway configuration") from error
     finally:
@@ -100,55 +121,13 @@ def _safe_relative_path(value: object) -> Path:
     return candidate
 
 
-def _https_origin(value: object) -> str:
-    try:
-        parsed = urlsplit(str(value or "").strip())
-        parsed_port = parsed.port
-    except ValueError as error:
-        raise GatewayError("invalid Worker API origin") from error
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or parsed.path not in ("", "/")
-    ):
-        raise GatewayError("invalid Worker API origin")
-    port = "" if parsed_port in (None, 443) else ":" + str(parsed_port)
-    return "https://" + parsed.hostname.lower() + port
-
-
 def _gateway_command(value: object) -> str:
     command = str(value or "").strip()
-    if (
-        not EXECUTABLE_RE.fullmatch(command)
-        or any(part in ("", ".", "..") for part in command.split("/")[1:])
+    if not EXECUTABLE_RE.fullmatch(command) or any(
+        part in ("", ".", "..") for part in command.split("/")[1:]
     ):
         raise GatewayError("invalid gateway executable")
     return command
-
-
-def _load_token(source: dict[str, Any]) -> str:
-    token = str(os.environ.get("FORKMESH_SSH_GATEWAY_TOKEN", "") or "").strip()
-    if not token:
-        token_path = Path(str(source.get("gatewayTokenFile") or "").strip())
-        try:
-            info = token_path.lstat()
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or stat.S_ISLNK(info.st_mode)
-                or info.st_mode & 0o077
-                or info.st_size > 4096
-            ):
-                raise GatewayError("gateway token is unavailable")
-            token = token_path.read_text(encoding="utf-8").strip()
-        except (OSError, ValueError) as error:
-            raise GatewayError("gateway token is unavailable") from error
-    if not GATEWAY_TOKEN_RE.fullmatch(token):
-        raise GatewayError("gateway token is unavailable")
-    return token
 
 
 def _normalize_presented_key(key_type: object, encoded: object) -> str:
@@ -174,21 +153,87 @@ def _normalize_presented_key(key_type: object, encoded: object) -> str:
 class Config:
     def __init__(self, path: Path):
         source = _read_json(path)
+        if set(source) != {
+            "schemaVersion",
+            "authorizationSocket",
+            "authorizationBrokerUser",
+            "gatewayExecutable",
+            "refreshNotifier",
+            "repositoryRoot",
+            "repositories",
+        }:
+            raise GatewayError("invalid gateway configuration")
         if source.get("schemaVersion") != CONFIG_VERSION:
             raise GatewayError("unsupported gateway configuration")
-        self.api_origin = _https_origin(source.get("apiOrigin"))
         self.gateway_command = _gateway_command(source.get("gatewayExecutable"))
+        gateway_path = Path(self.gateway_command)
+        try:
+            gateway_info = gateway_path.lstat()
+        except OSError as error:
+            raise GatewayError("invalid gateway executable") from error
+        if (
+            not stat.S_ISREG(gateway_info.st_mode)
+            or stat.S_ISLNK(gateway_info.st_mode)
+            or gateway_info.st_uid != 0
+            or stat.S_IMODE(gateway_info.st_mode) & 0o022
+            or not os.access(gateway_path, os.X_OK)
+        ):
+            raise GatewayError("invalid gateway executable")
+        self.refresh_notifier = Path(_gateway_command(source.get("refreshNotifier")))
+        try:
+            notifier_info = self.refresh_notifier.lstat()
+        except OSError as error:
+            raise GatewayError("invalid refresh notifier") from error
+        if (
+            not stat.S_ISREG(notifier_info.st_mode)
+            or stat.S_ISLNK(notifier_info.st_mode)
+            or notifier_info.st_uid != 0
+            or stat.S_IMODE(notifier_info.st_mode) & 0o022
+            or not os.access(self.refresh_notifier, os.X_OK)
+        ):
+            raise GatewayError("invalid refresh notifier")
+        socket_path = Path(str(source.get("authorizationSocket") or ""))
+        if (
+            not socket_path.is_absolute()
+            or socket_path.name in {"", ".", ".."}
+            or "\x00" in str(socket_path)
+        ):
+            raise GatewayError("invalid authorization socket")
+        self.authorization_socket = socket_path
+        broker_user = str(source.get("authorizationBrokerUser") or "")
+        try:
+            broker = pwd.getpwnam(broker_user)
+        except KeyError as error:
+            raise GatewayError("authorization broker is unavailable") from error
+        if broker.pw_uid == 0:
+            raise GatewayError("authorization broker is unavailable")
+        self.authorization_broker_uid = broker.pw_uid
         root = Path(str(source.get("repositoryRoot") or "").strip())
         if not root.is_absolute():
             raise GatewayError("invalid repository root")
+        try:
+            root_info = root.lstat()
+        except OSError as error:
+            raise GatewayError("invalid repository root") from error
+        if (
+            not stat.S_ISDIR(root_info.st_mode)
+            or stat.S_ISLNK(root_info.st_mode)
+            or root_info.st_uid not in (0, os.geteuid())
+            or (root_info.st_mode & 0o022)
+        ):
+            raise GatewayError("invalid repository root")
         self.repository_root = root.resolve()
-        self.token = _load_token(source)
         raw_repositories = source.get("repositories")
-        if not isinstance(raw_repositories, list):
+        if not isinstance(raw_repositories, list) or len(raw_repositories) > 1000:
             raise GatewayError("invalid repository allowlist")
         self.repositories: dict[tuple[str, str], tuple[Path, bool]] = {}
         for item in raw_repositories:
-            if not isinstance(item, dict):
+            if not isinstance(item, dict) or set(item) != {
+                "owner",
+                "name",
+                "path",
+                "access",
+            }:
                 raise GatewayError("invalid repository allowlist")
             owner = str(item.get("owner") or "").strip().lower()
             name = str(item.get("name") or "").strip()
@@ -200,44 +245,57 @@ class Config:
             ):
                 raise GatewayError("invalid repository allowlist")
             relative = _safe_relative_path(item.get("path"))
-            target = (self.repository_root / relative).resolve()
-            if self.repository_root not in target.parents:
-                raise GatewayError("invalid repository allowlist")
+            target = self.repository_root / relative
             key = (owner, name.lower())
             if key in self.repositories:
                 raise GatewayError("duplicate repository allowlist entry")
             self.repositories[key] = (target, access == "read-write")
 
 
+def _read_exact(connection: socket.socket, size: int) -> bytes:
+    content = bytearray()
+    while len(content) < size:
+        chunk = connection.recv(size - len(content))
+        if not chunk:
+            raise GatewayError("authorization broker response is incomplete")
+        content.extend(chunk)
+    return bytes(content)
+
+
 def _api(config: Config, payload: dict[str, Any]) -> dict[str, Any]:
-    body = json.dumps(
-        payload, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    request = Request(
-        config.api_origin + "/api/ssh/authorize",
-        data=body,
-        method="POST",
-        headers={
-            "accept": "application/json",
-            "authorization": "Bearer " + config.token,
-            "content-type": "application/json",
-        },
-    )
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if not body or len(body) > MAX_BROKER_FRAME_BYTES:
+        raise GatewayError("authorization request is invalid")
     try:
-        with urlopen(request, timeout=API_TIMEOUT_SECONDS) as response:
-            if int(response.status) != 200:
-                raise GatewayError("authorization service denied access")
-            raw = response.read(MAX_API_RESPONSE_BYTES + 1)
-    except (HTTPError, URLError, OSError, TimeoutError) as error:
-        raise GatewayError("authorization service unavailable") from error
-    if len(raw) > MAX_API_RESPONSE_BYTES:
-        raise GatewayError("authorization service response is invalid")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(BROKER_TIMEOUT_SECONDS)
+            connection.connect(str(config.authorization_socket))
+            if not hasattr(socket, "SO_PEERCRED"):
+                raise GatewayError("authorization broker is unavailable")
+            credentials = connection.getsockopt(
+                socket.SOL_SOCKET,
+                socket.SO_PEERCRED,
+                struct.calcsize("3i"),
+            )
+            _pid, peer_uid, _gid = struct.unpack("3i", credentials)
+            if peer_uid != config.authorization_broker_uid:
+                raise GatewayError("authorization broker is unavailable")
+            connection.sendall(struct.pack("!I", len(body)) + body)
+            connection.shutdown(socket.SHUT_WR)
+            announced = struct.unpack("!I", _read_exact(connection, 4))[0]
+            if announced <= 0 or announced > MAX_BROKER_FRAME_BYTES:
+                raise GatewayError("authorization broker response is invalid")
+            raw = _read_exact(connection, announced)
+            if connection.recv(1):
+                raise GatewayError("authorization broker response is invalid")
+    except (OSError, TimeoutError, struct.error) as error:
+        raise GatewayError("authorization broker is unavailable") from error
     try:
-        value = json.loads(raw)
+        value = json.loads(raw.decode("utf-8"))
     except (TypeError, ValueError) as error:
-        raise GatewayError("authorization service response is invalid") from error
+        raise GatewayError("authorization broker response is invalid") from error
     if not isinstance(value, dict) or value.get("authorized") is not True:
-        raise GatewayError("authorization service denied access")
+        raise GatewayError("authorization denied")
     return value
 
 
@@ -292,7 +350,14 @@ def _bare_repository(path: Path) -> bool:
             stderr=subprocess.DEVNULL,
             timeout=5,
             check=False,
-            env={"PATH": "/usr/bin:/bin", "LANG": "C"},
+            env={
+                "PATH": "/usr/bin:/bin",
+                "LANG": "C",
+                "LC_ALL": "C",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_TERMINAL_PROMPT": "0",
+            },
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -305,6 +370,9 @@ def _serve(config: Config, key_id: str) -> int:
     operation, requested_owner, requested_repo = _parse_original_command(
         os.environ.get("SSH_ORIGINAL_COMMAND", "")
     )
+    requested_entry = config.repositories.get((requested_owner, requested_repo.lower()))
+    if not requested_entry:
+        raise GatewayError("repository is not available on this gateway")
     result = _api(
         config,
         {
@@ -317,13 +385,24 @@ def _serve(config: Config, key_id: str) -> int:
     )
     owner = str(result.get("owner") or "").strip().lower()
     repository = str(result.get("repository") or "").strip()
-    if not OWNER_RE.fullmatch(owner) or not REPO_RE.fullmatch(repository):
+    relative_path = str(result.get("repositoryRelativePath") or "")
+    if (
+        not OWNER_RE.fullmatch(owner)
+        or not REPO_RE.fullmatch(repository)
+        or result.get("keyId") != key_id
+        or repository.lower() != requested_repo.lower()
+        or result.get("operation") != operation
+        or relative_path != owner + "/" + repository + ".git"
+    ):
         raise GatewayError("authorization service response is invalid")
     entry = config.repositories.get((owner, repository.lower()))
     if not entry:
         raise GatewayError("repository is not available on this gateway")
     repository_path, writable = entry
-    if operation == "git-receive-pack" and not writable:
+    requested_path, requested_writable = requested_entry
+    if requested_path != repository_path:
+        raise GatewayError("repository is not available on this gateway")
+    if operation == "git-receive-pack" and (not writable or not requested_writable):
         raise GatewayError("repository is read-only on this gateway")
     try:
         live_path = repository_path.resolve(strict=True)
@@ -339,16 +418,61 @@ def _serve(config: Config, key_id: str) -> int:
     if not _bare_repository(repository_path):
         raise GatewayError("repository is unavailable")
 
-    environment = {"PATH": "/usr/bin:/bin", "LANG": "C"}
+    environment = {
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_PROTOCOL_FROM_USER": "0",
+    }
     protocol = str(os.environ.get("GIT_PROTOCOL", "") or "")
     if protocol in ("version=1", "version=2"):
         environment["GIT_PROTOCOL"] = protocol
-    os.execvpe(
+    git_command = [
         "git",
-        ["git", operation.removeprefix("git-"), str(repository_path)],
-        environment,
-    )
-    raise GatewayError("Git service could not start")
+        "-c",
+        "core.alternateRefsCommand=/usr/bin/true",
+        "-c",
+        "core.hooksPath=" + os.devnull,
+        "-c",
+        "core.fsmonitor=",
+        "-c",
+        "credential.helper=",
+        "-c",
+        "protocol.ext.allow=never",
+        "-c",
+        "receive.fsckObjects=true",
+        "-c",
+        "safe.directory=" + str(repository_path),
+        operation.removeprefix("git-"),
+        str(repository_path),
+    ]
+    try:
+        completed = subprocess.run(
+            git_command,
+            env=environment,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise GatewayError("Git service could not start") from error
+    if completed.returncode == 0 and operation == "git-receive-pack":
+        try:
+            subprocess.run(
+                [str(config.refresh_notifier)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            # A committed push must not be rewritten as failed because the
+            # coalescing publication notification was unavailable.
+            pass
+    return int(completed.returncode)
 
 
 def _check(config: Config) -> int:
@@ -378,15 +502,9 @@ def _worker_allowlist(config: Config) -> int:
     """Print the exact fail-closed Worker repository configuration value."""
 
     entries = []
-    for (owner, repository), (_path, writable) in sorted(
-        config.repositories.items()
-    ):
+    for (owner, repository), (_path, writable) in sorted(config.repositories.items()):
         entries.append(
-            owner
-            + "/"
-            + repository
-            + "="
-            + ("read-write" if writable else "read-only")
+            owner + "/" + repository + "=" + ("read-write" if writable else "read-only")
         )
     print(",".join(entries))
     return 0
@@ -429,7 +547,10 @@ def main(argv: list[str] | None = None) -> int:
             return _worker_allowlist(config)
         return _check(config)
     except GatewayError as error:
-        print("ForkMesh SSH: " + str(error), file=sys.stderr)
+        if getattr(args, "command", "") == "serve":
+            print("ForkMesh SSH: repository access denied", file=sys.stderr)
+        else:
+            print("ForkMesh SSH: " + str(error), file=sys.stderr)
         return 1
 
 

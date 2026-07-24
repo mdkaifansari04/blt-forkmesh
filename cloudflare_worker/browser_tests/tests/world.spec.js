@@ -1,5 +1,11 @@
 const { test, expect } = require("@playwright/test");
 const path = require("node:path");
+const {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  pbkdf2Sync,
+} = require("node:crypto");
 
 const THREE_MODULE_URL =
   "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js";
@@ -32,9 +38,20 @@ const PRIVATE_SETTINGS = {
 
 const FIXED_NOW = 1_785_000_000_000;
 
-async function prepareWorldPage(page, socketId, { includeThread = false } = {}) {
+async function prepareWorldPage(
+  page,
+  socketId,
+  {
+    includeThread = false,
+    session = null,
+    notifications = [],
+    events = [],
+    chatPassphrase = "",
+  } = {},
+) {
   let mentionState = "review";
-  await page.addInitScript(({ now, identity }) => {
+  let notificationsRead = false;
+  await page.addInitScript(({ now, identity, accountSession }) => {
     Date.now = () => now;
     let seed = [...identity].reduce(
       (value, char) => (Math.imul(value, 31) + char.charCodeAt(0)) >>> 0,
@@ -48,7 +65,10 @@ async function prepareWorldPage(page, socketId, { includeThread = false } = {}) 
       "forkmesh.world.guestId.v1",
       `playwright-${identity}`,
     );
-  }, { now: FIXED_NOW, identity: socketId });
+    if (accountSession) {
+      localStorage.setItem("forkmesh.session", JSON.stringify(accountSession));
+    }
+  }, { now: FIXED_NOW, identity: socketId, accountSession: session });
   await page.emulateMedia({ reducedMotion: "reduce" });
   page.on("pageerror", (error) => {
     process.stderr.write(`World page error: ${error.message}\n`);
@@ -66,6 +86,7 @@ async function prepareWorldPage(page, socketId, { includeThread = false } = {}) 
   );
   await page.route("**/api/**", (route) => {
     const url = new URL(route.request().url());
+    let status = 200;
     const body =
       url.pathname === "/api/world/context"
         ? { now: FIXED_NOW, countryCode: "" }
@@ -94,8 +115,42 @@ async function prepareWorldPage(page, socketId, { includeThread = false } = {}) 
                 },
               ],
             }
+        : url.pathname === "/api/chat/room-key"
+          ? url.searchParams.get("room") === "world-general" &&
+            chatPassphrase
+            ? {
+                ok: true,
+                scope: "mainnode/forkmesh",
+                room: "world-general",
+                access: "public-world-general",
+                passphrase: chatPassphrase,
+              }
+            : ((status = 401), { error: "unauthorized" })
         : url.pathname === "/api/world/events"
-          ? { events: [] }
+          ? { events }
+          : url.pathname === "/api/notifications"
+            ? route.request().method() === "POST"
+              ? ((notificationsRead = true), { ok: true })
+              : {
+                  ok: true,
+                  notifications: notifications.map((item) => ({
+                    ...item,
+                    readAt: notificationsRead
+                      ? item.readAt || FIXED_NOW
+                      : item.readAt || 0,
+                  })),
+                  unread: notificationsRead
+                    ? 0
+                    : notifications.filter((item) => !item.readAt).length,
+                }
+            : url.pathname === "/api/world/ticket" && session
+              ? {
+                  authenticated: true,
+                  accountStatus: "Registered",
+                  name: session.nodeName,
+                  ticket: "playwright-world-ticket",
+                  expiresAt: FIXED_NOW + 300_000,
+                }
           : url.pathname === "/api/world/community-ads/placements"
             ? {
                 ok: true,
@@ -228,29 +283,16 @@ async function prepareWorldPage(page, socketId, { includeThread = false } = {}) 
             ? { mastodon: [], lemmy: [], x: [], reddit: [] }
           : url.pathname === "/api/world/media/spaces"
             ? { spaces: [] }
-            : url.pathname === "/api/security/quarantine"
-              ? {
-                  visibility: "aggregate-only",
-                  summary: {
-                    active: 2,
-                    temporary: 2,
-                    permanent: 0,
-                    appealed: 0,
-                    byReason: { automated_scanning: 2 },
-                  },
-                  restrictions: [],
-                  allowedActions: [],
-                }
             : url.pathname === "/api/repositories"
               ? { repositories: [] }
               : {};
     return route.fulfill({
-      status: 200,
+      status,
       contentType: "application/json; charset=utf-8",
       body: JSON.stringify(body),
     });
   });
-  await page.routeWebSocket("**/api/world/ws", (socket) => {
+  await page.routeWebSocket("**/api/world/ws*", (socket) => {
     socket.send(
       JSON.stringify({
         type: "welcome",
@@ -259,6 +301,47 @@ async function prepareWorldPage(page, socketId, { includeThread = false } = {}) 
       }),
     );
   });
+}
+
+function decryptChatEnvelope(envelope, passphrase, room) {
+  const salt = createHash("sha256")
+    .update(`ForkMesh room:${room}`, "utf8")
+    .digest()
+    .subarray(0, 16);
+  const key = pbkdf2Sync(passphrase, salt, 210000, 32, "sha256");
+  const decipher = createDecipheriv(
+    "aes-256-gcm",
+    key,
+    Buffer.from(envelope.nonce, "base64"),
+  );
+  decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
+  return JSON.parse(
+    Buffer.concat([
+      decipher.update(Buffer.from(envelope.body, "base64")),
+      decipher.final(),
+    ]).toString("utf8"),
+  );
+}
+
+function encryptChatEnvelope(message, passphrase, room) {
+  const salt = createHash("sha256")
+    .update(`ForkMesh room:${room}`, "utf8")
+    .digest()
+    .subarray(0, 16);
+  const key = pbkdf2Sync(passphrase, salt, 210000, 32, "sha256");
+  const nonce = Buffer.alloc(12, 7);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  const body = Buffer.concat([
+    cipher.update(JSON.stringify(message), "utf8"),
+    cipher.final(),
+  ]);
+  return {
+    kind: "cipher",
+    v: 1,
+    nonce: nonce.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+    body: body.toString("base64"),
+  };
 }
 
 async function waitForWorld(page, url = "/world/") {
@@ -278,6 +361,225 @@ async function waitForWorld(page, url = "/world/") {
         ?.getAttribute("aria-hidden") === "true",
   );
 }
+
+test("signed-in World receives private and global notifications", async ({
+  page,
+}) => {
+  const notificationRequests = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/notifications") {
+      notificationRequests.push({
+        method: request.method(),
+        authorization: request.headers().authorization || "",
+        body: request.postData() ? request.postDataJSON() : null,
+      });
+    }
+  });
+  await prepareWorldPage(page, "world-notifications", {
+    session: {
+      nodeName: "jett",
+      sessionToken: "playwright-jett-session",
+    },
+    notifications: [
+      {
+        id: "a".repeat(64),
+        kind: "Repository",
+        title: "Mirror refresh completed",
+        body: "forkmesh/forkmesh is healthy on the registered mirror.",
+        ts: FIXED_NOW - 1_000,
+        readAt: 0,
+      },
+      {
+        id: "c".repeat(64),
+        kind: "Issue",
+        title: "Issue #17 / forkmesh/forkmesh",
+        body: "Literal punctuation stays readable; markup <b>does not run</b>.",
+        href: "javascript:alert('must-not-run')",
+        ts: FIXED_NOW - 2_000,
+        readAt: FIXED_NOW - 1_500,
+      },
+    ],
+    events: [
+      {
+        id: "b".repeat(32),
+        type: "Infrastructure",
+        title: "ForkMesh production deployment complete",
+        description: "The production route and multiplayer World are ready.",
+        destination: "Town Square",
+        startsAt: new Date(FIXED_NOW - 60_000).toISOString(),
+        endsAt: new Date(FIXED_NOW + 3_600_000).toISOString(),
+      },
+    ],
+  });
+  await waitForWorld(page);
+
+  const badge = page.locator("[data-world-notification-count]");
+  await expect(badge).toBeVisible();
+  await expect(badge).toHaveText("2");
+  await page.getByRole("button", { name: /Open World notifications/ }).click();
+  const panel = page.locator("[data-world-detail]");
+  await expect(panel).toContainText("Mirror refresh completed");
+  await expect(panel).toContainText(
+    "ForkMesh production deployment complete",
+  );
+  await expect(panel).toContainText(
+    "The production route and multiplayer World are ready.",
+  );
+  await expect(panel).toContainText("Issue #17 / forkmesh/forkmesh");
+  await expect(panel).toContainText(
+    "Literal punctuation stays readable; markup <b>does not run</b>.",
+  );
+  await expect(
+    panel.locator(`[data-world-notification-id="${"c".repeat(64)}"] a`),
+  ).toHaveCount(0);
+  await expect(
+    panel.locator('[data-world-notification-id][data-unread="true"]'),
+  ).toHaveCount(1);
+
+  const initialGet = notificationRequests.find(
+    (request) => request.method === "GET",
+  );
+  expect(initialGet?.authorization).toBe(
+    "Bearer playwright-jett-session",
+  );
+  const markReadRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/notifications" &&
+      request.method() === "POST",
+  );
+  await panel.getByRole("button", { name: "Mark all read" }).click();
+  await markReadRequest;
+  await expect(badge).toHaveText("1");
+  await expect(
+    panel.locator('[data-world-notification-id][data-unread="false"]'),
+  ).toHaveCount(2);
+  const markRead = notificationRequests.find(
+    (request) => request.method === "POST",
+  );
+  expect(markRead).toEqual({
+    method: "POST",
+    authorization: "Bearer playwright-jett-session",
+    body: { node: "jett", all: true },
+  });
+
+  await page.locator("forkmesh-world").evaluate(async (shell) => {
+    localStorage.removeItem("forkmesh.session");
+    await shell.refreshPersonalNotifications(false);
+  });
+  await expect(panel).not.toContainText("Mirror refresh completed");
+  await expect(panel).not.toContainText("Issue #17 / forkmesh/forkmesh");
+  await expect(panel).toContainText("Sign in to receive");
+});
+
+test("World chat stays embedded without navigating or opening a tab", async ({
+  page,
+  context,
+}) => {
+  const passphrase = "playwright-public-world-general-passphrase";
+  const roomKeyRequests = [];
+  const chatSocketURLs = [];
+  const chatFrames = [];
+  let publicChatSocket = null;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/chat/room-key") {
+      roomKeyRequests.push({
+        room: url.searchParams.get("room"),
+        authorization: request.headers().authorization || "",
+      });
+    }
+  });
+  await page.routeWebSocket(
+    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+    (socket) => {
+      publicChatSocket = socket;
+      chatSocketURLs.push(socket.url());
+      socket.onMessage((message) => {
+        chatFrames.push(JSON.parse(String(message)));
+      });
+    },
+  );
+  await prepareWorldPage(page, "world-chat", {
+    chatPassphrase: passphrase,
+  });
+  await waitForWorld(page);
+
+  const worldURL = page.url();
+  const pageCount = context.pages().length;
+  await page.locator("[data-world-chat-open]").first().click();
+
+  const chat = page.locator("[data-world-chat]");
+  await expect(chat).toBeVisible();
+  const chatFrame = page.frameLocator("[data-world-chat-frame]");
+  const chatInput = chatFrame.locator("#fullChatInput");
+  await expect(chatInput).toBeVisible();
+  await expect(
+    chatFrame.locator("[data-dashboard-chat-status]").first(),
+  ).toHaveText("Connected · public World #general");
+  publicChatSocket.send(JSON.stringify(encryptChatEnvelope(
+    {
+      type: "chat",
+      id: "forged-user-claim",
+      senderId: "self-asserted-peer",
+      sender: "Verified Admin",
+      accountKind: "user",
+      channel: "#general",
+      text: "This identity claim is not verified.",
+      ts: FIXED_NOW,
+    },
+    passphrase,
+    "world-general",
+  )));
+  await expect(chatFrame.locator("#fullChatMessages")).toContainText(
+    "World visitor · Verified Admin",
+  );
+  await expect(chatFrame.locator("#fullChatMessages")).toContainText(
+    "This identity claim is not verified.",
+  );
+  await chatInput.fill("Hello from the public World");
+  await chatFrame.locator("#fullChatSend").click();
+  await expect.poll(
+    () => chatFrames.filter((frame) => frame.persist === true).length,
+  ).toBe(1);
+
+  const envelope = chatFrames.find((frame) => frame.persist === true);
+  const message = decryptChatEnvelope(
+    envelope,
+    passphrase,
+    "world-general",
+  );
+  expect(message).toMatchObject({
+    type: "chat",
+    channel: "#general",
+    text: "Hello from the public World",
+    accountKind: "guest",
+  });
+  expect(message.sender).toMatch(/^World visitor · /);
+  expect(roomKeyRequests).toContainEqual({
+    room: "world-general",
+    authorization: "",
+  });
+  expect(chatSocketURLs).toHaveLength(1);
+  expect(new URL(chatSocketURLs[0]).pathname).toBe(
+    "/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+  );
+  expect(page.url()).toBe(worldURL);
+  expect(context.pages()).toHaveLength(pageCount);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.openWorldChat("/dashboard/chat?space=sky-campus");
+  });
+  const restrictedFrame = page.frameLocator("[data-world-chat-frame]");
+  await expect(restrictedFrame.locator("#fullChatInput")).toBeDisabled();
+  await expect(
+    restrictedFrame.locator("[data-dashboard-chat-status]").first(),
+  ).toHaveText("User login required for this channel");
+  expect(chatSocketURLs).toHaveLength(1);
+
+  await chat.getByRole("button", { name: "Close World chat" }).click();
+  await expect(chat).toBeHidden();
+  expect(page.url()).toBe(worldURL);
+});
 
 test("reward-program links deep-link to the self-custodial fountain controls", async ({
   page,

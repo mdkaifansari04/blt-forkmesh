@@ -3,7 +3,6 @@
 import base64
 import hashlib
 import importlib.util
-import json
 from pathlib import Path
 
 
@@ -58,135 +57,54 @@ def test_roles_are_explicit_and_scope_limited():
     ) == ["mirror_operator"]
 
 
-def test_abuse_classifier_never_returns_request_or_identity_data():
-    samples = (
-        security.security_signal_for_path("/wp-admin", "GET"),
-        security.security_signal_for_path(
-            "/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php", "GET"),
-        security.security_signal_for_path("/a/../../etc/passwd", "GET"),
-        security.security_signal_for_path("/?q=UNION%20SELECT", "GET"),
-        security.security_signal_for_path("/", "CONNECT"),
-    )
-    for signal in samples:
-        assert signal
-        rendered = json.dumps(signal).lower()
-        for forbidden in (
-            "wp-admin", "passwd", "union select", "country", "browser",
-            "operating", "user-agent", "ip", "address",
-        ):
-            assert forbidden not in rendered
-        assert set(signal) == {"rule", "reason", "confidence", "summary"}
-    assert security.security_signal_for_path("/ordinary/page", "GET") is None
-
-
-def test_failed_auth_classifier_is_post_response_narrow_and_identity_free():
-    stuffing = security.security_signal_for_response(
-        "/api/accounts/login", "POST", 401)
-    bypass = security.security_signal_for_response(
-        "/api/private-replicas/" + "a" * 64,
-        "GET",
-        404,
-        authorization_present=True,
-    )
-    signed_bypass = security.security_signal_for_response(
-        "/api/mirrors/private",
-        "POST",
-        404,
-        authorization_present=False,
-    )
-    repeated = security.security_signal_for_response(
-        "/api/accounts/profile",
-        "POST",
-        401,
-        authorization_present=True,
-    )
-    assert stuffing == {
-        "rule": "credential-stuffing-failures-v1",
-        "reason": "credential_abuse",
-        "confidence": "low",
-        "summary": (
-            "Repeated failed credential submissions were observed at an "
-            "authentication boundary."
-        ),
-    }
-    assert bypass["rule"] == "protected-boundary-bypass-v1"
-    assert bypass["reason"] == "access_control_bypass"
-    assert signed_bypass["rule"] == "protected-boundary-bypass-v1"
-    assert signed_bypass["reason"] == "access_control_bypass"
-    assert repeated["rule"] == "repeated-auth-failures-v1"
-    assert repeated["reason"] == "credential_abuse"
-    assert security.security_signal_for_response(
-        "/api/accounts/login", "POST", 200) is None
-    assert security.security_signal_for_response(
-        "/api/public", "GET", 403, authorization_present=False) is None
-    for signal in (stuffing, bypass, signed_bypass, repeated):
-        rendered = json.dumps(signal).lower()
-        for forbidden in (
-            "alice", "repository", "country", "browser", "operating",
-            "user-agent", "ip", "address", "password", "token",
-        ):
-            assert forbidden not in rendered
-
-
-def test_bounded_traffic_detector_flags_only_sustained_volume_and_caps_memory():
-    detector = security.BoundedTrafficDetector(
-        max_subjects=2,
-        scrape_window_ms=1_000,
-        scrape_requests=3,
-        dos_window_ms=1_000,
-        dos_requests=5,
-    )
-    first = "a" * 64
-    assert detector.observe(first, "GET", 1000) is None
-    assert detector.observe(first, "GET", 1001) is None
-    scraping = detector.observe(first, "GET", 1002)
-    assert scraping["reason"] == "excessive_scraping"
-    assert scraping["rule"] == "excessive-read-automation-v1"
-
-    second = "b" * 64
-    for instant in range(1100, 1104):
-        assert detector.observe(second, "POST", instant) is None
-    denial = detector.observe(second, "POST", 1104)
-    assert denial["reason"] == "denial_of_service"
-    assert denial["rule"] == "request-flood-v1"
-
-    # A third keyed subject evicts the oldest state instead of growing without
-    # bound. Invalid/raw identifiers are rejected and never retained.
-    assert detector.observe("not-a-token", "GET", 1200) is None
-    assert detector.observe("c" * 64, "GET", 1200) is None
-    assert detector.subject_count == 2
-    for signal in (scraping, denial):
-        assert set(signal) == {"rule", "reason", "confidence", "summary"}
-        rendered = json.dumps(signal).lower()
-        for forbidden in (
-            "country", "browser", "operating", "user-agent", "path", "url",
-        ):
-            assert forbidden not in rendered
-
-
-def test_worker_enforces_volume_and_observes_failed_auth_without_request_data():
+def test_worker_has_no_abuse_quarantine_request_or_response_runtime():
     worker = (SRC / "entry.py").read_text(encoding="utf-8")
-    enforce = worker[
-        worker.index("async def _security_enforce_request")
-        :worker.index("async def _security_observe_response")
-    ]
-    observe = worker[
-        worker.index("async def _security_observe_response")
-        :worker.index("async def security_quarantine_handler")
-    ]
-    fetch = worker[
-        worker.index("    async def fetch(self, request):", worker.index(
-            "class Default"))
-        :worker.index("    async def _admin(self, request):")
-    ]
-    assert "_SECURITY_TRAFFIC_DETECTOR.observe" in enforce
-    assert "_record_security_signal" in enforce
-    assert "security_signal_for_response" in observe
-    assert "_record_security_signal" in observe
-    assert "request.text" not in observe
-    assert "request.json" not in observe
-    assert "url.query" not in observe
-    assert "_security_observe_response" in fetch
+    retired_symbols = (
+        "_security_enforce_request",
+        "_security_observe_response",
+        "_record_security_signal",
+        "security_signal_for_path",
+        "security_signal_for_response",
+        "BoundedTrafficDetector",
+        "public_restriction",
+        "bounded_restriction_duration",
+        "normalize_subject_token",
+        "normalize_reason",
+        "normalize_confidence",
+        "normalize_appeal_status",
+        "temporarily_quarantined",
+        "/api/security/quarantine",
+        "/api/security/appeals",
+        "security.auto_quarantine",
+        "security.account_restrict",
+    )
+    for removed in retired_symbols:
+        assert removed not in worker
+        assert not hasattr(security, removed)
+
+    for removed in (
+        "RESTRICTION_REASONS",
+        "RESTRICTION_CONFIDENCE",
+        "RESTRICTION_STATUSES",
+        "APPEAL_STATUSES",
+        "AUTO_RESTRICTION_MAX_MS",
+        "MANUAL_RESTRICTION_MAX_MS",
+        "DEFAULT_QUARANTINE_MS",
+        "MAX_APPEAL_TEXT",
+    ):
+        assert not hasattr(security, removed)
+
+    # Removing the cross-request quarantine does not weaken ordinary endpoint
+    # authorization, input validation, or narrowly scoped traffic limits.
+    for retained in (
+        "signup_rate_check",
+        "ROOM_MSG_WINDOW_MS",
+        "HOST_RATE_WINDOW_MS",
+        "security_roles_handler",
+        "security_report_handler",
+        "security_audit_handler",
+    ):
+        assert retained in worker
 
 
 def test_audit_detail_sanitizer_is_scalar_allowlist_and_secret_denylist():
@@ -207,50 +125,6 @@ def test_audit_detail_sanitizer_is_scalar_allowlist_and_secret_denylist():
         "retryCount": 2,
         "automatic": True,
     }
-
-
-def test_automatic_restrictions_are_temporal_and_public_shape_is_generalized():
-    assert security.bounded_restriction_duration(
-        10**15, automatic=True
-    ) == security.AUTO_RESTRICTION_MAX_MS
-    assert security.bounded_restriction_duration(0, automatic=True) == 0
-    record = security.public_restriction({
-        "incidentId": "a" * 32,
-        "reason": "path_traversal",
-        "rule": "path-traversal-v1",
-        "detectedAt": 10,
-        "durationMs": 20,
-        "expiresAt": 30,
-        "confidence": "high",
-        "automatic": True,
-        "appealStatus": "pending",
-        "status": "quarantined",
-        "countryCode": "US",
-        "clientCategory": "browser",
-        "rawIp": "192.0.2.4",
-        "evidence": "private",
-    }, now=31)
-    assert record["status"] == "expired"
-    assert record["countryCode"] == "US"
-    assert set(record) == {
-        "incidentId", "reason", "rule", "detectedAt", "durationMs",
-        "expiresAt", "confidence", "automatic", "reviewed",
-        "appealStatus", "status", "countryCode", "clientCategory",
-    }
-    assert "192.0.2.4" not in json.dumps(record)
-
-
-def test_world_quarantine_view_never_decrypts_private_reviewer_evidence():
-    worker = (SRC / "entry.py").read_text(encoding="utf-8")
-    handler = worker[
-        worker.index("async def security_quarantine_handler")
-        :worker.index("async def security_appeals_handler")
-    ]
-    assert 'x-forkmesh-world-view' in handler
-    assert "and not world_generalized" in handler
-    assert '"reviewer-generalized-world"' in handler
-    assert '"allowedActions": ["revoke"]' in handler
-    assert '"summary": [{' in handler
 
 
 def test_owner_public_bundle_contains_no_private_material_and_binds_key_id():
@@ -322,13 +196,16 @@ def test_schema_and_worker_keep_sensitive_planes_out_of_generic_admin():
         ROOT / "migrations" / "0043_security_control_plane.sql"
     ).read_text(encoding="utf-8")
     for table in (
-        "role_grants", "security_signals", "security_restrictions",
-        "security_appeals", "sensitive_audit_log", "owner_encryption_keys",
+        "role_grants", "sensitive_audit_log", "owner_encryption_keys",
         "repo_privacy_policy", "chain_intents", "pending_rewards",
     ):
         assert f"CREATE TABLE IF NOT EXISTS {table}" in schema
         assert f"CREATE TABLE IF NOT EXISTS {table}" in migration
         assert f'"{table}"' in worker
+    for removed in (
+        "security_signals", "security_restrictions", "security_appeals",
+    ):
+        assert f'"{removed}"' not in worker
     assert "allow_admin=False" in worker
 
 

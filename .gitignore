@@ -13,6 +13,7 @@ build-forkmesh/
 tools/__pycache__/
 node_modules/
 cloudflare_worker/browser_tests/test-results/
+cloudflare_worker/test-results/
 cloudflare_worker/browser_tests/playwright-report/
 
 # Offline legacy-custody migration outputs. These may be encrypted, but remain
@@ -27,3 +28,5 @@ cloudflare_worker/browser_tests/playwright-report/
 # NEVER committed (issue #304; see docs/design/release-binary-publishing.md).
 # Only the small signed release metadata under .forkmesh/releases/ is tracked.
 .forkmesh/release-blobs/
+forkmesh-variables.json
+forkmesh-hosts.md

@@ -1,0 +1,9 @@
+#!/bin/sh
+exec /usr/bin/env -i \
+  PATH=/usr/bin:/bin \
+  LANG=C \
+  LC_ALL=C \
+  /usr/bin/python3 -I \
+  /opt/forkmesh-mirror/ssh_post_receive_refresh.py \
+  --config /etc/forkmesh/ssh-refresh.json \
+  notify

@@ -163,9 +163,14 @@
 
     async function pollTranscript() {
       if (!state.paired || !state.captureId) return;
+      const captureId = state.captureId;
       try {
         const payload = await bridgeFetch("/v1/transcription");
-        if (payload.captureId !== state.captureId) {
+        // Cancel/restart may happen while the request is in flight. A stale
+        // response must never restore a cleared draft or overwrite the
+        // explicit cancellation status.
+        if (state.captureId !== captureId) return;
+        if (payload.captureId !== captureId) {
           throw new Error("The desktop capture changed; start again.");
         }
         if (payload.revision !== state.lastRevision) {
@@ -296,7 +301,7 @@
         state.lastRevision = "";
         setActive(true);
         setStatus("Recording locally in Qt…", "recording");
-        pollTranscript();
+        state.pollTimer = window.setTimeout(pollTranscript, 450);
       } catch (error) {
         setActive(false);
         setStatus(error.message || "Could not start local capture.", "error");
@@ -317,6 +322,16 @@
     });
 
     cancelButton.addEventListener("click", async () => {
+      if (state.pollTimer) window.clearTimeout(state.pollTimer);
+      state.pollTimer = 0;
+      // Invalidate an already-running poll before awaiting the local bridge.
+      // Its response is ignored by pollTranscript's capture-id check.
+      state.captureId = "";
+      const composer = selectedComposer();
+      if (composer) composer.value = "";
+      copyButton.disabled = true;
+      setActive(false);
+      setStatus("Cancelling local capture…", "transcribing");
       try {
         await bridgeFetch("/v1/transcription/cancel", {
           method: "POST",
@@ -329,10 +344,6 @@
         );
         return;
       }
-      const composer = selectedComposer();
-      if (composer) composer.value = "";
-      state.captureId = "";
-      setActive(false);
       setStatus("Capture cancelled; no transcript was submitted.", "cancelled");
     });
 

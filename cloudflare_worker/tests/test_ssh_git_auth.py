@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import pwd
 import sqlite3
 import subprocess
 from types import SimpleNamespace
@@ -30,8 +31,7 @@ def _module(path, name):
 
 
 ssh_keys = _module(ROOT / "src" / "ssh_keys.py", "forkmesh_ssh_keys")
-ssh_gateway = _module(PROJECT_ROOT / "tools" / "ssh_gateway.py",
-                      "forkmesh_ssh_gateway")
+ssh_gateway = _module(PROJECT_ROOT / "tools" / "ssh_gateway.py", "forkmesh_ssh_gateway")
 
 
 def _ssh_string(value):
@@ -43,33 +43,34 @@ def _key_line(key_type="ssh-ed25519", material=None, comment="laptop"):
     if material is None:
         material = b"\x42" * 32
     blob = _ssh_string(key_type.encode()) + _ssh_string(material)
-    return "%s %s %s" % (
-        key_type, base64.b64encode(blob).decode(), comment)
+    return "%s %s %s" % (key_type, base64.b64encode(blob).decode(), comment)
 
 
 def _rsa_line(bits):
     modulus = b"\x00\x80" + b"\x00" * ((bits // 8) - 1)
-    blob = (
-        _ssh_string(b"ssh-rsa")
-        + _ssh_string(b"\x01\x00\x01")
-        + _ssh_string(modulus)
-    )
+    blob = _ssh_string(b"ssh-rsa") + _ssh_string(b"\x01\x00\x01") + _ssh_string(modulus)
     return "ssh-rsa " + base64.b64encode(blob).decode()
 
 
 def _load_entry(*names, extra_globals=None):
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
     selected = [
-        node for node in tree.body
+        node
+        for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name in names
     ]
     found = {node.name for node in selected}
     assert found == set(names), "missing: %s" % sorted(set(names) - found)
     namespace = dict(extra_globals or {})
-    exec(compile(ast.fix_missing_locations(
-        ast.Module(body=selected, type_ignores=[])), str(ENTRY), "exec"),
-         namespace)
+    exec(
+        compile(
+            ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[])),
+            str(ENTRY),
+            "exec",
+        ),
+        namespace,
+    )
     return namespace
 
 
@@ -83,13 +84,14 @@ def test_public_key_parser_normalizes_fingerprints_and_rejects_injection():
     assert parsed["publicKey"].count(" ") == 1
     assert parsed["comment"] == "laptop"
     assert parsed["fingerprint"].startswith("SHA256:")
-    assert ssh_keys.parse_public_key(parsed["publicKey"])["fingerprint"] == \
-        parsed["fingerprint"]
+    assert (
+        ssh_keys.parse_public_key(parsed["publicKey"])["fingerprint"]
+        == parsed["fingerprint"]
+    )
 
     for value, error in (
-        ("command=\"sh\" " + _key_line(), "unsupported_key_type"),
-        (_key_line() + "\n" + _key_line(comment="second"),
-         "one_public_key_required"),
+        ('command="sh" ' + _key_line(), "unsupported_key_type"),
+        (_key_line() + "\n" + _key_line(comment="second"), "one_public_key_required"),
         ("ssh-dss AAAA", "unsupported_key_type"),
     ):
         with pytest.raises(ssh_keys.SshPublicKeyError, match=error):
@@ -106,15 +108,16 @@ def test_public_key_parser_requires_strong_rsa_and_matching_wire_type():
 
 
 def test_ssh_url_is_published_only_for_valid_gateway_configuration():
-    assert ssh_keys.ssh_repository_url(
-        "ssh.example.org", 22, "alice-node", "widget"
-    ) == "ssh://git@ssh.example.org/alice-node/widget.git"
-    assert ssh_keys.ssh_repository_url(
-        "2001:db8::1", 2222, "alice-node", "widget"
-    ) == "ssh://git@[2001:db8::1]:2222/alice-node/widget.git"
+    assert (
+        ssh_keys.ssh_repository_url("ssh.example.org", 22, "alice-node", "widget")
+        == "ssh://git@ssh.example.org/alice-node/widget.git"
+    )
+    assert (
+        ssh_keys.ssh_repository_url("2001:db8::1", 2222, "alice-node", "widget")
+        == "ssh://git@[2001:db8::1]:2222/alice-node/widget.git"
+    )
     for host in ("", "https://ssh.example.org", "git@ssh.example.org", "bad host"):
-        assert ssh_keys.ssh_repository_url(
-            host, 22, "alice-node", "widget") == ""
+        assert ssh_keys.ssh_repository_url(host, 22, "alice-node", "widget") == ""
 
 
 def test_gateway_token_and_repository_allowlist_fail_closed():
@@ -129,13 +132,16 @@ def test_gateway_token_and_repository_allowlist_fail_closed():
         assert ssh_keys.configured_gateway_token(token) == ""
 
     repositories = ssh_keys.parse_gateway_repository_allowlist(
-        "alice-node/widget=read-write,alice-node/docs=ro")
+        "alice-node/widget=read-write,alice-node/docs=ro"
+    )
     assert repositories == {
         "alice-node/widget": "read-write",
         "alice-node/docs": "read-only",
     }
-    assert ssh_keys.gateway_repository_access(
-        repositories, "alice-node", "Widget") == "read-write"
+    assert (
+        ssh_keys.gateway_repository_access(repositories, "alice-node", "Widget")
+        == "read-write"
+    )
     for invalid in (
         "",
         "disabled",
@@ -159,16 +165,13 @@ def test_worker_publishes_url_only_for_explicit_gateway_repo():
         SSH_GATEWAY_TOKEN="t" * 48,
         SSH_GATEWAY_REPOSITORIES="alice-node/widget=read-write",
     )
-    assert namespace["_ssh_repository_url"](
-        env, "alice-node", "widget"
-    ) == "ssh://git@ssh.example.org/alice-node/widget.git"
-    assert namespace["_ssh_repository_url"](
-        env, "alice-node", "not-hosted"
-    ) == ""
+    assert (
+        namespace["_ssh_repository_url"](env, "alice-node", "widget")
+        == "ssh://git@ssh.example.org/alice-node/widget.git"
+    )
+    assert namespace["_ssh_repository_url"](env, "alice-node", "not-hosted") == ""
     env.SSH_GATEWAY_REPOSITORIES = ""
-    assert namespace["_ssh_repository_url"](
-        env, "alice-node", "widget"
-    ) == ""
+    assert namespace["_ssh_repository_url"](env, "alice-node", "widget") == ""
 
 
 @pytest.mark.parametrize(
@@ -184,28 +187,28 @@ def test_worker_publishes_url_only_for_explicit_gateway_repo():
 )
 def test_forced_authorized_key_rejects_shell_command_injection(command):
     with pytest.raises(ValueError, match="invalid_gateway_executable"):
-        ssh_keys.forced_authorized_key_line(
-            _key_line(), "sk_" + "a" * 24, command)
+        ssh_keys.forced_authorized_key_line(_key_line(), "sk_" + "a" * 24, command)
 
 
 def _gateway_config(tmp_path, **overrides):
     root = tmp_path / "repos"
     root.mkdir(parents=True)
-    token = tmp_path / "gateway.token"
-    token.write_text("t" * 48, encoding="utf-8")
-    token.chmod(0o600)
+    root.chmod(0o755)
     config = {
         "schemaVersion": 1,
-        "apiOrigin": "https://forkmesh.example",
-        "gatewayExecutable": "/opt/forkmesh/ssh_gateway.py",
-        "gatewayTokenFile": str(token),
+        "authorizationSocket": str(tmp_path / "authorize.sock"),
+        "authorizationBrokerUser": pwd.getpwuid(os.geteuid()).pw_name,
+        "gatewayExecutable": "/bin/true",
+        "refreshNotifier": "/bin/true",
         "repositoryRoot": str(root),
-        "repositories": [{
-            "owner": "alice-node",
-            "name": "widget",
-            "path": "alice-node/widget.git",
-            "access": "read-write",
-        }],
+        "repositories": [
+            {
+                "owner": "alice-node",
+                "name": "widget",
+                "path": "alice-node/widget.git",
+                "access": "read-write",
+            }
+        ],
     }
     config.update(overrides)
     path = tmp_path / "gateway.json"
@@ -214,36 +217,47 @@ def _gateway_config(tmp_path, **overrides):
     return path, root
 
 
-def test_gateway_config_rejects_symlink_writable_bad_port_and_token(
-    tmp_path, monkeypatch
+def test_gateway_config_rejects_symlink_writable_and_unknown_broker(
+    tmp_path,
 ):
     path, _root = _gateway_config(tmp_path)
-    assert ssh_gateway.Config(path).api_origin == "https://forkmesh.example"
+    assert ssh_gateway.Config(path).authorization_socket == (
+        tmp_path / "authorize.sock"
+    )
 
     path.chmod(0o666)
-    with pytest.raises(ssh_gateway.GatewayError,
-                       match="invalid gateway configuration"):
+    with pytest.raises(ssh_gateway.GatewayError, match="invalid gateway configuration"):
         ssh_gateway.Config(path)
     path.chmod(0o644)
 
     symlink = tmp_path / "linked.json"
     symlink.symlink_to(path)
-    with pytest.raises(ssh_gateway.GatewayError,
-                       match="invalid gateway configuration"):
+    with pytest.raises(ssh_gateway.GatewayError, match="invalid gateway configuration"):
         ssh_gateway.Config(symlink)
 
-    path.write_text(json.dumps({
-        **json.loads(path.read_text()),
-        "apiOrigin": "https://forkmesh.example:99999",
-    }), encoding="utf-8")
-    with pytest.raises(ssh_gateway.GatewayError,
-                       match="invalid Worker API origin"):
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["authorizationBrokerUser"] = "forkmesh-no-such-user"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(
+        ssh_gateway.GatewayError, match="authorization broker is unavailable"
+    ):
         ssh_gateway.Config(path)
 
-    path, _root = _gateway_config(tmp_path / "unicode-token")
-    monkeypatch.setenv("FORKMESH_SSH_GATEWAY_TOKEN", "🔑" * 32)
-    with pytest.raises(ssh_gateway.GatewayError,
-                       match="gateway token is unavailable"):
+
+def test_gateway_runtime_rejects_unknown_fields_and_relative_token_path(
+    tmp_path,
+):
+    path, _root = _gateway_config(tmp_path)
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["privateKey"] = "must-not-be-accepted"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ssh_gateway.GatewayError, match="invalid gateway configuration"):
+        ssh_gateway.Config(path)
+
+    del value["privateKey"]
+    value["authorizationSocket"] = "authorize.sock"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ssh_gateway.GatewayError, match="invalid authorization socket"):
         ssh_gateway.Config(path)
 
 
@@ -264,49 +278,134 @@ def test_gateway_parses_only_exact_git_commands():
             ssh_gateway._parse_original_command(command)
 
 
-def test_gateway_execs_git_without_shell_after_worker_authorization(monkeypatch):
+def test_gateway_runs_hardened_git_without_shell_after_authorization(
+    monkeypatch,
+):
     repo_path = Path("/srv/forkmesh/git/alice-node/widget.git")
     config = SimpleNamespace(
         repositories={("alice-node", "widget"): (repo_path, True)},
-        repository_root=Path("/srv/forkmesh/git"))
+        repository_root=Path("/srv/forkmesh/git"),
+        refresh_notifier=Path("/opt/forkmesh/ssh-refresh-notify"),
+    )
+    monkeypatch.setenv(
+        "SSH_ORIGINAL_COMMAND", "git-receive-pack 'alice-node/widget.git'"
+    )
+    monkeypatch.setattr(
+        ssh_gateway,
+        "_api",
+        lambda _config, payload: {
+            "authorized": True,
+            "keyId": payload["keyId"],
+            "owner": payload["owner"],
+            "repository": payload["repository"],
+            "operation": payload["operation"],
+            "repositoryRelativePath": (
+                payload["owner"] + "/" + payload["repository"] + ".git"
+            ),
+        },
+    )
+    monkeypatch.setattr(ssh_gateway, "_bare_repository", lambda path: True)
+    monkeypatch.setattr(Path, "resolve", lambda self, strict=False: self)
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(ssh_gateway.subprocess, "run", fake_run)
+    assert ssh_gateway._serve(config, "sk_" + "a" * 24) == 0
+    git_command, git_options = commands[0]
+    assert git_command[0] == "git"
+    assert git_command[-2:] == ["receive-pack", str(repo_path)]
+    for setting in (
+        "core.alternateRefsCommand=/usr/bin/true",
+        "core.hooksPath=/dev/null",
+        "core.fsmonitor=",
+        "credential.helper=",
+        "protocol.ext.allow=never",
+        "safe.directory=" + str(repo_path),
+    ):
+        assert setting in git_command
+    assert not any(
+        setting.startswith("uploadpack.packObjectsHook") for setting in git_command
+    )
+    assert "SSH_ORIGINAL_COMMAND" not in git_options["env"]
+    assert commands[1][0] == [str(config.refresh_notifier)]
+    assert commands[1][1]["stdin"] is subprocess.DEVNULL
+
+
+def test_gateway_allows_only_explicit_aliases_to_same_local_repository(
+    monkeypatch,
+):
+    repo_path = Path("/srv/forkmesh/git/mirror2/forkmesh.git")
+    config = SimpleNamespace(
+        repositories={
+            ("forkmesh", "forkmesh"): (repo_path, True),
+            ("mirror2", "forkmesh"): (repo_path, True),
+            ("mirror2", "other"): (Path("/srv/forkmesh/git/other.git"), True),
+        },
+        repository_root=Path("/srv/forkmesh/git"),
+        refresh_notifier=Path("/opt/forkmesh/ssh-refresh-notify"),
+    )
     monkeypatch.setenv(
         "SSH_ORIGINAL_COMMAND",
-        "git-receive-pack 'alice-node/widget.git'")
-    monkeypatch.setattr(ssh_gateway, "_api", lambda _config, payload: {
-        "authorized": True,
-        "owner": payload["owner"],
-        "repository": payload["repository"],
-    })
+        "git-receive-pack 'forkmesh/forkmesh.git'",
+    )
     monkeypatch.setattr(ssh_gateway, "_bare_repository", lambda path: True)
+    monkeypatch.setattr(Path, "resolve", lambda self, strict=False: self)
+    captured = []
+
+    def fake_run(command, **_kwargs):
+        captured.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(ssh_gateway.subprocess, "run", fake_run)
     monkeypatch.setattr(
-        Path, "resolve",
-        lambda self, strict=False: self)
-    captured = {}
+        ssh_gateway,
+        "_api",
+        lambda _config, payload: {
+            "authorized": True,
+            "keyId": payload["keyId"],
+            "owner": "mirror2",
+            "repository": "forkmesh",
+            "operation": payload["operation"],
+            "repositoryRelativePath": "mirror2/forkmesh.git",
+        },
+    )
+    assert ssh_gateway._serve(config, "sk_" + "a" * 24) == 0
+    assert captured[0][-1] == str(repo_path)
 
-    def fake_exec(file, args, env):
-        captured.update(file=file, args=args, env=env)
-        raise RuntimeError("exec captured")
-
-    monkeypatch.setattr(ssh_gateway.os, "execvpe", fake_exec)
-    with pytest.raises(RuntimeError, match="exec captured"):
+    config.repositories[("forkmesh", "forkmesh")] = (
+        Path("/srv/forkmesh/git/other.git"),
+        True,
+    )
+    with pytest.raises(ssh_gateway.GatewayError, match="not available"):
         ssh_gateway._serve(config, "sk_" + "a" * 24)
-    assert captured["file"] == "git"
-    assert captured["args"] == ["git", "receive-pack", str(repo_path)]
-    assert "SSH_ORIGINAL_COMMAND" not in captured["env"]
 
 
 def test_gateway_refuses_receive_pack_for_local_read_only_repo(monkeypatch):
-    config = SimpleNamespace(repositories={
-        ("alice-node", "widget"): (Path("/safe/widget.git"), False)},
-        repository_root=Path("/safe"))
+    config = SimpleNamespace(
+        repositories={("alice-node", "widget"): (Path("/safe/widget.git"), False)},
+        repository_root=Path("/safe"),
+        refresh_notifier=Path("/opt/forkmesh/ssh-refresh-notify"),
+    )
     monkeypatch.setenv(
-        "SSH_ORIGINAL_COMMAND",
-        "git-receive-pack 'alice-node/widget.git'")
-    monkeypatch.setattr(ssh_gateway, "_api", lambda _config, payload: {
-        "authorized": True,
-        "owner": payload["owner"],
-        "repository": payload["repository"],
-    })
+        "SSH_ORIGINAL_COMMAND", "git-receive-pack 'alice-node/widget.git'"
+    )
+    monkeypatch.setattr(
+        ssh_gateway,
+        "_api",
+        lambda _config, payload: {
+            "authorized": True,
+            "keyId": payload["keyId"],
+            "owner": payload["owner"],
+            "repository": payload["repository"],
+            "operation": payload["operation"],
+            "repositoryRelativePath": (
+                payload["owner"] + "/" + payload["repository"] + ".git"
+            ),
+        },
+    )
     with pytest.raises(ssh_gateway.GatewayError, match="read-only"):
         ssh_gateway._serve(config, "sk_" + "a" * 24)
 
@@ -317,8 +416,7 @@ def test_gateway_prints_worker_allowlist_from_same_local_configuration(
     path, _root = _gateway_config(tmp_path)
     config = ssh_gateway.Config(path)
     assert ssh_gateway._worker_allowlist(config) == 0
-    assert capsys.readouterr().out.strip() == \
-        "alice-node/widget=read-write"
+    assert capsys.readouterr().out.strip() == "alice-node/widget=read-write"
 
 
 def test_schema_and_migration_define_revocable_encrypted_key_records():
@@ -337,16 +435,14 @@ def test_schema_and_migration_define_revocable_encrypted_key_records():
             "INSERT INTO account_ssh_keys "
             "(key_id,account_bi,key_bi,key_type,fingerprint,data,created_at) "
             "VALUES (?,?,?,?,?,?,?)",
-            ("sk_one", "account", "key", "ssh-ed25519", "SHA256:x",
-             "encrypted", 1),
+            ("sk_one", "account", "key", "ssh-ed25519", "SHA256:x", "encrypted", 1),
         )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 "INSERT INTO account_ssh_keys "
                 "(key_id,account_bi,key_bi,key_type,fingerprint,data,created_at) "
                 "VALUES (?,?,?,?,?,?,?)",
-                ("sk_two", "other", "key", "ssh-ed25519", "SHA256:x",
-                 "encrypted", 2),
+                ("sk_two", "other", "key", "ssh-ed25519", "SHA256:x", "encrypted", 2),
             )
     finally:
         connection.close()
@@ -363,8 +459,12 @@ class _Request:
 
 
 def _authorization_handler(
-    *, owns=False, org_write=False, gateway_access="read-write",
-    authoritative_private=True, visibility="private"
+    *,
+    owns=False,
+    org_write=False,
+    gateway_access="read-write",
+    authoritative_private=True,
+    visibility="private",
 ):
     audits = []
 
@@ -384,8 +484,9 @@ def _authorization_handler(
             "data": "encrypted",
         }
 
-    async def audit(_env, actor, action, target_type="", target="",
-                    outcome="success", details=None):
+    async def audit(
+        _env, actor, action, target_type="", target="", outcome="success", details=None
+    ):
         audits.append((actor, action, outcome, details or {}))
 
     async def d1_run(*_args):
@@ -401,21 +502,31 @@ def _authorization_handler(
             "clean_string": lambda value, limit: str(value or "")[:limit],
             "MAX_NODE_NAME": 64,
             "safe_segment": lambda value: (
-                str(value) if str(value).replace("-", "").replace(
-                    "_", "").replace(".", "").isalnum() else ""),
+                str(value)
+                if str(value)
+                .replace("-", "")
+                .replace("_", "")
+                .replace(".", "")
+                .isalnum()
+                else ""
+            ),
             "_ssh_key_gateway_record": gateway_record,
             "_org_repo_node": lambda *args: _async_value(""),
-            "_ssh_gateway_repository_access": (
-                lambda *args: gateway_access),
+            "_ssh_gateway_repository_access": (lambda *args: gateway_access),
             "blind_index": lambda *args: _async_value("repo-bi"),
             "d1_first": d1_first,
-            "decrypt_row": lambda *args: _async_value({
-                "owner": "alice-node", "name": "widget",
-                "visibility": visibility,
-            }),
+            "decrypt_row": lambda *args: _async_value(
+                {
+                    "owner": "alice-node",
+                    "name": "widget",
+                    "visibility": visibility,
+                }
+            ),
             "_catalog_record_matches_identity": (
-                lambda record, owner, repo:
-                record["owner"] == owner and record["name"] == repo),
+                lambda record, owner, repo: (
+                    record["owner"] == owner and record["name"] == repo
+                )
+            ),
             "_account_owns_node": lambda *args: _async_value(owns),
             "_org_write_allowed": lambda *args: _async_value(org_write),
             "_repo_shared_with": lambda *args: _async_value(False),
@@ -430,6 +541,31 @@ def _authorization_handler(
     return namespace["ssh_gateway_authorize_handler"], audits
 
 
+def test_gateway_rejects_bad_bearer_before_schema_body_or_database_work():
+    calls = []
+
+    async def forbidden(*_args, **_kwargs):
+        calls.append("forbidden")
+        raise AssertionError("unauthorized request reached protected work")
+
+    namespace = _load_entry(
+        "ssh_gateway_authorize_handler",
+        extra_globals={
+            "method_name": lambda _request: "POST",
+            "_ssh_gateway_token_ok": lambda _env, _request: False,
+            "ensure_schema": forbidden,
+            "_ssh_json_body": forbidden,
+            "json_response": _response,
+        },
+    )
+    response = _run(
+        namespace["ssh_gateway_authorize_handler"](SimpleNamespace(), _Request({}))
+    )
+    assert response["status"] == 401
+    assert response["payload"] == {"error": "unauthorized"}
+    assert calls == []
+
+
 async def _async_value(value):
     return value
 
@@ -442,8 +578,7 @@ def _key_management_handler(
     key_line = _key_line()
 
     async def session(*_args):
-        return "bi:alice", {
-            "name": "alice", "kind": account_kind, "status": "active"}
+        return "bi:alice", {"name": "alice", "kind": account_kind, "status": "active"}
 
     async def d1_first(_env, sql, *params):
         if "WHERE key_bi=?" in sql:
@@ -457,8 +592,9 @@ def _key_management_handler(
     async def d1_run(_env, sql, *params):
         writes.append((sql, params))
 
-    async def audit(_env, actor, action, target_type="", target="",
-                    outcome="success", details=None):
+    async def audit(
+        _env, actor, action, target_type="", target="", outcome="success", details=None
+    ):
         audits.append((actor, action, target_type, target, outcome, details or {}))
 
     namespace = _load_entry(
@@ -474,10 +610,12 @@ def _key_management_handler(
             "_account_kind": lambda record: record.get("kind"),
             "json_response": _response,
             "d1_all": lambda *args: _async_value(listed_rows or []),
-            "decrypt_row": lambda *args: _async_value({
-                "label": "Work laptop",
-                "publicKey": key_line,
-            }),
+            "decrypt_row": lambda *args: _async_value(
+                {
+                    "label": "Work laptop",
+                    "publicKey": key_line,
+                }
+            ),
             "ssh_auth": ssh_keys,
             "blind_index": lambda *args: _async_value("bi:key"),
             "d1_first": d1_first,
@@ -489,11 +627,13 @@ def _key_management_handler(
             "_audit_sensitive_action": audit,
             "re": __import__("re"),
             "_ssh_gateway_settings": lambda env: {
-                "configured": False, "host": "", "port": 0},
+                "configured": False,
+                "host": "",
+                "port": 0,
+            },
         },
     )
-    request = _Request(
-        {"publicKey": key_line, "label": "Laptop"}, method=method)
+    request = _Request({"publicKey": key_line, "label": "Laptop"}, method=method)
     return namespace["ssh_keys_handler"], request, audits, writes
 
 
@@ -505,16 +645,23 @@ def test_account_key_registration_and_revocation_are_session_gated_and_audited()
     assert response["payload"]["key"]["fingerprint"].startswith("SHA256:")
     assert any("INSERT INTO account_ssh_keys" in sql for sql, _ in writes)
     assert audits[-1][1:5] == (
-        "ssh_key.register", "ssh_public_key", "sk_" + "a" * 24, "success")
+        "ssh_key.register",
+        "ssh_public_key",
+        "sk_" + "a" * 24,
+        "success",
+    )
 
-    handler, request, audits, writes = _key_management_handler(
-        "DELETE", existing=True)
+    handler, request, audits, writes = _key_management_handler("DELETE", existing=True)
     response = _run(handler(None, request, "sk_" + "a" * 24))
     assert response["status"] == 200
     assert response["payload"]["revoked"] is True
     assert any("SET revoked_at=?" in sql for sql, _ in writes)
     assert audits[-1][1:5] == (
-        "ssh_key.revoke", "ssh_public_key", "sk_" + "a" * 24, "success")
+        "ssh_key.revoke",
+        "ssh_public_key",
+        "sk_" + "a" * 24,
+        "success",
+    )
 
 
 def test_account_key_list_is_owner_only_and_never_returns_public_key_material():
@@ -527,22 +674,26 @@ def test_account_key_list_is_owner_only_and_never_returns_public_key_material():
         "last_used_at": 200,
     }
     handler, request, _audits, _writes = _key_management_handler(
-        "GET", listed_rows=[row])
+        "GET", listed_rows=[row]
+    )
     response = _run(handler(None, request))
     assert response["status"] == 200
     assert response["payload"]["privateKeysStored"] is False
-    assert response["payload"]["keys"] == [{
-        "id": row["key_id"],
-        "label": "Work laptop",
-        "keyType": "ssh-ed25519",
-        "fingerprint": "SHA256:example",
-        "createdAt": 100,
-        "lastUsedAt": 200,
-    }]
+    assert response["payload"]["keys"] == [
+        {
+            "id": row["key_id"],
+            "label": "Work laptop",
+            "keyType": "ssh-ed25519",
+            "fingerprint": "SHA256:example",
+            "createdAt": 100,
+            "lastUsedAt": 200,
+        }
+    ]
     assert "publicKey" not in json.dumps(response["payload"])
 
     handler, request, _audits, _writes = _key_management_handler(
-        "GET", account_kind="node")
+        "GET", account_kind="node"
+    )
     response = _run(handler(None, request))
     assert response["status"] == 401
     assert response["payload"] == {"error": "invalid_session"}
@@ -550,7 +701,8 @@ def test_account_key_list_is_owner_only_and_never_returns_public_key_material():
 
 def test_duplicate_key_registration_does_not_disclose_its_owner_or_state():
     handler, request, _audits, writes = _key_management_handler(
-        "POST", existing={"account_bi": "bi:someone", "revoked_at": 100})
+        "POST", existing={"account_bi": "bi:someone", "revoked_at": 100}
+    )
     response = _run(handler(None, request))
     assert response["status"] == 409
     assert response["payload"] == {"error": "ssh_key_already_registered"}
@@ -561,6 +713,7 @@ def test_worker_gateway_maps_key_to_existing_owner_and_team_write_permissions():
     payload = {
         "action": "authorize",
         "keyId": "sk_" + "a" * 24,
+        "requestId": "r" * 24,
         "owner": "alice-node",
         "repository": "widget",
         "operation": "git-receive-pack",
@@ -569,9 +722,10 @@ def test_worker_gateway_maps_key_to_existing_owner_and_team_write_permissions():
     response = _run(handler(None, _Request(payload)))
     assert response["status"] == 200
     assert response["payload"]["authorized"] is True
-    assert response["payload"]["principal"] == "alice"
-    assert response["payload"]["repositoryRelativePath"] == \
-        "alice-node/widget.git"
+    assert "principal" not in response["payload"]
+    assert response["payload"]["keyId"] == payload["keyId"]
+    assert response["payload"]["requestId"] == payload["requestId"]
+    assert response["payload"]["repositoryRelativePath"] == "alice-node/widget.git"
     assert audits[-1][2] == "success"
 
     handler, audits = _authorization_handler(org_write=True)
@@ -590,12 +744,14 @@ def test_worker_gateway_public_read_requires_both_public_indicators():
     payload = {
         "action": "authorize",
         "keyId": "sk_" + "a" * 24,
+        "requestId": "r" * 24,
         "owner": "alice-node",
         "repository": "widget",
         "operation": "git-upload-pack",
     }
     handler, _ = _authorization_handler(
-        authoritative_private=False, visibility="public")
+        authoritative_private=False, visibility="public"
+    )
     assert _run(handler(None, _Request(payload)))["status"] == 200
 
     # Either disagreement fails closed and requires an owner/share/org ACL.
@@ -604,7 +760,8 @@ def test_worker_gateway_public_read_requires_both_public_indicators():
         (False, "private"),
     ):
         handler, _ = _authorization_handler(
-            authoritative_private=private_flag, visibility=visibility)
+            authoritative_private=private_flag, visibility=visibility
+        )
         response = _run(handler(None, _Request(payload)))
         assert response["status"] == 403
         assert response["payload"] == {"authorized": False}
@@ -614,13 +771,13 @@ def test_worker_gateway_requires_repo_allowlist_and_write_mode():
     payload = {
         "action": "authorize",
         "keyId": "sk_" + "a" * 24,
+        "requestId": "r" * 24,
         "owner": "alice-node",
         "repository": "widget",
         "operation": "git-receive-pack",
     }
     for access in ("", "read-only"):
-        handler, audits = _authorization_handler(
-            owns=True, gateway_access=access)
+        handler, audits = _authorization_handler(owns=True, gateway_access=access)
         response = _run(handler(None, _Request(payload)))
         assert response["status"] == 403
         assert response["payload"] == {"authorized": False}
@@ -643,14 +800,20 @@ def test_renamed_account_is_resolved_from_current_account_index():
         "_ssh_key_gateway_record",
         extra_globals={
             "d1_first": d1_first,
-            "decrypt_row": lambda *args: _async_value({
-                "account": "old-name",
-                "publicKey": line,
-            }),
+            "decrypt_row": lambda *args: _async_value(
+                {
+                    "account": "old-name",
+                    "publicKey": line,
+                }
+            ),
             "ssh_auth": ssh_keys,
-            "_account_identity_rec_by_bi": lambda env, account_bi: _async_value({
-                "name": "new-name", "status": "active", "kind": "user",
-            }),
+            "_account_identity_rec_by_bi": lambda env, account_bi: _async_value(
+                {
+                    "name": "new-name",
+                    "status": "active",
+                    "kind": "user",
+                }
+            ),
             "clean_string": lambda value, limit: str(value or "")[:limit],
             "MAX_NODE_NAME": 64,
             "_account_kind": lambda record: record.get("kind"),
@@ -658,8 +821,7 @@ def test_renamed_account_is_resolved_from_current_account_index():
             "hmac": __import__("hmac"),
         },
     )
-    found, data = _run(namespace["_ssh_key_gateway_record"](
-        None, key_id=row["key_id"]))
+    found, data = _run(namespace["_ssh_key_gateway_record"](None, key_id=row["key_id"]))
     assert found == row
     assert data["account"] == "new-name"
     # The production helper resolves the principal from row.account_bi, not
@@ -667,9 +829,12 @@ def test_renamed_account_is_resolved_from_current_account_index():
     # authorization context with the current name.
     function_source = ast.get_source_segment(
         ENTRY_TEXT,
-        next(node for node in ast.parse(ENTRY_TEXT).body
-             if isinstance(node, ast.AsyncFunctionDef)
-             and node.name == "_ssh_key_gateway_record"),
+        next(
+            node
+            for node in ast.parse(ENTRY_TEXT).body
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name == "_ssh_key_gateway_record"
+        ),
     )
     assert "_account_identity_rec_by_bi" in function_source
 
@@ -682,9 +847,9 @@ def test_routes_frontend_and_deploy_contract_are_wired():
     settings = (
         ROOT / "public" / "dashboard" / "partials" / "views" / "settings.html"
     ).read_text(encoding="utf-8")
-    account_js = (
-        ROOT / "public" / "dashboard" / "js" / "04-account.js"
-    ).read_text(encoding="utf-8")
+    account_js = (ROOT / "public" / "dashboard" / "js" / "04-account.js").read_text(
+        encoding="utf-8"
+    )
     repo_js = (
         ROOT / "public" / "dashboard" / "js" / "08-repo-detail-network.js"
     ).read_text(encoding="utf-8")
@@ -692,8 +857,7 @@ def test_routes_frontend_and_deploy_contract_are_wired():
     assert "data-ssh-public-key" in settings
     assert "/api/accounts/ssh-keys" in account_js
     assert "data-repo-ssh-url" in repo_js
-    deploy = (PROJECT_ROOT / ".forkmesh" / "deploy.yml").read_text(
-        encoding="utf-8")
+    deploy = (PROJECT_ROOT / ".forkmesh" / "deploy.yml").read_text(encoding="utf-8")
     for name in (
         "SSH_GATEWAY_HOST",
         "SSH_GATEWAY_PORT",

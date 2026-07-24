@@ -623,6 +623,33 @@ forkmesh-world {
   font-weight: 600;
 }
 
+.world-notification-button {
+  position: relative;
+}
+
+.world-notification-button [data-world-notification-count] {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  display: grid;
+  min-width: 19px;
+  height: 19px;
+  place-items: center;
+  border: 1px solid #0a1c16;
+  border-radius: 999px;
+  background: var(--world-sun);
+  padding: 0 5px;
+  color: #10251c;
+  font-family: "ForkMesh Mono", monospace;
+  font-size: 0.5rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.world-notification-button [data-world-notification-count][hidden] {
+  display: none;
+}
+
 .world-left-rail {
   position: absolute;
   top: calc(var(--safe-top) + 68px);
@@ -1302,6 +1329,99 @@ forkmesh-world {
   padding: 24px 24px max(32px, var(--safe-bottom));
 }
 
+.world-chat-backdrop {
+  position: absolute;
+  z-index: 31;
+  inset: 0;
+  border: 0;
+  background: rgb(0 0 0 / 0.62);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 180ms ease, visibility 180ms ease;
+  pointer-events: none;
+}
+
+.world-chat-backdrop[data-open="true"] {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.world-chat {
+  position: absolute;
+  z-index: 32;
+  top: max(18px, var(--safe-top));
+  bottom: max(18px, var(--safe-bottom));
+  left: 50%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(960px, calc(100vw - 36px));
+  overflow: hidden;
+  border: 1px solid var(--world-line-strong);
+  background: #081511;
+  box-shadow: 0 30px 100px rgb(0 0 0 / 0.55);
+  transform: translate(-50%, 18px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 180ms ease, transform 180ms ease, visibility 180ms ease;
+  pointer-events: none;
+}
+
+.world-chat[data-open="true"] {
+  transform: translate(-50%, 0);
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.world-chat-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid var(--world-line);
+  padding: 14px 18px;
+}
+
+.world-chat-heading h2 {
+  margin: 3px 0 0;
+  font-family: "ForkMesh Favorit", sans-serif;
+  font-size: 1.65rem;
+  letter-spacing: -0.04em;
+}
+
+.world-chat-heading span {
+  display: block;
+  margin-top: 3px;
+  color: var(--world-muted);
+  font-size: 0.64rem;
+}
+
+.world-chat-heading button {
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--world-line);
+  background: transparent;
+  color: var(--world-copy);
+  cursor: pointer;
+  font-size: 1.1rem;
+}
+
+.world-chat-heading button:hover,
+.world-chat-heading button:focus-visible {
+  border-color: var(--world-mint);
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-chat-frame {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  background: #081511;
+}
+
 .world-detail-summary {
   margin: 0;
   color: var(--world-copy);
@@ -1938,25 +2058,6 @@ forkmesh-world {
   text-overflow: ellipsis;
 }
 
-.world-quarantine-flow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-
-.world-quarantine-flow span {
-  border: 1px solid var(--world-line);
-  padding: 6px 8px;
-  color: var(--world-muted);
-  font-size: 0.58rem;
-}
-
-.world-quarantine-flow b {
-  color: var(--detail-color);
-  font-weight: 400;
-}
-
 .world-event-list {
   display: grid;
   gap: 7px;
@@ -1991,6 +2092,23 @@ forkmesh-world {
 .world-event-list > div span {
   color: var(--world-muted);
   font-size: 0.58rem;
+}
+
+.world-notification-list article[data-unread="true"] {
+  border-color: var(--world-sun);
+  box-shadow: inset 3px 0 0 var(--world-sun);
+}
+
+.world-event-list article p {
+  grid-column: 1 / -1;
+  margin: 2px 0;
+  color: var(--world-copy);
+  font-size: 0.65rem;
+  line-height: 1.45;
+}
+
+.world-notification-unread {
+  color: var(--world-sun) !important;
 }
 
 .world-home-card {
@@ -2942,6 +3060,18 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 @media (max-width: 720px) {
+  .world-chat {
+    top: var(--safe-top);
+    bottom: var(--safe-bottom);
+    width: 100%;
+    border-right: 0;
+    border-left: 0;
+  }
+
+  .world-chat-heading {
+    padding: 10px 12px;
+  }
+
   .world-topbar {
     gap: 8px;
   }

@@ -117,7 +117,7 @@
     },
     {
       "id": "security",
-      "label": "Security scans, clipboard, reports, review, and quarantine",
+      "label": "Security scans, clipboard, reports, and human review",
       "canonicalPath": "/security-report",
       "worker": "api",
       "web": "native",

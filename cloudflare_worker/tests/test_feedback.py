@@ -175,10 +175,11 @@ def test_feedback_handler_hashes_ip_and_never_stores_raw_ip():
     entry_text = ENTRY.read_text(encoding="utf-8")
 
     assert "async def feedback_handler(env, request):" in entry_text
+    assert "ip = _transient_client_address(request)" in entry_text
     assert 'headers.get("cf-connecting-ip")' in entry_text
     assert 'headers.get("x-forwarded-for")' in entry_text
     assert "ip_hash = await blind_index(env, ip) if ip else \"\"" in entry_text
-    assert "user_agent = _security_client_category(request)" in entry_text
+    assert "user_agent = _generalized_client_category(request)" in entry_text
     handler = entry_text.split(
         "async def feedback_handler", 1)[1].split(
         "def _validate_security_report", 1)[0]

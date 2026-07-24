@@ -376,8 +376,8 @@
           Signed node heartbeats provide generalized multiplayer and operator
           presence. Repository routing uses the separate
           <code>mirror_https_endpoints</code> registry: Cloudflare performs
-          fresh signed health challenges and records latency, integrity, and
-          abuse status without storing repository bytes.
+          fresh signed health challenges and records latency and integrity
+          without storing repository bytes.
         </p>
         <p>
           Presence is intentionally a lagging, privacy-preserving status and is
@@ -554,7 +554,7 @@
         </p>
         <p>Decision order for a <strong>public</strong> repo on <code>info/refs</code> / <code>upload-pack</code>:</p>
         <ol>
-          <li><strong>Filter first.</strong> Candidates must have a fresh Cloudflare health result, a verified Ed25519 node identity, an owner-attested refs digest, the required operation, and no abuse or integrity quarantine.</li>
+          <li><strong>Filter first.</strong> Candidates must have a fresh Cloudflare health result, a verified Ed25519 node identity, an owner-attested refs digest, the required operation, and must pass the repository integrity gate.</li>
           <li><strong>Select and pin.</strong> Region/latency preference and a rotating cursor choose among eligible endpoints. A successful <code>info/refs</code> response records a short-lived node pin in <code>clone_sticky</code>.</li>
           <li><strong>Bind and stream.</strong> The paired <code>git-upload-pack</code> request prefers that node, revalidates its repository proof, and carries a short-lived signed capability. If it fails, only another endpoint serving the identical approved refs state may be tried.</li>
         </ol>

@@ -21,6 +21,7 @@ from js import Uint8Array
 from js import WebSocketPair
 from js import caches as js_caches
 from js import crypto as js_crypto
+from js import fetch as js_fetch
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
 
@@ -79,16 +80,7 @@ TELEMETRY_MAX_SUMMARY = 8000    # per-event scrubbed report text
 TELEMETRY_KINDS = frozenset({"crash", "stall"})
 # Private vulnerability reports: bounded so the open endpoint can't grow D1.
 MAX_SECURITY_REPORTS = 1000
-# Abuse/quarantine records retain only generalized evidence and keyed tokens.
-# Automatic restrictions are short and require repeated high-signal events.
-SECURITY_SIGNAL_WINDOW_MS = 15 * 60 * 1000
-SECURITY_AUTO_QUARANTINE_MS = 15 * 60 * 1000
-SECURITY_SIGNAL_RETAIN_MS = 30 * 24 * 60 * 60 * 1000
-SECURITY_RESTRICTION_RETAIN_MS = 90 * 24 * 60 * 60 * 1000
-SECURITY_APPEAL_RETAIN_MS = 180 * 24 * 60 * 60 * 1000
 SECURITY_AUDIT_RETAIN_MS = 365 * 24 * 60 * 60 * 1000
-SECURITY_PUBLIC_JAIL_LIMIT = 100
-_SECURITY_RESTRICTION_MEMO = {}
 # Anonymous website feedback from static pages. Bounded like telemetry and
 # install diagnostics so the unauthenticated endpoint cannot grow D1 forever.
 MAX_FEEDBACK = 5000
@@ -97,6 +89,11 @@ FEEDBACK_MAX_MESSAGE = 2000
 FEEDBACK_MAX_PATH = 300
 FEEDBACK_SOURCES = frozenset({"docs"})
 FEEDBACK_VOTES = frozenset({"like", "dislike"})
+MAX_WAITLIST_FIELD = 300
+_WAITLIST_EMAIL_RE = re.compile(
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$"
+)
 MAX_PROFILE_BIO = 500
 MAX_PROFILE_README = 32000
 MAX_PROFILE_ABOUT = 32000
@@ -445,11 +442,10 @@ import fediverse_mentions_api  # noqa: E402
 # device, agent, and financial handlers. The API receives no platform-admin
 # authorization primitive and can mutate only organization membership roles.
 import organization_succession_api  # noqa: E402
-# Least-privilege roles, owner-sealed envelope validation, and generalized
-# abuse-record projections live in a pure sibling module. Keeping these
-# allowlists out of the route handlers makes them independently testable.
+# Least-privilege roles, owner-sealed envelope validation, and metadata-only
+# audit sanitization live in a pure sibling module. Keeping these allowlists
+# out of the route handlers makes them independently testable.
 import security_controls as security_control  # noqa: E402
-_SECURITY_TRAFFIC_DETECTOR = security_control.BoundedTrafficDetector()
 # Strict public-artifact validation and bounded encrypted D1 history for daily
 # repository security scans lives in a pure sibling module.
 import security_scan_ingest  # noqa: E402
@@ -496,6 +492,10 @@ MAX_BLOB_BATCH = 60
 # visit. The flagship room whose live client count the homepage shows.
 NETWORK_STATS_TTL = 20  # seconds the /api/network/stats response is cached
 FLAGSHIP_ROOM_KEY = "repo:mainnode/forkmesh:room:general"
+PUBLIC_WORLD_GENERAL_ROOM = "world-general"
+PUBLIC_WORLD_GENERAL_ROOM_KEY = (
+    "repo:mainnode/forkmesh:room:" + PUBLIC_WORLD_GENERAL_ROOM
+)
 # A host counts as "online" if it has been active within this window. The window
 # self-heals presence rows orphaned by a host that vanished without a clean close;
 # active hosts refresh their row at most once per HOST_PRESENCE_REFRESH_MS.
@@ -908,7 +908,7 @@ async def repo_live_host_count(env, owner, repo):
             env,
             "SELECT COUNT(*) AS total FROM mirror_https_endpoints "
             "WHERE lower(node_name)=lower(?) AND healthy=1 "
-            "AND abuse_blocked=0 AND integrity='verified' "
+            "AND abuse_blocked=0 AND integrity='ok' "
             "AND checked_at>=?",
             owner,
             now - HOST_PRESENCE_STALE_MS,
@@ -3817,31 +3817,38 @@ async def _hmac_key(env):
 
 
 async def _room_chat_passphrase(
-        env, owner="mainnode", repo="forkmesh"):
+        env, owner="mainnode", repo="forkmesh", room="general"):
     # A repository-scoped room-chat passphrase, derived ONE-WAY from DATA_KEY
     # with its own domain separation (same pattern as the blind-index HMAC key).
-    # The well-known mainnode/forkmesh room deliberately retains the v1
-    # derivation so retained public chat remains readable across this rollout.
-    # Every other repository gets a distinct v2 passphrase; having the public
-    # Town Square key therefore cannot decrypt a private repository room.
+    # The legacy authenticated mainnode/forkmesh room deliberately retains the
+    # v1 derivation so its retained chat remains readable across this rollout.
+    # Public World #general uses a separate, explicitly public derivation and a
+    # separate Durable Object room. Giving that key to a guest therefore cannot
+    # decrypt authenticated channels or any repository-scoped room.
     #
-    # Why this is a real improvement: the key is no longer a constant anyone can
-    # read straight out of the open-source client — only an authenticated
-    # ForkMesh account can fetch it. It is NOT confidentiality from the relay:
-    # the relay operator holds DATA_KEY and can derive this too (as they always
-    # could derive the old constant). SHA-256 is preimage-resistant, so exposing
-    # this passphrase never exposes DATA_KEY or other protected legacy/application
-    # records guarded by the same at-rest key.
+    # Neither key is a source-code constant. The public room key is intentionally
+    # available to guests, while authenticated room keys require repository
+    # authorization. This is NOT confidentiality from the relay: its operator
+    # holds DATA_KEY and can derive both. SHA-256 is preimage-resistant, so
+    # exposing the public passphrase does not expose DATA_KEY or protected
+    # application records guarded by the same at-rest key.
     owner = safe_segment(owner)
     repo = safe_segment(repo)
-    if not owner or not repo:
+    room = safe_segment(room, MAX_ROOM_NAME)
+    if not owner or not repo or not room:
         raise ValueError("invalid repository room scope")
     scope = owner.lower() + "/" + repo.lower()
-    suffix = (
-        ":room-chat-passphrase-v1"
-        if scope == "mainnode/forkmesh"
-        else ":room-chat-passphrase-v2:" + scope
-    )
+    if (
+        scope == "mainnode/forkmesh"
+        and room.lower() == PUBLIC_WORLD_GENERAL_ROOM
+    ):
+        suffix = ":room-chat-passphrase-public-world-general-v1"
+    else:
+        suffix = (
+            ":room-chat-passphrase-v1"
+            if scope == "mainnode/forkmesh"
+            else ":room-chat-passphrase-v2:" + scope
+        )
     secret = _require_data_secret(env) + suffix
     if _room_key_cache["secret"] == secret and _room_key_cache["value"]:
         return _room_key_cache["value"]
@@ -3893,7 +3900,8 @@ async def _room_key_authorized(env, request):
 
 
 async def chat_room_key_handler(env, request):
-    # Serve a repository-scoped room passphrase to an authenticated participant.
+    # Serve the isolated public World #general passphrase to any visitor, or a
+    # repository-scoped room passphrase to an authenticated participant.
     # Missing and unauthorized private repositories share one 404 response, and
     # the private catalog record is not decrypted until its blind-index ACL gate
     # has passed.
@@ -3903,20 +3911,34 @@ async def chat_room_key_handler(env, request):
     params = parse_qs(urlparse(request.url).query)
     owner = safe_segment(params.get("owner", ["mainnode"])[0])
     repo = safe_segment(params.get("repo", ["forkmesh"])[0])
-    if not owner or not repo:
+    room = safe_segment(params.get("room", ["general"])[0], MAX_ROOM_NAME)
+    if not owner or not repo or not room:
         return _private_replica_not_found()
-    requester = await _room_key_requester(env, request, owner, repo)
-    if not requester:
-        return json_response({"error": "unauthorized"}, status=401)
-    context = await _repository_access_context(
-        env, request, owner, repo, viewer=requester)
-    if context is None:
-        return _private_replica_not_found()
+    public_world_general = (
+        owner.lower() == "mainnode"
+        and repo.lower() == "forkmesh"
+        and room.lower() == PUBLIC_WORLD_GENERAL_ROOM
+    )
+    if not public_world_general:
+        requester = await _room_key_requester(env, request, owner, repo)
+        if not requester:
+            return json_response({"error": "unauthorized"}, status=401)
+        context = await _repository_access_context(
+            env, request, owner, repo, viewer=requester)
+        if context is None:
+            return _private_replica_not_found()
     return json_response(
         {
             "ok": True,
             "scope": owner.lower() + "/" + repo.lower(),
-            "passphrase": await _room_chat_passphrase(env, owner, repo),
+            "room": room.lower(),
+            "access": (
+                "public-world-general"
+                if public_world_general
+                else "authenticated-repository"
+            ),
+            "passphrase": await _room_chat_passphrase(
+                env, owner, repo, room),
         },
         cache_control="no-store, max-age=0, must-revalidate",
     )
@@ -6139,6 +6161,13 @@ async def release_downloads_handler(env, request, owner, repo):
 
 # --- Public waitlist (waitlist table) ---------------------------------------
 
+def _waitlist_normalize_email(value):
+    email = str(value or "").strip().lower()
+    if len(email) > 254 or not _WAITLIST_EMAIL_RE.fullmatch(email):
+        return ""
+    return email
+
+
 async def waitlist_handler(env, request):
     await ensure_schema(env)
     if method_name(request) != "POST":
@@ -6149,7 +6178,7 @@ async def waitlist_handler(env, request):
         return json_response({"error": "invalid_json"}, status=400)
     if not isinstance(data, dict):
         return json_response({"error": "invalid_json"}, status=400)
-    email = normalize_email(data.get("email", ""))
+    email = _waitlist_normalize_email(data.get("email", ""))
     if not email:
         return json_response({"error": "valid_email_required"}, status=400)
     source = clean_string(data.get("source", "features"), MAX_WAITLIST_FIELD)
@@ -7430,6 +7459,36 @@ def _donation_in_progress(rec):
     return Date.now() < expires
 
 
+def _transient_client_address(request):
+    """Read an address transiently for an endpoint-specific blind index."""
+    try:
+        headers = request.headers
+    except Exception:
+        return ""
+    value = (headers.get("cf-connecting-ip") or "").strip()
+    if not value:
+        forwarded = (headers.get("x-forwarded-for") or "").strip()
+        value = forwarded.split(",")[0].strip() if forwarded else ""
+    return value[:64]
+
+
+def _generalized_client_category(request):
+    """Reduce a user agent to a non-identifying category."""
+    try:
+        ua = str(request.headers.get("user-agent") or "").lower()
+    except Exception:
+        ua = ""
+    if any(marker in ua for marker in (
+            "bot", "crawler", "spider", "curl/", "wget/", "scanner")):
+        return "automated-client"
+    if "mobile" in ua:
+        return "mobile-browser"
+    if any(marker in ua for marker in (
+            "mozilla/", "chrome/", "safari/", "firefox/", "edg/")):
+        return "browser"
+    return "other-client" if ua else ""
+
+
 # Simple web signup: create an active account from node name + email + password.
 # Solana payout details are intentionally handled later from the dashboard profile.
 async def _account_signup(env, request):
@@ -7465,7 +7524,7 @@ async def _account_signup(env, request):
 
     # Per-IP account-creation throttle (checked only once the name/email are
     # otherwise creatable, so a rejected duplicate doesn't burn the quota).
-    signup_ip = _security_request_network_identifier(request)
+    signup_ip = _transient_client_address(request)
     throttled = await signup_rate_check(
         env, await blind_index(env, signup_ip) if signup_ip else None)
     if throttled is not None:
@@ -7736,7 +7795,7 @@ def _signup_metadata(request):
     # approximate two-letter edge-derived code.
     return {
         "country": world_request_country(request),
-        "clientCategory": _security_client_category(request),
+        "clientCategory": _generalized_client_category(request),
         "at": int(Date.now()),
     }
 
@@ -7808,7 +7867,7 @@ async def _account_finalize(env, request):
     rec.setdefault("created_at", int(Date.now()))
     # Keep only coarse signup metadata; the transient address is converted to a
     # keyed blind index and never persisted in the account's decryptable blob.
-    signup_ip = _security_request_network_identifier(request)
+    signup_ip = _transient_client_address(request)
     signup_meta = _signup_metadata(request)
     old_signup = rec.get("signup")
     if isinstance(old_signup, dict) and old_signup.get("at"):
@@ -9298,9 +9357,9 @@ async def _online_payout_addresses(env):
 # reads its balance and prepares unsigned distribution intents; the instance
 # owner's self-custodial desktop signer alone can authorize a transfer.
 REWARD_CLUSTER_GENESIS_HASHES = {
-    "mainnet-beta": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
-    "devnet": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-    "testnet": "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z",
+    "mainnet-beta": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+    "devnet": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+    "testnet": "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY",
 }
 REWARD_CANONICAL_RPC_HOSTS = {
     "api.mainnet-beta.solana.com": "mainnet-beta",
@@ -11948,7 +12007,14 @@ async def org_alias_rewrite(env, request, url):
     new_path = (url.path[:match.start(1)] + quote(node) +
                 url.path[match.end(1):])
     new_url = url._replace(path=new_path).geturl()
-    return JsRequest.new(str(new_url), request), urlparse(new_url)
+    # Route internally with the canonical parsed URL while preserving the
+    # original Request object.  Fetch's second Request constructor argument is
+    # a RequestInit mapping, not another Request; passing the Worker Request
+    # there aborts the Python isolate.  Downstream handlers receive owner/repo
+    # from the rewritten URL, while retaining the single-use body, trusted
+    # request.cf metadata, headers, and the public alias URL presented by the
+    # caller.
+    return request, urlparse(new_url)
 
 
 class _OrganizationSuccessionRuntime:
@@ -12787,9 +12853,10 @@ async def org_team_members_handler(env, request, org, team):
 async def org_repos_handler(env, request, org):
     # The alias map behind /<org>/<repo> URLs. GET is public routing data.
     # POST links a repo: the caller must be an org owner/admin AND the linked
-    # node namespace must be the caller's own account — you can only bring
-    # your own node's published repos under an org, so an org can never
-    # hijack another node's URL. DELETE unlinks (owner/admin).
+    # node namespace must be the caller's own account or a node demonstrably
+    # owned by that account — you can only bring your own fleet's published
+    # repos under an org, so an org can never hijack another node's URL.
+    # DELETE unlinks (owner/admin).
     await ensure_schema(env)
     method = method_name(request)
     org_bi, row = await _org_row(env, org)
@@ -12874,7 +12941,7 @@ async def org_repos_handler(env, request, org):
             org_name + "/" + repo, "success")
         return json_response({"ok": True, "repo": repo, "linked": False})
     node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower() or account
-    if node != account:
+    if not await _account_owns_node(env, account, node):
         await _audit_sensitive_action(
             env, account, audit_action, "organization_repository",
             org_name + "/" + repo, "denied",
@@ -13251,546 +13318,6 @@ async def security_roles_handler(env, request):
     }, cache_control="no-store")
 
 
-def _security_request_network_identifier(request):
-    """Read a network address transiently; callers must immediately HMAC it."""
-    try:
-        headers = request.headers
-    except Exception:
-        return ""
-    value = (headers.get("cf-connecting-ip") or "").strip()
-    if not value:
-        forwarded = (headers.get("x-forwarded-for") or "").strip()
-        value = forwarded.split(",")[0].strip() if forwarded else ""
-    return value[:64]
-
-
-def _security_client_category(request):
-    try:
-        ua = str(request.headers.get("user-agent") or "").lower()
-    except Exception:
-        ua = ""
-    if any(marker in ua for marker in (
-            "bot", "crawler", "spider", "curl/", "wget/", "scanner")):
-        return "automated-client"
-    if "mobile" in ua:
-        return "mobile-browser"
-    if any(marker in ua for marker in (
-            "mozilla/", "chrome/", "safari/", "firefox/", "edg/")):
-        return "browser"
-    return "other-client" if ua else ""
-
-
-async def _security_request_tokens(env, request):
-    tokens = []
-    network = _security_request_network_identifier(request)
-    if network:
-        tokens.append((
-            await blind_index(env, "security-network:" + network), "network"))
-    try:
-        auth = request.headers.get("authorization") or ""
-    except Exception:
-        auth = ""
-    if auth.lower().startswith("bearer "):
-        name = _account_session_token_name(
-            env, clean_string(auth[7:], 512).strip())
-        if name:
-            tokens.append((
-                await blind_index(env, "security-account:" + name), "account"))
-    return tokens
-
-
-def _security_restriction_record(row):
-    row = row or {}
-    return {
-        "incidentId": str(row.get("incident_id") or ""),
-        "reason": str(row.get("reason") or ""),
-        "rule": str(row.get("rule") or ""),
-        "detectedAt": int(row.get("detected_at") or 0),
-        "durationMs": int(row.get("duration_ms") or 0),
-        "expiresAt": int(row.get("expires_at") or 0),
-        "confidence": str(row.get("confidence") or ""),
-        "automatic": bool(int(row.get("automatic") or 0)),
-        "reviewed": bool(int(row.get("reviewed") or 0)),
-        "appealStatus": str(row.get("appeal_status") or "none"),
-        "status": str(row.get("status") or "quarantined"),
-        "countryCode": str(row.get("country_code") or ""),
-        "clientCategory": str(row.get("client_category") or ""),
-    }
-
-
-async def _active_security_restriction(env, subject_tokens):
-    now = int(Date.now())
-    for subject_token, _kind in subject_tokens:
-        memo = _SECURITY_RESTRICTION_MEMO.get(subject_token)
-        if memo and (not memo.get("expiresAt")
-                     or int(memo.get("expiresAt") or 0) > now):
-            return memo
-        row = await d1_first(
-            env,
-            "SELECT r.*, s.country_code, s.client_category "
-            "FROM security_restrictions r LEFT JOIN security_signals s "
-            "ON s.subject_token=r.subject_token AND s.rule=r.rule "
-            "WHERE r.subject_token=? "
-            "AND r.status IN ('quarantined','blocked') "
-            "AND (r.expires_at=0 OR r.expires_at>?) "
-            "ORDER BY r.created_at DESC LIMIT 1",
-            subject_token, now,
-        )
-        if row:
-            public = security_control.public_restriction(
-                _security_restriction_record(row), now)
-            _SECURITY_RESTRICTION_MEMO[subject_token] = public
-            return public
-    return None
-
-
-def _security_restriction_response(restriction):
-    public = security_control.public_restriction(
-        restriction, int(Date.now()))
-    return json_response({
-        "error": "temporarily_quarantined",
-        "restriction": public,
-        "appealPath": "/api/security/appeals",
-        "notice": (
-            "This is a temporary security control, not a permanent finding. "
-            "Country, browser and operating system are never treated as "
-            "evidence of malicious intent."
-        ),
-    }, status=429, cache_control="no-store",
-       extra_headers={"retry-after": str(max(
-           1, int(public.get("durationMs") or 60000) // 1000))})
-
-
-async def _record_security_signal(env, request, signal, subject_token):
-    now = int(Date.now())
-    cutoff = now - SECURITY_SIGNAL_WINDOW_MS
-    country = world_request_country(request)
-    client_category = _security_client_category(request)
-    await d1_run(
-        env,
-        "INSERT INTO security_signals "
-        "(subject_token, rule, reason, confidence, hits, first_seen, "
-        "last_seen, country_code, client_category) VALUES (?,?,?,?,1,?,?,?,?) "
-        "ON CONFLICT(subject_token,rule) DO UPDATE SET "
-        "reason=excluded.reason, confidence=excluded.confidence, "
-        "hits=CASE WHEN security_signals.last_seen<? THEN 1 "
-        "ELSE security_signals.hits+1 END, "
-        "first_seen=CASE WHEN security_signals.last_seen<? "
-        "THEN excluded.first_seen ELSE security_signals.first_seen END, "
-        "last_seen=excluded.last_seen, country_code=excluded.country_code, "
-        "client_category=excluded.client_category",
-        subject_token, signal["rule"], signal["reason"],
-        signal["confidence"], now, now, country, client_category,
-        cutoff, cutoff,
-    )
-    row = await d1_first(
-        env,
-        "SELECT hits, first_seen FROM security_signals "
-        "WHERE subject_token=? AND rule=?",
-        subject_token, signal["rule"],
-    )
-    hits = int((row or {}).get("hits") or 0)
-    threshold = {"high": 2, "medium": 3, "low": 6}.get(
-        signal.get("confidence"), 6)
-    if hits < threshold:
-        return None
-    existing = await _active_security_restriction(
-        env, [(subject_token, "network")])
-    if existing:
-        return existing
-    incident_id = _random_bytes(16).hex()
-    duration = min(
-        SECURITY_AUTO_QUARANTINE_MS,
-        security_control.AUTO_RESTRICTION_MAX_MS)
-    evidence = await encrypt_row(env, {
-        "summary": security_control.generalized_evidence_summary(
-            signal.get("summary")),
-        "hitCount": hits,
-        "windowMs": SECURITY_SIGNAL_WINDOW_MS,
-    })
-    await d1_run(
-        env,
-        "INSERT INTO security_restrictions "
-        "(incident_id, subject_token, subject_kind, reason, rule, "
-        "detected_at, duration_ms, expires_at, confidence, evidence_data, "
-        "automatic, reviewed, appeal_status, status, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,1,0,'none','quarantined',?)",
-        incident_id, subject_token, "network", signal["reason"],
-        signal["rule"], now, duration, now + duration,
-        signal["confidence"], evidence, now,
-    )
-    public = security_control.public_restriction({
-        "incidentId": incident_id,
-        "reason": signal["reason"],
-        "rule": signal["rule"],
-        "detectedAt": now,
-        "durationMs": duration,
-        "expiresAt": now + duration,
-        "confidence": signal["confidence"],
-        "automatic": True,
-        "reviewed": False,
-        "appealStatus": "none",
-        "status": "quarantined",
-        "countryCode": country,
-        "clientCategory": client_category,
-    }, now)
-    _SECURITY_RESTRICTION_MEMO[subject_token] = public
-    await _audit_sensitive_action(
-        env, "", "security.auto_quarantine", "incident", incident_id,
-        "success", {"rule": signal["rule"], "reason": signal["reason"],
-                    "hits": hits, "durationMs": duration})
-    return public
-
-
-async def _security_enforce_request(env, request, url):
-    path = str(getattr(url, "path", "") or "")
-    if path in (
-            "/health", "/api/version", "/api/version/",
-            "/api/security/appeals", "/api/security/appeals/"):
-        return None
-    signal = security_control.security_signal_for_path(
-        path + (("?" + url.query) if getattr(url, "query", "") else ""),
-        method_name(request))
-    dynamic = (
-        path.startswith("/api/") or "/git-" in path
-        or path.endswith("/info/refs"))
-    if not signal and not dynamic:
-        return None
-    tokens = await _security_request_tokens(env, request)
-    if not tokens:
-        return None
-    await ensure_schema(env)
-    active = await _active_security_restriction(env, tokens)
-    if active:
-        return _security_restriction_response(active)
-    network_token = next(
-        (token for token, kind in tokens if kind == "network"), "")
-    if signal:
-        # Automated request-derived signals are attached only to the transient
-        # network token. An account is never punished merely for sharing a
-        # network with a suspicious client.
-        if network_token:
-            active = await _record_security_signal(
-                env, request, signal, network_token)
-            if active:
-                return _security_restriction_response(active)
-    if network_token and dynamic:
-        volume_signal = _SECURITY_TRAFFIC_DETECTOR.observe(
-            network_token, method_name(request), int(Date.now()))
-        if volume_signal:
-            active = await _record_security_signal(
-                env, request, volume_signal, network_token)
-            if active:
-                return _security_restriction_response(active)
-    return None
-
-
-async def _security_observe_response(env, request, url, response):
-    """Record repeated failed authorization only after a rejection is known."""
-    try:
-        status = int(getattr(response, "status", 0) or 0)
-        authorization_present = bool(
-            request.headers.get("authorization") or "")
-    except Exception:
-        return None
-    signal = security_control.security_signal_for_response(
-        str(getattr(url, "path", "") or ""),
-        method_name(request),
-        status,
-        authorization_present=authorization_present,
-    )
-    if not signal:
-        return None
-    try:
-        tokens = await _security_request_tokens(env, request)
-        network_token = next(
-            (token for token, kind in tokens if kind == "network"), "")
-        if not network_token:
-            return None
-        await ensure_schema(env)
-        active = await _record_security_signal(
-            env, request, signal, network_token)
-        return _security_restriction_response(active) if active else None
-    except Exception:
-        # A signal-accounting outage must not turn an otherwise valid Worker
-        # response into an availability failure.
-        return None
-
-
-async def security_quarantine_handler(env, request):
-    await ensure_schema(env)
-    method = method_name(request)
-    try:
-        world_generalized = (
-            str(request.headers.get("x-forkmesh-world-view") or "")
-            .strip().lower() == "generalized"
-        )
-    except Exception:
-        world_generalized = False
-    data = {}
-    if method == "POST":
-        try:
-            data = await request.json()
-        except Exception:
-            return json_response({"error": "invalid_json"}, status=400)
-    _, rec = await _account_session_record(env, request, data)
-    actor = (rec.get("name", "") if rec else "").strip().lower()
-    is_moderator = bool(actor and await _has_role(
-        env, actor, "moderator"))
-    is_reviewer = bool(actor and await _has_role(
-        env, actor, "security_reviewer"))
-
-    if method == "GET":
-        now = int(Date.now())
-        if not (is_moderator or is_reviewer):
-            rows = await d1_all(
-                env,
-                "SELECT reason, status, COUNT(*) AS n "
-                "FROM security_restrictions "
-                "WHERE created_at>? GROUP BY reason,status",
-                now - SECURITY_RESTRICTION_RETAIN_MS,
-            )
-            return json_response({
-                "ok": True,
-                "visibility": "aggregate-only",
-                "allowedActions": [],
-                "summary": [{
-                    "reason": security_control.normalize_reason(
-                        row.get("reason")) or "other_security_abuse",
-                    "status": str(row.get("status") or ""),
-                    "count": int(row.get("n") or 0),
-                } for row in rows or []],
-            }, cache_seconds=60)
-        rows = await d1_all(
-            env,
-            "SELECT r.*, s.country_code, s.client_category "
-            "FROM security_restrictions r LEFT JOIN security_signals s "
-            "ON s.subject_token=r.subject_token AND s.rule=r.rule "
-            "ORDER BY r.created_at DESC LIMIT ?",
-            SECURITY_PUBLIC_JAIL_LIMIT,
-        )
-        items = []
-        summary_counts = {}
-        for row in rows or []:
-            item = security_control.public_restriction(
-                _security_restriction_record(row), now)
-            summary_key = (item["reason"], item["status"])
-            summary_counts[summary_key] = summary_counts.get(summary_key, 0) + 1
-            if (
-                is_reviewer
-                and not world_generalized
-                and row.get("evidence_data")
-            ):
-                evidence = await decrypt_row(env, row.get("evidence_data"))
-                item["privateEvidence"] = (
-                    evidence if isinstance(evidence, dict) else {})
-            items.append(item)
-        return json_response({
-            "ok": True,
-            "visibility": (
-                "reviewer-generalized-world"
-                if is_reviewer and world_generalized
-                else "reviewer"
-                if is_reviewer
-                else "moderator-generalized"),
-            "allowedActions": ["revoke"],
-            "summary": [{
-                "reason": reason,
-                "status": status,
-                "count": count,
-            } for (reason, status), count in sorted(summary_counts.items())],
-            "restrictions": items,
-        }, cache_control="no-store")
-
-    if method != "POST":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    if not (is_moderator or is_reviewer):
-        return json_response({"error": "forbidden"}, status=403)
-    action = str(data.get("action") or "").strip().lower()
-    incident_id = security_control.normalize_incident_id(
-        data.get("incidentId"))
-    now = int(Date.now())
-    if action in ("resolve", "revoke"):
-        if not incident_id:
-            return json_response({"error": "invalid_incident"}, status=400)
-        await d1_run(
-            env,
-            "UPDATE security_restrictions SET status='revoked', "
-            "reviewed=1, reviewer_bi=? WHERE incident_id=?",
-            await blind_index(env, actor), incident_id,
-        )
-        _SECURITY_RESTRICTION_MEMO.clear()
-        await _audit_sensitive_action(
-            env, actor, "security.restriction_revoke", "incident",
-            incident_id, "success", {"reviewed": True})
-        return json_response({"ok": True, "status": "revoked"})
-    if action != "restrict_account":
-        return json_response({"error": "invalid_action"}, status=400)
-    target = clean_string(
-        data.get("targetAccount", ""), MAX_NODE_NAME).strip().lower()
-    _, target_rec = await _account_row(env, target)
-    reason = security_control.normalize_reason(data.get("reason"))
-    confidence = security_control.normalize_confidence(data.get("confidence"))
-    if not target_rec or not reason or not confidence:
-        return json_response({"error": "invalid_restriction"}, status=400)
-    permanent = bool(data.get("permanent"))
-    if permanent and not (is_reviewer and confidence == "high"):
-        return json_response(
-            {"error": "permanent_requires_high_confidence_human_review"},
-            status=400)
-    try:
-        requested_duration = int(data.get("durationMs") or 0)
-    except (TypeError, ValueError):
-        requested_duration = 0
-    duration = (
-        0 if permanent else security_control.bounded_restriction_duration(
-            requested_duration or SECURITY_AUTO_QUARANTINE_MS,
-            automatic=False))
-    expires_at = 0 if permanent else now + duration
-    incident_id = _random_bytes(16).hex()
-    subject_token = await blind_index(env, "security-account:" + target)
-    summary = security_control.generalized_evidence_summary(
-        data.get("evidenceSummary"))
-    evidence = await encrypt_row(env, {
-        "summary": summary or "Human-reviewed account restriction.",
-    })
-    await d1_run(
-        env,
-        "INSERT INTO security_restrictions "
-        "(incident_id, subject_token, subject_kind, reason, rule, "
-        "detected_at, duration_ms, expires_at, confidence, evidence_data, "
-        "automatic, reviewed, reviewer_bi, appeal_status, status, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,0,1,?,'none','quarantined',?)",
-        incident_id, subject_token, "account", reason,
-        "human-review-v1", now, duration, expires_at, confidence, evidence,
-        await blind_index(env, actor), now,
-    )
-    _SECURITY_RESTRICTION_MEMO.clear()
-    await _audit_sensitive_action(
-        env, actor, "security.account_restrict", "incident", incident_id,
-        "success", {"reason": reason, "confidence": confidence,
-                    "durationMs": duration, "permanent": permanent})
-    return json_response({
-        "ok": True,
-        "restriction": security_control.public_restriction({
-            "incidentId": incident_id, "reason": reason,
-            "rule": "human-review-v1", "detectedAt": now,
-            "durationMs": duration, "expiresAt": expires_at,
-            "confidence": confidence, "automatic": False,
-            "reviewed": True, "status": "quarantined",
-        }, now),
-    }, status=201)
-
-
-async def security_appeals_handler(env, request):
-    await ensure_schema(env)
-    method = method_name(request)
-    if method == "GET":
-        _, rec = await _account_session_record(env, request)
-        actor = (rec.get("name", "") if rec else "").strip().lower()
-        if not actor or not await _has_role(
-                env, actor, "security_reviewer"):
-            return json_response({"error": "forbidden"}, status=403)
-        rows = await d1_all(
-            env,
-            "SELECT id, incident_id, data, status, created_at "
-            "FROM security_appeals WHERE status='pending' "
-            "ORDER BY created_at ASC LIMIT 100",
-        )
-        appeals = []
-        for row in rows or []:
-            private = await decrypt_row(env, row.get("data"))
-            appeals.append({
-                "id": int(row.get("id") or 0),
-                "incidentId": str(row.get("incident_id") or ""),
-                "status": str(row.get("status") or "pending"),
-                "createdAt": int(row.get("created_at") or 0),
-                "appeal": private if isinstance(private, dict) else {},
-            })
-        return json_response({"ok": True, "appeals": appeals},
-                             cache_control="no-store")
-    if method != "POST":
-        return json_response({"error": "method_not_allowed"}, status=405)
-    try:
-        data = await request.json()
-    except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
-    _, rec = await _account_session_record(env, request, data)
-    actor = (rec.get("name", "") if rec else "").strip().lower()
-    action = str(data.get("action") or "submit").strip().lower()
-    incident_id = security_control.normalize_incident_id(
-        data.get("incidentId"))
-    if not incident_id:
-        return json_response({"error": "invalid_incident"}, status=400)
-    if action == "review":
-        if not actor or not await _has_role(
-                env, actor, "security_reviewer"):
-            return json_response({"error": "forbidden"}, status=403)
-        try:
-            appeal_id = int(data.get("appealId") or 0)
-        except (TypeError, ValueError):
-            appeal_id = 0
-        decision = security_control.normalize_appeal_status(
-            data.get("decision"))
-        if not appeal_id or decision not in (
-                "accepted", "denied", "needs_information"):
-            return json_response({"error": "invalid_review"}, status=400)
-        now = int(Date.now())
-        reviewer_bi = await blind_index(env, actor)
-        await d1_run(
-            env,
-            "UPDATE security_appeals SET status=?, reviewed_at=?, "
-            "reviewer_bi=? WHERE id=? AND incident_id=?",
-            decision, now, reviewer_bi, appeal_id, incident_id,
-        )
-        await d1_run(
-            env,
-            "UPDATE security_restrictions SET appeal_status=?, "
-            "status=CASE WHEN ?='accepted' THEN 'revoked' ELSE status END, "
-            "reviewed=1, reviewer_bi=? WHERE incident_id=?",
-            decision, decision, reviewer_bi, incident_id,
-        )
-        _SECURITY_RESTRICTION_MEMO.clear()
-        await _audit_sensitive_action(
-            env, actor, "security.appeal_review", "incident", incident_id,
-            "success", {"decision": decision, "appealId": appeal_id})
-        return json_response({"ok": True, "decision": decision})
-    text = str(data.get("appeal") or "").strip()
-    if not text or len(text) > security_control.MAX_APPEAL_TEXT:
-        return json_response({"error": "invalid_appeal"}, status=400)
-    incident = await d1_first(
-        env,
-        "SELECT 1 AS one FROM security_restrictions WHERE incident_id=?",
-        incident_id,
-    )
-    # Return the same result for an unknown high-entropy incident id so this
-    # endpoint cannot be used to enumerate restrictions.
-    if incident:
-        appellant_bi = await blind_index(env, actor) if actor else None
-        now = int(Date.now())
-        private = await encrypt_row(env, {"text": text})
-        await d1_run(
-            env,
-            "INSERT INTO security_appeals "
-            "(incident_id, appellant_bi, data, status, created_at) "
-            "VALUES (?,?,?,'pending',?)",
-            incident_id, appellant_bi, private, now,
-        )
-        await d1_run(
-            env,
-            "UPDATE security_restrictions SET appeal_status='pending' "
-            "WHERE incident_id=?",
-            incident_id,
-        )
-        await _audit_sensitive_action(
-            env, actor, "security.appeal_submit", "incident", incident_id,
-            "requested", {})
-    return json_response({
-        "ok": True,
-        "status": "received",
-    }, status=202, cache_control="no-store")
-
-
 async def security_audit_handler(env, request):
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -13825,30 +13352,12 @@ async def security_audit_handler(env, request):
                          cache_control="no-store")
 
 
-async def cleanup_security_records(env):
+async def cleanup_sensitive_audit_records(env):
     await ensure_schema(env)
     now = int(Date.now())
     await d1_run(
-        env, "DELETE FROM security_signals WHERE last_seen<?",
-        now - SECURITY_SIGNAL_RETAIN_MS)
-    await d1_run(
-        env,
-        "UPDATE security_restrictions SET status='expired' "
-        "WHERE status IN ('quarantined','blocked') "
-        "AND expires_at>0 AND expires_at<=?",
-        now)
-    await d1_run(
-        env,
-        "DELETE FROM security_restrictions WHERE created_at<? "
-        "AND status IN ('expired','revoked')",
-        now - SECURITY_RESTRICTION_RETAIN_MS)
-    await d1_run(
-        env, "DELETE FROM security_appeals WHERE created_at<?",
-        now - SECURITY_APPEAL_RETAIN_MS)
-    await d1_run(
         env, "DELETE FROM sensitive_audit_log WHERE ts<?",
         now - SECURITY_AUDIT_RETAIN_MS)
-    _SECURITY_RESTRICTION_MEMO.clear()
 
 
 async def _admin_authorized(env, node, ts, sig, canonical):
@@ -16043,13 +15552,13 @@ async def ssh_gateway_authorize_handler(env, request):
     This is an HTTPS control-plane call. The raw SSH connection and Git process
     remain on the independently operated gateway host.
     """
-    await ensure_schema(env)
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     if not _ssh_gateway_token_ok(env, request):
         return json_response(
             {"error": "unauthorized"}, status=401,
             cache_control="no-store")
+    await ensure_schema(env)
     data, error = await _ssh_json_body(request)
     if error:
         return json_response(
@@ -16057,6 +15566,11 @@ async def ssh_gateway_authorize_handler(env, request):
             status=413 if error == "payload_too_large" else 400,
             cache_control="no-store")
     action = clean_string(data.get("action", ""), 20).lower()
+    request_id = clean_string(data.get("requestId", ""), 40)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{24}", request_id):
+        return json_response(
+            {"authorized": False}, status=403,
+            cache_control="no-store")
     if action == "lookup":
         row, _key_data = await _ssh_key_gateway_record(
             env, public_key=data.get("publicKey", ""))
@@ -16068,6 +15582,7 @@ async def ssh_gateway_authorize_handler(env, request):
             "ok": True,
             "authorized": True,
             "keyId": row.get("key_id"),
+            "requestId": request_id,
         }, cache_control="no-store")
     if action != "authorize":
         return json_response({"error": "bad_action"}, status=400)
@@ -16166,7 +15681,8 @@ async def ssh_gateway_authorize_handler(env, request):
     return json_response({
         "ok": True,
         "authorized": True,
-        "principal": account,
+        "keyId": key_id,
+        "requestId": request_id,
         "operation": operation,
         "owner": canonical_owner,
         "repository": repo,
@@ -23642,17 +23158,9 @@ async def feedback_handler(env, request):
                              cache_control="no-store")
 
     source, vote, path, message = fields
-    try:
-        headers = request.headers
-    except Exception:
-        headers = {}
-    ip = (headers.get("cf-connecting-ip") or "").strip()
-    if not ip:
-        fwd = (headers.get("x-forwarded-for") or "").strip()
-        ip = fwd.split(",")[0].strip() if fwd else ""
-    ip = ip[:64]
+    ip = _transient_client_address(request)
     # Retain only a broad category, never the browser's raw user-agent string.
-    user_agent = _security_client_category(request)
+    user_agent = _generalized_client_category(request)
     try:
         await ensure_schema(env)
         ip_hash = await blind_index(env, ip) if ip else ""
@@ -24851,9 +24359,6 @@ ADMIN_HIDDEN_TABLES = (
     "security_reports",
     "repo_security_scans",
     "repo_security_scan_reviews",
-    "security_appeals",
-    "security_signals",
-    "security_restrictions",
     "role_grants",
     "sensitive_audit_log",
     # Succession is governed only by the organization's current roster. The
@@ -25702,7 +25207,8 @@ def _https_mirror_registration_payload(data):
     }
 
 
-async def _https_mirror_fetch_text(url, max_bytes, timeout_seconds):
+async def _https_mirror_fetch_text(
+        url, max_bytes, timeout_seconds, accept="application/json"):
     """Fetch a bounded control document without forwarding caller metadata."""
     from js import fetch as js_fetch
     try:
@@ -25712,7 +25218,7 @@ async def _https_mirror_fetch_text(url, max_bytes, timeout_seconds):
                 to_js({
                     "method": "GET",
                     "headers": {
-                        "accept": "application/json",
+                        "accept": accept,
                         "user-agent": "ForkMesh-HTTPS-router/1.0",
                     },
                     "redirect": "manual",
@@ -25811,6 +25317,7 @@ async def _https_mirror_cloudflare_dns_ok(base_url):
             target,
             HTTPS_MIRROR_MANIFEST_MAX_BYTES,
             HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+            "application/dns-json",
         )
         if status != 200 or not text:
             return False
@@ -26287,9 +25794,16 @@ async def https_mirror_private_route_handler(env, request):
 
 
 async def _https_mirror_expected_forkmesh_refs(env):
-    """Owner-attested refs digest for the public flagship repository."""
+    """Owner-attested refs digest for the public flagship repository.
+
+    ``forkmesh`` may be an organization namespace rather than an account.  In
+    that case its public URL is backed by a linked node's catalog row; resolve
+    that alias for the state pin while health challenges continue to name the
+    stable public ``forkmesh/forkmesh`` gateway alias.
+    """
     try:
-        key_bi = await blind_index(env, "forkmesh/forkmesh")
+        owner = await _org_repo_node(env, "forkmesh", "forkmesh") or "forkmesh"
+        key_bi = await blind_index(env, owner + "/forkmesh")
         row = await d1_first(
             env,
             "SELECT data,is_private FROM repositories WHERE key_bi=?",
@@ -26726,8 +26240,39 @@ async def _https_mirror_public_context(env, owner, repo):
                 history.setdefault(
                     str(item.get("key_bi") or ""), []).append(
                         item.get("state_hash"))
-        pins = clone_state_pins(
-            target, target_row.get("key_bi"), members, history)
+        # An organization administrator can explicitly link one of their owned
+        # mirror nodes as the canonical backing node for an organization URL.
+        # In that case the linked record is the organization-owner attestation:
+        # use its signed current/history pins, then admit only peer mirrors that
+        # publish one of those exact states. This avoids an unrelated same-name
+        # local-node record overriding the explicit organization link while
+        # retaining the stricter source-of-truth pin policy everywhere else.
+        linked_target = await d1_first(
+            env,
+            "SELECT 1 AS linked FROM org_repos "
+            "WHERE node_owner=? AND repo=? LIMIT 1",
+            owner_l,
+            repo_l,
+        )
+        if (
+            linked_target
+            and str(target.get("source") or "").strip().lower()
+            == "remote-clone"
+        ):
+            pins = set()
+            target_state = clean_string(
+                target.get("stateHash", ""), 64).lower()
+            if re.fullmatch(r"[0-9a-f]{64}", target_state):
+                pins.add(target_state)
+            for state in history.get(
+                    str(target_row.get("key_bi") or ""), []):
+                state = clean_string(state, 64).lower()
+                if re.fullmatch(r"[0-9a-f]{64}", state):
+                    pins.add(state)
+            pins = pins or None
+        else:
+            pins = clone_state_pins(
+                target, target_row.get("key_bi"), members, history)
         # Direct routing never uses the legacy unpinned fail-open behavior. An
         # owner must publish an authenticated refs digest before a remote
         # endpoint can advertise or resolve that repository.
@@ -26833,14 +26378,22 @@ async def _https_mirror_clone_pin(env, context):
 
 async def _https_mirror_route_advance(env, context, served_node, operation):
     now = int(Date.now())
-    await d1_run(
-        env,
-        """INSERT INTO edge_route_cursor(repo_bi,cursor,updated_at)
-             VALUES (?,1,?)
-             ON CONFLICT(repo_bi) DO UPDATE SET
-               cursor=edge_route_cursor.cursor+1,updated_at=excluded.updated_at""",
-        context["repoBi"], now,
-    )
+    # A Git clone has two requests: info/refs selects the next mirror and the
+    # upload-pack body is pinned to that same mirror. Advancing for both made a
+    # two-node fleet move the cursor by two per clone and therefore select the
+    # same node forever. Advance once for info/refs (and once for each ordinary
+    # browse/release request), but never advance again for its sticky
+    # git-upload-pack continuation.
+    if operation != "git-upload-pack":
+        await d1_run(
+            env,
+            """INSERT INTO edge_route_cursor(repo_bi,cursor,updated_at)
+                 VALUES (?,1,?)
+                 ON CONFLICT(repo_bi) DO UPDATE SET
+                   cursor=edge_route_cursor.cursor+1,
+                   updated_at=excluded.updated_at""",
+            context["repoBi"], now,
+        )
     if operation == "git-info-refs":
         await d1_run(
             env,
@@ -27063,7 +26616,14 @@ async def _https_mirror_proxy(
             status = 0
             upstream = None
         if upstream is None or status in HTTPS_MIRROR_RETRY_STATUSES:
-            if status in (401, 403, 500, 502, 503, 504):
+            # A fresh signed repository proof owns the endpoint's shared
+            # integrity state. A request-local timeout, missing optional path,
+            # or transient 5xx still fails over, but must not poison the
+            # endpoint for every other visitor. Persistent availability is
+            # re-evaluated by the signed health cron. Capability/auth rejection
+            # remains a hard failure because the endpoint can no longer honor
+            # requests signed by this router.
+            if status in (401, 403):
                 try:
                     await d1_run(
                         env,
@@ -27303,17 +26863,16 @@ class Default(WorkerEntrypoint):
                     "organization succession warning pass failed: "
                     + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Hourly privacy/security retention: raw network identifiers were never
-        # stored; expire generalized signals, reviewed restrictions, appeals and
-        # metadata-only audit records on their documented schedules.
+        # Hourly retention for metadata-only sensitive-action audit records,
+        # plus expiration of pending reward allocations.
         if minute % 60 == 52:
             try:
-                await cleanup_security_records(self.env)
+                await cleanup_sensitive_audit_records(self.env)
                 await expire_pending_rewards(self.env)
             except BaseException as error:
                 await log_cron_error(
-                    self.env, "/cron/cleanup-security-records",
-                    "cleanup_security_records failed: "
+                    self.env, "/cron/cleanup-sensitive-audit-records",
+                    "cleanup_sensitive_audit_records failed: "
                     + _safe_error_text(error),
                     error=error, failures=cron_failures)
             try:
@@ -27350,11 +26909,6 @@ class Default(WorkerEntrypoint):
         try:
             url = urlparse(request.url)
 
-            restriction_response = await _security_enforce_request(
-                self.env, request, url)
-            if restriction_response is not None:
-                return restriction_response
-
             # Admin error dashboard at a secret, env-configured path. Its 401/403
             # responses are not logged, but unexpected exceptions are captured.
             admin_path = _admin_path(self.env)
@@ -27372,10 +26926,6 @@ class Default(WorkerEntrypoint):
             # Re-raise so Cloudflare records the native Worker failure/Error 1101
             # while Sentry keeps the underlying Python exception and stack trace.
             raise
-        post_restriction = await _security_observe_response(
-            self.env, request, url, response)
-        if post_restriction is not None:
-            response = post_restriction
         try:
             status = int(getattr(response, "status", 200) or 200)
         except Exception:
@@ -27833,16 +27383,6 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/security/roles", "/api/security/roles/"):
             return await security_roles_handler(self.env, request)
-
-        if url.path in (
-                "/api/security/quarantine",
-                "/api/security/quarantine/"):
-            return await security_quarantine_handler(self.env, request)
-
-        if url.path in (
-                "/api/security/appeals",
-                "/api/security/appeals/"):
-            return await security_appeals_handler(self.env, request)
 
         if url.path in ("/api/security/audit", "/api/security/audit/"):
             return await security_audit_handler(self.env, request)
@@ -28393,8 +27933,12 @@ class Default(WorkerEntrypoint):
 
         room = room_key_from_path(url.path)
         if room:
+            public_world_general = (
+                room.get("key") == PUBLIC_WORLD_GENERAL_ROOM_KEY
+            )
             if (
                 not room.get("compat")
+                and not public_world_general
                 and await _repository_access_context(
                     self.env,
                     request,

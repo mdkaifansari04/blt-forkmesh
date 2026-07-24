@@ -4,6 +4,7 @@
 
 (() => {
   const ROOM_NAME = "general";
+  const PUBLIC_WORLD_GENERAL_ROOM = "world-general";
   let roomPassphrase = null;
   const SPACE_CHANNELS = Object.freeze({
     "sky-campus": "#world-sky-campus",
@@ -17,6 +18,7 @@
   });
   const requestedParams = new URLSearchParams(location.search);
   const requestedSpace = requestedParams.get("space") || "";
+  const requestedOrganization = String(requestedParams.get("org") || "");
   const requestedWorkshopRepo = String(requestedParams.get("repo") || "");
   const requestedWorkshopRun = String(requestedParams.get("run") || "");
   const scopedWorkshop =
@@ -35,12 +37,18 @@
   // Square ciphertext: every registered account can obtain that public room's
   // key. The scoped key endpoint applies the repository ACL before release,
   // and the scoped WebSocket route fails closed before Durable Object access.
-  const ROOM_KEY_ENDPOINT =
-    `/api/chat/room-key?owner=${encodeURIComponent(ROOM_OWNER)}` +
-    `&repo=${encodeURIComponent(ROOM_REPO)}`;
   const ACTIVE_SPACE = Object.hasOwn(SPACE_CHANNELS, requestedSpace)
     ? requestedSpace
     : "";
+  const PUBLIC_WORLD_GENERAL =
+    !ACTIVE_SPACE && !scopedWorkshop && !requestedOrganization;
+  const ACTIVE_ROOM = PUBLIC_WORLD_GENERAL
+    ? PUBLIC_WORLD_GENERAL_ROOM
+    : ROOM_NAME;
+  const ROOM_KEY_ENDPOINT =
+    `/api/chat/room-key?owner=${encodeURIComponent(ROOM_OWNER)}` +
+    `&repo=${encodeURIComponent(ROOM_REPO)}` +
+    `&room=${encodeURIComponent(ACTIVE_ROOM)}`;
   const workshopChannelSuffix = scopedWorkshop
     ? `${requestedWorkshopRepo}/${requestedWorkshopRun}`
         .toLowerCase()
@@ -62,7 +70,7 @@
     : "General";
   const CHAT_WS_PATH =
     `/api/repo/${encodeURIComponent(ROOM_OWNER)}` +
-    `/${encodeURIComponent(ROOM_REPO)}/rooms/general/ws`;
+    `/${encodeURIComponent(ROOM_REPO)}/rooms/${encodeURIComponent(ACTIVE_ROOM)}/ws`;
   const FORKBOT_ENDPOINT = "/api/forkbot/chat";
   const FORKBOT_SENDER_ID = "forkbot";
   const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
@@ -177,7 +185,11 @@
     if (token) headers.authorization = "Bearer " + token;
     const res = await fetch(ROOM_KEY_ENDPOINT, { headers, cache: "no-store" });
     if (!res.ok) {
-      const err = new Error("Sign in to join chat — room key unavailable.");
+      const err = new Error(
+        PUBLIC_WORLD_GENERAL
+          ? "Public World #general key unavailable."
+          : "Sign in to join this authenticated chat — room key unavailable."
+      );
       err.code = res.status === 401 || res.status === 403 ? "auth" : "server";
       throw err;
     }
@@ -190,7 +202,10 @@
   async function deriveRoomKey() {
     const passphrase = await fetchRoomPassphrase();
     const saltDigest = new Uint8Array(
-      await crypto.subtle.digest("SHA-256", enc.encode("ForkMesh room:" + ROOM_NAME))
+      await crypto.subtle.digest(
+        "SHA-256",
+        enc.encode("ForkMesh room:" + ACTIVE_ROOM)
+      )
     );
     const salt = saltDigest.slice(0, 16);
     const baseKey = await crypto.subtle.importKey(
@@ -320,10 +335,30 @@
     return isUserLikeSession(session) ? session : null;
   }
 
+  function canJoinChat() {
+    return PUBLIC_WORLD_GENERAL || Boolean(userSession());
+  }
+
+  function chatAccountKind() {
+    return PUBLIC_WORLD_GENERAL ? "guest" : "user";
+  }
+
+  function worldVisitorName(value) {
+    const asserted = String(value || "")
+      .replace(/^World visitor\s*·\s*/i, "")
+      .trim()
+      .slice(0, 16) || "guest";
+    return `World visitor · ${asserted}`.slice(0, MAX_NAME);
+  }
+
   function displayName() {
     const session = userSession() || readSession();
-    const value = session?.nodeName || session?.email || "web-guest";
-    return String(value).trim().slice(0, MAX_NAME) || "web-guest";
+    const value =
+      session?.nodeName ||
+      session?.email ||
+      `World Guest ${String(selfId).replace(/[^A-Za-z0-9]/g, "").slice(0, 6)}`;
+    const name = String(value).trim().slice(0, MAX_NAME) || "World Guest";
+    return PUBLIC_WORLD_GENERAL ? worldVisitorName(name) : name;
   }
 
   function escapeHtml(value) {
@@ -477,11 +512,11 @@
   }
 
   function fullUserOnlyHtml() {
-    return `<div class="mt-3 rounded-lg border border-border bg-background px-4 py-3 text-sm text-muted-foreground">Log in as a user to join the encrypted ${escapeHtml(CHANNEL)} channel.</div>`;
+    return `<div class="mt-3 rounded-lg border border-border bg-background px-4 py-3 text-sm text-muted-foreground">Log in as a user to join the authenticated ${escapeHtml(CHANNEL)} channel. Guests can use only public World #general.</div>`;
   }
 
   function sideUserOnlyHtml() {
-    return '<div class="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">User login required for chat.</div>';
+    return '<div class="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">User login required for this channel. Guests can use only public World #general.</div>';
   }
 
   function setInputsEnabled(enabled) {
@@ -491,14 +526,14 @@
   }
 
   function showUserOnlyState() {
-    setStatus("User login required");
+    setStatus("User login required for this channel");
     setInputsEnabled(false);
     if (fullLog) fullLog.innerHTML = fullUserOnlyHtml();
     if (sideLog) sideLog.innerHTML = sideUserOnlyHtml();
   }
 
   function ensureEmptyState() {
-    if (!userSession()) {
+    if (!canJoinChat()) {
       showUserOnlyState();
       return;
     }
@@ -629,7 +664,7 @@
           `${Math.random()}`.slice(2) + Date.now(),
         senderId: selfId,
         sender: displayName(),
-        accountKind: "user",
+        accountKind: chatAccountKind(),
         ts: Date.now(),
       },
       extra || {}
@@ -642,8 +677,24 @@
     return true;
   }
 
+  function allowedChatAccountKind(value) {
+    return value === "user" || (PUBLIC_WORLD_GENERAL && value === "guest");
+  }
+
+  function normalizedPublicWorldFrame(entry) {
+    if (!PUBLIC_WORLD_GENERAL || !entry || typeof entry !== "object") {
+      return entry;
+    }
+    return {
+      ...entry,
+      accountKind: "guest",
+      sender: worldVisitorName(entry.sender),
+    };
+  }
+
   function renderChatEntry(entry, kind) {
-    if (!entry || entry.accountKind !== "user") return;
+    if (!entry || !allowedChatAccountKind(entry.accountKind)) return;
+    entry = normalizedPublicWorldFrame(entry);
     if (!once(entry.id)) return;
     const who = String(entry.sender || "peer").slice(0, MAX_NAME);
     const text = entry.fileName ? "📎 " + entry.fileName : entry.text || "";
@@ -701,7 +752,8 @@
       } catch (_) {}
       return;
     }
-    if (type !== "history" && plain.accountKind !== "user") return;
+    if (type !== "history" && !allowedChatAccountKind(plain.accountKind)) return;
+    plain = normalizedPublicWorldFrame(plain);
     const sender = String(plain.sender || "peer").slice(0, MAX_NAME);
     if (type === "chat") {
       if (plain.channel === CHANNEL) renderChatEntry(plain, "peer");
@@ -763,7 +815,7 @@
   const DURABLE_TYPES = new Set(["chat", "edit", "delete", "reaction", "admin-delete"]);
 
   function send(plain) {
-    if (!userSession()) {
+    if (!canJoinChat()) {
       showUserOnlyState();
       return Promise.resolve();
     }
@@ -781,7 +833,7 @@
   let reconnectTimer = null;
 
   function scheduleReconnect() {
-    if (reconnectTimer || !userSession()) return;
+    if (reconnectTimer || !canJoinChat()) return;
     setStatus("Disconnected · reconnecting…");
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
@@ -792,7 +844,7 @@
 
   async function connect() {
     if (socket || connecting) return;
-    if (!userSession()) {
+    if (!canJoinChat()) {
       showUserOnlyState();
       return;
     }
@@ -821,7 +873,11 @@
     socket.addEventListener("open", () => {
       connecting = false;
       reconnectDelayMs = 2000;
-      setStatus("Connected · authenticated shared key");
+      setStatus(
+        PUBLIC_WORLD_GENERAL
+          ? "Connected · public World #general"
+          : "Connected · authenticated shared key"
+      );
       send(makePlain("hello", { channels: [CHANNEL] }));
       const callbacks = openCallbacks;
       openCallbacks = [];
@@ -839,7 +895,7 @@
   }
 
   setInterval(() => {
-    if (socket && socket.readyState === WebSocket.OPEN && userSession()) {
+    if (socket && socket.readyState === WebSocket.OPEN && canJoinChat()) {
       send(makePlain("presence"));
     }
   }, 60000);
@@ -871,6 +927,7 @@
   }
 
   async function maybeAskForkbot(text) {
+    if (!userSession()) return;
     if (!FORKBOT_MENTION_RE.test(text || "")) return;
     // Drop the triggering line (sent separately as `message`) and ForkBot's own
     // replies, and cap the rest so ForkBot sees the lead-up conversation.
@@ -898,7 +955,7 @@
   }
 
   function sendFrom(inputEl) {
-    if (!userSession()) {
+    if (!canJoinChat()) {
       showUserOnlyState();
       return;
     }
@@ -941,7 +998,7 @@
     wireInput(sideInput, sideSend);
     // Connect right away so the room's message history (replayed by the relay
     // on WebSocket open) is visible without the visitor first focusing an input.
-    if (userSession()) {
+    if (canJoinChat()) {
       setStatus("Not connected");
       connect();
     }

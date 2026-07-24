@@ -24,6 +24,7 @@ const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const SOCKET_RETRY_MAX_MS = 20000;
 const PRESENCE_STALE_MS = 22000;
 const WORLD_TICKET_REFRESH_MS = 5 * 60 * 1000;
+const WORLD_NOTIFICATION_POLL_MS = 30 * 1000;
 const ACCOUNT_STATUS_VALUES = new Set([
   "Guest",
   "Registered",
@@ -481,6 +482,33 @@ function safeHTTPURL(value) {
   }
 }
 
+function safeNotificationURL(value) {
+  try {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const url = new URL(raw, location.origin);
+    if (url.username || url.password) return "";
+    if (url.origin === location.origin) {
+      return `${url.pathname}${url.search}${url.hash}`;
+    }
+    return url.protocol === "https:" ? url.href : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function sanitizeNotificationText(value, fallback = "", maxLength = 500) {
+  const text = String(value ?? "")
+    .replace(
+      /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,
+      " ",
+    )
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+  return text || fallback;
+}
+
 function safePublicHTTPSURL(value) {
   try {
     const raw = String(value || "").trim();
@@ -734,65 +762,6 @@ function normalizeMediaSpaces(value) {
     .map((space) => normalizeMediaRoom(space))
     .filter((space) => space.id)
     .slice(0, 50);
-}
-
-function normalizeQuarantinePayload(value) {
-  const source = value && typeof value === "object" ? value : {};
-  const summary = (Array.isArray(source.summary) ? source.summary : [])
-    .map((item) => ({
-      reason: sanitizePresenceText(item?.reason, "other_security_abuse", 64),
-      status: sanitizePresenceText(item?.status, "quarantined", 24),
-      count: Math.max(0, Math.min(100000, Number(item?.count) || 0)),
-    }))
-    .filter((item) => item.count > 0)
-    .slice(0, 40);
-  const restrictions = (Array.isArray(source.restrictions)
-    ? source.restrictions
-    : [])
-    .map((item) => {
-      const incidentId = String(item?.incidentId || "").toLowerCase();
-      if (!/^[a-f0-9]{32}$/.test(incidentId)) return null;
-      return {
-        incidentId,
-        reason: sanitizePresenceText(
-          item?.reason,
-          "other_security_abuse",
-          64,
-        ),
-        rule: sanitizePresenceText(item?.rule, "generalized-rule", 80),
-        detectedAt: Math.max(0, Number(item?.detectedAt) || 0),
-        durationMs: Math.max(0, Number(item?.durationMs) || 0),
-        expiresAt: Math.max(0, Number(item?.expiresAt) || 0),
-        confidence: ["low", "medium", "high"].includes(item?.confidence)
-          ? item.confidence
-          : "low",
-        automatic: item?.automatic === true,
-        reviewed: item?.reviewed === true,
-        appealStatus: sanitizePresenceText(item?.appealStatus, "none", 32),
-        status: sanitizePresenceText(item?.status, "quarantined", 24),
-        countryCode: /^[A-Z]{2}$/.test(String(item?.countryCode || ""))
-          ? String(item.countryCode)
-          : "",
-        clientCategory: sanitizePresenceText(item?.clientCategory, "", 40),
-      };
-    })
-    .filter(Boolean)
-    .slice(0, 100);
-  const allowedActions = Array.isArray(source.allowedActions)
-    ? source.allowedActions.filter((action) => action === "revoke")
-    : [];
-  return {
-    visibility: [
-      "aggregate-only",
-      "moderator-generalized",
-      "reviewer-generalized-world",
-    ].includes(source.visibility)
-      ? source.visibility
-      : "unavailable",
-    summary,
-    restrictions,
-    allowedActions,
-  };
 }
 
 function normalizeFederatedInstances(value) {
@@ -1579,6 +1548,31 @@ function normalizeCommunityEvents(payload, now = Date.now()) {
     .sort((left, right) => Date.parse(left.startsAt) - Date.parse(right.startsAt));
 }
 
+function normalizeWorldNotifications(payload) {
+  const items = Array.isArray(payload?.notifications)
+    ? payload.notifications
+    : [];
+  return items
+    .slice(0, 100)
+    .map((item) => {
+      const id = String(item?.id || "");
+      if (!/^[A-Za-z0-9_-]{16,160}$/.test(id)) return null;
+      const title = sanitizeNotificationText(item?.title, "Notification", 160);
+      if (!title) return null;
+      return {
+        id,
+        kind: sanitizeNotificationText(item?.kind, "Update", 40),
+        title,
+        body: sanitizeNotificationText(item?.body, "", 500),
+        href: safeNotificationURL(item?.href),
+        ts: Math.max(0, Number(item?.ts) || 0),
+        readAt: Math.max(0, Number(item?.readAt) || 0),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => right.ts - left.ts);
+}
+
 function liveNodeRecords(network) {
   const stats = network?.stats || network || {};
   const names = Array.isArray(stats.onlineNodes) ? stats.onlineNodes : [];
@@ -1721,7 +1715,7 @@ function worldTemplate(identity, settings, mode) {
         <button type="button" data-world-landmark="information"><span aria-hidden="true">i</span><span>Start</span></button>
         <button type="button" data-world-landmark="repositories"><span aria-hidden="true">{ }</span><span>Code</span></button>
         <button type="button" data-world-landmark="workshops"><span aria-hidden="true">⌘</span><span>Workshops</span></button>
-        <a href="/dashboard/chat"><span aria-hidden="true">⌁</span><span>Chat</span></a>
+        <a href="/dashboard/chat" data-world-chat-open><span aria-hidden="true">⌁</span><span>Chat</span></a>
         <button type="button" data-world-landmark="support"><span aria-hidden="true">♥</span><span>Support</span></button>
       </nav>
 
@@ -1756,7 +1750,16 @@ function worldTemplate(identity, settings, mode) {
               <button type="button" data-world-emote="idea" title="Idea" aria-label="Share an idea">✦</button>
               <button type="button" data-world-emote="celebrate" title="Celebrate" aria-label="Celebrate">★</button>
             </span>
-            <a class="world-top-link" href="/dashboard/chat" title="Open chat">
+            <button
+              class="world-top-link world-notification-button"
+              type="button"
+              data-world-landmark="events"
+              aria-label="Open World notifications"
+            >
+              <span aria-hidden="true">◫</span><span>Alerts</span>
+              <strong data-world-notification-count aria-hidden="true" hidden>0</strong>
+            </button>
+            <a class="world-top-link" href="/dashboard/chat" data-world-chat-open title="Open chat inside the World">
               <span aria-hidden="true">⌁</span><span>Chat</span>
             </a>
             <a class="world-top-link" href="/dashboard" title="Open operations console">
@@ -1870,6 +1873,38 @@ function worldTemplate(identity, settings, mode) {
           aria-hidden="true"
         ></aside>
 
+        <button
+          class="world-chat-backdrop"
+          type="button"
+          data-world-chat-close
+          aria-label="Close World chat"
+          tabindex="-1"
+        ></button>
+        <section
+          class="world-chat"
+          data-world-chat
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="world-chat-title"
+          aria-hidden="true"
+        >
+          <header class="world-chat-heading">
+            <div>
+              <p class="world-eyebrow">LIVE COLLABORATION</p>
+              <h2 id="world-chat-title">World chat</h2>
+              <span>Chat stays inside ForkMesh World.</span>
+            </div>
+            <button type="button" data-world-chat-close aria-label="Close World chat">×</button>
+          </header>
+          <iframe
+            class="world-chat-frame"
+            data-world-chat-frame
+            title="ForkMesh World chat"
+            sandbox="allow-forms allow-same-origin allow-scripts"
+            referrerpolicy="same-origin"
+          ></iframe>
+        </section>
+
         <section class="world-settings" data-world-settings aria-labelledby="world-settings-title" aria-hidden="true">
           <div class="world-settings-heading">
             <div>
@@ -1953,13 +1988,16 @@ class ForkMeshWorld extends HTMLElement {
     this.activeOffice = null;
     this.events = [];
     this.eventsState = "loading";
+    this.notifications = [];
+    this.notificationsState = "loading";
+    this.notificationUnread = 0;
+    this.notificationAccount = "";
     this.rewardState = {};
     this.pendingRewards = [];
     this.pendingContribution = null;
     this.securityScan = null;
     this.securityHistory = [];
     this.securityRepository = "";
-    this.quarantine = normalizeQuarantinePayload(null);
     this.fediverseDirectory = {
       mastodon: [],
       lemmy: [],
@@ -1984,6 +2022,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldTicket = "";
     this.worldTicketExpires = 0;
     this.worldTicketTimer = 0;
+    this.chatReturnFocus = null;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -2002,8 +2041,11 @@ class ForkMeshWorld extends HTMLElement {
     this.pingTimer = 0;
     this.rewardTimer = 0;
     this.eventsTimer = 0;
+    this.notificationsTimer = 0;
     this.mediaTimer = 0;
     this.seenRewardEvents = new Set();
+    this.seenWorldEvents = new Set();
+    this.seenNotifications = new Set();
     this.broadcast = null;
     this.broadcastTimer = 0;
     this.activityTimer = 0;
@@ -2039,6 +2081,7 @@ class ForkMeshWorld extends HTMLElement {
     this.syncViewportHeight();
     window.visualViewport?.addEventListener("resize", this.syncViewportHeight);
     window.addEventListener("orientationchange", this.syncViewportHeight);
+    window.addEventListener("storage", this.handleStorage);
     this.bindUI();
     this.startClock();
     this.bootstrap();
@@ -2095,7 +2138,6 @@ class ForkMeshWorld extends HTMLElement {
       this.world.updateFederatedInstances?.(this.federatedInstances);
       this.world.updateBots(this.botDirectory);
       this.world.updateFediverseDirectory(this.fediverseDirectory);
-      this.world.updateQuarantine?.(this.quarantine);
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
       if (!this.repositories.length) {
         // The portal's construction geometry is decorative, but an empty or
@@ -2112,7 +2154,9 @@ class ForkMeshWorld extends HTMLElement {
       this.startActivityTicker();
       this.startRewardPolling();
       this.startEventPolling();
+      this.startNotificationPolling();
       this.startMediaPlaybackPolling();
+      this.announceWorldNotifications();
       this.distanceTimer = window.setInterval(() => this.updateDistances(), 1000);
       document.addEventListener("visibilitychange", this.handleVisibility);
       window.addEventListener("pagehide", this.handlePageHide, { once: true });
@@ -2134,6 +2178,9 @@ class ForkMeshWorld extends HTMLElement {
       await Promise.allSettled([this.loadContext(), this.loadWorldData()]);
       this.hideLoading();
       this.updateMetrics();
+      this.startEventPolling();
+      this.startNotificationPolling();
+      this.announceWorldNotifications();
       if (this.requestedLandmark) {
         this.openLandmark(this.requestedLandmark);
       }
@@ -2149,6 +2196,12 @@ class ForkMeshWorld extends HTMLElement {
     } else if (!this.socket) {
       this.refreshWorldTicket();
       this.connectPresence();
+    }
+  };
+
+  handleStorage = (event) => {
+    if (event.key === "forkmesh.session") {
+      this.refreshPersonalNotifications(false);
     }
   };
 
@@ -2308,7 +2361,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async loadWorldData() {
-    const hasSession = Boolean(readSession()?.sessionToken);
+    const session = readSession();
+    const hasSession = Boolean(session?.sessionToken);
     const [
       networkResult,
       instancesResult,
@@ -2321,9 +2375,9 @@ class ForkMeshWorld extends HTMLElement {
       mediaResult,
       botResult,
       pendingRewardsResult,
+      notificationsResult,
       inactiveResult,
       eventsResult,
-      quarantineResult,
       placementResult,
       mentionResult,
     ] =
@@ -2372,6 +2426,17 @@ class ForkMeshWorld extends HTMLElement {
               cache: "no-store",
             })
           : Promise.resolve({ rewards: [] }),
+        hasSession && session?.nodeName
+          ? this.fetchJSON(
+              `/api/notifications?node=${encodeURIComponent(
+                String(session.nodeName).toLowerCase(),
+              )}&limit=100`,
+              {
+                timeout: 5000,
+                cache: "no-store",
+              },
+            )
+          : Promise.resolve({ notifications: [], unread: 0 }),
         this.fetchJSON("/api/world/inactive", {
           auth: false,
           timeout: 5000,
@@ -2381,11 +2446,6 @@ class ForkMeshWorld extends HTMLElement {
           auth: false,
           timeout: 5000,
           cache: "no-store",
-        }),
-        this.fetchJSON("/api/security/quarantine", {
-          timeout: 5000,
-          cache: "no-store",
-          headers: { "x-forkmesh-world-view": "generalized" },
         }),
         this.fetchJSON(
           "/api/world/community-ads/placements?context=town-square",
@@ -2430,6 +2490,29 @@ class ForkMeshWorld extends HTMLElement {
       this.events = [];
       this.eventsState = "unavailable";
     }
+    this.notificationAccount =
+      hasSession && session?.nodeName
+        ? String(session.nodeName).toLowerCase()
+        : "";
+    if (!this.notificationAccount) {
+      this.notifications = [];
+      this.notificationUnread = 0;
+      this.notificationsState = "signed-out";
+    } else if (notificationsResult.status === "fulfilled") {
+      this.notifications = normalizeWorldNotifications(
+        notificationsResult.value,
+      );
+      this.notificationUnread = Math.max(
+        0,
+        Number(notificationsResult.value?.unread) || 0,
+      );
+      this.notificationsState = this.notifications.length ? "ready" : "empty";
+    } else {
+      this.notifications = [];
+      this.notificationUnread = 0;
+      this.notificationsState = hasSession ? "unavailable" : "signed-out";
+    }
+    this.updateNotificationBadge();
     const serverNow =
       versionResult.status === "fulfilled" ? Number(versionResult.value?.now || 0) : 0;
     this.rewardState =
@@ -2450,10 +2533,6 @@ class ForkMeshWorld extends HTMLElement {
     }
     this.securityScan =
       scanResult.status === "fulfilled" ? scanResult.value || null : null;
-    this.quarantine =
-      quarantineResult.status === "fulfilled"
-        ? normalizeQuarantinePayload(quarantineResult.value)
-        : normalizeQuarantinePayload(null);
     this.fediverseDirectory =
       directoryResult.status === "fulfilled"
         ? directoryResult.value || {
@@ -2536,7 +2615,6 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.updateBots(this.botDirectory);
     this.world?.updateOrganizations(this.organizations);
     this.world?.updateFediverseDirectory(this.fediverseDirectory);
-    this.world?.updateQuarantine?.(this.quarantine);
     this.world?.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
     this.renderPeers();
     this.updateMetrics();
@@ -3022,6 +3100,23 @@ class ForkMeshWorld extends HTMLElement {
 
   bindUI() {
     this.addEventListener("click", (event) => {
+      const chatLink = event.target.closest(
+        "[data-world-chat-open], a[href^='/dashboard/chat']",
+      );
+      if (chatLink) {
+        event.preventDefault();
+        this.openWorldChat(
+          chatLink.getAttribute("href") ||
+            chatLink.dataset.worldChatOpen ||
+            "/dashboard/chat",
+          chatLink,
+        );
+        return;
+      }
+      if (event.target.closest("[data-world-chat-close]")) {
+        this.closeWorldChat();
+        return;
+      }
       const landmarkButton = event.target.closest("[data-world-landmark]");
       if (landmarkButton) {
         const id = landmarkButton.dataset.worldLandmark;
@@ -3201,17 +3296,12 @@ class ForkMeshWorld extends HTMLElement {
         this.refreshCommunityEvents(true);
         return;
       }
-      if (event.target.closest("[data-world-quarantine-refresh]")) {
-        this.refreshQuarantine(true);
+      if (event.target.closest("[data-world-notifications-refresh]")) {
+        this.refreshPersonalNotifications(true);
         return;
       }
-      const revokeRestriction = event.target.closest(
-        "[data-world-quarantine-revoke]",
-      );
-      if (revokeRestriction) {
-        this.revokeQuarantineRestriction(
-          revokeRestriction.dataset.worldQuarantineRevoke,
-        );
+      if (event.target.closest("[data-world-notifications-read]")) {
+        this.markWorldNotificationsRead();
         return;
       }
       const radio = event.target.closest("[data-world-radio]");
@@ -3420,7 +3510,9 @@ class ForkMeshWorld extends HTMLElement {
 
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
-      if (this.$("[data-world-settings]")?.dataset.open === "true") {
+      if (this.$("[data-world-chat]")?.dataset.open === "true") {
+        this.closeWorldChat();
+      } else if (this.$("[data-world-settings]")?.dataset.open === "true") {
         this.toggleSettings(false);
       } else if (this.$("[data-world-detail]")?.dataset.open === "true") {
         this.closeLandmark();
@@ -3808,6 +3900,7 @@ class ForkMeshWorld extends HTMLElement {
     const backdrop = this.$("[data-world-detail-backdrop]");
     if (!detail || !backdrop) return;
     const featurePanel = this.landmarkPanelHTML(landmark.id);
+    detail.dataset.openLandmark = landmark.id;
     detail.style.setProperty("--detail-color", landmark.color);
     detail.innerHTML = `
       <header class="world-detail-header">
@@ -3883,7 +3976,6 @@ class ForkMeshWorld extends HTMLElement {
       organizations: () => this.organizationPanelHTML(),
       fediverse: () => this.fediversePanelHTML(),
       security: () => this.securityPanelHTML(),
-      quarantine: () => this.quarantinePanelHTML(),
       launchpad: () => this.launchpadPanelHTML(),
       events: () => this.eventsPanelHTML(),
       neighborhood: () => this.neighborhoodPanelHTML(),
@@ -4909,178 +5001,6 @@ class ForkMeshWorld extends HTMLElement {
       </section>`;
   }
 
-  quarantinePanelHTML() {
-    const signals = [
-      "Known vulnerable endpoint probing",
-      "Credential stuffing or repeated authentication abuse",
-      "Path traversal or injection attempts",
-      "Excessive automated scraping or denial-of-service behavior",
-      "Known exploit signatures or access-control bypass attempts",
-    ];
-    const summary = Array.isArray(this.quarantine?.summary)
-      ? this.quarantine.summary
-      : [];
-    const restrictions = Array.isArray(this.quarantine?.restrictions)
-      ? this.quarantine.restrictions
-      : [];
-    const canRevoke = this.quarantine?.allowedActions?.includes("revoke");
-    const visibilityLabels = {
-      "aggregate-only": "Public aggregate view",
-      "moderator-generalized": "Moderator generalized view",
-      "reviewer-generalized-world": "Security reviewer generalized world view",
-      unavailable: "Live quarantine data unavailable",
-    };
-    return `
-      <section class="world-feature-card" aria-label="Quarantine safeguards">
-        <div class="world-quarantine-flow">
-          <span>Rate limit</span><b>→</b><span>Temporary quarantine</span><b>→</b><span>Human review</span><b>→</b><span>Appeal / expiry</span>
-        </div>
-        <ul class="world-detail-list">${signals
-          .map((signal) => `<li>${escapeHTML(signal)}</li>`)
-          .join("")}</ul>
-        <dl class="world-technical-list">
-          <div><dt>Public record</dt><dd>Generalized reason, rule, timestamp, duration, confidence, evidence summary, review source, and appeal state.</dd></div>
-          <div><dt>Identifier</dt><dd>Tokenized internal incident ID; never a raw IP address.</dd></div>
-          <div><dt>Private evidence</dt><dd>Least-privilege access with a defined retention period and sensitive-action audit trail.</dd></div>
-          <div><dt>False-positive safeguards</dt><dd>Shared networks, VPNs, proxies, and carrier NAT are considered. Country, browser, and OS are never malicious indicators.</dd></div>
-        </dl>
-        <div class="world-notice world-notice-safe">
-          <strong>${escapeHTML(
-            visibilityLabels[this.quarantine?.visibility] ||
-              visibilityLabels.unavailable,
-          )}</strong>
-          <span>The live visual jail consumes the privacy-safe quarantine API. This panel allowlists generalized fields and never renders private evidence, request paths, raw network identifiers, or decrypted reviewer material.</span>
-        </div>
-        <h3>Live privacy-safe aggregates</h3>
-        <div class="world-instance-list" data-world-quarantine-summary>
-          ${
-            summary.length
-              ? summary
-                  .map(
-                    (item) => `
-                      <article>
-                        <span class="world-instance-icon" aria-hidden="true">${escapeHTML(
-                          compactNumber(item.count),
-                        )}</span>
-                        <div><strong>${escapeHTML(
-                          item.reason.replaceAll("_", " "),
-                        )}</strong><span>${escapeHTML(
-                          item.status,
-                        )}</span><p>Generalized restrictions in the retained security window.</p></div>
-                      </article>`,
-                  )
-                  .join("")
-              : `<p class="world-empty-state">${
-                  this.quarantine?.visibility === "unavailable"
-                    ? "The live aggregate could not be loaded. No synthetic incident count is shown."
-                    : "No retained restrictions are present in the live aggregate."
-                }</p>`
-          }
-        </div>
-        ${
-          restrictions.length
-            ? `<h3>Role-gated generalized records</h3>
-              <div class="world-instance-list" data-world-quarantine-records>
-                ${restrictions
-                  .map((item) => {
-                    const detected = item.detectedAt
-                      ? new Date(item.detectedAt).toLocaleString()
-                      : "Timestamp unavailable";
-                    const expires = item.expiresAt
-                      ? new Date(item.expiresAt).toLocaleString()
-                      : "Manual expiry";
-                    const client = [
-                      item.countryCode ? flagEmoji(item.countryCode) : "",
-                      item.clientCategory,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ");
-                    return `<article>
-                      <span class="world-instance-icon" aria-hidden="true">⚑</span>
-                      <div><strong>${escapeHTML(
-                        item.reason.replaceAll("_", " "),
-                      )}</strong><span>${escapeHTML(
-                        `${item.status} · ${item.confidence} confidence`,
-                      )}</span><p>${escapeHTML(
-                        item.rule,
-                      )} · ${escapeHTML(detected)} · expires ${escapeHTML(
-                        expires,
-                      )}</p><small>${escapeHTML(
-                        [
-                          item.automatic ? "Automatic" : "Human initiated",
-                          item.reviewed ? "reviewed" : "awaiting review",
-                          `appeal ${item.appealStatus}`,
-                          client,
-                        ]
-                          .filter(Boolean)
-                          .join(" · "),
-                      )}</small></div>
-                      ${
-                        canRevoke &&
-                        ["quarantined", "blocked"].includes(item.status)
-                          ? `<button type="button" data-world-quarantine-revoke="${escapeHTML(
-                              item.incidentId,
-                            )}">Revoke restriction</button>`
-                          : ""
-                      }
-                    </article>`;
-                  })
-                  .join("")}
-              </div>`
-            : ""
-        }
-        <div class="world-detail-actions">
-          <button type="button" data-world-quarantine-refresh>Refresh live controls</button>
-          <a href="/security-report">Report a security issue privately</a>
-        </div>
-      </section>`;
-  }
-
-  async refreshQuarantine(openPanel = false) {
-    try {
-      const payload = await this.fetchJSON("/api/security/quarantine", {
-        timeout: 5000,
-        cache: "no-store",
-        headers: { "x-forkmesh-world-view": "generalized" },
-      });
-      this.quarantine = normalizeQuarantinePayload(payload);
-      this.world?.updateQuarantine?.(this.quarantine);
-      if (openPanel) this.openLandmark("quarantine");
-    } catch (_) {
-      this.quarantine = normalizeQuarantinePayload(null);
-      this.world?.updateQuarantine?.(this.quarantine);
-      if (openPanel) this.openLandmark("quarantine");
-      this.toast("The live privacy-safe quarantine view is unavailable.");
-    }
-  }
-
-  async revokeQuarantineRestriction(incidentId) {
-    const id = String(incidentId || "").toLowerCase();
-    if (
-      !/^[a-f0-9]{32}$/.test(id) ||
-      !this.quarantine?.allowedActions?.includes("revoke")
-    ) {
-      return;
-    }
-    if (
-      !window.confirm(
-        "Revoke this restriction? The action is audited and does not delete its retained review record.",
-      )
-    ) {
-      return;
-    }
-    try {
-      await this.postJSON("/api/security/quarantine", {
-        action: "revoke",
-        incidentId: id,
-      });
-      await this.refreshQuarantine(true);
-      this.toast("The restriction was revoked and the action was audited.");
-    } catch (_) {
-      this.toast("The restriction could not be revoked.");
-    }
-  }
-
   launchpadPanelHTML() {
     return `
       <section class="world-feature-card" aria-label="World destinations">
@@ -5151,12 +5071,96 @@ class ForkMeshWorld extends HTMLElement {
 
   eventsPanelHTML() {
     const events = this.events.slice(0, 12);
+    const notifications = this.notifications.slice(0, 20);
+    const session = readSession();
     const formatter = new Intl.DateTimeFormat(undefined, {
       dateStyle: "medium",
       timeStyle: "short",
     });
     return `
+      <div data-world-events-panel-content>
+      <section class="world-feature-card" aria-label="Account notifications">
+        <div class="world-panel-heading">
+          <h3>Your notifications</h3>
+          <span>${escapeHTML(
+            session?.sessionToken
+              ? `${this.notificationUnread} unread`
+              : "Sign in to receive",
+          )}</span>
+        </div>
+        <div class="world-event-list world-notification-list">
+          ${
+            notifications.length
+              ? notifications
+                  .map((item) => {
+                    const instant = new Date(item.ts);
+                    return `
+                      <article data-world-notification-id="${escapeHTML(
+                        item.id,
+                      )}" data-unread="${String(!item.readAt)}">
+                        <span>${escapeHTML(item.kind || "Update")}</span>
+                        ${
+                          item.readAt
+                            ? ""
+                            : '<em class="world-notification-unread">Unread</em>'
+                        }
+                        <strong>${escapeHTML(item.title)}</strong>
+                        ${
+                          item.body
+                            ? `<p>${escapeHTML(item.body)}</p>`
+                            : ""
+                        }
+                        <time datetime="${escapeHTML(
+                          Number.isNaN(instant.getTime())
+                            ? ""
+                            : instant.toISOString(),
+                        )}">${escapeHTML(
+                          Number.isNaN(instant.getTime())
+                            ? "Recently"
+                            : formatter.format(instant),
+                        )}</time>
+                        ${
+                          item.href
+                            ? `<a href="${escapeHTML(
+                                item.href,
+                              )}" rel="noopener noreferrer">Open context</a>`
+                            : ""
+                        }
+                      </article>`;
+                  })
+                  .join("")
+              : `<p class="world-empty-state" data-world-notifications-state="${escapeHTML(
+                  this.notificationsState,
+                )}">${
+                  this.notificationsState === "signed-out"
+                    ? "Sign in to receive your private ForkMesh notification inbox inside the World."
+                    : this.notificationsState === "unavailable"
+                      ? "Your notification inbox is temporarily unavailable."
+                      : this.notificationsState === "loading"
+                        ? "Loading your notification inbox…"
+                        : "No account notifications yet."
+                }</p>`
+          }
+        </div>
+        <div class="world-detail-actions">
+          <button type="button" data-world-notifications-refresh>Refresh notifications</button>
+          ${
+            session?.sessionToken && this.notificationUnread
+              ? `<button type="button" data-world-notifications-read>Mark all read</button>`
+              : ""
+          }
+        </div>
+        <p class="world-panel-footnote">This private inbox is fetched only with your signed-in account session. It is never included in multiplayer presence.</p>
+      </section>
       <section class="world-feature-card" aria-label="UTC community events">
+        <div class="world-panel-heading">
+          <h3>Global World announcements</h3>
+          <span>${
+            this.eventsState === "unavailable"
+              ? "PUBLIC · LAST KNOWN · UTC"
+              : "PUBLIC · UTC"
+          }</span>
+        </div>
         <div class="world-event-list">
           ${
             events.length
@@ -5167,6 +5171,11 @@ class ForkMeshWorld extends HTMLElement {
                 <article>
                   <span>${escapeHTML(item.type || "Event")}</span>
                   <strong>${escapeHTML(item.title)}</strong>
+                  ${
+                    item.description
+                      ? `<p>${escapeHTML(item.description)}</p>`
+                      : ""
+                  }
                   <time datetime="${escapeHTML(item.startsAt)}">${escapeHTML(
                     Number.isNaN(instant.getTime())
                       ? item.startsAt
@@ -5193,7 +5202,8 @@ class ForkMeshWorld extends HTMLElement {
         </div>
         <button type="button" data-world-events-refresh>Refresh live events</button>
         <p class="world-panel-footnote">Event instants are stored as UTC ISO-8601 values; the dates above are formatted in this device’s selected time zone.</p>
-      </section>`;
+      </section>
+      </div>`;
   }
 
   async refreshCommunityEvents(render = false) {
@@ -5206,26 +5216,161 @@ class ForkMeshWorld extends HTMLElement {
       this.events = normalizeCommunityEvents(payload);
       this.eventsState = this.events.length ? "ready" : "empty";
     } catch (_) {
-      this.events = [];
       this.eventsState = "unavailable";
     }
-    if (
-      render &&
-      this.$("[data-world-detail]")?.dataset.open === "true" &&
-      this.$("#world-detail-title")?.textContent?.includes("Events")
-    ) {
-      this.openLandmark("events");
-    }
+    this.updateNotificationBadge();
+    this.announceWorldNotifications();
+    if (render || this.isEventsPanelOpen()) this.refreshOpenEventsPanel();
   }
 
   startEventPolling() {
     window.clearInterval(this.eventsTimer);
     this.eventsTimer = window.setInterval(() => {
-      this.refreshCommunityEvents(
-        this.$("[data-world-detail]")?.dataset.open === "true" &&
-          this.$("#world-detail-title")?.textContent?.includes("Events"),
-      );
+      this.refreshCommunityEvents(this.isEventsPanelOpen());
     }, 60000);
+  }
+
+  isEventsPanelOpen() {
+    const detail = this.$("[data-world-detail]");
+    return (
+      detail?.dataset.open === "true" &&
+      detail.dataset.openLandmark === "events"
+    );
+  }
+
+  refreshOpenEventsPanel() {
+    if (!this.isEventsPanelOpen()) return;
+    const panel = this.$("[data-world-events-panel-content]");
+    if (panel) panel.outerHTML = this.eventsPanelHTML();
+  }
+
+  updateNotificationBadge() {
+    const badge = this.$("[data-world-notification-count]");
+    if (!badge) return;
+    const currentEvents = this.events.filter((item) => {
+      const start = Date.parse(item.startsAt);
+      const end = Date.parse(item.endsAt);
+      const now = Date.now();
+      return Number.isFinite(start) && Number.isFinite(end) && start <= now && end > now;
+    }).length;
+    const count = Math.max(
+      0,
+      Math.min(999, Number(this.notificationUnread || 0) + currentEvents),
+    );
+    badge.textContent = count > 99 ? "99+" : String(count);
+    badge.hidden = count === 0;
+    const button = badge.closest("[data-world-landmark='events']");
+    if (button) {
+      button.setAttribute(
+        "aria-label",
+        count
+          ? `Open World notifications, ${count} active`
+          : "Open World notifications",
+      );
+    }
+  }
+
+  announceWorldNotifications() {
+    const now = Date.now();
+    const globalEvents = this.events.filter(
+      (item) =>
+        Date.parse(item.startsAt) <= now &&
+        Date.parse(item.endsAt) > now &&
+        !this.seenWorldEvents.has(item.id),
+    );
+    const personalNotifications = this.notifications.filter(
+      (item) => !item.readAt && !this.seenNotifications.has(item.id),
+    );
+    globalEvents.forEach((item) => this.seenWorldEvents.add(item.id));
+    personalNotifications.forEach((item) =>
+      this.seenNotifications.add(item.id),
+    );
+    const announcements = [];
+    if (globalEvents.length) {
+      announcements.push(
+        `World announcement: ${globalEvents[0].title}${
+          globalEvents.length > 1 ? ` (+${globalEvents.length - 1})` : ""
+        }`,
+      );
+    }
+    if (personalNotifications.length) {
+      announcements.push(
+        `New notification: ${personalNotifications[0].title}${
+          personalNotifications.length > 1
+            ? ` (+${personalNotifications.length - 1})`
+            : ""
+        }`,
+      );
+    }
+    if (announcements.length) this.toast(announcements.join(" · "));
+  }
+
+  async refreshPersonalNotifications(render = false) {
+    const session = readSession();
+    if (!session?.sessionToken || !session?.nodeName) {
+      this.notifications = [];
+      this.notificationUnread = 0;
+      this.notificationsState = "signed-out";
+      this.notificationAccount = "";
+      this.seenNotifications.clear();
+      this.updateNotificationBadge();
+      if (render || this.isEventsPanelOpen()) this.refreshOpenEventsPanel();
+      return;
+    }
+    const account = String(session.nodeName).toLowerCase();
+    if (account !== this.notificationAccount) {
+      this.notifications = [];
+      this.notificationUnread = 0;
+      this.notificationAccount = account;
+      this.seenNotifications.clear();
+    }
+    try {
+      const payload = await this.fetchJSON(
+        `/api/notifications?node=${encodeURIComponent(
+          account,
+        )}&limit=100`,
+        { timeout: 5000, cache: "no-store" },
+      );
+      this.notifications = normalizeWorldNotifications(payload);
+      this.notificationUnread = Math.max(0, Number(payload?.unread) || 0);
+      this.notificationsState = this.notifications.length ? "ready" : "empty";
+    } catch (_) {
+      this.notifications = [];
+      this.notificationUnread = 0;
+      this.notificationsState = "unavailable";
+    }
+    this.updateNotificationBadge();
+    this.announceWorldNotifications();
+    if (render || this.isEventsPanelOpen()) this.refreshOpenEventsPanel();
+  }
+
+  async markWorldNotificationsRead() {
+    const session = readSession();
+    if (!session?.sessionToken || !session?.nodeName) return;
+    try {
+      await this.postJSON("/api/notifications", {
+        node: String(session.nodeName).toLowerCase(),
+        all: true,
+      });
+      this.notifications = this.notifications.map((item) => ({
+        ...item,
+        readAt: item.readAt || Date.now(),
+      }));
+      this.notificationUnread = 0;
+      this.notificationsState = this.notifications.length ? "ready" : "empty";
+      this.updateNotificationBadge();
+      this.refreshOpenEventsPanel();
+      this.toast("World notifications marked read.");
+    } catch (_) {
+      this.toast("World notifications could not be marked read.");
+    }
+  }
+
+  startNotificationPolling() {
+    window.clearInterval(this.notificationsTimer);
+    this.notificationsTimer = window.setInterval(() => {
+      if (!document.hidden) this.refreshPersonalNotifications(false);
+    }, WORLD_NOTIFICATION_POLL_MS);
   }
 
   neighborhoodPanelHTML() {
@@ -7537,8 +7682,6 @@ class ForkMeshWorld extends HTMLElement {
         "Only public and explicitly consented social relationships belong in this district.",
       security:
         "The clipboard shows only the latest redacted artifact; private evidence stays restricted.",
-      quarantine:
-        "Detailed incident evidence is never exposed in the public world.",
       launchpad:
         "Destinations retain normal permissions while events remain synchronized through UTC.",
       events:
@@ -7561,6 +7704,56 @@ class ForkMeshWorld extends HTMLElement {
     panel.dataset.open = String(open);
     panel.setAttribute("aria-hidden", String(!open));
     if (open) window.setTimeout(() => panel.querySelector("button")?.focus(), 80);
+  }
+
+  openWorldChat(href = "/dashboard/chat", returnFocus = null) {
+    let destination;
+    try {
+      destination = new URL(String(href || "/dashboard/chat"), location.origin);
+    } catch (_) {
+      return;
+    }
+    if (
+      destination.origin !== location.origin ||
+      !["/dashboard/chat", "/dashboard/chat/"].includes(destination.pathname)
+    ) {
+      return;
+    }
+    destination.searchParams.set("worldEmbed", "1");
+    const panel = this.$("[data-world-chat]");
+    const backdrop = this.$(".world-chat-backdrop");
+    const frame = this.$("[data-world-chat-frame]");
+    if (!panel || !backdrop || !frame) return;
+    const frameURL = `${destination.pathname}${destination.search}`;
+    if (frame.dataset.worldChatUrl !== frameURL) {
+      frame.dataset.worldChatUrl = frameURL;
+      frame.src = frameURL;
+    }
+    this.chatReturnFocus =
+      returnFocus instanceof HTMLElement ? returnFocus : null;
+    this.closeLandmark();
+    this.toggleSettings(false);
+    if (this.tourIndex >= 0) this.stopTour();
+    panel.dataset.open = "true";
+    panel.setAttribute("aria-hidden", "false");
+    backdrop.dataset.open = "true";
+    window.setTimeout(
+      () => panel.querySelector("[data-world-chat-close]")?.focus(),
+      80,
+    );
+  }
+
+  closeWorldChat() {
+    const panel = this.$("[data-world-chat]");
+    const backdrop = this.$(".world-chat-backdrop");
+    if (panel) {
+      panel.dataset.open = "false";
+      panel.setAttribute("aria-hidden", "true");
+    }
+    if (backdrop) backdrop.dataset.open = "false";
+    const returnFocus = this.chatReturnFocus;
+    this.chatReturnFocus = null;
+    window.setTimeout(() => returnFocus?.focus?.(), 0);
   }
 
   setTheme(theme) {
@@ -8013,6 +8206,7 @@ class ForkMeshWorld extends HTMLElement {
       this.syncViewportHeight,
     );
     window.removeEventListener("orientationchange", this.syncViewportHeight);
+    window.removeEventListener("storage", this.handleStorage);
     window.clearTimeout(this.socketTimer);
     window.clearTimeout(this.toastTimer);
     window.clearTimeout(this.inactiveSyncTimer);
@@ -8022,6 +8216,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.pingTimer);
     window.clearInterval(this.rewardTimer);
     window.clearInterval(this.eventsTimer);
+    window.clearInterval(this.notificationsTimer);
     window.clearInterval(this.mediaTimer);
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);

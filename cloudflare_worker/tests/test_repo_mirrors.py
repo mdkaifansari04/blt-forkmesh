@@ -528,6 +528,65 @@ def test_repo_mirrors_handler_uses_live_host_probe_for_online_status():
     assert response["data"]["summary"]["online"] == 1
 
 
+def test_fresh_healthy_ok_https_endpoint_hydrates_mirror_online():
+    queries = []
+
+    async def ensure_schema(_env):
+        return None
+
+    async def d1_first(_env, sql, owner, cutoff):
+        queries.append((sql, owner, cutoff))
+        return {"total": 1 if owner == "mirror2" else 0}
+
+    namespace = {
+        "Date": _Clock,
+        "HOST_PRESENCE_STALE_MS": 600_000,
+        "asyncio": asyncio,
+        "_LIVE_HOST_PROBE_MEMO": {},
+        "LIVE_HOST_PROBE_MEMO_TTL_MS": 30_000,
+        "HYDRATE_PROBE_MAX": 8,
+        "safe_segment": lambda value: str(value or ""),
+        "ensure_schema": ensure_schema,
+        "d1_first": d1_first,
+    }
+    hydrate, *_ = _load(
+        "hydrate_repo_group_live_hosts",
+        "repo_live_host_count",
+        "repo_mirror_same_group",
+        extra_globals=namespace,
+    )
+    rows = [
+        {
+            "key_bi": "source",
+            "data": _row(
+                "source", "mainnode", "forkmesh", root="abc"
+            )["data"],
+        },
+        {
+            "key_bi": "mirror",
+            "data": _row(
+                "mirror",
+                "mirror2",
+                "forkmesh",
+                root="abc",
+                source="remote-clone",
+            )["data"],
+        },
+    ]
+
+    presence = asyncio.run(
+        hydrate(object(), "mainnode", "forkmesh", rows, {}, _Clock.now())
+    )
+
+    assert "source" not in presence
+    assert presence["mirror"] == _Clock.now()
+    mirror_query = next(sql for sql, owner, _cutoff in queries if owner == "mirror2")
+    assert "healthy=1" in mirror_query
+    assert "abuse_blocked=0" in mirror_query
+    assert "integrity='ok'" in mirror_query
+    assert "integrity='verified'" not in mirror_query
+
+
 def test_repo_mirrors_handler_returns_404_for_private_or_unpublished_target():
     private_handler, _ = _load_handler(
         rows=[

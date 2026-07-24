@@ -449,7 +449,7 @@ push_secrets() {
     # production deploy is guaranteed to push and register it (the Worker still
     # no-ops gracefully if it's ever unset). A fork that doesn't send email can
     # drop it from this list.
-    local required=" ADMIN_PATH MAILTRAP_API_TOKEN MIRROR_ROUTER_PUBLIC_KEY MIRROR_ROUTER_SIGNING_SEED "
+    local required=" ADMIN_PATH MAILTRAP_API_TOKEN DATA_KEY TREASURY_SOLANA_ADDRESS MIRROR_ROUTER_PUBLIC_KEY MIRROR_ROUTER_SIGNING_SEED "
 
     echo "Pushing secrets from: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
     local count=0
