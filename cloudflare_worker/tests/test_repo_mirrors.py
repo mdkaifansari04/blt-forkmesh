@@ -158,6 +158,49 @@ def test_payload_groups_public_root_commit_mirrors_and_sorts_online_first():
     assert payload["mirrors"][1]["cloneAvailable"] is True
 
 
+def test_identical_signed_ref_states_are_not_behind_only_due_to_sync_time():
+    now = 1_000_000
+    exact_state = "a" * 64
+    rows = [
+        _row(
+            "a", "mirror2", "forkmesh", synced="990000",
+            state_hash=exact_state, source="remote-clone",
+        ),
+        _row(
+            "b", "mirror3", "forkmesh", synced="940000",
+            state_hash=exact_state, source="remote-clone",
+        ),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mirror2",
+        "forkmesh",
+        rows,
+        {"a": now - 1_000, "b": now - 2_000},
+        {},
+        now,
+        600_000,
+        5_000,
+    )
+
+    by_node = {mirror["node"]: mirror for mirror in payload["mirrors"]}
+    assert by_node["mirror2"]["behind"] is False
+    assert by_node["mirror3"]["behind"] is False
+
+    rows[1]["data"]["stateHash"] = "b" * 64
+    payload = build_repo_mirrors_payload(
+        "mirror2",
+        "forkmesh",
+        rows,
+        {"a": now - 1_000, "b": now - 2_000},
+        {},
+        now,
+        600_000,
+        5_000,
+    )
+    by_node = {mirror["node"]: mirror for mirror in payload["mirrors"]}
+    assert by_node["mirror3"]["behind"] is True
+
+
 def test_payload_keeps_clone_url_mirror_with_mismatched_legacy_root():
     now = 1_000_000
     rows = [

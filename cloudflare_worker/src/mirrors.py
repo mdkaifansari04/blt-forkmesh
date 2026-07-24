@@ -211,9 +211,27 @@ def build_repo_mirrors_payload(
         members = [
             r for r in public_rows if repo_mirror_same_group(target["data"], r["data"])
         ]
+
+    def exact_state_hash(rec):
+        value = str((rec or {}).get("stateHash") or "").strip().lower()
+        if (
+            len(value) == 64
+            and all(ch in "0123456789abcdef" for ch in value)
+        ):
+            return value
+        return ""
+
     freshest_sync = 0
     for row in members:
         freshest_sync = max(freshest_sync, _mirror_ms(row["data"].get("lastSync")) or 0)
+    freshest_states = {
+        exact_state_hash(row["data"])
+        for row in members
+        if (
+            (_mirror_ms(row["data"].get("lastSync")) or 0) == freshest_sync
+            and exact_state_hash(row["data"])
+        )
+    }
 
     # Is the logical repo's source of truth (a working-copy holder —
     # "local-node") reachable through a fresh, healthy direct-HTTPS endpoint?
@@ -283,8 +301,22 @@ def build_repo_mirrors_payload(
             size_bytes = max(0, int(rec.get("sizeBytes") or 0))
         except (TypeError, ValueError):
             size_bytes = 0
-        behind = bool(
+        exact_current_state = exact_state_hash(rec)
+        state_hash = str(rec.get("stateHash") or "").strip().lower()
+        sync_timestamp_behind = bool(
             last_sync and freshest_sync and freshest_sync - last_sync > sync_tolerance_ms
+        )
+        # `lastSync` is a publication timestamp, not repository content. Two
+        # independently renewed mirrors can publish the same signed all-refs
+        # state minutes apart; the older timestamp must not label exact,
+        # integrity-equivalent content as behind. Legacy records without a
+        # valid state hash retain the conservative timestamp fallback.
+        behind = bool(
+            sync_timestamp_behind
+            and not (
+                exact_current_state
+                and exact_current_state in freshest_states
+            )
         )
         issue_count = _int_field(rec, "issueCount")
         # Clones / website serves this node has provided; -1 == not advertised
@@ -301,7 +333,6 @@ def build_repo_mirrors_payload(
         # unlinked gate is unpinned), "rejected" (matches no attested state AND
         # the anchor is offline), "healing" (matches nothing yet, but the anchor
         # is online, so it can re-sync), "unknown" (no fingerprint published).
-        state_hash = str(rec.get("stateHash") or "").strip().lower()
         pins = (
             canonical_pins
             if canonical_link_mode
