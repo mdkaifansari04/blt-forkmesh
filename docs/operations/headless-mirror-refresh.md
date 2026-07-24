@@ -27,11 +27,14 @@ permissions, then performs the same signed endpoint/catalog publication as a
 renewal. Workflow variables and other secret material are never accepted by
 this mode and must never be placed in the refresh configuration.
 
-`check` performs the active-state validation from step 3 but makes no network
-request and does not reseal the repository. It is suitable for a gateway
-`ExecStartPre`. It opens the refresh-created advisory lock read-only, so the
-check remains compatible with a `ProtectSystem=strict` service sandbox. A
-missing lock fails closed instead of making the pre-start check mutate state.
+`check` performs the full active-state validation from step 3 but makes no
+network request and does not reseal the repository. That operator check
+includes `git fsck --full --strict`, so do not put it on the gateway's
+`ExecStartPre` path. The gateway's own `--check` mode is the bounded startup
+guard: it validates the generated configuration, endpoint manifest,
+materialized public repositories, and exact refs integrity pins without
+repeating the source-repository fsck. Both the precheck and `ExecStart` must
+read the same generated gateway configuration.
 
 This separation prevents the public catalog from advertising new refs before
 the gateway has restarted. If endpoint registration or catalog publication
@@ -265,8 +268,8 @@ Configure the gateway service to read the generated
 `gatewayConfigPath`. A typical start boundary is:
 
 ```ini
-ExecStartPre=/usr/bin/python3 /opt/forkmesh/tools/headless_mirror_refresh.py --config /var/lib/forkmesh-mirror/gateway/mirror-refresh.json check
-ExecStart=/usr/bin/python3 /opt/forkmesh/tools/mirror_gateway.py --config /var/lib/forkmesh-mirror/gateway/mirror-gateway.json
+ExecStartPre=/usr/bin/python3 -I /opt/forkmesh-mirror/mirror_gateway.py --config /var/lib/forkmesh-mirror/gateway/mirror-gateway.json --check
+ExecStart=/usr/bin/python3 /opt/forkmesh-mirror/mirror_gateway.py --config /var/lib/forkmesh-mirror/gateway/mirror-gateway.json
 ```
 
 Keep the gateway listener on loopback. Cloudflare Tunnel is the public TLS
