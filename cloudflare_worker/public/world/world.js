@@ -2580,7 +2580,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <summary aria-label="Open World chat in a terminal panel">
             <span class="world-diagnostics-light" data-state="online" aria-hidden="true"></span>
             <strong>CHAT</strong>
-            <span>Chat stays inside ForkMesh World</span>
+            <span data-world-chat-terminal-last>Chat stays inside ForkMesh World</span>
             <span class="world-diagnostics-toggle" aria-hidden="true">⌃</span>
           </summary>
           <div class="world-chat-terminal-body">
@@ -3133,14 +3133,15 @@ class ForkMeshWorld extends HTMLElement {
     if (!data || data.type !== "forkmesh:world-chat") return;
     const text = String(data.text || "").trim();
     if (!text) return;
+    const sender = String(data.sender || "")
+      .replace(/^World visitor\s*·\s*/i, "")
+      .trim();
+    this.setChatTerminalLastMessage(sender, text);
     if (data.self === true) {
       this.world?.showChatBubble?.(this.identity?.id, text, true);
       return;
     }
-    const senderName = String(data.sender || "")
-      .replace(/^World visitor\s*·\s*/i, "")
-      .trim()
-      .toLowerCase();
+    const senderName = sender.toLowerCase();
     if (!senderName) return;
     for (const [id, peer] of this.remotePlayers) {
       const peerName = String(peer?.name || "").trim().toLowerCase();
@@ -11251,6 +11252,14 @@ class ForkMeshWorld extends HTMLElement {
     const frameURL = "/dashboard/chat?worldEmbed=1";
     frame.dataset.worldChatUrl = frameURL;
     frame.src = frameURL;
+  }
+
+  // Mirror the newest live chat line into the collapsed CHAT bar so the
+  // bottom strip shows the latest message without opening the panel.
+  setChatTerminalLastMessage(sender, text) {
+    const label = this.$("[data-world-chat-terminal-last]");
+    if (!label) return;
+    label.textContent = sender ? `${sender}: ${text}` : text;
   }
 
   closeWorldChat() {

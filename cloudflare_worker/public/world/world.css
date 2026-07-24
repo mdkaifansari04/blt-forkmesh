@@ -1260,7 +1260,8 @@ forkmesh-world {
   letter-spacing: 0.1em;
 }
 
-.world-diagnostics summary [data-world-diagnostics-summary] {
+.world-diagnostics summary [data-world-diagnostics-summary],
+.world-diagnostics summary [data-world-chat-terminal-last] {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
