@@ -84,19 +84,6 @@
       setHint("Enter a valid email address.", "bad");
       return;
     }
-    if (demoLoginAllowed() && email.toLowerCase() === DEMO_EMAIL && password === DEMO_PASSWORD) {
-      storeSession({
-        nodeName: "demo-node",
-        email: DEMO_EMAIL,
-        status: "active",
-        pubkey: "",
-        emailVerified: true,
-        isAdmin: false,
-      });
-      setHint("Logged in with local demo credentials.", "good");
-      setTimeout(() => (location.href = nextPath() || "/dashboard"), 500);
-      return;
-    }
     btn.disabled = true;
     btn.textContent = "Logging in…";
     let res, body = {};

@@ -61,7 +61,20 @@ SENTRY_CRON_MAX_RUNTIME_MINUTES = 5
 # Retained chat history (encrypted) so late-joining nodes see some backlog.
 CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000  # keep the last 7 days
 CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
-CHAT_HISTORY_MAX_BODY = 48 * 1024  # don't retain very large frames (e.g. files)
+# A 1 MiB attachment becomes about 1.87 MB after its file bytes and encrypted
+# envelope are each base64 encoded. Keep the row below D1's 2,000,000-byte hard
+# limit, then bound the aggregate so attachment traffic cannot grow one room
+# without limit.
+CHAT_HISTORY_MAX_BODY = 1_900_000
+CHAT_HISTORY_MAX_BYTES_PER_ROOM = 16 * 1024 * 1024
+CHAT_HISTORY_INGRESS_WINDOW_MS = 10 * 1000
+CHAT_HISTORY_INGRESS_MAX_BYTES = 8 * 1024 * 1024
+CHAT_CHANNEL_TICKET_TTL_MS = 60 * 1000
+CHAT_CHANNEL_DO_RE = re.compile(
+    r"^/api/chat/channels/([0-9a-f]{32})/v([1-9][0-9]*)/(ws|revoke)$")
+LOCAL_DEMO_EMAIL = "demo@forkmesh.local"
+LOCAL_DEMO_NAME = "demo-node"
+LOCAL_DEMO_PASSWORD = "forkmesh-demo"
 MAX_CATALOG_REPOS = 200
 MAX_ERROR_LOG = 500
 # Anonymous installer diagnostics: one row per reported install step. Bounded the
@@ -256,6 +269,10 @@ GENERAL_CHAT_EMAIL_MAX_RECIPIENTS = 200
 from urls import (  # noqa: E402
     ROOM_RE,
     REPO_ROOM_RE,
+    CHAT_CHANNELS_RE,
+    CHAT_CHANNEL_MEMBERS_RE,
+    CHAT_CHANNEL_ROOM_ACCESS_RE,
+    CHAT_CHANNEL_WS_RE,
     REPO_ISSUES_RE,
     REPO_PULLS_RE,
     REPO_COMMITS_RE,
@@ -464,6 +481,9 @@ import world_events_api  # noqa: E402
 # Persisted Code Workshop reports and participant events use the same narrow
 # authenticated/encrypted D1 adapter as the other World collaboration APIs.
 import world_workshops  # noqa: E402
+# Private administrator-created channel policy is kept in a pure module and
+# receives only this Worker's narrow session, crypto, D1, and audit adapter.
+import chat_channels_api  # noqa: E402
 # Pull-request badge (adhoc #44/#83): a pure, js-free generator for the visual
 # "fingerprint" attached to federated PR-opened notes. The federated copy is a
 # square PNG — fediverse clients won't preview an SVG attachment.
@@ -2976,6 +2996,184 @@ async def world_inactive_handler(env, request):
     )
 
 
+async def _chat_channel_passphrase(env, channel_id, key_version):
+    secret = (
+        _require_data_secret(env)
+        + ":private-chat-channel-v1:"
+        + str(channel_id)
+        + ":"
+        + str(int(key_version))
+    )
+    digest = await js_crypto.subtle.digest(
+        "SHA-256", _to_js(secret.encode()))
+    return bytes(Uint8Array.new(digest).to_py()).hex()
+
+
+def _chat_channel_ticket(env, channel_id, key_version, account_bi):
+    expires = int(Date.now()) + CHAT_CHANNEL_TICKET_TTL_MS
+    canonical = ".".join((
+        "v1",
+        str(channel_id),
+        str(int(key_version)),
+        str(account_bi),
+        str(expires),
+    ))
+    signature = hmac.new(
+        (_require_data_secret(env) + ":chat-channel-ticket-v1").encode(),
+        canonical.encode(),
+        "sha256",
+    ).hexdigest()
+    return canonical + "." + signature
+
+
+def _chat_channel_ticket_claims(env, token):
+    parts = str(token or "").split(".")
+    if len(parts) != 6:
+        return None
+    version_tag, channel_id, version_raw, account_bi, expires_raw, signature = (
+        parts
+    )
+    if version_tag != "v1" or not re.fullmatch(r"[0-9a-f]{32}", channel_id):
+        return None
+    if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+        return None
+    try:
+        key_version = int(version_raw)
+        expires = int(expires_raw)
+    except (TypeError, ValueError):
+        return None
+    now = int(Date.now())
+    if (
+        key_version < 1
+        or expires <= now
+        or expires - now > CHAT_CHANNEL_TICKET_TTL_MS
+    ):
+        return None
+    canonical = ".".join(parts[:5])
+    expected = hmac.new(
+        (_require_data_secret(env) + ":chat-channel-ticket-v1").encode(),
+        canonical.encode(),
+        "sha256",
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    return {
+        "channel_id": channel_id,
+        "key_version": key_version,
+        "account_bi": account_bi,
+    }
+
+
+async def _chat_channel_socket_handler(env, request, channel_id):
+    if (
+        method_name(request) != "GET"
+        or (request.headers.get("upgrade") or "").lower() != "websocket"
+    ):
+        return _private_replica_not_found()
+    url = urlparse(request.url)
+    ticket_values = parse_qs(
+        url.query, keep_blank_values=False).get("ticket") or []
+    claims = (
+        _chat_channel_ticket_claims(env, ticket_values[0])
+        if len(ticket_values) == 1 else None
+    )
+    if not claims or claims["channel_id"] != channel_id:
+        return _private_replica_not_found()
+    try:
+        await ensure_schema(env)
+        channel = await d1_first(
+            env,
+            "SELECT data,key_version FROM chat_channels WHERE channel_id=?",
+            channel_id,
+        )
+        if (
+            not channel
+            or int(channel.get("key_version") or 0)
+                != int(claims["key_version"])
+        ):
+            return _private_replica_not_found()
+        channel_record = await decrypt_row(env, channel.get("data"))
+        if not isinstance(channel_record, dict):
+            return _private_replica_not_found()
+        visibility = (
+            "public"
+            if channel_record.get("visibility") == "public"
+            else "private"
+        )
+        account = await d1_first(
+            env,
+            "SELECT data,is_admin FROM users WHERE user_bi=?",
+            claims["account_bi"],
+        )
+        if not account:
+            return _private_replica_not_found()
+        account_record = await decrypt_row(env, account.get("data"))
+        if (
+            not account_record
+            or account_record.get("status") != "active"
+            or _account_kind(account_record) != "user"
+        ):
+            return _private_replica_not_found()
+        is_admin = bool(int(account.get("is_admin") or 0))
+        if not is_admin and visibility != "public":
+            membership = await d1_first(
+                env,
+                "SELECT 1 AS allowed FROM chat_channel_members "
+                "WHERE channel_id=? AND member_bi=?",
+                channel_id,
+                claims["account_bi"],
+            )
+            if not membership:
+                return _private_replica_not_found()
+    except Exception:
+        return _private_replica_not_found()
+
+    room_name = (
+        "chat-channel:" + channel_id + ":v" + str(claims["key_version"])
+    )
+    room_id = env.FORKMESH_MAINNODE_ROOM.idFromName(room_name)
+    target_url = (
+        url.scheme + "://" + url.netloc + "/api/chat/channels/"
+        + channel_id + "/v" + str(claims["key_version"])
+        + "/ws?account=" + quote(claims["account_bi"], safe="")
+    )
+    last_error = None
+    for _attempt in range(2):
+        room_object = env.FORKMESH_MAINNODE_ROOM.get(room_id)
+        try:
+            return await room_object.fetch(
+                await durable_object_request(request, target_url=target_url))
+        except Exception as error:
+            last_error = error
+    await log_durable_object_abort(env, request, url.path, last_error)
+    return json_response({"error": "unavailable"}, status=503)
+
+
+async def _revoke_chat_channel_room(env, channel_id, key_version):
+    room_name = (
+        "chat-channel:" + str(channel_id) + ":v" + str(int(key_version))
+    )
+    room_id = env.FORKMESH_MAINNODE_ROOM.idFromName(room_name)
+    target_url = (
+        "https://forkmesh.internal/api/chat/channels/" + str(channel_id)
+        + "/v" + str(int(key_version)) + "/revoke"
+    )
+    last_error = None
+    for _attempt in range(2):
+        room_object = env.FORKMESH_MAINNODE_ROOM.get(room_id)
+        try:
+            request = JsRequest.new(
+                target_url, to_js({"method": "POST"}))
+            response = await room_object.fetch(request)
+            if int(getattr(response, "status", 200) or 200) < 400:
+                return
+        except Exception as error:
+            last_error = error
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("chat_channel_revoke_failed")
+
+
 class _WorldCommunityRuntime:
     """Narrow adapter from isolated world APIs to established Worker helpers."""
 
@@ -3195,6 +3393,31 @@ class _WorldCommunityRuntime:
     async def d1_run(self, sql, *args):
         return await d1_run(self.env, sql, *args)
 
+    async def batch(self, statements):
+        return await _contribution_run_batch(self.env, statements)
+
+
+class _ChatChannelsRuntime(_WorldCommunityRuntime):
+    async def room_access(self, channel_id, key_version, account_bi):
+        room = (
+            "chat-channel:" + str(channel_id) + ":v" + str(int(key_version))
+        )
+        ticket = _chat_channel_ticket(
+            self.env, channel_id, key_version, account_bi)
+        return {
+            "room": room,
+            "passphrase": await _chat_channel_passphrase(
+                self.env, channel_id, key_version),
+            "webSocketUrl": (
+                "/api/chat/channels/" + str(channel_id) + "/ws?ticket="
+                + quote(ticket, safe="")
+            ),
+        }
+
+    async def revoke_room(self, channel_id, key_version):
+        await _revoke_chat_channel_room(
+            self.env, channel_id, key_version)
+
 
 async def world_fediverse_directory_handler(env, request, path):
     return await world_community_api.handle_fediverse(
@@ -3236,7 +3459,27 @@ async def cleanup_world_media_records(env):
 
 
 
-def room_key_from_path(pathname):
+def room_key_from_path(pathname, account_bi=""):
+    match = CHAT_CHANNEL_DO_RE.match(pathname)
+    if match and match.group(3) == "ws":
+        channel_id = match.group(1)
+        channel_version = int(match.group(2))
+        info = {
+            "key": (
+                "chat-channel:" + channel_id + ":v"
+                + str(channel_version)
+            ),
+            "owner": "",
+            "repo": "",
+            "room": channel_id,
+            "compat": False,
+            "channel_id": channel_id,
+            "channel_version": channel_version,
+        }
+        if re.fullmatch(r"[0-9a-f]{64}", str(account_bi or "")):
+            info["account_bi"] = str(account_bi)
+        return info
+
     match = REPO_ROOM_RE.match(pathname)
     if match:
         owner = safe_segment(match.group(1))
@@ -3628,6 +3871,20 @@ _hmac_key_cache = {"secret": None, "key": None}
 _room_key_cache = {"secret": None, "value": None}
 
 
+# Compatibility columns required by indexes in SCHEMA_STATEMENTS. These run
+# before the CREATE statements so an existing table can be upgraded before an
+# index references its new columns. A fresh database has no table yet, so the
+# failed ALTER is ignored and the current CREATE TABLE supplies the columns.
+SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
+    "ALTER TABLE ap_outbox ADD COLUMN dedupe_bi TEXT",
+    "ALTER TABLE ap_comments ADD COLUMN parent_remote_id_bi TEXT",
+    """ALTER TABLE ap_comments ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active'
+       CHECK (lifecycle IN (
+         'active', 'edited', 'tombstoned', 'moderated',
+         'awaiting-redelivery'
+       ))""",
+]
+
 # Post-CREATE column additions for tables that predate them. Idempotent: a
 # re-run raises "duplicate column name", which the applier swallows.
 SCHEMA_ALTER_STATEMENTS = [
@@ -3645,12 +3902,20 @@ SCHEMA_ALTER_STATEMENTS = [
     # Operator-settable flag granting a user access to the /outreach console
     # without a roster row (migration 0040). Mirrors is_admin.
     "ALTER TABLE users ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0",
+    # Early local builds created membership rows before their encrypted display
+    # payload was added. Existing blind-index grants remain valid; new writes
+    # always provide this ciphertext column.
+    "ALTER TABLE chat_channel_members ADD COLUMN data TEXT",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
 # full apply so later cold isolates can skip the replay with one SELECT.
 _SCHEMA_FINGERPRINT = hashlib.sha256(
-    "\n".join(SCHEMA_STATEMENTS + SCHEMA_ALTER_STATEMENTS).encode("utf-8")
+    "\n".join(
+        SCHEMA_PRE_CREATE_ALTER_STATEMENTS
+        + SCHEMA_STATEMENTS
+        + SCHEMA_ALTER_STATEMENTS
+    ).encode("utf-8")
 ).hexdigest()
 
 
@@ -3728,6 +3993,11 @@ async def _apply_schema(env):
         # the overload into a death spiral.
         if "no such table" not in str(exc).lower():
             raise
+    for sql in SCHEMA_PRE_CREATE_ALTER_STATEMENTS:
+        try:
+            await env.DB.prepare(sql).run()
+        except Exception:
+            pass
     for sql in SCHEMA_STATEMENTS:
         await env.DB.prepare(sql).run()
     for sql in SCHEMA_ALTER_STATEMENTS:
@@ -6782,6 +7052,49 @@ async def _move_chat_history_namespace(env, old_owner, new_owner, repo):
             old_key, row.get("msg_id"))
 
 
+async def _delete_chat_channel_memberships(env, member_bi):
+    rows = await d1_all(
+        env,
+        "SELECT m.channel_id,c.key_version "
+        "FROM chat_channel_members m JOIN chat_channels c "
+        "ON c.channel_id=m.channel_id WHERE m.member_bi=?",
+        member_bi,
+    )
+    if not rows:
+        return
+    await d1_run(
+        env, "DELETE FROM chat_channel_members WHERE member_bi=?", member_bi)
+    for row in rows:
+        await _revoke_chat_channel_room(
+            env,
+            row.get("channel_id", ""),
+            int(row.get("key_version") or 1),
+        )
+
+
+async def _move_chat_channel_memberships(
+        env, old_member_bi, new_member_bi, new_name):
+    if old_member_bi == new_member_bi:
+        return
+    await _delete_chat_channel_memberships(env, new_member_bi)
+    sealed = await encrypt_row(env, {"username": new_name})
+    await d1_run(
+        env,
+        "UPDATE chat_channel_members SET member_bi=?,data=? "
+        "WHERE member_bi=?",
+        new_member_bi,
+        sealed,
+        old_member_bi,
+    )
+    await d1_run(
+        env,
+        "UPDATE chat_channel_members SET invited_by_bi=? "
+        "WHERE invited_by_bi=?",
+        new_member_bi,
+        old_member_bi,
+    )
+
+
 async def _move_repo_namespace(env, old_owner_bi, old_owner, new_owner_bi,
                                new_owner, apply_changes=True):
     rows = await d1_all(
@@ -6915,6 +7228,8 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
         return name_bi, rec, move_error
     await _contribution_retarget_linked_nodes(
         env, name_bi, old_name, new_name_bi, new_name)
+    await _move_chat_channel_memberships(
+        env, name_bi, new_name_bi, new_name)
     await d1_run(
         env, "UPDATE account_presence SET name_bi=? WHERE name_bi=?",
         new_name_bi, name_bi)
@@ -7067,6 +7382,7 @@ async def _delete_account_namespace(env, name_bi, rec):
         env, "DELETE FROM account_devices WHERE account_bi=?", name_bi)
     await d1_run(
         env, "DELETE FROM account_ssh_keys WHERE account_bi=?", name_bi)
+    await _delete_chat_channel_memberships(env, name_bi)
     if email:
         email_bi = await blind_index(env, email)
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
@@ -9084,6 +9400,74 @@ def _with_session_capabilities(payload, *, session_kind, device_kind="", key_mat
     return payload
 
 
+def _is_local_demo_request(request):
+    try:
+        parsed = urlparse(request.url)
+        return (
+            parsed.scheme in ("http", "https")
+            and parsed.hostname in ("localhost", "127.0.0.1", "::1")
+        )
+    except Exception:
+        return False
+
+
+async def _ensure_local_demo_account(
+        env, request, identifier, password):
+    if (
+        not _is_local_demo_request(request)
+        or identifier != LOCAL_DEMO_EMAIL
+        or password != LOCAL_DEMO_PASSWORD
+    ):
+        return
+    email_bi = await blind_index(env, LOCAL_DEMO_EMAIL)
+    name_bi = await blind_index(env, LOCAL_DEMO_NAME)
+    row = await d1_first(
+        env,
+        "SELECT user_bi,data,is_admin FROM users WHERE email_bi=?",
+        email_bi,
+    )
+    if row and row.get("user_bi") != name_bi:
+        return
+    record = await decrypt_row(env, row.get("data")) if row else None
+    valid = bool(
+        record
+        and record.get("name") == LOCAL_DEMO_NAME
+        and record.get("status") == "active"
+        and record.get("pass_hash")
+        and await verify_password(
+            LOCAL_DEMO_PASSWORD,
+            record.get("pass_salt", ""),
+            record.get("pass_hash", ""),
+        )
+    )
+    if valid:
+        if not bool(int(row.get("is_admin") or 0)):
+            await d1_run(
+                env,
+                "UPDATE users SET is_admin=1 WHERE user_bi=?",
+                name_bi,
+            )
+        return
+    salt, password_hash = await hash_password(LOCAL_DEMO_PASSWORD)
+    await _save_account_full(
+        env,
+        name_bi,
+        {
+            "name": LOCAL_DEMO_NAME,
+            "email": LOCAL_DEMO_EMAIL,
+            "kind": "user",
+            "status": "active",
+            "pass_salt": salt,
+            "pass_hash": password_hash,
+            "email_verified": True,
+            "created_at": int(Date.now()),
+        },
+        email_bi=email_bi,
+        ip_bi=to_js(None),
+        is_admin=1,
+    )
+
+
 async def _account_login(env, request):
     try:
         data = await request.json()
@@ -9099,6 +9483,9 @@ async def _account_login(env, request):
     pubkey = clean_string(data.get("pubkey", ""), 120)
     device_ts = clean_string(data.get("deviceTs", ""), 20)
     device_sig = clean_string(data.get("deviceSig", ""), 200)
+
+    await _ensure_local_demo_account(
+        env, request, identifier, password)
 
     # Brute-force throttle, keyed by a blind index of the identifier (no plaintext
     # stored). Checked before any account lookup so it also protects nonexistent
@@ -27994,6 +28381,21 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/chat/activity", "/api/chat/activity/"):
             return await chat_activity_handler(self.env, request)
 
+        # Private channel API and socket admission are checked before the
+        # generic repository-room router. Authorization and current key-version
+        # validation therefore happen before any Durable Object is selected.
+        chat_channel_socket = CHAT_CHANNEL_WS_RE.match(url.path)
+        if chat_channel_socket:
+            return await _chat_channel_socket_handler(
+                self.env, request, chat_channel_socket.group(1))
+        if (
+            CHAT_CHANNELS_RE.match(url.path)
+            or CHAT_CHANNEL_MEMBERS_RE.match(url.path)
+            or CHAT_CHANNEL_ROOM_ACCESS_RE.match(url.path)
+        ):
+            return await chat_channels_api.handle(
+                _ChatChannelsRuntime(self.env, request), url.path)
+
         # Chat-triggered Cloudflare AI interface. Clients forward explicit
         # "forkbot ..." mentions here; the Worker queues compatible issue-inbox
         # records and returns a bot reply for the encrypted room.
@@ -28911,21 +29313,37 @@ async def chat_history_store(env, room_key, msg_id, ts, body):
         "ON CONFLICT(room_key, msg_id) DO NOTHING",
         room_key, msg_id, ts, body,
     )
+    await _chat_history_prune_bounds(env, room_key)
+
+
+async def _chat_history_prune_bounds(env, room_key):
+    # Enforce count and aggregate-byte limits in one deterministic statement.
+    # The body is an ASCII JSON envelope, so SQLite length(body) equals its UTF-8
+    # storage bytes. Window totals are newest-first; any older overflow rows are
+    # deleted without decrypting their contents.
+    await d1_run(
+        env,
+        "DELETE FROM chat_history WHERE room_key=? AND msg_id IN ("
+        "SELECT msg_id FROM ("
+        "SELECT msg_id,"
+        "ROW_NUMBER() OVER (ORDER BY ts DESC,msg_id DESC) AS row_number,"
+        "SUM(length(body)) OVER (ORDER BY ts DESC,msg_id DESC) AS retained_bytes "
+        "FROM chat_history WHERE room_key=?"
+        ") WHERE row_number>? OR retained_bytes>?)",
+        room_key,
+        room_key,
+        CHAT_HISTORY_MAX_PER_ROOM,
+        CHAT_HISTORY_MAX_BYTES_PER_ROOM,
+    )
 
 
 async def chat_history_prune(env, room_key):
-    # Drop anything past the retention window, then enforce the per-room cap by
-    # keeping only the newest CHAT_HISTORY_MAX_PER_ROOM rows.
+    # Drop anything past the retention window, then enforce count and aggregate
+    # encrypted-byte limits before replaying the room.
     cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
     await d1_run(env, "DELETE FROM chat_history WHERE room_key=? AND ts<?",
                  room_key, cutoff)
-    await d1_run(
-        env,
-        "DELETE FROM chat_history WHERE room_key=? AND msg_id NOT IN ("
-        "SELECT msg_id FROM chat_history WHERE room_key=? "
-        "ORDER BY ts DESC LIMIT ?)",
-        room_key, room_key, CHAT_HISTORY_MAX_PER_ROOM,
-    )
+    await _chat_history_prune_bounds(env, room_key)
 
 
 async def chat_history_prune_expired(env):
@@ -29448,7 +29866,17 @@ class ForkMeshRoom(DurableObject):
     # survive eviction. The read-only "observer" count socket was retired: the
     # live count is now served over HTTP via the cached /api/network/stats.
     async def fetch(self, request):
-        path = urlparse(request.url).path
+        parsed_url = urlparse(request.url)
+        path = parsed_url.path
+        private_path = CHAT_CHANNEL_DO_RE.match(path)
+        if (
+            private_path
+            and private_path.group(3) == "revoke"
+            and method_name(request) == "POST"
+        ):
+            self._close_all_chat_sockets(1008, "room access revoked")
+            return json_response({"ok": True})
+
         upgrade = request.headers.get("upgrade")
         is_websocket = bool(upgrade) and upgrade.lower() == "websocket"
 
@@ -29464,13 +29892,20 @@ class ForkMeshRoom(DurableObject):
 
         # The room key identifies this room across hibernation; stash it on the
         # socket so webSocketMessage can scope retained history to this room.
-        info = room_key_from_path(path)
+        account_values = parse_qs(
+            parsed_url.query, keep_blank_values=False
+        ).get("account") or []
+        account_bi = account_values[0] if len(account_values) == 1 else ""
+        info = room_key_from_path(path, account_bi)
         room_key = info["key"] if info else None
 
         client, server = WebSocketPair.new().object_values()
         self.ctx.acceptWebSocket(server, to_js(["chat"]))
         server.serializeAttachment(to_js({
             "id": new_socket_id(), "room": room_key,
+            "channel_id": (info or {}).get("channel_id", ""),
+            "channel_version": (info or {}).get("channel_version", 0),
+            "account_bi": (info or {}).get("account_bi", ""),
             "last": int(Date.now()),
         }))
 
@@ -29530,6 +29965,9 @@ class ForkMeshRoom(DurableObject):
         try:
             ws.serializeAttachment(to_js({
                 "id": _ws_attr(ws, "id"), "room": _ws_attr(ws, "room"),
+                "channel_id": _ws_attr(ws, "channel_id", ""),
+                "channel_version": _ws_attr(ws, "channel_version", 0),
+                "account_bi": _ws_attr(ws, "account_bi", ""),
                 "last": now, "rl_start": start, "rl_count": count,
             }))
         except Exception:
@@ -29545,6 +29983,9 @@ class ForkMeshRoom(DurableObject):
             return
         # Drop frames from a socket that is flooding (don't relay or retain them).
         if not self._rate_ok(ws):
+            return
+        if not await self._private_room_current(ws):
+            self._close_all_chat_sockets(1008, "room access revoked")
             return
         sender_id = _ws_attr(ws, "id")
         for peer in self._live_chat_sockets(close_stale=True):
@@ -29562,13 +30003,19 @@ class ForkMeshRoom(DurableObject):
         room_key = _ws_attr(ws, "room")
         if not room_key:
             return
-        if len(message.encode("utf-8")) > CHAT_HISTORY_MAX_BODY:
+        message_bytes = len(message.encode("utf-8"))
+        if message_bytes > CHAT_HISTORY_MAX_BODY:
             return  # don't retain very large frames (e.g. file transfers)
         try:
             envelope = json.loads(message)
         except Exception:
             return
-        if not (isinstance(envelope, dict) and envelope.get("persist")):
+        if not (
+            isinstance(envelope, dict)
+            and envelope.get("persist") is True
+        ):
+            return
+        if not await self._retention_ingress_admitted(message_bytes):
             return
         try:
             # The message id lives inside the ciphertext, so key retention on a
@@ -29578,6 +30025,107 @@ class ForkMeshRoom(DurableObject):
                                      int(Date.now()), message)
         except Exception:
             pass
+
+    async def _private_room_current(self, ws):
+        channel_id = _ws_attr(ws, "channel_id", "")
+        if not channel_id:
+            return True
+        try:
+            channel_version = int(_ws_attr(ws, "channel_version", 0) or 0)
+            account_bi = str(_ws_attr(ws, "account_bi", "") or "")
+            if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+                return False
+            await ensure_schema(self.env)
+            channel = await d1_first(
+                self.env,
+                "SELECT data,key_version FROM chat_channels WHERE channel_id=?",
+                channel_id,
+            )
+            if (
+                not channel
+                or int(channel.get("key_version") or 0) != channel_version
+            ):
+                return False
+            channel_record = await decrypt_row(
+                self.env, channel.get("data"))
+            if not isinstance(channel_record, dict):
+                return False
+            account = await d1_first(
+                self.env,
+                "SELECT data,is_admin FROM users WHERE user_bi=?",
+                account_bi,
+            )
+            if not account:
+                return False
+            account_record = await decrypt_row(
+                self.env, account.get("data"))
+            if (
+                not account_record
+                or account_record.get("status") != "active"
+                or _account_kind(account_record) != "user"
+            ):
+                return False
+            if bool(int(account.get("is_admin") or 0)):
+                return True
+            if channel_record.get("visibility") == "public":
+                return True
+            membership = await d1_first(
+                self.env,
+                "SELECT 1 AS allowed FROM chat_channel_members "
+                "WHERE channel_id=? AND member_bi=?",
+                channel_id,
+                account_bi,
+            )
+            return bool(membership)
+        except Exception:
+            return False
+
+    async def _retention_ingress_admitted(self, message_bytes):
+        now = int(Date.now())
+        try:
+            state = await self.ctx.storage.get("chat_history_ingress")
+        except Exception:
+            return False
+        if hasattr(state, "to_py"):
+            state = state.to_py()
+        if not isinstance(state, dict):
+            state = {}
+        try:
+            start = int(state.get("start") or 0)
+            used = int(state.get("bytes") or 0)
+        except (TypeError, ValueError):
+            start = 0
+            used = 0
+        if now - start >= CHAT_HISTORY_INGRESS_WINDOW_MS:
+            start = now
+            used = 0
+        if message_bytes < 0 or (
+            used + message_bytes > CHAT_HISTORY_INGRESS_MAX_BYTES
+        ):
+            try:
+                await self.ctx.storage.put(
+                    "chat_history_ingress",
+                    to_js({"start": start, "bytes": used}),
+                )
+            except Exception:
+                pass
+            return False
+        try:
+            await self.ctx.storage.put(
+                "chat_history_ingress",
+                to_js({"start": start, "bytes": used + message_bytes}),
+            )
+        except Exception:
+            return False
+        return True
+
+    def _close_all_chat_sockets(self, code, reason):
+        try:
+            peers = self.ctx.getWebSockets("chat")
+        except Exception:
+            peers = []
+        for peer in peers:
+            self._safe_close(peer, code, reason)
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._safe_close(ws, 1000, "")

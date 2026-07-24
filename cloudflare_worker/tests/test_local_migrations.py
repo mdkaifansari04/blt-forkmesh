@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
 """Regression tests for migrations on a fresh local D1 database."""
 
+import ast
 import sqlite3
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _literal_assignment(path, name):
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(isinstance(target, ast.Name) and target.id == name
+               for target in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"missing {name}")
 
 
 def test_activitypub_thread_lifecycle_migration_upgrades_remote_replies():
@@ -49,6 +61,92 @@ def test_activitypub_thread_lifecycle_migration_upgrades_remote_replies():
             pass
     finally:
         connection.close()
+
+
+def test_lazy_schema_upgrade_adds_columns_before_dependent_indexes():
+    entry_path = ROOT / "src" / "entry.py"
+    schema_path = ROOT / "src" / "schema.py"
+    initial = (ROOT / "migrations" / "0028_activitypub.sql").read_text(
+        encoding="utf-8"
+    )
+    pre_alters = _literal_assignment(
+        entry_path, "SCHEMA_PRE_CREATE_ALTER_STATEMENTS"
+    )
+    schema_statements = _literal_assignment(schema_path, "SCHEMA_STATEMENTS")
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(initial)
+        for statement in pre_alters:
+            connection.execute(statement)
+        for statement in schema_statements:
+            if "ap_comments" in statement or "ap_outbox" in statement:
+                connection.execute(statement)
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(ap_comments)")
+        }
+        outbox_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(ap_outbox)")
+        }
+        indexes = {
+            row[1] for row in connection.execute("PRAGMA index_list(ap_comments)")
+        }
+    finally:
+        connection.close()
+
+    assert {"parent_remote_id_bi", "lifecycle"}.issubset(columns)
+    assert "dedupe_bi" in outbox_columns
+    assert "idx_ap_comments_parent" in indexes
+    apply_schema = entry_path.read_text(encoding="utf-8").split(
+        "async def _apply_schema(env):", 1
+    )[1].split("\ndef js_nullish", 1)[0]
+    assert apply_schema.index("SCHEMA_PRE_CREATE_ALTER_STATEMENTS") < (
+        apply_schema.index("SCHEMA_STATEMENTS")
+    )
+
+
+def test_lazy_schema_upgrade_adds_encrypted_chat_member_payload_column():
+    entry_path = ROOT / "src" / "entry.py"
+    schema_path = ROOT / "src" / "schema.py"
+    schema_statements = _literal_assignment(schema_path, "SCHEMA_STATEMENTS")
+    post_alters = _literal_assignment(entry_path, "SCHEMA_ALTER_STATEMENTS")
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE chat_channels (
+                channel_id TEXT PRIMARY KEY,
+                name_bi TEXT NOT NULL UNIQUE,
+                data TEXT NOT NULL,
+                created_by_bi TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                key_version INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE chat_channel_members (
+                channel_id TEXT NOT NULL,
+                member_bi TEXT NOT NULL,
+                invited_by_bi TEXT NOT NULL,
+                joined_at INTEGER NOT NULL,
+                PRIMARY KEY (channel_id, member_bi)
+            );
+            """
+        )
+        for statement in schema_statements:
+            if "chat_channel" in statement:
+                connection.execute(statement)
+        for statement in post_alters:
+            if "chat_channel_members" in statement:
+                connection.execute(statement)
+        columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(chat_channel_members)"
+            )
+        }
+    finally:
+        connection.close()
+
+    assert "data" in columns
 
 
 def test_release_downloads_user_agent_migration_bootstraps_fresh_local_db():

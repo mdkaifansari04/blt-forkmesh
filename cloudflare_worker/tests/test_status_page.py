@@ -333,6 +333,7 @@ def test_cron_samples_run_every_tick_and_heavy_jobs_are_staggered():
 
 
 def test_ensure_schema_skips_ddl_when_fingerprint_matches():
+    fake_pre_alters = ["ALTER TABLE t ADD COLUMN indexed_y"]
     fake_statements = ["CREATE TABLE IF NOT EXISTS t (x)"]
     fake_alters = ["ALTER TABLE t ADD COLUMN y"]
     prepared = []
@@ -372,6 +373,7 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
 
         return {
             "asyncio": asyncio,
+            "SCHEMA_PRE_CREATE_ALTER_STATEMENTS": fake_pre_alters,
             "SCHEMA_STATEMENTS": fake_statements,
             "SCHEMA_ALTER_STATEMENTS": fake_alters,
             "_SCHEMA_FINGERPRINT": fingerprint,
@@ -397,7 +399,7 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
     d1_runs.clear()
     g = load_ensure_schema(stored_fingerprint=None)
     asyncio.run(g["ensure_schema"](_Env()))
-    assert prepared == fake_statements + fake_alters
+    assert prepared == fake_pre_alters + fake_statements + fake_alters
     assert len(d1_runs) == 1 and "schema_meta" in d1_runs[0][0]
     assert d1_runs[0][1] == (fingerprint,)
 
@@ -406,7 +408,7 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
     d1_runs.clear()
     g = load_ensure_schema(stored_fingerprint="fp-older")
     asyncio.run(g["ensure_schema"](_Env()))
-    assert prepared == fake_statements + fake_alters
+    assert prepared == fake_pre_alters + fake_statements + fake_alters
     assert len(d1_runs) == 1
 
     # Transient D1 failure (overload / internal error) on the fingerprint
@@ -434,7 +436,7 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
         await asyncio.gather(*(g["ensure_schema"](_Env()) for _ in range(5)))
 
     asyncio.run(_concurrent())
-    assert prepared == fake_statements + fake_alters
+    assert prepared == fake_pre_alters + fake_statements + fake_alters
     assert len(d1_runs) == 1
 
 

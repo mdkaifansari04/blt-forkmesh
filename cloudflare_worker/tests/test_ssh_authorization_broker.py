@@ -194,6 +194,10 @@ def test_broker_rejects_replayed_or_swapped_worker_response():
             broker._validated_upstream_response(request, changed, "r" * 24)
 
 
+@pytest.mark.skipif(
+    not hasattr(socket, "SO_PEERCRED"),
+    reason="SO_PEERCRED is a Linux-only broker boundary",
+)
 def test_broker_reads_kernel_peer_credentials():
     left, right = socket.socketpair()
     try:

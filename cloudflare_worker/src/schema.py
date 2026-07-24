@@ -290,6 +290,38 @@ SCHEMA_STATEMENTS = [
         room_key TEXT NOT NULL, msg_id TEXT NOT NULL, ts INTEGER NOT NULL,
         body TEXT NOT NULL, PRIMARY KEY (room_key, msg_id))""",
     "CREATE INDEX IF NOT EXISTS idx_chat_history_room_ts ON chat_history(room_key, ts)",
+    # Administrator-created private chat channels (migration 0069). Channel
+    # names and creator labels live only in encrypted data; name_bi enforces
+    # uniqueness without exposing the normalized name in plaintext. Every
+    # platform administrator has implicit access, while direct user grants are
+    # recorded in chat_channel_members.
+    """CREATE TABLE IF NOT EXISTS chat_channels (
+        channel_id TEXT PRIMARY KEY,
+        name_bi TEXT NOT NULL UNIQUE,
+        data TEXT NOT NULL,
+        created_by_bi TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        key_version INTEGER NOT NULL DEFAULT 1 CHECK (key_version >= 1))""",
+    """CREATE TABLE IF NOT EXISTS chat_channel_members (
+        channel_id TEXT NOT NULL,
+        member_bi TEXT NOT NULL,
+        data TEXT NOT NULL,
+        invited_by_bi TEXT NOT NULL,
+        joined_at INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, member_bi))""",
+    "CREATE INDEX IF NOT EXISTS idx_chat_channel_members_member "
+    "ON chat_channel_members(member_bi, channel_id)",
+    # Rotate the shared-key namespace atomically whenever a real membership is
+    # removed. An idempotent DELETE that matches no row does not fire it.
+    """CREATE TRIGGER IF NOT EXISTS trg_chat_channel_member_remove_rotate
+        AFTER DELETE ON chat_channel_members
+        BEGIN
+          UPDATE chat_channels
+             SET key_version = key_version + 1,
+                 updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+           WHERE channel_id = OLD.channel_id;
+        END""",
     # --- Relay federation (main relay only) ---------------------------------
     # Allowlist of relays that federate with this (main) relay. A relay is known
     # by its Ed25519 pubkey; only status='approved' relays may custody signups

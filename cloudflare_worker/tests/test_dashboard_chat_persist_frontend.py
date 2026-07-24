@@ -39,6 +39,21 @@ def test_public_chat_marks_durable_frames_for_relay_retention():
     assert "DURABLE_TYPES.has(" in send
 
 
+def test_replayed_self_messages_are_rendered_after_refresh():
+    for source in (CHAT, PUBLIC_CHAT):
+        on_frame = source[
+            source.index("async function onFrame("):
+            source.index("const DURABLE_TYPES", source.index("async function onFrame("))
+        ]
+        assert "plain.senderId === selfId" not in on_frame
+
+        render_entry = source[
+            source.index("function renderChatEntry("):
+            source.index("async function verifyAdminDelete(")
+        ]
+        assert 'entry.senderId === selfId ? "self" : kind' in render_entry
+
+
 def test_durable_type_set_matches_the_node():
     # Same set as the desktop node's kDurableTypes (ServerNode.cpp).
     for kind in ("chat", "edit", "delete", "reaction", "admin-delete"):
@@ -95,9 +110,10 @@ def test_public_chat_splits_guest_general_from_authenticated_channels():
     assert "sender: worldVisitorName(plain.sender)" in PUBLIC_CHAT
     assert "World visitor · ${asserted}" in PUBLIC_CHAT
     assert "PUBLIC_WORLD_ROOM_KEY_ENDPOINT" in PUBLIC_CHAT
-    assert "AUTHENTICATED_ROOM_KEY_ENDPOINT" in PUBLIC_CHAT
+    assert "PRIVATE_CHANNELS_ENDPOINT" in PUBLIC_CHAT
+    assert "fetchRoomAccess" in PUBLIC_CHAT
     assert "PUBLIC_WORLD_CHAT_WS_PATH" in PUBLIC_CHAT
-    assert "AUTHENTICATED_CHAT_WS_PATH" in PUBLIC_CHAT
+    assert "access.webSocketUrl" in PUBLIC_CHAT
     assert "switchChatRoom" in PUBLIC_CHAT
     assert "frameMatchesScope" in PUBLIC_CHAT
     assert "Guests can participate only in public World #general" in PUBLIC_CHAT
@@ -142,11 +158,18 @@ def test_public_chat_has_rooms_conversation_and_people_panes():
     assert 'id="chat-channel-title"' in PUBLIC_CHAT_HTML
     assert ".chat-rooms-pane" in PUBLIC_CHAT_HTML
     assert ".chat-people-pane" in PUBLIC_CHAT_HTML
-    # Sends carry the active channel; #general uses the isolated public room,
-    # while authenticated channels retain the desktop-compatible room.
-    assert "channel: activeChannel" in PUBLIC_CHAT
+    # Sends carry the selected display label while private buffers and room
+    # access stay keyed by the server-provided opaque channel id.
+    assert "channel: channelDisplayLabel(activeChannel)" in PUBLIC_CHAT
     assert "function setActiveChannel(" in PUBLIC_CHAT
-    assert 'DEFAULT_CHANNELS = ["#general", "#welcome", "#random"]' in PUBLIC_CHAT
+    assert 'const PRIVATE_CHANNELS_ENDPOINT = "/api/chat/channels"' in PUBLIC_CHAT
+    assert 'DEFAULT_CHANNELS = ["#general", "#welcome", "#random"]' not in PUBLIC_CHAT
+
+
+def test_dashboard_public_room_links_to_private_channel_directory():
+    assert "function mountPrivateChannelsLink(" in CHAT
+    assert 'link.href = "/chat"' in CHAT
+    assert 'link.textContent = "Open private channels"' in CHAT
 
 
 def test_public_chat_sends_presence_keepalive_at_desktop_cadence():
@@ -241,7 +264,11 @@ def test_dashboard_side_chat_orders_by_ts_with_avatar_and_time():
     assert "avatarLetter(message.who)" in CHAT
     # Call sites hand the epoch timestamp through (formatting happens at
     # render), so ordering never depends on arrival order.
-    assert "appendMessage(kind, who, text, entry.id, entry.senderId,\n                  Number(entry.ts) || Date.now())" in CHAT
+    assert (
+        "appendMessage(kind, who, text, entry.id, entry.senderId,\n"
+        "                  Number(entry.ts) || Date.now(), attachment)"
+        in CHAT
+    )
 
 
 def test_dashboard_side_chat_keeps_its_socket_alive_and_reconnects():
