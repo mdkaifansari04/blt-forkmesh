@@ -61,7 +61,12 @@ SENTRY_CRON_MAX_RUNTIME_MINUTES = 5
 # Retained chat history (encrypted) so late-joining nodes see some backlog.
 CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000  # keep the last 7 days
 CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
-CHAT_HISTORY_MAX_BODY = 48 * 1024  # don't retain very large frames (e.g. files)
+# A 1 MiB attachment becomes about 1.87 MB after its file bytes and encrypted
+# envelope are each base64 encoded. Keep the row below D1's 2,000,000-byte hard
+# limit, then bound the aggregate so attachment traffic cannot grow one room
+# without limit.
+CHAT_HISTORY_MAX_BODY = 1_900_000
+CHAT_HISTORY_MAX_BYTES_PER_ROOM = 16 * 1024 * 1024
 CHAT_CHANNEL_TICKET_TTL_MS = 60 * 1000
 MAX_CATALOG_REPOS = 200
 MAX_ERROR_LOG = 500
@@ -29093,21 +29098,37 @@ async def chat_history_store(env, room_key, msg_id, ts, body):
         "ON CONFLICT(room_key, msg_id) DO NOTHING",
         room_key, msg_id, ts, body,
     )
+    await _chat_history_prune_bounds(env, room_key)
+
+
+async def _chat_history_prune_bounds(env, room_key):
+    # Enforce count and aggregate-byte limits in one deterministic statement.
+    # The body is an ASCII JSON envelope, so SQLite length(body) equals its UTF-8
+    # storage bytes. Window totals are newest-first; any older overflow rows are
+    # deleted without decrypting their contents.
+    await d1_run(
+        env,
+        "DELETE FROM chat_history WHERE room_key=? AND msg_id IN ("
+        "SELECT msg_id FROM ("
+        "SELECT msg_id,"
+        "ROW_NUMBER() OVER (ORDER BY ts DESC,msg_id DESC) AS row_number,"
+        "SUM(length(body)) OVER (ORDER BY ts DESC,msg_id DESC) AS retained_bytes "
+        "FROM chat_history WHERE room_key=?"
+        ") WHERE row_number>? OR retained_bytes>?)",
+        room_key,
+        room_key,
+        CHAT_HISTORY_MAX_PER_ROOM,
+        CHAT_HISTORY_MAX_BYTES_PER_ROOM,
+    )
 
 
 async def chat_history_prune(env, room_key):
-    # Drop anything past the retention window, then enforce the per-room cap by
-    # keeping only the newest CHAT_HISTORY_MAX_PER_ROOM rows.
+    # Drop anything past the retention window, then enforce count and aggregate
+    # encrypted-byte limits before replaying the room.
     cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
     await d1_run(env, "DELETE FROM chat_history WHERE room_key=? AND ts<?",
                  room_key, cutoff)
-    await d1_run(
-        env,
-        "DELETE FROM chat_history WHERE room_key=? AND msg_id NOT IN ("
-        "SELECT msg_id FROM chat_history WHERE room_key=? "
-        "ORDER BY ts DESC LIMIT ?)",
-        room_key, room_key, CHAT_HISTORY_MAX_PER_ROOM,
-    )
+    await _chat_history_prune_bounds(env, room_key)
 
 
 async def chat_history_prune_expired(env):

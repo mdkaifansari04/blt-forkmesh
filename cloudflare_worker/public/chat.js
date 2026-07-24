@@ -38,6 +38,9 @@ const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
 const RELAY_HOST = window.FORKMESH_RELAY_HOST || location.host;
 const MAX_TEXT = 16000;
 const MAX_NAME = 32;
+const MAX_ATTACHMENT_BYTES = 1024 * 1024;
+const MAX_ATTACHMENT_NAME = 180;
+const MAX_ATTACHMENT_MIME = 100;
 const CHAT_MENTION_RE = /(^|[^A-Za-z0-9_-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b/gi;
 // Presence cadence + staleness mirror the desktop node (ServerNode.cpp:
 // kPresenceIntervalMs / kPeerStaleMs). The beat doubles as the keep-alive the
@@ -67,6 +70,9 @@ const logEl = document.querySelector("#chat-log");
 const nameInput = document.querySelector("#chat-name");
 const input = document.querySelector("#chat-input");
 const sendBtn = document.querySelector("#chat-send");
+const attachmentInput = document.querySelector("#chat-attachment-input");
+const attachmentBtn = document.querySelector("#chat-attachment-button");
+const attachmentFeedback = document.querySelector("#chat-attachment-feedback");
 const clearBtn = document.querySelector("#chat-clear");
 const statusEl = document.querySelector("#chat-status");
 const roomsEl = document.querySelector("#chat-rooms");
@@ -161,6 +167,62 @@ function b64ToBytes(value) {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+function safeAttachmentName(value) {
+  const parts = String(value || "")
+    .replace(/\\/g, "/")
+    .split("/");
+  const name = String(parts.pop() || "")
+    .replace(/\0/g, "")
+    .trim()
+    .slice(0, MAX_ATTACHMENT_NAME);
+  return name || "file";
+}
+
+function safeAttachmentMime(value) {
+  const mime = String(value || "").trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(mime) &&
+    mime.length <= MAX_ATTACHMENT_MIME
+    ? mime
+    : "application/octet-stream";
+}
+
+function attachmentFromEntry(entry) {
+  if (!entry || !entry.fileName || typeof entry.file !== "string") return null;
+  if (!entry.file || entry.file.length > Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 4) {
+    return null;
+  }
+  try {
+    const bytes = b64ToBytes(entry.file);
+    if (!bytes.length || bytes.byteLength > MAX_ATTACHMENT_BYTES) return null;
+    return {
+      fileName: safeAttachmentName(entry.fileName),
+      fileMime: safeAttachmentMime(entry.fileMime),
+      file: entry.file,
+      size: bytes.byteLength,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function formatAttachmentSize(size) {
+  const bytes = Math.max(0, Number(size) || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KiB`;
+}
+
+function setAttachmentFeedback(message) {
+  if (!attachmentFeedback) return;
+  attachmentFeedback.textContent = String(message || "");
+  if (message) {
+    setTimeout(() => {
+      if (attachmentFeedback.textContent === message) {
+        attachmentFeedback.textContent = "";
+      }
+    }, 5000);
+  }
 }
 
 // The desktop identity encodes keys/signatures as unpadded base64url.
@@ -427,7 +489,7 @@ function setStatus(text) {
 
 function lockChatForNonUser() {
   setStatus("User login required for this channel");
-  [input, sendBtn, nameInput].forEach((el) => {
+  [input, sendBtn, nameInput, attachmentBtn, attachmentInput].forEach((el) => {
     if (el) el.disabled = true;
   });
   if (logEl) {
@@ -442,7 +504,7 @@ function lockChatForNonUser() {
 }
 
 function unlockChatForUser() {
-  [input, sendBtn].forEach((el) => {
+  [input, sendBtn, attachmentBtn, attachmentInput].forEach((el) => {
     if (el) el.disabled = false;
   });
   const session = userSession();
@@ -1178,6 +1240,63 @@ function scrollLogToBottom() {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+function revokeAttachmentUrl(record) {
+  if (!record || !record.attachmentUrl) return;
+  URL.revokeObjectURL(record.attachmentUrl);
+  record.attachmentUrl = "";
+}
+
+function renderAttachment(record) {
+  const attachment = record && record.attachment;
+  if (!attachment) return null;
+  let bytes;
+  try {
+    bytes = b64ToBytes(attachment.file);
+  } catch (_) {
+    return null;
+  }
+  revokeAttachmentUrl(record);
+  const blob = new Blob([bytes], { type: attachment.fileMime });
+  const objectUrl = URL.createObjectURL(blob);
+  record.attachmentUrl = objectUrl;
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "chat-attachment";
+  if (attachment.fileMime.startsWith("image/")) {
+    const image = document.createElement("img");
+    image.className = "chat-attachment-image";
+    image.src = objectUrl;
+    image.alt = attachment.fileName;
+    image.loading = "lazy";
+    wrapper.append(image);
+  }
+
+  const card = document.createElement("div");
+  card.className = "chat-attachment-card";
+  const icon = document.createElement("span");
+  icon.textContent = attachment.fileMime.startsWith("image/") ? "Image" : "File";
+  icon.setAttribute("aria-hidden", "true");
+  const info = document.createElement("div");
+  info.className = "chat-attachment-info";
+  const name = document.createElement("div");
+  name.className = "chat-attachment-name";
+  name.textContent = attachment.fileName;
+  name.title = attachment.fileName;
+  const meta = document.createElement("div");
+  meta.className = "chat-attachment-meta";
+  meta.textContent = `${attachment.fileMime} - ${formatAttachmentSize(attachment.size)}`;
+  info.append(name, meta);
+  const link = document.createElement("a");
+  link.className = "chat-attachment-download";
+  link.href = objectUrl;
+  link.download = attachment.fileName;
+  link.textContent = "Download";
+  link.setAttribute("aria-label", `Download ${attachment.fileName}`);
+  card.append(icon, info, link);
+  wrapper.append(card);
+  return wrapper;
+}
+
 // Render one message record into the log. `prev` is the record already above
 // it; consecutive same-sender messages within GROUP_WINDOW_MS collapse under a
 // single avatar + name/time header, Discord-style.
@@ -1227,10 +1346,15 @@ function buildRow(record, prev) {
     head.append(author, time);
     main.append(head);
   }
-  const body = document.createElement("span");
-  body.className = "chat-text";
-  appendMentionText(body, record.text);
-  main.append(body);
+  let body = null;
+  if (record.text) {
+    body = document.createElement("span");
+    body.className = "chat-text";
+    appendMentionText(body, record.text);
+    main.append(body);
+  }
+  const attachment = renderAttachment(record);
+  if (attachment) main.append(attachment);
   const reactionsEl = document.createElement("div");
   reactionsEl.className = "chat-reactions";
   main.append(reactionsEl);
@@ -1252,6 +1376,7 @@ function buildRow(record, prev) {
 }
 
 function renderActiveChannel() {
+  for (const record of rows.values()) revokeAttachmentUrl(record);
   logEl.textContent = "";
   const list = channelMessages.get(activeChannel) || [];
   if (!list.length) {
@@ -1301,7 +1426,7 @@ function insertMessage(record) {
   }
 }
 
-function appendMessage(kind, who, text, id, senderId, ts, channel) {
+function appendMessage(kind, who, text, id, senderId, ts, channel, attachment = null) {
   const record = {
     id: id || String(Math.random()).slice(2) + Date.now(),
     channel: ensureChannel(channel) || activeChannel,
@@ -1309,6 +1434,7 @@ function appendMessage(kind, who, text, id, senderId, ts, channel) {
     senderId: senderId || "",
     sender: who,
     text,
+    attachment,
     self: kind === "self",
   };
   insertMessage(record);
@@ -1320,6 +1446,7 @@ function appendMessage(kind, who, text, id, senderId, ts, channel) {
 function removeMessage(id) {
   const rec = rows.get(id);
   if (!rec) return;
+  revokeAttachmentUrl(rec);
   rows.delete(id);
   reactions.delete(id);
   const list = channelMessages.get(rec.channel) || [];
@@ -1336,6 +1463,7 @@ function removeMessage(id) {
 function clearChat() {
   const list = channelMessages.get(activeChannel) || [];
   for (const record of list) {
+    revokeAttachmentUrl(record);
     rows.delete(record.id);
     reactions.delete(record.id);
   }
@@ -1420,10 +1548,9 @@ function renderChatEntry(entry, kind, scope = roomScopeForChannel()) {
   noteRoster(entry);
   if (!once(entry.id)) return;
   const who = (entry.sender || "peer").slice(0, MAX_NAME);
-  const text = entry.fileName
-    ? "📎 " + entry.fileName
-    : entry.text || "";
-  if (text) {
+  const text = entry.text || "";
+  const attachment = attachmentFromEntry(entry);
+  if (text || attachment) {
     const renderedKind = entry.senderId === selfId ? "self" : kind;
     appendMessage(
       renderedKind,
@@ -1433,6 +1560,7 @@ function renderChatEntry(entry, kind, scope = roomScopeForChannel()) {
       entry.senderId,
       entry.ts,
       entry.channel,
+      attachment,
     );
   }
 }
@@ -1733,6 +1861,64 @@ function runWhenConnected(callback) {
   connect();
 }
 
+async function sendAttachment(file) {
+  if (!file || !canJoinChannel()) {
+    if (!canJoinChannel()) lockChatForNonUser();
+    return;
+  }
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    setAttachmentFeedback("Attachments must be 1 MiB or smaller.");
+    return;
+  }
+  if (!file.size) {
+    setAttachmentFeedback("That file is empty.");
+    return;
+  }
+  let buffer;
+  try {
+    buffer = await file.arrayBuffer();
+  } catch (_) {
+    setAttachmentFeedback("Could not read that attachment.");
+    return;
+  }
+  const fileName = safeAttachmentName(file.name);
+  const fileMime = safeAttachmentMime(file.type);
+  const encodedFile = bytesToB64(buffer);
+  runWhenConnected(() => {
+    const plain = makePlain("chat", {
+      channel: activeChannel,
+      fileName,
+      fileMime,
+      file: encodedFile,
+    });
+    const attachment = attachmentFromEntry(plain);
+    if (!attachment) {
+      setAttachmentFeedback("Could not prepare that attachment.");
+      return;
+    }
+    send(plain);
+    seen.add(plain.id);
+    appendMessage(
+      "self",
+      plain.sender,
+      "",
+      plain.id,
+      plain.senderId,
+      plain.ts,
+      plain.channel,
+      attachment,
+    );
+    setAttachmentFeedback(`Shared ${fileName}`);
+  });
+}
+
+function clipboardImage(event) {
+  const items = Array.from(event.clipboardData?.items || []);
+  const item = items.find((candidate) =>
+    candidate.kind === "file" && String(candidate.type || "").startsWith("image/"));
+  return item ? item.getAsFile() : null;
+}
+
 function sendCurrentMessage() {
   if (!canJoinChannel()) {
     lockChatForNonUser();
@@ -1784,6 +1970,20 @@ async function initChat() {
   }
   sendBtn.addEventListener("click", sendCurrentMessage);
   if (clearBtn) clearBtn.addEventListener("click", clearChat);
+  if (attachmentBtn && attachmentInput) {
+    attachmentBtn.addEventListener("click", () => attachmentInput.click());
+    attachmentInput.addEventListener("change", () => {
+      const file = attachmentInput.files && attachmentInput.files[0];
+      attachmentInput.value = "";
+      if (file) sendAttachment(file);
+    });
+  }
+  input.addEventListener("paste", (event) => {
+    const file = clipboardImage(event);
+    if (!file) return;
+    event.preventDefault();
+    sendAttachment(file);
+  });
   input.addEventListener("keydown", (event) => {
     // While the @mention popup is open it owns the keyboard: Tab (or Enter)
     // accepts the highlighted name, arrows move, Escape dismisses — only then

@@ -256,7 +256,11 @@ def test_dashboard_side_chat_orders_by_ts_with_avatar_and_time():
     assert "avatarLetter(message.who)" in CHAT
     # Call sites hand the epoch timestamp through (formatting happens at
     # render), so ordering never depends on arrival order.
-    assert "appendMessage(kind, who, text, entry.id, entry.senderId,\n                  Number(entry.ts) || Date.now())" in CHAT
+    assert (
+        "appendMessage(kind, who, text, entry.id, entry.senderId,\n"
+        "                  Number(entry.ts) || Date.now(), attachment)"
+        in CHAT
+    )
 
 
 def test_dashboard_side_chat_keeps_its_socket_alive_and_reconnects():

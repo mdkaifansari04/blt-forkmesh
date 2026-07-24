@@ -554,6 +554,99 @@
       #chat-input::placeholder { color: var(--muted); }
       #chat-input:focus { border-color: var(--accent); }
 
+      #chat-attachment-input { display: none; }
+
+      #chat-attachment-button {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 42px;
+        height: 42px;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface2);
+        color: var(--muted);
+        cursor: pointer;
+      }
+
+      #chat-attachment-button:hover,
+      #chat-attachment-button:focus-visible {
+        border-color: var(--accent);
+        color: var(--fg);
+        outline: none;
+      }
+
+      #chat-attachment-button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+      #chat-attachment-feedback {
+        position: absolute;
+        left: 16px;
+        bottom: calc(100% + 8px);
+        max-width: min(420px, calc(100vw - 32px));
+        padding: 7px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface2);
+        color: var(--fg);
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+        font-size: 12px;
+      }
+
+      #chat-attachment-feedback:empty { display: none; }
+
+      .chat-attachment {
+        display: grid;
+        width: min(440px, 100%);
+        gap: 8px;
+        margin-top: 5px;
+      }
+
+      .chat-attachment-image {
+        display: block;
+        width: auto;
+        min-width: 96px;
+        min-height: 72px;
+        max-width: 100%;
+        max-height: 320px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface2);
+        object-fit: contain;
+      }
+
+      .chat-attachment-card {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+        padding: 9px 10px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--surface2);
+      }
+
+      .chat-attachment-info { min-width: 0; flex: 1; }
+      .chat-attachment-name {
+        overflow: hidden;
+        color: var(--fg);
+        font-size: 12.5px;
+        font-weight: 650;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .chat-attachment-meta { color: var(--muted); font-size: 11px; }
+      .chat-attachment-download {
+        flex-shrink: 0;
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 650;
+        text-decoration: none;
+      }
+      .chat-attachment-download:hover,
+      .chat-attachment-download:focus-visible { text-decoration: underline; }
+
       #chat-send {
         flex-shrink: 0;
         height: 42px;
@@ -722,6 +815,22 @@
           </div>
 
           <div class="chat-input-bar">
+            <input
+              id="chat-attachment-input"
+              type="file"
+              aria-label="Choose image or document"
+            />
+            <button
+              id="chat-attachment-button"
+              type="button"
+              aria-label="Attach image or document"
+              title="Attach image or document (up to 1 MiB)"
+            >
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+              </svg>
+            </button>
+            <span id="chat-attachment-feedback" role="status" aria-live="polite"></span>
             <input
               id="chat-input"
               type="text"

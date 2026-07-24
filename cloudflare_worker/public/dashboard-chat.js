@@ -81,6 +81,9 @@
   const RELAY_HOST = window.FORKMESH_RELAY_HOST || location.host;
   const MAX_TEXT = 16000;
   const MAX_NAME = 32;
+  const MAX_ATTACHMENT_BYTES = 1024 * 1024;
+  const MAX_ATTACHMENT_NAME = 180;
+  const MAX_ATTACHMENT_MIME = 100;
   const MAX_SIDE_MESSAGES = 3;
   const CHAT_MENTION_RE = /(^|[^A-Za-z0-9_-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b/gi;
 
@@ -120,6 +123,8 @@
   const seen = new Set();
   const rows = new Map();
   const sideEntries = [];
+  const attachmentControls = [];
+  const attachmentUrls = new Set();
   // Rolling buffer of recent decrypted messages, forwarded to ForkBot so it can
   // resolve references like "that bug" from the conversation. The relay can
   // decrypt the default shared-key room; this controls only the narrower
@@ -150,6 +155,70 @@
     for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
     return out;
   }
+
+  function safeAttachmentName(value) {
+    const parts = String(value || "").replace(/\\/g, "/").split("/");
+    const name = String(parts.pop() || "")
+      .replace(/\0/g, "")
+      .trim()
+      .slice(0, MAX_ATTACHMENT_NAME);
+    return name || "file";
+  }
+
+  function safeAttachmentMime(value) {
+    const mime = String(value || "").trim().toLowerCase();
+    return /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(mime) &&
+      mime.length <= MAX_ATTACHMENT_MIME
+      ? mime
+      : "application/octet-stream";
+  }
+
+  function attachmentFromEntry(entry) {
+    if (!entry || !entry.fileName || typeof entry.file !== "string") return null;
+    if (!entry.file || entry.file.length > Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 4) {
+      return null;
+    }
+    try {
+      const bytes = b64ToBytes(entry.file);
+      if (!bytes.length || bytes.byteLength > MAX_ATTACHMENT_BYTES) return null;
+      return {
+        fileName: safeAttachmentName(entry.fileName),
+        fileMime: safeAttachmentMime(entry.fileMime),
+        file: entry.file,
+        size: bytes.byteLength,
+        objectUrl: "",
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function attachmentObjectUrl(attachment) {
+    if (attachment.objectUrl) return attachment.objectUrl;
+    const bytes = b64ToBytes(attachment.file);
+    const url = URL.createObjectURL(new Blob([bytes], { type: attachment.fileMime }));
+    attachment.objectUrl = url;
+    attachmentUrls.add(url);
+    return url;
+  }
+
+  function releaseAttachment(attachment) {
+    if (!attachment?.objectUrl) return;
+    URL.revokeObjectURL(attachment.objectUrl);
+    attachmentUrls.delete(attachment.objectUrl);
+    attachment.objectUrl = "";
+  }
+
+  function formatAttachmentSize(size) {
+    const bytes = Math.max(0, Number(size) || 0);
+    if (bytes < 1024) return `${bytes} B`;
+    return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KiB`;
+  }
+
+  window.addEventListener("beforeunload", () => {
+    for (const url of attachmentUrls) URL.revokeObjectURL(url);
+    attachmentUrls.clear();
+  });
 
   function b64urlToBytes(value) {
     let s = (value || "").replace(/-/g, "+").replace(/_/g, "/");
@@ -523,6 +592,10 @@
     [fullInput, sideInput, fullSend, sideSend].forEach((el) => {
       if (el) el.disabled = !enabled;
     });
+    attachmentControls.forEach((control) => {
+      control.button.disabled = !enabled;
+      control.input.disabled = !enabled;
+    });
   }
 
   function showUserOnlyState() {
@@ -562,7 +635,51 @@
     return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
-  function appendFullMessage(kind, who, text, id, senderId, tsMs) {
+  function renderAttachment(attachment, compact = false) {
+    if (!attachment) return null;
+    const objectUrl = attachmentObjectUrl(attachment);
+    const wrapper = document.createElement("div");
+    wrapper.className = compact ? "mt-1 grid gap-1.5" : "mt-2 grid max-w-md gap-2";
+    if (attachment.fileMime.startsWith("image/")) {
+      const image = document.createElement("img");
+      image.className = "chat-attachment-image";
+      image.className += compact
+        ? " max-h-28 max-w-full rounded-md border border-border object-contain"
+        : " max-h-72 max-w-full rounded-lg border border-border bg-secondary object-contain";
+      image.src = objectUrl;
+      image.alt = attachment.fileName;
+      image.loading = "lazy";
+      image.style.minWidth = compact ? "72px" : "96px";
+      image.style.minHeight = compact ? "54px" : "72px";
+      wrapper.append(image);
+    }
+    const card = document.createElement("div");
+    card.className = "chat-attachment-card";
+    card.className += compact
+      ? " flex min-w-0 items-center gap-2 rounded-md border border-border bg-secondary/70 px-2 py-1.5"
+      : " flex min-w-0 items-center gap-3 rounded-lg border border-border bg-secondary px-3 py-2";
+    const info = document.createElement("div");
+    info.className = "min-w-0 flex-1";
+    const name = document.createElement("div");
+    name.className = "truncate text-xs font-semibold text-foreground";
+    name.textContent = attachment.fileName;
+    name.title = attachment.fileName;
+    const meta = document.createElement("div");
+    meta.className = "truncate text-[10px] text-muted-foreground";
+    meta.textContent = `${attachment.fileMime} - ${formatAttachmentSize(attachment.size)}`;
+    info.append(name, meta);
+    const link = document.createElement("a");
+    link.className = "shrink-0 text-[11px] font-semibold text-primary hover:underline";
+    link.href = objectUrl;
+    link.download = attachment.fileName;
+    link.textContent = "Download";
+    link.setAttribute("aria-label", `Download ${attachment.fileName}`);
+    card.append(info, link);
+    wrapper.append(card);
+    return wrapper;
+  }
+
+  function appendFullMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
     if (!fullLog) return;
     clearEmptyState();
     const self = kind === "self";
@@ -578,10 +695,21 @@
         <p class="text-sm text-muted-foreground leading-relaxed break-words"></p>
       </div>`;
     const textEl = row.querySelector("p");
-    if (textEl) appendMentionText(textEl, text);
+    if (textEl) {
+      if (text) appendMentionText(textEl, text);
+      else textEl.remove();
+    }
+    const content = row.querySelector(".min-w-0.flex-1");
+    const renderedAttachment = renderAttachment(attachment);
+    if (content && renderedAttachment) content.append(renderedAttachment);
     fullLog.append(row);
     fullLog.scrollTop = fullLog.scrollHeight;
-    if (id) rows.set(id, { el: row, senderId: senderId || "", textEl });
+    if (id) rows.set(id, {
+      el: row,
+      senderId: senderId || "",
+      textEl,
+      attachment,
+    });
   }
 
   // The rail's mini chat mirrors the full view at a smaller scale: avatar +
@@ -609,7 +737,13 @@
           <p class="text-xs text-muted-foreground leading-relaxed break-words"></p>
         </div>`;
       const textEl = row.querySelector("p");
-      if (textEl) appendMentionText(textEl, message.text);
+      if (textEl) {
+        if (message.text) appendMentionText(textEl, message.text);
+        else textEl.remove();
+      }
+      const content = row.querySelector(".min-w-0.flex-1");
+      const renderedAttachment = renderAttachment(message.attachment, true);
+      if (content && renderedAttachment) content.append(renderedAttachment);
       sideLog.append(row);
     }
     const bottom = document.createElement("div");
@@ -618,20 +752,28 @@
     bottom.scrollIntoView({ behavior: "smooth" });
   }
 
-  function appendSideMessage(kind, who, text, id, senderId, tsMs) {
+  function appendSideMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
     // Insert in timestamp order (append is the common case) so the newest
     // message is always the bottom row even when retained history replays
     // after live messages have already landed.
-    const entry = { kind, who, text, id, senderId, tsMs: Number(tsMs) || Date.now() };
+    const entry = {
+      kind,
+      who,
+      text,
+      id,
+      senderId,
+      tsMs: Number(tsMs) || Date.now(),
+      attachment,
+    };
     let index = sideEntries.length;
     while (index > 0 && Number(sideEntries[index - 1].tsMs) > entry.tsMs) index -= 1;
     sideEntries.splice(index, 0, entry);
     renderSideMessages();
   }
 
-  function appendMessage(kind, who, text, id, senderId, tsMs) {
-    appendFullMessage(kind, who, text, id, senderId, tsMs);
-    appendSideMessage(kind, who, text, id, senderId, tsMs);
+  function appendMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
+    appendFullMessage(kind, who, text, id, senderId, tsMs, attachment);
+    appendSideMessage(kind, who, text, id, senderId, tsMs, attachment);
     rememberContext(who, text);
   }
 
@@ -649,8 +791,12 @@
   function removeMessage(id) {
     const rec = rows.get(id);
     if (rec?.el?.parentNode) rec.el.parentNode.removeChild(rec.el);
+    if (rec?.attachment) releaseAttachment(rec.attachment);
     rows.delete(id);
     const idx = sideEntries.findIndex((entry) => entry.id === id);
+    if (idx >= 0 && sideEntries[idx].attachment !== rec?.attachment) {
+      releaseAttachment(sideEntries[idx].attachment);
+    }
     if (idx >= 0) sideEntries.splice(idx, 1);
     renderSideMessages();
   }
@@ -697,11 +843,12 @@
     entry = normalizedPublicWorldFrame(entry);
     if (!once(entry.id)) return;
     const who = String(entry.sender || "peer").slice(0, MAX_NAME);
-    const text = entry.fileName ? "📎 " + entry.fileName : entry.text || "";
-    if (!text) return;
+    const text = entry.text || "";
+    const attachment = attachmentFromEntry(entry);
+    if (!text && !attachment) return;
     kind = entry.senderId === selfId ? "self" : kind;
     appendMessage(kind, who, text, entry.id, entry.senderId,
-                  Number(entry.ts) || Date.now());
+                  Number(entry.ts) || Date.now(), attachment);
   }
 
   async function verifyAdminDelete(plain) {
@@ -955,6 +1102,103 @@
     }
   }
 
+  function showAttachmentFeedback(control, message) {
+    if (!control?.feedback) return;
+    control.feedback.textContent = String(message || "");
+    if (message) {
+      setTimeout(() => {
+        if (control.feedback.textContent === message) {
+          control.feedback.textContent = "";
+        }
+      }, 5000);
+    }
+  }
+
+  async function sendAttachment(file, control = null) {
+    if (!file || !canJoinChat()) {
+      if (!canJoinChat()) showUserOnlyState();
+      return;
+    }
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      showAttachmentFeedback(control, "Attachments must be 1 MiB or smaller.");
+      return;
+    }
+    if (!file.size) {
+      showAttachmentFeedback(control, "That file is empty.");
+      return;
+    }
+    let buffer;
+    try {
+      buffer = await file.arrayBuffer();
+    } catch (_) {
+      showAttachmentFeedback(control, "Could not read that attachment.");
+      return;
+    }
+    const fileName = safeAttachmentName(file.name);
+    const fileMime = safeAttachmentMime(file.type);
+    const encodedFile = bytesToB64(buffer);
+    runWhenConnected(() => {
+      const plain = makePlain("chat", {
+        channel: CHANNEL,
+        fileName,
+        fileMime,
+        file: encodedFile,
+      });
+      const attachment = attachmentFromEntry(plain);
+      if (!attachment) {
+        showAttachmentFeedback(control, "Could not prepare that attachment.");
+        return;
+      }
+      send(plain);
+      seen.add(plain.id);
+      appendMessage(
+        "self",
+        plain.sender,
+        "",
+        plain.id,
+        plain.senderId,
+        plain.ts,
+        attachment,
+      );
+      showAttachmentFeedback(control, `Shared ${fileName}`);
+    });
+  }
+
+  function mountAttachmentControl(inputEl) {
+    if (!inputEl?.parentElement) return null;
+    const bar = inputEl.parentElement;
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.hidden = true;
+    fileInput.id = `${inputEl.id}AttachmentInput`;
+    fileInput.setAttribute("aria-label", "Choose image or document");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50";
+    button.setAttribute("aria-label", "Attach image or document");
+    button.title = "Attach image or document (up to 1 MiB)";
+    button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>';
+    const feedback = document.createElement("span");
+    feedback.className = "sr-only";
+    feedback.setAttribute("role", "status");
+    feedback.setAttribute("aria-live", "polite");
+    const control = { button, input: fileInput, feedback };
+    const sendButton = inputEl === fullInput ? fullSend : sideSend;
+    bar.insertBefore(fileInput, sendButton || null);
+    bar.insertBefore(button, sendButton || null);
+    bar.append(feedback);
+    button.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files && fileInput.files[0];
+      fileInput.value = "";
+      if (file) sendAttachment(file, control);
+    });
+    control.button.disabled = !canJoinChat();
+    control.input.disabled = !canJoinChat();
+    attachmentControls.push(control);
+    return control;
+  }
+
   function sendFrom(inputEl) {
     if (!canJoinChat()) {
       showUserOnlyState();
@@ -975,7 +1219,17 @@
 
   function wireInput(inputEl, sendEl) {
     if (!inputEl || !sendEl) return;
+    const attachmentControl = mountAttachmentControl(inputEl);
     sendEl.addEventListener("click", () => sendFrom(inputEl));
+    inputEl.addEventListener("paste", (event) => {
+      const items = Array.from(event.clipboardData?.items || []);
+      const item = items.find((candidate) =>
+        candidate.kind === "file" && String(candidate.type || "").startsWith("image/"));
+      const file = item ? item.getAsFile() : null;
+      if (!file) return;
+      event.preventDefault();
+      sendAttachment(file, attachmentControl);
+    });
     inputEl.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
