@@ -375,9 +375,11 @@ verify_public_assets() {
     # every executable/style entrypoint byte-for-byte with this checkout and
     # require the explicit browser no-store policy. A query tied to BUILD_REV
     # also prevents an intermediary from answering this verification with an
-    # object selected under an earlier deployment URL.
+    # object selected under an earlier deployment URL. The HTML document is
+    # deliberately excluded from byte comparison because Cloudflare may append
+    # its managed browser-integrity bootstrap; its cache policy is still checked
+    # separately below.
     local world_checks=(
-        "/world|public/world/index.html"
         "/world/world.js|public/world/world.js"
         "/world/world-data.js|public/world/world-data.js"
         "/world/world-scene.js|public/world/world-scene.js"
@@ -417,6 +419,18 @@ verify_public_assets() {
                 ;;
         esac
     done
+    headers="$(curl -sSI --max-time 15 "$base/world?deploy-rev=$BUILD_REV" 2>/dev/null || true)"
+    cache_control="$(
+        printf '%s\n' "$headers" |
+            awk -F': *' 'tolower($1) == "cache-control" { value=tolower($2) } END { sub(/\r$/, "", value); print value }'
+    )"
+    case "$cache_control" in
+        *no-store*) ;;
+        *)
+            echo "ERROR: $base/world permits stale browser shell reuse ('$cache_control')." >&2
+            failed=1
+            ;;
+    esac
     if [ "$failed" != "0" ]; then
         echo "       World refresh freshness verification failed; deployment is incomplete." >&2
         return 1

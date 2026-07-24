@@ -60,7 +60,6 @@ def test_world_refreshes_cannot_reuse_an_older_application_graph():
     assert "/world\n  Cache-Control: no-store, max-age=0, must-revalidate" in HEADERS
     assert "/world/*\n  Cache-Control: no-store, max-age=0, must-revalidate" in HEADERS
     for asset in (
-        "index.html",
         "world.js",
         "world-data.js",
         "world-scene.js",
