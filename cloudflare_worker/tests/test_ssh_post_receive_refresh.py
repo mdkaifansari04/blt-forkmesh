@@ -6,6 +6,7 @@ from io import BytesIO
 import importlib.util
 import json
 from pathlib import Path
+import shlex
 import sys
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
@@ -461,8 +462,76 @@ def test_refresh_packaging_has_no_user_derived_commands():
             in unit
         )
     assert (
-        "ReadWritePaths=/var/lib/forkmesh-mirror/runtime-tmp"
+        "ReadWritePaths=/var/lib/forkmesh-mirror/identity "
+        "/var/lib/forkmesh-mirror/encrypted "
+        "/var/lib/forkmesh-mirror/gateway "
+        "/var/lib/forkmesh-mirror/runtime-tmp "
+        "-/var/lib/forkmesh-mirror/source -/srv/forkmesh-git"
         in gateway_service
+    )
+
+
+def test_gateway_merge_executor_is_writable_only_inside_service_data_roots():
+    service = (
+        PROJECT_ROOT / "packaging" / "systemd" / "forkmesh-mirror.service"
+    ).read_text(encoding="utf-8")
+    directives = [
+        shlex.split(line.split("=", 1)[1])
+        for line in service.splitlines()
+        if line.startswith("ReadWritePaths=")
+    ]
+
+    assert directives == [[
+        "/var/lib/forkmesh-mirror/identity",
+        "/var/lib/forkmesh-mirror/encrypted",
+        "/var/lib/forkmesh-mirror/gateway",
+        "/var/lib/forkmesh-mirror/runtime-tmp",
+        "-/var/lib/forkmesh-mirror/source",
+        "-/srv/forkmesh-git",
+    ]]
+    assert "ProtectSystem=strict" in service
+    assert "/var/lib/forkmesh-mirror/releases" not in directives[0]
+    assert "/var/lib/forkmesh-mirror" not in directives[0]
+    assert "/" not in directives[0]
+
+
+def test_gateway_startup_uses_fast_integrity_precheck():
+    service = (
+        PROJECT_ROOT / "packaging" / "systemd" / "forkmesh-mirror.service"
+    ).read_text(encoding="utf-8")
+    directives = {}
+    for line in service.splitlines():
+        if line.startswith(("ExecStartPre=", "ExecStart=")):
+            key, value = line.split("=", 1)
+            directives[key] = shlex.split(value)
+
+    precheck = directives["ExecStartPre"]
+    start = directives["ExecStart"]
+    assert precheck == [
+        "/usr/bin/python3",
+        "-I",
+        "/opt/forkmesh-mirror/mirror_gateway.py",
+        "--config",
+        "/var/lib/forkmesh-mirror/gateway/mirror-gateway.json",
+        "--check",
+    ]
+    assert start == [
+        "/usr/bin/python3",
+        "/opt/forkmesh-mirror/mirror_gateway.py",
+        "--config",
+        "/var/lib/forkmesh-mirror/gateway/mirror-gateway.json",
+    ]
+    assert "headless_mirror_refresh.py" not in service
+    assert precheck[2:5] == start[1:4]
+
+    # This is the gateway's bounded configuration/manifest/repository/pin
+    # validator, not the refresh command whose active check performs full fsck.
+    parser_source = (
+        PROJECT_ROOT / "tools" / "mirror_gateway.py"
+    ).read_text(encoding="utf-8")
+    assert (
+        "validate configuration, manifest, repositories, and integrity pins"
+        in parser_source
     )
 
 

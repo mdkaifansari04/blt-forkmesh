@@ -51,6 +51,7 @@
   --safe-right: max(14px, env(safe-area-inset-right));
   --safe-bottom: max(14px, env(safe-area-inset-bottom));
   --safe-left: max(14px, env(safe-area-inset-left));
+  --world-diagnostics-height: 28px;
   font-family: "ForkMesh Lato", system-ui, sans-serif;
 }
 
@@ -226,7 +227,7 @@ forkmesh-world {
   position: absolute;
   z-index: 9;
   left: 50%;
-  bottom: var(--safe-bottom);
+  bottom: calc(var(--safe-bottom) + var(--world-diagnostics-height));
   display: flex;
   overflow: hidden;
   transform: translateX(-50%);
@@ -1056,6 +1057,47 @@ forkmesh-world {
   font-size: 0.66rem;
 }
 
+.world-map-label-copy,
+.world-status-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.world-map-label-copy > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-construction-mark {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 1.35em;
+  height: 1.35em;
+  border: 1px solid rgb(247 201 107 / 0.68);
+  background: rgb(43 31 8 / 0.9);
+  color: #ffd56f;
+  font-size: 0.72rem;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.world-construction-mark[hidden] {
+  display: none;
+}
+
+.world-construction-mark-map {
+  font-size: 0.62rem;
+}
+
+.world-construction-mark-panel {
+  margin-top: 18px;
+  font-size: 0.84rem;
+}
+
 .world-map-distance {
   color: #71887c;
   font-family: "ForkMesh Mono", monospace;
@@ -1087,7 +1129,7 @@ forkmesh-world {
 .world-identity {
   position: absolute;
   left: var(--safe-left);
-  bottom: var(--safe-bottom);
+  bottom: calc(var(--safe-bottom) + var(--world-diagnostics-height));
   display: grid;
   grid-template-columns: 50px minmax(0, 1fr) auto;
   align-items: center;
@@ -1165,6 +1207,12 @@ forkmesh-world {
   font-size: 0.64rem;
 }
 
+.world-identity-copy .world-identity-emoji-status {
+  color: var(--world-mint);
+  font-family: "ForkMesh Mono", monospace;
+  text-transform: none;
+}
+
 .world-identity-edit {
   min-width: 34px;
   min-height: 34px;
@@ -1185,7 +1233,7 @@ forkmesh-world {
 .world-controls {
   position: absolute;
   left: 50%;
-  bottom: var(--safe-bottom);
+  bottom: calc(var(--safe-bottom) + var(--world-diagnostics-height));
   display: flex;
   align-items: center;
   gap: 11px;
@@ -1239,6 +1287,126 @@ forkmesh-world {
   font-size: 0.58rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.world-diagnostics {
+  position: absolute;
+  z-index: 45;
+  right: 0;
+  bottom: 0;
+  width: min(720px, 100%);
+  max-width: 100vw;
+  border-top: 1px solid var(--world-line-strong);
+  border-left: 1px solid var(--world-line);
+  background: rgb(5 13 11 / 0.94);
+  color: var(--world-muted);
+  font-family: "ForkMesh Mono", monospace;
+  font-size: 0.58rem;
+  line-height: 1.35;
+  backdrop-filter: blur(18px);
+  pointer-events: auto;
+}
+
+.world-diagnostics summary {
+  display: flex;
+  min-height: var(--world-diagnostics-height);
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  padding:
+    5px max(9px, env(safe-area-inset-right))
+    max(5px, env(safe-area-inset-bottom)) 9px;
+  cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+}
+
+.world-diagnostics summary::-webkit-details-marker {
+  display: none;
+}
+
+.world-diagnostics summary:focus-visible {
+  outline: 1px solid var(--world-mint);
+  outline-offset: -2px;
+}
+
+.world-diagnostics summary strong {
+  flex: 0 0 auto;
+  color: var(--world-mint);
+  font-size: 0.55rem;
+  letter-spacing: 0.1em;
+}
+
+.world-diagnostics summary [data-world-diagnostics-summary] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.world-diagnostics-light {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--world-danger);
+  box-shadow: 0 0 7px rgb(255 142 120 / 0.7);
+}
+
+.world-diagnostics-light[data-state="online"] {
+  background: var(--world-mint);
+  box-shadow: 0 0 7px rgb(158 247 198 / 0.72);
+}
+
+.world-diagnostics-light[data-state="connecting"] {
+  background: var(--world-sun);
+  box-shadow: 0 0 7px rgb(247 201 107 / 0.72);
+}
+
+.world-diagnostics-toggle {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--world-copy);
+  transition: transform 140ms ease;
+}
+
+.world-diagnostics[open] .world-diagnostics-toggle {
+  transform: rotate(180deg);
+}
+
+.world-diagnostics-details {
+  max-height: min(46vh, 330px);
+  overflow: auto;
+  border-top: 1px solid var(--world-line);
+  padding: 10px max(12px, env(safe-area-inset-right)) 11px 12px;
+}
+
+.world-diagnostics-details > p {
+  margin: 0 0 8px;
+  color: #80978b;
+  line-height: 1.5;
+}
+
+.world-diagnostics dl {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+}
+
+.world-diagnostics dl > div {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.world-diagnostics dt {
+  color: var(--world-mint);
+}
+
+.world-diagnostics dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--world-copy);
 }
 
 .world-toast {
@@ -1300,6 +1468,10 @@ forkmesh-world {
 
 .world-detail[data-open="true"] {
   transform: translateX(0);
+}
+
+.world-detail[data-repository-review="true"] {
+  width: min(1100px, 100vw);
 }
 
 .world-detail-header {
@@ -1447,6 +1619,255 @@ forkmesh-world {
   background: #081511;
 }
 
+.world-account-backdrop {
+  position: absolute;
+  z-index: 33;
+  inset: 0;
+  border: 0;
+  background: rgb(0 0 0 / 0.68);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 180ms ease, visibility 180ms ease;
+  pointer-events: none;
+}
+
+.world-account-backdrop[data-open="true"] {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.world-account {
+  position: absolute;
+  z-index: 34;
+  top: max(18px, var(--safe-top));
+  bottom: max(18px, var(--safe-bottom));
+  left: 50%;
+  width: min(520px, calc(100vw - 36px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--world-line-strong);
+  background: #081511;
+  padding: 18px;
+  box-shadow: 0 30px 100px rgb(0 0 0 / 0.62);
+  transform: translate(-50%, 18px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 180ms ease, transform 180ms ease, visibility 180ms ease;
+  pointer-events: none;
+}
+
+.world-account[data-open="true"] {
+  transform: translate(-50%, 0);
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.world-account-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid var(--world-line);
+  padding-bottom: 14px;
+}
+
+.world-account-heading h2 {
+  margin: 3px 0 0;
+  font-family: "ForkMesh Favorit", sans-serif;
+  font-size: 1.8rem;
+  letter-spacing: -0.04em;
+}
+
+.world-account-heading span {
+  display: block;
+  max-width: 420px;
+  margin-top: 5px;
+  color: var(--world-muted);
+  font-size: 0.64rem;
+  line-height: 1.45;
+}
+
+.world-account-heading > button {
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--world-line);
+  background: transparent;
+  color: var(--world-copy);
+  cursor: pointer;
+  font-size: 1.1rem;
+}
+
+.world-account-heading > button:hover,
+.world-account-heading > button:focus-visible {
+  border-color: var(--world-mint);
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-account-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  margin-top: 16px;
+  border: 1px solid var(--world-line);
+}
+
+.world-account-tabs button {
+  min-height: 40px;
+  border: 0;
+  background: #0a1915;
+  color: var(--world-muted);
+  cursor: pointer;
+  font: 0.66rem "ForkMesh Mono", monospace;
+}
+
+.world-account-tabs button + button {
+  border-left: 1px solid var(--world-line);
+}
+
+.world-account-tabs button[aria-selected="true"],
+.world-account-tabs button:hover,
+.world-account-tabs button:focus-visible {
+  background: #12332a;
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-account-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.world-account-form[hidden] {
+  display: none;
+}
+
+.world-account-form > label:not(.world-account-consent) {
+  display: grid;
+  gap: 6px;
+}
+
+.world-account-form label > span {
+  color: var(--world-muted);
+  font: 0.6rem "ForkMesh Mono", monospace;
+}
+
+.world-account-form label small {
+  color: #6f8c7e;
+  font: inherit;
+}
+
+.world-account-form input[type="email"],
+.world-account-form input[type="password"],
+.world-account-form input[type="text"] {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--world-line);
+  border-radius: 0;
+  background: #0b1c17;
+  padding: 0 11px;
+  color: var(--world-copy);
+  font: 0.76rem "ForkMesh Mono", monospace;
+}
+
+.world-account-form input:focus-visible {
+  border-color: var(--world-mint);
+  outline: 1px solid var(--world-mint);
+}
+
+.world-account-consent {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  line-height: 1.5;
+}
+
+.world-account-consent input {
+  margin-top: 2px;
+  accent-color: var(--world-mint-deep);
+}
+
+.world-account-consent a {
+  color: var(--world-mint);
+}
+
+.world-account-form > button,
+.world-account-signed-in > button {
+  min-height: 42px;
+  border: 1px solid var(--world-mint);
+  border-radius: 0;
+  background: #174d3b;
+  color: #e8fff5;
+  cursor: pointer;
+  font: 0.68rem "ForkMesh Mono", monospace;
+}
+
+.world-account-form > button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.world-account-status {
+  min-height: 1.25em;
+  margin: 12px 0 0;
+  color: var(--world-muted);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.world-account-status[data-state="error"] {
+  color: #ffb1aa;
+}
+
+.world-account-status[data-state="success"] {
+  color: var(--world-mint);
+}
+
+.world-account-verification,
+.world-account-signed-in {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  border: 1px solid var(--world-line);
+  background: #0b1c17;
+  padding: 16px;
+}
+
+.world-account-verification[hidden] {
+  display: none;
+}
+
+.world-account-verification strong,
+.world-account-signed-in strong {
+  color: var(--world-mint);
+  font: 1.1rem "ForkMesh Favorit", sans-serif;
+}
+
+.world-account-verification p,
+.world-account-signed-in p,
+.world-account-signed-in span,
+.world-account-privacy {
+  margin: 0;
+  color: var(--world-muted);
+  font-size: 0.68rem;
+  line-height: 1.55;
+}
+
+.world-account-verification span {
+  color: var(--world-copy);
+  font-family: "ForkMesh Mono", monospace;
+}
+
+.world-account-privacy {
+  margin-top: 16px;
+  border-top: 1px solid var(--world-line);
+  padding-top: 12px;
+}
+
 .world-detail-summary {
   margin: 0;
   color: var(--world-copy);
@@ -1466,6 +1887,11 @@ forkmesh-world {
   font-size: 0.58rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.world-status-row {
+  flex-wrap: wrap;
+  width: fit-content;
 }
 
 .world-status-pill::before {
@@ -1716,7 +2142,8 @@ forkmesh-world {
 }
 
 .world-finance-grid > div,
-.world-repo-summary > span {
+.world-repo-summary > span,
+.world-repo-summary > button {
   display: grid;
   align-content: start;
   gap: 4px;
@@ -1731,6 +2158,24 @@ forkmesh-world {
   font-family: "ForkMesh Mono", monospace;
   font-size: 0.5rem;
   text-transform: uppercase;
+}
+
+.world-repo-summary > button {
+  border: 0;
+  color: var(--world-muted);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.world-repo-summary > button:hover,
+.world-repo-summary > button:focus-visible {
+  position: relative;
+  z-index: 1;
+  background: #12332a;
+  color: var(--detail-color);
+  outline: 1px solid var(--detail-color);
 }
 
 .world-finance-grid strong,
@@ -2444,7 +2889,475 @@ forkmesh-world {
 }
 
 .world-repo-summary {
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
+}
+
+.world-pull-list-panel,
+.world-pull-review {
+  min-width: 0;
+}
+
+.world-pull-panel-heading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--world-line);
+  padding: 11px;
+}
+
+.world-pull-panel-heading > button {
+  min-height: 32px;
+  border: 1px solid var(--world-line);
+  border-radius: 0;
+  background: #0d211b;
+  padding: 0 10px;
+  color: var(--world-copy);
+  cursor: pointer;
+  font: 0.58rem "ForkMesh Mono", monospace;
+}
+
+.world-pull-panel-heading > button:hover,
+.world-pull-panel-heading > button:focus-visible {
+  border-color: var(--detail-color);
+  color: var(--detail-color);
+  outline: none;
+}
+
+.world-pull-panel-heading span,
+.world-pull-panel-heading h3,
+.world-pull-panel-heading small {
+  display: block;
+  min-width: 0;
+}
+
+.world-pull-panel-heading span {
+  color: var(--detail-color);
+  font: 600 0.5rem "ForkMesh Mono", monospace;
+}
+
+.world-pull-panel-heading h3 {
+  margin: 3px 0;
+  overflow: hidden;
+  font: 0.82rem "ForkMesh Favorit", sans-serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-pull-panel-heading small {
+  color: var(--world-muted);
+  font: 0.5rem "ForkMesh Mono", monospace;
+}
+
+.world-pull-pin {
+  margin: 0;
+  border-bottom: 1px solid var(--world-line);
+  background: rgb(119 217 255 / 0.05);
+  padding: 9px 11px;
+  color: var(--world-muted);
+  font: 0.52rem/1.5 "ForkMesh Mono", monospace;
+  overflow-wrap: anywhere;
+}
+
+.world-pull-pin code {
+  color: var(--detail-color);
+}
+
+.world-pull-records {
+  display: grid;
+  gap: 7px;
+  padding: 11px;
+}
+
+.world-pull-records > button,
+.world-pull-record-unavailable {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  border: 1px solid var(--world-line);
+  border-radius: 0;
+  background: #0c211a;
+  padding: 10px;
+  color: var(--world-copy);
+  cursor: pointer;
+  text-align: left;
+}
+
+.world-pull-record-unavailable {
+  opacity: 0.72;
+}
+
+.world-pull-records > button:hover,
+.world-pull-records > button:focus-visible {
+  border-color: var(--detail-color);
+  background: #12332a;
+  outline: none;
+}
+
+.world-pull-records strong,
+.world-pull-records small {
+  display: block;
+}
+
+.world-pull-records strong {
+  overflow: hidden;
+  font-size: 0.66rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-pull-records small {
+  margin-top: 4px;
+  color: var(--world-muted);
+  font: 0.49rem "ForkMesh Mono", monospace;
+}
+
+.world-pull-records em {
+  border: 1px solid var(--world-line);
+  padding: 4px 6px;
+  color: var(--world-muted);
+  font: normal 0.48rem "ForkMesh Mono", monospace;
+  text-transform: uppercase;
+}
+
+.world-pull-records em[data-pull-state="open"] {
+  border-color: rgb(158 247 198 / 0.45);
+  color: var(--world-mint);
+}
+
+.world-pull-records em[data-pull-state="merged"] {
+  border-color: rgb(213 182 255 / 0.45);
+  color: #d5b6ff;
+}
+
+.world-pull-review-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  border-bottom: 1px solid var(--world-line);
+  padding: 12px;
+}
+
+.world-pull-review-summary > div:first-child strong,
+.world-pull-review-summary > div:first-child span {
+  display: block;
+}
+
+.world-pull-review-summary > div:first-child strong {
+  font-size: 0.78rem;
+}
+
+.world-pull-review-summary > div:first-child span {
+  margin-top: 4px;
+  color: var(--world-muted);
+  font: 0.52rem "ForkMesh Mono", monospace;
+}
+
+.world-pull-review-summary > div:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.world-pull-review-summary > div:last-child > span {
+  border: 1px solid var(--world-line);
+  background: #0c211a;
+  padding: 5px 7px;
+  color: var(--world-muted);
+  font: 0.48rem "ForkMesh Mono", monospace;
+}
+
+.world-pull-review-summary > div:last-child strong {
+  color: var(--world-copy);
+}
+
+.world-pull-description {
+  max-height: 110px;
+  margin: 0;
+  overflow: auto;
+  border-bottom: 1px solid var(--world-line);
+  padding: 10px 12px;
+  color: var(--world-muted);
+  font-size: 0.62rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.world-pull-review-layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.26fr) minmax(0, 1fr);
+  height: min(62vh, 700px);
+  min-height: 340px;
+  border-top: 1px solid var(--world-line);
+  border-bottom: 1px solid var(--world-line);
+}
+
+.world-pull-file-tree,
+.world-pull-diff {
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.world-pull-file-tree {
+  border-right: 1px solid var(--world-line);
+  background: #071510;
+  padding: 7px 0;
+}
+
+.world-pull-file-tree ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.world-pull-tree-directory > span {
+  display: block;
+  padding: 6px 8px 3px
+    calc(8px + var(--pull-tree-depth, 0) * 10px);
+  color: var(--world-muted);
+  font: 0.5rem "ForkMesh Mono", monospace;
+}
+
+.world-pull-file-tree button {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto 14px;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  padding: 6px 7px 6px
+    calc(8px + var(--pull-tree-depth, 0) * 10px);
+  color: var(--world-copy);
+  cursor: pointer;
+  text-align: left;
+}
+
+.world-pull-file-tree button:hover,
+.world-pull-file-tree button:focus-visible {
+  border-left-color: var(--detail-color);
+  background: #12332a;
+  outline: none;
+}
+
+.world-pull-file-tree button[data-viewed="true"] {
+  color: var(--world-muted);
+}
+
+.world-pull-file-tree button > span {
+  color: var(--detail-color);
+}
+
+.world-pull-file-tree button strong {
+  overflow: hidden;
+  font: 0.51rem "ForkMesh Mono", monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-pull-file-tree button small,
+.world-pull-file-tree button em {
+  color: var(--world-muted);
+  font: normal 0.43rem "ForkMesh Mono", monospace;
+  white-space: nowrap;
+}
+
+.world-pull-file-tree button[data-viewed="true"] em {
+  color: var(--world-mint);
+}
+
+.world-pull-diff {
+  position: relative;
+  background: #06110e;
+}
+
+.world-pull-diff:focus-visible {
+  outline: 1px solid var(--detail-color);
+  outline-offset: -1px;
+}
+
+.world-pull-diff-file {
+  position: relative;
+  min-width: 620px;
+  border-bottom: 1px solid var(--world-line-strong);
+  scroll-margin-top: 38px;
+}
+
+.world-pull-diff-file:focus {
+  outline: 1px solid var(--detail-color);
+  outline-offset: -1px;
+}
+
+.world-pull-diff-file[data-viewed="true"] > header::after {
+  color: var(--world-mint);
+  content: "VIEWED ✓";
+  font: 0.45rem "ForkMesh Mono", monospace;
+}
+
+.world-pull-diff-file > header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--world-line);
+  background: #0b211a;
+  padding: 8px 10px;
+}
+
+.world-pull-diff-file > header strong {
+  overflow: hidden;
+  font: 0.54rem "ForkMesh Mono", monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-pull-diff-file > header span {
+  color: var(--world-muted);
+  font: 0.45rem "ForkMesh Mono", monospace;
+  white-space: nowrap;
+}
+
+.world-pull-diff-table {
+  min-width: max-content;
+}
+
+.world-pull-diff-row {
+  display: grid;
+  grid-template-columns: 48px 48px minmax(520px, 1fr);
+  min-height: 20px;
+  color: #c7d8d0;
+  font: 0.5rem/1.45 "ForkMesh Mono", monospace;
+}
+
+.world-pull-diff-row > span {
+  border-right: 1px solid rgb(82 125 109 / 0.18);
+  padding: 3px 6px;
+  color: #6f9384;
+  text-align: right;
+  user-select: none;
+}
+
+.world-pull-diff-row code {
+  padding: 3px 8px;
+  color: inherit;
+  font: inherit;
+  white-space: pre;
+}
+
+.world-pull-diff-row code b {
+  display: inline-block;
+  width: 12px;
+  color: currentColor;
+  font-weight: 400;
+  user-select: none;
+}
+
+.world-pull-diff-row.is-add {
+  background: rgb(61 160 105 / 0.12);
+  color: #b9f5d2;
+}
+
+.world-pull-diff-row.is-delete {
+  background: rgb(203 89 89 / 0.12);
+  color: #f4b2b2;
+}
+
+.world-pull-diff-row.is-hunk {
+  background: rgb(119 217 255 / 0.1);
+  color: #9edfff;
+}
+
+.world-pull-binary {
+  margin: 0;
+  padding: 22px 12px;
+  color: var(--world-muted);
+  font: 0.52rem "ForkMesh Mono", monospace;
+}
+
+.world-pull-file-end {
+  display: block;
+  width: 1px;
+  height: 1px;
+}
+
+.world-pull-merge-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid rgb(158 247 198 / 0.42);
+  background: rgb(35 107 77 / 0.18);
+  padding: 11px;
+}
+
+.world-pull-merge-panel > div,
+.world-pull-merge-panel span,
+.world-pull-merge-panel strong,
+.world-pull-merge-panel small {
+  display: block;
+  min-width: 0;
+}
+
+.world-pull-merge-panel span {
+  color: var(--world-mint);
+  font: 600 0.48rem "ForkMesh Mono", monospace;
+}
+
+.world-pull-merge-panel strong {
+  margin-top: 3px;
+  font-size: 0.68rem;
+}
+
+.world-pull-merge-panel small {
+  margin-top: 4px;
+  color: var(--world-muted);
+  font: 0.5rem/1.45 "ForkMesh Mono", monospace;
+}
+
+.world-pull-merge-panel > button {
+  min-height: 40px;
+  border: 1px solid var(--world-mint);
+  border-radius: 0;
+  background: #173c2e;
+  padding: 7px 11px;
+  color: var(--world-mint);
+  cursor: pointer;
+  font: 600 0.54rem "ForkMesh Mono", monospace;
+}
+
+.world-pull-merge-panel > button:hover,
+.world-pull-merge-panel > button:focus-visible {
+  background: #22533f;
+  outline: 2px solid var(--detail-color);
+  outline-offset: 2px;
+}
+
+.world-pull-merge-panel > button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.world-pull-merge-panel[data-world-pull-merge-state="conflict"],
+.world-pull-merge-panel[data-world-pull-merge-state="stale"],
+.world-pull-merge-panel[data-world-pull-merge-state="forbidden"],
+.world-pull-merge-panel[data-world-pull-merge-state="unauthenticated"],
+.world-pull-merge-panel[data-world-pull-merge-state="failed"] {
+  border-color: rgb(255 190 118 / 0.5);
+  background: rgb(107 66 35 / 0.2);
+}
+
+.world-pull-review > .world-panel-footnote,
+.world-pull-list-panel > .world-panel-footnote {
+  padding: 0 11px 11px;
 }
 
 .world-repo-entities {
@@ -2894,6 +3807,116 @@ forkmesh-world {
   line-height: 1.45;
 }
 
+.world-status-editor {
+  display: grid;
+  gap: 9px;
+  margin: 12px 0;
+  border: 1px solid var(--world-line);
+  background: rgb(13 33 27 / 0.52);
+  padding: 10px;
+}
+
+.world-status-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 8px;
+}
+
+.world-status-fields .world-field {
+  margin: 0;
+}
+
+.world-status-fields .world-field small {
+  color: #80978b;
+  font-size: 0.46rem;
+}
+
+.world-emoji-picker {
+  border-top: 1px solid var(--world-line);
+  padding-top: 8px;
+}
+
+.world-emoji-picker summary {
+  color: var(--world-mint);
+  cursor: pointer;
+  font-family: "ForkMesh Mono", monospace;
+  font-size: 0.6rem;
+}
+
+.world-emoji-category {
+  margin: 9px 0 7px;
+}
+
+.world-emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(34px, 1fr));
+  max-height: 176px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  gap: 4px;
+}
+
+.world-emoji-grid[hidden] {
+  display: none;
+}
+
+.world-emoji-grid button {
+  display: grid;
+  min-width: 0;
+  min-height: 38px;
+  place-items: center;
+  border: 1px solid var(--world-line);
+  border-radius: 0;
+  background: #0b1c17;
+  color: var(--world-copy);
+  cursor: pointer;
+  font-size: 1.15rem;
+}
+
+.world-emoji-grid button:hover,
+.world-emoji-grid button:focus-visible {
+  border-color: var(--world-mint);
+  background: #153a2d;
+  outline: none;
+}
+
+.world-status-preview {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  color: #80978b;
+  font-size: 0.58rem;
+}
+
+.world-status-preview strong {
+  color: var(--world-copy);
+  font-family: "ForkMesh Mono", monospace;
+  font-size: 0.68rem;
+}
+
+.world-status-preview button {
+  min-height: 30px;
+  border: 1px solid var(--world-line);
+  border-radius: 0;
+  background: transparent;
+  padding: 0 9px;
+  color: var(--world-muted);
+  cursor: pointer;
+  font-size: 0.58rem;
+}
+
+.world-status-preview button:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.world-status-editor > small {
+  color: #80978b;
+  font-size: 0.58rem;
+  line-height: 1.45;
+}
+
 .world-privacy-option {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -3038,6 +4061,9 @@ forkmesh-world {
 }
 
 .world-object-label button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   border: 1px solid var(--label-color, var(--world-line-strong));
   border-radius: 0;
   background: rgb(7 17 15 / 0.82);
@@ -3047,6 +4073,10 @@ forkmesh-world {
   font-size: 0.62rem;
   white-space: nowrap;
   backdrop-filter: blur(10px);
+}
+
+.world-construction-mark-destination {
+  font-size: 0.58rem;
 }
 
 .world-object-label button:hover,
@@ -3065,6 +4095,9 @@ forkmesh-world {
 
 .world-player-label {
   position: absolute;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
   transform: translate(-50%, -100%);
   border-bottom: 1px solid var(--world-mint);
   background: rgb(7 17 15 / 0.74);
@@ -3073,6 +4106,12 @@ forkmesh-world {
   font-family: "ForkMesh Mono", monospace;
   font-size: 0.5rem;
   white-space: nowrap;
+}
+
+.world-player-label-status {
+  color: var(--world-mint);
+  font-size: 0.58rem;
+  text-transform: none;
 }
 
 .world-dashboard-embed {
@@ -3119,6 +4158,21 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 @media (max-width: 720px) {
+  .world-map-label-copy {
+    gap: 4px;
+  }
+
+  .world-construction-mark-map,
+  .world-construction-mark-destination {
+    width: 1.2em;
+    height: 1.2em;
+    font-size: 0.56rem;
+  }
+
+  .world-status-row {
+    max-width: 100%;
+  }
+
   .world-chat {
     top: var(--safe-top);
     bottom: var(--safe-bottom);
@@ -3260,6 +4314,39 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     grid-template-columns: repeat(2, 1fr);
   }
 
+  .world-pull-review-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .world-pull-review-summary > div:last-child {
+    justify-content: flex-start;
+  }
+
+  .world-pull-review-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(90px, 0.32fr) minmax(240px, 1fr);
+    height: min(58vh, 620px);
+    min-height: 360px;
+  }
+
+  .world-pull-file-tree {
+    border-right: 0;
+    border-bottom: 1px solid var(--world-line);
+  }
+
+  .world-pull-panel-heading {
+    align-items: start;
+  }
+
+  .world-pull-merge-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .world-pull-merge-panel > button {
+    width: 100%;
+    min-height: 44px;
+  }
+
   .world-building-grid,
   .world-social-grid,
   .world-region-grid,
@@ -3324,13 +4411,17 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
   .world-touch-controls {
     right: calc(var(--safe-right) + 8px);
-    bottom: calc(var(--safe-bottom) + 8px);
+    bottom: calc(
+      var(--safe-bottom) + var(--world-diagnostics-height) + 8px
+    );
     grid-template-columns: repeat(3, 40px);
     grid-template-rows: repeat(2, 40px);
   }
 
   .world-identity {
-    bottom: calc(var(--safe-bottom) + 8px);
+    bottom: calc(
+      var(--safe-bottom) + var(--world-diagnostics-height) + 8px
+    );
   }
 
   .world-detail {
@@ -3342,6 +4433,27 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 @media (max-width: 480px) {
+  .world-diagnostics summary strong {
+    display: none;
+  }
+
+  .world-diagnostics-details {
+    max-height: min(52vh, 300px);
+    padding-left: max(10px, env(safe-area-inset-left));
+  }
+
+  .world-diagnostics dl > div {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
+  .world-status-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .world-emoji-grid {
+    grid-template-columns: repeat(5, minmax(34px, 1fr));
+  }
+
   .world-quick-dock {
     top: calc(var(--safe-top) + 54px);
     right: var(--safe-right);

@@ -358,6 +358,135 @@ export const ACTIVITY_OPTIONS = [
   { id: "browsing-code-visualization", label: "Browsing a code visualization" },
 ];
 
+export const WORLD_STATUS_NOTE_MAX = 20;
+
+// The picker is intentionally broad while the adjacent free-form emoji field
+// accepts any single valid Unicode emoji sequence, including flags, skin tones,
+// keycaps, and joined family/profession sequences. Keeping the picker data local
+// means opening it never sends a search term or profile hint to a third party.
+export const WORLD_EMOJI_CATEGORIES = Object.freeze([
+  {
+    id: "faces",
+    label: "Faces",
+    emoji: [
+      "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🙂", "🙃", "😉",
+      "😊", "🥰", "😍", "🤩", "😘", "😎", "🤓", "🧐", "🤔", "🫡",
+      "🤗", "🤫", "🤭", "😴", "🥳", "😭", "😤", "😱", "😇", "🤠",
+    ],
+  },
+  {
+    id: "gestures",
+    label: "People",
+    emoji: [
+      "👋", "🤚", "🖐️", "✋", "🖖", "🫶", "👌", "🤌", "🤏", "✌️",
+      "🤞", "🫰", "🤟", "🤘", "🤙", "👈", "👉", "👆", "👇", "☝️",
+      "👍", "👎", "✊", "👊", "🤝", "🙏", "💪", "🧠", "🧑‍💻", "🧑🏽‍🔬",
+    ],
+  },
+  {
+    id: "nature",
+    label: "Nature",
+    emoji: [
+      "🐶", "🐱", "🐭", "🐹", "🐰", "🦊", "🐻", "🐼", "🐨", "🐯",
+      "🦁", "🐮", "🐷", "🐸", "🐵", "🦄", "🐝", "🦋", "🐙", "🐢",
+      "🌱", "🌿", "🍀", "🌵", "🌲", "🌳", "🌴", "🌻", "🌈", "🔥",
+    ],
+  },
+  {
+    id: "food",
+    label: "Food",
+    emoji: [
+      "🍏", "🍎", "🍊", "🍋", "🍉", "🍇", "🍓", "🫐", "🍒", "🥝",
+      "🍅", "🥑", "🌽", "🥕", "🥐", "🍞", "🧀", "🍕", "🌮", "🍜",
+      "🍣", "🍪", "🍩", "🍫", "☕", "🫖", "🧃", "🥤", "🧋", "🍿",
+    ],
+  },
+  {
+    id: "activity",
+    label: "Activity",
+    emoji: [
+      "⚽", "🏀", "🏈", "⚾", "🎾", "🏐", "🏓", "🏸", "🥅", "⛳",
+      "🛹", "🛼", "🚲", "🏆", "🥇", "🎯", "🎮", "🎲", "🧩", "🎨",
+      "🎭", "🎸", "🎹", "🎧", "🎤", "📷", "🎬", "🚀", "🧘", "🏕️",
+    ],
+  },
+  {
+    id: "travel",
+    label: "Travel",
+    emoji: [
+      "🚗", "🚕", "🚌", "🚎", "🏎️", "🚓", "🚑", "🚒", "🚜", "🛵",
+      "🚆", "🚇", "🚄", "✈️", "🛫", "🛸", "🚁", "⛵", "🚢", "⚓",
+      "🗺️", "🧭", "🏔️", "🏝️", "🏙️", "🌋", "🌍", "🌎", "🌏", "🌌",
+    ],
+  },
+  {
+    id: "objects",
+    label: "Objects",
+    emoji: [
+      "⌚", "📱", "💻", "⌨️", "🖥️", "🖱️", "💾", "💿", "📡", "🔋",
+      "🔌", "💡", "🔦", "🧰", "🔧", "🔨", "⚙️", "🧲", "🧪", "🔬",
+      "🔭", "📚", "📝", "📌", "📎", "🔐", "🔑", "🎁", "💎", "🪄",
+    ],
+  },
+  {
+    id: "symbols",
+    label: "Symbols",
+    emoji: [
+      "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔",
+      "❣️", "💕", "💯", "💢", "💬", "💭", "💤", "✨", "⭐", "🌟",
+      "⚡", "✅", "❌", "❓", "❗", "♻️", "⚠️", "🔔", "🔕", "♾️",
+    ],
+  },
+  {
+    id: "flags",
+    label: "Flags",
+    emoji: [
+      "🏳️", "🏴", "🏁", "🚩", "🏳️‍🌈", "🏳️‍⚧️", "🇦🇺", "🇧🇷", "🇨🇦", "🇨🇳",
+      "🇪🇺", "🇫🇷", "🇩🇪", "🇮🇳", "🇮🇪", "🇮🇹", "🇯🇵", "🇲🇽", "🇳🇿", "🇳🇬",
+      "🇰🇷", "🇿🇦", "🇪🇸", "🇸🇪", "🇺🇦", "🇬🇧", "🇺🇸", "🇺🇳", "🇵🇷", "🇸🇬",
+    ],
+  },
+]);
+
+const WORLD_FLAG_EMOJI_RE = /^\p{Regional_Indicator}{2}$/u;
+const WORLD_KEYCAP_EMOJI_RE = /^[#*0-9]\uFE0F?\u20E3$/u;
+const WORLD_PICTOGRAPH_EMOJI_RE =
+  /^(?:\p{Extended_Pictographic}(?:\uFE0E|\uFE0F)?(?:\p{Emoji_Modifier})?(?:[\u{E0020}-\u{E007E}]+\u{E007F})?)(?:\u200D\p{Extended_Pictographic}(?:\uFE0E|\uFE0F)?(?:\p{Emoji_Modifier})?)*$/u;
+const WORLD_STATUS_NOTE_RE =
+  /^[\p{L}\p{N}][\p{L}\p{M}\p{N}'’-]*$/u;
+
+export function normalizeWorldEmoji(value) {
+  const emoji = String(value || "").trim().normalize("NFC");
+  if (!emoji || [...emoji].length > 24 || emoji.length > 48) return "";
+  return (
+    WORLD_FLAG_EMOJI_RE.test(emoji) ||
+    WORLD_KEYCAP_EMOJI_RE.test(emoji) ||
+    WORLD_PICTOGRAPH_EMOJI_RE.test(emoji)
+  )
+    ? emoji
+    : "";
+}
+
+export function normalizeWorldStatusNote(value) {
+  const note = String(value || "").trim().normalize("NFKC");
+  if (
+    !note ||
+    [...note].length > WORLD_STATUS_NOTE_MAX ||
+    !WORLD_STATUS_NOTE_RE.test(note)
+  ) {
+    return "";
+  }
+  return note;
+}
+
+export function normalizeWorldStatus(emojiValue, noteValue) {
+  const emoji = normalizeWorldEmoji(emojiValue);
+  return {
+    emoji,
+    note: emoji ? normalizeWorldStatusNote(noteValue) : "",
+  };
+}
+
 export const WORLD_REGIONS = [
   { id: "east", label: "East Campus", phase: "Local daylight view" },
   { id: "central", label: "Central Campus", phase: "Local daylight view" },

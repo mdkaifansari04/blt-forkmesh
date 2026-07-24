@@ -767,6 +767,12 @@ void MainWindow::loadRepositories()
         repo.actionsEnabled =
             settings.value("actionsEnabled", repo.owner == accountOwner())
                 .toBool();
+        repo.externallyManagedActions =
+            settings.value("externallyManagedActions", false).toBool();
+        repo.externalActionsSource =
+            settings.value("externalActionsSource").toString().trimmed();
+        repo.externalActionsRef =
+            settings.value("externalActionsRef").toString().trimmed();
         repo.secretScanningEnabled =
             settings.value("secretScanningEnabled", true).toBool();
         repo.disabledWorkflows = settings.value("disabledWorkflows").toStringList();
@@ -819,6 +825,11 @@ void MainWindow::saveRepositories() const
         settings.setValue("publishToNetwork", repo.publishToNetwork);
         settings.setValue("isPrivate", repo.isPrivate);
         settings.setValue("actionsEnabled", repo.actionsEnabled);
+        settings.setValue("externallyManagedActions",
+                          repo.externallyManagedActions);
+        settings.setValue("externalActionsSource",
+                          repo.externalActionsSource);
+        settings.setValue("externalActionsRef", repo.externalActionsRef);
         settings.setValue("secretScanningEnabled", repo.secretScanningEnabled);
         settings.setValue("disabledWorkflows", repo.disabledWorkflows);
         settings.setValue("hostedSinceMs", repo.hostedSinceMs);

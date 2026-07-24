@@ -2,6 +2,7 @@
 
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QMap>
 #include <QProcessEnvironment>
 #include <QString>
 #include <QStringList>
@@ -28,6 +29,54 @@ struct CloudflareBootstrapCommand {
     QStringList arguments;
     QProcessEnvironment environment;
 };
+
+// Ephemeral request sent by the desktop controller to a saved mirror host.
+// Variable values deliberately live only in this in-memory request and the
+// SSH stdin payload. They must never be added to argv, QSettings, process
+// output, or the mirror's signed public catalog.
+struct MirrorActionsConfigurationRequest {
+    QString requestId;
+    QString host;
+    QString sshUser;
+    QString nodeName;
+    bool actionsEnabled = false;
+    bool replaceVariables = false;
+    QMap<QString, QString> variables;
+};
+
+struct MirrorActionsSshCommand {
+    QString program;
+    QStringList arguments;
+    QProcessEnvironment environment;
+    QByteArray standardInput;
+};
+
+// Validate the bounded v1 mirror-Actions controller contract. An empty string
+// means the request is safe to serialize and send.
+QString validateMirrorActionsConfigurationRequest(
+    const MirrorActionsConfigurationRequest &request);
+
+// Serialize the exact v1 request consumed by a remote ForkMesh Actions helper.
+// Secrets appear only in the returned stdin bytes. Callers should overwrite
+// and clear that byte array immediately after QProcess::write().
+QByteArray buildMirrorActionsConfigurationPayload(
+    const MirrorActionsConfigurationRequest &request,
+    QString *error = nullptr);
+
+// Build a direct SSH invocation. With a password, sshpass reads it only from
+// SSHPASS. Without a password, OpenSSH uses the user's agent/default keys in
+// non-interactive public-key mode. The fixed remote helper command and all argv
+// fields are secret-free; the configuration payload is standardInput only.
+MirrorActionsSshCommand buildMirrorActionsSshCommand(
+    const MirrorActionsConfigurationRequest &request,
+    const QString &sshPassword,
+    QString *error = nullptr);
+
+// Decode the remote helper's single bounded, base64url result sentinel.
+// Success is not inferred from an SSH exit code alone.
+QJsonObject parseMirrorActionsConfigurationResult(
+    const QByteArray &output, const QString &expectedRequestId,
+    const QString &expectedNodeName, QString *error = nullptr);
 
 // Returns an empty string when the public deployment fields are safe to pass to
 // tools/cloudflare_bootstrap.py, otherwise a safe user-facing error.

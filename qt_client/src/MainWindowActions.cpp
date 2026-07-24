@@ -8,6 +8,11 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
+#include "MirrorActionsConfiguration.h"
+#include "MirrorActionsSummary.h"
+
+#include <QCryptographicHash>
+#include <QSaveFile>
 
 using namespace forkmesh::ui;
 
@@ -27,6 +32,70 @@ QString actionRunLogPath(const ActionRun &run)
 const char kCommitSignalMarker[] =
     "# forkmesh-commit-signal: spools a commit event so mirrors are told to "
     "update instantly";
+
+const QRegularExpression kExternalActionCommit(
+    QStringLiteral("^(?:[0-9a-f]{40}|[0-9a-f]{64})$"));
+const QRegularExpression kExternalActionRef(
+    QStringLiteral("^refs/heads/(?!/)(?!.*(?:\\.\\.|//))"
+                   "[A-Za-z0-9._/-]{1,120}(?<!/)$"));
+
+QString externalActionHeadKey(const RepositoryRecord &repo)
+{
+    return QStringLiteral("actions/externalHeads/") +
+           QString::fromLatin1(
+               QCryptographicHash::hash(
+                   (repo.owner + QLatin1Char('/') + repo.name +
+                    QLatin1Char('/') + repo.externalActionsRef)
+                       .toUtf8(),
+                   QCryptographicHash::Sha256)
+                   .toHex());
+}
+
+QString gitCommitAt(const QString &repository, const QString &ref)
+{
+    QProcess process;
+    process.setProcessChannelMode(QProcess::MergedChannels);
+    process.start(
+        QStringLiteral("git"),
+        {QStringLiteral("--git-dir"), repository,
+         QStringLiteral("rev-parse"), QStringLiteral("--verify"),
+         ref + QStringLiteral("^{commit}")});
+    if (!process.waitForStarted(2000) ||
+        !process.waitForFinished(5000) ||
+        process.exitStatus() != QProcess::NormalExit ||
+        process.exitCode() != 0) {
+        process.kill();
+        return {};
+    }
+    const QString commit =
+        QString::fromUtf8(process.readAllStandardOutput().left(256))
+            .trimmed()
+            .toLower();
+    return kExternalActionCommit.match(commit).hasMatch()
+               ? commit
+               : QString();
+}
+
+bool fetchExternalActionRef(const RepositoryRecord &repo)
+{
+    QProcess process;
+    process.setProcessChannelMode(QProcess::MergedChannels);
+    process.start(
+        QStringLiteral("git"),
+        {QStringLiteral("--git-dir"), repo.mirrorPath,
+         QStringLiteral("fetch"), QStringLiteral("--no-tags"),
+         repo.externalActionsSource,
+         QStringLiteral("+") + repo.externalActionsRef +
+             QLatin1Char(':') + repo.externalActionsRef});
+    if (!process.waitForStarted(2000) ||
+        !process.waitForFinished(30000)) {
+        process.kill();
+        process.waitForFinished(1000);
+        return false;
+    }
+    return process.exitStatus() == QProcess::NormalExit &&
+           process.exitCode() == 0;
+}
 
 } // namespace
 
@@ -106,7 +175,7 @@ void MainWindow::initActions()
 
 void MainWindow::ensurePushHook(const RepositoryRecord &repo) const
 {
-    if (repo.previewOnly)
+    if (repo.previewOnly || repo.externallyManagedActions)
         return;
     if (!m_actionStore || repo.mirrorPath.isEmpty())
         return;
@@ -234,7 +303,7 @@ void MainWindow::ensureCommitSignalHook(const RepositoryRecord &repo) const
 
 void MainWindow::removePushHook(const RepositoryRecord &repo) const
 {
-    if (!repo.mirrorPath.isEmpty())
+    if (!repo.externallyManagedActions && !repo.mirrorPath.isEmpty())
         QFile::remove(repo.mirrorPath + QStringLiteral("/hooks/post-receive"));
     // Also drop the working-copy commit-signal hooks — but only ours (marker
     // check), never a hook the user wrote.
@@ -286,6 +355,8 @@ void MainWindow::scanActionSpool()
 {
     if (!m_actionStore)
         return;
+    syncMirrorActionsConfiguration();
+    scanExternalActionsSources();
     QDir dir(m_actionStore->spoolDir());
 
     // ".commit" events: the working copy's post-commit/post-merge hook saw HEAD
@@ -404,6 +475,199 @@ void MainWindow::scanActionSpool()
         enqueuePushEvent(owner, name, commit, ref);
     }
     processActionQueue();
+    updateMirrorActionsRuntimeState();
+}
+
+void MainWindow::syncMirrorActionsConfiguration()
+{
+    QSettings settings;
+    const QString generation =
+        settings
+            .value(QString::fromLatin1(
+                forkmesh::mirror_actions::kGenerationSetting))
+            .toString()
+            .trimmed();
+    if (generation.isEmpty() ||
+        generation == m_mirrorActionsConfigGeneration)
+        return;
+    static const QRegularExpression validGeneration(
+        QStringLiteral("^[a-f0-9]{32}$"));
+    if (!validGeneration.match(generation).hasMatch())
+        return;
+
+    // The short-lived helper may have added the gateway-backed Actions mirror
+    // while this daemon was already running. Reload the durable repository
+    // records once per exact generation; externally-managed entries explicitly
+    // skip ensurePushHook(), preserving the serving repository's refresh hook.
+    loadRepositories();
+    installAllPushHooks();
+    const bool enabled =
+        settings
+            .value(QString::fromLatin1(
+                       forkmesh::mirror_actions::kEnabledSetting),
+                   false)
+            .toBool();
+    for (RepositoryRecord &repo : m_repositories) {
+        if (repo.externallyManagedActions)
+            repo.actionsEnabled = enabled;
+    }
+    m_mirrorActionsConfigGeneration = generation;
+    m_mirrorActionsRuntimeState.clear();
+    m_mirrorActionsRuntimeStateWrittenAtMs = 0;
+    m_mirrorActionsSummaryAttemptedAtMs = 0;
+    scheduleMirrorActionsSummary(0);
+    logSystem(
+        QStringLiteral("Actions: mirror executor configuration %1.")
+            .arg(enabled ? QStringLiteral("enabled")
+                         : QStringLiteral("disabled")));
+}
+
+void MainWindow::scanExternalActionsSources()
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now - m_lastExternalActionsScanMs < 3500)
+        return;
+    m_lastExternalActionsScanMs = now;
+    QSettings settings;
+    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+        if (!repo.externallyManagedActions || !repo.actionsEnabled ||
+            repo.previewOnly ||
+            !QFileInfo(repo.externalActionsSource).isDir() ||
+            QFileInfo(repo.externalActionsSource).isSymLink() ||
+            !QFileInfo(repo.mirrorPath).isDir() ||
+            QFileInfo(repo.mirrorPath).isSymLink() ||
+            !kExternalActionRef.match(repo.externalActionsRef).hasMatch()) {
+            continue;
+        }
+        const QString sourceCommit =
+            gitCommitAt(repo.externalActionsSource,
+                        repo.externalActionsRef);
+        if (sourceCommit.isEmpty())
+            continue;
+        const QString key = externalActionHeadKey(repo);
+        const QString previous =
+            settings.value(key).toString().trimmed().toLower();
+        if (previous.isEmpty()) {
+            // Enabling Actions starts from "now"; it never unexpectedly runs an
+            // old push that happened before the operator opted in.
+            settings.setValue(key, sourceCommit);
+            continue;
+        }
+        if (previous == sourceCommit)
+            continue;
+        if (!fetchExternalActionRef(repo) ||
+            gitCommitAt(repo.mirrorPath, repo.externalActionsRef) !=
+                sourceCommit) {
+            continue;
+        }
+        settings.setValue(key, sourceCommit);
+        enqueuePushEvent(repo.owner, repo.name, sourceCommit,
+                         repo.externalActionsRef);
+    }
+    settings.sync();
+}
+
+void MainWindow::updateMirrorActionsRuntimeState()
+{
+    if (m_mirrorActionsConfigGeneration.isEmpty())
+        return;
+    QSettings settings;
+    const bool enabled =
+        settings
+            .value(QString::fromLatin1(
+                       forkmesh::mirror_actions::kEnabledSetting),
+                   false)
+            .toBool();
+    bool running = false;
+    for (const ActionRunner *runner : std::as_const(m_actionRunners)) {
+        if (runner && runner->busy()) {
+            running = true;
+            break;
+        }
+    }
+    const QString state =
+        !enabled ? QStringLiteral("disabled")
+                 : running ? QStringLiteral("running")
+                           : QStringLiteral("enabled");
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now - m_mirrorActionsSummaryAttemptedAtMs >=
+        3 * 60 * 1000) {
+        scheduleMirrorActionsSummary(0);
+    }
+    const bool changed = state != m_mirrorActionsRuntimeState;
+    if (!changed &&
+        now - m_mirrorActionsRuntimeStateWrittenAtMs < 3 * 60 * 1000)
+        return;
+    const QString path =
+        settings.value(QStringLiteral("actions/mirrorStatePath"))
+            .toString()
+            .trimmed();
+    const QString node =
+        settings
+            .value(QString::fromLatin1(
+                forkmesh::mirror_actions::kNodeSetting))
+            .toString()
+            .trimmed();
+    if (!forkmesh::mirror_actions::writeStateFile(
+            path, node, state, now))
+        return;
+    m_mirrorActionsRuntimeState = state;
+    m_mirrorActionsRuntimeStateWrittenAtMs = now;
+
+#if defined(Q_OS_UNIX)
+    // The existing renew unit validates and signs the state as the dedicated
+    // mirror service account before publication. --no-block avoids holding the
+    // GUI/event loop; an ordinary desktop without that unit simply ignores
+    // this best-effort trigger.
+    if (changed) {
+        QProcess::startDetached(
+            QStringLiteral("/usr/bin/systemctl"),
+            {QStringLiteral("--no-block"), QStringLiteral("start"),
+             QStringLiteral("forkmesh-mirror-renew.service")});
+    }
+#endif
+}
+
+void MainWindow::scheduleMirrorActionsSummary(int delayMs)
+{
+    if (m_mirrorActionsConfigGeneration.isEmpty() || !m_actionStore)
+        return;
+    if (!m_mirrorActionsSummaryTimer) {
+        m_mirrorActionsSummaryTimer = new QTimer(this);
+        m_mirrorActionsSummaryTimer->setSingleShot(true);
+        connect(m_mirrorActionsSummaryTimer, &QTimer::timeout, this,
+                &MainWindow::writeMirrorActionsSummary);
+    }
+    const int boundedDelay = qBound(0, delayMs, 3000);
+    if (m_mirrorActionsSummaryTimer->isActive()) {
+        const int remaining = m_mirrorActionsSummaryTimer->remainingTime();
+        if (remaining >= 0 && remaining <= boundedDelay)
+            return;
+    }
+    m_mirrorActionsSummaryTimer->start(boundedDelay);
+}
+
+void MainWindow::writeMirrorActionsSummary()
+{
+    if (m_mirrorActionsConfigGeneration.isEmpty() || !m_actionStore)
+        return;
+    QSettings settings;
+    const QString path =
+        settings
+            .value(QString::fromLatin1(
+                forkmesh::mirror_actions::kSummaryPathSetting))
+            .toString()
+            .trimmed();
+    const QString node =
+        settings
+            .value(QString::fromLatin1(
+                forkmesh::mirror_actions::kNodeSetting))
+            .toString()
+            .trimmed();
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    m_mirrorActionsSummaryAttemptedAtMs = now;
+    forkmesh::mirror_actions::writeSummaryFile(
+        path, node, m_actionRuns, *m_actionStore, now);
 }
 
 void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
@@ -567,6 +831,7 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
 
         const ActionRun created = m_actionStore->createRun(run);
         m_actionRuns.prepend(created);
+        scheduleMirrorActionsSummary(0);
         cancelSupersededRuns(created);
         if (approved)
             m_actionQueue.append(created.id);
@@ -701,6 +966,7 @@ void MainWindow::processActionQueue()
         if (repoIndex < 0) {
             run->status = ActionStatus::Failed;
             m_actionStore->saveRun(*run);
+            scheduleMirrorActionsSummary(0);
             continue;
         }
         const QString mirror = m_repositories.at(repoIndex).mirrorPath;
@@ -710,6 +976,7 @@ void MainWindow::processActionQueue()
         if (!wf.valid) {
             run->status = ActionStatus::Failed;
             m_actionStore->saveRun(*run);
+            scheduleMirrorActionsSummary(0);
             continue;
         }
         // start() emits statusChanged synchronously (which reloads m_actionRuns),
@@ -770,6 +1037,7 @@ void MainWindow::cancelSupersededRuns(const ActionRun &newRun)
                 live->status = ActionStatus::Cancelled;
                 live->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
                 m_actionStore->saveRun(*live);
+                scheduleMirrorActionsSummary(0);
             }
             logSystem(QStringLiteral(
                           "Actions: cancelled %1 \"%2\" for %3/%4 @ %5 \xE2\x80\x94 "
@@ -784,6 +1052,10 @@ void MainWindow::cancelSupersededRuns(const ActionRun &newRun)
 
 void MainWindow::onRunLog(int runId, const QString &text)
 {
+    // ActionRunner has already redacted configured variable values before it
+    // appends this line to ActionStore. Batch live-tail publication to at most
+    // once every two seconds even when a process emits thousands of chunks.
+    scheduleMirrorActionsSummary(2000);
     if (runId != m_selectedRunId || !m_actionLog)
         return;
     m_actionLog->moveCursor(QTextCursor::End);
@@ -794,6 +1066,7 @@ void MainWindow::onRunLog(int runId, const QString &text)
 void MainWindow::onRunStatusChanged(int runId, const QString &status)
 {
     m_actionRuns = m_actionStore->loadAllRuns();
+    scheduleMirrorActionsSummary(0);
     refreshActionsTable();
     refreshCommitStatusGlyphs();
     if (runId == m_selectedRunId && m_actionRunMeta) {
@@ -813,11 +1086,13 @@ void MainWindow::onRunStatusChanged(int runId, const QString &status)
                                   .arg(run->workflowName, run->owner, run->name),
                               false);
     }
+    updateMirrorActionsRuntimeState();
 }
 
 void MainWindow::onRunFinished(int runId, bool ok)
 {
     m_actionRuns = m_actionStore->loadAllRuns();
+    scheduleMirrorActionsSummary(0);
     refreshActionsTable();
     refreshCommitStatusGlyphs();
     updateNotificationButton();
@@ -843,6 +1118,7 @@ void MainWindow::onRunFinished(int runId, bool ok)
         showRun(runId); // finished: reload the complete log from disk
     refreshOpenPullChecks();
     processActionQueue();
+    updateMirrorActionsRuntimeState();
 }
 
 void MainWindow::onReleaseMetadataLanded(int runId)
@@ -2187,6 +2463,7 @@ void MainWindow::runSelectedWorkflowManually()
 
     const ActionRun created = m_actionStore->createRun(run);
     m_actionRuns.prepend(created);
+    scheduleMirrorActionsSummary(0);
     cancelSupersededRuns(created);
     if (approved)
         m_actionQueue.append(created.id);
@@ -2347,6 +2624,7 @@ void MainWindow::approveSelectedRun()
     ActionStore::approve(run->repoKey(), run->workflowPath, run->workflowContent);
     run->status = ActionStatus::Queued;
     m_actionStore->saveRun(*run);
+    scheduleMirrorActionsSummary(0);
     m_actionQueue.append(run->id);
     logSystem(QStringLiteral("Actions: approved \"%1\" for %2/%3.")
                   .arg(run->workflowName, run->owner, run->name));
@@ -2365,6 +2643,7 @@ void MainWindow::rejectSelectedRun()
     run->status = ActionStatus::Rejected;
     run->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
     m_actionStore->saveRun(*run);
+    scheduleMirrorActionsSummary(0);
     logSystem(QStringLiteral("Actions: rejected \"%1\" for %2/%3.")
                   .arg(run->workflowName, run->owner, run->name));
     m_actionRuns = m_actionStore->loadAllRuns();
@@ -2396,6 +2675,7 @@ void MainWindow::rerunSelectedRun()
 
     const ActionRun created = m_actionStore->createRun(run);
     m_actionRuns.prepend(created);
+    scheduleMirrorActionsSummary(0);
     cancelSupersededRuns(created);
     if (approved)
         m_actionQueue.append(created.id);
@@ -2436,6 +2716,7 @@ void MainWindow::stopSelectedRun()
         run->status = ActionStatus::Cancelled;
         run->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
         m_actionStore->saveRun(*run);
+        scheduleMirrorActionsSummary(0);
         logSystem(QStringLiteral("Actions: cancelled queued \"%1\" for %2/%3.")
                       .arg(run->workflowName, run->owner, run->name));
         m_actionRuns = m_actionStore->loadAllRuns();
@@ -2462,6 +2743,7 @@ void MainWindow::skipSelectedRun()
     run->status = ActionStatus::Skipped;
     run->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
     m_actionStore->saveRun(*run);
+    scheduleMirrorActionsSummary(0);
     logSystem(QStringLiteral("Actions: skipped \"%1\" for %2/%3.")
                   .arg(run->workflowName, run->owner, run->name));
     m_actionRuns = m_actionStore->loadAllRuns();
@@ -2547,6 +2829,7 @@ void MainWindow::clearActionRuns()
         m_actionStore->deleteRun(run);
 
     m_actionRuns = m_actionStore->loadAllRuns();
+    scheduleMirrorActionsSummary(0);
     if (!findRun(m_selectedRunId)) {
         m_selectedRunId = -1;
         showRun(-1);

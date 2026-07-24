@@ -384,23 +384,52 @@ verify_public_assets() {
         "/world/world-data.js|public/world/world-data.js"
         "/world/world-scene.js|public/world/world-scene.js"
         "/world/world-mirror-nodes.js|public/world/world-mirror-nodes.js"
+        "/world/world-pull-review.js|public/world/world-pull-review.js"
         "/world/world-repository-graph.js|public/world/world-repository-graph.js"
         "/world/world-speech.js|public/world/world-speech.js"
         "/world/world.css|public/world/world.css"
         "/world/world-speech.css|public/world/world-speech.css"
     )
     local local_asset local_hash remote_hash cache_control
+    local asset_attempt asset_attempts=15 asset_retry_s=2
     for check in "${world_checks[@]}"; do
         path="${check%%|*}"
         local_asset="${check#*|}"
         url="$base$path?deploy-rev=$BUILD_REV"
         if command -v sha256sum >/dev/null 2>&1; then
             local_hash="$(sha256sum "$local_asset" | awk '{print $1}')"
-            remote_hash="$(curl -fsS --max-time 30 "$url" | sha256sum | awk '{print $1}')"
         else
             local_hash="$(shasum -a 256 "$local_asset" | awk '{print $1}')"
-            remote_hash="$(curl -fsS --max-time 30 "$url" | shasum -a 256 | awk '{print $1}')"
         fi
+        remote_hash=""
+        # A Worker version and its static-asset manifest propagate together, but
+        # an individual edge may briefly retain the previous content mapping for
+        # a URL that the verifier requested during the version transition.  Keep
+        # this check strict while allowing that bounded convergence window.
+        for ((asset_attempt = 1; asset_attempt <= asset_attempts; asset_attempt++)); do
+            if command -v sha256sum >/dev/null 2>&1; then
+                remote_hash="$(
+                    curl -fsS --max-time 30 \
+                        "$url&verify-attempt=$asset_attempt" |
+                        sha256sum |
+                        awk '{print $1}'
+                )"
+            else
+                remote_hash="$(
+                    curl -fsS --max-time 30 \
+                        "$url&verify-attempt=$asset_attempt" |
+                        shasum -a 256 |
+                        awk '{print $1}'
+                )"
+            fi
+            if [ "$remote_hash" = "$local_hash" ]; then
+                break
+            fi
+            if [ "$asset_attempt" -lt "$asset_attempts" ]; then
+                echo "  $path is still converging at the edge (attempt $asset_attempt/$asset_attempts); retrying in ${asset_retry_s}s..." >&2
+                sleep "$asset_retry_s"
+            fi
+        done
         if [ "$remote_hash" != "$local_hash" ]; then
             echo "ERROR: $url is not the World asset from BUILD_REV=$BUILD_REV." >&2
             echo "       Local sha256=$local_hash; live sha256=$remote_hash." >&2

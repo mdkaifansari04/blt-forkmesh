@@ -114,7 +114,7 @@
       "description": "The runtime additionally requires git-info-refs, git-upload-pack, tree, blob, and raw.",
       "type": "array",
       "minItems": 5,
-      "maxItems": 14,
+      "maxItems": 16,
       "uniqueItems": true,
       "items": {
         "enum": [
@@ -131,7 +131,9 @@
           "search",
           "stats",
           "sizes",
-          "release-blob"
+          "release-blob",
+          "merge-pull",
+          "actions-status"
         ]
       },
       "allOf": [
@@ -194,6 +196,11 @@
         "version": {
           "type": "string",
           "maxLength": 32
+        },
+        "actionsEnabled": {
+          "description": "Owner-approved upper bound for this node's public Actions capability. Defaults to false; live enabled/running state additionally requires a fresh protected actions-state.json lease (same-account mode 0600 or the fixed root:gateway-group mode-0640 handoff).",
+          "type": "boolean",
+          "default": false
         },
         "reportCpu": {
           "description": "Opt in to publishing a bounded aggregate host CPU percentage. Defaults to false.",

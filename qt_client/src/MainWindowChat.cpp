@@ -25,10 +25,13 @@
 #include <QInputDialog>
 #include <QNetworkInformation>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QSharedPointer>
 #include <QStandardPaths>
 #include <QTabWidget>
+#include <QUuid>
 
 #include <algorithm>
 
@@ -7637,7 +7640,10 @@ QWidget *MainWindow::buildHostsSection()
         "Click Update on a saved host to re-run the installer and bring it up to "
         "the latest ForkMesh release. Click Uninstall to completely remove "
         "ForkMesh \xE2\x80\x94 binary, launcher and ALL data \xE2\x80\x94 from "
-        "that host. Click Logs to open a live SSH tail for that host. "
+        "that host. Click Actions to enable its executor and optionally replace "
+        "its device-local variables through a one-shot SSH stdin request; secret "
+        "values are never saved by this controller. Click Logs to open a live "
+        "SSH tail for that host. "
         "Double-click a host instead to reload it into the form "
         "above for editing."));
     hostsHint->setObjectName("mutedLabel");
@@ -7764,6 +7770,19 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(viewLogsBtn);
+        auto *actionsBtn = new QPushButton(QStringLiteral("Actions"));
+        actionsBtn->setObjectName(QStringLiteral("hostActionsButton"));
+        actionsBtn->setCursor(Qt::PointingHandCursor);
+        actionsBtn->setToolTip(QStringLiteral(
+            "Configure this mirror's Actions state and device-local variables "
+            "over authenticated SSH. Values travel only on stdin."));
+        setOcticon(actionsBtn, "workflow", 12);
+        connect(actionsBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                configureHostActionsForSelection(i);
+            });
+        });
+        cellRow->addWidget(actionsBtn);
         m_hostsTable->setCellWidget(i, 4, cell);
     }
 
@@ -7771,6 +7790,406 @@ void MainWindow::refreshHostsTable()
         m_hostsNavButton->setText(hosts.isEmpty()
             ? QStringLiteral("Hosts")
             : QStringLiteral("Hosts (%1)").arg(hosts.size()));
+}
+
+void MainWindow::configureHostActionsForSelection(int row)
+{
+    if (m_hostActionsProcess &&
+        m_hostActionsProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus) {
+            m_hostInstallStatus->setText(
+                QStringLiteral("A mirror Actions configuration is already running."));
+        }
+        return;
+    }
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+
+    const auto cellText = [this, row](int column) {
+        const QTableWidgetItem *item = m_hostsTable->item(row, column);
+        return item ? item->text().trimmed() : QString();
+    };
+    const QString node = cellText(0);
+    const QString host = cellText(1);
+    const QString user = cellText(2);
+    QString password;
+    const QJsonArray savedHosts =
+        QJsonDocument::fromJson(
+            QSettings().value(kHostsSetting).toString().toUtf8())
+            .array();
+    for (const QJsonValue &value : savedHosts) {
+        const QJsonObject saved = value.toObject();
+        if (saved.value(QStringLiteral("name")).toString() == node) {
+            password = saved.value(QStringLiteral("pass")).toString();
+            break;
+        }
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Mirror Actions — %1").arg(node));
+    dialog.setMinimumSize(640, 470);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *notice = new QLabel(QStringLiteral(
+        "SSH access to <b>%1@%2</b> authorizes this one change. ForkMesh sends "
+        "a bounded configuration document to the node helper on stdin. Variable "
+        "values never enter command arguments, logs, the public mirror catalog, "
+        "or this desktop's saved settings.")
+                                  .arg(user.toHtmlEscaped(),
+                                       host.toHtmlEscaped()));
+    notice->setWordWrap(true);
+    layout->addWidget(notice);
+
+    auto *enabled =
+        new QCheckBox(QStringLiteral("Enable Actions on this mirror node"));
+    enabled->setObjectName(QStringLiteral("hostActionsEnabledCheck"));
+    enabled->setChecked(false);
+    layout->addWidget(enabled);
+    auto *replace = new QCheckBox(
+        QStringLiteral("Replace the node's Actions variables with this list"));
+    replace->setObjectName(QStringLiteral("hostActionsReplaceVariablesCheck"));
+    replace->setChecked(false);
+    layout->addWidget(replace);
+
+    auto *variables = new QTableWidget(0, 2);
+    variables->setObjectName(QStringLiteral("hostActionsVariablesTable"));
+    variables->setHorizontalHeaderLabels(
+        {QStringLiteral("Name"), QStringLiteral("Value")});
+    variables->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::ResizeToContents);
+    variables->horizontalHeader()->setSectionResizeMode(1,
+                                                         QHeaderView::Stretch);
+    variables->verticalHeader()->setVisible(false);
+    variables->setSelectionBehavior(QAbstractItemView::SelectRows);
+    variables->setSelectionMode(QAbstractItemView::SingleSelection);
+    variables->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    variables->setEnabled(false);
+    layout->addWidget(variables, 1);
+
+    auto *variableButtons = new QHBoxLayout;
+    auto *addVariable = new QPushButton(QStringLiteral("Add variable"));
+    addVariable->setObjectName(QStringLiteral("hostActionsAddVariableButton"));
+    auto *removeVariable =
+        new QPushButton(QStringLiteral("Remove selected"));
+    removeVariable->setObjectName(
+        QStringLiteral("hostActionsRemoveVariableButton"));
+    addVariable->setEnabled(false);
+    removeVariable->setEnabled(false);
+    variableButtons->addWidget(addVariable);
+    variableButtons->addWidget(removeVariable);
+    variableButtons->addStretch();
+    layout->addLayout(variableButtons);
+    connect(replace, &QCheckBox::toggled, variables,
+            &QWidget::setEnabled);
+    connect(replace, &QCheckBox::toggled, addVariable,
+            &QWidget::setEnabled);
+    connect(replace, &QCheckBox::toggled, removeVariable,
+            &QWidget::setEnabled);
+
+    connect(addVariable, &QPushButton::clicked, &dialog,
+            [this, variables] {
+                bool ok = false;
+                const QString name = QInputDialog::getText(
+                    this, QStringLiteral("Actions variable"),
+                    QStringLiteral("Variable name:"), QLineEdit::Normal,
+                    QString(), &ok).trimmed();
+                if (!ok || name.isEmpty())
+                    return;
+                const QString value = QInputDialog::getText(
+                    this, QStringLiteral("Actions variable"),
+                    QStringLiteral("Secret value:"), QLineEdit::Password,
+                    QString(), &ok);
+                if (!ok)
+                    return;
+                int rowForName = -1;
+                for (int row = 0; row < variables->rowCount(); ++row) {
+                    const QTableWidgetItem *item = variables->item(row, 0);
+                    if (item && item->text() == name) {
+                        rowForName = row;
+                        break;
+                    }
+                }
+                if (rowForName < 0) {
+                    rowForName = variables->rowCount();
+                    variables->insertRow(rowForName);
+                    variables->setItem(rowForName, 0,
+                                       new QTableWidgetItem(name));
+                    variables->setItem(rowForName, 1,
+                                       new QTableWidgetItem);
+                }
+                QTableWidgetItem *valueItem =
+                    variables->item(rowForName, 1);
+                valueItem->setText(QStringLiteral("••••••••"));
+                valueItem->setData(Qt::UserRole, value);
+                valueItem->setToolTip(
+                    QStringLiteral("Value is hidden and will be discarded after sending."));
+            });
+    connect(removeVariable, &QPushButton::clicked, &dialog,
+            [variables] {
+                const int row = variables->currentRow();
+                if (row < 0)
+                    return;
+                if (QTableWidgetItem *item = variables->item(row, 1)) {
+                    QString secret = item->data(Qt::UserRole).toString();
+                    secret.fill(QChar::Null);
+                    item->setData(Qt::UserRole, QString());
+                }
+                variables->removeRow(row);
+            });
+
+    auto *buttons =
+        new QDialogButtonBox(QDialogButtonBox::Cancel);
+    QPushButton *apply = buttons->addButton(
+        QStringLiteral("Send to mirror"), QDialogButtonBox::AcceptRole);
+    apply->setObjectName(QStringLiteral("hostActionsApplyButton"));
+    apply->setDefault(true);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog,
+            &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog,
+            &QDialog::reject);
+    layout->addWidget(buttons);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        for (int variableRow = 0; variableRow < variables->rowCount();
+             ++variableRow) {
+            if (QTableWidgetItem *item =
+                    variables->item(variableRow, 1)) {
+                QString secret = item->data(Qt::UserRole).toString();
+                secret.fill(QChar::Null);
+                item->setData(Qt::UserRole, QString());
+            }
+        }
+        return;
+    }
+
+    forkmesh::control::MirrorActionsConfigurationRequest request;
+    request.requestId =
+        QUuid::createUuid().toString(QUuid::Id128).toLower();
+    request.host = host;
+    request.sshUser = user;
+    request.nodeName = node;
+    request.actionsEnabled = enabled->isChecked();
+    request.replaceVariables = replace->isChecked();
+    if (request.replaceVariables) {
+        for (int variableRow = 0; variableRow < variables->rowCount();
+             ++variableRow) {
+            const QTableWidgetItem *nameItem =
+                variables->item(variableRow, 0);
+            QTableWidgetItem *valueItem =
+                variables->item(variableRow, 1);
+            if (!nameItem || !valueItem)
+                continue;
+            request.variables.insert(
+                nameItem->text(),
+                valueItem->data(Qt::UserRole).toString());
+            QString secret = valueItem->data(Qt::UserRole).toString();
+            secret.fill(QChar::Null);
+            valueItem->setData(Qt::UserRole, QString());
+            valueItem->setText(QStringLiteral("discarded"));
+        }
+    }
+    runHostActionsConfiguration(std::move(request), password);
+    password.fill(QChar::Null);
+}
+
+void MainWindow::runHostActionsConfiguration(
+    forkmesh::control::MirrorActionsConfigurationRequest request,
+    const QString &sshPassword)
+{
+    QString error;
+    forkmesh::control::MirrorActionsSshCommand command =
+        forkmesh::control::buildMirrorActionsSshCommand(
+            request, sshPassword, &error);
+    if (command.program.isEmpty()) {
+        for (QString &value : request.variables)
+            value.fill(QChar::Null);
+        command.standardInput.fill('\0');
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(error);
+        return;
+    }
+
+    const QString requestId = request.requestId;
+    const QString node = request.nodeName.trimmed();
+    const QString host = request.host.trimmed();
+    const bool enabled = request.actionsEnabled;
+    const bool replaceVariables = request.replaceVariables;
+    const int variableCount = request.variables.size();
+    for (QString &value : request.variables) {
+        value.fill(QChar::Null);
+    }
+    request.variables.clear();
+
+    auto rawOutput = QSharedPointer<QByteArray>::create();
+    auto outputOverflow = QSharedPointer<bool>::create(false);
+    auto completed = QSharedPointer<bool>::create(false);
+    auto *process = new QProcess(this);
+    m_hostActionsProcess = process;
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    process->setProcessEnvironment(command.environment);
+    if (m_hostInstallStatus) {
+        m_hostInstallStatus->setText(
+            QStringLiteral(
+                "Sending Actions state to %1 over authenticated SSH…")
+                .arg(node));
+    }
+    appendHostInstallLog(
+        QStringLiteral(
+            "\n[Actions] Sending %1 state and %2 variable name(s) to %3@%4; "
+            "values are stdin-only and redacted.\n")
+            .arg(enabled ? QStringLiteral("enabled")
+                         : QStringLiteral("disabled"))
+            .arg(replaceVariables ? variableCount : 0)
+            .arg(request.sshUser.trimmed(), host));
+
+    connect(process, &QProcess::readyReadStandardOutput, this,
+            [process, rawOutput, outputOverflow] {
+                QByteArray chunk = process->readAllStandardOutput();
+                constexpr qsizetype kMaximumOutput = 64 * 1024;
+                if (rawOutput->size() + chunk.size() <= kMaximumOutput) {
+                    rawOutput->append(chunk);
+                } else {
+                    *outputOverflow = true;
+                    const qsizetype remaining =
+                        qMax<qsizetype>(0, kMaximumOutput - rawOutput->size());
+                    rawOutput->append(chunk.first(remaining));
+                }
+                // Never render remote output from this secret-bearing request.
+                // A hostile/broken helper could echo stdin verbatim or encode
+                // it, which cannot be made safe by ordinary string redaction.
+                chunk.fill('\0');
+            });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, rawOutput, completed](
+                QProcess::ProcessError processError) {
+                if (processError == QProcess::FailedToStart) {
+                    if (*completed)
+                        return;
+                    *completed = true;
+                    appendHostInstallLog(
+                        QStringLiteral(
+                            "[Actions] Could not start SSH. Install OpenSSH"
+                            " (and sshpass for password login).\n"));
+                    if (m_hostInstallStatus) {
+                        m_hostInstallStatus->setText(
+                            QStringLiteral(
+                                "Mirror Actions configuration failed: "
+                                "could not start SSH."));
+                    }
+                    rawOutput->fill('\0');
+                    rawOutput->clear();
+                    QProcessEnvironment scrubbed =
+                        QProcessEnvironment::systemEnvironment();
+                    scrubbed.remove(QStringLiteral("SSHPASS"));
+                    process->setProcessEnvironment(scrubbed);
+                    if (m_hostActionsProcess == process)
+                        m_hostActionsProcess = nullptr;
+                    process->deleteLater();
+                }
+            });
+    connect(process, &QProcess::finished, this,
+            [this, process, rawOutput, outputOverflow, completed,
+             requestId, node, enabled, replaceVariables, variableCount](
+                int exitCode, QProcess::ExitStatus exitStatus) {
+                if (*completed)
+                    return;
+                *completed = true;
+                QByteArray finalChunk =
+                    process->readAllStandardOutput();
+                constexpr qsizetype kMaximumOutput = 64 * 1024;
+                if (rawOutput->size() + finalChunk.size() <=
+                    kMaximumOutput) {
+                    rawOutput->append(finalChunk);
+                } else {
+                    *outputOverflow = true;
+                    const qsizetype remaining =
+                        qMax<qsizetype>(
+                            0, kMaximumOutput - rawOutput->size());
+                    rawOutput->append(finalChunk.first(remaining));
+                }
+                finalChunk.fill('\0');
+                QString resultError;
+                const QJsonObject result =
+                    *outputOverflow
+                        ? QJsonObject()
+                        : forkmesh::control::
+                              parseMirrorActionsConfigurationResult(
+                                  *rawOutput, requestId, node, &resultError);
+                const bool confirmed =
+                    exitStatus == QProcess::NormalExit && exitCode == 0 &&
+                    !result.isEmpty() &&
+                    result.value(QStringLiteral("ok")).toBool() &&
+                    result.value(QStringLiteral("actionsEnabled")).toBool() ==
+                        enabled &&
+                    result.value(QStringLiteral("variablesReplaced")).toBool() ==
+                        replaceVariables &&
+                    result.value(QStringLiteral("variableCount")).toInt() ==
+                        (replaceVariables ? variableCount : 0);
+                if (confirmed) {
+                    const QString summary =
+                        QStringLiteral(
+                            "Mirror %1 confirmed Actions %2%3.")
+                            .arg(
+                                node,
+                                enabled ? QStringLiteral("enabled")
+                                        : QStringLiteral("disabled"),
+                                replaceVariables
+                                    ? QStringLiteral(
+                                          " and replaced %1 variable(s)")
+                                          .arg(variableCount)
+                                    : QString());
+                    appendHostInstallLog(
+                        QStringLiteral("[Actions] %1\n").arg(summary));
+                    if (m_hostInstallStatus)
+                        m_hostInstallStatus->setText(summary);
+                } else {
+                    if (*outputOverflow) {
+                        resultError = QStringLiteral(
+                            "The remote helper returned more than 64 KiB.");
+                    } else if (resultError.isEmpty()) {
+                        resultError = QStringLiteral(
+                            "The host did not confirm the requested state.");
+                    }
+                    appendHostInstallLog(
+                        QStringLiteral(
+                            "[Actions] Configuration was not confirmed "
+                            "(exit %1): %2\n")
+                            .arg(exitCode)
+                            .arg(resultError));
+                    if (m_hostInstallStatus) {
+                        m_hostInstallStatus->setText(
+                            QStringLiteral(
+                                "Mirror Actions configuration failed: %1")
+                                .arg(resultError));
+                    }
+                }
+                rawOutput->fill('\0');
+                rawOutput->clear();
+                QProcessEnvironment scrubbed =
+                    QProcessEnvironment::systemEnvironment();
+                scrubbed.remove(QStringLiteral("SSHPASS"));
+                process->setProcessEnvironment(scrubbed);
+                if (m_hostActionsProcess == process)
+                    m_hostActionsProcess = nullptr;
+                process->deleteLater();
+            });
+
+    process->start(command.program, command.arguments);
+    process->write(command.standardInput);
+    process->closeWriteChannel();
+    const QPointer<QProcess> guardedProcess(process);
+    QTimer::singleShot(45 * 1000, this, [this, guardedProcess, completed] {
+        if (!guardedProcess || *completed ||
+            guardedProcess->state() == QProcess::NotRunning) {
+            return;
+        }
+        appendHostInstallLog(
+            QStringLiteral(
+                "[Actions] SSH configuration timed out after 45 seconds.\n"));
+        guardedProcess->kill();
+    });
+    command.standardInput.fill('\0');
+    command.standardInput.clear();
+    command.environment = QProcessEnvironment();
 }
 
 // --- Nodes ------------------------------------------------------------------

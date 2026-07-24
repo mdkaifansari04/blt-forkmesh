@@ -12,6 +12,7 @@ Cloudflare-provided two-letter code, while peer ids are random per connection.
 
 import math
 import re
+import unicodedata
 
 
 # One shared virtual day lasts four real hours.  Clients advance the returned
@@ -75,6 +76,7 @@ WORLD_INACTIVITY_VALUES = frozenset({
     "away", "inactive", "recent", "offline-operator", "returning",
 })
 WORLD_NODE_BADGE_MAX = 6
+WORLD_STATUS_NOTE_MAX = 20
 
 # This is the complete state that may leave the Durable Object.  Keeping the
 # list explicit is the privacy boundary for snapshots and presence frames.
@@ -82,7 +84,7 @@ WORLD_PUBLIC_FIELDS = (
     "id", "name", "countryCode", "browser", "os", "status", "localTime",
     "activityCategory", "inputActive", "visitCount", "firstVisitAge",
     "accountStatus", "nodeCount", "space",
-    "publicDoor",
+    "publicDoor", "statusEmoji", "statusNote",
     "x", "y", "z", "yaw", "moving", "updatedAt",
 )
 
@@ -120,6 +122,110 @@ def clean_display_name(value, fallback="Guest"):
         if ch.isalnum() or ch in (" ", ".", "_", "-")
     )
     return (" ".join(safe_fallback.split()).strip(" ._-")[:32] or "Guest")
+
+
+def _emoji_base(character):
+    codepoint = ord(character)
+    return (
+        codepoint in {
+            0x00A9, 0x00AE, 0x203C, 0x2049, 0x2122, 0x2139,
+            0x24C2, 0x3030, 0x303D, 0x3297, 0x3299,
+        }
+        or 0x2194 <= codepoint <= 0x21FF
+        or codepoint in {0x231A, 0x231B, 0x2328, 0x23CF}
+        or 0x23E9 <= codepoint <= 0x23F3
+        or 0x23F8 <= codepoint <= 0x23FA
+        or 0x25AA <= codepoint <= 0x25AB
+        or codepoint in {0x25B6, 0x25C0}
+        or 0x25FB <= codepoint <= 0x25FE
+        or 0x2600 <= codepoint <= 0x27BF
+        or 0x2934 <= codepoint <= 0x2935
+        or 0x2B05 <= codepoint <= 0x2B07
+        or 0x2B1B <= codepoint <= 0x2B1C
+        or codepoint in {0x2B50, 0x2B55}
+        or (
+            0x1F000 <= codepoint <= 0x1FAFF
+            and not 0x1F1E6 <= codepoint <= 0x1F1FF
+        )
+    )
+
+
+def clean_status_emoji(value):
+    """Return one bounded Unicode emoji grapheme or an empty string.
+
+    This parser accepts pictographs, flags, keycaps, skin-tone modifiers,
+    subdivision-flag tags, and zero-width-joiner sequences. It intentionally
+    rejects arbitrary text and multiple adjacent emoji, keeping the public
+    presence field both useful and mechanically bounded.
+    """
+    emoji = unicodedata.normalize("NFC", str(value or "").strip())
+    if not emoji or len(emoji) > 24 or len(emoji.encode("utf-8")) > 96:
+        return ""
+    codepoints = [ord(character) for character in emoji]
+    if (
+        len(codepoints) == 2
+        and all(0x1F1E6 <= codepoint <= 0x1F1FF for codepoint in codepoints)
+    ):
+        return emoji
+    if (
+        len(codepoints) in (2, 3)
+        and emoji[0] in "#*0123456789"
+        and codepoints[-1] == 0x20E3
+        and (len(codepoints) == 2 or codepoints[1] == 0xFE0F)
+    ):
+        return emoji
+
+    index = 0
+
+    def consume_pictograph(offset):
+        if offset >= len(emoji) or not _emoji_base(emoji[offset]):
+            return -1
+        base = ord(emoji[offset])
+        offset += 1
+        if offset < len(emoji) and ord(emoji[offset]) in (0xFE0E, 0xFE0F):
+            offset += 1
+        if offset < len(emoji) and 0x1F3FB <= ord(emoji[offset]) <= 0x1F3FF:
+            offset += 1
+        if offset < len(emoji) and 0xE0020 <= ord(emoji[offset]) <= 0xE007E:
+            if base != 0x1F3F4:
+                return -1
+            while (
+                offset < len(emoji)
+                and 0xE0020 <= ord(emoji[offset]) <= 0xE007E
+            ):
+                offset += 1
+            if offset >= len(emoji) or ord(emoji[offset]) != 0xE007F:
+                return -1
+            offset += 1
+        return offset
+
+    index = consume_pictograph(index)
+    if index < 0:
+        return ""
+    while index < len(emoji):
+        if ord(emoji[index]) != 0x200D:
+            return ""
+        index = consume_pictograph(index + 1)
+        if index < 0:
+            return ""
+    return emoji
+
+
+def clean_status_note(value):
+    """Return one Unicode word of at most 20 code points."""
+    note = unicodedata.normalize("NFKC", str(value or "").strip())
+    if not note or len(note) > WORLD_STATUS_NOTE_MAX:
+        return ""
+    first_category = unicodedata.category(note[0])
+    if first_category[:1] not in {"L", "N"}:
+        return ""
+    for character in note[1:]:
+        if (
+            unicodedata.category(character)[:1] not in {"L", "M", "N"}
+            and character not in {"'", "\u2019", "-"}
+        ):
+            return ""
+    return note
 
 
 def _choice(value, allowed, fallback):
@@ -228,6 +334,8 @@ def default_presence(peer_id, now):
         "nodeCount": 0,
         "space": "town-square",
         "publicDoor": "closed",
+        "statusEmoji": "",
+        "statusNote": "",
         "x": 0.0,
         "y": 0.0,
         "z": 0.0,
@@ -311,6 +419,14 @@ def sanitize_message(payload, current, now, country_source="",
         if "publicDoor" in payload:
             state["publicDoor"] = _choice(
                 payload.get("publicDoor"), WORLD_DOOR_VALUES, "closed")
+        if "statusEmoji" in payload:
+            state["statusEmoji"] = clean_status_emoji(
+                payload.get("statusEmoji"))
+        if "statusNote" in payload:
+            state["statusNote"] = clean_status_note(
+                payload.get("statusNote"))
+        if not state.get("statusEmoji"):
+            state["statusNote"] = ""
         if "space" in payload:
             state["space"] = _choice(
                 payload.get("space"), WORLD_SPACE_VALUES, "town-square")

@@ -2,6 +2,8 @@
 
 import ast
 import asyncio
+import hashlib
+import json
 import re
 import sqlite3
 import sys
@@ -51,6 +53,115 @@ def _method_source(class_name, method_name):
                 ):
                     return ast.get_source_segment(source, child)
     raise AssertionError(f"{class_name}.{method_name} not found")
+
+
+def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
+    namespace = {
+        "hashlib": hashlib,
+        "json": json,
+        "re": re,
+        "MAX_BLOB_BATCH": 60,
+        "REPOSITORY_METADATA_CACHE_PREFIX": (
+            "https://forkmesh.internal/repository-metadata/v1/"
+        ),
+    }
+    exec(_function_source("repository_metadata_cache_key"), namespace)
+    key = namespace["repository_metadata_cache_key"]
+    first = {
+        "repoBi": "public-repo-blind-index",
+        "pins": {"b" * 64, "a" * 64},
+    }
+    same = {
+        "repoBi": "public-repo-blind-index",
+        "pins": {"a" * 64, "b" * 64},
+    }
+    pull_ref = "c" * 40
+
+    tree_key = key(first, "tree", {"path": "pulls", "ref": pull_ref})
+    assert tree_key.startswith(namespace["REPOSITORY_METADATA_CACHE_PREFIX"])
+    assert tree_key == key(
+        same, "tree", {"path": "pulls", "ref": pull_ref}
+    )
+    assert tree_key != key(
+        {**first, "pins": {"d" * 64}},
+        "tree",
+        {"path": "pulls", "ref": pull_ref},
+    )
+    assert tree_key != key(
+        first, "tree", {"path": "pulls", "ref": "d" * 40}
+    )
+    assert key(first, "branches", {})
+    assert key(first, "tree", {"path": "", "ref": ""})
+    assert key(first, "sizes", {"ref": "d" * 40})
+    assert key(first, "stats", {"ref": "d" * 40})
+    assert key(
+        first,
+        "blobs",
+        {
+            "path": ["pulls/44/pull.md", "pulls/43/pull.md"],
+            "ref": pull_ref,
+        },
+    )
+
+    # No source contents, arbitrary paths, moving refs, duplicate amplification,
+    # or unattested repository state may enter this narrow cache.
+    assert not key(
+        first,
+        "blobs",
+        {"path": ["src/main.py"], "ref": pull_ref},
+    )
+    assert not key(
+        first,
+        "blobs",
+        {"path": ["pulls/44/changes.patch"], "ref": pull_ref},
+    )
+    assert not key(
+        first,
+        "blobs",
+        {
+            "path": ["pulls/44/pull.md", "pulls/44/pull.md"],
+            "ref": pull_ref,
+        },
+    )
+    assert not key(first, "tree", {"path": "private", "ref": pull_ref})
+    assert not key(first, "tree", {"path": "pulls", "ref": "main"})
+    assert not key(
+        {"repoBi": "public-repo-blind-index", "pins": set()},
+        "branches",
+        {},
+    )
+
+    proxy = _function_source("_https_mirror_proxy")
+    assert (
+        proxy.index("repository_metadata_cache_get(metadata_cache_key)")
+        < proxy.index("_https_mirror_candidates(")
+    )
+    assert (
+        "repository_metadata_cache_put(\n"
+        "            metadata_cache_key, upstream, status)"
+    ) in proxy
+    get_source = _function_source("repository_metadata_cache_get")
+    put_source = _function_source("repository_metadata_cache_put")
+    assert '"no-store, max-age=0, must-revalidate"' in get_source
+    assert '"public, max-age=%d"' in put_source
+    assert "int(status or 0) != 200" in put_source
+    assert "content_length <= 0" in put_source
+    assert "content_length > REPOSITORY_METADATA_CACHE_MAX_BYTES" in put_source
+
+    class MustNotClone:
+        def clone(self):
+            raise AssertionError("a non-200 upstream must never be cached")
+
+    put_namespace = {
+        "REPOSITORY_METADATA_CACHE_MAX_BYTES": 8 * 1024 * 1024,
+        "REPOSITORY_METADATA_CACHE_TTL": 300,
+    }
+    exec(put_source, put_namespace)
+    assert asyncio.run(
+        put_namespace["repository_metadata_cache_put"](
+            "https://cache.invalid/key", MustNotClone(), 503
+        )
+    ) is None
 
 
 def test_registration_is_signed_account_bound_and_manifest_verified():

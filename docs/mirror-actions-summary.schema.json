@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forkmesh.com/schemas/mirror-actions-summary-v1.json",
+  "title": "ForkMesh mirror Actions public summary",
+  "description": "Short-lived, secret-free run metadata written atomically by the node owner. Runtime policy additionally requires a positive lease no longer than 15 minutes and a UTF-8 logTail no larger than 16 KiB.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "type",
+    "node",
+    "updatedAt",
+    "expiresAt",
+    "runs"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "type": {
+      "const": "forkmesh.mirror-actions-summary"
+    },
+    "node": {
+      "type": "string",
+      "pattern": "^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "updatedAt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "expiresAt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "runs": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/run"
+      }
+    }
+  },
+  "$defs": {
+    "timestampOrZero": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "owner",
+        "repository",
+        "workflow",
+        "commit",
+        "ref",
+        "status",
+        "createdAt",
+        "startedAt",
+        "finishedAt",
+        "logTail"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "owner": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,100}$"
+        },
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,100}$"
+        },
+        "workflow": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "ref": {
+          "type": "string",
+          "pattern": "^refs/(?:heads|tags)/(?!/)(?!.*(?:\\.\\.|//))[A-Za-z0-9._/-]{1,160}(?<!/)$"
+        },
+        "status": {
+          "enum": [
+            "awaiting-approval",
+            "queued",
+            "running",
+            "success",
+            "failed",
+            "rejected",
+            "cancelled",
+            "skipped"
+          ]
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "startedAt": {
+          "$ref": "#/$defs/timestampOrZero"
+        },
+        "finishedAt": {
+          "$ref": "#/$defs/timestampOrZero"
+        },
+        "logTail": {
+          "description": "Tail of ActionStore's already-redacted UTF-8 log. Runtime enforces a 16 KiB encoded-byte limit.",
+          "type": "string",
+          "maxLength": 16384
+        }
+      }
+    }
+  }
+}

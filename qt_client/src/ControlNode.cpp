@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStandardPaths>
 
 #include <algorithm>
@@ -262,6 +263,260 @@ QPair<QJsonValue, QJsonValue> normalizedTelemetryUsagePair(
 }
 
 } // namespace
+
+QString validateMirrorActionsConfigurationRequest(
+    const MirrorActionsConfigurationRequest &request)
+{
+    static const QRegularExpression requestIdPattern(
+        QStringLiteral("^[a-f0-9]{32}$"));
+    static const QRegularExpression hostPattern(
+        QStringLiteral("^[A-Za-z0-9](?:[A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$"));
+    static const QRegularExpression userPattern(
+        QStringLiteral("^[A-Za-z_][A-Za-z0-9_.-]{0,63}$"));
+    static const QRegularExpression nodePattern(
+        QStringLiteral("^[a-z][a-z0-9-]{0,62}$"));
+    static const QRegularExpression variablePattern(
+        QStringLiteral("^[A-Za-z_][A-Za-z0-9_]{0,63}$"));
+
+    if (!requestIdPattern.match(request.requestId).hasMatch())
+        return QStringLiteral("The Actions request ID is invalid.");
+    const QString host = request.host.trimmed();
+    if (host.size() > 253 || host.contains(QStringLiteral("..")) ||
+        !hostPattern.match(host).hasMatch()) {
+        return QStringLiteral("The saved host address is invalid.");
+    }
+    if (!userPattern.match(request.sshUser.trimmed()).hasMatch())
+        return QStringLiteral("The saved SSH username is invalid.");
+    if (!nodePattern.match(request.nodeName.trimmed()).hasMatch())
+        return QStringLiteral("The mirror node name is invalid.");
+    if (!request.replaceVariables && !request.variables.isEmpty()) {
+        return QStringLiteral(
+            "Variable values require explicit replace-variables approval.");
+    }
+    if (request.variables.size() > 64)
+        return QStringLiteral("At most 64 Actions variables can be sent at once.");
+
+    qsizetype totalValueBytes = 0;
+    for (auto it = request.variables.constBegin();
+         it != request.variables.constEnd(); ++it) {
+        if (!variablePattern.match(it.key()).hasMatch()) {
+            return QStringLiteral(
+                "Actions variable names must use letters, digits, and "
+                "underscores, and cannot start with a digit.");
+        }
+        if (it.value().contains(QChar::Null)) {
+            return QStringLiteral(
+                "Actions variable values cannot contain NUL characters.");
+        }
+        const qsizetype valueBytes = it.value().toUtf8().size();
+        if (valueBytes > 16 * 1024) {
+            return QStringLiteral(
+                "Each Actions variable must be 16 KiB or smaller.");
+        }
+        totalValueBytes += valueBytes;
+        if (totalValueBytes > 48 * 1024) {
+            return QStringLiteral(
+                "The combined Actions variable values must be 48 KiB or smaller.");
+        }
+    }
+    return {};
+}
+
+QByteArray buildMirrorActionsConfigurationPayload(
+    const MirrorActionsConfigurationRequest &request, QString *error)
+{
+    const QString validation =
+        validateMirrorActionsConfigurationRequest(request);
+    if (!validation.isEmpty()) {
+        if (error)
+            *error = validation;
+        return {};
+    }
+
+    QJsonObject root{
+        {QStringLiteral("type"),
+         QStringLiteral("forkmesh.mirror-actions-configuration")},
+        {QStringLiteral("schemaVersion"), 1},
+        {QStringLiteral("requestId"), request.requestId},
+        {QStringLiteral("node"), request.nodeName.trimmed()},
+        {QStringLiteral("actionsEnabled"), request.actionsEnabled},
+    };
+    if (request.replaceVariables) {
+        QJsonObject values;
+        for (auto it = request.variables.constBegin();
+             it != request.variables.constEnd(); ++it) {
+            values.insert(it.key(), it.value());
+        }
+        root.insert(
+            QStringLiteral("variables"),
+            QJsonObject{
+                {QStringLiteral("mode"), QStringLiteral("replace")},
+                {QStringLiteral("values"), values},
+            });
+    }
+    QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Compact);
+    payload.append('\n');
+    if (payload.size() > 64 * 1024) {
+        payload.fill('\0');
+        payload.clear();
+        if (error)
+            *error = QStringLiteral(
+                "The Actions configuration payload exceeds 64 KiB.");
+        return {};
+    }
+    if (error)
+        error->clear();
+    return payload;
+}
+
+MirrorActionsSshCommand buildMirrorActionsSshCommand(
+    const MirrorActionsConfigurationRequest &request,
+    const QString &sshPassword, QString *error)
+{
+    MirrorActionsSshCommand command;
+    command.standardInput =
+        buildMirrorActionsConfigurationPayload(request, error);
+    if (command.standardInput.isEmpty())
+        return command;
+
+    const QString remoteCommand = QStringLiteral(
+        "if command -v forkmesh >/dev/null 2>&1; then "
+        "exec forkmesh --configure-mirror-actions-stdin; "
+        "elif [ -x \"$HOME/.local/bin/forkmesh\" ]; then "
+        "exec \"$HOME/.local/bin/forkmesh\" "
+        "--configure-mirror-actions-stdin; "
+        "else printf 'ForkMesh Actions helper is not installed.\\n' >&2; "
+        "exit 127; fi");
+    QStringList sshArguments{
+        QStringLiteral("-o"), QStringLiteral("IdentitiesOnly=yes"),
+        QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=accept-new"),
+        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
+    };
+    command.environment = QProcessEnvironment::systemEnvironment();
+    command.environment.remove(QStringLiteral("SSHPASS"));
+    if (sshPassword.isEmpty()) {
+        command.program = QStringLiteral("ssh");
+        sshArguments << QStringLiteral("-o") << QStringLiteral("BatchMode=yes")
+                     << QStringLiteral("-o")
+                     << QStringLiteral("PreferredAuthentications=publickey");
+    } else {
+        command.program = QStringLiteral("sshpass");
+        command.environment.insert(QStringLiteral("SSHPASS"), sshPassword);
+        sshArguments.prepend(QStringLiteral("ssh"));
+        sshArguments.prepend(QStringLiteral("-e"));
+        sshArguments << QStringLiteral("-o")
+                     << QStringLiteral("PreferredAuthentications=password")
+                     << QStringLiteral("-o")
+                     << QStringLiteral("PubkeyAuthentication=no");
+    }
+    sshArguments << request.sshUser.trimmed() + QLatin1Char('@') +
+                        request.host.trimmed()
+                 << remoteCommand;
+    command.arguments = sshArguments;
+    if (error)
+        error->clear();
+    return command;
+}
+
+QJsonObject parseMirrorActionsConfigurationResult(
+    const QByteArray &output, const QString &expectedRequestId,
+    const QString &expectedNodeName, QString *error)
+{
+    constexpr qsizetype kMaximumOutputBytes = 64 * 1024;
+    constexpr auto kPrefix = "FORKMESH_ACTIONS_RESULT=";
+    if (output.size() > kMaximumOutputBytes) {
+        if (error)
+            *error = QStringLiteral(
+                "The mirror Actions helper returned too much output.");
+        return {};
+    }
+    QByteArray encoded;
+    int sentinels = 0;
+    const QList<QByteArray> lines = output.split('\n');
+    for (QByteArray line : lines) {
+        if (line.endsWith('\r'))
+            line.chop(1);
+        if (!line.startsWith(kPrefix))
+            continue;
+        ++sentinels;
+        encoded = line.mid(qstrlen(kPrefix));
+    }
+    if (sentinels != 1 || encoded.isEmpty() || encoded.size() > 4096) {
+        if (error)
+            *error = QStringLiteral(
+                "The mirror Actions helper did not return one valid result.");
+        return {};
+    }
+    if (!QRegularExpression(QStringLiteral("^[A-Za-z0-9_-]+$"))
+             .match(QString::fromLatin1(encoded))
+             .hasMatch()) {
+        if (error)
+            *error = QStringLiteral(
+                "The mirror Actions helper result encoding is invalid.");
+        return {};
+    }
+    const QByteArray decoded = QByteArray::fromBase64(
+        encoded, QByteArray::Base64UrlEncoding |
+                     QByteArray::AbortOnBase64DecodingErrors);
+    QJsonParseError parseError;
+    const QJsonDocument document =
+        QJsonDocument::fromJson(decoded, &parseError);
+    const QJsonObject result = document.object();
+    static const QSet<QString> allowedKeys{
+        QStringLiteral("type"),
+        QStringLiteral("schemaVersion"),
+        QStringLiteral("ok"),
+        QStringLiteral("requestId"),
+        QStringLiteral("node"),
+        QStringLiteral("actionsEnabled"),
+        QStringLiteral("variablesReplaced"),
+        QStringLiteral("variableCount"),
+        QStringLiteral("errorCode"),
+    };
+    bool hasUnexpectedKey = false;
+    for (auto it = result.constBegin(); it != result.constEnd(); ++it) {
+        if (!allowedKeys.contains(it.key())) {
+            hasUnexpectedKey = true;
+            break;
+        }
+    }
+    const QJsonValue variableCount =
+        result.value(QStringLiteral("variableCount"));
+    const bool validCount =
+        variableCount.isDouble() &&
+        variableCount.toDouble() >= 0 &&
+        variableCount.toDouble() <= 64 &&
+        std::floor(variableCount.toDouble()) == variableCount.toDouble();
+    const QString errorCode =
+        result.value(QStringLiteral("errorCode")).toString();
+    static const QRegularExpression errorCodePattern(
+        QStringLiteral("^[a-z][a-z0-9_]{0,63}$"));
+    const bool validErrorCode =
+        errorCode.isEmpty() ||
+        errorCodePattern.match(errorCode).hasMatch();
+    if (parseError.error != QJsonParseError::NoError ||
+        !document.isObject() ||
+        hasUnexpectedKey ||
+        result.value(QStringLiteral("type")).toString() !=
+            QLatin1String("forkmesh.mirror-actions-configuration-result") ||
+        result.value(QStringLiteral("schemaVersion")).toInt() != 1 ||
+        result.value(QStringLiteral("ok")).isBool() == false ||
+        result.value(QStringLiteral("requestId")).toString() !=
+            expectedRequestId ||
+        result.value(QStringLiteral("node")).toString() !=
+            expectedNodeName ||
+        !result.value(QStringLiteral("actionsEnabled")).isBool() ||
+        !result.value(QStringLiteral("variablesReplaced")).isBool() ||
+        !validCount || !validErrorCode) {
+        if (error)
+            *error = QStringLiteral(
+                "The mirror Actions helper result failed validation.");
+        return {};
+    }
+    if (error)
+        error->clear();
+    return result;
+}
 
 QString validateCloudflareBootstrapRequest(
     const CloudflareBootstrapRequest &request,

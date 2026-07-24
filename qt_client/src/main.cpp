@@ -3,6 +3,7 @@
 #include "ForkMeshIdentity.h"
 #include "HeadlessConsole.h"
 #include "MainWindow.h"
+#include "MirrorActionsConfiguration.h"
 #include "PlatformLogFilter.h"
 #include "PublicMirrorRuntime.h"
 #include "ServerNode.h"
@@ -533,6 +534,9 @@ int main(int argc, char *argv[])
         return runMirrorHealthSigner(argc, argv);
     if (rawArgs.contains(QStringLiteral("--materialize-public-mirror")))
         return runPublicMirrorMaterializer(argc, argv);
+    if (rawArgs.contains(
+            QStringLiteral("--configure-mirror-actions-stdin")))
+        return forkmesh::mirror_actions::runConfigurationStdin(argc, argv);
 
     const bool headless = detectHeadless(rawArgs);
     const bool allowRoot = rawArgs.contains(QStringLiteral("--allow-root")) ||

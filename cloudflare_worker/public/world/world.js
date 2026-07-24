@@ -6,14 +6,30 @@ import {
   THEME_OPTIONS,
   TOUR_STEPS,
   WORKSHOP_TYPES,
+  WORLD_EMOJI_CATEGORIES,
   WORLD_REGIONS,
+  WORLD_STATUS_NOTE_MAX,
   detectClient,
   flagEmoji,
   landmarkById,
+  normalizeWorldEmoji,
+  normalizeWorldStatus,
+  normalizeWorldStatusNote,
   sanitizePresenceText,
   utcClock,
 } from "./world-data.js";
 import { buildLiveMirrorNodes } from "./world-mirror-nodes.js";
+import {
+  buildPullMergeRequest,
+  buildPullFileTree,
+  exactPullMergeContext,
+  immutableGitOid,
+  parsePullFrontMatter,
+  parseUnifiedDiff,
+  pullViewedStateKey,
+  safeDiffPath,
+  safePullNumber,
+} from "./world-pull-review.js";
 import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
 import { createWorldScene } from "./world-scene.js";
 
@@ -62,6 +78,18 @@ const WORLD_SCORE_LOOP_MS = 4 * 60 * 60 * 1000;
 const WORLD_LIGHT_LEVEL_MIN = 40;
 const WORLD_LIGHT_LEVEL_MAX = 140;
 const WORLD_LIGHT_LEVEL_DEFAULT = 100;
+const WORLD_DIAGNOSTICS_INTERVAL_MS = 1000;
+const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
+const WORLD_PULL_MERGE_MAX_REQUESTS = 6;
+const WORLD_PULL_MERGE_POLL_MS = 400;
+const WORLD_PULL_MERGE_RESPONSE_MAX_BYTES = 16 * 1024;
+// The edge router can spend up to 20 seconds on each of two attested mirrors.
+// Keep the browser bound just above that failover envelope; shorter 6-12s
+// aborts made healthy exact-ref reads fail whenever a one-vCPU node was doing
+// integrity maintenance.
+const REPOSITORY_METADATA_TIMEOUT_MS = 45 * 1000;
+const WORLD_ACCOUNT_NAME_RE =
+  /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const FLAGSHIP_REPOSITORY = Object.freeze({
   owner: "forkmesh",
   repo: "forkmesh",
@@ -101,6 +129,25 @@ function escapeHTML(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function incrementDiagnosticCounter(value) {
+  return Math.min(
+    WORLD_DIAGNOSTICS_COUNTER_MAX,
+    Math.max(0, Number(value) || 0) + 1,
+  );
+}
+
+function normalizeBuildDiagnostics(payload) {
+  const version = String(payload?.version || "")
+    .trim()
+    .replace(/[^a-z0-9._+-]/gi, "")
+    .slice(0, 32);
+  const rawRevision = String(payload?.rev || "").trim();
+  const revision = /^[a-f0-9]{7,64}$/i.test(rawRevision)
+    ? rawRevision.toLowerCase()
+    : "";
+  return { version, revision };
 }
 
 function readJSON(storage, key, fallback) {
@@ -241,6 +288,91 @@ function readSession() {
   return readJSON(localStorage, "forkmesh.session", null);
 }
 
+function validWorldSession() {
+  const session = readSession();
+  const nodeName = String(session?.nodeName || "").trim().toLowerCase();
+  const sessionToken = String(session?.sessionToken || "").trim();
+  return WORLD_ACCOUNT_NAME_RE.test(nodeName) &&
+    sessionToken &&
+    sessionToken.length <= 2048
+    ? { ...session, nodeName, sessionToken }
+    : null;
+}
+
+function createPullMergeRequestId() {
+  try {
+    if (typeof crypto.randomUUID === "function") {
+      return `world_merge_${crypto.randomUUID().replaceAll("-", "")}`;
+    }
+    const bytes = new Uint8Array(18);
+    crypto.getRandomValues(bytes);
+    return `world_merge_${[...bytes]
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("")}`;
+  } catch (_) {
+    // A merge request never falls back to a predictable Math.random id.
+    return "";
+  }
+}
+
+function storeWorldSession(body) {
+  const nodeName = String(body?.nodeName || "").trim().toLowerCase();
+  const sessionToken = String(body?.sessionToken || "").trim();
+  if (
+    !WORLD_ACCOUNT_NAME_RE.test(nodeName) ||
+    !sessionToken ||
+    sessionToken.length > 2048
+  ) {
+    return false;
+  }
+  writeJSON(localStorage, "forkmesh.session", {
+    nodeName,
+    email: String(body?.email || "").slice(0, 320),
+    status: String(body?.status || "").slice(0, 32),
+    pubkey: String(body?.pubkey || "").slice(0, 256),
+    emailVerified: Boolean(body?.emailVerified),
+    isAdmin: Boolean(body?.isAdmin),
+    adminUrl: String(body?.adminUrl || "").slice(0, 300),
+    solana: String(body?.solana || "").slice(0, 80),
+    hasPayoutAddress: Boolean(body?.hasPayoutAddress),
+    sessionToken,
+    avatarPng: String(body?.avatarPng || "").slice(0, 600),
+    avatarUpdatedAt: Number(body?.avatarUpdatedAt) || 0,
+    profileBio: String(body?.profileBio || "").slice(0, 500),
+    profileAbout: String(
+      body?.profileAbout || body?.profileReadme || "",
+    ).slice(0, 20_000),
+    profileReadme: String(
+      body?.profileReadme || body?.profileAbout || "",
+    ).slice(0, 20_000),
+    profileLocation: String(body?.profileLocation || "").slice(0, 160),
+    profileTimezone: String(body?.profileTimezone || "").slice(0, 80),
+    profileLinks: Array.isArray(body?.profileLinks)
+      ? body.profileLinks.slice(0, 12).map((link) => ({
+          label: String(link?.label || "").slice(0, 80),
+          url: String(link?.url || "").slice(0, 500),
+        }))
+      : [],
+    profileFollowers: Math.max(0, Number(body?.followers) || 0),
+    profileFollowing: Math.max(0, Number(body?.following) || 0),
+    profileMirrorCount: Math.max(0, Number(body?.mirrorCount) || 0),
+    kind: String(body?.kind || "").slice(0, 32),
+    owner: String(body?.owner || "").slice(0, 80),
+    nodes: Array.isArray(body?.nodes)
+      ? body.nodes
+          .slice(0, 64)
+          .map((node) => String(node || "").slice(0, 80))
+      : [],
+    at: Date.now(),
+  });
+  try {
+    document.cookie =
+      "forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax" +
+      (location.protocol === "https:" ? "; Secure" : "");
+  } catch (_) {}
+  return true;
+}
+
 function guestId() {
   try {
     let id = sessionStorage.getItem(GUEST_ID_KEY);
@@ -298,6 +430,8 @@ function defaultSettings() {
     activityCategory: "automatic",
     publicDoor: "knock",
     displayName: "",
+    statusEmoji: "",
+    statusNote: "",
     privacy: {
       name: true,
       country: true,
@@ -319,6 +453,10 @@ function mergeSettings(stored) {
   const theme = THEME_OPTIONS.some((option) => option.id === requestedTheme)
     ? requestedTheme
     : defaults.theme;
+  const publicStatus = normalizeWorldStatus(
+    stored?.statusEmoji,
+    stored?.statusNote,
+  );
   return {
     ...defaults,
     ...(stored || {}),
@@ -332,6 +470,8 @@ function mergeSettings(stored) {
           : WORLD_LIGHT_LEVEL_DEFAULT,
       ),
     ),
+    statusEmoji: publicStatus.emoji,
+    statusNote: publicStatus.note,
     privacy: {
       ...defaults.privacy,
       ...(stored?.privacy || {}),
@@ -344,6 +484,10 @@ function publicIdentity(identity, settings) {
     identity.accountStatus === "Guest" ? settings.displayName : identity.name,
     identity.name,
     24,
+  );
+  const publicStatus = normalizeWorldStatus(
+    settings.statusEmoji,
+    settings.statusNote,
   );
   return {
     id: identity.id,
@@ -391,6 +535,8 @@ function publicIdentity(identity, settings) {
     firstVisitAge: settings.privacy.activity
       ? String(identity.firstVisitAge || "this-session")
       : "hidden",
+    statusEmoji: publicStatus.emoji,
+    statusNote: publicStatus.note,
   };
 }
 
@@ -482,6 +628,10 @@ function presenceLabel(value, hidden, fallback) {
 function remotePlayer(peer) {
   if (!peer?.id) return null;
   const status = String(peer.status || "hidden");
+  const publicStatus = normalizeWorldStatus(
+    peer.statusEmoji,
+    peer.statusNote,
+  );
   const moderationHandles = {};
   if (peer.moderationHandles && typeof peer.moderationHandles === "object") {
     for (const targetType of ["ip", "agent"]) {
@@ -538,6 +688,8 @@ function remotePlayer(peer) {
     ].includes(String(peer.firstVisitAge || ""))
       ? String(peer.firstVisitAge)
       : "hidden",
+    statusEmoji: publicStatus.emoji,
+    statusNote: publicStatus.note,
     moderationHandles,
     updatedAt: Math.max(0, Number(peer.updatedAt) || 0),
   };
@@ -1702,6 +1854,7 @@ function cleanRepositories(payload) {
     .map((repo) => {
       const commit = String(repo.commit || "").trim().toLowerCase();
       const stateHash = String(repo.stateHash || "").trim().toLowerCase();
+      const pullCount = Number(repo.pullCount);
       return {
         owner: sanitizePresenceText(repo.owner, "external", 40),
         name: sanitizePresenceText(repo.name, "repository", 60),
@@ -1719,7 +1872,16 @@ function cleanRepositories(payload) {
         ),
         commit: /^[0-9a-f]{40,64}$/.test(commit) ? commit : "",
         stateHash: /^[0-9a-f]{64}$/.test(stateHash) ? stateHash : "",
+        rootCommit: immutableGitOid(repo.rootCommit),
+        pullCount:
+          Number.isSafeInteger(pullCount) &&
+          pullCount >= 0 &&
+          pullCount <= 10_000_000
+            ? pullCount
+            : null,
         mirrorCount: Number(repo.mirrorCount || repo.mirrors || 0),
+        cloneUrl: String(repo.cloneUrl || "").slice(0, 500),
+        updatedAt: Number(repo.updatedAt || repo.lastSync || 0) || 0,
         status: String(repo.status || "").slice(0, 40),
         externalUrl: String(
           repo.externalUrl || repo.sourceUrl || repo.url || "",
@@ -1734,6 +1896,119 @@ function cleanRepositories(payload) {
       };
     })
     .slice(0, 200);
+}
+
+function repositoryBlobText(blob) {
+  const content = String(blob?.content ?? blob?.text ?? "");
+  if (String(blob?.encoding || "").toLowerCase() !== "base64") {
+    return content;
+  }
+  try {
+    const bytes = Uint8Array.from(atob(content), (character) =>
+      character.charCodeAt(0),
+    );
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  } catch (_) {
+    return "";
+  }
+}
+
+function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
+  const source = Array.isArray(repositories) ? repositories : [];
+  const catalogs = Array.isArray(mirrorCatalogs) ? mirrorCatalogs : [];
+  const consumed = new Set();
+  const aliases = [];
+  catalogs.forEach((catalog) => {
+    const owner = sanitizePresenceText(
+      catalog?.requestedOwner || catalog?.owner,
+      "",
+      40,
+    );
+    const repo = sanitizePresenceText(
+      catalog?.requestedRepo || catalog?.repo,
+      "",
+      60,
+    );
+    if (!owner || !repo) return;
+    const mirrors = Array.isArray(catalog?.mirrors)
+      ? catalog.mirrors.slice(0, 100)
+      : [];
+    const nodes = new Set(
+      mirrors
+        .map((mirror) =>
+          sanitizePresenceText(mirror?.node || mirror?.owner, "", 40).toLowerCase(),
+        )
+        .filter(Boolean),
+    );
+    const candidates = source
+      .map((record, index) => ({ record, index }))
+      .filter(
+        ({ record }) =>
+          !record.isPrivate &&
+          record.name.toLowerCase() === repo.toLowerCase() &&
+          nodes.has(record.owner.toLowerCase()),
+      );
+    if (!candidates.length) return;
+    candidates.forEach(({ index }) => consumed.add(index));
+    const healthy = mirrors.filter(
+      (mirror) =>
+        String(mirror?.status || "").toLowerCase() === "online" &&
+        mirror?.cloneAvailable === true &&
+        String(mirror?.integrity || "").toLowerCase() === "ok",
+    );
+    const preferredNode = String(healthy[0]?.node || "").toLowerCase();
+    const preferred =
+      candidates.find(
+        ({ record }) => record.owner.toLowerCase() === preferredNode,
+      )?.record ||
+      candidates
+        .map(({ record }) => record)
+        .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    const commits = new Set(
+      candidates
+        .map(({ record }) => immutableGitOid(record.commit))
+        .filter(Boolean),
+    );
+    const stateHashes = new Set(
+      candidates
+        .map(({ record }) => String(record.stateHash || "").toLowerCase())
+        .filter((value) => /^[0-9a-f]{64}$/.test(value)),
+    );
+    const reportedPullCounts = mirrors
+      .map((mirror) => Number(mirror?.pullCount))
+      .filter(
+        (value) =>
+          Number.isSafeInteger(value) &&
+          value >= 0 &&
+          value <= 10_000_000,
+      );
+    const pullCount =
+      reportedPullCounts.length === mirrors.length &&
+      new Set(reportedPullCounts).size === 1
+        ? reportedPullCounts[0]
+        : null;
+    aliases.push({
+      ...preferred,
+      owner,
+      name: repo,
+      servingOwner: preferred.owner,
+      servingName: preferred.name,
+      source: "organization-alias",
+      liveHost: healthy.length > 0,
+      mirrorCount: mirrors.length,
+      pullCount,
+      commit: commits.size === 1 ? [...commits][0] : "",
+      stateHash: stateHashes.size === 1 ? [...stateHashes][0] : "",
+      mirrorAliases: candidates.map(({ record }) => ({
+        owner: record.owner,
+        name: record.name,
+      })),
+    });
+  });
+  return [
+    ...aliases,
+    ...source.filter((_record, index) => !consumed.has(index)),
+  ].slice(0, 200);
 }
 
 function normalizeCommunityEvents(payload, now = Date.now()) {
@@ -1803,6 +2078,89 @@ function liveNodeRecords(network, mirrorCatalogs = []) {
   return buildLiveMirrorNodes(network, mirrorCatalogs);
 }
 
+const LOCAL_LIVE_LANDMARKS = new Set([
+  "information",
+  "neighborhood",
+  "broadcast",
+  "support",
+]);
+
+const LANDMARK_CONSTRUCTION_REASONS = Object.freeze({
+  fountain:
+    "A configured public Solana reward-pool address has not been verified in this session.",
+  repositories:
+    "The live repository catalog has not been verified in this session.",
+  routing:
+    "No healthy, integrity-checked, clone-ready mirror route has been verified in this session.",
+  organizations:
+    "The organization directory integration has not been verified in this session.",
+  fediverse:
+    "The Mastodon and Lemmy directory integration has not been verified in this session.",
+  security:
+    "No completed commit-scoped public security scan has been verified.",
+  launchpad:
+    "The interactive destination renderer has not finished loading.",
+  events:
+    "The UTC event service has not been verified in this session.",
+  workshops:
+    "No live authorized repository is available for a code workshop.",
+});
+
+function initialLandmarkCapabilities() {
+  return Object.fromEntries(
+    LANDMARKS.map((landmark) => [
+      landmark.id,
+      {
+        live: LOCAL_LIVE_LANDMARKS.has(landmark.id),
+        reason:
+          LANDMARK_CONSTRUCTION_REASONS[landmark.id] ||
+          "This integration has not been verified in this session.",
+      },
+    ]),
+  );
+}
+
+function hasRepositoryCatalogSchema(payload) {
+  return ["repositories", "items", "repos", "data"].some((field) =>
+    Array.isArray(payload?.[field]),
+  );
+}
+
+function hasFediverseDirectorySchema(payload) {
+  return (
+    Array.isArray(payload?.mastodon) &&
+    Array.isArray(payload?.lemmy)
+  );
+}
+
+function hasCompletedSecurityScan(scan) {
+  const status = String(scan?.status || "").trim().toLowerCase();
+  const commit = String(scan?.commitHash || scan?.commit || "")
+    .trim()
+    .toLowerCase();
+  const scannedAt = Date.parse(String(scan?.scannedAt || scan?.timestamp || ""));
+  return (
+    !["", "scan unavailable", "scan failed", "scan outdated"].includes(status) &&
+    /^[0-9a-f]{40,64}$/.test(commit) &&
+    Number.isFinite(scannedAt)
+  );
+}
+
+function constructionMarkerHTML(id, capability, className = "") {
+  const live = capability?.live === true;
+  const reason =
+    String(capability?.reason || "").trim() ||
+    "This integration has not been verified in this session.";
+  return `<span
+    class="world-construction-mark ${escapeHTML(className)}"
+    data-world-construction-marker="${escapeHTML(id)}"
+    role="img"
+    aria-label="Under construction: ${escapeHTML(reason)}"
+    title="Under construction: ${escapeHTML(reason)}"
+    ${live ? "hidden" : ""}
+  ><span aria-hidden="true">🚧</span></span>`;
+}
+
 function accountBadgeCopy(identity, settings) {
   const availability = AVAILABILITY_OPTIONS.find(
     (option) => option.id === settings.availability,
@@ -1829,7 +2187,15 @@ function accountBadgeCopy(identity, settings) {
   return pieces.join(" · ");
 }
 
-function worldTemplate(identity, settings, mode) {
+function worldTemplate(identity, settings, mode, landmarkCapabilities) {
+  const accountSession = readSession();
+  const signedInName =
+    accountSession?.sessionToken &&
+    WORLD_ACCOUNT_NAME_RE.test(
+      String(accountSession.nodeName || "").trim().toLowerCase(),
+    )
+      ? String(accountSession.nodeName).trim().toLowerCase()
+      : "";
   const mapItems = LANDMARKS.map(
     (landmark) => `
       <li>
@@ -1841,7 +2207,14 @@ function worldTemplate(identity, settings, mode) {
           aria-current="${landmark.id === "information" ? "true" : "false"}"
         >
           <span class="world-map-icon" aria-hidden="true">${escapeHTML(landmark.icon)}</span>
-          <span>${escapeHTML(landmark.shortLabel)}</span>
+          <span class="world-map-label-copy">
+            <span>${escapeHTML(landmark.shortLabel)}</span>
+            ${constructionMarkerHTML(
+              landmark.id,
+              landmarkCapabilities?.[landmark.id],
+              "world-construction-mark-map",
+            )}
+          </span>
           <span class="world-map-distance" data-world-distance="${escapeHTML(landmark.id)}">—</span>
         </button>
       </li>`,
@@ -1892,6 +2265,36 @@ function worldTemplate(identity, settings, mode) {
       <option value="${escapeHTML(option.id)}" ${
         settings.activityCategory === option.id ? "selected" : ""
       }>${escapeHTML(option.label)}</option>`,
+  ).join("");
+  const publicStatus = normalizeWorldStatus(
+    settings.statusEmoji,
+    settings.statusNote,
+  );
+  const emojiCategoryOptions = WORLD_EMOJI_CATEGORIES.map(
+    (category, index) => `
+      <option value="${escapeHTML(category.id)}" ${index === 0 ? "selected" : ""}>
+        ${escapeHTML(category.label)}
+      </option>`,
+  ).join("");
+  const emojiCategoryPanels = WORLD_EMOJI_CATEGORIES.map(
+    (category, index) => `
+      <div
+        class="world-emoji-grid"
+        data-world-emoji-category-panel="${escapeHTML(category.id)}"
+        ${index === 0 ? "" : "hidden"}
+      >
+        ${category.emoji
+          .map(
+            (emoji) => `
+              <button
+                type="button"
+                data-world-status-emoji-choice="${escapeHTML(emoji)}"
+                aria-label="Use ${escapeHTML(emoji)} as public status"
+                title="Use ${escapeHTML(emoji)}"
+              >${escapeHTML(emoji)}</button>`,
+          )
+          .join("")}
+      </div>`,
   ).join("");
 
   return `
@@ -1967,6 +2370,19 @@ function worldTemplate(identity, settings, mode) {
               title="Enable World sounds"
             >
               <span aria-hidden="true">♪</span><span data-world-sound-label>Sound</span>
+            </button>
+            <button
+              class="world-top-link"
+              type="button"
+              data-world-account-open
+              title="${
+                signedInName
+                  ? `Account: ${escapeHTML(signedInName)}`
+                  : "Log in or create an account inside the World"
+              }"
+            >
+              <span aria-hidden="true">${signedInName ? "✓" : "○"}</span>
+              <span>${signedInName ? "Account" : "Login"}</span>
             </button>
             <a class="world-top-link" href="/dashboard" title="Open operations console">
               <span aria-hidden="true">▦</span><span>Console</span>
@@ -2055,6 +2471,13 @@ function worldTemplate(identity, settings, mode) {
           <div class="world-identity-copy">
             <strong data-world-identity-name>${escapeHTML(identity.name)}</strong>
             <span data-world-identity-status>${escapeHTML(accountBadgeCopy(identity, settings))}</span>
+            <span
+              class="world-identity-emoji-status"
+              data-world-identity-emoji-status
+              ${publicStatus.emoji ? "" : "hidden"}
+            >${escapeHTML(
+              [publicStatus.emoji, publicStatus.note].filter(Boolean).join(" "),
+            )}</span>
           </div>
           <button class="world-identity-edit" type="button" data-world-settings-open aria-label="Edit public badge">✎</button>
         </section>
@@ -2080,6 +2503,25 @@ function worldTemplate(identity, settings, mode) {
           <button class="world-touch-button" type="button" data-move="back" aria-label="Move back">↓</button>
           <button class="world-touch-button" type="button" data-move="right" aria-label="Move right">→</button>
         </div>
+
+        <details class="world-diagnostics" data-world-diagnostics>
+          <summary aria-label="Open local World performance and connection details">
+            <span class="world-diagnostics-light" data-world-diagnostics-light data-state="connecting" aria-hidden="true"></span>
+            <strong>DEBUG</strong>
+            <span data-world-diagnostics-summary>Renderer starting · socket connecting · 1 peer</span>
+            <span class="world-diagnostics-toggle" aria-hidden="true">⌃</span>
+          </summary>
+          <div class="world-diagnostics-details" aria-live="off">
+            <p>Local one-second samples only. No diagnostics are transmitted, and no URLs, locations, form contents, or activity history are collected.</p>
+            <dl>
+              <div><dt>Renderer</dt><dd data-world-diagnostics-renderer>Starting…</dd></div>
+              <div><dt>Connection</dt><dd data-world-diagnostics-connection>Connecting…</dd></div>
+              <div><dt>Socket frames</dt><dd data-world-diagnostics-traffic>Inbound 0 · outbound 0</dd></div>
+              <div><dt>Coalescing</dt><dd data-world-diagnostics-queues>Movement idle · profile idle</dd></div>
+              <div><dt>Build</dt><dd data-world-diagnostics-build>Loading current version…</dd></div>
+            </dl>
+          </div>
+        </details>
 
         <div class="world-toast" data-world-toast role="status"></div>
         <div class="world-detail-backdrop" data-world-detail-backdrop></div>
@@ -2120,6 +2562,86 @@ function worldTemplate(identity, settings, mode) {
             sandbox="allow-forms allow-same-origin allow-scripts"
             referrerpolicy="same-origin"
           ></iframe>
+        </section>
+
+        <button
+          class="world-account-backdrop"
+          type="button"
+          data-world-account-close
+          aria-label="Close account panel"
+          tabindex="-1"
+        ></button>
+        <section
+          class="world-account"
+          data-world-account
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="world-account-title"
+          aria-hidden="true"
+        >
+          <header class="world-account-heading">
+            <div>
+              <p class="world-eyebrow">FORKMESH IDENTITY</p>
+              <h2 id="world-account-title">${
+                signedInName ? "Your account" : "Join from the World"
+              }</h2>
+              <span>Passwords, verification codes, and form contents never enter multiplayer presence.</span>
+            </div>
+            <button type="button" data-world-account-close aria-label="Close account panel">×</button>
+          </header>
+          ${
+            signedInName
+              ? `<div class="world-account-signed-in">
+                  <span>Signed in on this device as</span>
+                  <strong>${escapeHTML(signedInName)}</strong>
+                  <p>The server still verifies your session before granting an account badge, private repository visibility, notifications, or organization permissions.</p>
+                  <button type="button" data-world-account-logout>Log out on this device</button>
+                </div>`
+              : `<div class="world-account-tabs" role="tablist" aria-label="Account action">
+                  <button type="button" role="tab" aria-selected="true" data-world-account-mode="login">Log in</button>
+                  <button type="button" role="tab" aria-selected="false" data-world-account-mode="signup">Create account</button>
+                </div>
+                <form class="world-account-form" data-world-login-form data-world-account-view="login">
+                  <label>
+                    <span>Email</span>
+                    <input type="email" name="email" maxlength="320" autocomplete="username" required />
+                  </label>
+                  <label>
+                    <span>Password</span>
+                    <input type="password" name="password" maxlength="1024" autocomplete="current-password" required />
+                  </label>
+                  <label>
+                    <span>Authenticator code <small>only if enabled</small></span>
+                    <input type="text" name="totp" maxlength="12" inputmode="numeric" autocomplete="one-time-code" />
+                  </label>
+                  <button type="submit" data-world-account-submit>Log in inside the World</button>
+                </form>
+                <form class="world-account-form" data-world-signup-form data-world-account-view="signup" hidden>
+                  <label>
+                    <span>Public username</span>
+                    <input type="text" name="nodeName" minlength="1" maxlength="63" autocomplete="username" autocapitalize="none" spellcheck="false" required />
+                  </label>
+                  <label>
+                    <span>Email</span>
+                    <input type="email" name="email" maxlength="320" autocomplete="email" required />
+                  </label>
+                  <label>
+                    <span>Password <small>at least 8 characters</small></span>
+                    <input type="password" name="password" minlength="8" maxlength="1024" autocomplete="new-password" required />
+                  </label>
+                  <label class="world-account-consent">
+                    <input type="checkbox" name="terms" required />
+                    <span>I agree to the ForkMesh <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.</span>
+                  </label>
+                  <button type="submit" data-world-account-submit>Create account inside the World</button>
+                </form>
+                <div class="world-account-verification" data-world-account-verification hidden>
+                  <strong>Check your inbox</strong>
+                  <p>ForkMesh created <span data-world-account-created-name></span> and sent a verification message to <span data-world-account-created-email></span>. You may close this panel and keep exploring as a guest.</p>
+                </div>
+                <p class="world-account-status" data-world-account-status role="status" aria-live="polite"></p>`
+          }
+          <p class="world-account-privacy">ForkMesh sends these forms only over same-origin HTTPS. Credentials are never placed in URLs, public activity, World sockets, analytics events, or repository logs.</p>
         </section>
 
         <section class="world-settings" data-world-settings aria-labelledby="world-settings-title" aria-hidden="true">
@@ -2172,6 +2694,64 @@ function worldTemplate(identity, settings, mode) {
               <span>Generalized public activity</span>
               <select data-world-activity-category>${activityOptions}</select>
             </label>
+            <div class="world-status-editor">
+              <div class="world-status-fields">
+                <label class="world-field">
+                  <span>Emoji status</span>
+                  <input
+                    type="text"
+                    inputmode="text"
+                    maxlength="48"
+                    autocomplete="off"
+                    spellcheck="false"
+                    value="${escapeHTML(publicStatus.emoji)}"
+                    data-world-status-emoji
+                    aria-describedby="world-status-privacy-note"
+                    placeholder="🧑‍💻"
+                  />
+                </label>
+                <label class="world-field">
+                  <span>One-word note <small>optional</small></span>
+                  <input
+                    type="text"
+                    maxlength="${WORLD_STATUS_NOTE_MAX}"
+                    autocomplete="off"
+                    spellcheck="false"
+                    value="${escapeHTML(publicStatus.note)}"
+                    data-world-status-note
+                    placeholder="coding"
+                  />
+                </label>
+              </div>
+              <details class="world-emoji-picker">
+                <summary>Choose from the Unicode emoji picker</summary>
+                <label class="world-field world-emoji-category">
+                  <span>Category</span>
+                  <select data-world-emoji-category>${emojiCategoryOptions}</select>
+                </label>
+                ${emojiCategoryPanels}
+              </details>
+              <div class="world-status-preview" aria-live="polite">
+                <span>Public overhead status</span>
+                <strong data-world-status-preview>${
+                  publicStatus.emoji
+                    ? escapeHTML(
+                        [publicStatus.emoji, publicStatus.note]
+                          .filter(Boolean)
+                          .join(" "),
+                      )
+                    : "Off"
+                }</strong>
+                <button type="button" data-world-status-clear ${
+                  publicStatus.emoji ? "" : "disabled"
+                }>Clear</button>
+              </div>
+              <small id="world-status-privacy-note">
+                Any single Unicode emoji sequence is accepted. The optional
+                note must be one word. Only those two bounded values are public;
+                no URL, activity detail, or form text is included.
+              </small>
+            </div>
             <label class="world-field">
               <span>Home / office door</span>
               <select data-world-public-door>
@@ -2211,6 +2791,7 @@ class ForkMeshWorld extends HTMLElement {
     this.identity = null;
     this.settings = null;
     this.world = null;
+    this.landmarkCapabilities = initialLandmarkCapabilities();
     this.repositories = [];
     this.repositoryCatalogState = "loading";
     this.network = {};
@@ -2253,6 +2834,11 @@ class ForkMeshWorld extends HTMLElement {
     this.repositoryMapSelection = 0;
     this.repositoryManualSelection = "";
     this.repositoryMapLoads = new Map();
+    this.repositoryView = "map";
+    this.pullReview = null;
+    this.pullReviewSelection = 0;
+    this.pullViewedFiles = new Map();
+    this.pullReviewScrollCleanup = null;
     this.securityTriage = null;
     this.pendingWorkshop = null;
     this.activeWorkshop = null;
@@ -2267,6 +2853,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldTicketExpires = 0;
     this.worldTicketTimer = 0;
     this.chatReturnFocus = null;
+    this.accountReturnFocus = null;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
@@ -2284,6 +2871,18 @@ class ForkMeshWorld extends HTMLElement {
     this.socketRetry = 1000;
     this.socketTimer = 0;
     this.socketStableTimer = 0;
+    this.socketConnectionAttempts = 0;
+    this.socketInboundFrames = 0;
+    this.socketOutboundFrames = 0;
+    this.socketBackpressureEvents = 0;
+    this.movementCoalescedFrames = 0;
+    this.profileCoalescedFrames = 0;
+    this.diagnosticsTimer = 0;
+    this.diagnosticsSampleAt = performance.now();
+    this.diagnosticsInboundSample = 0;
+    this.diagnosticsOutboundSample = 0;
+    this.lastDiagnosticsSnapshot = null;
+    this.buildDiagnostics = { version: "", revision: "" };
     this.peerGraceTimer = 0;
     this.peerGraceUntil = 0;
     this.pingTimer = 0;
@@ -2354,7 +2953,12 @@ class ForkMeshWorld extends HTMLElement {
     // for this identity. It has no movement history, URLs, or activity labels.
     this.mediaSpaces = [];
     this.mediaRoom = normalizeMediaRoom(null);
-    this.innerHTML = worldTemplate(this.identity, this.settings, this.mode);
+    this.innerHTML = worldTemplate(
+      this.identity,
+      this.settings,
+      this.mode,
+      this.landmarkCapabilities,
+    );
     this.syncViewportHeight();
     window.visualViewport?.addEventListener("resize", this.syncViewportHeight);
     window.addEventListener("orientationchange", this.syncViewportHeight);
@@ -2368,6 +2972,7 @@ class ForkMeshWorld extends HTMLElement {
     window.addEventListener("keydown", this.handlePublicInputActivity);
     this.bindUI();
     this.startClock();
+    this.startDiagnostics();
     this.bootstrap();
     this.startWorldTicketRefresh();
   }
@@ -2446,6 +3051,12 @@ class ForkMeshWorld extends HTMLElement {
         onMovement: (movement) => this.handleMovement(movement),
         onModeration: (action) => this.moderateWorldPeer(action),
       });
+      this.syncConstructionMarkers();
+      this.setLandmarkCapability(
+        "launchpad",
+        true,
+        "The interactive destination renderer is available.",
+      );
       this.world.setTheme(this.settings.theme);
       this.world.setLightLevel(this.settings.lightLevel);
       await Promise.allSettled([contextPromise, dataPromise]);
@@ -2860,7 +3471,10 @@ class ForkMeshWorld extends HTMLElement {
     this.renderCommunityPlacement();
     this.renderFediverseActivity();
     if (reposResult.status === "fulfilled") {
-      this.repositories = cleanRepositories(reposResult.value);
+      this.repositories = reconcileRepositoryAliases(
+        cleanRepositories(reposResult.value),
+        this.mirrorCatalogs,
+      );
       this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
     } else {
       this.repositories = [];
@@ -2896,6 +3510,11 @@ class ForkMeshWorld extends HTMLElement {
       this.notificationsState = hasSession ? "unavailable" : "signed-out";
     }
     this.updateNotificationBadge();
+    this.buildDiagnostics =
+      versionResult.status === "fulfilled"
+        ? normalizeBuildDiagnostics(versionResult.value)
+        : { version: "", revision: "" };
+    this.renderDiagnostics();
     const serverNow =
       versionResult.status === "fulfilled" ? Number(versionResult.value?.now || 0) : 0;
     this.rewardState =
@@ -2991,9 +3610,67 @@ class ForkMeshWorld extends HTMLElement {
             persistedInactive: true,
           }))
         : [];
+    const liveMirrors = liveNodeRecords(this.network, this.mirrorCatalogs);
+    const rewardAddress = String(this.rewardState?.address || "").trim();
+    this.landmarkCapabilities.fountain = {
+      live:
+        rewardResult.status === "fulfilled" &&
+        /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(rewardAddress),
+      reason: LANDMARK_CONSTRUCTION_REASONS.fountain,
+    };
+    this.landmarkCapabilities.repositories = {
+      live:
+        reposResult.status === "fulfilled" &&
+        hasRepositoryCatalogSchema(reposResult.value),
+      reason: LANDMARK_CONSTRUCTION_REASONS.repositories,
+    };
+    this.landmarkCapabilities.routing = {
+      live:
+        mirrorResult.status === "fulfilled" &&
+        mirrorResult.value?.ok === true &&
+        Array.isArray(mirrorResult.value?.mirrors) &&
+        liveMirrors.some(
+          (node) =>
+            node.healthy === true &&
+            node.cloneAvailable === true &&
+            /^[0-9a-f]{40,64}$/.test(String(node.commit || "")),
+        ),
+      reason: LANDMARK_CONSTRUCTION_REASONS.routing,
+    };
+    this.landmarkCapabilities.organizations = {
+      live:
+        orgResult.status === "fulfilled" &&
+        Array.isArray(orgResult.value?.organizations),
+      reason: LANDMARK_CONSTRUCTION_REASONS.organizations,
+    };
+    this.landmarkCapabilities.fediverse = {
+      live:
+        directoryResult.status === "fulfilled" &&
+        hasFediverseDirectorySchema(directoryResult.value),
+      reason: LANDMARK_CONSTRUCTION_REASONS.fediverse,
+    };
+    this.landmarkCapabilities.security = {
+      live:
+        scanResult.status === "fulfilled" &&
+        hasCompletedSecurityScan(this.securityScan),
+      reason: LANDMARK_CONSTRUCTION_REASONS.security,
+    };
+    this.landmarkCapabilities.events = {
+      live:
+        eventsResult.status === "fulfilled" &&
+        Array.isArray(eventsResult.value?.events),
+      reason: LANDMARK_CONSTRUCTION_REASONS.events,
+    };
+    this.landmarkCapabilities.workshops = {
+      live:
+        this.landmarkCapabilities.repositories.live === true &&
+        this.repositories.some((repo) => repo.liveHost || repo.isPrivate),
+      reason: LANDMARK_CONSTRUCTION_REASONS.workshops,
+    };
+    this.syncConstructionMarkers();
     if (serverNow > 0 && !this.serverOffset) this.serverOffset = serverNow - Date.now();
     this.world?.updateNetworkNodes(
-      liveNodeRecords(this.network, this.mirrorCatalogs),
+      liveMirrors,
     );
     this.world?.updateFederatedInstances?.(this.federatedInstances);
     this.world?.updateBots(this.botDirectory);
@@ -3501,6 +4178,24 @@ class ForkMeshWorld extends HTMLElement {
         this.closeWorldChat();
         return;
       }
+      const accountOpen = event.target.closest("[data-world-account-open]");
+      if (accountOpen) {
+        this.toggleWorldAccount(true, "login", accountOpen);
+        return;
+      }
+      if (event.target.closest("[data-world-account-close]")) {
+        this.toggleWorldAccount(false);
+        return;
+      }
+      const accountMode = event.target.closest("[data-world-account-mode]");
+      if (accountMode) {
+        this.selectWorldAccountMode(accountMode.dataset.worldAccountMode);
+        return;
+      }
+      if (event.target.closest("[data-world-account-logout]")) {
+        void this.logoutFromWorld();
+        return;
+      }
       if (event.target.closest("[data-world-arrival-dismiss]")) {
         try {
           localStorage.setItem(INTRO_DISMISSED_KEY, "1");
@@ -3546,6 +4241,20 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-settings-close]")) {
         this.toggleSettings(false);
+        return;
+      }
+      const emojiChoice = event.target.closest(
+        "[data-world-status-emoji-choice]",
+      );
+      if (emojiChoice) {
+        this.commitWorldStatus(
+          emojiChoice.dataset.worldStatusEmojiChoice,
+          this.$("[data-world-status-note]")?.value,
+        );
+        return;
+      }
+      if (event.target.closest("[data-world-status-clear]")) {
+        this.commitWorldStatus("", "");
         return;
       }
       const fediverseReview = event.target.closest(
@@ -3614,6 +4323,33 @@ class ForkMeshWorld extends HTMLElement {
       const detailAction = event.target.closest("[data-world-detail-action]");
       if (detailAction) {
         this.handleLandmarkAction(detailAction.dataset.worldDetailAction);
+        return;
+      }
+      if (event.target.closest("[data-world-pull-list]")) {
+        this.openRepositoryPullList();
+        return;
+      }
+      const pullOpen = event.target.closest("[data-world-pull-open]");
+      if (pullOpen) {
+        this.loadRepositoryPullReview(pullOpen.dataset.worldPullNumber);
+        return;
+      }
+      const pullBack = event.target.closest("[data-world-pull-back]");
+      if (pullBack) {
+        this.repositoryView =
+          pullBack.dataset.worldPullBack === "map" ? "map" : "list";
+        this.clearPullReviewScrollTracking();
+        this.renderRepositoryExplorer();
+        return;
+      }
+      const pullFile = event.target.closest("[data-world-pull-file-path]");
+      if (pullFile) {
+        this.scrollToPullFile(pullFile.dataset.worldPullFilePath);
+        return;
+      }
+      const pullMerge = event.target.closest("[data-world-pull-merge]");
+      if (pullMerge) {
+        void this.mergeRepositoryPull();
         return;
       }
       const graphNode = event.target.closest("[data-world-graph-node]");
@@ -3865,6 +4601,29 @@ class ForkMeshWorld extends HTMLElement {
         }
         return;
       }
+      const emojiCategory = event.target.closest(
+        "[data-world-emoji-category]",
+      );
+      if (emojiCategory) {
+        this.selectWorldEmojiCategory(emojiCategory.value);
+        return;
+      }
+      const statusEmoji = event.target.closest("[data-world-status-emoji]");
+      if (statusEmoji) {
+        this.commitWorldStatus(
+          statusEmoji.value,
+          this.$("[data-world-status-note]")?.value,
+        );
+        return;
+      }
+      const statusNote = event.target.closest("[data-world-status-note]");
+      if (statusNote) {
+        this.commitWorldStatus(
+          this.$("[data-world-status-emoji]")?.value,
+          statusNote.value,
+        );
+        return;
+      }
       const door = event.target.closest("[data-world-public-door]");
       if (door) {
         if (["knock", "open", "closed"].includes(door.value)) {
@@ -3911,6 +4670,15 @@ class ForkMeshWorld extends HTMLElement {
       }
     });
 
+    this.$("[data-world-login-form]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void this.submitWorldLogin(event.currentTarget);
+    });
+    this.$("[data-world-signup-form]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void this.submitWorldSignup(event.currentTarget);
+    });
+
     this.$$("[data-move]").forEach((button) => {
       const start = (event) => {
         event.preventDefault();
@@ -3931,6 +4699,8 @@ class ForkMeshWorld extends HTMLElement {
       if (event.code !== "Escape") return;
       if (this.$("[data-world-chat]")?.dataset.open === "true") {
         this.closeWorldChat();
+      } else if (this.$("[data-world-account]")?.dataset.open === "true") {
+        this.toggleWorldAccount(false);
       } else if (this.$("[data-world-settings]")?.dataset.open === "true") {
         this.toggleSettings(false);
       } else if (this.$("[data-world-detail]")?.dataset.open === "true") {
@@ -3948,6 +4718,75 @@ class ForkMeshWorld extends HTMLElement {
     this.sendPresence({ type: "presence" });
     this.broadcastLocalPresence();
     this.syncInactivePresence();
+  }
+
+  selectWorldEmojiCategory(categoryId) {
+    const selected = WORLD_EMOJI_CATEGORIES.some(
+      (category) => category.id === categoryId,
+    )
+      ? categoryId
+      : WORLD_EMOJI_CATEGORIES[0]?.id;
+    this.$$("[data-world-emoji-category-panel]").forEach((panel) => {
+      panel.hidden = panel.dataset.worldEmojiCategoryPanel !== selected;
+    });
+  }
+
+  commitWorldStatus(emojiValue, noteValue) {
+    const rawEmoji = String(emojiValue || "").trim();
+    const rawNote = String(noteValue || "").trim();
+    const next = normalizeWorldStatus(rawEmoji, rawNote);
+    const emojiInput = this.$("[data-world-status-emoji]");
+    const noteInput = this.$("[data-world-status-note]");
+    if (rawEmoji && !normalizeWorldEmoji(rawEmoji)) {
+      if (emojiInput) emojiInput.value = this.settings.statusEmoji;
+      if (noteInput) noteInput.value = this.settings.statusNote;
+      this.toast("Choose or paste one valid Unicode emoji.");
+      return false;
+    }
+    if (rawNote && !normalizeWorldStatusNote(rawNote)) {
+      if (emojiInput) emojiInput.value = this.settings.statusEmoji;
+      if (noteInput) noteInput.value = this.settings.statusNote;
+      this.toast(
+        `The public note must be one word, up to ${WORLD_STATUS_NOTE_MAX} characters.`,
+      );
+      return false;
+    }
+    if (rawNote && !next.emoji) {
+      if (emojiInput) emojiInput.value = this.settings.statusEmoji;
+      if (noteInput) noteInput.value = this.settings.statusNote;
+      this.toast("Choose an emoji before adding a public note.");
+      return false;
+    }
+    const changed =
+      next.emoji !== this.settings.statusEmoji ||
+      next.note !== this.settings.statusNote;
+    this.settings.statusEmoji = next.emoji;
+    this.settings.statusNote = next.note;
+    if (emojiInput) emojiInput.value = next.emoji;
+    if (noteInput) noteInput.value = next.note;
+    this.updateWorldStatusUI();
+    if (!changed) return false;
+    // Profile presence is already coalesced. Status values are deliberately
+    // absent from movement frames, so walking cannot repeatedly republish them.
+    this.commitPublicSettings();
+    return true;
+  }
+
+  updateWorldStatusUI() {
+    const status = normalizeWorldStatus(
+      this.settings?.statusEmoji,
+      this.settings?.statusNote,
+    );
+    const copy = [status.emoji, status.note].filter(Boolean).join(" ");
+    const preview = this.$("[data-world-status-preview]");
+    const clear = this.$("[data-world-status-clear]");
+    const identityStatus = this.$("[data-world-identity-emoji-status]");
+    if (preview) preview.textContent = copy || "Off";
+    if (clear) clear.disabled = !status.emoji;
+    if (identityStatus) {
+      identityStatus.textContent = copy;
+      identityStatus.hidden = !status.emoji;
+    }
   }
 
   syncInactivePresence() {
@@ -4080,6 +4919,7 @@ class ForkMeshWorld extends HTMLElement {
     if (shirtName) shirtName.textContent = visible.name;
     if (name) name.textContent = visible.name;
     if (status) status.textContent = accountBadgeCopy(this.identity, this.settings);
+    this.updateWorldStatusUI();
   }
 
   updateMetrics() {
@@ -4224,6 +5064,14 @@ class ForkMeshWorld extends HTMLElement {
       this.rewardState = pool.value || {};
       this.captureRewardEvents(true);
     }
+    this.setLandmarkCapability(
+      "fountain",
+      pool.status === "fulfilled" &&
+        /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(
+          String(pool.value?.address || "").trim(),
+        ),
+      LANDMARK_CONSTRUCTION_REASONS.fountain,
+    );
     if (pending.status === "fulfilled") {
       this.pendingRewards = Array.isArray(pending.value?.rewards)
         ? pending.value.rewards.slice(0, 100)
@@ -4349,9 +5197,20 @@ class ForkMeshWorld extends HTMLElement {
         requestedRepo: FLAGSHIP_REPOSITORY.repo,
       },
     ];
-    this.world?.updateNetworkNodes(
-      liveNodeRecords(this.network, this.mirrorCatalogs),
+    const liveMirrors = liveNodeRecords(this.network, this.mirrorCatalogs);
+    this.setLandmarkCapability(
+      "routing",
+      payload?.ok === true &&
+        Array.isArray(payload?.mirrors) &&
+        liveMirrors.some(
+          (node) =>
+            node.healthy === true &&
+            node.cloneAvailable === true &&
+            /^[0-9a-f]{40,64}$/.test(String(node.commit || "")),
+        ),
+      LANDMARK_CONSTRUCTION_REASONS.routing,
     );
+    this.world?.updateNetworkNodes(liveMirrors);
   }
 
   startMirrorPolling() {
@@ -4412,6 +5271,45 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  setLandmarkCapability(id, live, reason = "") {
+    if (!LANDMARKS.some((landmark) => landmark.id === id)) return;
+    this.landmarkCapabilities[id] = {
+      live: live === true,
+      reason:
+        String(reason || "").trim() ||
+        LANDMARK_CONSTRUCTION_REASONS[id] ||
+        "This integration has not been verified in this session.",
+    };
+    this.syncConstructionMarkers(id);
+  }
+
+  syncConstructionMarkers(id = "") {
+    const ids = id ? [id] : LANDMARKS.map((landmark) => landmark.id);
+    ids.forEach((landmarkId) => {
+      const capability = this.landmarkCapabilities[landmarkId] || {
+        live: false,
+        reason: "This integration has not been verified in this session.",
+      };
+      const reason = String(capability.reason || "");
+      this.$$(
+        `[data-world-construction-marker="${landmarkId}"]`,
+      ).forEach((marker) => {
+        marker.hidden = capability.live === true;
+        marker.setAttribute(
+          "aria-label",
+          `Under construction: ${reason}`,
+        );
+        marker.setAttribute("title", `Under construction: ${reason}`);
+      });
+      this.$$(`[data-world-landmark="${landmarkId}"]`).forEach((button) => {
+        button.dataset.worldUnderConstruction = String(
+          capability.live !== true,
+        );
+      });
+    });
+    this.world?.updateLandmarkConstruction?.(this.landmarkCapabilities);
+  }
+
   updateDistances() {
     const position = this.world?.getPosition?.();
     if (!position) return;
@@ -4427,6 +5325,10 @@ class ForkMeshWorld extends HTMLElement {
 
   openLandmark(id) {
     const landmark = landmarkById(id);
+    const capability = this.landmarkCapabilities[landmark.id] || {
+      live: false,
+      reason: "This integration has not been verified in this session.",
+    };
     const detail = this.$("[data-world-detail]");
     const backdrop = this.$("[data-world-detail-backdrop]");
     if (!detail || !backdrop) return;
@@ -4443,7 +5345,14 @@ class ForkMeshWorld extends HTMLElement {
       </header>
       <div class="world-detail-scroll">
         <p class="world-detail-summary">${escapeHTML(landmark.summary)}</p>
-        <span class="world-status-pill">${escapeHTML(landmark.status)}</span>
+        <div class="world-status-row">
+          <span class="world-status-pill">${escapeHTML(landmark.status)}</span>
+          ${constructionMarkerHTML(
+            landmark.id,
+            capability,
+            "world-construction-mark-panel",
+          )}
+        </div>
 
         <div class="world-truth-grid">
           <section class="world-truth-block">
@@ -4478,6 +5387,16 @@ class ForkMeshWorld extends HTMLElement {
     detail.dataset.open = "true";
     detail.setAttribute("aria-hidden", "false");
     backdrop.dataset.open = "true";
+    this.updateRepositoryReviewMode();
+    if (
+      landmark.id === "repositories" &&
+      this.repositoryView === "review" &&
+      this.pullReview?.state === "ready"
+    ) {
+      window.requestAnimationFrame(() =>
+        this.setupPullReviewScrollTracking(),
+      );
+    }
     this.$$("[data-world-landmark]").forEach((button) => {
       button.setAttribute(
         "aria-current",
@@ -4492,9 +5411,11 @@ class ForkMeshWorld extends HTMLElement {
     const backdrop = this.$("[data-world-detail-backdrop]");
     if (detail) {
       detail.dataset.open = "false";
+      detail.dataset.repositoryReview = "false";
       detail.setAttribute("aria-hidden", "true");
     }
     if (backdrop) backdrop.dataset.open = "false";
+    this.clearPullReviewScrollTracking();
     this.world?.clearFocus();
   }
 
@@ -5030,6 +5951,12 @@ class ForkMeshWorld extends HTMLElement {
   renderRepositoryMapStatus() {
     const explorer = this.$("[data-world-repo-explorer]");
     if (explorer) explorer.innerHTML = this.repositoryMapStatusHTML();
+    this.updateRepositoryReviewMode();
+    if (this.repositoryView === "review" && this.pullReview?.state === "ready") {
+      window.requestAnimationFrame(() =>
+        this.setupPullReviewScrollTracking(),
+      );
+    }
   }
 
   repositoryPanelHTML() {
@@ -5052,7 +5979,13 @@ class ForkMeshWorld extends HTMLElement {
                 : repo.source === "external"
                   ? "Stub only"
                   : "Unavailable";
-            const meta = [repo.language, repo.mirrorCount ? `${repo.mirrorCount} mirrors` : ""]
+            const meta = [
+              repo.language,
+              repo.mirrorCount ? `${repo.mirrorCount} mirrors` : "",
+              Number.isSafeInteger(repo.pullCount)
+                ? `${compactNumber(repo.pullCount)} pull requests`
+                : "",
+            ]
               .filter(Boolean)
               .join(" · ");
             const external = safeHTTPURL(repo.externalUrl);
@@ -5990,8 +6923,18 @@ class ForkMeshWorld extends HTMLElement {
       });
       this.events = normalizeCommunityEvents(payload);
       this.eventsState = this.events.length ? "ready" : "empty";
+      this.setLandmarkCapability(
+        "events",
+        Array.isArray(payload?.events),
+        LANDMARK_CONSTRUCTION_REASONS.events,
+      );
     } catch (_) {
       this.eventsState = "unavailable";
+      this.setLandmarkCapability(
+        "events",
+        false,
+        LANDMARK_CONSTRUCTION_REASONS.events,
+      );
     }
     this.updateNotificationBadge();
     this.announceWorldNotifications();
@@ -7033,34 +7976,183 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  async loadRepositoryEntityRecords(base, commit) {
-    const locations = [
-      { path: ".forkmesh/issues", kind: "issue", state: "" },
-      { path: ".forkmesh/issues/open", kind: "issue", state: "open" },
-      { path: ".forkmesh/issues/closed", kind: "issue", state: "closed" },
-      { path: "pulls", kind: "pull", state: "" },
-    ];
-    const results = await Promise.allSettled(
-      locations.map(({ path }) =>
-        this.fetchJSON(
-          `${base}/tree?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(
-            commit,
-          )}`,
-          { timeout: 9000, cache: "no-store" },
+  async resolveRepositoryPullMetadataCommit(base) {
+    const branches = await this.fetchJSON(`${base}/branches`, {
+      timeout: REPOSITORY_METADATA_TIMEOUT_MS,
+      cache: "no-store",
+    });
+    const branch = (Array.isArray(branches?.branches) ? branches.branches : [])
+      .map((candidate) => ({
+        name: String(candidate?.name || candidate?.ref || "")
+          .replace(/^refs\/heads\//, "")
+          .replace(/^refs\/remotes\/origin\//, ""),
+        commit: immutableGitOid(
+          candidate?.commit || candidate?.hash || candidate?.sha,
         ),
-      ),
+      }))
+      .find(
+        (candidate) =>
+          candidate.name === "forkmesh/pulls" && candidate.commit,
+      );
+    if (!branch) throw new Error("pull metadata branch unavailable");
+    return branch.commit;
+  }
+
+  async loadRepositoryPullRecords(base) {
+    const pullMetadataCommit =
+      await this.resolveRepositoryPullMetadataCommit(base);
+    const tree = await this.fetchJSON(
+      `${base}/tree?path=pulls&ref=${encodeURIComponent(
+        pullMetadataCommit,
+      )}`,
+      { timeout: REPOSITORY_METADATA_TIMEOUT_MS, cache: "no-store" },
     );
+    if (
+      tree?.ok === false ||
+      immutableGitOid(tree?.commit) !== pullMetadataCommit
+    ) {
+      throw new Error("pull metadata commit mismatch");
+    }
+    const numbered = (Array.isArray(tree?.entries) ? tree.entries : [])
+      .filter(
+        (entry) =>
+          ["tree", "directory"].includes(String(entry?.type || "")) &&
+          safePullNumber(entry?.name),
+      )
+      .map((entry) => safePullNumber(entry.name))
+      .sort((left, right) => right - left);
+    const selected = numbered.slice(0, 60);
+    const paths = selected.map((number) => `pulls/${number}/pull.md`);
+    let blobs = {};
+    if (paths.length) {
+      const query = new URLSearchParams();
+      paths.forEach((path) => query.append("path", path));
+      query.set("ref", pullMetadataCommit);
+      try {
+        const result = await this.fetchJSON(`${base}/blobs?${query}`, {
+          timeout: REPOSITORY_METADATA_TIMEOUT_MS,
+          cache: "no-store",
+        });
+        if (immutableGitOid(result?.commit) !== pullMetadataCommit) {
+          throw new Error("pull metadata batch commit mismatch");
+        }
+        blobs =
+          result?.blobs && typeof result.blobs === "object"
+            ? result.blobs
+            : {};
+      } catch (error) {
+        throw new Error(
+          error?.message || "pull metadata batch is unavailable",
+        );
+      }
+    }
+    let pullMetadataUnavailableCount = 0;
+    const pulls = selected.map((number) => {
+      const path = `pulls/${number}`;
+      const metadataBlob = blobs[`${path}/pull.md`];
+      const metadataText =
+        metadataBlob && metadataBlob?.ok !== false
+          ? repositoryBlobText(metadataBlob)
+          : "";
+      if (!metadataText.trim()) {
+        pullMetadataUnavailableCount += 1;
+        return {
+          number,
+          path,
+          state: "unknown",
+          title: "Metadata unavailable",
+          author: "Unknown",
+          base: "",
+          head: "",
+          createdAt: 0,
+          body: "",
+          creationBaseOid: "",
+          creationHeadOid: "",
+          metadataAvailable: false,
+        };
+      }
+      const parsed = parsePullFrontMatter(metadataText, number);
+      return {
+        number,
+        path,
+        state: parsed.status,
+        title: parsed.title,
+        author: parsed.author,
+        base: parsed.base,
+        head: parsed.head,
+        createdAt: parsed.createdAt,
+        body: parsed.body,
+        creationBaseOid: parsed.creationBaseOid,
+        creationHeadOid: parsed.creationHeadOid,
+        metadataAvailable: true,
+      };
+    });
+    return {
+      pullMetadataCommit,
+      pullsAvailable: true,
+      pullCount: numbered.length,
+      pullCountExact: tree?.truncated !== true,
+      pullTreeTruncated: tree?.truncated === true,
+      pullMetadataUnavailableCount,
+      pulls,
+    };
+  }
+
+  async loadRepositoryEntityRecords(base, commit, options = {}) {
+    const locations = [
+      { path: ".forkmesh/issues", state: "" },
+      { path: ".forkmesh/issues/open", state: "open" },
+      { path: ".forkmesh/issues/closed", state: "closed" },
+    ];
+    // Pulls have their own immutable metadata commit and are required for a
+    // truthful review surface. Resolve that short chain before lower-priority
+    // issue-layout probes can occupy every connection on a small mirror.
+    const pullResult =
+      options.pullResult?.status === "fulfilled" ||
+      options.pullResult?.status === "rejected"
+        ? options.pullResult
+        : options.privateRepository === true
+          ? {
+              status: "rejected",
+              reason: new Error("private pull metadata is not publicly probed"),
+            }
+          : await this.loadRepositoryPullRecords(base).then(
+              (value) => ({ status: "fulfilled", value }),
+              (reason) => ({ status: "rejected", reason }),
+            );
+    const issueResults = [];
+    const issueConcurrency = 2;
+    for (let offset = 0; offset < locations.length; offset += issueConcurrency) {
+      const batch = locations.slice(offset, offset + issueConcurrency);
+      issueResults.push(
+        ...(await Promise.allSettled(
+          batch.map(({ path }) =>
+            this.fetchJSON(
+              `${base}/tree?path=${encodeURIComponent(
+                path,
+              )}&ref=${encodeURIComponent(commit)}`,
+              {
+                // Issue layout is optional context. Never let its three legacy
+                // probes hold an otherwise complete PR review for the full
+                // two-mirror failover envelope.
+                timeout: 6000,
+                cache: "no-store",
+              },
+            ),
+          ),
+        )),
+      );
+    }
     const issues = new Map();
-    const pulls = new Map();
-    let matched = false;
-    results.forEach((result, index) => {
+    let issuesMatched = false;
+    issueResults.forEach((result, index) => {
       if (result.status !== "fulfilled" || result.value?.ok === false) return;
       const payload = result.value || {};
       const payloadCommit = String(
         payload.commit || payload.analysis?.commit || "",
       ).toLowerCase();
       if (payloadCommit !== commit) return;
-      matched = true;
+      issuesMatched = true;
       const location = locations[index];
       const entries = Array.isArray(payload.entries)
         ? payload.entries.slice(0, 80)
@@ -7076,23 +8168,30 @@ class ForkMeshWorld extends HTMLElement {
           path: `${location.path}/${number}`,
           state: location.state,
         };
-        if (location.kind === "issue") {
-          const previous = issues.get(number);
-          if (!previous || location.state) issues.set(number, record);
-        } else {
-          pulls.set(number, record);
-        }
+        const previous = issues.get(number);
+        if (!previous || location.state) issues.set(number, record);
       });
     });
+    const pullRecords =
+      pullResult.status === "fulfilled"
+        ? pullResult.value
+        : {
+            pullMetadataCommit: "",
+            pullsAvailable: false,
+            pullCount: 0,
+            pullCountExact: false,
+            pullTreeTruncated: false,
+            pullMetadataUnavailableCount: 0,
+            pulls: [],
+          };
     return {
       commit,
-      available: matched,
+      repositoryCommit: commit,
+      available: issuesMatched || pullRecords.pullsAvailable,
       issues: [...issues.values()]
         .sort((left, right) => right.number - left.number)
         .slice(0, 40),
-      pulls: [...pulls.values()]
-        .sort((left, right) => right.number - left.number)
-        .slice(0, 40),
+      ...pullRecords,
     };
   }
 
@@ -7106,7 +8205,7 @@ class ForkMeshWorld extends HTMLElement {
         String(record?.name || "").toLowerCase() === FLAGSHIP_REPOSITORY.repo &&
         !record?.isPrivate &&
         !record?.archived &&
-        ["local-node", "remote-clone"].includes(source) &&
+        ["local-node", "remote-clone", "organization-alias"].includes(source) &&
         /^[0-9a-f]{40,64}$/.test(String(record?.commit || "")) &&
         /^[0-9a-f]{64}$/.test(String(record?.stateHash || ""))
       ) {
@@ -7157,7 +8256,7 @@ class ForkMeshWorld extends HTMLElement {
       safeRepo,
     )}`;
     const tree = await this.fetchJSON(`${base}/tree?path=`, {
-      timeout: 12000,
+      timeout: REPOSITORY_METADATA_TIMEOUT_MS,
       cache: "no-store",
     });
     if (!tree || tree?.ok === false) {
@@ -7174,18 +8273,39 @@ class ForkMeshWorld extends HTMLElement {
       throw new Error("repository tree commit unavailable");
     }
     const ref = `?ref=${encodeURIComponent(commit)}`;
+    const catalogRecord = this.repositories.find(
+      (record) =>
+        record.owner.toLowerCase() === safeOwner.toLowerCase() &&
+        record.name.toLowerCase() === safeRepo.toLowerCase(),
+    );
+    // Resolve the short immutable PR chain before sizes/stats and issue scans
+    // can contend for a one-vCPU mirror. This result is then injected into the
+    // entity loader, so the browser never repeats branches/tree/blobs.
+    const pullResult =
+      catalogRecord?.isPrivate === true
+        ? {
+            status: "rejected",
+            reason: new Error("private pull metadata is not publicly probed"),
+          }
+        : await this.loadRepositoryPullRecords(base).then(
+            (value) => ({ status: "fulfilled", value }),
+            (reason) => ({ status: "rejected", reason }),
+          );
     const [sizeResult, statsResult, mirrorsResult, entityRecordsResult] =
       await Promise.allSettled([
         this.fetchJSON(`${base}/sizes${ref}`, {
-          timeout: 12000,
+          timeout: REPOSITORY_METADATA_TIMEOUT_MS,
           cache: "no-store",
         }),
         this.fetchJSON(`${base}/stats${ref}`, {
-          timeout: 12000,
+          timeout: REPOSITORY_METADATA_TIMEOUT_MS,
           cache: "no-store",
         }),
         this.fetchJSON(`${base}/mirrors`, { auth: false }),
-        this.loadRepositoryEntityRecords(base, commit),
+        this.loadRepositoryEntityRecords(base, commit, {
+          privateRepository: catalogRecord?.isPrivate === true,
+          pullResult,
+        }),
       ]);
     const sizes =
       sizeResult.status === "fulfilled" &&
@@ -7205,6 +8325,42 @@ class ForkMeshWorld extends HTMLElement {
       String(entityRecordsResult.value?.commit || "").toLowerCase() === commit
         ? entityRecordsResult.value
         : null;
+    const mirrorPayload =
+      mirrorsResult.status === "fulfilled" ? mirrorsResult.value : {};
+    const mirrorPullCounts = (
+      Array.isArray(mirrorPayload?.mirrors) ? mirrorPayload.mirrors : []
+    )
+      .map((mirror) => Number(mirror?.pullCount))
+      .filter(
+        (value) =>
+          Number.isSafeInteger(value) &&
+          value >= 0 &&
+          value <= 10_000_000,
+      );
+    const unanimousMirrorPullCount =
+      mirrorPullCounts.length > 0 &&
+      mirrorPullCounts.length ===
+        (Array.isArray(mirrorPayload?.mirrors)
+          ? mirrorPayload.mirrors.length
+          : 0) &&
+      new Set(mirrorPullCounts).size === 1
+        ? mirrorPullCounts[0]
+        : null;
+    const catalogPullCount = this.repositories.find(
+      (record) =>
+        record.owner.toLowerCase() === safeOwner.toLowerCase() &&
+        record.name.toLowerCase() === safeRepo.toLowerCase(),
+    )?.pullCount;
+    const pullCount =
+      entityRecords?.pullCountExact === true
+        ? entityRecords.pullCount
+        : unanimousMirrorPullCount ?? catalogPullCount ?? null;
+    const pullCountSource =
+      entityRecords?.pullCountExact === true
+        ? "metadata-tree"
+        : pullCount !== null
+          ? "signed-mirror-report"
+          : "unavailable";
     const snapshot = {
       owner: safeOwner,
       repo: safeRepo,
@@ -7212,13 +8368,26 @@ class ForkMeshWorld extends HTMLElement {
       commit,
       analysis: tree.analysis || {},
       entries: normalizeTreeEntries(tree),
-      counts: tree?.counts || {},
+      counts: {
+        ...(tree?.counts || {}),
+        pulls: pullCount,
+      },
+      pullCount,
+      pullCountSource,
+      isPrivate: catalogRecord?.isPrivate === true,
       sizes: sizes || {},
       stats: stats || {},
-      mirrors: mirrorsResult.status === "fulfilled" ? mirrorsResult.value : {},
+      mirrors: mirrorPayload,
       entityRecords: entityRecords || {
         commit,
+        repositoryCommit: commit,
         available: false,
+        pullMetadataCommit: "",
+        pullsAvailable: false,
+        pullCount: 0,
+        pullCountExact: false,
+        pullTreeTruncated: false,
+        pullMetadataUnavailableCount: 0,
         issues: [],
         pulls: [],
       },
@@ -7248,10 +8417,18 @@ class ForkMeshWorld extends HTMLElement {
       this.activeRepository?.owner.toLowerCase() === safeOwner.toLowerCase() &&
       this.activeRepository?.repo.toLowerCase() === safeRepo.toLowerCase()
     ) {
+      this.repositoryView = "map";
+      this.pullReview = null;
+      this.pullReviewSelection += 1;
+      this.clearPullReviewScrollTracking();
       this.renderRepositoryMapStatus();
       return true;
     }
 
+    this.repositoryView = "map";
+    this.pullReview = null;
+    this.pullReviewSelection += 1;
+    this.clearPullReviewScrollTracking();
     const selection = ++this.repositoryMapSelection;
     this.repositoryMapState = "loading";
     this.repositoryMapTarget = `${safeOwner}/${safeRepo}`;
@@ -7478,7 +8655,1010 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  repositoryPullRecords(active = this.activeRepository) {
+    const records =
+      active?.entityRecords && typeof active.entityRecords === "object"
+        ? active.entityRecords
+        : {};
+    const metadataCommit = immutableGitOid(records.pullMetadataCommit);
+    if (
+      active?.isPrivate === true ||
+      records.pullsAvailable !== true ||
+      !metadataCommit ||
+      !Array.isArray(records.pulls)
+    ) {
+      return [];
+    }
+    return records.pulls
+      .map((record) => {
+        const number = safePullNumber(record?.number);
+        if (!number) return null;
+        const state = ["open", "closed", "merged", "unknown"].includes(
+          String(record?.state || "").toLowerCase(),
+        )
+          ? String(record.state).toLowerCase()
+          : "unknown";
+        return {
+          ...record,
+          number,
+          state,
+          title: sanitizePresenceText(
+            record?.title,
+            `Pull request #${number}`,
+            240,
+          ),
+          author: sanitizePresenceText(record?.author, "Unknown", 100),
+          base: sanitizePresenceText(record?.base, "main", 160),
+          head: sanitizePresenceText(record?.head, "", 160),
+          metadataAvailable: record?.metadataAvailable !== false,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.number - left.number)
+      .slice(0, 60);
+  }
+
+  repositoryPullCount(active = this.activeRepository) {
+    const candidates = [
+      active?.pullCount,
+      active?.counts?.pulls,
+      active?.entityRecords?.pullCountExact === true
+        ? active.entityRecords.pullCount
+        : null,
+    ];
+    for (const candidate of candidates) {
+      const value = Number(candidate);
+      if (
+        Number.isSafeInteger(value) &&
+        value >= 0 &&
+        value <= 10_000_000
+      ) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  repositoryPullCountLabel(active = this.activeRepository) {
+    const count = this.repositoryPullCount(active);
+    if (count === null) return "Pull-request count unavailable";
+    const source =
+      active?.pullCountSource === "metadata-tree"
+        ? "exact metadata tree"
+        : active?.pullCountSource === "signed-mirror-report"
+          ? "matching signed mirror reports"
+          : "authorized repository metadata";
+    return `${compactNumber(count)} pull request${
+      count === 1 ? "" : "s"
+    } · ${source}`;
+  }
+
+  repositoryPullListHTML(active) {
+    const records = this.repositoryPullRecords(active);
+    const metadataCommit = immutableGitOid(
+      active?.entityRecords?.pullMetadataCommit,
+    );
+    const available =
+      active?.isPrivate !== true &&
+      active?.entityRecords?.pullsAvailable === true &&
+      Boolean(metadataCommit);
+    const count = this.repositoryPullCount(active);
+    return `
+      <section class="world-pull-list-panel" aria-labelledby="world-pull-list-title">
+        <header class="world-pull-panel-heading">
+          <button type="button" data-world-pull-back="map">← Code map</button>
+          <div>
+            <span>IN-WORLD REVIEW</span>
+            <h3 id="world-pull-list-title">${escapeHTML(
+              active.owner,
+            )}/${escapeHTML(active.repo)} pull requests</h3>
+            <small>${escapeHTML(this.repositoryPullCountLabel(active))}</small>
+          </div>
+        </header>
+        ${
+          available
+            ? `<p class="world-pull-pin">Record index and files are read from immutable <code>${escapeHTML(
+                metadataCommit,
+              )}</code>. ForkMesh never substitutes <code>main</code> or an unpinned ref.</p>`
+            : ""
+        }
+        <div class="world-pull-records" data-world-pull-state="${
+          available ? (records.length ? "ready" : "empty") : "unavailable"
+        }">
+          ${
+            available && records.length
+              ? records
+                  .map((record) => {
+                    const rawTime = Number(record.createdAt || 0);
+                    const timestamp =
+                      rawTime > 0 && rawTime < 1_000_000_000_000
+                        ? rawTime * 1000
+                        : rawTime;
+                    const date = Number.isFinite(timestamp) && timestamp > 0
+                      ? new Date(timestamp).toLocaleDateString()
+                      : "";
+                    const content = `
+                      <span>
+                        <strong>#${record.number} · ${escapeHTML(
+                          record.title,
+                        )}</strong>
+                        <small>${escapeHTML(
+                          [
+                            record.author,
+                            record.base && record.head
+                              ? `${record.base} ← ${record.head}`
+                              : "",
+                            date,
+                          ]
+                            .filter(Boolean)
+                            .join(" · "),
+                        )}</small>
+                      </span>
+                      <em data-pull-state="${escapeHTML(
+                        record.state,
+                      )}">${escapeHTML(record.state)}</em>
+                    `;
+                    return record.metadataAvailable
+                      ? `<button type="button" data-world-pull-open data-world-pull-number="${record.number}">${content}</button>`
+                      : `<div class="world-pull-record-unavailable" aria-label="Pull request #${record.number} metadata unavailable">${content}</div>`;
+                  })
+                  .join("")
+              : available
+                ? `<p class="world-empty-state">The pinned metadata tree contains no pull-request records.</p>`
+                : `<div class="world-notice world-notice-warning">
+                    <strong>Pull-request records unavailable</strong>
+                    <span>${
+                      active?.isPrivate === true
+                        ? "Private repositories are not probed through the public pull-metadata branch. Missing and unauthorized repositories remain indistinguishable."
+                        : `The exact forkmesh/pulls commit could not be verified${
+                            count === null
+                              ? ""
+                              : `, although ${compactNumber(
+                                  count,
+                                )} was reported`
+                          }. No main-branch, guessed-ref, or repository-name probe was attempted.`
+                    }</span>
+                  </div>`
+          }
+        </div>
+        ${
+          active?.entityRecords?.pullTreeTruncated === true
+            ? `<p class="world-panel-footnote">The mirror bounded this metadata listing. Only returned records are shown; ForkMesh does not invent the missing entries.</p>`
+            : records.length >= 60
+              ? `<p class="world-panel-footnote">Showing the newest 60 records from the pinned metadata tree.</p>`
+              : Number(
+                    active?.entityRecords?.pullMetadataUnavailableCount || 0,
+                  ) > 0
+                ? `<p class="world-panel-footnote">${compactNumber(
+                    active.entityRecords.pullMetadataUnavailableCount,
+                  )} pull-request record${
+                    active.entityRecords.pullMetadataUnavailableCount === 1
+                      ? " is"
+                      : "s are"
+                  } listed by the tree but ${
+                    active.entityRecords.pullMetadataUnavailableCount === 1
+                      ? "its metadata is"
+                      : "their metadata are"
+                  } unavailable. ${
+                    active.entityRecords.pullMetadataUnavailableCount === 1
+                      ? "It is"
+                      : "They are"
+                  } not labeled open.</p>`
+              : ""
+        }
+      </section>`;
+  }
+
+  pullViewedSet(active, review) {
+    const key = pullViewedStateKey(
+      active?.owner,
+      active?.repo,
+      review?.metadataCommit,
+      review?.number,
+    );
+    if (!key) return new Set();
+    if (!this.pullViewedFiles.has(key)) {
+      this.pullViewedFiles.set(key, new Set());
+    }
+    return this.pullViewedFiles.get(key);
+  }
+
+  pullFileTreeHTML(nodes, viewed, depth = 0) {
+    if (!Array.isArray(nodes) || !nodes.length) return "";
+    return `<ul>${nodes
+      .map((node) => {
+        if (node.kind === "directory") {
+          return `<li class="world-pull-tree-directory">
+            <span style="--pull-tree-depth:${Math.min(depth, 12)}">▾ ${escapeHTML(
+              node.name,
+            )}</span>
+            ${this.pullFileTreeHTML(node.children, viewed, depth + 1)}
+          </li>`;
+        }
+        const isViewed = viewed.has(node.path);
+        return `<li>
+          <button type="button"
+            style="--pull-tree-depth:${Math.min(depth, 12)}"
+            data-world-pull-file-path="${escapeHTML(node.path)}"
+            data-viewed="${isViewed}"
+            aria-label="${isViewed ? "Viewed" : "Review"} ${escapeHTML(
+              node.path,
+            )}">
+            <span aria-hidden="true">${escapeHTML(
+              node.status === "added"
+                ? "+"
+                : node.status === "deleted"
+                  ? "−"
+                  : node.status === "renamed"
+                    ? "↪"
+                    : "◇",
+            )}</span>
+            <strong>${escapeHTML(node.name)}</strong>
+            <small>+${compactNumber(node.additions)} −${compactNumber(
+              node.deletions,
+            )}</small>
+            <em data-world-pull-viewed aria-label="${
+              isViewed ? "Viewed" : "Not viewed"
+            }">${isViewed ? "✓" : "○"}</em>
+          </button>
+        </li>`;
+      })
+      .join("")}</ul>`;
+  }
+
+  pullDiffRowsHTML(file) {
+    if (file.binary) {
+      return `<p class="world-pull-binary">Binary change · content is not rendered in the World.</p>`;
+    }
+    if (!file.rows.length) {
+      return `<p class="world-empty-state">No textual diff rows were returned for this file.</p>`;
+    }
+    return `<div class="world-pull-diff-table" role="table" aria-label="${escapeHTML(
+      file.path,
+    )} unified diff">${file.rows
+      .map((row) => {
+        if (row.type === "hunk") {
+          return `<div class="world-pull-diff-row is-hunk" role="row">
+            <span role="cell"></span><span role="cell"></span><code role="cell">${escapeHTML(
+              row.text,
+            )}</code>
+          </div>`;
+        }
+        const marker =
+          row.type === "add"
+            ? "+"
+            : row.type === "delete"
+              ? "−"
+              : row.type === "meta"
+                ? "\\"
+                : " ";
+        return `<div class="world-pull-diff-row is-${escapeHTML(
+          row.type,
+        )}" role="row">
+          <span role="cell">${row.oldLine ?? ""}</span>
+          <span role="cell">${row.newLine ?? ""}</span>
+          <code role="cell"><b aria-hidden="true">${marker}</b>${escapeHTML(
+            row.text,
+          )}</code>
+        </div>`;
+      })
+      .join("")}</div>`;
+  }
+
+  repositoryPullMergeHTML(active, review) {
+    const merge = review?.merge || { state: "idle" };
+    const state = String(merge.state || "idle");
+    const context = exactPullMergeContext(active, review);
+    const session = validWorldSession();
+    const terminalCopy = {
+      merged: {
+        title: "Merged and published",
+        body: "The selected mirror confirmed both the merge and publication. The repository map is being refreshed from the published commit.",
+      },
+      conflict: {
+        title: "Merge conflict",
+        body: "The exact reviewed commits do not merge cleanly. No branch or pull-metadata ref was changed.",
+      },
+      stale: {
+        title: "Review is stale",
+        body: "The base, head, or pull-metadata commit changed. ForkMesh refused to substitute a newer ref or merge different code.",
+      },
+      forbidden: {
+        title: "Merge not authorized",
+        body: "This signed-in account is not authorized as the repository owner, node owner, or an organization writer.",
+      },
+      unauthenticated: {
+        title: "Session no longer valid",
+        body: "Sign in again before requesting a merge. No bearer token is placed in the URL or page content.",
+      },
+      pending: {
+        title: "Merge still processing",
+        body: "Bounded automatic polling ended. Checking again reuses the same idempotency request and cannot create a second merge job.",
+      },
+      failed: {
+        title: "Merge status unavailable",
+        body: "ForkMesh could not verify a terminal result. Checking again safely reuses the same idempotency request.",
+      },
+    };
+    if (terminalCopy[state]) {
+      const details = terminalCopy[state];
+      const retry =
+        session &&
+        context &&
+        ["pending", "failed"].includes(state) &&
+        buildPullMergeRequest(context, merge.requestId);
+      return `<section class="world-pull-merge-panel" data-world-pull-merge-state="${escapeHTML(
+        state,
+      )}" aria-live="${state === "merged" ? "polite" : "assertive"}" aria-atomic="true" role="${
+        ["conflict", "stale", "forbidden", "unauthenticated", "failed"].includes(
+          state,
+        )
+          ? "alert"
+          : "status"
+      }">
+        <div>
+          <span>PROTECTED MERGE</span>
+          <strong>${escapeHTML(details.title)}</strong>
+          <small id="world-pull-merge-status">${escapeHTML(details.body)}</small>
+        </div>
+        ${
+          retry
+            ? `<button type="button" data-world-pull-merge aria-describedby="world-pull-merge-status">Check merge status</button>`
+            : ""
+        }
+      </section>`;
+    }
+    if (!session) {
+      return `<p class="world-panel-footnote">Sign in to request a protected in-World merge. Review remains available without opening another tab.</p>`;
+    }
+    if (!context) {
+      return `<div class="world-notice world-notice-warning" data-world-pull-merge-state="unavailable">
+        <strong>Commit-checked merge unavailable</strong>
+        <span>The open pull request must expose matching, immutable base, head, and pull-metadata object IDs before a merge control can appear.</span>
+      </div>`;
+    }
+    const processing = state === "processing";
+    return `<section class="world-pull-merge-panel" data-world-pull-merge-state="${processing ? "processing" : "ready"}" aria-live="polite" aria-atomic="true" aria-busy="${processing}" role="status">
+      <div>
+        <span>PROTECTED MERGE</span>
+        <strong>${processing ? "Merge requested" : "Exact commits verified"}</strong>
+        <small id="world-pull-merge-status">${
+          processing
+            ? "The selected mirror is checking and publishing this idempotent request."
+            : "The request will be pinned to the reviewed base, head, and pull-metadata commits. Authorization is enforced by the protected endpoint."
+        }</small>
+      </div>
+      <button type="button" data-world-pull-merge aria-describedby="world-pull-merge-status" ${
+        processing ? "disabled" : ""
+      }>${processing ? "Merging and publishing…" : `Merge pull request #${context.number}`}</button>
+    </section>`;
+  }
+
+  repositoryPullReviewHTML(active) {
+    const review = this.pullReview || { state: "unavailable" };
+    const back = `
+      <header class="world-pull-panel-heading">
+        <button type="button" data-world-pull-back="list">← Pull requests</button>
+        <div>
+          <span>IN-WORLD REVIEW</span>
+          <h3 id="world-pull-review-title">Pull request #${escapeHTML(
+            safePullNumber(review.number) || "",
+          )}</h3>
+        </div>
+      </header>`;
+    if (review.state === "loading") {
+      return `<section class="world-pull-review" aria-labelledby="world-pull-review-title">
+        ${back}
+        <p class="world-empty-state" role="status">Loading the metadata record and patch from exact commit ${escapeHTML(
+          String(review.metadataCommit || "").slice(0, 12),
+        )}…</p>
+      </section>`;
+    }
+    if (review.state !== "ready") {
+      return `<section class="world-pull-review" aria-labelledby="world-pull-review-title">
+        ${back}
+        <div class="world-notice world-notice-warning" data-world-pull-detail data-world-pull-state="unavailable">
+          <strong>Pull-request review unavailable</strong>
+          <span>${escapeHTML(
+            review.message ||
+              "The exact metadata record and patch could not be verified. No alternate branch or external page was opened.",
+          )}</span>
+        </div>
+      </section>`;
+    }
+    const viewed = this.pullViewedSet(active, review);
+    const files = Array.isArray(review.diff?.files)
+      ? review.diff.files
+      : [];
+    const fileTree = buildPullFileTree(files);
+    const metadata = review.metadata || {};
+    return `
+      <section class="world-pull-review" aria-labelledby="world-pull-review-title" data-world-pull-detail data-world-pull-review-key="${escapeHTML(
+        pullViewedStateKey(
+          active.owner,
+          active.repo,
+          review.metadataCommit,
+          review.number,
+        ),
+      )}">
+        ${back}
+        <div class="world-pull-review-summary">
+          <div>
+            <strong>${escapeHTML(
+              metadata.title || `Pull request #${review.number}`,
+            )}</strong>
+            <span>${escapeHTML(
+              [
+                metadata.status || "unknown",
+                metadata.author,
+                metadata.base && metadata.head
+                  ? `${metadata.base} ← ${metadata.head}`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" · "),
+            )}</span>
+          </div>
+          <div>
+            <span><strong>${compactNumber(files.length)}</strong> files</span>
+            <span><strong>+${compactNumber(
+              review.diff?.additions || 0,
+            )}</strong> additions</span>
+            <span><strong>−${compactNumber(
+              review.diff?.deletions || 0,
+            )}</strong> deletions</span>
+            <span data-world-pull-viewed-summary>${compactNumber(
+              viewed.size,
+            )} of ${compactNumber(files.length)} files viewed</span>
+          </div>
+        </div>
+        ${
+          metadata.body
+            ? `<p class="world-pull-description">${escapeHTML(
+                metadata.body,
+              )}</p>`
+            : ""
+        }
+        <p class="world-pull-pin">Metadata and committed patch pinned to <code>${escapeHTML(
+          review.metadataCommit,
+        )}</code>${
+          review.patchSource === "immutable-compare"
+            ? "; the patch was reconstructed only from the two immutable creation OIDs"
+            : ""
+        }. Viewed checks live only in memory for this page.</p>
+        ${
+          review.diff?.truncated
+            ? `<div class="world-notice world-notice-warning"><strong>Diff bounded for safe display</strong><span>The World rendered a compact subset. Review the full signed change with a trusted Git client before deciding.</span></div>`
+            : ""
+        }
+        ${
+          files.length
+            ? `<div class="world-pull-review-layout">
+                <nav class="world-pull-file-tree" aria-label="Changed files">
+                  ${this.pullFileTreeHTML(fileTree, viewed)}
+                </nav>
+                <div class="world-pull-diff" data-world-pull-diff tabindex="0" aria-label="Unified code diff">
+                  ${files
+                    .map(
+                      (file) => `
+                        <article class="world-pull-diff-file"
+                          id="${escapeHTML(file.id)}"
+                          tabindex="-1"
+                          data-world-pull-diff-file
+                          data-world-pull-file="${escapeHTML(file.path)}"
+                          data-viewed="${viewed.has(file.path)}">
+                          <header>
+                            <strong>${escapeHTML(file.path)}</strong>
+                            <span>${escapeHTML(file.status)} · +${compactNumber(
+                              file.additions,
+                            )} −${compactNumber(file.deletions)}</span>
+                          </header>
+                          ${this.pullDiffRowsHTML(file)}
+                          <span class="world-pull-file-end" data-world-pull-file-end="${escapeHTML(
+                            file.path,
+                          )}" aria-hidden="true"></span>
+                        </article>`,
+                    )
+                    .join("")}
+                </div>
+              </div>`
+            : `<div class="world-notice">
+                <strong>No textual patch is committed for this pull request</strong>
+                <span>The World will not invent a diff or silently read a moving branch. Use a trusted Git client to inspect branch-backed changes.</span>
+              </div>`
+        }
+        ${this.repositoryPullMergeHTML(active, review)}
+      </section>`;
+  }
+
+  updateRepositoryReviewMode() {
+    const detail = this.$("[data-world-detail]");
+    if (!detail) return;
+    detail.dataset.repositoryReview = String(
+      detail.dataset.openLandmark === "repositories" &&
+        this.repositoryView === "review",
+    );
+  }
+
+  clearPullReviewScrollTracking() {
+    if (typeof this.pullReviewScrollCleanup === "function") {
+      this.pullReviewScrollCleanup();
+    }
+    this.pullReviewScrollCleanup = null;
+  }
+
+  setupPullReviewScrollTracking() {
+    this.clearPullReviewScrollTracking();
+    const scroller = this.$("[data-world-pull-diff]");
+    if (!scroller || this.pullReview?.state !== "ready") return;
+    const onScroll = () => this.markVisiblePullFilesViewed();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    this.pullReviewScrollCleanup = () =>
+      scroller.removeEventListener("scroll", onScroll);
+  }
+
+  markVisiblePullFilesViewed() {
+    const scroller = this.$("[data-world-pull-diff]");
+    if (!scroller) return;
+    const rootBounds = scroller.getBoundingClientRect();
+    scroller.querySelectorAll("[data-world-pull-file-end]").forEach((marker) => {
+      const bounds = marker.getBoundingClientRect();
+      if (
+        bounds.top >= rootBounds.top &&
+        bounds.top <= rootBounds.bottom
+      ) {
+        this.markPullFileViewed(marker.dataset.worldPullFileEnd);
+      }
+    });
+  }
+
+  markPullFileViewed(path) {
+    const safePath = safeDiffPath(path);
+    if (!safePath || this.pullReview?.state !== "ready") return;
+    const viewed = this.pullViewedSet(this.activeRepository, this.pullReview);
+    if (viewed.has(safePath)) return;
+    viewed.add(safePath);
+    this.$$("[data-world-pull-file-path]").forEach((button) => {
+      if (button.dataset.worldPullFilePath !== safePath) return;
+      button.dataset.viewed = "true";
+      button.setAttribute("aria-label", `Viewed ${safePath}`);
+      const icon = button.querySelector("[data-world-pull-viewed]");
+      if (icon) {
+        icon.textContent = "✓";
+        icon.setAttribute("aria-label", "Viewed");
+      }
+    });
+    this.$$("[data-world-pull-diff-file]").forEach((section) => {
+      if (section.dataset.worldPullFile === safePath) {
+        section.dataset.viewed = "true";
+      }
+    });
+    const summary = this.$("[data-world-pull-viewed-summary]");
+    const total = this.pullReview.diff?.files?.length || 0;
+    if (summary) {
+      summary.textContent = `${compactNumber(viewed.size)} of ${compactNumber(
+        total,
+      )} files viewed`;
+    }
+  }
+
+  scrollToPullFile(path) {
+    const safePath = safeDiffPath(path);
+    if (!safePath) return;
+    const section = this.$$("[data-world-pull-diff-file]").find(
+      (candidate) => candidate.dataset.worldPullFile === safePath,
+    );
+    if (!section) return;
+    section.scrollIntoView({ behavior: "smooth", block: "start" });
+    section.focus({ preventScroll: true });
+    this.markPullFileViewed(safePath);
+  }
+
+  async requestRepositoryPullMerge(path, body, sessionToken) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${sessionToken}`,
+          "content-type": "application/json",
+        },
+        credentials: "same-origin",
+        cache: "no-store",
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const announced = Number(response.headers.get("content-length") || 0);
+      if (
+        Number.isFinite(announced) &&
+        announced > WORLD_PULL_MERGE_RESPONSE_MAX_BYTES
+      ) {
+        throw new Error("merge response too large");
+      }
+      const raw = await response.text();
+      const size =
+        typeof TextEncoder === "function"
+          ? new TextEncoder().encode(raw).byteLength
+          : raw.length;
+      if (size > WORLD_PULL_MERGE_RESPONSE_MAX_BYTES) {
+        throw new Error("merge response too large");
+      }
+      let payload = {};
+      try {
+        payload = JSON.parse(raw);
+      } catch (_) {}
+      return {
+        httpStatus: response.status,
+        payload:
+          payload && typeof payload === "object" && !Array.isArray(payload)
+            ? payload
+            : {},
+      };
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  classifyRepositoryPullMergeResponse(response, request) {
+    const httpStatus = Number(response?.httpStatus) || 0;
+    const payload =
+      response?.payload && typeof response.payload === "object"
+        ? response.payload
+        : {};
+    const error = String(payload.error || "");
+    if (httpStatus === 401 || error === "invalid_session") {
+      return { state: "unauthenticated" };
+    }
+    if (httpStatus === 403 || error === "forbidden") {
+      return { state: "forbidden" };
+    }
+    if (error === "merge_conflict") return { state: "conflict" };
+    if (
+      [
+        "stale_base",
+        "stale_head",
+        "stale_pull_metadata",
+        "pull_not_found",
+        "pull_not_open",
+        "unsupported_pull",
+      ].includes(error)
+    ) {
+      return { state: "stale" };
+    }
+    if (
+      httpStatus === 202 &&
+      payload.ok === true &&
+      payload.status === "processing" &&
+      payload.requestId === request.requestId
+    ) {
+      return { state: "processing" };
+    }
+    const baseAfter = immutableGitOid(payload.baseAfter);
+    const pullsAfter = immutableGitOid(payload.pullsAfter);
+    if (
+      httpStatus === 200 &&
+      payload.ok === true &&
+      payload.status === "merged" &&
+      payload.published === true &&
+      payload.requestId === request.requestId &&
+      immutableGitOid(payload.baseBefore) === request.expectedBaseOid &&
+      immutableGitOid(payload.head) === request.expectedHeadOid &&
+      immutableGitOid(payload.pullsBefore) === request.expectedPullsOid &&
+      baseAfter &&
+      pullsAfter &&
+      baseAfter.length === request.expectedBaseOid.length &&
+      pullsAfter.length === request.expectedPullsOid.length
+    ) {
+      return {
+        state: "merged",
+        published: true,
+        baseAfter,
+        pullsAfter,
+      };
+    }
+    return { state: "failed" };
+  }
+
+  async reloadRepositoryAfterPublishedPullMerge(active, review, mergeResult) {
+    if (
+      mergeResult?.state !== "merged" ||
+      mergeResult?.published !== true ||
+      !immutableGitOid(mergeResult.baseAfter)
+    ) {
+      return false;
+    }
+    let result;
+    try {
+      result = await this.fetchRepositoryMapSnapshot(active.owner, active.repo);
+    } catch (_) {
+      return false;
+    }
+    if (
+      this.destroyed ||
+      this.pullReview !== review ||
+      this.activeRepository?.owner !== active.owner ||
+      this.activeRepository?.repo !== active.repo ||
+      immutableGitOid(result?.snapshot?.commit) !== mergeResult.baseAfter
+    ) {
+      return false;
+    }
+    this.activeRepository = result.snapshot;
+    this.repositoryMapState = "ready";
+    this.renderRepositoryMapStatus();
+    this.world?.updateRepositoryGraph?.(
+      this.activeRepository.entries,
+      buildRepositoryGraphEntities(this.activeRepository),
+    );
+    void this.loadRepositorySecurity(active.owner, active.repo, false);
+    return true;
+  }
+
+  async mergeRepositoryPull() {
+    const active = this.activeRepository;
+    const review = this.pullReview;
+    const context = exactPullMergeContext(active, review);
+    const session = validWorldSession();
+    if (!active || !review || !context || !session) return;
+    if (
+      ["processing", "merged", "conflict", "stale", "forbidden", "unauthenticated"].includes(
+        String(review.merge?.state || ""),
+      )
+    ) {
+      return;
+    }
+    const existingRequest = buildPullMergeRequest(
+      context,
+      review.merge?.requestId,
+    );
+    const requestId =
+      existingRequest?.requestId || createPullMergeRequestId();
+    const request = buildPullMergeRequest(context, requestId);
+    if (!request) {
+      review.merge = { state: "failed", requestId: "" };
+      this.renderRepositoryExplorer();
+      return;
+    }
+    const endpoint = `/api/repo/${encodeURIComponent(
+      active.owner,
+    )}/${encodeURIComponent(active.repo)}/pulls/${context.number}/merge`;
+    const selection = this.pullReviewSelection;
+    const stillCurrent = () =>
+      !this.destroyed &&
+      selection === this.pullReviewSelection &&
+      this.pullReview === review;
+    review.merge = { state: "processing", requestId };
+    this.renderRepositoryExplorer();
+
+    for (let attempt = 0; attempt < WORLD_PULL_MERGE_MAX_REQUESTS; attempt += 1) {
+      if (!stillCurrent()) return;
+      if (validWorldSession()?.sessionToken !== session.sessionToken) {
+        review.merge = { state: "unauthenticated", requestId };
+        this.renderRepositoryExplorer();
+        return;
+      }
+      let response;
+      try {
+        response = await this.requestRepositoryPullMerge(
+          endpoint,
+          request,
+          session.sessionToken,
+        );
+      } catch (_) {
+        if (!stillCurrent()) return;
+        review.merge = { state: "failed", requestId };
+        this.renderRepositoryExplorer();
+        return;
+      }
+      if (!stillCurrent()) return;
+      const result = this.classifyRepositoryPullMergeResponse(response, request);
+      if (result.state === "processing") {
+        if (attempt + 1 >= WORLD_PULL_MERGE_MAX_REQUESTS) {
+          review.merge = { state: "pending", requestId };
+          this.renderRepositoryExplorer();
+          return;
+        }
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, WORLD_PULL_MERGE_POLL_MS),
+        );
+        continue;
+      }
+      review.merge = { ...result, requestId };
+      this.renderRepositoryExplorer();
+      if (result.state === "merged" && result.published === true) {
+        this.toast("Pull request merged and published.");
+        await this.reloadRepositoryAfterPublishedPullMerge(
+          active,
+          review,
+          result,
+        );
+      }
+      return;
+    }
+  }
+
+  openRepositoryPullList() {
+    if (!this.activeRepository) return;
+    this.repositoryView = "list";
+    this.clearPullReviewScrollTracking();
+    if (
+      this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+    ) {
+      this.openLandmark("repositories");
+      return;
+    }
+    this.renderRepositoryExplorer();
+  }
+
+  async fetchRepositoryPullReview(active, record, metadataCommit) {
+    if (active?.isPrivate === true) {
+      throw new Error(
+        "Private repositories are not probed through the public pull-metadata branch.",
+      );
+    }
+    const number = safePullNumber(record?.number);
+    if (!number || !immutableGitOid(metadataCommit)) {
+      throw new Error("The exact pull metadata commit is unavailable.");
+    }
+    const base = `/api/repo/${encodeURIComponent(
+      active.owner,
+    )}/${encodeURIComponent(active.repo)}`;
+    const metadataPath = `pulls/${number}/pull.md`;
+    const patchPath = `pulls/${number}/changes.patch`;
+    const query = new URLSearchParams();
+    query.append("path", metadataPath);
+    query.append("path", patchPath);
+    query.set("ref", metadataCommit);
+    const payload = await this.fetchJSON(`${base}/blobs?${query.toString()}`, {
+      timeout: 12000,
+      cache: "no-store",
+    });
+    const responseCommit = immutableGitOid(payload?.commit);
+    if (responseCommit !== metadataCommit) {
+      throw new Error("The mirror returned a different metadata commit.");
+    }
+    const blobs =
+      payload?.blobs && typeof payload.blobs === "object"
+        ? payload.blobs
+        : {};
+    const metadataBlob = blobs[metadataPath];
+    if (!metadataBlob || metadataBlob?.ok === false) {
+      throw new Error("The pinned pull-request record is unavailable.");
+    }
+    const metadataText = repositoryBlobText(metadataBlob);
+    if (!metadataText.trim()) {
+      throw new Error("The pinned pull-request metadata is empty.");
+    }
+    const metadata = parsePullFrontMatter(metadataText, number);
+    if (metadata.number !== number) {
+      throw new Error("The pinned pull-request record does not match its path.");
+    }
+    let patch = repositoryBlobText(blobs[patchPath]);
+    let patchSource = "metadata-patch";
+    if (
+      !patch.trim() &&
+      metadata.creationBaseOid &&
+      metadata.creationHeadOid
+    ) {
+      try {
+        const compare = await this.fetchJSON(
+          `${base}/compare?base=${encodeURIComponent(
+            metadata.creationBaseOid,
+          )}&head=${encodeURIComponent(metadata.creationHeadOid)}`,
+          { timeout: 12000, cache: "no-store" },
+        );
+        if (
+          immutableGitOid(compare?.baseOid) === metadata.creationBaseOid &&
+          immutableGitOid(compare?.headOid) === metadata.creationHeadOid
+        ) {
+          patch = String(compare?.patch || "");
+          patchSource = "immutable-compare";
+        }
+      } catch (_) {}
+    }
+    return {
+      state: "ready",
+      number,
+      metadataCommit,
+      metadata,
+      patchSource,
+      diff: parseUnifiedDiff(patch, {
+        maxCharacters: 1_200_000,
+        maxFiles: 120,
+        maxRows: 6_000,
+      }),
+    };
+  }
+
+  async loadRepositoryPullReview(value) {
+    const active = this.activeRepository;
+    const number = safePullNumber(value);
+    const metadataCommit = immutableGitOid(
+      active?.entityRecords?.pullMetadataCommit,
+    );
+    const record = this.repositoryPullRecords(active).find(
+      (candidate) => candidate.number === number,
+    );
+    this.repositoryView = "review";
+    this.clearPullReviewScrollTracking();
+    const selection = ++this.pullReviewSelection;
+    if (
+      !active ||
+      !number ||
+      !metadataCommit ||
+      !record ||
+      record.metadataAvailable === false
+    ) {
+      this.pullReview = {
+        state: "unavailable",
+        number,
+        metadataCommit,
+        message:
+          "That pull request is not present in the exact pinned metadata index. No alternate ref was queried.",
+      };
+      if (
+        this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+      ) {
+        this.openLandmark("repositories");
+      } else {
+        this.renderRepositoryExplorer();
+      }
+      return;
+    }
+    this.pullReview = {
+      state: "loading",
+      number,
+      metadataCommit,
+    };
+    if (
+      this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+    ) {
+      this.openLandmark("repositories");
+    } else {
+      this.renderRepositoryExplorer();
+    }
+    try {
+      const review = await this.fetchRepositoryPullReview(
+        active,
+        record,
+        metadataCommit,
+      );
+      if (
+        selection !== this.pullReviewSelection ||
+        active !== this.activeRepository ||
+        this.destroyed
+      ) {
+        return;
+      }
+      this.pullReview = review;
+    } catch (error) {
+      if (
+        selection !== this.pullReviewSelection ||
+        active !== this.activeRepository ||
+        this.destroyed
+      ) {
+        return;
+      }
+      this.pullReview = {
+        state: "unavailable",
+        number,
+        metadataCommit,
+        message:
+          error?.message ||
+          "The exact metadata record and patch could not be verified.",
+      };
+    }
+    this.renderRepositoryExplorer();
+  }
+
   repositoryExplorerHTML(active) {
+    if (this.repositoryView === "list") {
+      return this.repositoryPullListHTML(active);
+    }
+    if (this.repositoryView === "review") {
+      return this.repositoryPullReviewHTML(active);
+    }
     const languages = [...new Set(active.entries.map((entry) => entry.language))]
       .filter(Boolean)
       .sort();
@@ -7568,6 +9748,14 @@ class ForkMeshWorld extends HTMLElement {
           <span><strong>${formatBytes(totalSize)}</strong> mapped size</span>
           <span><strong>${compactNumber(contributorCount)}</strong> contributors</span>
           <span><strong>${compactNumber(mirrorItems.length)}</strong> reported mirrors</span>
+          <button type="button" data-world-pull-list>
+            <strong>${
+              this.repositoryPullCount(active) === null
+                ? "—"
+                : compactNumber(this.repositoryPullCount(active))
+            }</strong>
+            pull requests
+          </button>
         </div>
         <div class="world-repo-entities" aria-label="Repository entity layers">
           ${entityNodes
@@ -7701,6 +9889,12 @@ class ForkMeshWorld extends HTMLElement {
     const explorer = this.$("[data-world-repo-explorer]");
     if (!explorer || !this.activeRepository) return;
     explorer.innerHTML = this.repositoryExplorerHTML(this.activeRepository);
+    this.updateRepositoryReviewMode();
+    if (this.repositoryView === "review" && this.pullReview?.state === "ready") {
+      window.requestAnimationFrame(() =>
+        this.setupPullReviewScrollTracking(),
+      );
+    }
   }
 
   selectRepositoryGraphNode(candidate) {
@@ -7708,6 +9902,22 @@ class ForkMeshWorld extends HTMLElement {
       this.activeRepository || {},
     ).find((item) => item.id === String(candidate?.id || ""));
     if (!entity) return;
+    if (
+      entity.kind === "pull-request-collection" ||
+      entity.kind === "pull-request"
+    ) {
+      if (
+        this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+      ) {
+        this.openLandmark("repositories");
+      }
+      if (entity.kind === "pull-request-collection") {
+        this.openRepositoryPullList();
+      } else {
+        this.loadRepositoryPullReview(entity.number);
+      }
+      return;
+    }
     const selection = this.$("[data-world-graph-selection]");
     if (selection) {
       selection.innerHTML = `
@@ -8613,6 +10823,242 @@ class ForkMeshWorld extends HTMLElement {
     this.toast(messages[action] || "This district is being connected to its technical backend.");
   }
 
+  setWorldAccountStatus(message, state = "") {
+    const status = this.$("[data-world-account-status]");
+    if (!status) return;
+    status.textContent = String(message || "");
+    status.dataset.state = ["error", "success"].includes(state) ? state : "";
+  }
+
+  selectWorldAccountMode(mode) {
+    const selected = mode === "signup" ? "signup" : "login";
+    const tabs = this.$(".world-account-tabs");
+    if (tabs) tabs.hidden = false;
+    this.$$("[data-world-account-mode]").forEach((button) => {
+      button.setAttribute(
+        "aria-selected",
+        String(button.dataset.worldAccountMode === selected),
+      );
+    });
+    this.$$("[data-world-account-view]").forEach((view) => {
+      view.hidden = view.dataset.worldAccountView !== selected;
+    });
+    this.$("[data-world-account-verification]")?.setAttribute("hidden", "");
+    this.setWorldAccountStatus("");
+    window.setTimeout(
+      () =>
+        this.$(
+          `[data-world-account-view="${selected}"]:not([hidden]) input`,
+        )?.focus(),
+      0,
+    );
+  }
+
+  toggleWorldAccount(open, mode = "login", returnFocus = null) {
+    const panel = this.$("[data-world-account]");
+    const backdrop = this.$(".world-account-backdrop");
+    if (!panel || !backdrop) return;
+    if (open) {
+      this.accountReturnFocus =
+        returnFocus instanceof HTMLElement ? returnFocus : null;
+      this.closeWorldChat();
+      this.closeLandmark();
+      this.toggleSettings(false);
+      if (this.tourIndex >= 0) this.stopTour();
+      this.selectWorldAccountMode(mode);
+    } else {
+      this.$$(
+        "[data-world-login-form] input[type='password'], " +
+          "[data-world-signup-form] input[type='password'], " +
+          "[data-world-login-form] input[name='totp']",
+      ).forEach((input) => {
+        input.value = "";
+      });
+      this.setWorldAccountStatus("");
+    }
+    panel.dataset.open = String(open);
+    panel.setAttribute("aria-hidden", String(!open));
+    backdrop.dataset.open = String(open);
+    if (open) {
+      window.setTimeout(
+        () =>
+          panel.querySelector(
+            "input:not([hidden]), [data-world-account-close]",
+          )?.focus(),
+        80,
+      );
+    } else {
+      const focus = this.accountReturnFocus;
+      this.accountReturnFocus = null;
+      window.setTimeout(() => focus?.focus?.(), 0);
+    }
+  }
+
+  async submitWorldLogin(form) {
+    if (!(form instanceof HTMLFormElement)) return;
+    const email = String(form.elements.email?.value || "").trim();
+    const password = String(form.elements.password?.value || "");
+    const totp = String(form.elements.totp?.value || "").trim();
+    if (!/.+@.+\..+/.test(email) || !password) {
+      this.setWorldAccountStatus(
+        "Enter a valid email address and password.",
+        "error",
+      );
+      return;
+    }
+    const submit = form.querySelector("[data-world-account-submit]");
+    if (submit) {
+      submit.disabled = true;
+      submit.textContent = "Logging in…";
+    }
+    this.setWorldAccountStatus("Verifying this account…");
+    try {
+      const body = await this.postJSON(
+        "/api/accounts/login",
+        { email, password, totp },
+        { auth: false, timeout: 12_000 },
+      );
+      if (!storeWorldSession(body)) {
+        throw new Error("invalid_session");
+      }
+      form.elements.password.value = "";
+      form.elements.totp.value = "";
+      this.captureWorldPosition(true);
+      this.setWorldAccountStatus(
+        `Logged in as ${String(body.nodeName || "").toLowerCase()}. Reloading the same World position…`,
+        "success",
+      );
+      window.setTimeout(() => location.reload(), 350);
+    } catch (error) {
+      const code = String(error?.message || "");
+      const messages = {
+        invalid_credentials: "Incorrect email or password.",
+        bad_totp: "Enter the current authenticator code.",
+        too_many_attempts:
+          "Too many failed attempts. Wait a few minutes and try again.",
+        account_disabled: "This account has been disabled.",
+      };
+      this.setWorldAccountStatus(
+        messages[code] || "Could not log in. Please try again.",
+        "error",
+      );
+      form.elements.password.value = "";
+      form.elements.totp.value = "";
+      form.elements.password.focus();
+      if (submit) {
+        submit.disabled = false;
+        submit.textContent = "Log in inside the World";
+      }
+    }
+  }
+
+  async submitWorldSignup(form) {
+    if (!(form instanceof HTMLFormElement)) return;
+    const nodeName = String(form.elements.nodeName?.value || "")
+      .trim()
+      .toLowerCase();
+    const email = String(form.elements.email?.value || "").trim();
+    const password = String(form.elements.password?.value || "");
+    const terms = Boolean(form.elements.terms?.checked);
+    form.elements.nodeName.value = nodeName;
+    if (!WORLD_ACCOUNT_NAME_RE.test(nodeName)) {
+      this.setWorldAccountStatus(
+        "Use lowercase letters, numbers, and hyphens; start with a letter and end with a letter or number.",
+        "error",
+      );
+      return;
+    }
+    if (!/.+@.+\..+/.test(email)) {
+      this.setWorldAccountStatus("Enter a valid email address.", "error");
+      return;
+    }
+    if (password.length < 8) {
+      this.setWorldAccountStatus(
+        "Password must contain at least 8 characters.",
+        "error",
+      );
+      return;
+    }
+    if (!terms) {
+      this.setWorldAccountStatus(
+        "Accept the Terms and Privacy Policy to continue.",
+        "error",
+      );
+      return;
+    }
+    const submit = form.querySelector("[data-world-account-submit]");
+    if (submit) {
+      submit.disabled = true;
+      submit.textContent = "Creating…";
+    }
+    this.setWorldAccountStatus("Creating the account securely…");
+    try {
+      await this.postJSON(
+        "/api/accounts/signup",
+        { nodeName, email, password },
+        { auth: false, timeout: 12_000 },
+      );
+      form.elements.password.value = "";
+      this.$$("[data-world-account-view]").forEach((view) => {
+        view.hidden = true;
+      });
+      const tabs = this.$(".world-account-tabs");
+      if (tabs) tabs.hidden = true;
+      const verification = this.$("[data-world-account-verification]");
+      if (verification) verification.hidden = false;
+      const createdName = this.$("[data-world-account-created-name]");
+      const createdEmail = this.$("[data-world-account-created-email]");
+      if (createdName) createdName.textContent = nodeName;
+      if (createdEmail) createdEmail.textContent = email;
+      this.setWorldAccountStatus(
+        "Account created. Verification is required before account permissions appear in the World.",
+        "success",
+      );
+    } catch (error) {
+      const code = String(error?.message || "");
+      const messages = {
+        node_name_taken: "That username is already taken.",
+        email_taken: "That email is already registered.",
+        password_too_short:
+          "Password must contain at least 8 characters.",
+      };
+      this.setWorldAccountStatus(
+        messages[code] || "Could not create the account. Please try again.",
+        "error",
+      );
+      form.elements.password.value = "";
+      form.elements.password.focus();
+      if (submit) {
+        submit.disabled = false;
+        submit.textContent = "Create account inside the World";
+      }
+    }
+  }
+
+  async logoutFromWorld() {
+    const session = readSession();
+    try {
+      await fetch("/api/accounts/logout", {
+        method: "POST",
+        headers: session?.sessionToken
+          ? { Authorization: `Bearer ${session.sessionToken}` }
+          : {},
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+    } catch (_) {
+      // Local logout must still complete if the network is unavailable.
+    }
+    try {
+      localStorage.removeItem("forkmesh.session");
+      document.cookie =
+        "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax" +
+        (location.protocol === "https:" ? "; Secure" : "");
+    } catch (_) {}
+    this.captureWorldPosition(true);
+    location.reload();
+  }
+
   toggleSettings(open) {
     const panel = this.$("[data-world-settings]");
     if (!panel) return;
@@ -8840,6 +11286,195 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.clearFocus();
   }
 
+  startDiagnostics() {
+    window.clearInterval(this.diagnosticsTimer);
+    this.renderDiagnostics();
+    this.diagnosticsTimer = window.setInterval(
+      () => this.renderDiagnostics(),
+      WORLD_DIAGNOSTICS_INTERVAL_MS,
+    );
+  }
+
+  collectDiagnostics(now = performance.now()) {
+    const sampleNow = Number.isFinite(Number(now))
+      ? Number(now)
+      : performance.now();
+    const elapsedMs = Math.max(1, sampleNow - this.diagnosticsSampleAt);
+    const inboundFrames = Math.max(0, Number(this.socketInboundFrames) || 0);
+    const outboundFrames = Math.max(0, Number(this.socketOutboundFrames) || 0);
+    const inboundRate = Math.min(
+      10_000,
+      (Math.max(0, inboundFrames - this.diagnosticsInboundSample) * 1000) /
+        elapsedMs,
+    );
+    const outboundRate = Math.min(
+      10_000,
+      (Math.max(0, outboundFrames - this.diagnosticsOutboundSample) * 1000) /
+        elapsedMs,
+    );
+    this.diagnosticsSampleAt = sampleNow;
+    this.diagnosticsInboundSample = inboundFrames;
+    this.diagnosticsOutboundSample = outboundFrames;
+
+    const readyState = Number(this.socket?.readyState);
+    let socketState = "offline";
+    if (this.presenceConnecting || readyState === 0) {
+      socketState = "connecting";
+    } else if (readyState === 1) {
+      socketState = this.serverPeerId ? "online" : "handshaking";
+    } else if (readyState === 2) {
+      socketState = "closing";
+    } else if (this.socketTimer) {
+      socketState = "reconnecting";
+    }
+    const socketOnline = readyState === 1 && Boolean(this.serverPeerId);
+    const peerCount =
+      1 +
+      this.remotePlayers.size +
+      (socketOnline ? 0 : this.localPeers.size);
+    const scene = this.world?.getDiagnostics?.(sampleNow) || null;
+    const snapshot = {
+      renderer: scene
+        ? {
+            fps: Math.max(0, Math.min(1000, Number(scene.fps) || 0)),
+            frameTimeMs: Math.max(
+              0,
+              Math.min(60_000, Number(scene.frameTimeMs) || 0),
+            ),
+            calls: Math.max(
+              0,
+              Math.min(10_000_000, Number(scene.rendererCalls) || 0),
+            ),
+            triangles: Math.max(
+              0,
+              Math.min(1_000_000_000, Number(scene.rendererTriangles) || 0),
+            ),
+            paused: scene.paused === true,
+          }
+        : null,
+      connection: {
+        state: socketState,
+        peers: Math.max(1, Math.min(10_000, peerCount)),
+        reconnects: Math.max(
+          0,
+          Math.min(
+            WORLD_DIAGNOSTICS_COUNTER_MAX,
+            this.socketConnectionAttempts - 1,
+          ),
+        ),
+        bufferedBytes: Math.max(
+          0,
+          Math.min(
+            64 * 1024 * 1024,
+            Number(this.socket?.bufferedAmount) || 0,
+          ),
+        ),
+      },
+      traffic: {
+        inboundFrames,
+        outboundFrames,
+        inboundRate,
+        outboundRate,
+      },
+      queues: {
+        movement:
+          this.pendingMovement && this.movementSendTimer
+            ? "coalescing"
+            : this.pendingMovement
+              ? "queued"
+              : "idle",
+        profile:
+          this.profilePresencePending && this.profilePresenceTimer
+            ? "coalescing"
+            : this.profilePresencePending
+              ? "queued"
+              : "idle",
+        movementCoalesced: Math.max(
+          0,
+          Math.min(
+            WORLD_DIAGNOSTICS_COUNTER_MAX,
+            Number(this.movementCoalescedFrames) || 0,
+          ),
+        ),
+        profileCoalesced: Math.max(
+          0,
+          Math.min(
+            WORLD_DIAGNOSTICS_COUNTER_MAX,
+            Number(this.profileCoalescedFrames) || 0,
+          ),
+        ),
+        backpressureEvents: Math.max(
+          0,
+          Math.min(
+            WORLD_DIAGNOSTICS_COUNTER_MAX,
+            Number(this.socketBackpressureEvents) || 0,
+          ),
+        ),
+      },
+      build: { ...this.buildDiagnostics },
+    };
+    this.lastDiagnosticsSnapshot = snapshot;
+    return snapshot;
+  }
+
+  renderDiagnostics() {
+    const root = this.$("[data-world-diagnostics]");
+    if (!root) return;
+    const snapshot = this.collectDiagnostics();
+    const { renderer, connection, traffic, queues, build } = snapshot;
+    const formatRate = (value) =>
+      `${Math.max(0, Number(value) || 0).toFixed(1)}/s`;
+    const rendererSummary = renderer
+      ? renderer.paused
+        ? "renderer paused"
+        : `${renderer.fps.toFixed(0)} FPS · ${renderer.frameTimeMs.toFixed(1)} ms`
+      : "renderer unavailable";
+    const version = build.version
+      ? `${/^v/i.test(build.version) ? "" : "v"}${build.version}`
+      : "build pending";
+    const summary = this.$("[data-world-diagnostics-summary]");
+    if (summary) {
+      summary.textContent = `${rendererSummary} · socket ${connection.state} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${version}`;
+    }
+    const light = this.$("[data-world-diagnostics-light]");
+    if (light) {
+      light.dataset.state =
+        connection.state === "online"
+          ? "online"
+          : ["connecting", "handshaking", "reconnecting"].includes(
+                connection.state,
+              )
+            ? "connecting"
+            : "offline";
+    }
+    const rendererDetail = this.$("[data-world-diagnostics-renderer]");
+    if (rendererDetail) {
+      rendererDetail.textContent = renderer
+        ? `${renderer.paused ? "Paused" : `${renderer.fps.toFixed(1)} FPS · ${renderer.frameTimeMs.toFixed(1)} ms/frame`} · ${Math.round(renderer.calls).toLocaleString()} calls · ${Math.round(renderer.triangles).toLocaleString()} triangles`
+        : "WebGL renderer unavailable";
+    }
+    const connectionDetail = this.$(
+      "[data-world-diagnostics-connection]",
+    );
+    if (connectionDetail) {
+      connectionDetail.textContent = `${connection.state} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${connection.reconnects} reconnect attempts · ${Math.round(connection.bufferedBytes).toLocaleString()} buffered bytes`;
+    }
+    const trafficDetail = this.$("[data-world-diagnostics-traffic]");
+    if (trafficDetail) {
+      trafficDetail.textContent = `Inbound ${Math.round(traffic.inboundFrames).toLocaleString()} (${formatRate(traffic.inboundRate)}) · outbound ${Math.round(traffic.outboundFrames).toLocaleString()} (${formatRate(traffic.outboundRate)})`;
+    }
+    const queueDetail = this.$("[data-world-diagnostics-queues]");
+    if (queueDetail) {
+      queueDetail.textContent = `Movement ${queues.movement} (${queues.movementCoalesced} coalesced) · profile ${queues.profile} (${queues.profileCoalesced} coalesced) · ${queues.backpressureEvents} backpressure events`;
+    }
+    const buildDetail = this.$("[data-world-diagnostics-build]");
+    if (buildDetail) {
+      buildDetail.textContent = build.version
+        ? `${version}${build.revision ? ` · ${build.revision.slice(0, 12)}` : " · revision unavailable"}`
+        : "Version endpoint unavailable";
+    }
+  }
+
   startActivityTicker() {
     const messages = () => {
       const nodes = liveNodeRecords(this.network, this.mirrorCatalogs);
@@ -8951,6 +11586,11 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   queueMovementPresence(movement) {
+    if (this.pendingMovement) {
+      this.movementCoalescedFrames = incrementDiagnosticCounter(
+        this.movementCoalescedFrames,
+      );
+    }
     this.pendingMovement = {
       ...movement,
       moving: movement?.moving !== false,
@@ -9103,6 +11743,9 @@ class ForkMeshWorld extends HTMLElement {
     );
     if (this.worldTicket) socketURL.searchParams.set("ticket", this.worldTicket);
     let socket;
+    this.socketConnectionAttempts = incrementDiagnosticCounter(
+      this.socketConnectionAttempts,
+    );
     try {
       socket = new WebSocket(socketURL.href);
     } catch (_) {
@@ -9139,6 +11782,9 @@ class ForkMeshWorld extends HTMLElement {
       );
     });
     socket.addEventListener("message", (event) => {
+      this.socketInboundFrames = incrementDiagnosticCounter(
+        this.socketInboundFrames,
+      );
       let message = null;
       try {
         message = JSON.parse(event.data);
@@ -9181,6 +11827,11 @@ class ForkMeshWorld extends HTMLElement {
     if (message?.type !== "presence") {
       return this.sendPresenceNow(message);
     }
+    if (this.profilePresencePending) {
+      this.profileCoalescedFrames = incrementDiagnosticCounter(
+        this.profileCoalescedFrames,
+      );
+    }
     this.profilePresencePending = true;
     window.clearTimeout(this.profilePresenceTimer);
     this.profilePresenceTimer = window.setTimeout(
@@ -9213,6 +11864,9 @@ class ForkMeshWorld extends HTMLElement {
       ["presence", "move", "ping"].includes(String(message?.type || "")) &&
       Number(this.socket.bufferedAmount || 0) > SOCKET_BUFFER_HIGH_WATER_BYTES
     ) {
+      this.socketBackpressureEvents = incrementDiagnosticCounter(
+        this.socketBackpressureEvents,
+      );
       return false;
     }
     let safe;
@@ -9222,6 +11876,10 @@ class ForkMeshWorld extends HTMLElement {
       this.identity.activityCategory = presenceActivity(
         this.settings,
         this.currentActivityCategory,
+      );
+      const publicStatus = normalizeWorldStatus(
+        this.settings.statusEmoji,
+        this.settings.statusNote,
       );
       safe = {
         type: "presence",
@@ -9254,6 +11912,8 @@ class ForkMeshWorld extends HTMLElement {
         space: WORLD_SPACE_IDS.has(this.currentSpace)
           ? this.currentSpace
           : "town-square",
+        statusEmoji: publicStatus.emoji,
+        statusNote: publicStatus.note,
       };
     } else if (message.type === "move") {
       safe = {
@@ -9271,6 +11931,9 @@ class ForkMeshWorld extends HTMLElement {
     }
     try {
       this.socket.send(JSON.stringify(safe));
+      this.socketOutboundFrames = incrementDiagnosticCounter(
+        this.socketOutboundFrames,
+      );
       return true;
     } catch (_) {
       return false;
@@ -9475,6 +12138,7 @@ class ForkMeshWorld extends HTMLElement {
     if (this.destroyed) return;
     if (this.spawnSelected) this.captureWorldPosition(true);
     this.destroyed = true;
+    this.clearPullReviewScrollTracking();
     document.removeEventListener("visibilitychange", this.handleVisibility);
     window.visualViewport?.removeEventListener(
       "resize",
@@ -9505,6 +12169,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.mediaTimer);
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);
+    window.clearInterval(this.diagnosticsTimer);
     this.peerGraceTimer = 0;
     this.profilePresenceTimer = 0;
     this.movementSendTimer = 0;

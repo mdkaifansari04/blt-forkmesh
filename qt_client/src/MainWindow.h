@@ -137,6 +137,9 @@ class QVBoxLayout;
 class QCheckBox;
 class QHBoxLayout;
 class PublicMirrorMaterialization;
+namespace forkmesh::control {
+struct MirrorActionsConfigurationRequest;
+}
 namespace forkmesh::ui { class DiffFileNavigator; } // file-list <-> diff-view sync
 
 // A configured mainnode the user can connect to. The client connects to one at
@@ -186,6 +189,14 @@ struct RepositoryRecord {
     // Enabled by default; can be turned off per repo on the Actions tab. Pushed
     // workflow changes still require explicit approval before they run.
     bool actionsEnabled = true;
+    // A gateway-managed serving repository must keep its own post-receive hook
+    // and object database isolated from workflow-created objects. The remote
+    // Actions helper therefore maintains a separate local bare mirror and this
+    // source/ref pair is polled for bounded branch changes instead of replacing
+    // the serving hook.
+    bool externallyManagedActions = false;
+    QString externalActionsSource;
+    QString externalActionsRef;
     // Workflow paths (relative to the repo root, e.g. ".forkmesh/ci.yml") that
     // the owner has switched off individually. Disabled workflows are skipped on
     // push and can't be triggered manually, but stay listed so past runs remain
@@ -276,6 +287,7 @@ public:
     // (adhoc #15) without needing real scroll-wheel input.
     void testShowSettingsSection() { showSection(1); }
     void testShowLogSection() { showSection(4); }
+    void testShowHostsSection() { showSection(7); }
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
     QTextBrowser *testNetworkLogView() const { return m_settingsLog; }
     void testScrollNetworkLogToTop() { onNetworkLogScrolled(0); }
@@ -1075,6 +1087,14 @@ private:
     void viewHostLogsForSelection(int row);
     void runHostLogSession(const QString &ip, const QString &user,
                           const QString &pass, const QString &node);
+    // Configure a saved mirror host's Actions executor over its authenticated
+    // SSH channel. Secret values are collected in a one-shot dialog and sent
+    // only in a bounded JSON stdin payload; they are never saved in QSettings
+    // or placed in process arguments/logs.
+    void configureHostActionsForSelection(int row);
+    void runHostActionsConfiguration(
+        forkmesh::control::MirrorActionsConfigurationRequest request,
+        const QString &sshPassword);
     // Fleet-wide deploys (adhoc): each runs against EVERY saved host in
     // parallel, streaming into its own pane of the split live-output grid — a
     // published, checksum-verified binary install (#257), an
@@ -1853,6 +1873,17 @@ private:
     void removePushHook(const RepositoryRecord &repo) const;
     void installAllPushHooks() const;
     void scanActionSpool();              // read *.push/*.commit events, enqueue runs
+    // Apply a controller-written generation without restarting the headless
+    // node, then poll gateway-managed sources into their isolated Actions
+    // mirrors. Neither path changes the gateway's serving hook/object store.
+    void syncMirrorActionsConfiguration();
+    void scanExternalActionsSources();
+    void updateMirrorActionsRuntimeState();
+    // Atomically publish a bounded, redacted Actions run summary for the
+    // gateway. Live log lines are coalesced; lifecycle changes publish on the
+    // next event-loop turn and the lease is refreshed periodically.
+    void scheduleMirrorActionsSummary(int delayMs = 0);
+    void writeMirrorActionsSummary();
     void enqueuePushEvent(const QString &owner, const QString &name,
                           const QString &commit, const QString &ref);
     void processActionQueue();
@@ -3516,6 +3547,7 @@ private:
     QTableWidget *m_hostsTable = nullptr;
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any
+    QProcess *m_hostActionsProcess = nullptr; // one-shot stdin-only Actions config
     // Installer link-code detection (adhoc #53): rolling tail of the install
     // output so the "Link code: NNNNNN" line survives chunk splits, and a
     // per-run guard so the link popup opens once.
@@ -4548,6 +4580,12 @@ private:
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
+    QString m_mirrorActionsConfigGeneration;
+    QString m_mirrorActionsRuntimeState;
+    qint64 m_mirrorActionsRuntimeStateWrittenAtMs = 0;
+    QTimer *m_mirrorActionsSummaryTimer = nullptr;
+    qint64 m_mirrorActionsSummaryAttemptedAtMs = 0;
+    qint64 m_lastExternalActionsScanMs = 0;
     QList<AppNotification> m_notifications;
     QPushButton *m_notificationButton = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page

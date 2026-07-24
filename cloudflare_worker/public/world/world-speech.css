@@ -2,7 +2,10 @@
   position: fixed;
   z-index: 90;
   right: max(16px, env(safe-area-inset-right));
-  bottom: max(18px, env(safe-area-inset-bottom));
+  bottom: calc(
+    max(18px, env(safe-area-inset-bottom)) +
+      var(--world-diagnostics-height, 0px)
+  );
   width: 46px;
   height: 46px;
   border: 1px solid rgba(141, 245, 199, 0.72);
@@ -23,7 +26,10 @@
   position: fixed;
   z-index: 100;
   right: max(16px, env(safe-area-inset-right));
-  bottom: calc(max(18px, env(safe-area-inset-bottom)) + 56px);
+  bottom: calc(
+    max(18px, env(safe-area-inset-bottom)) + 56px +
+      var(--world-diagnostics-height, 0px)
+  );
   width: min(390px, calc(100vw - 32px));
   max-height: min(680px, calc(100dvh - 92px));
   overflow: auto;
@@ -187,14 +193,20 @@
 @media (max-width: 540px), (pointer: coarse) {
   .world-speech-launcher {
     right: max(10px, env(safe-area-inset-right));
-    bottom: max(10px, env(safe-area-inset-bottom));
+    bottom: calc(
+      max(10px, env(safe-area-inset-bottom)) +
+        var(--world-diagnostics-height, 0px)
+    );
     width: 48px;
     height: 48px;
   }
 
   .world-speech-panel {
     inset: auto max(8px, env(safe-area-inset-right))
-      calc(max(10px, env(safe-area-inset-bottom)) + 58px)
+      calc(
+        max(10px, env(safe-area-inset-bottom)) + 58px +
+          var(--world-diagnostics-height, 0px)
+      )
       max(8px, env(safe-area-inset-left));
     width: auto;
     max-height: min(72dvh, 620px);
@@ -204,7 +216,10 @@
 @media (max-height: 520px) and (orientation: landscape) {
   .world-speech-panel {
     top: max(8px, env(safe-area-inset-top));
-    bottom: max(8px, env(safe-area-inset-bottom));
+    bottom: calc(
+      max(8px, env(safe-area-inset-bottom)) +
+        var(--world-diagnostics-height, 0px)
+    );
     max-height: none;
   }
 }

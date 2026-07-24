@@ -616,14 +616,46 @@ def test_world_autoloads_the_live_catalog_attested_flagship_repository_map():
         )
     ]
     assert "record?.owner" in catalog
-    assert '["local-node", "remote-clone"].includes(source)' in catalog
+    assert (
+        '["local-node", "remote-clone", "organization-alias"].includes(source)'
+        in catalog
+    )
     assert "!record?.isPrivate" in catalog
     assert "!record?.archived" in catalog
     assert "record?.commit" in catalog
     assert "record?.stateHash" in catalog
 
 
+def test_login_and_signup_stay_inside_the_world_and_out_of_presence():
+    assert "data-world-account-open" in APP
+    assert "data-world-login-form" in APP
+    assert "data-world-signup-form" in APP
+    assert '"/api/accounts/login"' in APP
+    assert '"/api/accounts/signup"' in APP
+    assert "storeWorldSession(body)" in APP
+    assert "location.reload()" in APP
+    assert "password, totp" in APP
+    assert "password },\n        { auth: false" in APP
+    assert "Credentials are never placed in URLs" in APP
+    assert ".world-account" in CSS
+
+
 def test_flagship_graph_requires_commit_matched_tree_sizes_stats_and_entities():
+    entity_loader = APP[
+        APP.index("  async loadRepositoryEntityRecords("):
+        APP.index(
+            "\n  flagshipCatalogCommits() {",
+            APP.index("  async loadRepositoryEntityRecords("),
+        )
+    ]
+    assert (
+        entity_loader.index("const pullResult =")
+        < entity_loader.index("const issueResults = [];")
+    )
+    assert "await this.loadRepositoryPullRecords(base)" in entity_loader
+    assert "const issueConcurrency = 2;" in entity_loader
+    assert "timeout: 6000" in entity_loader
+
     fetch_map = APP[
         APP.index("  async fetchRepositoryMapSnapshot("):
         APP.index(
@@ -635,7 +667,14 @@ def test_flagship_graph_requires_commit_matched_tree_sizes_stats_and_entities():
     assert "const ref = `?ref=${encodeURIComponent(commit)}`;" in fetch_map
     assert "`${base}/sizes${ref}`" in fetch_map
     assert "`${base}/stats${ref}`" in fetch_map
-    assert "this.loadRepositoryEntityRecords(base, commit)" in fetch_map
+    assert "this.loadRepositoryEntityRecords(base, commit, {" in fetch_map
+    assert "privateRepository: catalogRecord?.isPrivate === true" in fetch_map
+    assert "pullResult," in fetch_map
+    assert (
+        fetch_map.index("await this.loadRepositoryPullRecords(base)")
+        < fetch_map.index("await Promise.allSettled([")
+    )
+    assert "const REPOSITORY_METADATA_TIMEOUT_MS = 45 * 1000;" in APP
     assert fetch_map.count(
         'String(sizeResult.value?.commit || "").toLowerCase() === commit'
     ) == 1

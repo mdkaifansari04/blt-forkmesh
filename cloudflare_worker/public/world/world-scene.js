@@ -2,6 +2,7 @@ import {
   LANDMARKS,
   WORLD_REGIONS,
   landmarkById,
+  normalizeWorldStatus,
 } from "./world-data.js";
 
 const WORLD_RADIUS = 72;
@@ -430,6 +431,66 @@ function makeLabelSprite(THREE, title, subtitle, color) {
   return sprite;
 }
 
+function avatarStatusTexture(THREE, emoji, note) {
+  return canvasTexture(THREE, 512, 192, (context) => {
+    context.clearRect(0, 0, 512, 192);
+    roundedRect(context, 8, 8, 496, 176, 32);
+    context.fillStyle = "rgba(7,17,15,0.94)";
+    context.fill();
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 6;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font =
+      '82px system-ui, "Apple Color Emoji", "Segoe UI Emoji", sans-serif';
+    context.fillStyle = "#ffffff";
+    context.fillText(emoji, note ? 116 : 256, 96);
+    if (note) {
+      context.textAlign = "left";
+      context.font =
+        '700 42px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = "#d9ffea";
+      context.fillText(note.slice(0, 20), 188, 98, 282);
+    }
+  });
+}
+
+function syncAvatarStatus(THREE, avatar, identity) {
+  if (!avatar?.userData) return;
+  const status = normalizeWorldStatus(
+    identity?.statusEmoji,
+    identity?.statusNote,
+  );
+  const key = `${status.emoji}\u0000${status.note}`;
+  if (avatar.userData.emojiStatusKey === key) return;
+  const previous = avatar.userData.emojiStatusSprite;
+  if (previous) {
+    avatar.remove(previous);
+    previous.material?.map?.dispose?.();
+    previous.material?.dispose?.();
+  }
+  avatar.userData.emojiStatusKey = key;
+  avatar.userData.statusEmoji = status.emoji;
+  avatar.userData.statusNote = status.note;
+  avatar.userData.emojiStatusSprite = null;
+  if (!status.emoji) return;
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: avatarStatusTexture(THREE, status.emoji, status.note),
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  sprite.name = "forkmesh-avatar-emoji-status";
+  sprite.position.set(0, 4.75, 0);
+  sprite.scale.set(status.note ? 3.25 : 1.6, 1.22, 1);
+  sprite.renderOrder = 12;
+  avatar.add(sprite);
+  avatar.userData.emojiStatusSprite = sprite;
+}
+
 function makeConsentedProfileFace(THREE, follower) {
   const face = new THREE.Mesh(
     new THREE.SphereGeometry(0.24, 18, 14),
@@ -614,8 +675,13 @@ function createAvatar(THREE, identity, options = {}) {
     inactiveSince:
       identity.inputActive === true ? 0 : performance.now(),
     avatarOpacity: 1,
+    statusEmoji: "",
+    statusNote: "",
+    emojiStatusKey: "",
+    emojiStatusSprite: null,
   };
   syncOperatorBelt(THREE, group, identity.nodes?.length || 0);
+  syncAvatarStatus(THREE, group, identity);
   setShadows(group, true, true);
   return group;
 }
@@ -653,6 +719,7 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
   avatar.userData.name = identity.name;
   syncCountryShirt(THREE, avatar, identity);
   syncAvatarActivity(avatar, identity);
+  syncAvatarStatus(THREE, avatar, identity);
 }
 
 function animateAvatarActivity(avatar, time, delta, reducedMotion) {
@@ -2552,7 +2619,24 @@ function makeObjectLabel(landmark, labelLayer, onSelect) {
   wrapper.style.setProperty("--label-color", landmark.color);
   const button = document.createElement("button");
   button.type = "button";
-  button.textContent = landmark.shortLabel;
+  const copy = document.createElement("span");
+  copy.textContent = landmark.shortLabel;
+  const construction = document.createElement("span");
+  construction.className =
+    "world-construction-mark world-construction-mark-destination";
+  construction.dataset.worldConstructionMarker = landmark.id;
+  construction.setAttribute("role", "img");
+  construction.setAttribute(
+    "aria-label",
+    "Under construction: this integration has not been verified in this session.",
+  );
+  construction.title =
+    "Under construction: this integration has not been verified in this session.";
+  const icon = document.createElement("span");
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "🚧";
+  construction.appendChild(icon);
+  button.append(copy, construction);
   button.setAttribute("aria-label", `Open ${landmark.label}`);
   button.addEventListener("click", () => onSelect(landmark.id, { source: "label" }));
   wrapper.appendChild(button);
@@ -2560,11 +2644,39 @@ function makeObjectLabel(landmark, labelLayer, onSelect) {
   return wrapper;
 }
 
+function updatePlayerLabel(element, identity) {
+  const status = normalizeWorldStatus(
+    identity?.statusEmoji,
+    identity?.statusNote,
+  );
+  const name = String(identity?.name || "visitor").slice(0, 32);
+  const nameCopy = document.createElement("span");
+  nameCopy.className = "world-player-label-name";
+  nameCopy.textContent = name;
+  element.replaceChildren(nameCopy);
+  if (status.emoji) {
+    const statusCopy = document.createElement("span");
+    statusCopy.className = "world-player-label-status";
+    statusCopy.textContent = [status.emoji, status.note]
+      .filter(Boolean)
+      .join(" ");
+    element.appendChild(statusCopy);
+    element.setAttribute(
+      "aria-label",
+      `${name}, public status ${status.emoji}${
+        status.note ? ` ${status.note}` : ""
+      }`,
+    );
+  } else {
+    element.setAttribute("aria-label", name);
+  }
+}
+
 function makePlayerLabel(player, labelLayer) {
   const element = document.createElement("div");
   element.className = "world-player-label";
   element.dataset.playerLabel = player.userData.id || "";
-  element.textContent = player.userData.name || "visitor";
+  updatePlayerLabel(element, player.userData);
   labelLayer.appendChild(element);
   return element;
 }
@@ -2840,6 +2952,10 @@ export function createWorldScene({
   let running = true;
   let disposed = false;
   let lastFrame = performance.now();
+  let diagnosticsSampleAt = lastFrame;
+  let diagnosticsFrameCount = 0;
+  let diagnosticsRendererCalls = 0;
+  let diagnosticsRendererTriangles = 0;
   let lastMovementEmit = 0;
   let lastPosition = player.position.clone();
   let wasWalking = false;
@@ -3295,6 +3411,8 @@ export function createWorldScene({
         ),
         firstVisitAge: remote.firstVisitAge || "hidden",
         nodes: Array.isArray(remote.nodes) ? remote.nodes.slice(0, 6) : [],
+        statusEmoji: remote.statusEmoji || "",
+        statusNote: remote.statusNote || "",
       };
       const badgeKey = JSON.stringify(badgeIdentity);
       if (!avatar) {
@@ -3357,7 +3475,7 @@ export function createWorldScene({
         updateAvatarBadge(THREE, avatar, badgeIdentity, true);
         syncOperatorBelt(THREE, avatar, badgeIdentity.nodes.length);
         avatar.userData.badgeKey = badgeKey;
-        remoteLabels.get(remote.id).textContent = remote.name || "visitor";
+        updatePlayerLabel(remoteLabels.get(remote.id), badgeIdentity);
       }
       syncRemoteModerationControls(avatar, remote);
     });
@@ -4060,7 +4178,7 @@ export function createWorldScene({
     Object.assign(identity, nextIdentity);
     updateAvatarBadge(THREE, player, identity, false);
     syncOperatorBelt(THREE, player, identity.nodes?.length || 0);
-    playerLabel.textContent = identity.name;
+    updatePlayerLabel(playerLabel, identity);
     if (identity.isAdmin !== true) {
       remotePlayers.forEach((avatar, peerId) => {
         removeRemoteModerationControls(avatar, peerId);
@@ -4805,11 +4923,39 @@ export function createWorldScene({
       updateScreenLabel(THREE, object, element, camera, rect.width, rect.height, height);
       element.dataset.selected = String(selectedLandmark === landmark.id);
     });
-    updateScreenLabel(THREE, player, playerLabel, camera, rect.width, rect.height, 4.5);
+    updateScreenLabel(
+      THREE,
+      player,
+      playerLabel,
+      camera,
+      rect.width,
+      rect.height,
+      player.userData.emojiStatusSprite ? 5.7 : 4.5,
+    );
     remotePlayers.forEach((avatar, id) => {
-      updateScreenLabel(THREE, avatar, remoteLabels.get(id), camera, rect.width, rect.height, 4.2);
+      updateScreenLabel(
+        THREE,
+        avatar,
+        remoteLabels.get(id),
+        camera,
+        rect.width,
+        rect.height,
+        avatar.userData.emojiStatusSprite ? 5.35 : 4.2,
+      );
     });
     renderer.render(scene, camera);
+    diagnosticsFrameCount = Math.min(
+      1_000_000,
+      diagnosticsFrameCount + 1,
+    );
+    diagnosticsRendererCalls = Math.max(
+      0,
+      Math.min(10_000_000, Number(renderer.info?.render?.calls) || 0),
+    );
+    diagnosticsRendererTriangles = Math.max(
+      0,
+      Math.min(1_000_000_000, Number(renderer.info?.render?.triangles) || 0),
+    );
   }
 
   function setPaused(paused) {
@@ -4820,6 +4966,56 @@ export function createWorldScene({
     } else {
       renderer.setAnimationLoop(null);
     }
+  }
+
+  function getDiagnostics(now = performance.now()) {
+    const sampleNow = Number.isFinite(Number(now))
+      ? Number(now)
+      : performance.now();
+    const elapsedMs = Math.max(1, sampleNow - diagnosticsSampleAt);
+    const frames = diagnosticsFrameCount;
+    const fps = running
+      ? Math.max(0, Math.min(1000, (frames * 1000) / elapsedMs))
+      : 0;
+    const frameTimeMs =
+      running && frames
+        ? Math.max(0, Math.min(60_000, elapsedMs / frames))
+        : 0;
+    diagnosticsSampleAt = sampleNow;
+    diagnosticsFrameCount = 0;
+    return {
+      fps,
+      frameTimeMs,
+      rendererCalls: diagnosticsRendererCalls,
+      rendererTriangles: diagnosticsRendererTriangles,
+      paused: !running,
+    };
+  }
+
+  function updateLandmarkConstruction(capabilities = {}) {
+    LANDMARKS.forEach((landmark) => {
+      const label = landmarkLabels.get(landmark.id);
+      const marker = label?.querySelector(
+        `[data-world-construction-marker="${landmark.id}"]`,
+      );
+      const button = label?.querySelector("button");
+      if (!marker || !button) return;
+      const capability = capabilities?.[landmark.id];
+      const live = capability?.live === true;
+      const reason =
+        String(capability?.reason || "").trim() ||
+        "This integration has not been verified in this session.";
+      marker.hidden = live;
+      marker.setAttribute("aria-label", `Under construction: ${reason}`);
+      marker.title = `Under construction: ${reason}`;
+      button.dataset.worldUnderConstruction = String(!live);
+      button.setAttribute(
+        "aria-label",
+        live
+          ? `Open ${landmark.label}`
+          : `Open ${landmark.label} — under construction: ${reason}`,
+      );
+    });
   }
 
   function dispose() {
@@ -4883,6 +5079,7 @@ export function createWorldScene({
     updateMediaSpaces,
     updateIdentity,
     updateRepositoryGraph,
+    updateLandmarkConstruction,
     playEmote,
     playRewardEvent,
     setPaused,
@@ -4903,6 +5100,7 @@ export function createWorldScene({
       maxSpeed: PLAYER_MAX_SPEED,
       keyboardActive: [...keys].some((code) => MOVEMENT_KEYS.has(code)),
     }),
+    getDiagnostics,
     getEnvironmentState: () => ({
       theme: currentTheme,
       lightLevel,
