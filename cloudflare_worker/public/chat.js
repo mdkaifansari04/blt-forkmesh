@@ -35,6 +35,7 @@ const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
 const RELAY_HOST = window.FORKMESH_RELAY_HOST || location.host;
 const MAX_TEXT = 16000;
 const MAX_NAME = 32;
+const MAX_ACCOUNT_NAME = 63;
 const MAX_ATTACHMENT_BYTES = 1024 * 1024;
 const MAX_ATTACHMENT_NAME = 180;
 const MAX_ATTACHMENT_MIME = 100;
@@ -76,6 +77,7 @@ const roomsEl = document.querySelector("#chat-rooms");
 const peopleEl = document.querySelector("#chat-people");
 const peopleTitleEl = document.querySelector("#chat-people-title");
 const channelTitleEl = document.querySelector("#chat-channel-title");
+const channelVisibilityBadge = document.querySelector("#chat-channel-visibility-badge");
 const channelCreateBtn = document.querySelector("#chat-channel-create");
 const channelManageBtn = document.querySelector("#chat-channel-manage");
 const channelDialog = document.querySelector("#chat-channel-dialog");
@@ -83,6 +85,13 @@ const channelDialogClose = document.querySelector("#chat-channel-dialog-close");
 const channelError = document.querySelector("#chat-channel-error");
 const channelCreateForm = document.querySelector("#chat-channel-create-form");
 const channelNameInput = document.querySelector("#chat-channel-name");
+const channelVisibilitySelect = document.querySelector("#chat-channel-visibility");
+const channelVisibilityHelp = document.querySelector("#chat-channel-visibility-help");
+const channelInitialMembers = document.querySelector("#chat-channel-initial-members");
+const channelUserSearch = document.querySelector("#chat-channel-user-search");
+const channelUserOptions = document.querySelector("#chat-channel-user-options");
+const channelUserEmpty = document.querySelector("#chat-channel-user-empty");
+const channelSelectedCount = document.querySelector("#chat-channel-selected-count");
 const channelMembersSection = document.querySelector("#chat-channel-members-section");
 const channelMembersTitle = document.querySelector("#chat-channel-members-title");
 const channelInviteForm = document.querySelector("#chat-channel-invite-form");
@@ -288,7 +297,7 @@ function privateChannelForKey(channel) {
 function channelDisplayLabel(channel = activeChannel) {
   if (channel === "#general") return "#general";
   const record = privateChannelForKey(channel);
-  return record ? "#" + record.name : "Private channel";
+  return record ? "#" + record.name : "Channel";
 }
 
 function canJoinChannel(channel = activeChannel) {
@@ -385,12 +394,12 @@ async function privateChannelRequest(path, options = {}) {
 
 async function fetchRoomAccess(channelKey = activeChannel) {
   const channel = privateChannelForKey(channelKey);
-  if (!channel) throw new Error("Private channel unavailable.");
+  if (!channel) throw new Error("Channel unavailable.");
   const access = await privateChannelRequest(
     PRIVATE_CHANNELS_ENDPOINT + "/" + channel.id + "/room-access"
   );
   if (!access.passphrase || !access.room || !access.webSocketUrl) {
-    throw new Error("Private channel room access unavailable.");
+    throw new Error("Channel room access unavailable.");
   }
   return access;
 }
@@ -941,8 +950,15 @@ function renderRooms() {
     label.className = "chat-room-name";
     label.textContent = channelDisplayLabel(name);
     if (isPrivateChannelKey(name)) {
-      btn.setAttribute("aria-label", `Private channel ${channelDisplayLabel(name)}`);
-      btn.title = "Private channel";
+      const channel = privateChannelForKey(name);
+      const visibilityLabel = channel?.visibility === "public"
+        ? "Public channel"
+        : "Private channel";
+      btn.setAttribute(
+        "aria-label",
+        `${visibilityLabel} ${channelDisplayLabel(name)}`,
+      );
+      btn.title = visibilityLabel;
     }
     btn.append(label);
     if (meta.unread > 0 && name !== activeChannel) {
@@ -956,12 +972,28 @@ function renderRooms() {
   }
 }
 
+function updateChannelHeading() {
+  const channel = privateChannelForKey(activeChannel);
+  const label = channelDisplayLabel(activeChannel);
+  if (channelTitleEl) channelTitleEl.textContent = label;
+  if (channelVisibilityBadge) {
+    channelVisibilityBadge.hidden = !channel;
+    channelVisibilityBadge.textContent = channel
+      ? channel.visibility
+      : "";
+  }
+}
+
 function updateAdminChannelControls() {
   const session = userSession();
   const channel = privateChannelForKey(activeChannel);
   if (channelCreateBtn) channelCreateBtn.hidden = !session?.isAdmin;
   if (channelManageBtn) {
-    channelManageBtn.hidden = !(session?.isAdmin && channel?.canManage);
+    channelManageBtn.hidden = !(
+      session?.isAdmin &&
+      channel?.canManage &&
+      channel?.visibility === "private"
+    );
   }
 }
 
@@ -989,7 +1021,7 @@ function setActiveChannel(name, options = {}) {
   const meta = channelMeta.get(channel);
   if (meta) meta.unread = 0;
   const label = channelDisplayLabel(channel);
-  if (channelTitleEl) channelTitleEl.textContent = label;
+  updateChannelHeading();
   if (input) input.placeholder = `Message ${label}…`;
   updateAdminChannelControls();
   renderRooms();
@@ -1022,6 +1054,7 @@ function reconcilePrivateChannels(records, options = {}) {
       updatedAt: Number(value.updatedAt) || 0,
       keyVersion: Number(value.keyVersion) || 1,
       canManage: Boolean(value.canManage),
+      visibility: value.visibility === "public" ? "public" : "private",
     });
     ensureChannel(privateChannelKey(id));
   }
@@ -1073,8 +1106,11 @@ function privateChannelErrorMessage(error) {
     invalid_channel_name: "Use lowercase letters, numbers, and hyphens.",
     channel_name_taken: "That channel name is already in use.",
     user_not_found: "That active registered user was not found.",
-    too_many_channels: "This relay has reached its private channel limit.",
+    too_many_channels: "This relay has reached its channel limit.",
     too_many_members: "This channel has reached its member limit.",
+    invalid_visibility: "Choose Public or Private visibility.",
+    invalid_members: "Choose registered users from the list.",
+    members_not_allowed: "Public channels do not use member invitations.",
     admin_required: "Administrator access is required.",
   };
   return messages[error?.code] || "The channel request could not be completed.";
@@ -1086,7 +1122,9 @@ function setChannelError(message) {
 
 function activeManageableChannel() {
   const channel = privateChannelForKey(activeChannel);
-  return channel?.canManage ? channel : null;
+  return channel?.canManage && channel?.visibility === "private"
+    ? channel
+    : null;
 }
 
 function renderChannelMembers(members) {
@@ -1134,21 +1172,32 @@ async function refreshChannelMembers() {
   }
 }
 
-async function createPrivateChannel(name) {
+async function createChannel(name, visibility, members) {
   setChannelError("");
   try {
     const data = await privateChannelRequest(PRIVATE_CHANNELS_ENDPOINT, {
       method: "POST",
-      body: JSON.stringify({ name: String(name || "").trim().toLowerCase() }),
+      body: JSON.stringify({
+        name: String(name || "").trim().toLowerCase(),
+        visibility: visibility === "public" ? "public" : "private",
+        members: Array.isArray(members) ? members : [],
+      }),
     });
     await refreshPrivateChannels({ selectSaved: false });
     const channel = data.channel;
     if (channel?.id && privateChannels.has(channel.id)) {
       setActiveChannel(privateChannelKey(channel.id));
-      if (channelMembersSection) channelMembersSection.hidden = false;
-      await refreshChannelMembers();
+      const created = privateChannels.get(channel.id);
+      const canManageMembers = created?.visibility === "private";
+      if (channelMembersSection) {
+        channelMembersSection.hidden = !canManageMembers;
+      }
+      if (canManageMembers) await refreshChannelMembers();
     }
-    if (channelNameInput) channelNameInput.value = "";
+    channelCreateForm?.reset();
+    selectedInitialMembers.clear();
+    if (channelUserSearch) channelUserSearch.value = "";
+    syncInitialMemberVisibility();
   } catch (error) {
     setChannelError(privateChannelErrorMessage(error));
   }
@@ -1194,6 +1243,9 @@ function openChannelDialog(showMembers = false) {
   if (channelMembersSection) {
     channelMembersSection.hidden = !(showMembers && channel);
   }
+  syncInitialMemberVisibility();
+  renderInitialMemberPicker();
+  refreshUsersDirectory();
   if (showMembers && channel) refreshChannelMembers();
   if (typeof channelDialog.showModal === "function") channelDialog.showModal();
   else channelDialog.setAttribute("open", "");
@@ -1270,7 +1322,67 @@ function personIsOnline(person) {
 // log so the room can welcome them right away.
 
 const directoryKnown = new Set(); // lowercased account names already merged
+const registeredUsers = new Map();
+const selectedInitialMembers = new Set();
 let directorySeeded = false;
+
+function renderInitialMemberPicker() {
+  if (!channelUserOptions) return;
+  channelUserOptions.textContent = "";
+  const query = String(channelUserSearch?.value || "").trim().toLowerCase();
+  const currentName = String(userSession()?.nodeName || "").trim().toLowerCase();
+  const users = [...registeredUsers.values()]
+    .filter((user) => user.name !== currentName)
+    .filter((user) => !query || user.name.includes(query))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  for (const user of users) {
+    const option = document.createElement("label");
+    option.className = "chat-channel-user-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = user.name;
+    checkbox.checked = selectedInitialMembers.has(user.name);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) selectedInitialMembers.add(user.name);
+      else selectedInitialMembers.delete(user.name);
+      if (channelSelectedCount) {
+        const count = selectedInitialMembers.size;
+        channelSelectedCount.textContent = `${count} selected`;
+      }
+    });
+    const label = document.createElement("span");
+    label.textContent = "@" + user.name;
+    option.append(checkbox, label);
+    channelUserOptions.append(option);
+  }
+
+  if (channelSelectedCount) {
+    const count = selectedInitialMembers.size;
+    channelSelectedCount.textContent = `${count} selected`;
+  }
+  if (channelUserEmpty) {
+    channelUserEmpty.hidden = users.length > 0;
+    channelUserEmpty.textContent = registeredUsers.size
+      ? "No registered users match your search."
+      : "No registered users are available yet.";
+  }
+}
+
+function syncInitialMemberVisibility() {
+  const isPrivate = channelVisibilitySelect?.value !== "public";
+  if (channelInitialMembers) channelInitialMembers.hidden = !isPrivate;
+  if (channelVisibilityHelp) {
+    channelVisibilityHelp.textContent = isPrivate
+      ? "Only selected users and administrators can join."
+      : "Every registered user can discover and join this channel.";
+  }
+  if (!isPrivate) {
+    selectedInitialMembers.clear();
+    if (channelUserSearch) channelUserSearch.value = "";
+  }
+  renderInitialMemberPicker();
+}
 
 async function refreshUsersDirectory() {
   let users;
@@ -1285,8 +1397,15 @@ async function refreshUsersDirectory() {
     return;
   }
   for (const user of users) {
-    const name = String(user.name || "").trim().toLowerCase().slice(0, MAX_NAME);
+    const name = String(user.name || "")
+      .trim()
+      .toLowerCase()
+      .slice(0, MAX_ACCOUNT_NAME);
     if (!name) continue;
+    registeredUsers.set(name, {
+      name,
+      createdAt: Number(user.createdAt) || 0,
+    });
     const fresh = !directoryKnown.has(name);
     directoryKnown.add(name);
     // Namespaced id so this offline placeholder never collides with a live
@@ -1302,10 +1421,11 @@ async function refreshUsersDirectory() {
     });
     if (fresh && directorySeeded &&
         Date.now() - Number(user.createdAt || 0) < NEW_USER_ANNOUNCE_WINDOW_MS) {
-      appendSystem("🎉 " + name + " just joined ForkMesh — say hi!");
+      appendSystem("🎉 " + name + " just joined ForkMesh - say hi!");
     }
   }
   directorySeeded = true;
+  renderInitialMemberPicker();
   schedulePeopleRender();
 }
 
@@ -1366,7 +1486,7 @@ function renderPeople() {
     [...bySection.user, ...bySection.guest, ...bySection.node]
       .filter(personIsOnline).length;
   if (peopleTitleEl) {
-    peopleTitleEl.textContent = `People — ${onlineCount} online`;
+    peopleTitleEl.textContent = `People - ${onlineCount} online`;
   }
   const renderSection = (title, list) => {
     if (!list.length) return;
@@ -2106,7 +2226,9 @@ async function connect() {
     setStatus(
       scope === "public-world-general"
         ? "Connected · public World #general"
-        : `Connected · private ${channelDisplayLabel(scope)}`
+        : `Connected · ${
+          privateChannelForKey(scope)?.visibility || "private"
+        } ${channelDisplayLabel(scope)}`
     );
     // Announce ourselves so clients add us to their roster and replay history.
     send(makePlain("hello", {
@@ -2236,7 +2358,7 @@ async function initChat() {
   ensureChannel("#general");
   await refreshPrivateChannels({ connect: false });
   const label = channelDisplayLabel(activeChannel);
-  if (channelTitleEl) channelTitleEl.textContent = label;
+  updateChannelHeading();
   if (input) input.placeholder = `Message ${label}…`;
   updateAdminChannelControls();
   renderRooms();
@@ -2266,8 +2388,15 @@ async function initChat() {
   channelDialogClose?.addEventListener("click", () => channelDialog?.close());
   channelCreateForm?.addEventListener("submit", (event) => {
     event.preventDefault();
-    createPrivateChannel(channelNameInput?.value || "");
+    createChannel(
+      channelNameInput?.value || "",
+      channelVisibilitySelect?.value || "private",
+      [...selectedInitialMembers],
+    );
   });
+  channelVisibilitySelect?.addEventListener(
+    "change", syncInitialMemberVisibility);
+  channelUserSearch?.addEventListener("input", renderInitialMemberPicker);
   channelInviteForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     inviteChannelMember(channelUsernameInput?.value || "");

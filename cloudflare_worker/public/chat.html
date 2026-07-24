@@ -211,8 +211,11 @@
 
       .chat-channel-section h3 { margin: 0; font-size: 14px; }
       .chat-channel-form { display: flex; gap: 8px; }
-      .chat-channel-form input {
+      .chat-channel-form input,
+      .chat-channel-create-form input,
+      .chat-channel-create-form select {
         flex: 1;
+        width: 100%;
         min-width: 0;
         height: 38px;
         padding: 0 11px;
@@ -222,8 +225,13 @@
         color: var(--fg);
         outline: none;
       }
-      .chat-channel-form input:focus { border-color: var(--accent); }
+      .chat-channel-form input:focus,
+      .chat-channel-create-form input:focus,
+      .chat-channel-create-form select:focus {
+        border-color: var(--accent);
+      }
       .chat-channel-form button,
+      .chat-channel-create-form button,
       .chat-member-remove {
         min-height: 36px;
         padding: 0 12px;
@@ -233,6 +241,111 @@
         color: #06120a;
         font-weight: 700;
         cursor: pointer;
+      }
+
+      .chat-channel-create-form {
+        display: grid;
+        gap: 12px;
+      }
+
+      .chat-channel-create-fields {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 148px;
+        gap: 10px;
+      }
+
+      .chat-channel-field {
+        display: grid;
+        min-width: 0;
+        gap: 6px;
+      }
+
+      .chat-channel-field > label,
+      .chat-channel-picker-head label {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .chat-channel-initial-members {
+        display: grid;
+        gap: 9px;
+        min-width: 0;
+        padding: 11px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--surface2) 78%, transparent);
+      }
+
+      .chat-channel-picker-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      #chat-channel-selected-count,
+      #chat-channel-user-empty {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      #chat-channel-user-options {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 3px 12px;
+        max-height: 176px;
+        overflow-y: auto;
+      }
+
+      .chat-channel-user-option {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        gap: 7px;
+        padding: 6px 4px;
+        border-radius: 6px;
+        color: var(--fg);
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .chat-channel-user-option:hover,
+      .chat-channel-user-option:focus-within {
+        background: var(--surface);
+      }
+
+      .chat-channel-user-option input {
+        width: 15px;
+        height: 15px;
+        margin: 0;
+        accent-color: var(--accent);
+      }
+
+      .chat-channel-user-option span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #chat-channel-user-empty { margin: 0; }
+
+      .chat-channel-create-submit { justify-self: start; }
+
+      .chat-channel-heading {
+        display: flex;
+        align-items: baseline;
+        min-width: 0;
+        gap: 8px;
+      }
+
+      #chat-channel-visibility-badge {
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
       }
 
       #chat-channel-error {
@@ -920,6 +1033,15 @@
         .chat-main-controls { flex-shrink: 0; gap: 6px; }
         #chat-status { display: none; }
       }
+
+      @media (max-width: 480px) {
+        .chat-channel-dialog-body { padding: 14px; }
+        .chat-channel-create-fields,
+        #chat-channel-user-options {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .chat-channel-create-submit { width: 100%; }
+      }
     </style>
   </head>
   <body>
@@ -936,7 +1058,7 @@
         <aside class="chat-rooms-pane" aria-label="Rooms">
           <div class="chat-pane-title chat-pane-title-row">
             <span>Rooms</span>
-            <button id="chat-channel-create" class="chat-admin-action" type="button" aria-label="Create private channel" title="Create private channel" hidden>+</button>
+            <button id="chat-channel-create" class="chat-admin-action" type="button" aria-label="Create channel" title="Create channel" hidden>+</button>
           </div>
           <div id="chat-rooms"></div>
         </aside>
@@ -944,7 +1066,10 @@
         <!-- middle: conversation -->
         <main class="chat-main-pane">
           <div class="chat-main-head">
-            <span id="chat-channel-title">#general</span>
+            <span class="chat-channel-heading">
+              <span id="chat-channel-title">#general</span>
+              <span id="chat-channel-visibility-badge" hidden></span>
+            </span>
             <div class="chat-main-controls">
               <button id="chat-channel-manage" class="chat-admin-action" type="button" hidden>Members</button>
               <span id="chat-status">Waiting to connect…</span>
@@ -1016,15 +1141,37 @@
       <dialog id="chat-channel-dialog" aria-labelledby="chat-channel-dialog-title">
         <div class="chat-channel-dialog-body">
           <div class="chat-channel-dialog-head">
-            <h2 id="chat-channel-dialog-title">Manage private channels</h2>
+            <h2 id="chat-channel-dialog-title">Manage channels</h2>
             <button id="chat-channel-dialog-close" type="button" aria-label="Close channel manager">×</button>
           </div>
           <p id="chat-channel-error" role="alert" aria-live="polite"></p>
           <section class="chat-channel-section" aria-labelledby="chat-channel-create-title">
             <h3 id="chat-channel-create-title">Create a channel</h3>
-            <form id="chat-channel-create-form" class="chat-channel-form">
-              <input id="chat-channel-name" name="channel" maxlength="40" pattern="[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?" placeholder="release-team" aria-label="Private channel name" required />
-              <button type="submit">Create</button>
+            <form id="chat-channel-create-form" class="chat-channel-create-form">
+              <div class="chat-channel-create-fields">
+                <div class="chat-channel-field">
+                  <label for="chat-channel-name">Channel name</label>
+                  <input id="chat-channel-name" name="channel" maxlength="40" pattern="[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?" placeholder="release-team" aria-label="Channel name" required />
+                </div>
+                <div class="chat-channel-field">
+                  <label for="chat-channel-visibility">Visibility</label>
+                  <select id="chat-channel-visibility" name="visibility" aria-describedby="chat-channel-visibility-help">
+                    <option value="private" selected>Private</option>
+                    <option value="public">Public</option>
+                  </select>
+                </div>
+              </div>
+              <p id="chat-channel-visibility-help" class="chat-attachment-meta">Public channels are available to every registered user.</p>
+              <div id="chat-channel-initial-members" class="chat-channel-initial-members">
+                <div class="chat-channel-picker-head">
+                  <label for="chat-channel-user-search">Add registered users</label>
+                  <span id="chat-channel-selected-count">0 selected</span>
+                </div>
+                <input id="chat-channel-user-search" type="search" autocomplete="off" placeholder="Search usernames" aria-label="Search registered users" />
+                <div id="chat-channel-user-options" role="group" aria-label="Registered users"></div>
+                <p id="chat-channel-user-empty" aria-live="polite">Loading registered users...</p>
+              </div>
+              <button class="chat-channel-create-submit" type="submit">Create channel</button>
             </form>
           </section>
           <section id="chat-channel-members-section" class="chat-channel-section" aria-labelledby="chat-channel-members-title" hidden>

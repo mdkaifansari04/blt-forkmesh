@@ -52,7 +52,7 @@ def test_removed_or_rotated_channel_closes_stale_room_and_falls_back():
 
 def test_admin_channel_controls_are_accessible_and_hidden_by_default():
     assert 'id="chat-channel-create"' in HTML
-    assert 'aria-label="Create private channel"' in HTML
+    assert 'aria-label="Create channel"' in HTML
     assert 'id="chat-channel-dialog"' in HTML
     assert 'aria-labelledby="chat-channel-dialog-title"' in HTML
     assert 'id="chat-channel-manage"' in HTML
@@ -64,7 +64,7 @@ def test_admin_channel_controls_are_accessible_and_hidden_by_default():
 
 
 def test_admin_controls_create_invite_list_and_remove_members():
-    assert "async function createPrivateChannel(" in CHAT
+    assert "async function createChannel(" in CHAT
     assert "async function refreshChannelMembers(" in CHAT
     assert "async function inviteChannelMember(" in CHAT
     assert "async function removeChannelMember(" in CHAT
@@ -72,6 +72,39 @@ def test_admin_controls_create_invite_list_and_remove_members():
     assert 'method: "POST"' in CHAT
     assert '`/api/chat/channels/${channel.id}/members`' in CHAT
     assert 'method: "DELETE"' in CHAT
+
+
+def test_create_form_selects_visibility_and_initial_registered_users():
+    for marker in (
+        'id="chat-channel-visibility"',
+        '<option value="private"',
+        '<option value="public"',
+        'id="chat-channel-initial-members"',
+        'id="chat-channel-user-search"',
+        'id="chat-channel-user-options"',
+        'id="chat-channel-selected-count"',
+        'id="chat-channel-visibility-badge"',
+    ):
+        assert marker in HTML
+
+    create = _function_source("createChannel")
+    assert "visibility" in create
+    assert "members" in create
+    assert "selectedInitialMembers" in CHAT
+    assert "registeredUsers" in CHAT
+    assert "renderInitialMemberPicker" in CHAT
+    assert "syncInitialMemberVisibility" in CHAT
+
+
+def test_channel_visibility_controls_labels_and_private_member_management():
+    reconcile = _function_source("reconcilePrivateChannels")
+    controls = _function_source("updateAdminChannelControls")
+    rooms = _function_source("renderRooms")
+
+    assert "visibility" in reconcile
+    assert 'channel?.visibility === "private"' in controls
+    assert "Public channel" in rooms
+    assert "Private channel" in rooms
 
 
 def test_only_opaque_private_channel_id_is_persisted_as_preference():
