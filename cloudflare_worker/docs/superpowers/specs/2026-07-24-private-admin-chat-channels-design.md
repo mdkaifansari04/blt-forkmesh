@@ -192,6 +192,25 @@ It will include a visible link to the full `/chat` channel directory so private-
 Private passphrases, derived CryptoKeys, and tickets remain in memory only.
 Only the selected channel ID may be stored locally as a preference, and the client must fall back to `#general` when that ID is no longer authorized.
 
+## Encrypted Image and Document Attachments
+
+Every browser chat surface will use the desktop-compatible encrypted attachment fields: `fileName`, `fileMime`, and base64 `file`.
+This keeps images and documents interoperable with existing desktop clients and keeps attachment bytes inside the same AES-GCM encrypted message as the rest of the chat payload.
+
+The full `/chat` page and the dashboard chat will expose an accessible attachment button backed by a file picker.
+Pasting a clipboard image into either composer will send it as an image attachment while ordinary text paste continues unchanged.
+The browser accepts one attachment at a time and caps the decoded file at 1 MiB so the twice-base64-encoded encrypted envelope remains within the Worker frame limit and Cloudflare D1's 2,000,000-byte row limit.
+
+Image attachments render as bounded previews with an explicit download action.
+Other documents render as filename, MIME type, and size cards with an explicit download action.
+Filenames are reduced to their final path component and limited to 180 characters before they are displayed or used as download suggestions.
+The client treats MIME labels as untrusted metadata and previews only `image/*` payloads that the browser can decode.
+
+Attachment messages are durable chat messages and are replayed after refresh just like text messages.
+The Worker will raise the encrypted retained-frame ceiling only as far as the D1 row limit safely permits and will add a 16 MiB aggregate retained-byte budget per room alongside the existing seven-day and 500-frame limits.
+When a room exceeds that byte budget, the oldest encrypted frames are removed first.
+The relay continues to store only opaque encrypted envelopes and does not inspect attachment contents.
+
 ## Error Handling
 
 Authentication failures return `401 invalid_session` before database mutation.
@@ -215,6 +234,10 @@ Ticket tests will cover signature tampering, expiry, wrong-channel replay, stale
 Schema and routing tests will pin the migration, lazy schema, indexes, route shapes, cache headers, and authorization gate occurring before Durable Object lookup.
 
 Frontend unit-contract tests will pin session-authenticated API requests, removal of the insecure fixed authenticated-channel labels, in-memory key handling, list refresh, admin-only controls, and safe fallback to `#general`.
+
+Attachment tests will pin the desktop-compatible wire fields, 1 MiB rejection path, safe filename handling, clipboard-image interception, image preview, document download cards, and dashboard/full-chat parity.
+
+A Playwright end-to-end test will paste a real clipboard image and select a document through the file input, capture the encrypted frames, reload the page, replay retained frames, and verify that the user's own image and document remain visible and downloadable.
 
 A Playwright end-to-end test will exercise the product as an administrator and an invited user with network and WebSocket fixtures.
 It will verify channel creation, direct invitation, immediate channel visibility, encrypted message exchange, non-member exclusion, member removal, and fallback after key rotation.

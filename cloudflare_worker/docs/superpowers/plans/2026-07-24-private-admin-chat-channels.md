@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add private encrypted chat channels that platform administrators create and manage, while invited registered users receive immediate access and all other users remain excluded.
+**Goal:** Add private encrypted chat channels that platform administrators create and manage, while invited registered users receive immediate access, all other users remain excluded, and every chat surface supports encrypted clipboard images and document attachments that survive refresh.
 
 **Architecture:** A focused Python API module will own channel and membership policy over encrypted D1 records, while `entry.py` supplies existing session, encryption, audit, and Durable Object services. Each channel and key version receives a distinct relay-derived passphrase and Durable Object namespace, and a short-lived signed ticket gates browser WebSocket upgrades. The `/chat` client will replace insecure fixed authenticated labels with server-authorized private channels while preserving public World `#general`.
 
@@ -19,6 +19,8 @@
 - Modify `cloudflare_worker/src/entry.py` to adapt existing Worker services to the channel API, derive keys, issue and verify tickets, and gate Durable Object upgrades.
 - Modify `cloudflare_worker/public/chat.js` to load authorized channels, switch isolated encrypted rooms, refresh membership, and manage admin actions.
 - Modify `cloudflare_worker/public/chat.html` to add accessible create-channel and member-management controls.
+- Modify `cloudflare_worker/public/dashboard-chat.js` to add encrypted image and document sending, rendering, clipboard paste, and dynamically mounted attachment controls without rewriting generated dashboard pages.
+- Modify `cloudflare_worker/src/entry.py` to retain bounded attachment frames under an aggregate per-room byte budget.
 - Modify `cloudflare_worker/public/dashboard/chat/index.html` to link the dashboard's public-only chat view to the full channel directory.
 - Modify `cloudflare_worker/public/docs/protocol/index.html` to document private channel access and relay-readable encryption semantics.
 - Create `cloudflare_worker/tests/test_private_chat_channel_schema.py` for schema and route contracts.
@@ -26,6 +28,43 @@
 - Create `cloudflare_worker/tests/test_chat_channel_room_access.py` for key, ticket, and pre-Durable-Object admission behavior.
 - Create `cloudflare_worker/tests/test_private_chat_channels_frontend.py` for browser-source contracts.
 - Create `cloudflare_worker/browser_tests/tests/private-chat-channels.spec.js` for administrator and invited-user end-to-end behavior.
+- Create `cloudflare_worker/browser_tests/tests/chat-attachments.spec.js` for clipboard-image, document, encryption, and refresh-persistence behavior.
+
+### Task 2A: Add Compatible Encrypted Attachments
+
+**Files:**
+
+- Create: `cloudflare_worker/tests/test_chat_attachments_frontend.py`
+- Create: `cloudflare_worker/tests/test_chat_history_byte_budget.py`
+- Create: `cloudflare_worker/browser_tests/tests/chat-attachments.spec.js`
+- Modify: `cloudflare_worker/public/chat.js`
+- Modify: `cloudflare_worker/public/chat.html`
+- Modify: `cloudflare_worker/public/dashboard-chat.js`
+- Modify: `cloudflare_worker/src/entry.py`
+
+- [ ] **Step 1: Reproduce clipboard-image and document gaps in Playwright**
+
+Drive the full chat as a user, paste a real PNG through `ClipboardEvent.clipboardData`, and select a text or PDF document through the hidden file input.
+Confirm that the current UI sends neither attachment and therefore cannot replay either after refresh.
+
+- [ ] **Step 2: Add failing source and retention tests**
+
+Pin the desktop-compatible `fileName`, `fileMime`, and `file` fields, the 1 MiB decoded-file limit, safe basename handling, full-chat and dashboard paste listeners, attachment rendering, and a retained-room byte budget below D1's row and database abuse boundaries.
+
+- [ ] **Step 3: Implement shared attachment behavior in both browser clients**
+
+Add file reading, clipboard image extraction, encrypted send, image preview, document card, object URL cleanup, size feedback, and accessible file controls.
+Use existing room keys and durable chat frames without introducing plaintext upload endpoints or persistent browser keys.
+
+- [ ] **Step 4: Make bounded attachment messages durable**
+
+Raise the per-frame retained limit to 1,900,000 bytes, safely below D1's 2,000,000-byte maximum row size.
+Add a 16 MiB per-room retained-byte budget and prune oldest encrypted frames after inserts while preserving the existing seven-day and 500-frame caps.
+
+- [ ] **Step 5: Run focused Python and Playwright tests**
+
+Run the attachment source tests, chat-history budget tests, existing self-message persistence test, and new clipboard/document Playwright test.
+Confirm image and document attachments remain visible after a simulated retained-frame reload.
 
 ### Task 1: Persist Private Channels and Define Routes
 
