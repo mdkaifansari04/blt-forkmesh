@@ -641,6 +641,21 @@ def test_login_and_signup_stay_inside_the_world_and_out_of_presence():
 
 
 def test_flagship_graph_requires_commit_matched_tree_sizes_stats_and_entities():
+    entity_loader = APP[
+        APP.index("  async loadRepositoryEntityRecords("):
+        APP.index(
+            "\n  flagshipCatalogCommits() {",
+            APP.index("  async loadRepositoryEntityRecords("),
+        )
+    ]
+    assert (
+        entity_loader.index("const pullResult =")
+        < entity_loader.index("const issueResults = [];")
+    )
+    assert "await this.loadRepositoryPullRecords(base)" in entity_loader
+    assert "const issueConcurrency = 2;" in entity_loader
+    assert "{ timeout: 6000, cache: \"no-store\" }" in entity_loader
+
     fetch_map = APP[
         APP.index("  async fetchRepositoryMapSnapshot("):
         APP.index(

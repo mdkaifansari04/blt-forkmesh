@@ -88,7 +88,7 @@ async function prepareWorldPage(
       contentType: "text/javascript; charset=utf-8",
     }),
   );
-  await page.route("**/api/**", (route) => {
+  await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     if (unavailablePaths.includes(url.pathname)) {
       return route.fulfill({
@@ -549,15 +549,23 @@ ${longContext}
           })),
         };
       } else if (url.pathname === `${repoBase}/branches`) {
-        body = {
-          ok: true,
-          branches: repositoryFixture.invalidPullBranch
-            ? [{ name: "main", commit: codeOid }]
-            : [
-                { name: "main", commit: codeOid },
-                { name: "forkmesh/pulls", commit: pullOid },
-              ],
-        };
+        if (
+          repositoryFixture.rejectPullMetadataAfterIssueFanout &&
+          repositoryFixture.issueTreeRequestStarted
+        ) {
+          status = 503;
+          body = { ok: false, error: "mirror_capacity_exhausted" };
+        } else {
+          body = {
+            ok: true,
+            branches: repositoryFixture.invalidPullBranch
+              ? [{ name: "main", commit: codeOid }]
+              : [
+                  { name: "main", commit: codeOid },
+                  { name: "forkmesh/pulls", commit: pullOid },
+                ],
+          };
+        }
       } else if (url.pathname === `${repoBase}/tree`) {
         const treePath = url.searchParams.get("path") || "";
         const ref = url.searchParams.get("ref") || "";
@@ -583,6 +591,17 @@ ${longContext}
             ],
           };
         } else if (treePath.startsWith(".forkmesh/issues")) {
+          repositoryFixture.issueTreeRequestStarted = true;
+          const issueDelay = Math.max(
+            0,
+            Math.min(
+              5000,
+              Number(repositoryFixture.issueTreeDelayMs) || 0,
+            ),
+          );
+          if (issueDelay) {
+            await new Promise((resolve) => setTimeout(resolve, issueDelay));
+          }
           body = { ok: true, commit: codeOid, entries: [] };
         } else if (
           treePath === "pulls" &&
@@ -2043,6 +2062,93 @@ test("pull requests open and become viewed entirely inside the repository World"
   expect(
     repositoryRequests.filter((url) => url.pathname.endsWith("/branches")),
   ).toHaveLength(1);
+});
+
+test("a fresh map resolves exact pull metadata before slow issue scans", async ({
+  page,
+}) => {
+  const repositoryRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/api/repo/forkmesh/forkmesh/")) {
+      repositoryRequests.push(url);
+    }
+  });
+  await prepareWorldPage(page, "world-pull-priority", {
+    repositoryFixture: {
+      issueTreeDelayMs: 900,
+      // Model a small mirror whose pull-metadata read would be rejected once
+      // lower-priority issue fanout has occupied its request capacity.
+      rejectPullMetadataAfterIssueFanout: true,
+    },
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready" &&
+      shell?.activeRepository?.pullCountSource === "metadata-tree";
+  });
+
+  const snapshot = await page.locator("forkmesh-world").evaluate((shell) => ({
+    pullCount: shell.activeRepository?.pullCount,
+    pullCountSource: shell.activeRepository?.pullCountSource,
+    pullMetadataCommit:
+      shell.activeRepository?.entityRecords?.pullMetadataCommit,
+    pullCountExact: shell.activeRepository?.entityRecords?.pullCountExact,
+    pullsAvailable: shell.activeRepository?.entityRecords?.pullsAvailable,
+  }));
+  expect(snapshot).toEqual({
+    pullCount: 2,
+    pullCountSource: "metadata-tree",
+    pullMetadataCommit: "b".repeat(40),
+    pullCountExact: true,
+    pullsAvailable: true,
+  });
+
+  const branchesIndex = repositoryRequests.findIndex((url) =>
+    url.pathname.endsWith("/branches"),
+  );
+  const pullTreeIndex = repositoryRequests.findIndex(
+    (url) =>
+      url.pathname.endsWith("/tree") &&
+      url.searchParams.get("path") === "pulls" &&
+      url.searchParams.get("ref") === "b".repeat(40),
+  );
+  const pullBlobsIndex = repositoryRequests.findIndex(
+    (url) =>
+      url.pathname.endsWith("/blobs") &&
+      url.searchParams.get("ref") === "b".repeat(40) &&
+      url.searchParams
+        .getAll("path")
+        .some((path) => path.startsWith("pulls/")),
+  );
+  const firstIssueIndex = repositoryRequests.findIndex(
+    (url) =>
+      url.pathname.endsWith("/tree") &&
+      String(url.searchParams.get("path") || "").startsWith(
+        ".forkmesh/issues",
+      ),
+  );
+  expect(branchesIndex).toBeGreaterThanOrEqual(0);
+  expect(pullTreeIndex).toBeGreaterThan(branchesIndex);
+  expect(pullBlobsIndex).toBeGreaterThan(pullTreeIndex);
+  expect(firstIssueIndex).toBeGreaterThan(branchesIndex);
+  expect(firstIssueIndex).toBeGreaterThan(pullTreeIndex);
+  expect(firstIssueIndex).toBeGreaterThan(pullBlobsIndex);
+
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("repositories"),
+  );
+  await page.getByRole("button", { name: /^2 pull requests$/i }).click();
+  await page
+    .locator("[data-world-pull-open][data-world-pull-number='44']")
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Pull request #44" }),
+  ).toBeVisible();
+  await expect(page.locator("[data-world-pull-diff]")).toContainText(
+    "world-pr-diff-visible",
+  );
 });
 
 test("an authenticated organization writer merges exact reviewed OIDs in-World", async ({

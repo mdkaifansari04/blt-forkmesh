@@ -8099,27 +8099,36 @@ class ForkMeshWorld extends HTMLElement {
       { path: ".forkmesh/issues/open", state: "open" },
       { path: ".forkmesh/issues/closed", state: "closed" },
     ];
-    const [issueResults, pullResult] = await Promise.all([
-      Promise.allSettled(
-        locations.map(({ path }) =>
-          this.fetchJSON(
-            `${base}/tree?path=${encodeURIComponent(
-              path,
-            )}&ref=${encodeURIComponent(commit)}`,
-            { timeout: 9000, cache: "no-store" },
-          ),
-        ),
-      ),
+    // Pulls have their own immutable metadata commit and are required for a
+    // truthful review surface. Resolve that short chain before lower-priority
+    // issue-layout probes can occupy every connection on a small mirror.
+    const pullResult =
       options.privateRepository === true
-        ? Promise.resolve({
+        ? {
             status: "rejected",
             reason: new Error("private pull metadata is not publicly probed"),
-          })
-        : this.loadRepositoryPullRecords(base).then(
+          }
+        : await this.loadRepositoryPullRecords(base).then(
             (value) => ({ status: "fulfilled", value }),
             (reason) => ({ status: "rejected", reason }),
+          );
+    const issueResults = [];
+    const issueConcurrency = 2;
+    for (let offset = 0; offset < locations.length; offset += issueConcurrency) {
+      const batch = locations.slice(offset, offset + issueConcurrency);
+      issueResults.push(
+        ...(await Promise.allSettled(
+          batch.map(({ path }) =>
+            this.fetchJSON(
+              `${base}/tree?path=${encodeURIComponent(
+                path,
+              )}&ref=${encodeURIComponent(commit)}`,
+              { timeout: 6000, cache: "no-store" },
+            ),
           ),
-    ]);
+        )),
+      );
+    }
     const issues = new Map();
     let issuesMatched = false;
     issueResults.forEach((result, index) => {
