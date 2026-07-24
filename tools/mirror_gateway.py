@@ -2493,19 +2493,32 @@ class GatewayApplication:
         materializer = materializer or ArchiveMaterializer()
         self.repositories: dict[tuple[str, str], GitRepository] = {}
         self.quarantined_count = 0
+        materialized_archives: dict[EncryptedArchive, Path | None] = {}
         for index, repository in enumerate(config.repositories):
             if repository.visibility != "public" or not repository.enabled:
                 continue
             try:
                 git_dir = repository.git_dir
-                if repository.encrypted_archive is not None:
-                    destination = (
-                        Path(self._temporary_root.name) / f"repository-{index}"
-                    )
-                    destination.mkdir(mode=0o700)
-                    git_dir = materializer.materialize(
-                        repository.encrypted_archive, destination
-                    )
+                archive = repository.encrypted_archive
+                if archive is not None:
+                    if archive not in materialized_archives:
+                        destination = (
+                            Path(self._temporary_root.name)
+                            / f"repository-{index}"
+                        )
+                        destination.mkdir(mode=0o700)
+                        try:
+                            materialized_archives[archive] = (
+                                materializer.materialize(
+                                    archive, destination
+                                )
+                            )
+                        except (GatewayError, GitError, OSError):
+                            # One failed encrypted identity remains unavailable
+                            # for every alias during this application lifetime.
+                            materialized_archives[archive] = None
+                            raise
+                    git_dir = materialized_archives[archive]
                 if git_dir is None:
                     raise GatewayError("public repository storage is missing")
                 runtime = GitRepository(repository, git_dir)
