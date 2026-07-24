@@ -2294,6 +2294,11 @@ private:
     // Whether `path` is switched off for the open repo.
     bool isWorkflowDisabled(const QString &path) const;
     void loadMirrorNodesPanel();
+    // Spin the caution/error status lights on Mirror-nodes rows (adhoc #230);
+    // updateMirrorNodeLightTimer() keeps the timer running only while a row's
+    // light is actually spinning, so an all-green table never ticks.
+    void animateMirrorNodeLights();
+    void updateMirrorNodeLightTimer();
     void requestMirrorNodesRefresh();
     void onMirrorRefreshRequested(const QString &source,
                                   const QString &requesterName);
@@ -3133,6 +3138,16 @@ private:
     QString avatarCachePath(const QString &peerId) const;
     void loadCachedAvatars();
     void loadRepositories();
+    // An account/owner rename re-derives a record's <owner>-<name>.git mirror
+    // path while the bare mirror stays on disk under its old name; the working
+    // copy's push remote and post-receive hook keep feeding the old directory,
+    // but workflow discovery, publishing, and the attested state hash all read
+    // the missing new path — pushes stop kicking off actions and the node
+    // advertises stale state (adhoc #227). Adopt the mirror the working copy
+    // actually pushes into by moving it to the recorded path (or repointing
+    // the record at it when the move fails). Returns true when the record was
+    // modified and needs saving.
+    bool reconcileMirrorPath(RepositoryRecord &repo);
     void saveRepositories() const;
     void refreshRepositoryList();
     // Node handles offered by the @-mention autocomplete in comment editors:
@@ -4061,6 +4076,10 @@ private:
     // over the tab as the window reflows (mirrors the looper toggle, adhoc #197).
     QWidget *m_mirrorActivityStrip = nullptr;
     QTimer *m_mirrorActivityStripTimer = nullptr;
+    // Animates the spinning caution/error status lights in the Mirror nodes
+    // table (adhoc #230); only ticks while at least one row's light spins.
+    QTimer *m_nodeLightTimer = nullptr;
+    int m_nodeLightFrame = 0;
     // Coalesces the heavy tail of onRequestServed (stats save + full repo-list
     // rebuild) so a clone/browse burst costs one refresh per second, not one per
     // served request.

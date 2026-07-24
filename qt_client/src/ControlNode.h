@@ -165,6 +165,13 @@ bool isValidSolanaPublicAddress(const QString &address);
 // Convert a configured ws/wss/http(s) relay URL into its browser world portal.
 QUrl worldUrlForRelay(const QString &relayUrl);
 
+// Normalize the configured local World dev server (tools/world_dev_server.py)
+// into a probe/open URL. Empty input yields the default
+// http://127.0.0.1:8788/world/; "off" disables the probe; anything that does
+// not resolve to a loopback plain-http host fails closed (invalid QUrl) so the
+// World button can never be redirected off this machine by a stray setting.
+QUrl worldDevServerUrl(const QString &configured);
+
 // Return the distinct, normalized repository-owner aliases a direct mirror
 // must expose. A mirror account can publish an imported repository under its
 // own catalog namespace while the Worker continues routing and challenging the

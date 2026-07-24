@@ -218,6 +218,22 @@ int main(int argc, char **argv)
     check(world.toString() == QStringLiteral("https://relay.example.com/world/"),
           "websocket relay becomes the HTTPS World portal");
 
+    check(forkmesh::control::worldDevServerUrl(QString()).toString() ==
+              QStringLiteral("http://127.0.0.1:8788/world/"),
+          "empty World dev setting yields the default local dev URL");
+    check(forkmesh::control::worldDevServerUrl(
+              QStringLiteral("localhost:9099")).toString() ==
+              QStringLiteral("http://localhost:9099/world/"),
+          "bare host:port World dev setting is normalized to /world/");
+    check(!forkmesh::control::worldDevServerUrl(QStringLiteral("OFF")).isValid(),
+          "\"off\" disables the World dev probe");
+    check(!forkmesh::control::worldDevServerUrl(
+               QStringLiteral("http://evil.example.com/world/")).isValid(),
+          "non-loopback World dev URL fails closed");
+    check(!forkmesh::control::worldDevServerUrl(
+               QStringLiteral("https://127.0.0.1:8788/")).isValid(),
+          "the local World dev probe stays plain http");
+
     const QStringList mirrorOwners =
         forkmesh::control::directMirrorRepositoryOwners(
             QStringLiteral("forkmesh"), QStringLiteral("jett"));
