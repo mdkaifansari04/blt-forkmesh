@@ -9,5 +9,5 @@
   "refreshConfigPath": "/var/lib/forkmesh-mirror/gateway/mirror-refresh.json",
   "gatewayConfigPath": "/var/lib/forkmesh-mirror/gateway/mirror-gateway.json",
   "mirrorService": "forkmesh-mirror.service",
-  "healthTimeoutSeconds": 60
+  "healthTimeoutSeconds": 180
 }

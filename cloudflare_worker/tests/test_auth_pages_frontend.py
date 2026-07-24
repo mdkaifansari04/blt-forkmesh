@@ -377,8 +377,7 @@ def test_login_exposes_localhost_only_demo_credentials():
     assert 'const DEMO_PASSWORD = "forkmesh-demo";' in login_js
     assert 'location.hostname === "localhost"' in login_js
     assert 'location.hostname === "127.0.0.1"' in login_js
-    # Demo login lands on the dashboard unless a ?next= bounce (e.g. a pending
-    # link-node grant, adhoc #120) asked to resume somewhere specific.
-    assert 'location.href = nextPath() || "/dashboard"' in login_js
+    assert 'fetch("/api/accounts/login"' in login_js
+    assert "email.toLowerCase() === DEMO_EMAIL" not in login_js
+    assert 'nodeName: "demo-node"' not in login_js
     assert '"/dashboard.html"' not in login_js
-    assert 'nodeName: "demo-node"' in login_js

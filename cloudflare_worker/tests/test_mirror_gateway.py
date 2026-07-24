@@ -4,6 +4,7 @@ import base64
 import gzip
 import hashlib
 import http.client
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import shutil
@@ -77,8 +78,21 @@ def make_bare_repository(tmp_path):
     run(["git", "add", "."], source)
     run(["git", "commit", "-m", "Improve greeting"], source)
     run(["git", "branch", "release-preview"], source)
+    run(["git", "switch", "-c", "forkmesh/pulls"], source)
+    (source / "pulls" / "42").mkdir(parents=True)
+    (source / "pulls" / "42" / "pull.md").write_text(
+        "---\nnumber: 42\nstatus: open\n"
+        "title: Metadata branch truth\n---\n\nPinned review.\n",
+        encoding="utf-8",
+    )
+    run(["git", "add", "pulls/42/pull.md"], source)
+    run(["git", "commit", "-m", "Add pull metadata branch"], source)
+    run(["git", "switch", "main"], source)
     run(["git", "remote", "add", "origin", str(bare)], source)
-    run(["git", "push", "origin", "main", "release-preview"], source)
+    run([
+        "git", "push", "origin",
+        "main", "release-preview", "forkmesh/pulls",
+    ], source)
     run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], bare)
     commit = run(["git", "rev-parse", "HEAD"], source)
     return bare, commit
@@ -748,11 +762,92 @@ def test_branches_returns_main_and_additional_heads(application):
         )
     )
     assert [branch["name"] for branch in payload["branches"]] == [
+        "forkmesh/pulls",
         "main",
         "release-preview",
     ]
     assert all(branch["commit"] for branch in payload["branches"])
     assert all(branch["updatedAt"] for branch in payload["branches"])
+
+
+def test_pull_metadata_branch_is_read_through_its_resolved_commit(application):
+    app, _commit, _release_hash, _logs = application
+    branches = decode_json(
+        dispatch(
+            app,
+            "branches",
+            {},
+            request_id="pull_metadata_branches_01",
+        )
+    )["branches"]
+    metadata = next(
+        branch for branch in branches
+        if branch["name"] == "forkmesh/pulls"
+    )
+    assert len(metadata["commit"]) == 40
+
+    tree = decode_json(
+        dispatch(
+            app,
+            "tree",
+            {"path": "pulls", "ref": metadata["commit"]},
+            request_id="pull_metadata_tree_01",
+        )
+    )
+    assert tree["commit"] == metadata["commit"]
+    assert [(entry["name"], entry["type"]) for entry in tree["entries"]] == [
+        ("42", "tree")
+    ]
+    blob = decode_json(
+        dispatch(
+            app,
+            "blob",
+            {
+                "path": "pulls/42/pull.md",
+                "ref": metadata["commit"],
+            },
+            request_id="pull_metadata_blob_01",
+        )
+    )
+    assert "Metadata branch truth" in blob["content"]
+
+
+def test_collaboration_tree_avoids_whole_repo_analysis_and_per_entry_logs(
+    application, monkeypatch,
+):
+    app, _commit, _release_hash, _logs = application
+    repository = app.repositories[("alice", "project")]
+    summary_paths = []
+    original_summary = repository._commit_summary
+
+    def unavailable_analysis(_commit):
+        raise AssertionError(
+            "collaboration metadata must not occupy the analysis lock"
+        )
+
+    def counted_summary(commit, path=""):
+        summary_paths.append(path)
+        return original_summary(commit, path)
+
+    monkeypatch.setattr(repository, "_analysis", unavailable_analysis)
+    monkeypatch.setattr(repository, "_commit_summary", counted_summary)
+    metadata_commit = repository.resolve_commit("forkmesh/pulls")
+    payload = repository.tree({
+        "path": "pulls",
+        "ref": metadata_commit,
+    })
+
+    assert payload["ok"] is True
+    assert payload["commit"] == metadata_commit
+    assert payload["analysis"]["commit"] == metadata_commit
+    assert payload["analysis"]["dependency"]["status"] == "not-requested"
+    assert payload["analysis"]["coverage"]["status"] == "not-requested"
+    assert summary_paths == [""]
+    assert [(item["name"], item["type"]) for item in payload["entries"]] == [
+        ("42", "tree")
+    ]
+    assert payload["entries"][0]["analysisCommit"] == metadata_commit
+    assert payload["entries"][0]["dependencies"] == []
 
 
 def test_compare_returns_bounded_portable_pull_change_set(application):
@@ -932,7 +1027,7 @@ def test_bounded_analysis_parsers_reject_escape_and_parse_common_artifacts():
 
 
 def test_batched_blobs_preserve_repeated_paths_and_bound_missing_files(application):
-    app, _commit, _release_hash, _logs = application
+    app, commit, _release_hash, _logs = application
     target = (
         "/v1/repositories/alice/project/blobs"
         "?path=README.md&path=src%2Fmain.py"
@@ -946,6 +1041,7 @@ def test_batched_blobs_preserve_repeated_paths_and_bound_missing_files(applicati
     )
     assert response.status == 200
     payload = decode_json(response)
+    assert payload["commit"] == commit
     assert "searchable mirror gateway" in payload["blobs"]["README.md"]["content"]
     assert payload["blobs"]["src/main.py"]["ok"] is True
     assert payload["blobs"]["does-not-exist"] is None
@@ -1020,6 +1116,10 @@ def test_raw_release_and_git_upload_pack_are_stream_specs(application):
         for item in upload.stream.command
     )
     assert "core.alternateRefsCommand=/usr/bin/true" in upload.stream.command
+    assert "uploadpack.hideRefs=refs/forkmesh/" in upload.stream.command
+    assert "uploadpack.allowTipSHA1InWant=false" in upload.stream.command
+    assert "uploadpack.allowReachableSHA1InWant=false" in upload.stream.command
+    assert "uploadpack.allowAnySHA1InWant=false" in upload.stream.command
     completed = subprocess.run(
         upload.stream.command,
         input=upload.stream.input_bytes,
@@ -1030,6 +1130,124 @@ def test_raw_release_and_git_upload_pack_are_stream_specs(application):
     )
     assert completed.returncode == 0
     assert b"PACK" in completed.stdout
+
+
+def test_real_git_clone_cannot_advertise_or_fetch_internal_merge_objects(
+    application, tmp_path
+):
+    app, _commit, _release_hash, _logs = application
+    repository = next(iter(app.repositories.values()))
+    secret = subprocess.run(
+        [
+            "git", "--git-dir", str(repository.git_dir),
+            "hash-object", "-w", "--stdin",
+        ],
+        input=b"owner-only merge job",
+        check=True,
+        capture_output=True,
+    ).stdout.decode("ascii").strip()
+    run([
+        "git", "--git-dir", str(repository.git_dir), "update-ref",
+        "refs/forkmesh/merge-jobs/test-job", secret,
+    ], tmp_path)
+    run([
+        "git", "--git-dir", str(repository.git_dir), "update-ref",
+        "refs/forkmesh/merge-staging/test-job/base", secret,
+    ], tmp_path)
+    # Repository-local settings are hostile input at this boundary. Explicit
+    # command-line policy must override attempts to expose arbitrary objects.
+    run([
+        "git", "--git-dir", str(repository.git_dir), "config",
+        "uploadpack.allowAnySHA1InWant", "true",
+    ], tmp_path)
+    run([
+        "git", "--git-dir", str(repository.git_dir), "config", "--add",
+        "uploadpack.hideRefs", "!refs/forkmesh/",
+    ], tmp_path)
+
+    advertisement = repository.git_advertisement()
+    assert b"refs/forkmesh/" not in advertisement
+    assert secret.encode("ascii") not in advertisement
+
+    class GitHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            if self.path != "/repo/info/refs?service=git-upload-pack":
+                self.send_error(404)
+                return
+            body = repository.git_advertisement()
+            self.send_response(200)
+            self.send_header(
+                "Content-Type",
+                "application/x-git-upload-pack-advertisement",
+            )
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            if self.path != "/repo/git-upload-pack":
+                self.send_error(404)
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            request_body = self.rfile.read(length)
+            stream = repository.upload_pack_spec(request_body)
+            completed = subprocess.run(
+                stream.command,
+                input=stream.input_bytes,
+                capture_output=True,
+                env=gateway._git_environment(),
+                timeout=10,
+                check=False,
+            )
+            body = completed.stdout
+            self.send_response(200 if completed.returncode == 0 else 500)
+            self.send_header(
+                "Content-Type", "application/x-git-upload-pack-result")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), GitHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    origin = "http://127.0.0.1:%d/repo" % server.server_address[1]
+    clone = tmp_path / "clone-with-hidden-refs"
+    try:
+        cloned = subprocess.run(
+            ["git", "clone", "--no-tags", origin, str(clone)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+            env={**gateway._git_environment(), "GIT_PROTOCOL": "version=0"},
+        )
+        assert cloned.returncode == 0, cloned.stderr
+        refs = run(["git", "-C", str(clone), "show-ref"], tmp_path)
+        assert "refs/forkmesh/" not in refs
+        assert (clone / "README.md").exists()
+        assert subprocess.run(
+            ["git", "-C", str(clone), "cat-file", "-e", secret],
+            capture_output=True,
+            check=False,
+        ).returncode != 0
+        exact_fetch = subprocess.run(
+            ["git", "-C", str(clone), "fetch", origin, secret],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+            env={**gateway._git_environment(), "GIT_PROTOCOL": "version=0"},
+        )
+        assert exact_fetch.returncode != 0
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_git_upload_pack_decodes_gzip_after_verifying_transport_digest(application):

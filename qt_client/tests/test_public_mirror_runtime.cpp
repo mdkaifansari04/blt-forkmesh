@@ -1,6 +1,7 @@
 #include "PublicMirrorRuntime.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -83,6 +84,24 @@ QByteArray readAll(const QString &path)
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
+
+    const QByteArray unsortedRefs =
+        QByteArrayLiteral(
+            "0000000000000000000000000000000000000000 refs/tags/zeta\n"
+            "ffffffffffffffffffffffffffffffffffffffff refs/heads/alpha\n"
+            "1111111111111111111111111111111111111111 refs/tags/beta\n");
+    const QByteArray canonicalRefs =
+        QByteArrayLiteral(
+            "ffffffffffffffffffffffffffffffffffffffff refs/heads/alpha\n"
+            "1111111111111111111111111111111111111111 refs/tags/beta\n"
+            "0000000000000000000000000000000000000000 refs/tags/zeta");
+    check(
+        PublicMirrorRuntime::refsSha256FromForEachRef(unsortedRefs) ==
+            QString::fromLatin1(
+                QCryptographicHash::hash(canonicalRefs,
+                                         QCryptographicHash::Sha256)
+                    .toHex()),
+        "public ref fingerprints are canonicalized by refname");
 
     QTemporaryDir root;
     check(root.isValid(), "temporary root is available");

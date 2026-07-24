@@ -1,5 +1,6 @@
 #include "../src/MainWindow.h"
 #include "../src/PlatformLogFilter.h"
+#include "ForkMeshVersion.h"
 
 #include <QAction>
 #include <QAbstractItemView>
@@ -20,6 +21,7 @@
 #include <QFileInfo>
 #include <QPointer>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QSemaphore>
 #include <QPushButton>
 #include <QSettings>
@@ -351,6 +353,8 @@ int main(int argc, char *argv[])
     const QString testApplicationName =
         QStringLiteral("WindowResize-") + QFileInfo(dataDir.path()).fileName();
     app.setApplicationName(testApplicationName);
+    const bool fleetBinaryInstallOnly =
+        app.arguments().contains(QStringLiteral("--fleet-binary-install-only"));
 
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -407,6 +411,122 @@ int main(int argc, char *argv[])
                          QStringLiteral("wallet"));
 
     MainWindow window;
+
+    // Fleet "Install from binary" must install the published release, not
+    // upload this test process (or any other locally-built executable). The
+    // target verifies the release checksum in install.sh, refuses source
+    // fallback, restarts in place, and checks both the reported version and
+    // exact source revision before the per-host pane can turn green.
+    {
+        const QString expectedBuildCommit =
+            QStringLiteral(FORKMESH_BUILD_COMMIT).trimmed().toLower();
+        const QRegularExpression exactCommit(
+            QStringLiteral("^(?:[0-9a-f]{40}|[0-9a-f]{64})$"));
+        const bool buildIsCommitted =
+            exactCommit.match(expectedBuildCommit).hasMatch();
+        if (!buildIsCommitted) {
+            qsizetype refusedBytes = -1;
+            QString refusedError;
+            const QString refusedCommand =
+                window.testFleetBinaryInstallRemoteCommand(
+                    false, &refusedBytes, &refusedError);
+            check(refusedCommand.isEmpty() && refusedBytes == 0 &&
+                      refusedError.contains(
+                          QStringLiteral("no exact source revision")),
+                  QStringLiteral("dirty or unknown-provenance builds refuse "
+                                 "fleet binary deployment"));
+        } else {
+            check(true,
+                  QStringLiteral("test binary embeds an exact Git source commit"));
+        }
+
+        // Exercise the successful command contract deterministically even when
+        // this suite is intentionally running from a dirty developer tree. This
+        // override exists only in the FORKMESH_WINDOW_TESTS target.
+        const QByteArray testCommit(
+            "0123456789abcdef0123456789abcdef01234567");
+        qputenv("FORKMESH_TEST_BUILD_COMMIT", testCommit);
+        const QString commandBuildCommit = QString::fromLatin1(testCommit);
+
+        qsizetype uploadBytes = -1;
+        QString commandError;
+        const QString command = window.testFleetBinaryInstallRemoteCommand(
+            false, &uploadBytes, &commandError);
+        check(!command.isEmpty() && commandError.isEmpty(),
+              QStringLiteral("fleet binary install command builds without an "
+                             "installer error"));
+        check(uploadBytes == 0 &&
+                  !command.contains(QStringLiteral("FORKMESH_LOCAL_BINARY")) &&
+                  !command.contains(QStringLiteral("__FORKMESH_UPLOAD__")),
+              QStringLiteral("fleet binary install never uploads the locally "
+                             "running source/test executable"));
+        check(command.contains(
+                  QStringLiteral("FORKMESH_RELEASE=latest")) &&
+                  command.contains(
+                      QStringLiteral("FORKMESH_NO_SOURCE_FALLBACK=1")) &&
+                  command.contains(
+                      QStringLiteral("FORKMESH_EXPECTED_BUILD_COMMIT=")) &&
+                  command.contains(
+                      QStringLiteral("FORKMESH_EXPECTED_RELEASE_VERSION=")) &&
+                  command.contains(commandBuildCommit) &&
+                  !command.contains(QStringLiteral("FORKMESH_FROM_SOURCE=1")),
+              QStringLiteral("fleet binary install is pinned to the published "
+                             "binary-only release at this source commit"));
+        check(command.contains(QStringLiteral("FORKMESH_RESTART=1")) &&
+                  !command.contains(QStringLiteral("FORKMESH_REINSTALL=1")),
+              QStringLiteral("normal fleet binary install restarts in place "
+                             "without deleting node keys or data"));
+        check(command.contains(QStringLiteral("Cache-Control: no-cache")) &&
+                  command.contains(QStringLiteral("command -v sha256sum")) &&
+                  command.contains(
+                      QStringLiteral("forkmesh-installer.XXXXXX")) &&
+                  command.contains(QStringLiteral("--version")) &&
+                  command.contains(QStringLiteral("--build-commit")) &&
+                  command.contains(
+                      QStringLiteral("source-revision check failed")) &&
+                  command.contains(QStringLiteral("probe_ticks")) &&
+                  command.contains(QStringLiteral("sleep 0.1")) &&
+                  command.contains(QStringLiteral("sleep 0.2")) &&
+                  command.contains(QStringLiteral("kill -KILL")) &&
+                  command.contains(QStringLiteral("head -c 128")) &&
+                  command.contains(
+                      QStringLiteral("wait \"$commit_pid\" || "
+                                     "commit_status=$?")) &&
+                  command.contains(
+                      QStringLiteral("ForkMesh " FORKMESH_VERSION)),
+              QStringLiteral("fleet binary install fetches a fresh installer "
+                             "and verifies the exact app version and source "
+                             "revision with a bounded legacy-binary probe"));
+        QProcess shellSyntax;
+        shellSyntax.start(QStringLiteral("/bin/sh"),
+                          {QStringLiteral("-n"), QStringLiteral("-c"), command});
+        const bool syntaxFinished = shellSyntax.waitForFinished(5000);
+        check(syntaxFinished && shellSyntax.exitStatus() == QProcess::NormalExit &&
+                  shellSyntax.exitCode() == 0,
+              QStringLiteral("fleet binary remote command is valid shell "
+                             "syntax"));
+
+        uploadBytes = -1;
+        commandError.clear();
+        const QString reinstallCommand =
+            window.testFleetBinaryInstallRemoteCommand(
+                true, &uploadBytes, &commandError);
+        check(!reinstallCommand.isEmpty() && commandError.isEmpty() &&
+                  uploadBytes == 0 &&
+                  reinstallCommand.contains(
+                      QStringLiteral("FORKMESH_REINSTALL=1")) &&
+                  reinstallCommand.contains(
+                      QStringLiteral("FORKMESH_NO_SOURCE_FALLBACK=1")) &&
+                  reinstallCommand.contains(
+                      QStringLiteral("FORKMESH_EXPECTED_BUILD_COMMIT=")) &&
+                  reinstallCommand.contains(
+                      QStringLiteral("--build-commit")),
+              QStringLiteral("explicit destructive fleet reinstall also uses "
+                             "the commit-matched published binary-only release"));
+        qunsetenv("FORKMESH_TEST_BUILD_COMMIT");
+    }
+    if (fleetBinaryInstallOnly)
+        return failures == 0 ? 0 : 1;
 
     // Account credentials are never portable ForkMesh data.  The retired
     // claude-auth export/import command names must fail closed without reading
@@ -480,6 +600,11 @@ int main(int argc, char *argv[])
     check(cloudflareToken &&
               cloudflareToken->echoMode() == QLineEdit::Password,
           QStringLiteral("Cloudflare token control masks the session-only secret"));
+    window.testShowLogSection();
+    QApplication::processEvents();
+    check(window.findChild<QPushButton *>(
+              QStringLiteral("cloudflareWorkerLogsButton")) != nullptr,
+          QStringLiteral("network log exposes the Cloudflare live-log viewer"));
     check(window.findChild<QTableWidget *>(
               QStringLiteral("controlPermissionsTable")) != nullptr &&
               window.findChild<QPushButton *>(
@@ -508,6 +633,34 @@ int main(int argc, char *argv[])
     check(window.findChild<QLineEdit *>(
               QStringLiteral("rewardPoolPrivateKeyInput")) == nullptr,
           QStringLiteral("reward private-key input exists only inside the explicit import dialog"));
+
+    const QJsonArray actionsHostFixture{
+        QJsonObject{
+            {QStringLiteral("name"), QStringLiteral("mirror2")},
+            {QStringLiteral("ip"), QStringLiteral("mirror2.example.test")},
+            {QStringLiteral("user"), QStringLiteral("forkmesh")},
+            {QStringLiteral("pass"),
+             QStringLiteral("test-password-never-rendered")},
+            {QStringLiteral("status"), QStringLiteral("installed")},
+        },
+    };
+    QSettings().setValue(
+        QStringLiteral("hosts/list"),
+        QString::fromUtf8(
+            QJsonDocument(actionsHostFixture).toJson(
+                QJsonDocument::Compact)));
+    window.testShowHostsSection();
+    QApplication::processEvents();
+    check(window.findChild<QPushButton *>(
+              QStringLiteral("hostActionsButton")) != nullptr,
+          QStringLiteral(
+              "saved mirror hosts expose the stdin-only Actions controller"));
+    check(window.findChild<QWidget *>(
+              QStringLiteral("hostActionsVariablesTable")) == nullptr,
+          QStringLiteral(
+              "Actions secret-entry widgets exist only inside the explicit dialog"));
+    QSettings().remove(QStringLiteral("hosts/list"));
+
     // Settings is deferred independently from the Control Node. Navigate there
     // before checking its one-way legacy-custody migration and controls.
     window.testShowSettingsSection();

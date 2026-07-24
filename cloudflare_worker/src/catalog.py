@@ -81,6 +81,29 @@ def clean_int_series(value, length=52, max_value=1000000):
     return ([0] * max(0, length - len(series))) + series
 
 
+def clean_optional_integer(value, max_value):
+    """Return a bounded integer metric, or None when it was not shared."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and (
+            value != value or value in (float("inf"), float("-inf"))
+            or not value.is_integer()):
+        return None
+    if value < 0:
+        return None
+    return min(int(value), max_value)
+
+
+def clean_optional_usage(used_value, total_value):
+    """Normalize a used/total byte pair without manufacturing partial data."""
+    maximum = 1 << 50
+    used = clean_optional_integer(used_value, maximum)
+    total = clean_optional_integer(total_value, maximum)
+    if used is None or total is None or total <= 0:
+        return None, None
+    return min(used, total), total
+
+
 def clean_logo_metadata(value):
     """Keep only bounded, content-free inputs for native logo generation."""
     value = value if isinstance(value, dict) else {}
@@ -155,7 +178,24 @@ def safe_catalog_record(data):
     solana = clean_string(data.get("solana", ""), 64)
     if not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", solana):
         solana = ""
-    return {
+    mem_used, mem_total = clean_optional_usage(
+        data.get("memUsedBytes"), data.get("memTotalBytes"))
+    disk_used, disk_total = clean_optional_usage(
+        data.get("diskUsedBytes"), data.get("diskTotalBytes"))
+    actions_fields = {"actionsEnabled", "actionsState"}.intersection(data)
+    if actions_fields and actions_fields != {"actionsEnabled", "actionsState"}:
+        return None
+    actions_enabled = data.get("actionsEnabled")
+    actions_state = data.get("actionsState")
+    if actions_fields and (
+        not isinstance(actions_enabled, bool)
+        or (
+            (not actions_enabled and actions_state != "disabled")
+            or (actions_enabled and actions_state not in {"enabled", "running"})
+        )
+    ):
+        return None
+    record = {
         "owner": owner,
         "name": name,
         "visibility": visibility,
@@ -217,3 +257,23 @@ def safe_catalog_record(data):
         "stateHash": clean_string(data.get("stateHash", ""), 64),
         "stateSig": clean_string(data.get("stateSig", ""), 220),
     }
+    # Keep this pair absent on legacy records so their catalog-v2 signatures
+    # still verify. New reports are a strict, signed capability/status only:
+    # arbitrary Actions configuration never reaches the stored public record.
+    if actions_fields:
+        record["actionsEnabled"] = actions_enabled
+        record["actionsState"] = actions_state
+    # Keep absent telemetry absent (rather than adding null fields) so a
+    # catalog-v2 signature produced by an older, opted-out client continues to
+    # verify after this schema extension. Consumers still expose unknown values
+    # as null in their response shape.
+    cpu_percent = clean_optional_integer(data.get("cpuPercent"), 100)
+    if cpu_percent is not None:
+        record["cpuPercent"] = cpu_percent
+    if mem_total is not None:
+        record["memUsedBytes"] = mem_used
+        record["memTotalBytes"] = mem_total
+    if disk_total is not None:
+        record["diskUsedBytes"] = disk_used
+        record["diskTotalBytes"] = disk_total
+    return record

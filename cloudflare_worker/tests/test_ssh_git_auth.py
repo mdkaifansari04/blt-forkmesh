@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import shutil
 import sqlite3
 import subprocess
 from types import SimpleNamespace
@@ -194,12 +195,13 @@ def _gateway_config(tmp_path, **overrides):
     root = tmp_path / "repos"
     root.mkdir(parents=True)
     root.chmod(0o755)
+    true_program = str(Path(shutil.which("true") or "/usr/bin/true").resolve())
     config = {
         "schemaVersion": 1,
         "authorizationSocket": str(tmp_path / "authorize.sock"),
         "authorizationBrokerUser": pwd.getpwuid(os.geteuid()).pw_name,
-        "gatewayExecutable": "/bin/true",
-        "refreshNotifier": "/bin/true",
+        "gatewayExecutable": true_program,
+        "refreshNotifier": true_program,
         "repositoryRoot": str(root),
         "repositories": [
             {
@@ -323,6 +325,11 @@ def test_gateway_runs_hardened_git_without_shell_after_authorization(
         "core.fsmonitor=",
         "credential.helper=",
         "protocol.ext.allow=never",
+        "uploadpack.hideRefs=refs/forkmesh/",
+        "uploadpack.allowTipSHA1InWant=false",
+        "uploadpack.allowReachableSHA1InWant=false",
+        "uploadpack.allowAnySHA1InWant=false",
+        "receive.hideRefs=refs/forkmesh/",
         "safe.directory=" + str(repo_path),
     ):
         assert setting in git_command
@@ -332,6 +339,78 @@ def test_gateway_runs_hardened_git_without_shell_after_authorization(
     assert "SSH_ORIGINAL_COMMAND" not in git_options["env"]
     assert commands[1][0] == [str(config.refresh_notifier)]
     assert commands[1][1]["stdin"] is subprocess.DEVNULL
+
+
+def test_real_ssh_git_services_hide_and_protect_internal_merge_refs(tmp_path):
+    work = tmp_path / "work"
+    bare = tmp_path / "repository.git"
+    subprocess.run(
+        ["git", "init", "-b", "main", str(work)],
+        check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(work), "config", "user.name", "Test"],
+        check=True)
+    subprocess.run(
+        ["git", "-C", str(work), "config", "user.email", "test@example.invalid"],
+        check=True)
+    (work / "README.md").write_text("public\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(work), "add", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(work), "commit", "-m", "public"],
+        check=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", "--bare", str(work), str(bare)],
+        check=True, capture_output=True)
+    commit = subprocess.run(
+        ["git", "-C", str(work), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True).stdout.strip()
+    subprocess.run(
+        [
+            "git", "--git-dir", str(bare), "update-ref",
+            "refs/forkmesh/merge-completed/test/base", commit,
+        ],
+        check=True)
+
+    advertisement = subprocess.run(
+        [
+            "git",
+            "-c", "uploadpack.hideRefs=refs/forkmesh/",
+            "-c", "uploadpack.allowTipSHA1InWant=false",
+            "-c", "uploadpack.allowReachableSHA1InWant=false",
+            "upload-pack", "--advertise-refs", str(bare),
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert b"refs/forkmesh/" not in advertisement
+
+    wrapper = tmp_path / "receive-pack-hidden-refs"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        "exec git -c receive.hideRefs=refs/forkmesh/ receive-pack \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o700)
+    rejected = subprocess.run(
+        [
+            "git", "-C", str(work), "push",
+            "--receive-pack=" + str(wrapper),
+            str(bare), "HEAD:refs/forkmesh/merge-jobs/attacker",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejected.returncode != 0
+    assert subprocess.run(
+        [
+            "git", "--git-dir", str(bare), "rev-parse", "--verify",
+            "refs/forkmesh/merge-jobs/attacker",
+        ],
+        capture_output=True,
+        check=False,
+    ).returncode != 0
 
 
 def test_gateway_allows_only_explicit_aliases_to_same_local_repository(

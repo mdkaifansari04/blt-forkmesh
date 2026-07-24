@@ -1,14 +1,104 @@
 import {
   LANDMARKS,
-  WORLD_DAY_MS,
   WORLD_REGIONS,
   landmarkById,
-  worldClock,
+  normalizeWorldStatus,
 } from "./world-data.js";
 
-const WORLD_RADIUS = 36;
-const PLAYER_SPEED = 6.2;
+const WORLD_RADIUS = 72;
+const WORLD_GROUND_RADIUS = 88;
+const PLAYER_SPEED = 4.8;
+const PLAYER_MAX_SPEED = 10.4;
+const PLAYER_ACCELERATION = 3.2;
 const CAMERA_OFFSET = [17, 16, 21];
+const CAMERA_DISTANCE = Math.hypot(...CAMERA_OFFSET);
+const CAMERA_ZOOM_MIN = 0.12;
+const CAMERA_ZOOM_MAX = 3.2;
+const CAMERA_LOOK_SENSITIVITY = 0.0022;
+const CAMERA_PITCH_MIN = 0.08;
+const CAMERA_PITCH_MAX = 1.24;
+const LIGHT_LEVEL_MIN = 40;
+const LIGHT_LEVEL_MAX = 140;
+const LIGHT_LEVEL_DEFAULT = 100;
+const WORLD_SPACE_FLOORS = Object.freeze({
+  "town-square": 0.38,
+  east: 0.38,
+  central: 0.38,
+  west: 0.38,
+  "sky-campus": 15.45,
+  "space-station": 18.45,
+  "code-planet": 15.45,
+  "organization-region": 14.45,
+  "planet-atlas": 22.45,
+});
+const MOVEMENT_KEYS = new Set([
+  "KeyW",
+  "KeyA",
+  "KeyS",
+  "KeyD",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+]);
+const CITY_GRID_EXTENT = 64;
+const CITY_GRID_COORDINATES = Object.freeze([-48, -32, -16, 0, 16, 32, 48]);
+const REGISTERED_LOUNGE_POSITION = Object.freeze([-48, 0, 32]);
+const DURABLE_OBJECT_DISTRICT_POSITION = Object.freeze([48, 0, -32]);
+const REGISTERED_LOUNGE_STATUSES = new Set([
+  "Registered",
+  "Supporting member",
+  "Mirror operator",
+  "Organization admin",
+]);
+const LOCAL_ENVIRONMENT_OVERLAYS = Object.freeze({
+  rain: {
+    tint: "#5f7785",
+    tintStrength: 0.2,
+    lightMultiplier: 0.76,
+    exposureMultiplier: 0.88,
+    fogMultiplier: 1.22,
+  },
+  snow: {
+    tint: "#dcece9",
+    tintStrength: 0.22,
+    lightMultiplier: 1.04,
+    exposureMultiplier: 1.02,
+    fogMultiplier: 1.16,
+  },
+  winter: {
+    tint: "#b9ccca",
+    tintStrength: 0.27,
+    lightMultiplier: 0.94,
+    exposureMultiplier: 0.96,
+    fogMultiplier: 1.18,
+  },
+  cyberpunk: {
+    tint: "#35104c",
+    tintStrength: 0.34,
+    lightMultiplier: 0.9,
+    exposureMultiplier: 0.9,
+    fogMultiplier: 1.12,
+  },
+  "low-light": {
+    tint: "#07110f",
+    tintStrength: 0.18,
+    lightMultiplier: 0.64,
+    exposureMultiplier: 0.7,
+    fogMultiplier: 1.05,
+  },
+});
+const DAYLIGHT_ENVIRONMENT = Object.freeze({
+  background: "#9ed2bd",
+  fog: "#9bc6b5",
+  hemiSky: "#d8fff1",
+  hemiGround: "#25493a",
+  sun: "#fff0bd",
+  sunPower: 3.7,
+  hemiPower: 2.1,
+  exposure: 1.12,
+  fogDensity: 0.0068,
+});
 const ACCOUNT_STATUS_ICONS = Object.freeze({
   Guest: "○",
   Registered: "✓",
@@ -17,6 +107,7 @@ const ACCOUNT_STATUS_ICONS = Object.freeze({
   "Organization admin": "◆",
   "Verified bot": "⌘",
 });
+const WORLD_MODERATION_HANDLE_PATTERN = /^[a-f0-9]{64}$/;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -56,34 +147,64 @@ function roundedRect(context, x, y, width, height, radius) {
 }
 
 function badgeTexture(THREE, identity, accent = "#9ef7c6") {
-  return canvasTexture(THREE, 384, 384, (context) => {
+  const activityLabels = {
+    "browsing-code-visualization": "CODE MAP",
+    "exploring-town-square": "TOWN SQUARE",
+    "reading-documentation": "DOCUMENTATION",
+    "viewing-repository": "REPOSITORY",
+    "visiting-organization": "ORGANIZATION",
+    hidden: "ACTIVITY HIDDEN",
+  };
+  const firstSeenLabels = {
+    "this-session": "FIRST SEEN THIS SESSION",
+    today: "FIRST SEEN TODAY",
+    "this-week": "FIRST SEEN THIS WEEK",
+    "this-month": "FIRST SEEN THIS MONTH",
+    "this-year": "FIRST SEEN THIS YEAR",
+    "over-a-year": "FIRST SEEN 1Y+ AGO",
+    hidden: "FIRST SEEN HIDDEN",
+  };
+  return canvasTexture(THREE, 512, 512, (context) => {
     context.fillStyle = "#0c2019";
-    context.fillRect(0, 0, 384, 384);
+    context.fillRect(0, 0, 512, 512);
     context.strokeStyle = accent;
-    context.lineWidth = 10;
-    context.strokeRect(7, 7, 370, 370);
+    context.lineWidth = 12;
+    context.strokeRect(8, 8, 496, 496);
 
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.font = '118px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+    context.font = '128px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
     context.fillStyle = "#ffffff";
-    context.fillText(identity.flag || "◌", 192, 94);
+    context.fillText(identity.flag || "◌", 256, 86);
 
-    roundedRect(context, 42, 170, 300, 82, 10);
+    roundedRect(context, 42, 158, 428, 62, 10);
     context.fillStyle = "rgba(255,255,255,0.11)";
     context.fill();
-    context.font = '700 32px "ForkMesh Mono", ui-monospace, monospace';
+    context.font = '700 27px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#d9ffea";
     context.fillText(
       `${String(identity.browser || "BROWSER").toUpperCase()} · ${String(identity.os || "DEVICE").toUpperCase()}`,
-      192,
-      211,
+      256,
+      189,
     );
 
-    context.font = '700 41px "ForkMesh Mono", ui-monospace, monospace';
+    context.font = '700 43px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#ffffff";
     const name = String(identity.name || "guest").slice(0, 15);
-    context.fillText(name, 192, 294);
+    context.fillText(name, 256, 265);
+
+    context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#9ef7c6";
+    context.fillText(
+      firstSeenLabels[identity.firstVisitAge] || firstSeenLabels.hidden,
+      256,
+      324,
+    );
+    const activity =
+      activityLabels[identity.activityCategory] || activityLabels.hidden;
+    const visits = Math.max(0, Math.min(999, Number(identity.visitCount) || 0));
+    context.fillStyle = "#77d9ff";
+    context.fillText(`${activity} · ${visits} PUBLIC URL VISITS`, 256, 366);
 
     const statusColors = {
       online: "#9ef7c6",
@@ -95,11 +216,11 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
       hidden: "#65776f",
     };
     context.beginPath();
-    context.arc(52, 348, 11, 0, Math.PI * 2);
+    context.arc(60, 452, 12, 0, Math.PI * 2);
     context.fillStyle = statusColors[identity.status] || "#9ef7c6";
     context.fill();
     context.textAlign = "left";
-    context.font = '700 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#b9cfc4";
     const account = String(identity.accountStatus || "Guest")
       .replace(/\s+/g, " ")
@@ -109,9 +230,39 @@ function badgeTexture(THREE, identity, accent = "#9ef7c6") {
         `${ACCOUNT_STATUS_ICONS[account] || "○"} ${account}`,
         identity.localTime,
       ].filter(Boolean).join(" · "),
-      72,
-      349,
+      86,
+      453,
     );
+  });
+}
+
+function countryShirtTexture(THREE, identity) {
+  const code = /^[A-Z]{2}$/.test(String(identity.countryCode || ""))
+    ? String(identity.countryCode)
+    : "";
+  const flag = code && identity.flag && identity.flag !== "◌"
+    ? identity.flag
+    : "◌";
+  return canvasTexture(THREE, 256, 256, (context) => {
+    const seed = hashNumber(code || "neutral");
+    const palettes = [
+      ["#174f3d", "#9ef7c6"],
+      ["#183f62", "#77d9ff"],
+      ["#633e23", "#f7c96b"],
+      ["#573965", "#d5b6ff"],
+      ["#6a3346", "#ff9eb7"],
+    ];
+    const [base, stripe] = palettes[seed % palettes.length];
+    context.fillStyle = code ? "#f7fbf8" : base;
+    context.fillRect(0, 0, 256, 256);
+    context.fillStyle = stripe;
+    context.fillRect(0, 0, 256, 34);
+    context.fillRect(0, 222, 256, 34);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = '150px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
+    context.fillStyle = "#ffffff";
+    context.fillText(flag, 128, 128);
   });
 }
 
@@ -135,6 +286,98 @@ function wordTexture(THREE, title, subtitle, color = "#9ef7c6") {
   });
 }
 
+function moderationControlTexture(THREE, title, subtitle, color) {
+  return canvasTexture(THREE, 512, 160, (context) => {
+    context.clearRect(0, 0, 512, 160);
+    roundedRect(context, 4, 4, 504, 152, 18);
+    context.fillStyle = "rgba(35,8,12,0.96)";
+    context.fill();
+    context.strokeStyle = color;
+    context.lineWidth = 8;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = "#fff5f6";
+    context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(title, 256, 58);
+    context.fillStyle = color;
+    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(subtitle, 256, 113);
+  });
+}
+
+function sanitizedModerationHandles(remote, isAdmin) {
+  const peerId = String(remote?.id || "");
+  if (
+    isAdmin !== true ||
+    !peerId ||
+    /^(?:inactive|local|node|bot):/.test(peerId) ||
+    remote?.persistedInactive === true ||
+    remote?.accountStatus === "Verified bot" ||
+    !remote?.moderationHandles ||
+    typeof remote.moderationHandles !== "object" ||
+    Array.isArray(remote.moderationHandles)
+  ) {
+    return {};
+  }
+  const handles = {};
+  for (const targetType of ["ip", "agent"]) {
+    const handle = remote.moderationHandles[targetType];
+    if (
+      typeof handle === "string" &&
+      WORLD_MODERATION_HANDLE_PATTERN.test(handle)
+    ) {
+      handles[targetType] = handle;
+    }
+  }
+  return handles;
+}
+
+function createAvatarModerationControls(THREE, handles) {
+  const group = new THREE.Group();
+  group.name = "forkmesh-world-moderation-controls";
+  const specs = [
+    {
+      targetType: "ip",
+      title: "TEMP BLOCK IP",
+      subtitle: "ROTATING IP TOKEN · 1 HOUR",
+      color: "#ff9ca4",
+      y: 2.43,
+    },
+    {
+      targetType: "agent",
+      title: "TEMP BLOCK AGENT",
+      subtitle: "BROWSER AGENT · 1 HOUR",
+      color: "#ffc279",
+      y: 2.02,
+    },
+  ];
+  specs.forEach((spec) => {
+    if (!handles[spec.targetType]) return;
+    const control = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.02, 0.34),
+      new THREE.MeshBasicMaterial({
+        map: moderationControlTexture(
+          THREE,
+          spec.title,
+          spec.subtitle,
+          spec.color,
+        ),
+        transparent: false,
+        depthWrite: true,
+      }),
+    );
+    control.name = `world-moderation-${spec.targetType}-control`;
+    // Avatar fronts face -Z; positive Z places this single-sided control on
+    // the back, so it cannot be selected through the avatar from the front.
+    control.position.set(0, spec.y, 0.321);
+    control.userData.worldModerationControl = spec.targetType;
+    control.renderOrder = 3;
+    group.add(control);
+  });
+  return group;
+}
+
 function makeMaterial(THREE, color, options = {}) {
   return new THREE.MeshStandardMaterial({
     color,
@@ -156,6 +399,25 @@ function setShadows(object, cast = true, receive = true) {
   });
 }
 
+function disposeObject3D(object) {
+  const geometries = new Set();
+  const materials = new Set();
+  const textures = new Set();
+  object?.traverse?.((child) => {
+    if (child.geometry) geometries.add(child.geometry);
+    const childMaterials = Array.isArray(child.material)
+      ? child.material
+      : [child.material];
+    childMaterials.filter(Boolean).forEach((material) => {
+      materials.add(material);
+      if (material.map) textures.add(material.map);
+    });
+  });
+  textures.forEach((texture) => texture.dispose?.());
+  materials.forEach((material) => material.dispose?.());
+  geometries.forEach((geometry) => geometry.dispose?.());
+}
+
 function makeLabelSprite(THREE, title, subtitle, color) {
   const material = new THREE.SpriteMaterial({
     map: wordTexture(THREE, title, subtitle, color),
@@ -167,6 +429,66 @@ function makeLabelSprite(THREE, title, subtitle, color) {
   sprite.scale.set(7.5, 2.5, 1);
   sprite.renderOrder = 10;
   return sprite;
+}
+
+function avatarStatusTexture(THREE, emoji, note) {
+  return canvasTexture(THREE, 512, 192, (context) => {
+    context.clearRect(0, 0, 512, 192);
+    roundedRect(context, 8, 8, 496, 176, 32);
+    context.fillStyle = "rgba(7,17,15,0.94)";
+    context.fill();
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 6;
+    context.stroke();
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font =
+      '82px system-ui, "Apple Color Emoji", "Segoe UI Emoji", sans-serif';
+    context.fillStyle = "#ffffff";
+    context.fillText(emoji, note ? 116 : 256, 96);
+    if (note) {
+      context.textAlign = "left";
+      context.font =
+        '700 42px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = "#d9ffea";
+      context.fillText(note.slice(0, 20), 188, 98, 282);
+    }
+  });
+}
+
+function syncAvatarStatus(THREE, avatar, identity) {
+  if (!avatar?.userData) return;
+  const status = normalizeWorldStatus(
+    identity?.statusEmoji,
+    identity?.statusNote,
+  );
+  const key = `${status.emoji}\u0000${status.note}`;
+  if (avatar.userData.emojiStatusKey === key) return;
+  const previous = avatar.userData.emojiStatusSprite;
+  if (previous) {
+    avatar.remove(previous);
+    previous.material?.map?.dispose?.();
+    previous.material?.dispose?.();
+  }
+  avatar.userData.emojiStatusKey = key;
+  avatar.userData.statusEmoji = status.emoji;
+  avatar.userData.statusNote = status.note;
+  avatar.userData.emojiStatusSprite = null;
+  if (!status.emoji) return;
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: avatarStatusTexture(THREE, status.emoji, status.note),
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  sprite.name = "forkmesh-avatar-emoji-status";
+  sprite.position.set(0, 4.75, 0);
+  sprite.scale.set(status.note ? 3.25 : 1.6, 1.22, 1);
+  sprite.renderOrder = 12;
+  avatar.add(sprite);
+  avatar.userData.emojiStatusSprite = sprite;
 }
 
 function makeConsentedProfileFace(THREE, follower) {
@@ -256,11 +578,12 @@ function createAvatar(THREE, identity, options = {}) {
   const remote = Boolean(options.remote);
 
   const skinColors = ["#d59a70", "#9a6043", "#f0bd91", "#704832", "#c98255"];
-  const shirtColors = ["#176642", "#225a72", "#58447b", "#694d27", "#215c54"];
   const skin = makeMaterial(THREE, skinColors[seed % skinColors.length], { roughness: 0.92 });
-  const shirt = makeMaterial(THREE, shirtColors[(seed >> 3) % shirtColors.length], {
+  const shirt = makeMaterial(THREE, "#ffffff", {
     roughness: 0.8,
   });
+  shirt.map = countryShirtTexture(THREE, identity);
+  shirt.needsUpdate = true;
   const dark = makeMaterial(THREE, "#101d19", { roughness: 0.85 });
   const shoe = makeMaterial(THREE, "#07100e", { roughness: 0.82 });
 
@@ -288,6 +611,21 @@ function createAvatar(THREE, identity, options = {}) {
   rightArm.position.x = 0.73;
   group.add(rightArm);
 
+  const bracelet = new THREE.Mesh(
+    new THREE.TorusGeometry(0.19, 0.045, 8, 24),
+    makeMaterial(THREE, "#9ef7c6", {
+      emissive: "#39c783",
+      emissiveIntensity: 1.4,
+      metalness: 0.42,
+      roughness: 0.32,
+    }),
+  );
+  bracelet.name = "mouse-activity-bracelet";
+  bracelet.rotation.x = Math.PI / 2;
+  bracelet.position.set(0.73, 1.52, 0);
+  bracelet.visible = identity.inputActive === true;
+  group.add(bracelet);
+
   const legGeometry = new THREE.BoxGeometry(0.42, 1.25, 0.45);
   const leftLeg = new THREE.Mesh(legGeometry, dark);
   leftLeg.position.set(-0.3, 0.78, 0);
@@ -310,6 +648,7 @@ function createAvatar(THREE, identity, options = {}) {
       transparent: false,
     }),
   );
+  badge.scale.set(1, 1.14, 1);
   badge.position.set(0, 2.25, -0.316);
   badge.rotation.y = Math.PI;
   group.add(badge);
@@ -323,15 +662,51 @@ function createAvatar(THREE, identity, options = {}) {
     leftLeg,
     rightLeg,
     badge,
+    shirt,
+    shirtMeshes: [torso, leftArm, rightArm],
+    bracelet,
     phase: (seed % 100) / 10,
     targetPosition: new THREE.Vector3(),
     targetHeading: 0,
     status: identity.status || "exploring",
     nodeCount: 0,
+    accountStatus: identity.accountStatus || "Guest",
+    inputActive: identity.inputActive === true,
+    inactiveSince:
+      identity.inputActive === true ? 0 : performance.now(),
+    avatarOpacity: 1,
+    statusEmoji: "",
+    statusNote: "",
+    emojiStatusKey: "",
+    emojiStatusSprite: null,
   };
   syncOperatorBelt(THREE, group, identity.nodes?.length || 0);
+  syncAvatarStatus(THREE, group, identity);
   setShadows(group, true, true);
   return group;
+}
+
+function syncCountryShirt(THREE, avatar, identity) {
+  const shirt = avatar?.userData?.shirt;
+  if (!shirt) return;
+  const previous = shirt.map;
+  shirt.map = countryShirtTexture(THREE, identity);
+  shirt.color.set("#ffffff");
+  shirt.needsUpdate = true;
+  previous?.dispose?.();
+}
+
+function syncAvatarActivity(avatar, identity) {
+  if (!avatar?.userData) return;
+  const active = identity.inputActive === true;
+  if (active && !avatar.userData.inputActive) {
+    avatar.userData.inactiveSince = 0;
+  } else if (!active && avatar.userData.inputActive) {
+    avatar.userData.inactiveSince = performance.now();
+  }
+  avatar.userData.inputActive = active;
+  avatar.userData.accountStatus = identity.accountStatus || "Guest";
+  if (avatar.userData.bracelet) avatar.userData.bracelet.visible = active;
 }
 
 function updateAvatarBadge(THREE, avatar, identity, remote = false) {
@@ -342,6 +717,54 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
   badge.material.needsUpdate = true;
   old?.dispose?.();
   avatar.userData.name = identity.name;
+  syncCountryShirt(THREE, avatar, identity);
+  syncAvatarActivity(avatar, identity);
+  syncAvatarStatus(THREE, avatar, identity);
+}
+
+function animateAvatarActivity(avatar, time, delta, reducedMotion) {
+  if (!avatar?.userData) return;
+  const bracelet = avatar.userData.bracelet;
+  if (bracelet?.visible) {
+    bracelet.rotation.z += reducedMotion ? 0 : delta * 3.2;
+    bracelet.material.emissiveIntensity = reducedMotion
+      ? 1.15
+      : 1.1 + (Math.sin(time * 0.008 + avatar.userData.phase) + 1) * 0.55;
+  }
+  const inactiveFor = avatar.userData.inactiveSince
+    ? Math.max(0, time - avatar.userData.inactiveSince)
+    : 0;
+  const shouldFade =
+    avatar.userData.accountStatus === "Guest" &&
+    avatar.userData.inputActive !== true &&
+    inactiveFor >= 12000;
+  const targetOpacity = shouldFade ? 0.36 : 1;
+  const blend = 1 - Math.pow(0.006, Math.max(0, delta));
+  avatar.userData.avatarOpacity +=
+    (targetOpacity - avatar.userData.avatarOpacity) * blend;
+  const opacity = avatar.userData.avatarOpacity;
+  const materials = new Set();
+  avatar.traverse((child) => {
+    if (
+      !child.isMesh ||
+      child === bracelet ||
+      child.userData?.worldModerationControl
+    ) return;
+    const childMaterials = Array.isArray(child.material)
+      ? child.material
+      : [child.material];
+    childMaterials.filter(Boolean).forEach((material) => materials.add(material));
+  });
+  materials.forEach((material) => {
+    if (material.userData.avatarBaseOpacity === undefined) {
+      material.userData.avatarBaseOpacity = Number(material.opacity) || 1;
+      material.userData.avatarBaseTransparent = Boolean(material.transparent);
+    }
+    material.opacity = material.userData.avatarBaseOpacity * opacity;
+    material.transparent =
+      material.userData.avatarBaseTransparent || opacity < 0.995;
+    material.needsUpdate = true;
+  });
 }
 
 function createRoad(THREE, width, depth, x, z, rotation = 0) {
@@ -353,6 +776,655 @@ function createRoad(THREE, width, depth, x, z, rotation = 0) {
   road.rotation.y = rotation;
   road.receiveShadow = true;
   return road;
+}
+
+function createElectricMeshCityGrid(THREE, animated) {
+  const grid = new THREE.Group();
+  grid.name = "electric-mesh-city-block-grid";
+  grid.userData.blockSize = 16;
+  grid.userData.extent = CITY_GRID_EXTENT;
+
+  const conduitMaterial = makeMaterial(THREE, "#72f2bd", {
+    emissive: "#2bcc86",
+    emissiveIntensity: 1.05,
+    metalness: 0.28,
+    roughness: 0.32,
+  });
+  const junctionMaterial = makeMaterial(THREE, "#8ce7ff", {
+    emissive: "#35acd0",
+    emissiveIntensity: 1.2,
+    metalness: 0.35,
+    roughness: 0.28,
+  });
+  const conduits = [];
+  const junctions = [];
+
+  CITY_GRID_COORDINATES.forEach((coordinate) => {
+    const northSouth = createRoad(
+      THREE,
+      3.6,
+      CITY_GRID_EXTENT * 2,
+      coordinate,
+      0,
+    );
+    northSouth.userData.cityGridRoad = true;
+    grid.add(northSouth);
+    const eastWest = createRoad(
+      THREE,
+      CITY_GRID_EXTENT * 2,
+      3.6,
+      0,
+      coordinate,
+    );
+    eastWest.userData.cityGridRoad = true;
+    grid.add(eastWest);
+
+    const verticalConduit = new THREE.Mesh(
+      new THREE.BoxGeometry(0.075, 0.035, CITY_GRID_EXTENT * 2 - 2),
+      conduitMaterial,
+    );
+    verticalConduit.position.set(coordinate, 0.105, 0);
+    verticalConduit.userData.electricMeshConduit = true;
+    grid.add(verticalConduit);
+    conduits.push(verticalConduit);
+
+    const horizontalConduit = new THREE.Mesh(
+      new THREE.BoxGeometry(CITY_GRID_EXTENT * 2 - 2, 0.035, 0.075),
+      conduitMaterial,
+    );
+    horizontalConduit.position.set(0, 0.105, coordinate);
+    horizontalConduit.userData.electricMeshConduit = true;
+    grid.add(horizontalConduit);
+    conduits.push(horizontalConduit);
+  });
+
+  CITY_GRID_COORDINATES.forEach((x) => {
+    CITY_GRID_COORDINATES.forEach((z) => {
+      const junction = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.16, 0.2, 0.08, 8),
+        junctionMaterial,
+      );
+      junction.position.set(x, 0.14, z);
+      junction.userData.electricMeshJunction = true;
+      grid.add(junction);
+      junctions.push(junction);
+    });
+  });
+
+  animated.push((time) => {
+    const pulse = (Math.sin(time * 0.0012) + 1) * 0.5;
+    conduitMaterial.emissiveIntensity = 0.8 + pulse * 0.45;
+    junctionMaterial.emissiveIntensity = 0.95 + (1 - pulse) * 0.55;
+    if (junctions.length) {
+      const active = Math.floor(time / 180) % junctions.length;
+      junctions.forEach((junction, index) => {
+        junction.scale.y = index === active ? 2.2 : 1;
+      });
+    }
+  });
+  grid.userData.conduitCount = conduits.length;
+  grid.userData.junctionCount = junctions.length;
+  return grid;
+}
+
+function mirrorNodeIsOnline(node) {
+  const health = String(node?.health || node?.status || "").toLowerCase();
+  return (
+    node?.online === true ||
+    node?.healthy === true ||
+    ["online", "healthy", "available"].includes(health)
+  );
+}
+
+function mirrorMetric(value, maximum = Number.MAX_SAFE_INTEGER) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 && number <= maximum
+    ? number
+    : null;
+}
+
+function compactMirrorCount(value) {
+  const number = mirrorMetric(value, 1_000_000_000);
+  if (number === null) return "—";
+  if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(1)}M`;
+  if (number >= 1_000) return `${(number / 1_000).toFixed(1)}K`;
+  return String(Math.round(number));
+}
+
+function compactMirrorBytes(value) {
+  const bytes = mirrorMetric(value, 2 ** 50);
+  if (bytes === null) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let amount = bytes;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`;
+}
+
+function mirrorRatio(used, total) {
+  const safeUsed = mirrorMetric(used, 2 ** 50);
+  const safeTotal = mirrorMetric(total, 2 ** 50);
+  if (safeUsed === null || safeTotal === null || safeTotal <= 0 || safeUsed > safeTotal) {
+    return null;
+  }
+  return safeUsed / safeTotal;
+}
+
+function nodeDataKey(node) {
+  return JSON.stringify({
+    name: node?.name,
+    online: mirrorNodeIsOnline(node),
+    healthy: node?.healthy,
+    integrity: node?.integrity,
+    cloneAvailable: node?.cloneAvailable,
+    commit: node?.commit,
+    branch: node?.branch,
+    version: node?.version,
+    platform: node?.platform,
+    lastSync: node?.lastSync,
+    sizeBytes: node?.sizeBytes,
+    issueCount: node?.issueCount,
+    commitCount: node?.commitCount,
+    branchCount: node?.branchCount,
+    pullCount: node?.pullCount,
+    discussionCount: node?.discussionCount,
+    worktreeCount: node?.worktreeCount,
+    artifactCount: node?.artifactCount,
+    clonesServed: node?.clonesServed,
+    websiteServed: node?.websiteServed,
+    cpuPercent: node?.cpuPercent,
+    memoryUsedBytes: node?.memoryUsedBytes,
+    memoryTotalBytes: node?.memoryTotalBytes,
+    diskUsedBytes: node?.diskUsedBytes,
+    diskTotalBytes: node?.diskTotalBytes,
+    repositories: node?.repositories,
+  });
+}
+
+function serverPanelTexture(THREE, node) {
+  const online = mirrorNodeIsOnline(node);
+  const integrity = String(node?.integrity || "unknown").toLowerCase();
+  const repo = Array.isArray(node?.repositories) ? node.repositories[0] : null;
+  const repositoryLabel =
+    repo?.owner && repo?.name
+      ? `${String(repo.owner).slice(0, 32)}/${String(repo.name).slice(0, 44)}`
+      : "REPOSITORY NOT REPORTED";
+  const commit = String(node?.commit || repo?.commit || "").toLowerCase();
+  const shortCommit = /^[0-9a-f]{40,64}$/.test(commit)
+    ? commit.slice(0, 12)
+    : "NOT REPORTED";
+  const cpu = mirrorMetric(node?.cpuPercent, 100);
+  const memory = mirrorRatio(node?.memoryUsedBytes, node?.memoryTotalBytes);
+  const disk = mirrorRatio(node?.diskUsedBytes, node?.diskTotalBytes);
+  const statusColor =
+    online && integrity === "ok"
+      ? "#73f0ad"
+      : integrity === "rejected" || integrity === "degraded"
+        ? "#ff7e88"
+        : online
+          ? "#f7c96b"
+          : "#91a39a";
+  const routeLabel = !online
+    ? "ROUTE OFFLINE"
+    : node?.cloneAvailable === true && integrity === "ok"
+      ? "CLONE READY"
+      : integrity === "rejected" || integrity === "degraded"
+        ? "ROUTE BLOCKED"
+        : integrity === "healing"
+          ? "ROUTE VERIFYING"
+          : "ROUTE UNVERIFIED";
+  // 512² keeps the worst-case 64-cabinet texture budget bounded on mobile.
+  // Draw in a 1024-unit coordinate system so typography stays easy to tune.
+  return canvasTexture(THREE, 512, 512, (context) => {
+    context.scale(0.5, 0.5);
+    context.fillStyle = "#07110f";
+    context.fillRect(0, 0, 1024, 1024);
+    context.strokeStyle = "#526c61";
+    context.lineWidth = 12;
+    roundedRect(context, 10, 10, 1004, 1004, 28);
+    context.stroke();
+
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.font = '800 52px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#f1fff6";
+    context.fillText(String(node?.name || "MIRROR").toUpperCase().slice(0, 24), 58, 70);
+    context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = statusColor;
+    context.fillText(
+      `${online ? "ONLINE" : "OFFLINE"} · ${integrity.toUpperCase()} · ${routeLabel}`,
+      58,
+      124,
+    );
+
+    context.strokeStyle = "#294339";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(58, 158);
+    context.lineTo(966, 158);
+    context.stroke();
+
+    const drawBar = (label, ratio, value, y, color) => {
+      context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillStyle = "#cce9d8";
+      context.fillText(label, 58, y);
+      roundedRect(context, 170, y - 19, 520, 38, 9);
+      context.fillStyle = "#15271f";
+      context.fill();
+      if (ratio !== null) {
+        roundedRect(context, 170, y - 19, Math.max(12, 520 * ratio), 38, 9);
+        context.fillStyle = color;
+        context.fill();
+      } else {
+        context.strokeStyle = "#53665e";
+        context.lineWidth = 3;
+        for (let x = 178; x < 682; x += 24) {
+          context.beginPath();
+          context.moveTo(x, y + 16);
+          context.lineTo(x + 18, y - 16);
+          context.stroke();
+        }
+      }
+      context.textAlign = "right";
+      context.fillStyle = ratio === null ? "#91a39a" : "#f1fff6";
+      context.fillText(ratio === null ? "NOT SHARED" : value, 966, y);
+      context.textAlign = "left";
+    };
+    drawBar(
+      "CPU",
+      cpu === null ? null : cpu / 100,
+      cpu === null ? "" : `${cpu.toFixed(1)}%`,
+      216,
+      "#77d9ff",
+    );
+    drawBar(
+      "MEM",
+      memory,
+      memory === null
+        ? ""
+        : `${compactMirrorBytes(node?.memoryUsedBytes)} / ${compactMirrorBytes(
+            node?.memoryTotalBytes,
+          )}`,
+      278,
+      "#d5b6ff",
+    );
+    drawBar(
+      "DISK",
+      disk,
+      disk === null
+        ? ""
+        : `${compactMirrorBytes(node?.diskUsedBytes)} / ${compactMirrorBytes(
+            node?.diskTotalBytes,
+          )}`,
+      340,
+      "#f7c96b",
+    );
+
+    context.fillStyle = "#10251d";
+    roundedRect(context, 42, 386, 940, 170, 14);
+    context.fill();
+    context.font = '700 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#9ef7c6";
+    context.fillText(repositoryLabel, 62, 426);
+    context.fillStyle = "#f1fff6";
+    context.font = '700 30px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(`HEAD ${shortCommit}`, 62, 475);
+    context.font = '600 23px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#b4cabd";
+    context.fillText(
+      `${String(node?.branch || repo?.branch || "branch not reported").slice(
+        0,
+        30,
+      )} · ${String(node?.platform || "platform —").slice(0, 18)} · v${
+        String(node?.version || "—").replace(/^v/i, "").slice(0, 20)
+      }`,
+      62,
+      522,
+    );
+
+    const rows = [
+      ["COMMITS", node?.commitCount],
+      ["BRANCHES", node?.branchCount],
+      ["PULL REQUESTS", node?.pullCount],
+      ["ISSUES", node?.issueCount],
+      ["DISCUSSIONS", node?.discussionCount],
+      ["ARTIFACTS", node?.artifactCount],
+      ["WORKTREES", node?.worktreeCount],
+      ["CLONES SERVED", node?.clonesServed],
+      ["WEB SERVED", node?.websiteServed],
+      ["REPO BYTES", compactMirrorBytes(node?.sizeBytes)],
+    ];
+    context.font = '700 21px "ForkMesh Mono", ui-monospace, monospace';
+    rows.forEach(([label, value], index) => {
+      const column = index % 2;
+      const row = Math.floor(index / 2);
+      const x = column === 0 ? 58 : 536;
+      const y = 604 + row * 62;
+      context.fillStyle = "#8ca99a";
+      context.fillText(label, x, y);
+      context.textAlign = "right";
+      context.fillStyle = "#f1fff6";
+      context.fillText(
+        typeof value === "string" ? value : compactMirrorCount(value),
+        x + 414,
+        y,
+      );
+      context.textAlign = "left";
+    });
+
+    context.fillStyle = "#91a39a";
+    context.font = '600 19px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "OPERATOR-REPORTED, SIGNED REPO DATA · UNAVAILABLE VALUES ARE NEVER ESTIMATED",
+      58,
+      958,
+    );
+  });
+}
+
+function createMirrorServerCabinet(THREE, node, id) {
+  const group = new THREE.Group();
+  group.name = `mirror-server-cabinet:${id}`;
+  group.userData.infrastructureKind = "mirror-node";
+  group.userData.nodeId = id;
+  const online = mirrorNodeIsOnline(node);
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(2.24, 3.28, 1.42),
+    makeMaterial(THREE, online ? "#17221e" : "#252b28", {
+      emissive: online ? "#0b2d20" : "#171b19",
+      emissiveIntensity: online ? 0.24 : 0.1,
+      metalness: 0.72,
+      roughness: 0.28,
+    }),
+  );
+  body.position.y = 1.64;
+  group.add(body);
+
+  const trimMaterial = makeMaterial(THREE, "#485950", {
+    emissive: "#15271f",
+    emissiveIntensity: 0.18,
+    metalness: 0.88,
+    roughness: 0.22,
+  });
+  for (const x of [-1.04, 1.04]) {
+    const rail = new THREE.Mesh(
+      new THREE.BoxGeometry(0.075, 3.14, 1.5),
+      trimMaterial,
+    );
+    rail.position.set(x, 1.64, 0);
+    group.add(rail);
+  }
+  for (const x of [-0.84, 0.84]) {
+    const foot = new THREE.Mesh(
+      new THREE.BoxGeometry(0.28, 0.18, 0.8),
+      trimMaterial,
+    );
+    foot.position.set(x, 0.08, 0);
+    group.add(foot);
+  }
+
+  const panelGeometry = new THREE.PlaneGeometry(1.9, 2.46);
+  const panelMaterial = new THREE.MeshBasicMaterial({
+    map: serverPanelTexture(THREE, node),
+    toneMapped: false,
+  });
+  const panel = new THREE.Mesh(panelGeometry, panelMaterial);
+  // Keep a real depth gap in front of the 0.71 cabinet face. A near-coplanar
+  // display flickers at oblique camera angles on mobile GPUs.
+  panel.position.set(0, 1.72, 0.735);
+  panel.name = "mirror-server-front-panel";
+  panel.userData.nodeCabinet = { ...node };
+  group.add(panel);
+  // A mirrored service panel on the rear keeps the technical display readable
+  // from the third-person camera while the physical front remains oriented
+  // toward the routing-station walkway.
+  const rearPanel = new THREE.Mesh(panelGeometry, panelMaterial);
+  rearPanel.position.set(0, 1.72, -0.735);
+  rearPanel.rotation.y = Math.PI;
+  rearPanel.name = "mirror-server-rear-panel";
+  rearPanel.userData.nodeCabinet = { ...node };
+  group.add(rearPanel);
+
+  const integrity = String(node?.integrity || "unknown").toLowerCase();
+  const statusColors = [
+    online ? "#73f0ad" : "#71837a",
+    node?.cloneAvailable === true ? "#77d9ff" : online ? "#f7c96b" : "#71837a",
+    integrity === "ok"
+      ? "#73f0ad"
+      : integrity === "rejected" || integrity === "degraded"
+        ? "#ff7e88"
+        : integrity === "healing"
+          ? "#f7c96b"
+          : "#71837a",
+  ];
+  const statusLights = new THREE.Group();
+  statusColors.forEach((color, index) => {
+    const light = new THREE.Mesh(
+      new THREE.SphereGeometry(0.075, 12, 10),
+      makeMaterial(THREE, color, {
+        emissive: color,
+        emissiveIntensity: online ? 1.25 : 0.25,
+        metalness: 0.22,
+        roughness: 0.26,
+      }),
+    );
+    light.position.set(-0.24 + index * 0.24, 3.08, 0.76);
+    statusLights.add(light);
+  });
+  group.add(statusLights);
+
+  const vent = new THREE.Mesh(
+    new THREE.BoxGeometry(1.42, 0.26, 0.05),
+    makeMaterial(THREE, "#35463e", {
+      metalness: 0.76,
+      roughness: 0.38,
+    }),
+  );
+  vent.position.set(0, 0.22, 0.75);
+  group.add(vent);
+  group.userData.signalRing = statusLights.children[0];
+  group.userData.online = online;
+  group.userData.dataKey = nodeDataKey(node);
+  group.userData.nodeRecord = { ...node };
+  setShadows(group);
+  return group;
+}
+
+function createAgentRobot(THREE, bot, id) {
+  const group = new THREE.Group();
+  group.name = `verified-agent-object:${id}`;
+  group.userData.infrastructureKind = "automated-agent";
+  group.userData.agentId = id;
+  group.userData.verified = bot?.verified === true;
+  const verified = bot?.verified === true;
+  const core = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.62, 0),
+    makeMaterial(THREE, verified ? "#d5b6ff" : "#89929b", {
+      emissive: verified ? "#6f4da0" : "#32383d",
+      emissiveIntensity: verified ? 0.85 : 0.2,
+      metalness: 0.42,
+      roughness: 0.28,
+    }),
+  );
+  core.position.y = 1.35;
+  group.add(core);
+  const lens = new THREE.Mesh(
+    new THREE.SphereGeometry(0.17, 12, 10),
+    makeMaterial(THREE, verified ? "#9ef7c6" : "#91a39a", {
+      emissive: verified ? "#39c783" : "#3f4a45",
+      emissiveIntensity: verified ? 1.25 : 0.3,
+    }),
+  );
+  lens.position.set(0, 1.36, -0.55);
+  group.add(lens);
+  for (const side of [-1, 1]) {
+    const rotor = new THREE.Mesh(
+      new THREE.TorusGeometry(0.34, 0.055, 7, 20),
+      makeMaterial(THREE, "#77d9ff", {
+        emissive: "#237a99",
+        emissiveIntensity: 0.72,
+      }),
+    );
+    rotor.position.set(side * 0.8, 1.35, 0);
+    rotor.rotation.x = Math.PI / 2;
+    group.add(rotor);
+  }
+  const label = makeLabelSprite(
+    THREE,
+    String(bot.name).slice(0, 22),
+    `${verified ? "verified" : "unverified"} · ${String(bot.type).slice(0, 20)}`,
+    verified ? "#d5b6ff" : "#91a39a",
+  );
+  label.scale.set(2.7, 0.9, 1);
+  label.position.y = 2.7;
+  group.add(label);
+  group.userData.core = core;
+  setShadows(group);
+  return group;
+}
+
+function createRegisteredUserLounge(THREE, animated) {
+  const lounge = new THREE.Group();
+  lounge.name = "registered-user-lounge";
+  lounge.userData.spaceKind = "registered-user-lounge";
+  lounge.position.set(...REGISTERED_LOUNGE_POSITION);
+  const base = new THREE.Mesh(
+    new THREE.CylinderGeometry(7.4, 7.8, 0.42, 12),
+    makeMaterial(THREE, "#1a3f34", {
+      emissive: "#154f3b",
+      emissiveIntensity: 0.28,
+      roughness: 0.62,
+    }),
+  );
+  base.position.y = 0.21;
+  lounge.add(base);
+  const canopy = new THREE.Mesh(
+    new THREE.TorusGeometry(5.8, 0.16, 10, 64),
+    makeMaterial(THREE, "#9ef7c6", {
+      emissive: "#39c783",
+      emissiveIntensity: 0.8,
+      metalness: 0.3,
+    }),
+  );
+  canopy.rotation.x = Math.PI / 2;
+  canopy.position.y = 4.2;
+  lounge.add(canopy);
+  for (const angle of [0, Math.PI / 2, Math.PI, Math.PI * 1.5]) {
+    const column = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.12, 0.17, 3.9, 8),
+      makeMaterial(THREE, "#507d68", { metalness: 0.22 }),
+    );
+    column.position.set(Math.cos(angle) * 5.8, 2.1, Math.sin(angle) * 5.8);
+    lounge.add(column);
+  }
+  const seatOffsets = [];
+  for (let row = 0; row < 3; row += 1) {
+    for (let column = 0; column < 6; column += 1) {
+      const x = -4.5 + column * 1.8;
+      const z = -1.8 + row * 1.8;
+      const seat = new THREE.Mesh(
+        new THREE.BoxGeometry(1.25, 0.25, 1.05),
+        makeMaterial(THREE, row === 0 ? "#5ca783" : "#3f755e", {
+          emissive: row === 0 ? "#245c46" : "#173d2e",
+          emissiveIntensity: 0.35,
+        }),
+      );
+      seat.position.set(x, 0.53, z);
+      lounge.add(seat);
+      seatOffsets.push(new THREE.Vector3(x, 0.38, z));
+    }
+  }
+  lounge.userData.seatOffsets = seatOffsets;
+  const sign = makeLabelSprite(
+    THREE,
+    "MEMBER LOUNGE",
+    "registered contributors · recent activity glows",
+    "#9ef7c6",
+  );
+  sign.position.set(0, 5.3, 0);
+  lounge.add(sign);
+  const activityBeacon = new THREE.PointLight("#9ef7c6", 1.4, 18, 2);
+  activityBeacon.position.set(0, 4.2, 0);
+  lounge.add(activityBeacon);
+  lounge.userData.activityBeacon = activityBeacon;
+  setShadows(lounge);
+  animated.push((time) => {
+    const pulse = (Math.sin(time * 0.0018) + 1) * 0.5;
+    canopy.material.emissiveIntensity = 0.55 + pulse * 0.55;
+    activityBeacon.intensity = 0.9 + pulse * 1.1;
+  });
+  return lounge;
+}
+
+function createDurableObjectDistrict(THREE) {
+  const district = new THREE.Group();
+  district.name = "durable-object-infrastructure";
+  district.userData.infrastructureKind = "durable-objects";
+  district.userData.metricsAvailable = false;
+  district.position.set(...DURABLE_OBJECT_DISTRICT_POSITION);
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(13.5, 0.36, 9.5),
+    makeMaterial(THREE, "#102d32", {
+      emissive: "#164a55",
+      emissiveIntensity: 0.25,
+      roughness: 0.62,
+    }),
+  );
+  base.position.y = 0.18;
+  district.add(base);
+  const sign = makeLabelSprite(
+    THREE,
+    "DURABLE OBJECTS",
+    "usage appears only with explicit configured limits",
+    "#80e8ff",
+  );
+  sign.position.set(0, 4.7, 0);
+  district.add(sign);
+  const emptyMarker = new THREE.Mesh(
+    new THREE.TorusGeometry(1.2, 0.08, 8, 36),
+    makeMaterial(THREE, "#718087", {
+      emissive: "#2d3f44",
+      emissiveIntensity: 0.2,
+      transparent: true,
+      opacity: 0.75,
+    }),
+  );
+  emptyMarker.name = "durable-object-metrics-unavailable";
+  emptyMarker.position.y = 1.4;
+  emptyMarker.rotation.x = Math.PI / 2;
+  district.add(emptyMarker);
+  setShadows(district);
+  return district;
+}
+
+function durableObjectMetricPairs(record) {
+  const usage =
+    record?.usage && typeof record.usage === "object" ? record.usage : null;
+  const limits =
+    record?.limits && typeof record.limits === "object" ? record.limits : null;
+  if (!usage || !limits) return [];
+  return Object.keys(usage)
+    .filter(
+      (key) =>
+        /^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(key) &&
+        Object.prototype.hasOwnProperty.call(limits, key),
+    )
+    .map((key) => ({
+      key,
+      usage: Number(usage[key]),
+      limit: Number(limits[key]),
+    }))
+    .filter(
+      (metric) =>
+        Number.isFinite(metric.usage) &&
+        metric.usage >= 0 &&
+        Number.isFinite(metric.limit) &&
+        metric.limit > 0,
+    )
+    .slice(0, 4);
 }
 
 function createTree(THREE, x, z, scale = 1, color = "#2f8c5f") {
@@ -1547,7 +2619,24 @@ function makeObjectLabel(landmark, labelLayer, onSelect) {
   wrapper.style.setProperty("--label-color", landmark.color);
   const button = document.createElement("button");
   button.type = "button";
-  button.textContent = landmark.shortLabel;
+  const copy = document.createElement("span");
+  copy.textContent = landmark.shortLabel;
+  const construction = document.createElement("span");
+  construction.className =
+    "world-construction-mark world-construction-mark-destination";
+  construction.dataset.worldConstructionMarker = landmark.id;
+  construction.setAttribute("role", "img");
+  construction.setAttribute(
+    "aria-label",
+    "Under construction: this integration has not been verified in this session.",
+  );
+  construction.title =
+    "Under construction: this integration has not been verified in this session.";
+  const icon = document.createElement("span");
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "🚧";
+  construction.appendChild(icon);
+  button.append(copy, construction);
   button.setAttribute("aria-label", `Open ${landmark.label}`);
   button.addEventListener("click", () => onSelect(landmark.id, { source: "label" }));
   wrapper.appendChild(button);
@@ -1555,11 +2644,39 @@ function makeObjectLabel(landmark, labelLayer, onSelect) {
   return wrapper;
 }
 
+function updatePlayerLabel(element, identity) {
+  const status = normalizeWorldStatus(
+    identity?.statusEmoji,
+    identity?.statusNote,
+  );
+  const name = String(identity?.name || "visitor").slice(0, 32);
+  const nameCopy = document.createElement("span");
+  nameCopy.className = "world-player-label-name";
+  nameCopy.textContent = name;
+  element.replaceChildren(nameCopy);
+  if (status.emoji) {
+    const statusCopy = document.createElement("span");
+    statusCopy.className = "world-player-label-status";
+    statusCopy.textContent = [status.emoji, status.note]
+      .filter(Boolean)
+      .join(" ");
+    element.appendChild(statusCopy);
+    element.setAttribute(
+      "aria-label",
+      `${name}, public status ${status.emoji}${
+        status.note ? ` ${status.note}` : ""
+      }`,
+    );
+  } else {
+    element.setAttribute("aria-label", name);
+  }
+}
+
 function makePlayerLabel(player, labelLayer) {
   const element = document.createElement("div");
   element.className = "world-player-label";
   element.dataset.playerLabel = player.userData.id || "";
-  element.textContent = player.userData.name || "visitor";
+  updatePlayerLabel(element, player.userData);
   labelLayer.appendChild(element);
   return element;
 }
@@ -1587,10 +2704,11 @@ export function createWorldScene({
   onLocationChange = () => {},
   onRegionChange = () => {},
   onMovement = () => {},
+  onModeration = () => {},
 }) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color("#93c9b3");
-  scene.fog = new THREE.FogExp2("#8ebaa8", 0.0135);
+  scene.fog = new THREE.FogExp2("#8ebaa8", 0.0085);
 
   const camera = new THREE.PerspectiveCamera(44, 1, 0.1, 240);
   camera.position.set(...CAMERA_OFFSET);
@@ -1608,6 +2726,8 @@ export function createWorldScene({
   renderer.domElement.className = "world-canvas";
   renderer.domElement.setAttribute("aria-hidden", "true");
   renderer.domElement.tabIndex = -1;
+  renderer.domElement.dataset.cameraControl = "drag";
+  renderer.domElement.dataset.dragging = "false";
   container.appendChild(renderer.domElement);
 
   const hemisphere = new THREE.HemisphereLight("#d5fff1", "#19362d", 2.1);
@@ -1616,12 +2736,12 @@ export function createWorldScene({
   sun.position.set(-24, 35, 18);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -45;
-  sun.shadow.camera.right = 45;
-  sun.shadow.camera.top = 45;
-  sun.shadow.camera.bottom = -45;
+  sun.shadow.camera.left = -90;
+  sun.shadow.camera.right = 90;
+  sun.shadow.camera.top = 90;
+  sun.shadow.camera.bottom = -90;
   sun.shadow.camera.near = 1;
-  sun.shadow.camera.far = 100;
+  sun.shadow.camera.far = 220;
   sun.shadow.bias = -0.0003;
   scene.add(sun);
 
@@ -1633,7 +2753,7 @@ export function createWorldScene({
   const landmarkLabels = new Map();
 
   const ground = new THREE.Mesh(
-    new THREE.CircleGeometry(58, 96),
+    new THREE.CircleGeometry(WORLD_GROUND_RADIUS, 128),
     makeMaterial(THREE, "#174434", { roughness: 1 }),
   );
   ground.rotation.x = -Math.PI / 2;
@@ -1672,16 +2792,58 @@ export function createWorldScene({
   }
   world.add(plazaLines);
 
-  [
-    [20, 4.2, 17, 5, 0.2],
-    [21, 4.2, -18, 6, -0.12],
-    [20, 4.2, 1, -17, Math.PI / 2],
-    [20, 4.2, 2, 18, Math.PI / 2],
-    [15, 3.4, -12, 12, -Math.PI / 4],
-    [15, 3.4, 12, -12, -Math.PI / 4],
-    [15, 3.4, -13, -11, Math.PI / 4],
-    [15, 3.4, 13, 12, Math.PI / 4],
-  ].forEach(([width, depth, x, z, rotation]) => world.add(createRoad(THREE, width, depth, x, z, rotation)));
+  // The room assigns one of 64 ephemeral slots: ten columns per row. The
+  // outline makes the arrival contract visible without turning it into a
+  // barrier once a visitor starts walking.
+  const arrivalBox = new THREE.Group();
+  arrivalBox.name = "world-arrival-box";
+  const arrivalFloor = new THREE.Mesh(
+    new THREE.BoxGeometry(19.8, 0.05, 15.8),
+    makeMaterial(THREE, "#143d31", {
+      emissive: "#1f7b57",
+      emissiveIntensity: 0.18,
+      transparent: true,
+      opacity: 0.78,
+    }),
+  );
+  arrivalFloor.position.set(0, 0.04, 23.7);
+  arrivalFloor.receiveShadow = true;
+  arrivalFloor.userData.ground = true;
+  arrivalBox.add(arrivalFloor);
+  for (let column = 0; column <= 10; column += 1) {
+    const line = new THREE.Mesh(
+      new THREE.BoxGeometry(0.025, 0.035, 14.7),
+      makeMaterial(THREE, "#61dca0", {
+        emissive: "#2e9f70",
+        emissiveIntensity: 0.7,
+      }),
+    );
+    line.position.set(-9 + column * 1.8, 0.09, 23.7);
+    arrivalBox.add(line);
+  }
+  for (let row = 0; row <= 7; row += 1) {
+    const line = new THREE.Mesh(
+      new THREE.BoxGeometry(18.1, 0.035, 0.025),
+      makeMaterial(THREE, "#61dca0", {
+        emissive: "#2e9f70",
+        emissiveIntensity: 0.7,
+      }),
+    );
+    line.position.set(0, 0.09, 30.95 - row * 2.1);
+    arrivalBox.add(line);
+  }
+  const arrivalLabel = makeLabelSprite(
+    THREE,
+    "ARRIVAL GRID",
+    "10 visitors per row · face the square",
+    "#9ef7c6",
+  );
+  arrivalLabel.scale.set(4.8, 1.6, 1);
+  arrivalLabel.position.set(0, 1.25, 31.3);
+  arrivalBox.add(arrivalLabel);
+  world.add(arrivalBox);
+
+  world.add(createElectricMeshCityGrid(THREE, animated));
 
   const landmarkFactories = {
     information: createInformationBooth,
@@ -1754,27 +2916,33 @@ export function createWorldScene({
 
   world.add(createSkyOffice(THREE, animated));
   world.add(createOtherWorlds(THREE, animated));
+  const registeredUserLounge = createRegisteredUserLounge(THREE, animated);
+  world.add(registeredUserLounge);
+  const durableObjectDistrict = createDurableObjectDistrict(THREE);
+  world.add(durableObjectDistrict);
 
   const player = createAvatar(THREE, identity);
-  player.position.set(-8.5, 0.38, 12.5);
-  player.rotation.y = Math.PI * 0.82;
+  player.position.set(-8.1, 0.38, 30);
+  player.rotation.y = 0;
   world.add(player);
   const playerLabel = makePlayerLabel(player, labelLayer);
 
   const remotePlayers = new Map();
   const remoteLabels = new Map();
+  const moderationActions = new WeakMap();
+  const moderationControlKeys = new Map();
   const neighborhoodHomes = new Map();
-  const nodeAvatars = new Map();
-  const botAvatars = new Map();
+  const nodeInfrastructure = new Map();
+  const botAgents = new Map();
   const emoteSprites = [];
   const rewardFlights = [];
   const keys = new Set();
   const touchKeys = new Set();
+  const touchPointers = new Map();
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   const pointerStart = new THREE.Vector2();
-  const moveTarget = new THREE.Vector3();
-  let hasMoveTarget = false;
+  const pointerLast = new THREE.Vector2();
   let selectedLandmark = "information";
   let currentLocation = "Town Square";
   let currentRegion = "central";
@@ -1784,125 +2952,83 @@ export function createWorldScene({
   let running = true;
   let disposed = false;
   let lastFrame = performance.now();
+  let diagnosticsSampleAt = lastFrame;
+  let diagnosticsFrameCount = 0;
+  let diagnosticsRendererCalls = 0;
+  let diagnosticsRendererTriangles = 0;
   let lastMovementEmit = 0;
   let lastPosition = player.position.clone();
+  let wasWalking = false;
   let cameraFocus = null;
-  let pointerDown = false;
-  let clockOffset = 0;
+  let cameraZoom = 1;
+  let cameraYaw = Math.atan2(CAMERA_OFFSET[0], CAMERA_OFFSET[2]);
+  let cameraPitch = Math.asin(CAMERA_OFFSET[1] / CAMERA_DISTANCE);
+  let keyboardMovementSpeed = PLAYER_SPEED;
+  let primaryPointerId = null;
+  let pointerGestureMoved = false;
+  let pinchStartDistance = 0;
+  let pinchStartZoom = cameraZoom;
+  let pinchActive = false;
+  let lightLevel = LIGHT_LEVEL_DEFAULT;
   const weather = createWeather(THREE, scene);
 
-  function setClockOffset(offset) {
-    clockOffset = Number(offset) || 0;
-  }
-
-  function themeState(theme, now = Date.now()) {
-    const region =
-      WORLD_REGIONS.find((item) => item.id === currentRegion) ||
-      WORLD_REGIONS.find((item) => item.id === "central");
-    const regionalOffset =
-      currentTheme === "world"
-        ? Number(region?.utcOffsetHours || 0) * (WORLD_DAY_MS / 24)
-        : 0;
-    const synced = worldClock(now + clockOffset + regionalOffset);
-    const states = {
-      day: {
-        background: "#9ed2bd",
-        fog: "#9bc6b5",
-        hemiSky: "#d8fff1",
-        hemiGround: "#25493a",
-        sun: "#fff0bd",
-        sunPower: 3.7,
-        exposure: 1.12,
-      },
-      sunset: {
-        background: "#ce9174",
-        fog: "#a17469",
-        hemiSky: "#ffd1aa",
-        hemiGround: "#442e39",
-        sun: "#ffad68",
-        sunPower: 4.2,
-        exposure: 1.0,
-      },
-      night: {
-        background: "#071322",
-        fog: "#0a1723",
-        hemiSky: "#31527a",
-        hemiGround: "#101b1b",
-        sun: "#83a7ff",
-        sunPower: 0.82,
-        exposure: 0.72,
-      },
-      cyberpunk: {
-        background: "#12091d",
-        fog: "#1c0b29",
-        hemiSky: "#7b3fff",
-        hemiGround: "#071717",
-        sun: "#ff4fa7",
-        sunPower: 2.5,
-        exposure: 0.88,
-      },
-      "low-light": {
-        background: "#07110f",
-        fog: "#081410",
-        hemiSky: "#315244",
-        hemiGround: "#06100d",
-        sun: "#a5d3bd",
-        sunPower: 1.0,
-        exposure: 0.66,
-      },
+  function updateWorldEnvironment() {
+    const state = {
+      background: new THREE.Color(DAYLIGHT_ENVIRONMENT.background),
+      fog: new THREE.Color(DAYLIGHT_ENVIRONMENT.fog),
+      hemiSky: new THREE.Color(DAYLIGHT_ENVIRONMENT.hemiSky),
+      hemiGround: new THREE.Color(DAYLIGHT_ENVIRONMENT.hemiGround),
+      sun: new THREE.Color(DAYLIGHT_ENVIRONMENT.sun),
+      sunPower: DAYLIGHT_ENVIRONMENT.sunPower,
+      hemiPower: DAYLIGHT_ENVIRONMENT.hemiPower,
+      exposure: DAYLIGHT_ENVIRONMENT.exposure,
+      fogDensity: DAYLIGHT_ENVIRONMENT.fogDensity,
     };
-    if (theme === "rain") return states.sunset;
-    if (theme === "snow" || theme === "winter") {
-      return {
-        ...states.day,
-        background: theme === "winter" ? "#aebfbd" : "#b7c9c4",
-        fog: theme === "winter" ? "#adbfbc" : "#bdcbc8",
-        hemiGround: theme === "winter" ? "#536a63" : "#63756f",
-      };
+    const overlay = LOCAL_ENVIRONMENT_OVERLAYS[currentTheme];
+    if (overlay) {
+      const tint = new THREE.Color(overlay.tint);
+      state.background.lerp(tint, overlay.tintStrength);
+      state.fog.lerp(tint, overlay.tintStrength * 0.72);
+      state.hemiSky.lerp(tint, overlay.tintStrength * 0.42);
+      state.sun.lerp(tint, overlay.tintStrength * 0.18);
     }
-    if (theme !== "world") return states[theme] || states.day;
-    if (synced.phase === "Night") return states.night;
-    if (synced.phase === "Sunset") return states.sunset;
-    if (synced.phase === "Sunrise") {
-      return {
-        ...states.sunset,
-        background: "#bd9f8e",
-        fog: "#a88f82",
-        sun: "#ffd19a",
-      };
-    }
-    return states.day;
-  }
-
-  function applyTheme(theme) {
-    currentTheme = theme || "world";
-    const state = themeState(currentTheme);
-    scene.background.set(state.background);
-    scene.fog.color.set(state.fog);
-    hemisphere.color.set(state.hemiSky);
-    hemisphere.groundColor.set(state.hemiGround);
-    sun.color.set(state.sun);
-    sun.intensity = state.sunPower;
-    renderer.toneMappingExposure = state.exposure;
-    weather.rain.visible = currentTheme === "rain";
-    weather.snow.visible = currentTheme === "snow" || currentTheme === "winter";
-  }
-
-  function updateWorldSun(now) {
-    if (currentTheme !== "world") return;
-    const region =
-      WORLD_REGIONS.find((item) => item.id === currentRegion) ||
-      WORLD_REGIONS.find((item) => item.id === "central");
-    const regionalOffset =
-      Number(region?.utcOffsetHours || 0) * (WORLD_DAY_MS / 24);
-    const clock = worldClock(now + clockOffset + regionalOffset);
-    const angle = clock.progress * Math.PI * 2 - Math.PI / 2;
-    sun.position.set(Math.cos(angle) * 34, 12 + Math.max(0, Math.sin(angle)) * 28, Math.sin(angle) * 24);
-    if (Math.floor(now / 30000) !== Math.floor((now - 1000 / 60) / 30000)) applyTheme("world");
+    scene.background.copy(state.background);
+    scene.fog.color.copy(state.fog);
+    scene.fog.density =
+      state.fogDensity * (overlay?.fogMultiplier || 1);
+    const lightMultiplier = lightLevel / LIGHT_LEVEL_DEFAULT;
+    hemisphere.color.copy(state.hemiSky);
+    hemisphere.groundColor.copy(state.hemiGround);
+    hemisphere.intensity =
+      state.hemiPower * (overlay?.lightMultiplier || 1) * lightMultiplier;
+    sun.color.copy(state.sun);
+    sun.intensity =
+      state.sunPower * (overlay?.lightMultiplier || 1) * lightMultiplier;
+    renderer.toneMappingExposure =
+      state.exposure *
+      (overlay?.exposureMultiplier || 1) *
+      lightMultiplier;
   }
 
   function setTheme(theme) {
-    applyTheme(theme);
+    currentTheme =
+      theme === "world" || LOCAL_ENVIRONMENT_OVERLAYS[theme]
+        ? theme
+        : "world";
+    weather.rain.visible = currentTheme === "rain";
+    weather.snow.visible = currentTheme === "snow" || currentTheme === "winter";
+    updateWorldEnvironment();
+  }
+
+  function setLightLevel(value) {
+    const numeric = Number(value);
+    lightLevel = clamp(
+      Number.isFinite(numeric) ? numeric : LIGHT_LEVEL_DEFAULT,
+      LIGHT_LEVEL_MIN,
+      LIGHT_LEVEL_MAX,
+    );
+    updateWorldEnvironment();
+    return lightLevel;
   }
 
   function nearestLandmark() {
@@ -1936,7 +3062,6 @@ export function createWorldScene({
           : "central";
     if (nextRegion !== currentRegion) {
       currentRegion = nextRegion;
-      if (currentTheme === "world") applyTheme("world");
       const region = WORLD_REGIONS.find((item) => item.id === currentRegion);
       onRegionChange(region || { id: currentRegion, label: currentRegion });
     }
@@ -1953,8 +3078,6 @@ export function createWorldScene({
     currentSpace = regionId;
     currentFloorY = 0.38;
     player.position.copy(destination);
-    moveTarget.copy(destination);
-    hasMoveTarget = false;
     cameraFocus = null;
     nearestLandmark();
     onMovement({
@@ -1963,6 +3086,8 @@ export function createWorldScene({
       z: destination.z,
       heading: player.rotation.y,
       activity: `arriving in ${regionId} campus`,
+      space: regionId,
+      moving: false,
     });
     return true;
   }
@@ -1980,8 +3105,6 @@ export function createWorldScene({
     currentSpace = spaceId;
     currentFloorY = destination.y;
     player.position.copy(destination);
-    moveTarget.copy(destination);
-    hasMoveTarget = false;
     cameraFocus = null;
     currentLocation = spaceId
       .split("-")
@@ -1995,11 +3118,12 @@ export function createWorldScene({
       heading: player.rotation.y,
       activity: `collaborating in ${spaceId}`,
       space: spaceId,
+      moving: false,
     });
     return true;
   }
 
-  function focusLandmark(id, options = {}) {
+  function focusLandmark(id) {
     const landmark = landmarkById(id);
     const object = landmarkObjects.get(landmark.id);
     if (!object) return;
@@ -2012,19 +3136,6 @@ export function createWorldScene({
       1.5,
       landmark.position[2],
     );
-    const direction = new THREE.Vector3(
-      player.position.x - landmark.position[0],
-      0,
-      player.position.z - landmark.position[2],
-    );
-    if (direction.lengthSq() < 0.1) direction.set(1, 0, 1);
-    direction.normalize().multiplyScalar(options.distance || 5.2);
-    moveTarget.set(
-      clamp(landmark.position[0] + direction.x, -WORLD_RADIUS, WORLD_RADIUS),
-      player.position.y,
-      clamp(landmark.position[2] + direction.z, -WORLD_RADIUS, WORLD_RADIUS),
-    );
-    hasMoveTarget = options.move !== false;
   }
 
   function clearFocus() {
@@ -2043,36 +3154,63 @@ export function createWorldScene({
     else touchKeys.delete(normalized);
   }
 
-  function movementVector() {
+  function movementInput() {
     const movement = new THREE.Vector3();
-    const active = (code) => keys.has(code) || touchKeys.has(code);
-    if (active("KeyW") || active("ArrowUp")) movement.z -= 1;
-    if (active("KeyS") || active("ArrowDown")) movement.z += 1;
-    if (active("KeyA") || active("ArrowLeft")) movement.x -= 1;
-    if (active("KeyD") || active("ArrowRight")) movement.x += 1;
-    return movement.lengthSq() ? movement.normalize() : movement;
+    const forwardInput =
+      Number(keys.has("KeyW") || keys.has("ArrowUp")) -
+      Number(keys.has("KeyS") || keys.has("ArrowDown"));
+    const rightInput =
+      Number(keys.has("KeyD") || keys.has("ArrowRight")) -
+      Number(keys.has("KeyA") || keys.has("ArrowLeft"));
+    if (forwardInput || rightInput) {
+      // Desktop movement follows the view direction, as in an FPS: W/S move
+      // toward/away from the camera reticle and A/D strafe. Only the horizontal
+      // yaw participates so looking up or down never changes walking speed.
+      const forward = new THREE.Vector3(
+        -Math.sin(cameraYaw),
+        0,
+        -Math.cos(cameraYaw),
+      );
+      const right = new THREE.Vector3(
+        Math.cos(cameraYaw),
+        0,
+        -Math.sin(cameraYaw),
+      );
+      movement.addScaledVector(forward, forwardInput);
+      movement.addScaledVector(right, rightInput);
+    }
+
+    // The coarse-pointer direction pad remains a predictable screen-independent
+    // fallback and does not require a mouse.
+    if (touchKeys.has("KeyW")) movement.z -= 1;
+    if (touchKeys.has("KeyS")) movement.z += 1;
+    if (touchKeys.has("KeyA")) movement.x -= 1;
+    if (touchKeys.has("KeyD")) movement.x += 1;
+    return {
+      keyboardActive: Boolean(forwardInput || rightInput),
+      movement: movement.lengthSq() ? movement.normalize() : movement,
+    };
   }
 
   function walkPlayer(delta, time) {
-    const movement = movementVector();
+    const { keyboardActive, movement } = movementInput();
     let walking = false;
     if (movement.lengthSq()) {
-      hasMoveTarget = false;
       cameraFocus = null;
-      player.position.addScaledVector(movement, PLAYER_SPEED * delta);
-      player.rotation.y = Math.atan2(movement.x, movement.z);
+      keyboardMovementSpeed = keyboardActive
+        ? Math.min(
+            PLAYER_MAX_SPEED,
+            keyboardMovementSpeed + PLAYER_ACCELERATION * delta,
+          )
+        : PLAYER_SPEED;
+      player.position.addScaledVector(
+        movement,
+        keyboardMovementSpeed * delta,
+      );
+      player.rotation.y = Math.atan2(-movement.x, -movement.z);
       walking = true;
-    } else if (hasMoveTarget) {
-      const toTarget = moveTarget.clone().sub(player.position);
-      toTarget.y = 0;
-      if (toTarget.length() < 0.18) {
-        hasMoveTarget = false;
-      } else {
-        toTarget.normalize();
-        player.position.addScaledVector(toTarget, PLAYER_SPEED * 0.86 * delta);
-        player.rotation.y = Math.atan2(toTarget.x, toTarget.z);
-        walking = true;
-      }
+    } else {
+      keyboardMovementSpeed = PLAYER_SPEED;
     }
 
     const radius = Math.hypot(player.position.x, player.position.z);
@@ -2087,6 +3225,7 @@ export function createWorldScene({
     player.userData.leftLeg.rotation.x = -gait * 0.72;
     player.userData.rightLeg.rotation.x = gait * 0.72;
     player.position.y += walking ? Math.abs(Math.sin(time * 0.012)) * 0.035 : 0;
+    animateAvatarActivity(player, time, delta, reducedMotion);
 
     if (
       performance.now() - lastMovementEmit > 450 &&
@@ -2100,9 +3239,26 @@ export function createWorldScene({
         z: Number(player.position.z.toFixed(2)),
         heading: Number(player.rotation.y.toFixed(3)),
         space: currentSpace,
+        moving: true,
         activity: currentLocation === "Town Square" ? "exploring the Town Square" : `visiting ${currentLocation}`,
       });
     }
+    if (!walking && wasWalking) {
+      lastPosition.copy(player.position);
+      onMovement({
+        x: Number(player.position.x.toFixed(2)),
+        y: Number(player.position.y.toFixed(2)),
+        z: Number(player.position.z.toFixed(2)),
+        heading: Number(player.rotation.y.toFixed(3)),
+        space: currentSpace,
+        moving: false,
+        activity:
+          currentLocation === "Town Square"
+            ? "exploring the Town Square"
+            : `visiting ${currentLocation}`,
+      });
+    }
+    wasWalking = walking;
   }
 
   function updateRemotePlayers(delta, time) {
@@ -2112,11 +3268,23 @@ export function createWorldScene({
       headingDelta = Math.atan2(Math.sin(headingDelta), Math.cos(headingDelta));
       avatar.rotation.y += headingDelta * (1 - Math.pow(0.01, delta));
       const walking = avatar.position.distanceToSquared(avatar.userData.targetPosition) > 0.01;
-      const gait = walking ? Math.sin(time * 0.009 + avatar.userData.phase) * 0.42 : 0;
+      const recentlyActiveInLounge =
+        avatar.userData.loungeActivity === "recent";
+      const gait = walking
+        ? Math.sin(time * 0.009 + avatar.userData.phase) * 0.42
+        : recentlyActiveInLounge
+          ? Math.sin(time * 0.012 + avatar.userData.phase) * 0.18
+          : 0;
       avatar.userData.leftArm.rotation.x = gait;
       avatar.userData.rightArm.rotation.x = -gait;
       avatar.userData.leftLeg.rotation.x = -gait * 0.7;
       avatar.userData.rightLeg.rotation.x = gait * 0.7;
+      if (recentlyActiveInLounge && !walking && !reducedMotion) {
+        avatar.position.y =
+          avatar.userData.targetPosition.y +
+          Math.abs(Math.sin(time * 0.004 + avatar.userData.phase)) * 0.055;
+      }
+      animateAvatarActivity(avatar, time, delta, reducedMotion);
     });
   }
 
@@ -2124,16 +3292,98 @@ export function createWorldScene({
     const target = cameraFocus
       ? cameraFocus.clone()
       : player.position.clone().add(new THREE.Vector3(0, 2.2, 0));
-    const zoom = cameraFocus ? 0.78 : 1;
+    const distance =
+      CAMERA_DISTANCE * cameraZoom * (cameraFocus ? 0.78 : 1);
+    const horizontalDistance = Math.cos(cameraPitch) * distance;
     const desired = target.clone().add(
       new THREE.Vector3(
-        CAMERA_OFFSET[0] * zoom,
-        CAMERA_OFFSET[1] * zoom,
-        CAMERA_OFFSET[2] * zoom,
+        Math.sin(cameraYaw) * horizontalDistance,
+        Math.sin(cameraPitch) * distance,
+        Math.cos(cameraYaw) * horizontalDistance,
       ),
     );
     camera.position.lerp(desired, 1 - Math.pow(0.0008, delta));
     camera.lookAt(target);
+  }
+
+  function setSpawn(spawn = {}) {
+    const requestedSpace = String(spawn.space || "");
+    const space = Object.hasOwn(WORLD_SPACE_FLOORS, requestedSpace)
+      ? requestedSpace
+      : "town-square";
+    const x = clamp(Number(spawn.x) || 0, -WORLD_RADIUS, WORLD_RADIUS);
+    const z = clamp(Number(spawn.z) || 0, -WORLD_RADIUS, WORLD_RADIUS);
+    const heading = clamp(Number(spawn.heading) || 0, -Math.PI, Math.PI);
+    currentSpace = space;
+    currentFloorY = WORLD_SPACE_FLOORS[space];
+    player.position.set(x, currentFloorY, z);
+    player.rotation.y = heading;
+    lastPosition.copy(player.position);
+    wasWalking = false;
+    cameraFocus = null;
+    if (space === "town-square") {
+      nearestLandmark();
+    } else {
+      currentLocation = space
+        .split("-")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ");
+      onLocationChange(currentLocation, "launchpad");
+    }
+  }
+
+  function removeRemoteModerationControls(avatar, peerId) {
+    const controls = avatar?.userData?.moderationControls;
+    if (controls) {
+      controls.traverse((child) => {
+        moderationActions.delete(child);
+        const interactiveIndex = interactive.indexOf(child);
+        if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
+      });
+      avatar.remove(controls);
+      disposeObject3D(controls);
+      delete avatar.userData.moderationControls;
+    }
+    moderationControlKeys.delete(String(peerId || ""));
+  }
+
+  function syncRemoteModerationControls(avatar, remote) {
+    const peerId = String(remote?.id || "");
+    const name = String(remote?.name || "visitor").slice(0, 32);
+    const handles = sanitizedModerationHandles(
+      remote,
+      identity?.isAdmin === true,
+    );
+    const key = JSON.stringify([
+      name,
+      handles.ip || "",
+      handles.agent || "",
+    ]);
+    if (
+      moderationControlKeys.get(peerId) === key &&
+      avatar?.userData?.moderationControls
+    ) {
+      return;
+    }
+    removeRemoteModerationControls(avatar, peerId);
+    if (!handles.ip && !handles.agent) return;
+
+    const controls = createAvatarModerationControls(THREE, handles);
+    controls.children.forEach((control) => {
+      const targetType = control.userData.worldModerationControl;
+      const handle = handles[targetType];
+      if (!WORLD_MODERATION_HANDLE_PATTERN.test(handle || "")) return;
+      moderationActions.set(control, {
+        targetType,
+        handle,
+        peerId,
+        name,
+      });
+      interactive.push(control);
+    });
+    avatar.add(controls);
+    avatar.userData.moderationControls = controls;
+    moderationControlKeys.set(peerId, key);
   }
 
   function setRemotePlayers(players = []) {
@@ -2146,12 +3396,23 @@ export function createWorldScene({
         id: remote.id,
         name: remote.name || "visitor",
         flag: remote.flag || "◌",
+        countryCode: remote.countryCode || "",
         browser: remote.browser || "Browser",
         os: remote.os || "Device",
         status: remote.activity || "exploring",
         accountStatus: remote.accountStatus || "Guest",
         localTime: remote.localTime || "",
+        activityCategory:
+          remote.category || remote.activityCategory || "hidden",
+        inputActive: remote.inputActive === true,
+        visitCount: Math.max(
+          0,
+          Math.min(999, Number(remote.visitCount) || 0),
+        ),
+        firstVisitAge: remote.firstVisitAge || "hidden",
         nodes: Array.isArray(remote.nodes) ? remote.nodes.slice(0, 6) : [],
+        statusEmoji: remote.statusEmoji || "",
+        statusNote: remote.statusNote || "",
       };
       const badgeKey = JSON.stringify(badgeIdentity);
       if (!avatar) {
@@ -2161,17 +3422,39 @@ export function createWorldScene({
           { remote: true, scale: 0.92 },
         );
         avatar.userData.badgeKey = badgeKey;
+        const initialX = Number(remote.x);
+        const initialZ = Number(remote.z);
         avatar.position.set(
-          Number(remote.x) || (Math.random() - 0.5) * 8,
+          Number.isFinite(initialX) ? initialX : 0,
           0.38,
-          Number(remote.z) || (Math.random() - 0.5) * 8,
+          Number.isFinite(initialZ) ? initialZ : 0,
         );
         world.add(avatar);
         remotePlayers.set(remote.id, avatar);
         remoteLabels.set(remote.id, makePlayerLabel(avatar, labelLayer));
       }
       const sharedInactive = remote.activity === "idle";
-      if (sharedInactive) {
+      const loungeEligible = REGISTERED_LOUNGE_STATUSES.has(
+        String(remote.accountStatus || ""),
+      );
+      const recentlyActive =
+        remote.recent === true ||
+        ["recent", "returning"].includes(String(remote.availability || ""));
+      const useRegisteredLounge =
+        loungeEligible && (sharedInactive || recentlyActive);
+      avatar.userData.loungeActivity = useRegisteredLounge
+        ? recentlyActive
+          ? "recent"
+          : "idle"
+        : "";
+      if (useRegisteredLounge) {
+        const seats = registeredUserLounge.userData.seatOffsets || [];
+        const seat = seats[hashNumber(remote.id) % Math.max(1, seats.length)];
+        const offset = seat || new THREE.Vector3();
+        avatar.userData.targetPosition.copy(registeredUserLounge.position);
+        avatar.userData.targetPosition.add(offset);
+        avatar.userData.targetHeading = Math.PI;
+      } else if (sharedInactive) {
         const restArea = landmarkById("neighborhood").position;
         const seat = hashNumber(remote.id) % 8;
         avatar.userData.targetPosition.set(
@@ -2185,18 +3468,20 @@ export function createWorldScene({
           clamp(Number(remote.y) || 0.38, 0.38, 40),
           clamp(Number(remote.z) || 0, -WORLD_RADIUS, WORLD_RADIUS),
         );
+        avatar.userData.targetHeading = Number(remote.heading) || 0;
       }
-      avatar.userData.targetHeading = Number(remote.heading) || 0;
       avatar.userData.status = remote.activity || "exploring";
       if (avatar.userData.badgeKey !== badgeKey) {
         updateAvatarBadge(THREE, avatar, badgeIdentity, true);
         syncOperatorBelt(THREE, avatar, badgeIdentity.nodes.length);
         avatar.userData.badgeKey = badgeKey;
-        remoteLabels.get(remote.id).textContent = remote.name || "visitor";
+        updatePlayerLabel(remoteLabels.get(remote.id), badgeIdentity);
       }
+      syncRemoteModerationControls(avatar, remote);
     });
     remotePlayers.forEach((avatar, id) => {
       if (seen.has(id)) return;
+      removeRemoteModerationControls(avatar, id);
       world.remove(avatar);
       avatar.traverse((child) => {
         child.geometry?.dispose?.();
@@ -2284,8 +3569,6 @@ export function createWorldScene({
     currentSpace = "town-square";
     currentFloorY = 0.38;
     player.position.copy(destination);
-    moveTarget.copy(destination);
-    hasMoveTarget = false;
     cameraFocus = null;
     currentLocation = `${home.name}'s front yard`;
     onLocationChange(currentLocation, "neighborhood");
@@ -2296,46 +3579,111 @@ export function createWorldScene({
       heading: player.rotation.y,
       activity: "visiting a consented front yard",
       space: "town-square",
+      moving: false,
     });
     return true;
   }
 
   function updateNetworkNodes(nodes = []) {
+    const routingPosition = landmarkById("routing").position;
+    const routingX = Number(routingPosition?.[0]) || 32;
+    const routingZ = Number(routingPosition?.[2]) || 16;
+    // A dedicated 8×8 server aisle east of the routing station keeps all 64
+    // bounded live slots separate without expanding rings through neighboring
+    // repository and launchpad landmarks. Fill closest-to-routing slots first.
+    const serverSlots = [];
+    for (let column = 0; column < 8; column += 1) {
+      for (let row = 0; row < 8; row += 1) {
+        const x = routingX + 9.5 + column * 3;
+        const z = routingZ - 10.5 + row * 3;
+        serverSlots.push({
+          x,
+          z,
+          distance: Math.hypot(x - routingX, z - routingZ),
+        });
+      }
+    }
+    serverSlots.sort(
+      (left, right) =>
+        left.distance - right.distance || left.z - right.z || left.x - right.x,
+    );
     const seen = new Set();
-    nodes.slice(0, 10).forEach((node, index) => {
-      const id = `node:${node.name || node.label || index}`;
+    const removeCabinet = (cabinet) => {
+      cabinet?.traverse?.((child) => {
+        if (!child.userData?.nodeCabinet) return;
+        const interactiveIndex = interactive.indexOf(child);
+        if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
+      });
+      world.remove(cabinet);
+      disposeObject3D(cabinet);
+    };
+    const usableNodes = (Array.isArray(nodes) ? nodes : [])
+      .filter((node) => String(node?.name || node?.label || "").trim())
+      .slice(0, 64);
+    usableNodes.forEach((node, index) => {
+      const nodeName = String(node.name || node.label).trim().slice(0, 80);
+      const id = `node:${nodeName.toLowerCase()}`;
+      const dataKey = nodeDataKey({ ...node, name: nodeName });
       seen.add(id);
-      let avatar = nodeAvatars.get(id);
-      if (!avatar) {
-        avatar = createAvatar(
+      let cabinet = nodeInfrastructure.get(id);
+      if (
+        cabinet &&
+        cabinet.userData.dataKey !== dataKey
+      ) {
+        removeCabinet(cabinet);
+        nodeInfrastructure.delete(id);
+        cabinet = null;
+      }
+      if (!cabinet) {
+        cabinet = createMirrorServerCabinet(
           THREE,
-          {
-            id,
-            name: node.name || node.label || `mirror-${index + 1}`,
-            flag: "◈",
-            browser: "MIRROR",
-            os: "NODE",
-            status: "operating a public mirror",
-            nodes: [id],
-          },
-          { remote: true, scale: 0.82 },
+          { ...node, name: nodeName },
+          id,
         );
-        const angle = (index / Math.max(1, Math.min(nodes.length, 10))) * Math.PI * 2;
-        avatar.position.set(
-          9 + Math.cos(angle) * 4.4,
-          0.38,
-          -10 + Math.sin(angle) * 4.4,
-        );
-        avatar.rotation.y = -angle;
-        world.add(avatar);
-        nodeAvatars.set(id, avatar);
+        world.add(cabinet);
+        for (const panelName of [
+          "mirror-server-front-panel",
+          "mirror-server-rear-panel",
+        ]) {
+          const panel = cabinet.getObjectByName(panelName);
+          if (panel) interactive.push(panel);
+        }
+        nodeInfrastructure.set(id, cabinet);
+      }
+      const slot = serverSlots[index];
+      cabinet.position.set(slot.x, 0.38, slot.z);
+      // The front display faces inward toward the routing station, so each
+      // cabinet remains individually readable from the surrounding walkway.
+      cabinet.rotation.y = Math.atan2(
+        routingX - slot.x,
+        routingZ - slot.z,
+      );
+    });
+    nodeInfrastructure.forEach((cabinet, id) => {
+      if (seen.has(id)) return;
+      removeCabinet(cabinet);
+      nodeInfrastructure.delete(id);
+    });
+  }
+
+  function focusNetworkNode(name) {
+    const targetName = String(name || "").trim().toLowerCase();
+    let target = null;
+    nodeInfrastructure.forEach((cabinet) => {
+      if (
+        !target &&
+        String(cabinet.userData?.nodeRecord?.name || "")
+          .trim()
+          .toLowerCase() === targetName
+      ) {
+        target = cabinet;
       }
     });
-    nodeAvatars.forEach((avatar, id) => {
-      if (seen.has(id)) return;
-      world.remove(avatar);
-      nodeAvatars.delete(id);
-    });
+    if (!target) return false;
+    selectedLandmark = "routing";
+    cameraFocus = target.position.clone();
+    cameraFocus.y += 1.65;
+    return true;
   }
 
   function updateFederatedInstances(instances = []) {
@@ -2389,41 +3737,162 @@ export function createWorldScene({
 
   function updateBots(bots = []) {
     const seen = new Set();
-    bots.slice(0, 12).forEach((bot, index) => {
-      const id = `bot:${String(bot.id || index).slice(0, 48)}`;
+    const namedBots = (Array.isArray(bots) ? bots : [])
+      .filter(
+        (bot) =>
+          String(bot?.id || "").trim() &&
+          String(bot?.name || "").trim() &&
+          String(bot?.type || "").trim(),
+      )
+      .slice(0, 12);
+    namedBots.forEach((bot, index) => {
+      const id = `bot:${String(bot.id).trim().slice(0, 48)}`;
       seen.add(id);
-      let avatar = botAvatars.get(id);
-      if (!avatar) {
-        avatar = createAvatar(
+      let robot = botAgents.get(id);
+      if (!robot) {
+        robot = createAgentRobot(
           THREE,
           {
-            id,
-            name: String(bot.name || "Automated agent").slice(0, 32),
-            flag: "⌘",
-            browser: String(bot.type || "BOT").slice(0, 18),
-            os: "AGENT",
-            status: "available",
-            accountStatus: bot.verified === true ? "Verified bot" : "Unverified bot",
+            ...bot,
+            name: String(bot.name).trim().slice(0, 32),
+            type: String(bot.type).trim().slice(0, 20),
           },
-          { remote: true, scale: 0.78 },
+          id,
         );
-        const center = landmarkById(index % 2 ? "fediverse" : "security").position;
-        const angle = (index / Math.max(1, Math.min(bots.length, 12))) * Math.PI * 2;
-        avatar.position.set(
+        world.add(robot);
+        botAgents.set(id, robot);
+      }
+      const center = landmarkById(
+        index % 2 ? "fediverse" : "security",
+      ).position;
+      const angle = (index / Math.max(1, namedBots.length)) * Math.PI * 2;
+      robot.position.set(
           center[0] + Math.cos(angle) * 5.2,
           0.38,
           center[2] + Math.sin(angle) * 5.2,
-        );
-        avatar.rotation.y = -angle;
-        world.add(avatar);
-        botAvatars.set(id, avatar);
-      }
+      );
+      robot.rotation.y = -angle;
     });
-    botAvatars.forEach((avatar, id) => {
+    botAgents.forEach((robot, id) => {
       if (seen.has(id)) return;
-      world.remove(avatar);
-      botAvatars.delete(id);
+      world.remove(robot);
+      disposeObject3D(robot);
+      botAgents.delete(id);
     });
+  }
+
+  function updateDurableObjects(metrics = {}) {
+    const existing = durableObjectDistrict.userData.metricsLayer;
+    if (existing) {
+      durableObjectDistrict.remove(existing);
+      disposeObject3D(existing);
+      durableObjectDistrict.userData.metricsLayer = null;
+    }
+
+    const records = Array.isArray(metrics)
+      ? metrics
+      : Array.isArray(metrics?.objects)
+        ? metrics.objects
+        : [];
+    const safeRecords = records
+      .map((record) => {
+        const name = String(record?.name || record?.id || "").trim();
+        const pairs = durableObjectMetricPairs(record);
+        return name && pairs.length
+          ? {
+              name: name.slice(0, 36),
+              id: String(record?.id || name).slice(0, 72),
+              pairs,
+            }
+          : null;
+      })
+      .filter(Boolean)
+      .slice(0, 12);
+
+    const emptyMarker = durableObjectDistrict.getObjectByName(
+      "durable-object-metrics-unavailable",
+    );
+    if (emptyMarker) emptyMarker.visible = safeRecords.length === 0;
+    durableObjectDistrict.userData.metricsAvailable =
+      safeRecords.length > 0;
+    durableObjectDistrict.userData.visibleObjectCount = safeRecords.length;
+    if (!safeRecords.length) return 0;
+
+    const layer = new THREE.Group();
+    layer.name = "durable-object-current-usage";
+    safeRecords.forEach((record, index) => {
+      const object = new THREE.Group();
+      object.name = `durable-object:${record.id}`;
+      object.userData.metrics = record.pairs.map((metric) => ({
+        key: metric.key,
+        currentUsage: metric.usage,
+        configuredLimit: metric.limit,
+      }));
+
+      const column = index % 4;
+      const row = Math.floor(index / 4);
+      object.position.set(-4.5 + column * 3, 0.38, -2.7 + row * 2.7);
+      const plinth = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.75, 0.9, 0.26, 8),
+        makeMaterial(THREE, "#173840", {
+          emissive: "#1d5665",
+          emissiveIntensity: 0.38,
+          metalness: 0.28,
+        }),
+      );
+      plinth.position.y = 0.13;
+      object.add(plinth);
+
+      const firstMetric = record.pairs[0];
+      const rawRatio = firstMetric.usage / firstMetric.limit;
+      const ratio = clamp(rawRatio, 0, 1);
+      const overLimit = rawRatio > 1;
+      const housing = new THREE.Mesh(
+        new THREE.BoxGeometry(0.82, 2.6, 0.82),
+        makeMaterial(THREE, "#1d343b", {
+          transparent: true,
+          opacity: 0.62,
+          roughness: 0.46,
+        }),
+      );
+      housing.position.y = 1.55;
+      object.add(housing);
+      const fillHeight = Math.max(0.08, ratio * 2.5);
+      const fill = new THREE.Mesh(
+        new THREE.BoxGeometry(0.58, fillHeight, 0.58),
+        makeMaterial(THREE, overLimit ? "#ff6d78" : "#80e8ff", {
+          emissive: overLimit ? "#9f2632" : "#267e9a",
+          emissiveIntensity: 0.92,
+          metalness: 0.22,
+        }),
+      );
+      fill.position.y = 0.25 + fillHeight / 2;
+      fill.userData.currentUsage = firstMetric.usage;
+      fill.userData.configuredLimit = firstMetric.limit;
+      object.add(fill);
+
+      const exactValues = record.pairs
+        .slice(0, 2)
+        .map(
+          (metric) =>
+            `${metric.key} ${metric.usage}/${metric.limit}`,
+        )
+        .join(" · ");
+      const label = makeLabelSprite(
+        THREE,
+        record.name,
+        exactValues,
+        overLimit ? "#ff9ca4" : "#80e8ff",
+      );
+      label.scale.set(2.5, 0.84, 1);
+      label.position.y = 3.55;
+      object.add(label);
+      setShadows(object);
+      layer.add(object);
+    });
+    durableObjectDistrict.add(layer);
+    durableObjectDistrict.userData.metricsLayer = layer;
+    return safeRecords.length;
   }
 
   function updateOrganizations(organizations = []) {
@@ -2709,7 +4178,12 @@ export function createWorldScene({
     Object.assign(identity, nextIdentity);
     updateAvatarBadge(THREE, player, identity, false);
     syncOperatorBelt(THREE, player, identity.nodes?.length || 0);
-    playerLabel.textContent = identity.name;
+    updatePlayerLabel(playerLabel, identity);
+    if (identity.isAdmin !== true) {
+      remotePlayers.forEach((avatar, peerId) => {
+        removeRemoteModerationControls(avatar, peerId);
+      });
+    }
   }
 
   function updateRepositoryGraph(entries = [], entities = []) {
@@ -3063,20 +4537,20 @@ export function createWorldScene({
   }
 
   function playRewardEvent(targetHint = "") {
-    let targetAvatar = null;
-    nodeAvatars.forEach((avatar) => {
+    let targetPylon = null;
+    nodeInfrastructure.forEach((pylon) => {
       if (
-        !targetAvatar &&
+        !targetPylon &&
         (!targetHint ||
-          String(avatar.userData?.name || "")
+          String(pylon.userData?.nodeId || "")
             .toLowerCase()
             .includes(String(targetHint).toLowerCase()))
       ) {
-        targetAvatar = avatar;
+        targetPylon = pylon;
       }
     });
-    const target = targetAvatar
-      ? targetAvatar.position.clone()
+    const target = targetPylon
+      ? targetPylon.position.clone()
       : new THREE.Vector3(...landmarkById("organizations").position);
     target.y = 1.2;
     const start = new THREE.Vector3(...landmarkById("fountain").position);
@@ -3113,20 +4587,163 @@ export function createWorldScene({
     pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   }
 
-  function handlePointerDown(event) {
-    pointerDown = true;
-    pointerStart.set(event.clientX, event.clientY);
+  function setCameraZoom(value) {
+    const next = Number(value);
+    if (!Number.isFinite(next)) return cameraZoom;
+    cameraZoom = clamp(next, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX);
+    return cameraZoom;
+  }
+
+  function touchDistance() {
+    const points = [...touchPointers.values()];
+    if (points.length < 2) return 0;
+    return Math.hypot(
+      points[0].x - points[1].x,
+      points[0].y - points[1].y,
+    );
+  }
+
+  function beginPinchIfReady() {
+    if (touchPointers.size < 2) return;
+    const distance = touchDistance();
+    if (distance <= 0) return;
+    pinchStartDistance = distance;
+    pinchStartZoom = cameraZoom;
+    pinchActive = true;
+    pointerGestureMoved = true;
     renderer.domElement.dataset.dragging = "true";
   }
 
-  function handlePointerUp(event) {
-    renderer.domElement.dataset.dragging = "false";
-    if (!pointerDown) return;
-    pointerDown = false;
-    if (pointerStart.distanceTo(new THREE.Vector2(event.clientX, event.clientY)) > 9) return;
-    pointerCoordinates(event);
+  function rotateCamera(deltaX, deltaY) {
+    if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return;
+    cameraYaw -= deltaX * CAMERA_LOOK_SENSITIVITY;
+    cameraPitch = clamp(
+      cameraPitch + deltaY * CAMERA_LOOK_SENSITIVITY,
+      CAMERA_PITCH_MIN,
+      CAMERA_PITCH_MAX,
+    );
+  }
+
+  function handlePointerDown(event) {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (event.pointerType === "touch") {
+      touchPointers.set(event.pointerId, {
+        x: event.clientX,
+        y: event.clientY,
+      });
+      try {
+        renderer.domElement.setPointerCapture(event.pointerId);
+      } catch (_) {}
+      if (touchPointers.size === 2) beginPinchIfReady();
+    }
+    if (primaryPointerId !== null) return;
+    primaryPointerId = event.pointerId;
+    pointerStart.set(event.clientX, event.clientY);
+    pointerLast.copy(pointerStart);
+    pointerGestureMoved = false;
+    renderer.domElement.dataset.dragging = "true";
+    try {
+      renderer.domElement.setPointerCapture(event.pointerId);
+    } catch (_) {}
+  }
+
+  function handlePointerMove(event) {
+    if (event.pointerType === "touch" && touchPointers.has(event.pointerId)) {
+      touchPointers.set(event.pointerId, {
+        x: event.clientX,
+        y: event.clientY,
+      });
+      if (touchPointers.size >= 2) {
+        if (!pinchActive) beginPinchIfReady();
+        const distance = touchDistance();
+        if (pinchActive && distance > 0) {
+          // Spreading two fingers zooms in; bringing them together zooms out.
+          // Every move is clamped, so repeated gestures can traverse the entire
+          // supported near/far range without overshooting it.
+          setCameraZoom(
+            pinchStartZoom * (pinchStartDistance / distance),
+          );
+          event.preventDefault();
+        }
+      }
+    }
+    if (event.pointerId !== primaryPointerId) return;
+    const currentPointer = new THREE.Vector2(event.clientX, event.clientY);
+    const movedDistance = pointerStart.distanceTo(currentPointer);
+    if (event.pointerType === "mouse" && movedDistance > 4) {
+      if (pointerGestureMoved) {
+        rotateCamera(
+          currentPointer.x - pointerLast.x,
+          currentPointer.y - pointerLast.y,
+        );
+      } else {
+        pointerGestureMoved = true;
+        rotateCamera(
+          currentPointer.x - pointerStart.x,
+          currentPointer.y - pointerStart.y,
+        );
+      }
+      event.preventDefault();
+    } else if (movedDistance > 9) {
+      pointerGestureMoved = true;
+    }
+    pointerLast.copy(currentPointer);
+  }
+
+  function finishPointer(event, cancelled = false) {
+    const wasPinching = pinchActive || touchPointers.size > 1;
+    if (event.pointerType === "touch") {
+      touchPointers.delete(event.pointerId);
+      if (touchPointers.size < 2) {
+        pinchActive = false;
+        pinchStartDistance = 0;
+      }
+    }
+    try {
+      renderer.domElement.releasePointerCapture(event.pointerId);
+    } catch (_) {}
+    if (event.pointerId !== primaryPointerId) {
+      if (!touchPointers.size) renderer.domElement.dataset.dragging = "false";
+      return;
+    }
+    primaryPointerId = null;
+    renderer.domElement.dataset.dragging =
+      touchPointers.size ? "true" : "false";
+    const suppressTap =
+      cancelled ||
+      wasPinching ||
+      pointerGestureMoved;
+    pointerGestureMoved = false;
+    if (suppressTap) return;
+
+    // Use the down coordinates so a small amount of click jitter cannot select
+    // an object that was not underneath the visible cursor at press time.
+    pointerCoordinates({
+      clientX: pointerStart.x,
+      clientY: pointerStart.y,
+    });
     raycaster.setFromCamera(pointer, camera);
     const hit = raycaster.intersectObjects(interactive, false)[0];
+    const moderationAction = hit?.object
+      ? moderationActions.get(hit.object)
+      : null;
+    if (moderationAction) {
+      onModeration({
+        targetType: moderationAction.targetType,
+        handle: moderationAction.handle,
+        peerId: moderationAction.peerId,
+        name: moderationAction.name,
+      });
+      return;
+    }
+    if (hit?.object?.userData?.nodeCabinet) {
+      focusNetworkNode(hit.object.userData.nodeCabinet.name);
+      onLandmarkSelect("routing", {
+        source: "world",
+        nodeCabinet: { ...hit.object.userData.nodeCabinet },
+      });
+      return;
+    }
     if (hit?.object?.userData?.landmark) {
       const id = hit.object.userData.landmark;
       focusLandmark(id);
@@ -3142,13 +4759,28 @@ export function createWorldScene({
       });
       return;
     }
-    const groundHit = raycaster.intersectObject(ground, false)[0];
-    if (groundHit) {
-      moveTarget.copy(groundHit.point);
-      moveTarget.y = player.position.y;
-      hasMoveTarget = true;
-      cameraFocus = null;
-    }
+  }
+
+  function handlePointerUp(event) {
+    finishPointer(event, false);
+  }
+
+  function handlePointerCancel(event) {
+    finishPointer(event, true);
+  }
+
+  function handleWheel(event) {
+    const lineHeight = 16;
+    const deltaPixels =
+      event.deltaY *
+      (event.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? lineHeight
+        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? Math.max(1, renderer.domElement.clientHeight)
+          : 1);
+    if (!Number.isFinite(deltaPixels) || deltaPixels === 0) return;
+    event.preventDefault();
+    setCameraZoom(cameraZoom * Math.exp(deltaPixels * 0.0015));
   }
 
   function handleKeyDown(event) {
@@ -3158,21 +4790,49 @@ export function createWorldScene({
       event.target instanceof HTMLSelectElement ||
       event.target?.isContentEditable
     ) return;
-    if (["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.code)) {
+    if (MOVEMENT_KEYS.has(event.code)) {
       keys.add(event.code);
       event.preventDefault();
     }
-    if (event.code === "Escape") clearFocus();
+    if (event.code === "Escape") {
+      clearFocus();
+    }
   }
 
   function handleKeyUp(event) {
     keys.delete(event.code);
+    if (
+      MOVEMENT_KEYS.has(event.code) &&
+      ![...keys].some((code) => MOVEMENT_KEYS.has(code))
+    ) {
+      keyboardMovementSpeed = PLAYER_SPEED;
+    }
+  }
+
+  function handleWindowBlur() {
+    keys.clear();
+    touchKeys.clear();
+    touchPointers.clear();
+    keyboardMovementSpeed = PLAYER_SPEED;
+    primaryPointerId = null;
+    pointerGestureMoved = false;
+    pinchActive = false;
+    pinchStartDistance = 0;
+    renderer.domElement.dataset.dragging = "false";
   }
 
   renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+  renderer.domElement.addEventListener("pointermove", handlePointerMove, {
+    passive: false,
+  });
+  renderer.domElement.addEventListener("wheel", handleWheel, {
+    passive: false,
+  });
   window.addEventListener("pointerup", handlePointerUp);
+  window.addEventListener("pointercancel", handlePointerCancel);
   window.addEventListener("keydown", handleKeyDown);
   window.addEventListener("keyup", handleKeyUp);
+  window.addEventListener("blur", handleWindowBlur);
 
   const resizeObserver = new ResizeObserver(() => {
     const rect = container.getBoundingClientRect();
@@ -3191,6 +4851,21 @@ export function createWorldScene({
     lastFrame = time;
     walkPlayer(delta, time);
     updateRemotePlayers(delta, time);
+    if (!reducedMotion) {
+      nodeInfrastructure.forEach((pylon, id) => {
+        const phase = hashNumber(id) * 0.0001;
+        pylon.userData.signalRing.rotation.z = time * 0.0015 + phase;
+        pylon.userData.signalRing.scale.setScalar(
+          1 + Math.sin(time * 0.002 + phase) * 0.08,
+        );
+      });
+      botAgents.forEach((robot, id) => {
+        const phase = hashNumber(id) * 0.0001;
+        robot.position.y =
+          0.38 + Math.sin(time * 0.0017 + phase) * 0.16;
+        robot.userData.core.rotation.y = time * 0.0011 + phase;
+      });
+    }
     for (let index = emoteSprites.length - 1; index >= 0; index -= 1) {
       const flight = emoteSprites[index];
       const progress = Math.min(
@@ -3232,7 +4907,6 @@ export function createWorldScene({
     }
     updateCamera(delta);
     nearestLandmark();
-    updateWorldSun(Date.now());
     if (!reducedMotion) {
       animated.forEach((callback) => callback(time, delta));
       animateWeather(weather.rain, time, delta, "rain");
@@ -3249,11 +4923,39 @@ export function createWorldScene({
       updateScreenLabel(THREE, object, element, camera, rect.width, rect.height, height);
       element.dataset.selected = String(selectedLandmark === landmark.id);
     });
-    updateScreenLabel(THREE, player, playerLabel, camera, rect.width, rect.height, 4.5);
+    updateScreenLabel(
+      THREE,
+      player,
+      playerLabel,
+      camera,
+      rect.width,
+      rect.height,
+      player.userData.emojiStatusSprite ? 5.7 : 4.5,
+    );
     remotePlayers.forEach((avatar, id) => {
-      updateScreenLabel(THREE, avatar, remoteLabels.get(id), camera, rect.width, rect.height, 4.2);
+      updateScreenLabel(
+        THREE,
+        avatar,
+        remoteLabels.get(id),
+        camera,
+        rect.width,
+        rect.height,
+        avatar.userData.emojiStatusSprite ? 5.35 : 4.2,
+      );
     });
     renderer.render(scene, camera);
+    diagnosticsFrameCount = Math.min(
+      1_000_000,
+      diagnosticsFrameCount + 1,
+    );
+    diagnosticsRendererCalls = Math.max(
+      0,
+      Math.min(10_000_000, Number(renderer.info?.render?.calls) || 0),
+    );
+    diagnosticsRendererTriangles = Math.max(
+      0,
+      Math.min(1_000_000_000, Number(renderer.info?.render?.triangles) || 0),
+    );
   }
 
   function setPaused(paused) {
@@ -3266,14 +4968,71 @@ export function createWorldScene({
     }
   }
 
+  function getDiagnostics(now = performance.now()) {
+    const sampleNow = Number.isFinite(Number(now))
+      ? Number(now)
+      : performance.now();
+    const elapsedMs = Math.max(1, sampleNow - diagnosticsSampleAt);
+    const frames = diagnosticsFrameCount;
+    const fps = running
+      ? Math.max(0, Math.min(1000, (frames * 1000) / elapsedMs))
+      : 0;
+    const frameTimeMs =
+      running && frames
+        ? Math.max(0, Math.min(60_000, elapsedMs / frames))
+        : 0;
+    diagnosticsSampleAt = sampleNow;
+    diagnosticsFrameCount = 0;
+    return {
+      fps,
+      frameTimeMs,
+      rendererCalls: diagnosticsRendererCalls,
+      rendererTriangles: diagnosticsRendererTriangles,
+      paused: !running,
+    };
+  }
+
+  function updateLandmarkConstruction(capabilities = {}) {
+    LANDMARKS.forEach((landmark) => {
+      const label = landmarkLabels.get(landmark.id);
+      const marker = label?.querySelector(
+        `[data-world-construction-marker="${landmark.id}"]`,
+      );
+      const button = label?.querySelector("button");
+      if (!marker || !button) return;
+      const capability = capabilities?.[landmark.id];
+      const live = capability?.live === true;
+      const reason =
+        String(capability?.reason || "").trim() ||
+        "This integration has not been verified in this session.";
+      marker.hidden = live;
+      marker.setAttribute("aria-label", `Under construction: ${reason}`);
+      marker.title = `Under construction: ${reason}`;
+      button.dataset.worldUnderConstruction = String(!live);
+      button.setAttribute(
+        "aria-label",
+        live
+          ? `Open ${landmark.label}`
+          : `Open ${landmark.label} — under construction: ${reason}`,
+      );
+    });
+  }
+
   function dispose() {
     disposed = true;
     renderer.setAnimationLoop(null);
     resizeObserver.disconnect();
     renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
+    renderer.domElement.removeEventListener("pointermove", handlePointerMove);
+    renderer.domElement.removeEventListener("wheel", handleWheel);
     window.removeEventListener("pointerup", handlePointerUp);
+    window.removeEventListener("pointercancel", handlePointerCancel);
     window.removeEventListener("keydown", handleKeyDown);
     window.removeEventListener("keyup", handleKeyUp);
+    window.removeEventListener("blur", handleWindowBlur);
+    touchPointers.clear();
+    keys.clear();
+    touchKeys.clear();
     scene.traverse((child) => {
       child.geometry?.dispose?.();
       if (Array.isArray(child.material)) {
@@ -3291,7 +5050,7 @@ export function createWorldScene({
     labelLayer.replaceChildren();
   }
 
-  applyTheme("world");
+  setTheme("world");
   camera.lookAt(player.position);
   renderer.setAnimationLoop(animate);
 
@@ -3303,24 +5062,53 @@ export function createWorldScene({
     focusLandmark,
     clearFocus,
     setTheme,
-    setClockOffset,
+    setLightLevel,
     setControl,
+    setSpawn,
     travelToRegion,
     travelToSpace,
     visitNeighborhoodHome,
     setRemotePlayers,
     updateNetworkNodes,
+    focusNetworkNode,
     updateFederatedInstances,
     updateBots,
+    updateDurableObjects,
     updateOrganizations,
     updateFediverseDirectory,
     updateMediaSpaces,
     updateIdentity,
     updateRepositoryGraph,
+    updateLandmarkConstruction,
     playEmote,
     playRewardEvent,
     setPaused,
     dispose,
+    setCameraZoom,
+    getCameraState: () => ({
+      zoom: cameraZoom,
+      minZoom: CAMERA_ZOOM_MIN,
+      maxZoom: CAMERA_ZOOM_MAX,
+      yaw: cameraYaw,
+      pitch: cameraPitch,
+      dragging: primaryPointerId !== null,
+      pointerLocked: false,
+    }),
+    getMovementState: () => ({
+      speed: keyboardMovementSpeed,
+      baseSpeed: PLAYER_SPEED,
+      maxSpeed: PLAYER_MAX_SPEED,
+      keyboardActive: [...keys].some((code) => MOVEMENT_KEYS.has(code)),
+    }),
+    getDiagnostics,
+    getEnvironmentState: () => ({
+      theme: currentTheme,
+      lightLevel,
+      sunIntensity: sun.intensity,
+      hemisphereIntensity: hemisphere.intensity,
+      exposure: renderer.toneMappingExposure,
+      sunPosition: sun.position.toArray(),
+    }),
     getPosition: () => ({
       x: player.position.x,
       y: player.position.y,

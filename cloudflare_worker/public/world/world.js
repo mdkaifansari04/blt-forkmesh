@@ -6,14 +6,30 @@ import {
   THEME_OPTIONS,
   TOUR_STEPS,
   WORKSHOP_TYPES,
-  WORLD_DAY_MS,
+  WORLD_EMOJI_CATEGORIES,
   WORLD_REGIONS,
+  WORLD_STATUS_NOTE_MAX,
   detectClient,
   flagEmoji,
   landmarkById,
+  normalizeWorldEmoji,
+  normalizeWorldStatus,
+  normalizeWorldStatusNote,
   sanitizePresenceText,
-  worldClock,
+  utcClock,
 } from "./world-data.js";
+import { buildLiveMirrorNodes } from "./world-mirror-nodes.js";
+import {
+  buildPullMergeRequest,
+  buildPullFileTree,
+  exactPullMergeContext,
+  immutableGitOid,
+  parsePullFrontMatter,
+  parseUnifiedDiff,
+  pullViewedStateKey,
+  safeDiffPath,
+  safePullNumber,
+} from "./world-pull-review.js";
 import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
 import { createWorldScene } from "./world-scene.js";
 
@@ -28,10 +44,56 @@ const THREE_MODULE = import(THREE_MODULE_URL);
 THREE_MODULE.catch(() => {});
 const SETTINGS_KEY = "forkmesh.world.settings.v1";
 const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
+const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
+const VISIT_COUNT_KEY = "forkmesh.world.publicVisitCount.v1";
+const INTRO_DISMISSED_KEY = "forkmesh.world.introDismissed.v1";
+const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
+const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const POSITION_WRITE_INTERVAL_MS = 1000;
+const POSITION_RADIUS = 72;
+const POSITION_FLOOR_TOLERANCE = 0.5;
+const POSITION_FLOORS = Object.freeze({
+  "town-square": 0.38,
+  east: 0.38,
+  central: 0.38,
+  west: 0.38,
+  "sky-campus": 15.45,
+  "space-station": 18.45,
+  "code-planet": 15.45,
+  "organization-region": 14.45,
+  "planet-atlas": 22.45,
+});
 const SOCKET_RETRY_MAX_MS = 20000;
+const SOCKET_STABLE_MS = 5000;
+const SOCKET_PEER_GRACE_MS = 8000;
+const SOCKET_BUFFER_HIGH_WATER_BYTES = 64 * 1024;
+const PRESENCE_PROFILE_DEBOUNCE_MS = 300;
+const MOVEMENT_SEND_INTERVAL_MS = 1000;
 const PRESENCE_STALE_MS = 22000;
 const WORLD_TICKET_REFRESH_MS = 5 * 60 * 1000;
 const WORLD_NOTIFICATION_POLL_MS = 30 * 1000;
+const MIRROR_STATUS_POLL_MS = 30 * 1000;
+const WORLD_MANUAL_BLOCK_DURATION_MS = 60 * 60 * 1000;
+const WORLD_SCORE_LOOP_MS = 4 * 60 * 60 * 1000;
+const WORLD_LIGHT_LEVEL_MIN = 40;
+const WORLD_LIGHT_LEVEL_MAX = 140;
+const WORLD_LIGHT_LEVEL_DEFAULT = 100;
+const WORLD_DIAGNOSTICS_INTERVAL_MS = 1000;
+const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
+const WORLD_PULL_MERGE_MAX_REQUESTS = 6;
+const WORLD_PULL_MERGE_POLL_MS = 400;
+const WORLD_PULL_MERGE_RESPONSE_MAX_BYTES = 16 * 1024;
+// The edge router can spend up to 20 seconds on each of two attested mirrors.
+// Keep the browser bound just above that failover envelope; shorter 6-12s
+// aborts made healthy exact-ref reads fail whenever a one-vCPU node was doing
+// integrity maintenance.
+const REPOSITORY_METADATA_TIMEOUT_MS = 45 * 1000;
+const WORLD_ACCOUNT_NAME_RE =
+  /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const FLAGSHIP_REPOSITORY = Object.freeze({
+  owner: "forkmesh",
+  repo: "forkmesh",
+});
 const ACCOUNT_STATUS_VALUES = new Set([
   "Guest",
   "Registered",
@@ -69,6 +131,25 @@ function escapeHTML(value) {
     .replace(/'/g, "&#039;");
 }
 
+function incrementDiagnosticCounter(value) {
+  return Math.min(
+    WORLD_DIAGNOSTICS_COUNTER_MAX,
+    Math.max(0, Number(value) || 0) + 1,
+  );
+}
+
+function normalizeBuildDiagnostics(payload) {
+  const version = String(payload?.version || "")
+    .trim()
+    .replace(/[^a-z0-9._+-]/gi, "")
+    .slice(0, 32);
+  const rawRevision = String(payload?.rev || "").trim();
+  const revision = /^[a-f0-9]{7,64}$/i.test(rawRevision)
+    ? rawRevision.toLowerCase()
+    : "";
+  return { version, revision };
+}
+
 function readJSON(storage, key, fallback) {
   try {
     const value = JSON.parse(storage.getItem(key) || "null");
@@ -84,6 +165,117 @@ function writeJSON(storage, key, value) {
   } catch (_) {}
 }
 
+function positionIdentityToken(value) {
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (const character of String(value || "")) {
+    const code = character.charCodeAt(0);
+    first = Math.imul(first ^ code, 0x01000193) >>> 0;
+    second = Math.imul(second ^ (code + 0x9d), 0x85ebca6b) >>> 0;
+  }
+  return `${first.toString(16).padStart(8, "0")}${second
+    .toString(16)
+    .padStart(8, "0")}`;
+}
+
+function positionStorageKey(identityId) {
+  return `${POSITION_KEY_PREFIX}${positionIdentityToken(identityId)}`;
+}
+
+function normalizedWorldPosition(record, now = Date.now()) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+  const allowedFields = ["heading", "space", "updatedAt", "x", "y", "z"];
+  const fields = Object.keys(record).sort();
+  if (
+    fields.length !== allowedFields.length ||
+    fields.some((field, index) => field !== allowedFields[index])
+  ) {
+    return null;
+  }
+  const space = String(record.space || "");
+  const floor = POSITION_FLOORS[space];
+  const x = Number(record.x);
+  const y = Number(record.y);
+  const z = Number(record.z);
+  const heading = Number(record.heading);
+  const updatedAt = Number(record.updatedAt);
+  if (
+    !WORLD_SPACE_IDS.has(space) ||
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    !Number.isFinite(z) ||
+    !Number.isFinite(heading) ||
+    !Number.isSafeInteger(updatedAt) ||
+    Math.abs(x) > POSITION_RADIUS ||
+    Math.abs(z) > POSITION_RADIUS ||
+    Math.abs(y - floor) > POSITION_FLOOR_TOLERANCE ||
+    heading < -Math.PI ||
+    heading > Math.PI ||
+    updatedAt < now - POSITION_MAX_AGE_MS ||
+    updatedAt > now + 60 * 1000
+  ) {
+    return null;
+  }
+  return { x, y, z, heading, space, updatedAt };
+}
+
+function readWorldPosition(storage, key, now = Date.now()) {
+  const position = normalizedWorldPosition(readJSON(storage, key, null), now);
+  if (!position) {
+    try {
+      storage.removeItem(key);
+    } catch (_) {}
+  }
+  return position;
+}
+
+function firstVisitTimestamp(now = Date.now()) {
+  try {
+    const stored = Number(localStorage.getItem(FIRST_VISIT_KEY) || 0);
+    if (
+      Number.isSafeInteger(stored) &&
+      stored >= Date.UTC(2020, 0, 1) &&
+      stored <= now
+    ) {
+      return stored;
+    }
+    localStorage.setItem(FIRST_VISIT_KEY, String(now));
+  } catch (_) {}
+  return now;
+}
+
+function firstVisitAge(timestamp, now = Date.now()) {
+  const age = Math.max(0, now - Number(timestamp || now));
+  if (age < 10 * 60 * 1000) return "this-session";
+  if (age < 24 * 60 * 60 * 1000) return "today";
+  if (age < 7 * 24 * 60 * 60 * 1000) return "this-week";
+  if (age < 31 * 24 * 60 * 60 * 1000) return "this-month";
+  if (age < 366 * 24 * 60 * 60 * 1000) return "this-year";
+  return "over-a-year";
+}
+
+function sessionVisitCount(increment = false) {
+  try {
+    const current = Math.max(
+      0,
+      Math.min(999, Number(sessionStorage.getItem(VISIT_COUNT_KEY)) || 0),
+    );
+    const next = increment ? Math.min(999, current + 1) : current;
+    sessionStorage.setItem(VISIT_COUNT_KEY, String(next));
+    return next;
+  } catch (_) {
+    return increment ? 1 : 0;
+  }
+}
+
+function introDismissed() {
+  try {
+    return localStorage.getItem(INTRO_DISMISSED_KEY) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
 function randomId() {
   try {
     return crypto.randomUUID();
@@ -94,6 +286,91 @@ function randomId() {
 
 function readSession() {
   return readJSON(localStorage, "forkmesh.session", null);
+}
+
+function validWorldSession() {
+  const session = readSession();
+  const nodeName = String(session?.nodeName || "").trim().toLowerCase();
+  const sessionToken = String(session?.sessionToken || "").trim();
+  return WORLD_ACCOUNT_NAME_RE.test(nodeName) &&
+    sessionToken &&
+    sessionToken.length <= 2048
+    ? { ...session, nodeName, sessionToken }
+    : null;
+}
+
+function createPullMergeRequestId() {
+  try {
+    if (typeof crypto.randomUUID === "function") {
+      return `world_merge_${crypto.randomUUID().replaceAll("-", "")}`;
+    }
+    const bytes = new Uint8Array(18);
+    crypto.getRandomValues(bytes);
+    return `world_merge_${[...bytes]
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("")}`;
+  } catch (_) {
+    // A merge request never falls back to a predictable Math.random id.
+    return "";
+  }
+}
+
+function storeWorldSession(body) {
+  const nodeName = String(body?.nodeName || "").trim().toLowerCase();
+  const sessionToken = String(body?.sessionToken || "").trim();
+  if (
+    !WORLD_ACCOUNT_NAME_RE.test(nodeName) ||
+    !sessionToken ||
+    sessionToken.length > 2048
+  ) {
+    return false;
+  }
+  writeJSON(localStorage, "forkmesh.session", {
+    nodeName,
+    email: String(body?.email || "").slice(0, 320),
+    status: String(body?.status || "").slice(0, 32),
+    pubkey: String(body?.pubkey || "").slice(0, 256),
+    emailVerified: Boolean(body?.emailVerified),
+    isAdmin: Boolean(body?.isAdmin),
+    adminUrl: String(body?.adminUrl || "").slice(0, 300),
+    solana: String(body?.solana || "").slice(0, 80),
+    hasPayoutAddress: Boolean(body?.hasPayoutAddress),
+    sessionToken,
+    avatarPng: String(body?.avatarPng || "").slice(0, 600),
+    avatarUpdatedAt: Number(body?.avatarUpdatedAt) || 0,
+    profileBio: String(body?.profileBio || "").slice(0, 500),
+    profileAbout: String(
+      body?.profileAbout || body?.profileReadme || "",
+    ).slice(0, 20_000),
+    profileReadme: String(
+      body?.profileReadme || body?.profileAbout || "",
+    ).slice(0, 20_000),
+    profileLocation: String(body?.profileLocation || "").slice(0, 160),
+    profileTimezone: String(body?.profileTimezone || "").slice(0, 80),
+    profileLinks: Array.isArray(body?.profileLinks)
+      ? body.profileLinks.slice(0, 12).map((link) => ({
+          label: String(link?.label || "").slice(0, 80),
+          url: String(link?.url || "").slice(0, 500),
+        }))
+      : [],
+    profileFollowers: Math.max(0, Number(body?.followers) || 0),
+    profileFollowing: Math.max(0, Number(body?.following) || 0),
+    profileMirrorCount: Math.max(0, Number(body?.mirrorCount) || 0),
+    kind: String(body?.kind || "").slice(0, 32),
+    owner: String(body?.owner || "").slice(0, 80),
+    nodes: Array.isArray(body?.nodes)
+      ? body.nodes
+          .slice(0, 64)
+          .map((node) => String(node || "").slice(0, 80))
+      : [],
+    at: Date.now(),
+  });
+  try {
+    document.cookie =
+      "forkmesh_session=1; Path=/; Max-Age=2592000; SameSite=Lax" +
+      (location.protocol === "https:" ? "; Secure" : "");
+  } catch (_) {}
+  return true;
 }
 
 function guestId() {
@@ -130,7 +407,12 @@ function accountIdentity(session) {
     countryCode: "",
     flag: "◌",
     accountStatus: "Guest",
+    isAdmin: false,
     nodes: [],
+    inputActive: false,
+    visitCount: 0,
+    firstVisitAge: "this-session",
+    activityCategory: "exploring-town-square",
   };
 }
 
@@ -143,10 +425,13 @@ function hashSuffix(value) {
 function defaultSettings() {
   return {
     theme: "world",
+    lightLevel: WORLD_LIGHT_LEVEL_DEFAULT,
     availability: "online",
     activityCategory: "automatic",
     publicDoor: "knock",
     displayName: "",
+    statusEmoji: "",
+    statusNote: "",
     privacy: {
       name: true,
       country: true,
@@ -164,9 +449,29 @@ function defaultSettings() {
 
 function mergeSettings(stored) {
   const defaults = defaultSettings();
+  const requestedTheme = String(stored?.theme || defaults.theme);
+  const theme = THEME_OPTIONS.some((option) => option.id === requestedTheme)
+    ? requestedTheme
+    : defaults.theme;
+  const publicStatus = normalizeWorldStatus(
+    stored?.statusEmoji,
+    stored?.statusNote,
+  );
   return {
     ...defaults,
     ...(stored || {}),
+    theme,
+    lightLevel: Math.min(
+      WORLD_LIGHT_LEVEL_MAX,
+      Math.max(
+        WORLD_LIGHT_LEVEL_MIN,
+        Number.isFinite(Number(stored?.lightLevel))
+          ? Number(stored.lightLevel)
+          : WORLD_LIGHT_LEVEL_DEFAULT,
+      ),
+    ),
+    statusEmoji: publicStatus.emoji,
+    statusNote: publicStatus.note,
     privacy: {
       ...defaults.privacy,
       ...(stored?.privacy || {}),
@@ -180,13 +485,23 @@ function publicIdentity(identity, settings) {
     identity.name,
     24,
   );
+  const publicStatus = normalizeWorldStatus(
+    settings.statusEmoji,
+    settings.statusNote,
+  );
   return {
     id: identity.id,
     name: settings.privacy.name ? chosenName : "Private visitor",
     flag: settings.privacy.country ? identity.flag : "◌",
+    countryCode:
+      settings.privacy.country &&
+      /^[A-Z]{2}$/.test(String(identity.countryCode || ""))
+        ? String(identity.countryCode)
+        : "",
     browser: settings.privacy.browser ? identity.browser : "Hidden",
     os: settings.privacy.os ? identity.os : "Hidden",
     accountStatus: identity.accountStatus,
+    isAdmin: identity.isAdmin === true,
     status:
       settings.privacy.activity &&
       (settings.privacy.inactivity || !["inactive", "recent"].includes(settings.availability))
@@ -209,6 +524,19 @@ function publicIdentity(identity, settings) {
     publicDoor: ["closed", "knock", "open"].includes(settings.publicDoor)
       ? settings.publicDoor
       : "closed",
+    activityCategory: settings.privacy.activity
+      ? String(identity.activityCategory || "exploring-town-square")
+      : "hidden",
+    inputActive:
+      settings.privacy.activity && identity.inputActive === true,
+    visitCount: settings.privacy.activity
+      ? Math.max(0, Math.min(999, Number(identity.visitCount) || 0))
+      : 0,
+    firstVisitAge: settings.privacy.activity
+      ? String(identity.firstVisitAge || "this-session")
+      : "hidden",
+    statusEmoji: publicStatus.emoji,
+    statusNote: publicStatus.note,
   };
 }
 
@@ -300,10 +628,26 @@ function presenceLabel(value, hidden, fallback) {
 function remotePlayer(peer) {
   if (!peer?.id) return null;
   const status = String(peer.status || "hidden");
+  const publicStatus = normalizeWorldStatus(
+    peer.statusEmoji,
+    peer.statusNote,
+  );
+  const moderationHandles = {};
+  if (peer.moderationHandles && typeof peer.moderationHandles === "object") {
+    for (const targetType of ["ip", "agent"]) {
+      const handle = String(peer.moderationHandles[targetType] || "");
+      if (/^[a-f0-9]{64}$/.test(handle)) {
+        moderationHandles[targetType] = handle;
+      }
+    }
+  }
   return {
     id: String(peer.id),
     name: sanitizePresenceText(peer.name, "visitor", 32),
     flag: flagEmoji(peer.countryCode),
+    countryCode: /^[A-Z]{2}$/.test(String(peer.countryCode || ""))
+      ? String(peer.countryCode)
+      : "",
     browser: presenceLabel(peer.browser, "Hidden", "Browser"),
     os: presenceLabel(peer.os, "Hidden", "Device"),
     activity: status === "hidden" ? "online" : status,
@@ -332,6 +676,22 @@ function remotePlayer(peer) {
     y: boundedPresenceNumber(peer.y),
     z: boundedPresenceNumber(peer.z),
     heading: boundedYaw(peer.yaw),
+    inputActive: peer.inputActive === true,
+    visitCount: Math.max(0, Math.min(999, Number(peer.visitCount) || 0)),
+    firstVisitAge: [
+      "this-session",
+      "today",
+      "this-week",
+      "this-month",
+      "this-year",
+      "over-a-year",
+    ].includes(String(peer.firstVisitAge || ""))
+      ? String(peer.firstVisitAge)
+      : "hidden",
+    statusEmoji: publicStatus.emoji,
+    statusNote: publicStatus.note,
+    moderationHandles,
+    updatedAt: Math.max(0, Number(peer.updatedAt) || 0),
   };
 }
 
@@ -372,7 +732,7 @@ function providerMetadataCopy(item) {
   return "Current provider track metadata unavailable: ForkMesh did not receive a permitted provider metadata event. The playlist title is user supplied.";
 }
 
-function createProceduralWorldSoundtrack(AudioContext, worldOffsetMs) {
+function createProceduralWorldSoundtrack(AudioContext, scoreOffsetMs) {
   const context = new AudioContext();
   const master = context.createGain();
   master.gain.setValueAtTime(0.0001, context.currentTime);
@@ -385,8 +745,8 @@ function createProceduralWorldSoundtrack(AudioContext, worldOffsetMs) {
   const stepSeconds = 60 / 72 / 2;
   const roots = [110, 98, 82.41, 92.5, 73.42, 82.41, 98, 87.31];
   let step = Math.floor(
-    (worldOffsetMs / 1000 / stepSeconds) %
-      Math.floor(WORLD_DAY_MS / 1000 / stepSeconds),
+    (scoreOffsetMs / 1000 / stepSeconds) %
+      Math.floor(WORLD_SCORE_LOOP_MS / 1000 / stepSeconds),
   );
   let nextWhen = context.currentTime + 0.08;
   let stopped = false;
@@ -412,11 +772,13 @@ function createProceduralWorldSoundtrack(AudioContext, worldOffsetMs) {
   const schedule = () => {
     const horizon = context.currentTime + 1.6;
     while (!stopped && nextWhen < horizon) {
-      const worldStepCount = Math.floor(WORLD_DAY_MS / 1000 / stepSeconds);
-      const normalizedStep = ((step % worldStepCount) + worldStepCount) %
-        worldStepCount;
-      const worldMs = normalizedStep * stepSeconds * 1000;
-      const chapter = Math.floor(worldMs / (15 * 60 * 1000));
+      const scoreStepCount = Math.floor(
+        WORLD_SCORE_LOOP_MS / 1000 / stepSeconds,
+      );
+      const normalizedStep = ((step % scoreStepCount) + scoreStepCount) %
+        scoreStepCount;
+      const scoreMs = normalizedStep * stepSeconds * 1000;
+      const chapter = Math.floor(scoreMs / (15 * 60 * 1000));
       const bar = Math.floor(normalizedStep / 8);
       const root = roots[(bar + chapter * 3) % roots.length];
       const color = [1, 6 / 5, 3 / 2, 9 / 5][
@@ -464,8 +826,8 @@ function createProceduralWorldSoundtrack(AudioContext, worldOffsetMs) {
     context,
     gain: master,
     timer,
-    worldOffsetMs,
-    durationMs: WORLD_DAY_MS,
+    scoreOffsetMs,
+    durationMs: WORLD_SCORE_LOOP_MS,
     license: "ForkMesh Procedural World Score · CC0-1.0",
     stop() {
       if (stopped) return;
@@ -1489,32 +1851,164 @@ function cleanRepositories(payload) {
   if (!Array.isArray(items)) return [];
   return items
     .filter((repo) => repo && (repo.owner || repo.name))
-    .map((repo) => ({
-      owner: sanitizePresenceText(repo.owner, "external", 40),
-      name: sanitizePresenceText(repo.name, "repository", 60),
-      description: String(repo.description || "").slice(0, 180),
-      liveHost: Boolean(repo.liveHost ?? repo.cloneOnline ?? repo.online),
-      source: String(repo.source || "external"),
-      language: String(
-        repo.language ||
-          repo.primaryLanguage ||
-          Object.keys(repo.languages || {})[0] ||
-          "",
-      ).slice(0, 30),
-      isPrivate: Boolean(repo.private || repo.isPrivate || repo.visibility === "private"),
-      mirrorCount: Number(repo.mirrorCount || repo.mirrors || 0),
-      status: String(repo.status || "").slice(0, 40),
-      externalUrl: String(repo.externalUrl || repo.sourceUrl || repo.url || "").slice(
-        0,
-        500,
-      ),
-      archived: Boolean(repo.archived),
-      license: String(repo.license?.name || repo.license || "").slice(0, 80),
-      topics: Array.isArray(repo.topics)
-        ? repo.topics.map((topic) => String(topic).slice(0, 30)).slice(0, 12)
-        : [],
-    }))
+    .map((repo) => {
+      const commit = String(repo.commit || "").trim().toLowerCase();
+      const stateHash = String(repo.stateHash || "").trim().toLowerCase();
+      const pullCount = Number(repo.pullCount);
+      return {
+        owner: sanitizePresenceText(repo.owner, "external", 40),
+        name: sanitizePresenceText(repo.name, "repository", 60),
+        description: String(repo.description || "").slice(0, 180),
+        liveHost: Boolean(repo.liveHost ?? repo.cloneOnline ?? repo.online),
+        source: String(repo.source || "external"),
+        language: String(
+          repo.language ||
+            repo.primaryLanguage ||
+            Object.keys(repo.languages || {})[0] ||
+            "",
+        ).slice(0, 30),
+        isPrivate: Boolean(
+          repo.private || repo.isPrivate || repo.visibility === "private",
+        ),
+        commit: /^[0-9a-f]{40,64}$/.test(commit) ? commit : "",
+        stateHash: /^[0-9a-f]{64}$/.test(stateHash) ? stateHash : "",
+        rootCommit: immutableGitOid(repo.rootCommit),
+        pullCount:
+          Number.isSafeInteger(pullCount) &&
+          pullCount >= 0 &&
+          pullCount <= 10_000_000
+            ? pullCount
+            : null,
+        mirrorCount: Number(repo.mirrorCount || repo.mirrors || 0),
+        cloneUrl: String(repo.cloneUrl || "").slice(0, 500),
+        updatedAt: Number(repo.updatedAt || repo.lastSync || 0) || 0,
+        status: String(repo.status || "").slice(0, 40),
+        externalUrl: String(
+          repo.externalUrl || repo.sourceUrl || repo.url || "",
+        ).slice(0, 500),
+        archived: Boolean(repo.archived),
+        license: String(repo.license?.name || repo.license || "").slice(0, 80),
+        topics: Array.isArray(repo.topics)
+          ? repo.topics
+              .map((topic) => String(topic).slice(0, 30))
+              .slice(0, 12)
+          : [],
+      };
+    })
     .slice(0, 200);
+}
+
+function repositoryBlobText(blob) {
+  const content = String(blob?.content ?? blob?.text ?? "");
+  if (String(blob?.encoding || "").toLowerCase() !== "base64") {
+    return content;
+  }
+  try {
+    const bytes = Uint8Array.from(atob(content), (character) =>
+      character.charCodeAt(0),
+    );
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  } catch (_) {
+    return "";
+  }
+}
+
+function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
+  const source = Array.isArray(repositories) ? repositories : [];
+  const catalogs = Array.isArray(mirrorCatalogs) ? mirrorCatalogs : [];
+  const consumed = new Set();
+  const aliases = [];
+  catalogs.forEach((catalog) => {
+    const owner = sanitizePresenceText(
+      catalog?.requestedOwner || catalog?.owner,
+      "",
+      40,
+    );
+    const repo = sanitizePresenceText(
+      catalog?.requestedRepo || catalog?.repo,
+      "",
+      60,
+    );
+    if (!owner || !repo) return;
+    const mirrors = Array.isArray(catalog?.mirrors)
+      ? catalog.mirrors.slice(0, 100)
+      : [];
+    const nodes = new Set(
+      mirrors
+        .map((mirror) =>
+          sanitizePresenceText(mirror?.node || mirror?.owner, "", 40).toLowerCase(),
+        )
+        .filter(Boolean),
+    );
+    const candidates = source
+      .map((record, index) => ({ record, index }))
+      .filter(
+        ({ record }) =>
+          !record.isPrivate &&
+          record.name.toLowerCase() === repo.toLowerCase() &&
+          nodes.has(record.owner.toLowerCase()),
+      );
+    if (!candidates.length) return;
+    candidates.forEach(({ index }) => consumed.add(index));
+    const healthy = mirrors.filter(
+      (mirror) =>
+        String(mirror?.status || "").toLowerCase() === "online" &&
+        mirror?.cloneAvailable === true &&
+        String(mirror?.integrity || "").toLowerCase() === "ok",
+    );
+    const preferredNode = String(healthy[0]?.node || "").toLowerCase();
+    const preferred =
+      candidates.find(
+        ({ record }) => record.owner.toLowerCase() === preferredNode,
+      )?.record ||
+      candidates
+        .map(({ record }) => record)
+        .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    const commits = new Set(
+      candidates
+        .map(({ record }) => immutableGitOid(record.commit))
+        .filter(Boolean),
+    );
+    const stateHashes = new Set(
+      candidates
+        .map(({ record }) => String(record.stateHash || "").toLowerCase())
+        .filter((value) => /^[0-9a-f]{64}$/.test(value)),
+    );
+    const reportedPullCounts = mirrors
+      .map((mirror) => Number(mirror?.pullCount))
+      .filter(
+        (value) =>
+          Number.isSafeInteger(value) &&
+          value >= 0 &&
+          value <= 10_000_000,
+      );
+    const pullCount =
+      reportedPullCounts.length === mirrors.length &&
+      new Set(reportedPullCounts).size === 1
+        ? reportedPullCounts[0]
+        : null;
+    aliases.push({
+      ...preferred,
+      owner,
+      name: repo,
+      servingOwner: preferred.owner,
+      servingName: preferred.name,
+      source: "organization-alias",
+      liveHost: healthy.length > 0,
+      mirrorCount: mirrors.length,
+      pullCount,
+      commit: commits.size === 1 ? [...commits][0] : "",
+      stateHash: stateHashes.size === 1 ? [...stateHashes][0] : "",
+      mirrorAliases: candidates.map(({ record }) => ({
+        owner: record.owner,
+        name: record.name,
+      })),
+    });
+  });
+  return [
+    ...aliases,
+    ...source.filter((_record, index) => !consumed.has(index)),
+  ].slice(0, 200);
 }
 
 function normalizeCommunityEvents(payload, now = Date.now()) {
@@ -1580,26 +2074,91 @@ function normalizeWorldNotifications(payload) {
     .sort((left, right) => right.ts - left.ts);
 }
 
-function liveNodeRecords(network) {
-  const stats = network?.stats || network || {};
-  const names = Array.isArray(stats.onlineNodes) ? stats.onlineNodes : [];
-  if (names.length) {
-    return names.slice(0, 20).map((name) => ({
-      name: sanitizePresenceText(name, "mirror node", 30),
-      online: true,
-    }));
-  }
-  const nodes =
-    network?.history?.nodes ||
-    network?.nodes ||
-    network?.leaderboards?.uptime ||
-    [];
-  return Array.isArray(nodes)
-    ? nodes.slice(0, 20).map((node) => ({
-        name: sanitizePresenceText(node?.label || node?.name, "mirror node", 30),
-        online: node?.online !== false,
-      }))
-    : [];
+function liveNodeRecords(network, mirrorCatalogs = []) {
+  return buildLiveMirrorNodes(network, mirrorCatalogs);
+}
+
+const LOCAL_LIVE_LANDMARKS = new Set([
+  "information",
+  "neighborhood",
+  "broadcast",
+  "support",
+]);
+
+const LANDMARK_CONSTRUCTION_REASONS = Object.freeze({
+  fountain:
+    "A configured public Solana reward-pool address has not been verified in this session.",
+  repositories:
+    "The live repository catalog has not been verified in this session.",
+  routing:
+    "No healthy, integrity-checked, clone-ready mirror route has been verified in this session.",
+  organizations:
+    "The organization directory integration has not been verified in this session.",
+  fediverse:
+    "The Mastodon and Lemmy directory integration has not been verified in this session.",
+  security:
+    "No completed commit-scoped public security scan has been verified.",
+  launchpad:
+    "The interactive destination renderer has not finished loading.",
+  events:
+    "The UTC event service has not been verified in this session.",
+  workshops:
+    "No live authorized repository is available for a code workshop.",
+});
+
+function initialLandmarkCapabilities() {
+  return Object.fromEntries(
+    LANDMARKS.map((landmark) => [
+      landmark.id,
+      {
+        live: LOCAL_LIVE_LANDMARKS.has(landmark.id),
+        reason:
+          LANDMARK_CONSTRUCTION_REASONS[landmark.id] ||
+          "This integration has not been verified in this session.",
+      },
+    ]),
+  );
+}
+
+function hasRepositoryCatalogSchema(payload) {
+  return ["repositories", "items", "repos", "data"].some((field) =>
+    Array.isArray(payload?.[field]),
+  );
+}
+
+function hasFediverseDirectorySchema(payload) {
+  return (
+    Array.isArray(payload?.mastodon) &&
+    Array.isArray(payload?.lemmy)
+  );
+}
+
+function hasCompletedSecurityScan(scan) {
+  const status = String(scan?.status || "").trim().toLowerCase();
+  const commit = String(scan?.commitHash || scan?.commit || "")
+    .trim()
+    .toLowerCase();
+  const scannedAt = Date.parse(String(scan?.scannedAt || scan?.timestamp || ""));
+  return (
+    !["", "scan unavailable", "scan failed", "scan outdated"].includes(status) &&
+    /^[0-9a-f]{40,64}$/.test(commit) &&
+    Number.isFinite(scannedAt)
+  );
+}
+
+function constructionMarkerHTML(id, capability, className = "") {
+  const live = capability?.live === true;
+  const reason =
+    String(capability?.reason || "").trim() ||
+    "This integration has not been verified in this session.";
+  return `<span
+    class="world-construction-mark ${escapeHTML(className)}"
+    data-world-construction-marker="${escapeHTML(id)}"
+    role="img"
+    aria-label="Under construction: ${escapeHTML(reason)}"
+    title="Under construction: ${escapeHTML(reason)}"
+    ${live ? "hidden" : ""}
+  ><span aria-hidden="true">🚧</span></span>`;
 }
 
 function accountBadgeCopy(identity, settings) {
@@ -1628,7 +2187,15 @@ function accountBadgeCopy(identity, settings) {
   return pieces.join(" · ");
 }
 
-function worldTemplate(identity, settings, mode) {
+function worldTemplate(identity, settings, mode, landmarkCapabilities) {
+  const accountSession = readSession();
+  const signedInName =
+    accountSession?.sessionToken &&
+    WORLD_ACCOUNT_NAME_RE.test(
+      String(accountSession.nodeName || "").trim().toLowerCase(),
+    )
+      ? String(accountSession.nodeName).trim().toLowerCase()
+      : "";
   const mapItems = LANDMARKS.map(
     (landmark) => `
       <li>
@@ -1640,7 +2207,14 @@ function worldTemplate(identity, settings, mode) {
           aria-current="${landmark.id === "information" ? "true" : "false"}"
         >
           <span class="world-map-icon" aria-hidden="true">${escapeHTML(landmark.icon)}</span>
-          <span>${escapeHTML(landmark.shortLabel)}</span>
+          <span class="world-map-label-copy">
+            <span>${escapeHTML(landmark.shortLabel)}</span>
+            ${constructionMarkerHTML(
+              landmark.id,
+              landmarkCapabilities?.[landmark.id],
+              "world-construction-mark-map",
+            )}
+          </span>
           <span class="world-map-distance" data-world-distance="${escapeHTML(landmark.id)}">—</span>
         </button>
       </li>`,
@@ -1692,6 +2266,36 @@ function worldTemplate(identity, settings, mode) {
         settings.activityCategory === option.id ? "selected" : ""
       }>${escapeHTML(option.label)}</option>`,
   ).join("");
+  const publicStatus = normalizeWorldStatus(
+    settings.statusEmoji,
+    settings.statusNote,
+  );
+  const emojiCategoryOptions = WORLD_EMOJI_CATEGORIES.map(
+    (category, index) => `
+      <option value="${escapeHTML(category.id)}" ${index === 0 ? "selected" : ""}>
+        ${escapeHTML(category.label)}
+      </option>`,
+  ).join("");
+  const emojiCategoryPanels = WORLD_EMOJI_CATEGORIES.map(
+    (category, index) => `
+      <div
+        class="world-emoji-grid"
+        data-world-emoji-category-panel="${escapeHTML(category.id)}"
+        ${index === 0 ? "" : "hidden"}
+      >
+        ${category.emoji
+          .map(
+            (emoji) => `
+              <button
+                type="button"
+                data-world-status-emoji-choice="${escapeHTML(emoji)}"
+                aria-label="Use ${escapeHTML(emoji)} as public status"
+                title="Use ${escapeHTML(emoji)}"
+              >${escapeHTML(emoji)}</button>`,
+          )
+          .join("")}
+      </div>`,
+  ).join("");
 
   return `
     <div class="fm-world ${mode === "dashboard" ? "world-dashboard-embed" : ""}" data-world-root>
@@ -1734,6 +2338,12 @@ function worldTemplate(identity, settings, mode) {
             </span>
           </a>
 
+          <div class="world-clock" aria-label="Current UTC time">
+            <strong class="world-clock-time" data-world-clock>--:--:--</strong>
+            <span class="world-clock-label">UTC time</span>
+            <span class="world-clock-phase" data-world-phase>UTC · 24-hour clock</span>
+          </div>
+
           <nav class="world-top-actions" aria-label="World tools">
             <span class="world-emote-bar" aria-label="Public emotes">
               <button type="button" data-world-emote="wave" title="Wave" aria-label="Wave">◡</button>
@@ -1752,6 +2362,28 @@ function worldTemplate(identity, settings, mode) {
             <a class="world-top-link" href="/dashboard/chat" data-world-chat-open title="Open chat inside the World">
               <span aria-hidden="true">⌁</span><span>Chat</span>
             </a>
+            <button
+              class="world-top-link"
+              type="button"
+              data-world-sound-toggle
+              aria-pressed="false"
+              title="Enable World sounds"
+            >
+              <span aria-hidden="true">♪</span><span data-world-sound-label>Sound</span>
+            </button>
+            <button
+              class="world-top-link"
+              type="button"
+              data-world-account-open
+              title="${
+                signedInName
+                  ? `Account: ${escapeHTML(signedInName)}`
+                  : "Log in or create an account inside the World"
+              }"
+            >
+              <span aria-hidden="true">${signedInName ? "✓" : "○"}</span>
+              <span>${signedInName ? "Account" : "Login"}</span>
+            </button>
             <a class="world-top-link" href="/dashboard" title="Open operations console">
               <span aria-hidden="true">▦</span><span>Console</span>
             </a>
@@ -1760,7 +2392,18 @@ function worldTemplate(identity, settings, mode) {
         </header>
 
         <div class="world-left-rail">
-          <section class="world-arrival-card" aria-labelledby="world-arrival-title">
+          <section
+            class="world-arrival-card"
+            aria-labelledby="world-arrival-title"
+            ${introDismissed() ? "hidden" : ""}
+          >
+            <button
+              class="world-arrival-dismiss"
+              type="button"
+              data-world-arrival-dismiss
+              aria-label="Permanently dismiss this introduction"
+              title="Do not show this introduction again"
+            >×</button>
             <p class="world-eyebrow">YOU ARE HERE / TOWN SQUARE</p>
             <h1 id="world-arrival-title">Code is a place now.</h1>
             <p>
@@ -1828,11 +2471,18 @@ function worldTemplate(identity, settings, mode) {
           <div class="world-identity-copy">
             <strong data-world-identity-name>${escapeHTML(identity.name)}</strong>
             <span data-world-identity-status>${escapeHTML(accountBadgeCopy(identity, settings))}</span>
+            <span
+              class="world-identity-emoji-status"
+              data-world-identity-emoji-status
+              ${publicStatus.emoji ? "" : "hidden"}
+            >${escapeHTML(
+              [publicStatus.emoji, publicStatus.note].filter(Boolean).join(" "),
+            )}</span>
           </div>
           <button class="world-identity-edit" type="button" data-world-settings-open aria-label="Edit public badge">✎</button>
         </section>
 
-        <div class="world-controls" aria-label="Movement controls">
+        <div class="world-controls" aria-label="Movement and camera controls">
           <div class="world-control-keys" aria-hidden="true">
             <span class="world-control-key">W</span>
             <span class="world-control-key">A</span>
@@ -1840,11 +2490,11 @@ function worldTemplate(identity, settings, mode) {
             <span class="world-control-key">D</span>
           </div>
           <div class="world-controls-copy">
-            <strong>Move around</strong>
-            <span>WASD, arrows, or click the plaza</span>
+            <strong>Move and look around</strong>
+            <span>WASD or arrows · drag to rotate · wheel to zoom</span>
           </div>
           <span class="world-location" data-world-location>Town Square</span>
-          <span class="world-location world-region-location" data-world-active-region>Central Campus · Afternoon</span>
+          <span class="world-location world-region-location" data-world-active-region>Central Campus · shared global time</span>
         </div>
 
         <div class="world-touch-controls" aria-label="Touch movement controls">
@@ -1853,6 +2503,25 @@ function worldTemplate(identity, settings, mode) {
           <button class="world-touch-button" type="button" data-move="back" aria-label="Move back">↓</button>
           <button class="world-touch-button" type="button" data-move="right" aria-label="Move right">→</button>
         </div>
+
+        <details class="world-diagnostics" data-world-diagnostics>
+          <summary aria-label="Open local World performance and connection details">
+            <span class="world-diagnostics-light" data-world-diagnostics-light data-state="connecting" aria-hidden="true"></span>
+            <strong>DEBUG</strong>
+            <span data-world-diagnostics-summary>Renderer starting · socket connecting · 1 peer</span>
+            <span class="world-diagnostics-toggle" aria-hidden="true">⌃</span>
+          </summary>
+          <div class="world-diagnostics-details" aria-live="off">
+            <p>Local one-second samples only. No diagnostics are transmitted, and no URLs, locations, form contents, or activity history are collected.</p>
+            <dl>
+              <div><dt>Renderer</dt><dd data-world-diagnostics-renderer>Starting…</dd></div>
+              <div><dt>Connection</dt><dd data-world-diagnostics-connection>Connecting…</dd></div>
+              <div><dt>Socket frames</dt><dd data-world-diagnostics-traffic>Inbound 0 · outbound 0</dd></div>
+              <div><dt>Coalescing</dt><dd data-world-diagnostics-queues>Movement idle · profile idle</dd></div>
+              <div><dt>Build</dt><dd data-world-diagnostics-build>Loading current version…</dd></div>
+            </dl>
+          </div>
+        </details>
 
         <div class="world-toast" data-world-toast role="status"></div>
         <div class="world-detail-backdrop" data-world-detail-backdrop></div>
@@ -1895,6 +2564,86 @@ function worldTemplate(identity, settings, mode) {
           ></iframe>
         </section>
 
+        <button
+          class="world-account-backdrop"
+          type="button"
+          data-world-account-close
+          aria-label="Close account panel"
+          tabindex="-1"
+        ></button>
+        <section
+          class="world-account"
+          data-world-account
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="world-account-title"
+          aria-hidden="true"
+        >
+          <header class="world-account-heading">
+            <div>
+              <p class="world-eyebrow">FORKMESH IDENTITY</p>
+              <h2 id="world-account-title">${
+                signedInName ? "Your account" : "Join from the World"
+              }</h2>
+              <span>Passwords, verification codes, and form contents never enter multiplayer presence.</span>
+            </div>
+            <button type="button" data-world-account-close aria-label="Close account panel">×</button>
+          </header>
+          ${
+            signedInName
+              ? `<div class="world-account-signed-in">
+                  <span>Signed in on this device as</span>
+                  <strong>${escapeHTML(signedInName)}</strong>
+                  <p>The server still verifies your session before granting an account badge, private repository visibility, notifications, or organization permissions.</p>
+                  <button type="button" data-world-account-logout>Log out on this device</button>
+                </div>`
+              : `<div class="world-account-tabs" role="tablist" aria-label="Account action">
+                  <button type="button" role="tab" aria-selected="true" data-world-account-mode="login">Log in</button>
+                  <button type="button" role="tab" aria-selected="false" data-world-account-mode="signup">Create account</button>
+                </div>
+                <form class="world-account-form" data-world-login-form data-world-account-view="login">
+                  <label>
+                    <span>Email</span>
+                    <input type="email" name="email" maxlength="320" autocomplete="username" required />
+                  </label>
+                  <label>
+                    <span>Password</span>
+                    <input type="password" name="password" maxlength="1024" autocomplete="current-password" required />
+                  </label>
+                  <label>
+                    <span>Authenticator code <small>only if enabled</small></span>
+                    <input type="text" name="totp" maxlength="12" inputmode="numeric" autocomplete="one-time-code" />
+                  </label>
+                  <button type="submit" data-world-account-submit>Log in inside the World</button>
+                </form>
+                <form class="world-account-form" data-world-signup-form data-world-account-view="signup" hidden>
+                  <label>
+                    <span>Public username</span>
+                    <input type="text" name="nodeName" minlength="1" maxlength="63" autocomplete="username" autocapitalize="none" spellcheck="false" required />
+                  </label>
+                  <label>
+                    <span>Email</span>
+                    <input type="email" name="email" maxlength="320" autocomplete="email" required />
+                  </label>
+                  <label>
+                    <span>Password <small>at least 8 characters</small></span>
+                    <input type="password" name="password" minlength="8" maxlength="1024" autocomplete="new-password" required />
+                  </label>
+                  <label class="world-account-consent">
+                    <input type="checkbox" name="terms" required />
+                    <span>I agree to the ForkMesh <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.</span>
+                  </label>
+                  <button type="submit" data-world-account-submit>Create account inside the World</button>
+                </form>
+                <div class="world-account-verification" data-world-account-verification hidden>
+                  <strong>Check your inbox</strong>
+                  <p>ForkMesh created <span data-world-account-created-name></span> and sent a verification message to <span data-world-account-created-email></span>. You may close this panel and keep exploring as a guest.</p>
+                </div>
+                <p class="world-account-status" data-world-account-status role="status" aria-live="polite"></p>`
+          }
+          <p class="world-account-privacy">ForkMesh sends these forms only over same-origin HTTPS. Credentials are never placed in URLs, public activity, World sockets, analytics events, or repository logs.</p>
+        </section>
+
         <section class="world-settings" data-world-settings aria-labelledby="world-settings-title" aria-hidden="true">
           <div class="world-settings-heading">
             <div>
@@ -1907,6 +2656,23 @@ function worldTemplate(identity, settings, mode) {
           <fieldset class="world-setting-group">
             <legend>Personal environment · only changes this device</legend>
             <div class="world-theme-grid">${themes}</div>
+            <label class="world-light-control">
+              <span>
+                <strong>Light level</strong>
+                <output data-world-light-level-output>${escapeHTML(
+                  settings.lightLevel,
+                )}%</output>
+              </span>
+              <input
+                type="range"
+                min="${WORLD_LIGHT_LEVEL_MIN}"
+                max="${WORLD_LIGHT_LEVEL_MAX}"
+                step="5"
+                value="${escapeHTML(settings.lightLevel)}"
+                data-world-light-level
+              />
+              <small>Full daylight is the default. This adjustment stays on this device and never changes the shared world.</small>
+            </label>
           </fieldset>
 
           <fieldset class="world-setting-group">
@@ -1928,6 +2694,64 @@ function worldTemplate(identity, settings, mode) {
               <span>Generalized public activity</span>
               <select data-world-activity-category>${activityOptions}</select>
             </label>
+            <div class="world-status-editor">
+              <div class="world-status-fields">
+                <label class="world-field">
+                  <span>Emoji status</span>
+                  <input
+                    type="text"
+                    inputmode="text"
+                    maxlength="48"
+                    autocomplete="off"
+                    spellcheck="false"
+                    value="${escapeHTML(publicStatus.emoji)}"
+                    data-world-status-emoji
+                    aria-describedby="world-status-privacy-note"
+                    placeholder="🧑‍💻"
+                  />
+                </label>
+                <label class="world-field">
+                  <span>One-word note <small>optional</small></span>
+                  <input
+                    type="text"
+                    maxlength="${WORLD_STATUS_NOTE_MAX}"
+                    autocomplete="off"
+                    spellcheck="false"
+                    value="${escapeHTML(publicStatus.note)}"
+                    data-world-status-note
+                    placeholder="coding"
+                  />
+                </label>
+              </div>
+              <details class="world-emoji-picker">
+                <summary>Choose from the Unicode emoji picker</summary>
+                <label class="world-field world-emoji-category">
+                  <span>Category</span>
+                  <select data-world-emoji-category>${emojiCategoryOptions}</select>
+                </label>
+                ${emojiCategoryPanels}
+              </details>
+              <div class="world-status-preview" aria-live="polite">
+                <span>Public overhead status</span>
+                <strong data-world-status-preview>${
+                  publicStatus.emoji
+                    ? escapeHTML(
+                        [publicStatus.emoji, publicStatus.note]
+                          .filter(Boolean)
+                          .join(" "),
+                      )
+                    : "Off"
+                }</strong>
+                <button type="button" data-world-status-clear ${
+                  publicStatus.emoji ? "" : "disabled"
+                }>Clear</button>
+              </div>
+              <small id="world-status-privacy-note">
+                Any single Unicode emoji sequence is accepted. The optional
+                note must be one word. Only those two bounded values are public;
+                no URL, activity detail, or form text is included.
+              </small>
+            </div>
             <label class="world-field">
               <span>Home / office door</span>
               <select data-world-public-door>
@@ -1967,9 +2791,11 @@ class ForkMeshWorld extends HTMLElement {
     this.identity = null;
     this.settings = null;
     this.world = null;
+    this.landmarkCapabilities = initialLandmarkCapabilities();
     this.repositories = [];
     this.repositoryCatalogState = "loading";
     this.network = {};
+    this.mirrorCatalogs = [];
     this.federatedInstances = [];
     this.communityPlacement = null;
     this.fediverseMentions = [];
@@ -1995,10 +2821,24 @@ class ForkMeshWorld extends HTMLElement {
       reddit: [],
     };
     this.botDirectory = [];
+    this.worldLimits = null;
     this.activeAudio = null;
+    this.soundEnabled = false;
+    this.soundContext = null;
+    this.joinSoundTimes = [];
     this.mediaSpaces = [];
     this.mediaRoom = normalizeMediaRoom(null);
     this.activeRepository = null;
+    this.repositoryMapState = "idle";
+    this.repositoryMapTarget = "";
+    this.repositoryMapSelection = 0;
+    this.repositoryManualSelection = "";
+    this.repositoryMapLoads = new Map();
+    this.repositoryView = "map";
+    this.pullReview = null;
+    this.pullReviewSelection = 0;
+    this.pullViewedFiles = new Map();
+    this.pullReviewScrollCleanup = null;
     this.securityTriage = null;
     this.pendingWorkshop = null;
     this.activeWorkshop = null;
@@ -2013,9 +2853,11 @@ class ForkMeshWorld extends HTMLElement {
     this.worldTicketExpires = 0;
     this.worldTicketTimer = 0;
     this.chatReturnFocus = null;
+    this.accountReturnFocus = null;
     const worldQuery = new URLSearchParams(location.search);
     const requestedSpace = worldQuery.get("space") || "";
     const requestedLandmark = worldQuery.get("landmark") || "";
+    this.requestedSpaceExplicit = WORLD_SPACE_IDS.has(requestedSpace);
     this.currentSpace = WORLD_SPACE_IDS.has(requestedSpace)
       ? requestedSpace
       : "town-square";
@@ -2028,8 +2870,34 @@ class ForkMeshWorld extends HTMLElement {
     this.presenceConnecting = false;
     this.socketRetry = 1000;
     this.socketTimer = 0;
+    this.socketStableTimer = 0;
+    this.socketConnectionAttempts = 0;
+    this.socketInboundFrames = 0;
+    this.socketOutboundFrames = 0;
+    this.socketBackpressureEvents = 0;
+    this.movementCoalescedFrames = 0;
+    this.profileCoalescedFrames = 0;
+    this.diagnosticsTimer = 0;
+    this.diagnosticsSampleAt = performance.now();
+    this.diagnosticsInboundSample = 0;
+    this.diagnosticsOutboundSample = 0;
+    this.lastDiagnosticsSnapshot = null;
+    this.buildDiagnostics = { version: "", revision: "" };
+    this.peerGraceTimer = 0;
+    this.peerGraceUntil = 0;
     this.pingTimer = 0;
+    this.profilePresenceTimer = 0;
+    this.profilePresencePending = false;
+    this.movementSendTimer = 0;
+    this.pendingMovement = null;
+    this.lastMovementSentAt = 0;
+    this.positionWriteTimer = 0;
+    this.pendingPosition = null;
+    this.positionKey = "";
+    this.restoredPosition = null;
+    this.spawnSelected = false;
     this.rewardTimer = 0;
+    this.mirrorTimer = 0;
     this.eventsTimer = 0;
     this.notificationsTimer = 0;
     this.mediaTimer = 0;
@@ -2043,6 +2911,10 @@ class ForkMeshWorld extends HTMLElement {
     this.distanceTimer = 0;
     this.toastTimer = 0;
     this.inactiveSyncTimer = 0;
+    this.inputInactiveTimer = 0;
+    this.firstVisitAt = firstVisitTimestamp();
+    this.publicVisitCount = sessionVisitCount(true);
+    this.visitedPlaces = new Set(["town-square"]);
     this.tourIndex = -1;
     this.serverOffset = 0;
     this.lastMovement = {
@@ -2062,18 +2934,45 @@ class ForkMeshWorld extends HTMLElement {
     this.mode = this.dataset.worldMode || "public";
     if (this.mode === "public") document.body.classList.add("world-active");
     this.identity = accountIdentity(readSession());
+    this.identity.firstVisitAge = firstVisitAge(this.firstVisitAt);
+    this.identity.visitCount = this.publicVisitCount;
+    this.identity.activityCategory = this.currentActivityCategory;
     this.settings = mergeSettings(readJSON(localStorage, SETTINGS_KEY, null));
+    this.positionKey = positionStorageKey(this.identity.id);
+    const restoredPosition = readWorldPosition(localStorage, this.positionKey);
+    if (
+      restoredPosition &&
+      (!this.requestedSpaceExplicit ||
+        restoredPosition.space === this.currentSpace)
+    ) {
+      this.restoredPosition = restoredPosition;
+      this.currentSpace = restoredPosition.space;
+    }
     // Shared rooms, playlists, roles, and schedules are server-authoritative.
-    // localStorage is reserved for this device's visual/privacy preferences.
+    // The only additional device-local state is one bounded position record
+    // for this identity. It has no movement history, URLs, or activity labels.
     this.mediaSpaces = [];
     this.mediaRoom = normalizeMediaRoom(null);
-    this.innerHTML = worldTemplate(this.identity, this.settings, this.mode);
+    this.innerHTML = worldTemplate(
+      this.identity,
+      this.settings,
+      this.mode,
+      this.landmarkCapabilities,
+    );
     this.syncViewportHeight();
     window.visualViewport?.addEventListener("resize", this.syncViewportHeight);
     window.addEventListener("orientationchange", this.syncViewportHeight);
     window.addEventListener("storage", this.handleStorage);
+    window.addEventListener("pointerdown", this.handlePublicInputActivity, {
+      passive: true,
+    });
+    window.addEventListener("pointermove", this.handlePublicInputActivity, {
+      passive: true,
+    });
+    window.addEventListener("keydown", this.handlePublicInputActivity);
     this.bindUI();
     this.startClock();
+    this.startDiagnostics();
     this.bootstrap();
     this.startWorldTicketRefresh();
   }
@@ -2090,10 +2989,37 @@ class ForkMeshWorld extends HTMLElement {
     return Array.from(this.querySelectorAll(selector));
   }
 
+  handlePublicInputActivity = () => {
+    if (this.destroyed || !this.identity) return;
+    if (!this.identity.inputActive) {
+      this.identity.inputActive = true;
+      this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+      this.sendPresence({ type: "presence" });
+      this.broadcastLocalPresence();
+    }
+    window.clearTimeout(this.inputInactiveTimer);
+    this.inputInactiveTimer = window.setTimeout(() => {
+      if (!this.identity || this.destroyed) return;
+      this.identity.inputActive = false;
+      this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+      this.sendPresence({ type: "presence" });
+      this.broadcastLocalPresence();
+    }, 12000);
+  };
+
+  recordPublicVisit(place) {
+    const safePlace = String(place || "").toLowerCase().slice(0, 64);
+    if (!safePlace || this.visitedPlaces.has(safePlace)) return;
+    this.visitedPlaces.add(safePlace);
+    this.publicVisitCount = sessionVisitCount(true);
+    this.identity.visitCount = this.publicVisitCount;
+    this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+  }
+
   async bootstrap() {
     const loadingCopy = this.$("[data-world-loading-copy]");
     try {
-      loadingCopy.textContent = "Synchronizing the shared world clock";
+      loadingCopy.textContent = "Reading the current UTC time";
       const contextPromise = this.loadContext();
       const dataPromise = this.loadWorldData();
       loadingCopy.textContent = "Building repositories, offices, and portals";
@@ -2106,6 +3032,10 @@ class ForkMeshWorld extends HTMLElement {
         identity: publicIdentity(this.identity, this.settings),
         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
         onLandmarkSelect: (id, meta = {}) => {
+          if (meta.nodeCabinet) {
+            this.openMirrorNodeDetail(meta.nodeCabinet);
+            return;
+          }
           if (id === "repositories" && meta.graphNode) {
             this.selectRepositoryGraphNode(meta.graphNode);
             return;
@@ -2119,23 +3049,53 @@ class ForkMeshWorld extends HTMLElement {
         onLocationChange: (label, id) => this.updateLocation(label, id),
         onRegionChange: (region) => this.updateRegion(region),
         onMovement: (movement) => this.handleMovement(movement),
+        onModeration: (action) => this.moderateWorldPeer(action),
       });
+      this.syncConstructionMarkers();
+      this.setLandmarkCapability(
+        "launchpad",
+        true,
+        "The interactive destination renderer is available.",
+      );
       this.world.setTheme(this.settings.theme);
+      this.world.setLightLevel(this.settings.lightLevel);
       await Promise.allSettled([contextPromise, dataPromise]);
-      this.world.setClockOffset(this.serverOffset);
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
-      this.world.updateNetworkNodes(liveNodeRecords(this.network));
+      this.world.updateNetworkNodes(
+        liveNodeRecords(this.network, this.mirrorCatalogs),
+      );
       this.world.updateFederatedInstances?.(this.federatedInstances);
       this.world.updateBots(this.botDirectory);
       this.world.updateFediverseDirectory(this.fediverseDirectory);
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
-      if (!this.repositories.length) {
+      if (this.repositories.length) {
+        // The scene and authenticated live catalog are both ready. Populate
+        // the repository district from the canonical flagship route without
+        // delaying entry into the rest of the World.
+        void this.autoLoadFlagshipRepositoryMap();
+      } else {
         // The portal's construction geometry is decorative, but an empty or
         // failed live catalog must not leave file icons that look selectable.
         this.world.updateRepositoryGraph?.([], []);
       }
-      if (this.currentSpace !== "town-square") {
-        this.world.travelToSpace?.(this.currentSpace);
+      if (this.restoredPosition) {
+        this.world.setSpawn?.(this.restoredPosition);
+        this.lastMovement = {
+          ...this.lastMovement,
+          x: this.restoredPosition.x,
+          y: this.restoredPosition.y,
+          z: this.restoredPosition.z,
+          heading: this.restoredPosition.heading,
+          space: this.restoredPosition.space,
+        };
+        this.spawnSelected = true;
+      } else if (this.currentSpace !== "town-square") {
+        const traveled = WORLD_REGIONS.some(
+          (region) => region.id === this.currentSpace,
+        )
+          ? this.world.travelToRegion?.(this.currentSpace)
+          : this.world.travelToSpace?.(this.currentSpace);
+        this.spawnSelected = traveled === true;
       }
       this.connectPresence();
       this.hideLoading();
@@ -2143,6 +3103,7 @@ class ForkMeshWorld extends HTMLElement {
       this.updateDistances();
       this.startActivityTicker();
       this.startRewardPolling();
+      this.startMirrorPolling();
       this.startEventPolling();
       this.startNotificationPolling();
       this.startMediaPlaybackPolling();
@@ -2186,6 +3147,7 @@ class ForkMeshWorld extends HTMLElement {
     } else if (!this.socket) {
       this.refreshWorldTicket();
       this.connectPresence();
+      void this.refreshMirrorCatalogs();
     }
   };
 
@@ -2204,7 +3166,7 @@ class ForkMeshWorld extends HTMLElement {
   };
 
   handlePageHide = () => {
-    this.sendPresence({ type: "leave" });
+    this.captureWorldPosition(true);
     this.destroy();
   };
 
@@ -2326,6 +3288,7 @@ class ForkMeshWorld extends HTMLElement {
         24,
       );
       this.identity.accountStatus = String(ticket.accountStatus);
+      this.identity.isAdmin = ticket.isAdmin === true;
       this.identity.nodes = Array.from(
         {
           length: Math.max(
@@ -2339,6 +3302,7 @@ class ForkMeshWorld extends HTMLElement {
       this.worldTicketExpires = Number(ticket.expiresAt || 0);
     } else {
       this.identity.accountStatus = "Guest";
+      this.identity.isAdmin = false;
       this.identity.nodes = [];
       this.worldTicket = "";
       this.worldTicketExpires = 0;
@@ -2353,9 +3317,25 @@ class ForkMeshWorld extends HTMLElement {
       context?.serverTimeMs || context?.now || context?.worldNow || 0,
     );
     if (serverNow > 0) this.serverOffset = serverNow - Date.now();
+    const worldConnections = Number(context?.worldConnections);
+    const worldMessagesPerSecond = Number(context?.worldMessagesPerSecond);
+    const chatConnections = Number(context?.chatConnections);
+    this.worldLimits =
+      Number.isSafeInteger(worldConnections) &&
+      worldConnections > 0 &&
+      Number.isSafeInteger(worldMessagesPerSecond) &&
+      worldMessagesPerSecond > 0 &&
+      Number.isSafeInteger(chatConnections) &&
+      chatConnections > 0
+        ? {
+            worldConnections,
+            worldMessagesPerSecond,
+            chatConnections,
+          }
+        : null;
     this.updateIdentityUI();
-    this.world?.setClockOffset(this.serverOffset);
     this.world?.updateIdentity(publicIdentity(this.identity, this.settings));
+    this.updateDurableObjectMetrics();
   }
 
   async loadWorldData() {
@@ -2363,6 +3343,7 @@ class ForkMeshWorld extends HTMLElement {
     const hasSession = Boolean(session?.sessionToken);
     const [
       networkResult,
+      mirrorResult,
       instancesResult,
       reposResult,
       versionResult,
@@ -2381,6 +3362,11 @@ class ForkMeshWorld extends HTMLElement {
     ] =
       await Promise.allSettled([
         this.fetchJSON("/api/network/overview", { auth: false }),
+        this.fetchJSON("/api/repo/forkmesh/forkmesh/mirrors", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
         this.fetchJSON("/api/world/instances", {
           auth: false,
           timeout: 5000,
@@ -2460,6 +3446,16 @@ class ForkMeshWorld extends HTMLElement {
         }),
       ]);
     this.network = networkResult.status === "fulfilled" ? networkResult.value : {};
+    this.mirrorCatalogs =
+      mirrorResult.status === "fulfilled"
+        ? [
+            {
+              ...mirrorResult.value,
+              requestedOwner: FLAGSHIP_REPOSITORY.owner,
+              requestedRepo: FLAGSHIP_REPOSITORY.repo,
+            },
+          ]
+        : [];
     this.federatedInstances =
       instancesResult.status === "fulfilled"
         ? normalizeFederatedInstances(instancesResult.value)
@@ -2475,7 +3471,10 @@ class ForkMeshWorld extends HTMLElement {
     this.renderCommunityPlacement();
     this.renderFediverseActivity();
     if (reposResult.status === "fulfilled") {
-      this.repositories = cleanRepositories(reposResult.value);
+      this.repositories = reconcileRepositoryAliases(
+        cleanRepositories(reposResult.value),
+        this.mirrorCatalogs,
+      );
       this.repositoryCatalogState = this.repositories.length ? "ready" : "empty";
     } else {
       this.repositories = [];
@@ -2511,6 +3510,11 @@ class ForkMeshWorld extends HTMLElement {
       this.notificationsState = hasSession ? "unavailable" : "signed-out";
     }
     this.updateNotificationBadge();
+    this.buildDiagnostics =
+      versionResult.status === "fulfilled"
+        ? normalizeBuildDiagnostics(versionResult.value)
+        : { version: "", revision: "" };
+    this.renderDiagnostics();
     const serverNow =
       versionResult.status === "fulfilled" ? Number(versionResult.value?.now || 0) : 0;
     this.rewardState =
@@ -2606,9 +3610,68 @@ class ForkMeshWorld extends HTMLElement {
             persistedInactive: true,
           }))
         : [];
+    const liveMirrors = liveNodeRecords(this.network, this.mirrorCatalogs);
+    const rewardAddress = String(this.rewardState?.address || "").trim();
+    this.landmarkCapabilities.fountain = {
+      live:
+        rewardResult.status === "fulfilled" &&
+        /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(rewardAddress),
+      reason: LANDMARK_CONSTRUCTION_REASONS.fountain,
+    };
+    this.landmarkCapabilities.repositories = {
+      live:
+        reposResult.status === "fulfilled" &&
+        hasRepositoryCatalogSchema(reposResult.value),
+      reason: LANDMARK_CONSTRUCTION_REASONS.repositories,
+    };
+    this.landmarkCapabilities.routing = {
+      live:
+        mirrorResult.status === "fulfilled" &&
+        mirrorResult.value?.ok === true &&
+        Array.isArray(mirrorResult.value?.mirrors) &&
+        liveMirrors.some(
+          (node) =>
+            node.healthy === true &&
+            node.cloneAvailable === true &&
+            /^[0-9a-f]{40,64}$/.test(String(node.commit || "")),
+        ),
+      reason: LANDMARK_CONSTRUCTION_REASONS.routing,
+    };
+    this.landmarkCapabilities.organizations = {
+      live:
+        orgResult.status === "fulfilled" &&
+        Array.isArray(orgResult.value?.organizations),
+      reason: LANDMARK_CONSTRUCTION_REASONS.organizations,
+    };
+    this.landmarkCapabilities.fediverse = {
+      live:
+        directoryResult.status === "fulfilled" &&
+        hasFediverseDirectorySchema(directoryResult.value),
+      reason: LANDMARK_CONSTRUCTION_REASONS.fediverse,
+    };
+    this.landmarkCapabilities.security = {
+      live:
+        scanResult.status === "fulfilled" &&
+        hasCompletedSecurityScan(this.securityScan),
+      reason: LANDMARK_CONSTRUCTION_REASONS.security,
+    };
+    this.landmarkCapabilities.events = {
+      live:
+        eventsResult.status === "fulfilled" &&
+        Array.isArray(eventsResult.value?.events),
+      reason: LANDMARK_CONSTRUCTION_REASONS.events,
+    };
+    this.landmarkCapabilities.workshops = {
+      live:
+        this.landmarkCapabilities.repositories.live === true &&
+        this.repositories.some((repo) => repo.liveHost || repo.isPrivate),
+      reason: LANDMARK_CONSTRUCTION_REASONS.workshops,
+    };
+    this.syncConstructionMarkers();
     if (serverNow > 0 && !this.serverOffset) this.serverOffset = serverNow - Date.now();
-    this.world?.setClockOffset(this.serverOffset);
-    this.world?.updateNetworkNodes(liveNodeRecords(this.network));
+    this.world?.updateNetworkNodes(
+      liveMirrors,
+    );
     this.world?.updateFederatedInstances?.(this.federatedInstances);
     this.world?.updateBots(this.botDirectory);
     this.world?.updateOrganizations(this.organizations);
@@ -3115,11 +4178,57 @@ class ForkMeshWorld extends HTMLElement {
         this.closeWorldChat();
         return;
       }
+      const accountOpen = event.target.closest("[data-world-account-open]");
+      if (accountOpen) {
+        this.toggleWorldAccount(true, "login", accountOpen);
+        return;
+      }
+      if (event.target.closest("[data-world-account-close]")) {
+        this.toggleWorldAccount(false);
+        return;
+      }
+      const accountMode = event.target.closest("[data-world-account-mode]");
+      if (accountMode) {
+        this.selectWorldAccountMode(accountMode.dataset.worldAccountMode);
+        return;
+      }
+      if (event.target.closest("[data-world-account-logout]")) {
+        void this.logoutFromWorld();
+        return;
+      }
+      if (event.target.closest("[data-world-arrival-dismiss]")) {
+        try {
+          localStorage.setItem(INTRO_DISMISSED_KEY, "1");
+        } catch (_) {}
+        const card = this.$(".world-arrival-card");
+        if (card) card.hidden = true;
+        this.toast("Introduction dismissed on this device. Start remains available from the dock.");
+        return;
+      }
+      if (event.target.closest("[data-world-sound-toggle]")) {
+        this.toggleWorldSound();
+        return;
+      }
       const landmarkButton = event.target.closest("[data-world-landmark]");
       if (landmarkButton) {
         const id = landmarkButton.dataset.worldLandmark;
         this.world?.focusLandmark(id);
         this.openLandmark(id);
+        return;
+      }
+      const mirrorNodeButton = event.target.closest("[data-world-mirror-node]");
+      if (mirrorNodeButton) {
+        const nodeName = String(
+          mirrorNodeButton.dataset.worldMirrorNode || "",
+        ).toLowerCase();
+        const node = liveNodeRecords(
+          this.network,
+          this.mirrorCatalogs,
+        ).find((candidate) => candidate.name.toLowerCase() === nodeName);
+        if (node) {
+          this.world?.focusNetworkNode?.(node.name);
+          this.openMirrorNodeDetail(node);
+        }
         return;
       }
       if (event.target.closest("[data-world-action='tour']")) {
@@ -3132,6 +4241,20 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-settings-close]")) {
         this.toggleSettings(false);
+        return;
+      }
+      const emojiChoice = event.target.closest(
+        "[data-world-status-emoji-choice]",
+      );
+      if (emojiChoice) {
+        this.commitWorldStatus(
+          emojiChoice.dataset.worldStatusEmojiChoice,
+          this.$("[data-world-status-note]")?.value,
+        );
+        return;
+      }
+      if (event.target.closest("[data-world-status-clear]")) {
+        this.commitWorldStatus("", "");
         return;
       }
       const fediverseReview = event.target.closest(
@@ -3202,6 +4325,33 @@ class ForkMeshWorld extends HTMLElement {
         this.handleLandmarkAction(detailAction.dataset.worldDetailAction);
         return;
       }
+      if (event.target.closest("[data-world-pull-list]")) {
+        this.openRepositoryPullList();
+        return;
+      }
+      const pullOpen = event.target.closest("[data-world-pull-open]");
+      if (pullOpen) {
+        this.loadRepositoryPullReview(pullOpen.dataset.worldPullNumber);
+        return;
+      }
+      const pullBack = event.target.closest("[data-world-pull-back]");
+      if (pullBack) {
+        this.repositoryView =
+          pullBack.dataset.worldPullBack === "map" ? "map" : "list";
+        this.clearPullReviewScrollTracking();
+        this.renderRepositoryExplorer();
+        return;
+      }
+      const pullFile = event.target.closest("[data-world-pull-file-path]");
+      if (pullFile) {
+        this.scrollToPullFile(pullFile.dataset.worldPullFilePath);
+        return;
+      }
+      const pullMerge = event.target.closest("[data-world-pull-merge]");
+      if (pullMerge) {
+        void this.mergeRepositoryPull();
+        return;
+      }
       const graphNode = event.target.closest("[data-world-graph-node]");
       if (graphNode) {
         const entity = buildRepositoryGraphEntities(
@@ -3213,7 +4363,9 @@ class ForkMeshWorld extends HTMLElement {
       const repoMap = event.target.closest("[data-world-repo-map]");
       if (repoMap) {
         const [owner, name] = String(repoMap.dataset.worldRepoMap || "").split("/");
-        if (owner && name) this.loadRepositoryMap(owner, name);
+        if (owner && name) {
+          this.loadRepositoryMap(owner, name, { automatic: false });
+        }
         return;
       }
       const securityScan = event.target.closest("[data-world-security-scan]");
@@ -3449,6 +4601,29 @@ class ForkMeshWorld extends HTMLElement {
         }
         return;
       }
+      const emojiCategory = event.target.closest(
+        "[data-world-emoji-category]",
+      );
+      if (emojiCategory) {
+        this.selectWorldEmojiCategory(emojiCategory.value);
+        return;
+      }
+      const statusEmoji = event.target.closest("[data-world-status-emoji]");
+      if (statusEmoji) {
+        this.commitWorldStatus(
+          statusEmoji.value,
+          this.$("[data-world-status-note]")?.value,
+        );
+        return;
+      }
+      const statusNote = event.target.closest("[data-world-status-note]");
+      if (statusNote) {
+        this.commitWorldStatus(
+          this.$("[data-world-status-emoji]")?.value,
+          statusNote.value,
+        );
+        return;
+      }
       const door = event.target.closest("[data-world-public-door]");
       if (door) {
         if (["knock", "open", "closed"].includes(door.value)) {
@@ -3485,9 +4660,23 @@ class ForkMeshWorld extends HTMLElement {
     });
 
     this.addEventListener("input", (event) => {
+      const lightLevel = event.target.closest("[data-world-light-level]");
+      if (lightLevel) {
+        this.setLightLevel(lightLevel.value);
+        return;
+      }
       if (event.target.closest("[data-world-repo-filter='directory']")) {
         this.applyRepositoryFilters();
       }
+    });
+
+    this.$("[data-world-login-form]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void this.submitWorldLogin(event.currentTarget);
+    });
+    this.$("[data-world-signup-form]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void this.submitWorldSignup(event.currentTarget);
     });
 
     this.$$("[data-move]").forEach((button) => {
@@ -3510,6 +4699,8 @@ class ForkMeshWorld extends HTMLElement {
       if (event.code !== "Escape") return;
       if (this.$("[data-world-chat]")?.dataset.open === "true") {
         this.closeWorldChat();
+      } else if (this.$("[data-world-account]")?.dataset.open === "true") {
+        this.toggleWorldAccount(false);
       } else if (this.$("[data-world-settings]")?.dataset.open === "true") {
         this.toggleSettings(false);
       } else if (this.$("[data-world-detail]")?.dataset.open === "true") {
@@ -3527,6 +4718,75 @@ class ForkMeshWorld extends HTMLElement {
     this.sendPresence({ type: "presence" });
     this.broadcastLocalPresence();
     this.syncInactivePresence();
+  }
+
+  selectWorldEmojiCategory(categoryId) {
+    const selected = WORLD_EMOJI_CATEGORIES.some(
+      (category) => category.id === categoryId,
+    )
+      ? categoryId
+      : WORLD_EMOJI_CATEGORIES[0]?.id;
+    this.$$("[data-world-emoji-category-panel]").forEach((panel) => {
+      panel.hidden = panel.dataset.worldEmojiCategoryPanel !== selected;
+    });
+  }
+
+  commitWorldStatus(emojiValue, noteValue) {
+    const rawEmoji = String(emojiValue || "").trim();
+    const rawNote = String(noteValue || "").trim();
+    const next = normalizeWorldStatus(rawEmoji, rawNote);
+    const emojiInput = this.$("[data-world-status-emoji]");
+    const noteInput = this.$("[data-world-status-note]");
+    if (rawEmoji && !normalizeWorldEmoji(rawEmoji)) {
+      if (emojiInput) emojiInput.value = this.settings.statusEmoji;
+      if (noteInput) noteInput.value = this.settings.statusNote;
+      this.toast("Choose or paste one valid Unicode emoji.");
+      return false;
+    }
+    if (rawNote && !normalizeWorldStatusNote(rawNote)) {
+      if (emojiInput) emojiInput.value = this.settings.statusEmoji;
+      if (noteInput) noteInput.value = this.settings.statusNote;
+      this.toast(
+        `The public note must be one word, up to ${WORLD_STATUS_NOTE_MAX} characters.`,
+      );
+      return false;
+    }
+    if (rawNote && !next.emoji) {
+      if (emojiInput) emojiInput.value = this.settings.statusEmoji;
+      if (noteInput) noteInput.value = this.settings.statusNote;
+      this.toast("Choose an emoji before adding a public note.");
+      return false;
+    }
+    const changed =
+      next.emoji !== this.settings.statusEmoji ||
+      next.note !== this.settings.statusNote;
+    this.settings.statusEmoji = next.emoji;
+    this.settings.statusNote = next.note;
+    if (emojiInput) emojiInput.value = next.emoji;
+    if (noteInput) noteInput.value = next.note;
+    this.updateWorldStatusUI();
+    if (!changed) return false;
+    // Profile presence is already coalesced. Status values are deliberately
+    // absent from movement frames, so walking cannot repeatedly republish them.
+    this.commitPublicSettings();
+    return true;
+  }
+
+  updateWorldStatusUI() {
+    const status = normalizeWorldStatus(
+      this.settings?.statusEmoji,
+      this.settings?.statusNote,
+    );
+    const copy = [status.emoji, status.note].filter(Boolean).join(" ");
+    const preview = this.$("[data-world-status-preview]");
+    const clear = this.$("[data-world-status-clear]");
+    const identityStatus = this.$("[data-world-identity-emoji-status]");
+    if (preview) preview.textContent = copy || "Off";
+    if (clear) clear.disabled = !status.emoji;
+    if (identityStatus) {
+      identityStatus.textContent = copy;
+      identityStatus.hidden = !status.emoji;
+    }
   }
 
   syncInactivePresence() {
@@ -3619,24 +4879,19 @@ class ForkMeshWorld extends HTMLElement {
 
   startClock() {
     const render = () => {
-      const clock = worldClock(Date.now() + this.serverOffset);
+      const clock = utcClock(Date.now() + this.serverOffset);
       const time = this.$("[data-world-clock]");
       const phase = this.$("[data-world-phase]");
       if (time) time.textContent = clock.label;
-      if (phase) phase.textContent = `${clock.phase} · 4h shared day`;
+      if (phase) phase.textContent = `${clock.zone} · 24-hour clock`;
       this.$$("[data-world-region-clock]").forEach((element) => {
         const region = WORLD_REGIONS.find(
           (item) => item.id === element.dataset.worldRegionClock,
         );
         if (!region) return;
-        const regionalClock = worldClock(
-          Date.now() +
-            this.serverOffset +
-            Number(region.utcOffsetHours || 0) * (WORLD_DAY_MS / 24),
-        );
         const label = element.querySelector("span");
         if (label) {
-          label.textContent = `${region.phase} · ${regionalClock.label}`;
+          label.textContent = `${region.phase} · ${clock.label} ${clock.zone}`;
         }
       });
       if (this.settings?.privacy?.localTime) this.updateIdentityUI();
@@ -3664,17 +4919,95 @@ class ForkMeshWorld extends HTMLElement {
     if (shirtName) shirtName.textContent = visible.name;
     if (name) name.textContent = visible.name;
     if (status) status.textContent = accountBadgeCopy(this.identity, this.settings);
+    this.updateWorldStatusUI();
   }
 
   updateMetrics() {
     const stats = this.network?.stats || this.network || {};
     const repoCount = Number(stats.repos || stats.repositories || this.repositories.length);
-    const nodes = Number(stats.hosts || stats.nodes || liveNodeRecords(this.network).length);
+    const nodes = Number(
+      stats.hosts ||
+        stats.nodes ||
+        liveNodeRecords(this.network, this.mirrorCatalogs).length,
+    );
     const reposEl = this.$("[data-world-repos]");
     const nodesEl = this.$("[data-world-nodes]");
     if (reposEl) reposEl.textContent = compactNumber(repoCount);
     if (nodesEl) nodesEl.textContent = compactNumber(nodes);
     this.updatePlayerCount();
+    this.updateDurableObjectMetrics();
+  }
+
+  updateDurableObjectMetrics() {
+    if (!this.world?.updateDurableObjects) return;
+    const limits = this.worldLimits;
+    if (!limits) {
+      this.world.updateDurableObjects([]);
+      return;
+    }
+    const worldSocketOnline =
+      this.socket?.readyState === WebSocket.OPEN && Boolean(this.serverPeerId);
+    const chatConnected = Number(this.network?.stats?.clients);
+    const objects = [];
+    if (worldSocketOnline) {
+      objects.push({
+        id: "forkmesh-world",
+        name: "Town Square presence",
+        usage: { connections: 1 + this.remotePlayers.size },
+        limits: { connections: limits.worldConnections },
+      });
+    }
+    if (Number.isFinite(chatConnected) && chatConnected >= 0) {
+      objects.push({
+        id: "forkmesh-general-chat",
+        name: "#general chat · cached live count",
+        usage: { connections: chatConnected },
+        limits: { connections: limits.chatConnections },
+      });
+    }
+    this.world.updateDurableObjects({ objects });
+  }
+
+  async moderateWorldPeer(action) {
+    if (!this.identity?.isAdmin) {
+      this.toast("Platform administrator access is required.");
+      return;
+    }
+    const targetType = String(action?.targetType || "").toLowerCase();
+    const handle = String(action?.handle || "").toLowerCase();
+    if (
+      !["ip", "agent"].includes(targetType) ||
+      !/^[a-f0-9]{64}$/.test(handle)
+    ) {
+      this.toast("That temporary moderation handle is no longer available.");
+      return;
+    }
+    const targetLabel =
+      targetType === "ip" ? "this rotating IP token" : "this browser agent";
+    if (
+      !window.confirm(
+        `Temporarily block ${targetLabel} from the World for one hour? ` +
+          "This is a manual administrative action and will be audited.",
+      )
+    ) {
+      return;
+    }
+    try {
+      const result = await this.postJSON("/api/world/moderation", {
+        targetType,
+        handle,
+        durationMs: WORLD_MANUAL_BLOCK_DURATION_MS,
+      });
+      const disconnected = Math.max(0, Number(result?.disconnected) || 0);
+      this.toast(
+        `Temporary ${targetType === "ip" ? "IP-token" : "agent"} block applied` +
+          (disconnected
+            ? `; ${disconnected} live connection${disconnected === 1 ? "" : "s"} closed.`
+            : "."),
+      );
+    } catch (error) {
+      this.toast(`Temporary block was not applied: ${error.message}`);
+    }
   }
 
   rewardEvents() {
@@ -3731,6 +5064,14 @@ class ForkMeshWorld extends HTMLElement {
       this.rewardState = pool.value || {};
       this.captureRewardEvents(true);
     }
+    this.setLandmarkCapability(
+      "fountain",
+      pool.status === "fulfilled" &&
+        /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(
+          String(pool.value?.address || "").trim(),
+        ),
+      LANDMARK_CONSTRUCTION_REASONS.fountain,
+    );
     if (pending.status === "fulfilled") {
       this.pendingRewards = Array.isArray(pending.value?.rewards)
         ? pending.value.rewards.slice(0, 100)
@@ -3840,8 +5181,56 @@ class ForkMeshWorld extends HTMLElement {
     }, 60000);
   }
 
+  async refreshMirrorCatalogs() {
+    const payload = await this.fetchJSON(
+      "/api/repo/forkmesh/forkmesh/mirrors",
+      {
+        auth: false,
+        timeout: 5000,
+        cache: "no-store",
+      },
+    );
+    this.mirrorCatalogs = [
+      {
+        ...payload,
+        requestedOwner: FLAGSHIP_REPOSITORY.owner,
+        requestedRepo: FLAGSHIP_REPOSITORY.repo,
+      },
+    ];
+    const liveMirrors = liveNodeRecords(this.network, this.mirrorCatalogs);
+    this.setLandmarkCapability(
+      "routing",
+      payload?.ok === true &&
+        Array.isArray(payload?.mirrors) &&
+        liveMirrors.some(
+          (node) =>
+            node.healthy === true &&
+            node.cloneAvailable === true &&
+            /^[0-9a-f]{40,64}$/.test(String(node.commit || "")),
+        ),
+      LANDMARK_CONSTRUCTION_REASONS.routing,
+    );
+    this.world?.updateNetworkNodes(liveMirrors);
+  }
+
+  startMirrorPolling() {
+    window.clearInterval(this.mirrorTimer);
+    this.mirrorTimer = window.setInterval(() => {
+      if (this.destroyed || document.visibilityState !== "visible") return;
+      void this.refreshMirrorCatalogs().catch(() => {
+        // Preserve the last verified snapshot during a transient HTTPS failure.
+      });
+    }, MIRROR_STATUS_POLL_MS);
+  }
+
   updatePlayerCount() {
-    const count = 1 + this.remotePlayers.size + this.localPeers.size;
+    // BroadcastChannel is an offline/same-device fallback. Once the
+    // authoritative World socket is live, counting both maps would show the
+    // same browser tab twice.
+    const socketOnline =
+      this.socket?.readyState === WebSocket.OPEN && Boolean(this.serverPeerId);
+    const count =
+      1 + this.remotePlayers.size + (socketOnline ? 0 : this.localPeers.size);
     const element = this.$("[data-world-players]");
     if (element) element.textContent = compactNumber(count);
   }
@@ -3857,6 +5246,7 @@ class ForkMeshWorld extends HTMLElement {
         String(Boolean(id) && button.dataset.worldLandmark === id),
       );
     });
+    this.recordPublicVisit(id || "town-square");
     if (this.settings.privacy.activity) {
       this.lastMovement.activity =
         label === "Town Square" ? "exploring the Town Square" : `visiting ${label}`;
@@ -3869,14 +5259,55 @@ class ForkMeshWorld extends HTMLElement {
       organizations: "visiting-organization",
       information: "reading-documentation",
     }[id] || "exploring-town-square";
+    this.identity.activityCategory = this.currentActivityCategory;
     this.sendPresence({ type: "presence" });
+    this.broadcastLocalPresence();
   }
 
   updateRegion(region) {
     const element = this.$("[data-world-active-region]");
     if (element && region) {
-      element.textContent = `${region.label} · ${region.phase}`;
+      element.textContent = `${region.label} · shared global time`;
     }
+  }
+
+  setLandmarkCapability(id, live, reason = "") {
+    if (!LANDMARKS.some((landmark) => landmark.id === id)) return;
+    this.landmarkCapabilities[id] = {
+      live: live === true,
+      reason:
+        String(reason || "").trim() ||
+        LANDMARK_CONSTRUCTION_REASONS[id] ||
+        "This integration has not been verified in this session.",
+    };
+    this.syncConstructionMarkers(id);
+  }
+
+  syncConstructionMarkers(id = "") {
+    const ids = id ? [id] : LANDMARKS.map((landmark) => landmark.id);
+    ids.forEach((landmarkId) => {
+      const capability = this.landmarkCapabilities[landmarkId] || {
+        live: false,
+        reason: "This integration has not been verified in this session.",
+      };
+      const reason = String(capability.reason || "");
+      this.$$(
+        `[data-world-construction-marker="${landmarkId}"]`,
+      ).forEach((marker) => {
+        marker.hidden = capability.live === true;
+        marker.setAttribute(
+          "aria-label",
+          `Under construction: ${reason}`,
+        );
+        marker.setAttribute("title", `Under construction: ${reason}`);
+      });
+      this.$$(`[data-world-landmark="${landmarkId}"]`).forEach((button) => {
+        button.dataset.worldUnderConstruction = String(
+          capability.live !== true,
+        );
+      });
+    });
+    this.world?.updateLandmarkConstruction?.(this.landmarkCapabilities);
   }
 
   updateDistances() {
@@ -3894,6 +5325,10 @@ class ForkMeshWorld extends HTMLElement {
 
   openLandmark(id) {
     const landmark = landmarkById(id);
+    const capability = this.landmarkCapabilities[landmark.id] || {
+      live: false,
+      reason: "This integration has not been verified in this session.",
+    };
     const detail = this.$("[data-world-detail]");
     const backdrop = this.$("[data-world-detail-backdrop]");
     if (!detail || !backdrop) return;
@@ -3910,7 +5345,14 @@ class ForkMeshWorld extends HTMLElement {
       </header>
       <div class="world-detail-scroll">
         <p class="world-detail-summary">${escapeHTML(landmark.summary)}</p>
-        <span class="world-status-pill">${escapeHTML(landmark.status)}</span>
+        <div class="world-status-row">
+          <span class="world-status-pill">${escapeHTML(landmark.status)}</span>
+          ${constructionMarkerHTML(
+            landmark.id,
+            capability,
+            "world-construction-mark-panel",
+          )}
+        </div>
 
         <div class="world-truth-grid">
           <section class="world-truth-block">
@@ -3945,6 +5387,16 @@ class ForkMeshWorld extends HTMLElement {
     detail.dataset.open = "true";
     detail.setAttribute("aria-hidden", "false");
     backdrop.dataset.open = "true";
+    this.updateRepositoryReviewMode();
+    if (
+      landmark.id === "repositories" &&
+      this.repositoryView === "review" &&
+      this.pullReview?.state === "ready"
+    ) {
+      window.requestAnimationFrame(() =>
+        this.setupPullReviewScrollTracking(),
+      );
+    }
     this.$$("[data-world-landmark]").forEach((button) => {
       button.setAttribute(
         "aria-current",
@@ -3959,9 +5411,11 @@ class ForkMeshWorld extends HTMLElement {
     const backdrop = this.$("[data-world-detail-backdrop]");
     if (detail) {
       detail.dataset.open = "false";
+      detail.dataset.repositoryReview = "false";
       detail.setAttribute("aria-hidden", "true");
     }
     if (backdrop) backdrop.dataset.open = "false";
+    this.clearPullReviewScrollTracking();
     this.world?.clearFocus();
   }
 
@@ -4023,7 +5477,52 @@ class ForkMeshWorld extends HTMLElement {
     const instances = Array.isArray(this.federatedInstances)
       ? this.federatedInstances
       : [];
+    const mirrorNodes = liveNodeRecords(this.network, this.mirrorCatalogs);
     return `
+      <section class="world-feature-card" aria-label="Live mirror server cabinets">
+        <h3>Live mirror server cabinets</h3>
+        <div class="world-instance-list" data-world-mirror-node-list>
+          ${
+            mirrorNodes.length
+              ? mirrorNodes
+                  .map((node) => {
+                    const commit = /^[0-9a-f]{40,64}$/.test(
+                      String(node.commit || ""),
+                    )
+                      ? String(node.commit).slice(0, 12)
+                      : "HEAD not reported";
+                    const route =
+                      node.cloneAvailable === true
+                        ? "verified clone route"
+                        : String(node.integrity || "") === "rejected"
+                          ? "integrity blocked"
+                          : "route not verified";
+                    return `<article>
+                      <span class="world-instance-icon" aria-hidden="true">${
+                        node.healthy ? "●" : "◐"
+                      }</span>
+                      <div>
+                        <strong>${escapeHTML(node.name)}</strong>
+                        <span>${escapeHTML(
+                          [node.platform, node.version ? `v${String(node.version).replace(/^v/i, "")}` : ""]
+                            .filter(Boolean)
+                            .join(" · ") || "platform/version not reported",
+                        )}</span>
+                        <p>${escapeHTML(`${commit} · ${route}`)}</p>
+                      </div>
+                      <button
+                        type="button"
+                        class="world-secondary-action"
+                        data-world-mirror-node="${escapeHTML(node.name)}"
+                      >Inspect live server</button>
+                    </article>`;
+                  })
+                  .join("")
+              : '<p class="world-empty-state">No live public mirror has a current presence record. ForkMesh does not invent server cabinets.</p>'
+          }
+        </div>
+        <p class="world-panel-footnote">CPU, memory, and disk are optional operator-reported values signed into the public catalog. A signature establishes publisher provenance, not automatic trust. Missing values remain “not shared.”</p>
+      </section>
       <section class="world-feature-card" aria-label="Approved ForkMesh relay instances">
         <h3>Approved federated instances</h3>
         <div class="world-instance-list">
@@ -4057,6 +5556,183 @@ class ForkMeshWorld extends HTMLElement {
         </div>
         <p class="world-panel-footnote">This projection includes only an approved public origin, generalized health, and a random public display id. Federation keys, signatures, tokens, wallets, node identities, raw IPs, private repositories, and exact activity are excluded.</p>
       </section>`;
+  }
+
+  mirrorNodeTechnicalHTML(node) {
+    const known = (value, maximum = Number.MAX_SAFE_INTEGER) => {
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 && number <= maximum
+        ? number
+        : null;
+    };
+    const count = (value) => {
+      const number = known(value, 1_000_000_000);
+      return number === null ? "Not reported" : compactNumber(number);
+    };
+    const bytes = (value) => {
+      const number = known(value, 2 ** 50);
+      return number === null ? "Not shared" : formatBytes(number);
+    };
+    const usage = (usedValue, totalValue) => {
+      const used = known(usedValue, 2 ** 50);
+      const total = known(totalValue, 2 ** 50);
+      if (used === null || total === null || total <= 0 || used > total) {
+        return "Not shared";
+      }
+      return `${formatBytes(used)} / ${formatBytes(total)} · ${(
+        (used / total) *
+        100
+      ).toFixed(1)}%`;
+    };
+    const date = (value) => {
+      const timestamp = known(value);
+      if (timestamp === null || timestamp <= 0) return "Not reported";
+      const parsed = new Date(timestamp);
+      return Number.isNaN(parsed.getTime())
+        ? "Not reported"
+        : parsed.toLocaleString();
+    };
+    const syncAge = known(node?.syncAgeMs);
+    const syncAgeLabel =
+      syncAge === null
+        ? "Not reported"
+        : syncAge < 60_000
+          ? "Less than one minute"
+          : `${Math.floor(syncAge / 60_000)} minutes`;
+    const cpu = known(node?.cpuPercent, 100);
+    const commit = /^[0-9a-f]{40,64}$/.test(String(node?.commit || ""))
+      ? String(node.commit)
+      : "Not reported";
+    const route =
+      node?.cloneAvailable === true
+        ? "Verified and clone-ready"
+        : String(node?.integrity || "") === "rejected"
+          ? "Blocked by integrity policy"
+          : String(node?.integrity || "") === "healing"
+            ? "Online; integrity is being re-verified"
+            : "Not currently verified for cloning";
+    const repositories = Array.isArray(node?.repositories)
+      ? node.repositories.slice(0, 32)
+      : [];
+    return `
+      <section class="world-feature-card" data-world-mirror-node-detail>
+        <div class="world-notice ${
+          node?.cloneAvailable === true
+            ? "world-notice-safe"
+            : "world-notice-warning"
+        }">
+          <strong>${escapeHTML(route)}</strong>
+          <span>Online presence, signed repository publication, content integrity, and route eligibility are separate checks. An online node is not automatically trustworthy.</span>
+        </div>
+        <dl class="world-technical-list">
+          <div><dt>Node</dt><dd>${escapeHTML(node?.name || "Not reported")}</dd></div>
+          <div><dt>Node id</dt><dd class="world-break">${escapeHTML(
+            node?.nodeId || "Not reported",
+          )}</dd></div>
+          <div><dt>Platform / version</dt><dd>${escapeHTML(
+            [node?.platform, node?.version ? `v${String(node.version).replace(/^v/i, "")}` : ""]
+              .filter(Boolean)
+              .join(" · ") || "Not reported",
+          )}</dd></div>
+          <div><dt>Git HEAD</dt><dd class="world-break"><code>${escapeHTML(
+            commit,
+          )}</code></dd></div>
+          <div><dt>Branch</dt><dd>${escapeHTML(node?.branch || "Not reported")}</dd></div>
+          <div><dt>Integrity</dt><dd>${escapeHTML(
+            node?.integrity || "unknown",
+          )}${node?.behind === true ? " · behind current state" : ""}</dd></div>
+          <div><dt>Last seen</dt><dd>${escapeHTML(date(node?.lastSeen))}</dd></div>
+          <div><dt>Last sync</dt><dd>${escapeHTML(
+            date(node?.lastSync),
+          )}${
+            syncAge === null
+              ? ""
+              : ` · ${escapeHTML(syncAgeLabel)} ago`
+          }</dd></div>
+          <div><dt>CPU</dt><dd>${escapeHTML(
+            cpu === null ? "Not shared" : `${cpu.toFixed(1)}%`,
+          )}</dd></div>
+          <div><dt>Memory</dt><dd>${escapeHTML(
+            usage(node?.memoryUsedBytes, node?.memoryTotalBytes),
+          )}</dd></div>
+          <div><dt>Disk</dt><dd>${escapeHTML(
+            usage(node?.diskUsedBytes, node?.diskTotalBytes),
+          )}</dd></div>
+          <div><dt>Repository bytes</dt><dd>${escapeHTML(
+            bytes(node?.sizeBytes),
+          )}</dd></div>
+          <div><dt>Commits</dt><dd>${escapeHTML(count(node?.commitCount))}</dd></div>
+          <div><dt>Branches</dt><dd>${escapeHTML(count(node?.branchCount))}</dd></div>
+          <div><dt>Pull requests</dt><dd>${escapeHTML(
+            count(node?.pullCount),
+          )}</dd></div>
+          <div><dt>Issues</dt><dd>${escapeHTML(count(node?.issueCount))}</dd></div>
+          <div><dt>Discussions</dt><dd>${escapeHTML(
+            count(node?.discussionCount),
+          )}</dd></div>
+          <div><dt>Artifacts</dt><dd>${escapeHTML(
+            count(node?.artifactCount),
+          )}</dd></div>
+          <div><dt>Worktrees</dt><dd>${escapeHTML(
+            count(node?.worktreeCount),
+          )}</dd></div>
+          <div><dt>Clones served</dt><dd>${escapeHTML(
+            count(node?.clonesServed),
+          )}</dd></div>
+          <div><dt>Web requests served</dt><dd>${escapeHTML(
+            count(node?.websiteServed),
+          )}</dd></div>
+        </dl>
+        <h3>Public mirrored repositories</h3>
+        ${
+          repositories.length
+            ? `<ul class="world-detail-list">${repositories
+                .map(
+                  (repository) =>
+                    `<li><strong>${escapeHTML(
+                      repository.owner && repository.name
+                        ? `${repository.owner}/${repository.name}`
+                        : "Repository identity not reported",
+                    )}</strong> · ${escapeHTML(
+                      repository.cloneAvailable && repository.integrity === "ok"
+                        ? "clone-ready"
+                        : repository.integrity || "unverified",
+                    )} · ${escapeHTML(bytes(repository.sizeBytes))}</li>`,
+                )
+                .join("")}</ul>`
+            : '<p class="world-empty-state">Repository identity was not reported for this live node.</p>'
+        }
+        <p class="world-panel-footnote">Resource measurements and repository counters are operator-reported, bounded values signed into the public catalog. They are not independent performance audits and may be stale between publications.</p>
+      </section>`;
+  }
+
+  openMirrorNodeDetail(node) {
+    const detail = this.$("[data-world-detail]");
+    const backdrop = this.$("[data-world-detail-backdrop]");
+    if (!detail || !backdrop || !node) return;
+    detail.dataset.openLandmark = "routing";
+    detail.style.setProperty("--detail-color", "#80e8ff");
+    detail.innerHTML = `
+      <header class="world-detail-header">
+        <div>
+          <p class="world-eyebrow">MIRROR SERVER / LIVE PUBLIC STATUS</p>
+          <h2 id="world-detail-title">${escapeHTML(
+            node.name || "Mirror node",
+          )}</h2>
+        </div>
+        <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close mirror server details">×</button>
+      </header>
+      <div class="world-detail-scroll">
+        <p class="world-detail-summary">The readable technical equivalent of this server cabinet’s front display.</p>
+        ${this.mirrorNodeTechnicalHTML(node)}
+      </div>`;
+    detail.dataset.open = "true";
+    detail.setAttribute("aria-hidden", "false");
+    backdrop.dataset.open = "true";
+    window.setTimeout(
+      () => detail.querySelector("[data-world-detail-close]")?.focus(),
+      120,
+    );
   }
 
   rewardPanelHTML() {
@@ -4249,6 +5925,40 @@ class ForkMeshWorld extends HTMLElement {
       </section>`;
   }
 
+  repositoryMapStatusHTML() {
+    if (this.repositoryMapState === "ready" && this.activeRepository) {
+      return this.repositoryExplorerHTML(this.activeRepository);
+    }
+    if (this.repositoryMapState === "loading") {
+      return `<p class="world-empty-state">Loading ${escapeHTML(
+        this.repositoryMapTarget || "the selected repository",
+      )} from commit-pinned authorized HTTPS endpoints…</p>`;
+    }
+    if (this.repositoryMapState === "unavailable") {
+      return `
+        <div class="world-notice world-notice-warning" data-world-repository-map-state="unavailable">
+          <strong>Repository map unavailable</strong>
+          <span>The live catalog or commit-pinned repository data could not be verified. ForkMesh did not substitute sample files, guessed entries, or stale analysis.</span>
+        </div>`;
+    }
+    return `<p class="world-empty-state">${
+      this.repositories.length
+        ? "Choose an available repository to build its authorized, size-aware file map."
+        : "A live, authorized repository is required before a three-dimensional map can run."
+    }</p>`;
+  }
+
+  renderRepositoryMapStatus() {
+    const explorer = this.$("[data-world-repo-explorer]");
+    if (explorer) explorer.innerHTML = this.repositoryMapStatusHTML();
+    this.updateRepositoryReviewMode();
+    if (this.repositoryView === "review" && this.pullReview?.state === "ready") {
+      window.requestAnimationFrame(() =>
+        this.setupPullReviewScrollTracking(),
+      );
+    }
+  }
+
   repositoryPanelHTML() {
     const repos = this.repositories.slice(0, 8);
     const catalogEmpty = this.repositoryCatalogState === "empty";
@@ -4269,7 +5979,13 @@ class ForkMeshWorld extends HTMLElement {
                 : repo.source === "external"
                   ? "Stub only"
                   : "Unavailable";
-            const meta = [repo.language, repo.mirrorCount ? `${repo.mirrorCount} mirrors` : ""]
+            const meta = [
+              repo.language,
+              repo.mirrorCount ? `${repo.mirrorCount} mirrors` : "",
+              Number.isSafeInteger(repo.pullCount)
+                ? `${compactNumber(repo.pullCount)} pull requests`
+                : "",
+            ]
               .filter(Boolean)
               .join(" · ");
             const external = safeHTTPURL(repo.externalUrl);
@@ -4324,11 +6040,7 @@ class ForkMeshWorld extends HTMLElement {
               </div>`
         }
         <div data-world-repo-explorer>
-          <p class="world-empty-state">${
-            repos.length
-              ? "Choose an available repository to build its authorized, size-aware file map."
-              : "A live, authorized repository is required before a three-dimensional map can run."
-          }</p>
+          ${this.repositoryMapStatusHTML()}
         </div>
       </div>`;
   }
@@ -5008,9 +6720,7 @@ class ForkMeshWorld extends HTMLElement {
               <article>
                 <span>${escapeHTML(region.phase)}</span>
                 <strong>${escapeHTML(region.label)}</strong>
-                <p>Visual offset ${region.utcOffsetHours >= 0 ? "+" : ""}${escapeHTML(
-                  region.utcOffsetHours,
-                )}h · events remain UTC-synchronized.</p>
+                <p>Walking here never changes your lighting. Events use the same UTC schedule everywhere.</p>
                 <button type="button" data-world-travel="${escapeHTML(
                   region.id,
                 )}">Teleport to campus</button>
@@ -5044,7 +6754,7 @@ class ForkMeshWorld extends HTMLElement {
       if (this.world?.travelToRegion(destination)) {
         const region = WORLD_REGIONS.find((item) => item.id === destination);
         this.toast(
-          `Arrived in ${region.label}. Its visual time is ${region.phase}; shared events remain UTC-synchronized.`,
+          `Arrived in ${region.label}. Your local light level is unchanged; shared events stay UTC-synchronized.`,
         );
         this.closeLandmark();
       }
@@ -5213,8 +6923,18 @@ class ForkMeshWorld extends HTMLElement {
       });
       this.events = normalizeCommunityEvents(payload);
       this.eventsState = this.events.length ? "ready" : "empty";
+      this.setLandmarkCapability(
+        "events",
+        Array.isArray(payload?.events),
+        LANDMARK_CONSTRUCTION_REASONS.events,
+      );
     } catch (_) {
       this.eventsState = "unavailable";
+      this.setLandmarkCapability(
+        "events",
+        false,
+        LANDMARK_CONSTRUCTION_REASONS.events,
+      );
     }
     this.updateNotificationBadge();
     this.announceWorldNotifications();
@@ -6256,34 +7976,183 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  async loadRepositoryEntityRecords(base, commit) {
-    const locations = [
-      { path: ".forkmesh/issues", kind: "issue", state: "" },
-      { path: ".forkmesh/issues/open", kind: "issue", state: "open" },
-      { path: ".forkmesh/issues/closed", kind: "issue", state: "closed" },
-      { path: "pulls", kind: "pull", state: "" },
-    ];
-    const results = await Promise.allSettled(
-      locations.map(({ path }) =>
-        this.fetchJSON(
-          `${base}/tree?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(
-            commit,
-          )}`,
-          { timeout: 9000, cache: "no-store" },
+  async resolveRepositoryPullMetadataCommit(base) {
+    const branches = await this.fetchJSON(`${base}/branches`, {
+      timeout: REPOSITORY_METADATA_TIMEOUT_MS,
+      cache: "no-store",
+    });
+    const branch = (Array.isArray(branches?.branches) ? branches.branches : [])
+      .map((candidate) => ({
+        name: String(candidate?.name || candidate?.ref || "")
+          .replace(/^refs\/heads\//, "")
+          .replace(/^refs\/remotes\/origin\//, ""),
+        commit: immutableGitOid(
+          candidate?.commit || candidate?.hash || candidate?.sha,
         ),
-      ),
+      }))
+      .find(
+        (candidate) =>
+          candidate.name === "forkmesh/pulls" && candidate.commit,
+      );
+    if (!branch) throw new Error("pull metadata branch unavailable");
+    return branch.commit;
+  }
+
+  async loadRepositoryPullRecords(base) {
+    const pullMetadataCommit =
+      await this.resolveRepositoryPullMetadataCommit(base);
+    const tree = await this.fetchJSON(
+      `${base}/tree?path=pulls&ref=${encodeURIComponent(
+        pullMetadataCommit,
+      )}`,
+      { timeout: REPOSITORY_METADATA_TIMEOUT_MS, cache: "no-store" },
     );
+    if (
+      tree?.ok === false ||
+      immutableGitOid(tree?.commit) !== pullMetadataCommit
+    ) {
+      throw new Error("pull metadata commit mismatch");
+    }
+    const numbered = (Array.isArray(tree?.entries) ? tree.entries : [])
+      .filter(
+        (entry) =>
+          ["tree", "directory"].includes(String(entry?.type || "")) &&
+          safePullNumber(entry?.name),
+      )
+      .map((entry) => safePullNumber(entry.name))
+      .sort((left, right) => right - left);
+    const selected = numbered.slice(0, 60);
+    const paths = selected.map((number) => `pulls/${number}/pull.md`);
+    let blobs = {};
+    if (paths.length) {
+      const query = new URLSearchParams();
+      paths.forEach((path) => query.append("path", path));
+      query.set("ref", pullMetadataCommit);
+      try {
+        const result = await this.fetchJSON(`${base}/blobs?${query}`, {
+          timeout: REPOSITORY_METADATA_TIMEOUT_MS,
+          cache: "no-store",
+        });
+        if (immutableGitOid(result?.commit) !== pullMetadataCommit) {
+          throw new Error("pull metadata batch commit mismatch");
+        }
+        blobs =
+          result?.blobs && typeof result.blobs === "object"
+            ? result.blobs
+            : {};
+      } catch (error) {
+        throw new Error(
+          error?.message || "pull metadata batch is unavailable",
+        );
+      }
+    }
+    let pullMetadataUnavailableCount = 0;
+    const pulls = selected.map((number) => {
+      const path = `pulls/${number}`;
+      const metadataBlob = blobs[`${path}/pull.md`];
+      const metadataText =
+        metadataBlob && metadataBlob?.ok !== false
+          ? repositoryBlobText(metadataBlob)
+          : "";
+      if (!metadataText.trim()) {
+        pullMetadataUnavailableCount += 1;
+        return {
+          number,
+          path,
+          state: "unknown",
+          title: "Metadata unavailable",
+          author: "Unknown",
+          base: "",
+          head: "",
+          createdAt: 0,
+          body: "",
+          creationBaseOid: "",
+          creationHeadOid: "",
+          metadataAvailable: false,
+        };
+      }
+      const parsed = parsePullFrontMatter(metadataText, number);
+      return {
+        number,
+        path,
+        state: parsed.status,
+        title: parsed.title,
+        author: parsed.author,
+        base: parsed.base,
+        head: parsed.head,
+        createdAt: parsed.createdAt,
+        body: parsed.body,
+        creationBaseOid: parsed.creationBaseOid,
+        creationHeadOid: parsed.creationHeadOid,
+        metadataAvailable: true,
+      };
+    });
+    return {
+      pullMetadataCommit,
+      pullsAvailable: true,
+      pullCount: numbered.length,
+      pullCountExact: tree?.truncated !== true,
+      pullTreeTruncated: tree?.truncated === true,
+      pullMetadataUnavailableCount,
+      pulls,
+    };
+  }
+
+  async loadRepositoryEntityRecords(base, commit, options = {}) {
+    const locations = [
+      { path: ".forkmesh/issues", state: "" },
+      { path: ".forkmesh/issues/open", state: "open" },
+      { path: ".forkmesh/issues/closed", state: "closed" },
+    ];
+    // Pulls have their own immutable metadata commit and are required for a
+    // truthful review surface. Resolve that short chain before lower-priority
+    // issue-layout probes can occupy every connection on a small mirror.
+    const pullResult =
+      options.pullResult?.status === "fulfilled" ||
+      options.pullResult?.status === "rejected"
+        ? options.pullResult
+        : options.privateRepository === true
+          ? {
+              status: "rejected",
+              reason: new Error("private pull metadata is not publicly probed"),
+            }
+          : await this.loadRepositoryPullRecords(base).then(
+              (value) => ({ status: "fulfilled", value }),
+              (reason) => ({ status: "rejected", reason }),
+            );
+    const issueResults = [];
+    const issueConcurrency = 2;
+    for (let offset = 0; offset < locations.length; offset += issueConcurrency) {
+      const batch = locations.slice(offset, offset + issueConcurrency);
+      issueResults.push(
+        ...(await Promise.allSettled(
+          batch.map(({ path }) =>
+            this.fetchJSON(
+              `${base}/tree?path=${encodeURIComponent(
+                path,
+              )}&ref=${encodeURIComponent(commit)}`,
+              {
+                // Issue layout is optional context. Never let its three legacy
+                // probes hold an otherwise complete PR review for the full
+                // two-mirror failover envelope.
+                timeout: 6000,
+                cache: "no-store",
+              },
+            ),
+          ),
+        )),
+      );
+    }
     const issues = new Map();
-    const pulls = new Map();
-    let matched = false;
-    results.forEach((result, index) => {
+    let issuesMatched = false;
+    issueResults.forEach((result, index) => {
       if (result.status !== "fulfilled" || result.value?.ok === false) return;
       const payload = result.value || {};
       const payloadCommit = String(
         payload.commit || payload.analysis?.commit || "",
       ).toLowerCase();
       if (payloadCommit !== commit) return;
-      matched = true;
+      issuesMatched = true;
       const location = locations[index];
       const entries = Array.isArray(payload.entries)
         ? payload.entries.slice(0, 80)
@@ -6299,112 +8168,330 @@ class ForkMeshWorld extends HTMLElement {
           path: `${location.path}/${number}`,
           state: location.state,
         };
-        if (location.kind === "issue") {
-          const previous = issues.get(number);
-          if (!previous || location.state) issues.set(number, record);
-        } else {
-          pulls.set(number, record);
-        }
+        const previous = issues.get(number);
+        if (!previous || location.state) issues.set(number, record);
       });
     });
+    const pullRecords =
+      pullResult.status === "fulfilled"
+        ? pullResult.value
+        : {
+            pullMetadataCommit: "",
+            pullsAvailable: false,
+            pullCount: 0,
+            pullCountExact: false,
+            pullTreeTruncated: false,
+            pullMetadataUnavailableCount: 0,
+            pulls: [],
+          };
     return {
       commit,
-      available: matched,
+      repositoryCommit: commit,
+      available: issuesMatched || pullRecords.pullsAvailable,
       issues: [...issues.values()]
         .sort((left, right) => right.number - left.number)
         .slice(0, 40),
-      pulls: [...pulls.values()]
-        .sort((left, right) => right.number - left.number)
-        .slice(0, 40),
+      ...pullRecords,
     };
   }
 
-  async loadRepositoryMap(owner, repo) {
-    const explorer = this.$("[data-world-repo-explorer]");
-    if (!explorer) return;
+  flagshipCatalogCommits() {
+    const commits = new Set();
+    this.repositories.forEach((record) => {
+      const source = String(record?.source || "").toLowerCase();
+      if (
+        String(record?.owner || "").toLowerCase() ===
+          FLAGSHIP_REPOSITORY.owner &&
+        String(record?.name || "").toLowerCase() === FLAGSHIP_REPOSITORY.repo &&
+        !record?.isPrivate &&
+        !record?.archived &&
+        ["local-node", "remote-clone", "organization-alias"].includes(source) &&
+        /^[0-9a-f]{40,64}$/.test(String(record?.commit || "")) &&
+        /^[0-9a-f]{64}$/.test(String(record?.stateHash || ""))
+      ) {
+        commits.add(String(record.commit).toLowerCase());
+      }
+    });
+    return commits;
+  }
+
+  async autoLoadFlagshipRepositoryMap() {
+    if (
+      this.destroyed ||
+      !this.world ||
+      this.repositoryCatalogState !== "ready" ||
+      this.repositoryManualSelection ||
+      this.activeRepository
+    ) {
+      return false;
+    }
+    const catalogCommits = this.flagshipCatalogCommits();
+    if (!catalogCommits.size) {
+      this.repositoryMapState = "unavailable";
+      this.repositoryMapTarget =
+        `${FLAGSHIP_REPOSITORY.owner}/${FLAGSHIP_REPOSITORY.repo}`;
+      this.world.updateRepositoryGraph?.([], []);
+      this.renderRepositoryMapStatus();
+      return false;
+    }
+    // Remove construction-only file shapes before the live request begins.
+    // The scene is repopulated only after every required response is pinned to
+    // one catalog-attested commit.
+    this.world.updateRepositoryGraph?.([], []);
+    return this.loadRepositoryMap(
+      FLAGSHIP_REPOSITORY.owner,
+      FLAGSHIP_REPOSITORY.repo,
+      {
+        automatic: true,
+        expectedCommits: catalogCommits,
+        requireComplete: true,
+      },
+    );
+  }
+
+  async fetchRepositoryMapSnapshot(owner, repo) {
     const safeOwner = sanitizePresenceText(owner, "", 40);
     const safeRepo = sanitizePresenceText(repo, "", 60);
-    if (!safeOwner || !safeRepo) return;
-    explorer.innerHTML = `<p class="world-empty-state">Loading authorized tree, size, contribution, and mirror metadata…</p>`;
     const base = `/api/repo/${encodeURIComponent(safeOwner)}/${encodeURIComponent(
       safeRepo,
     )}`;
-    let tree;
-    try {
-      tree = await this.fetchJSON(`${base}/tree?path=`, {
-        timeout: 12000,
-        cache: "no-store",
-      });
-    } catch (_) {
-      tree = null;
-    }
+    const tree = await this.fetchJSON(`${base}/tree?path=`, {
+      timeout: REPOSITORY_METADATA_TIMEOUT_MS,
+      cache: "no-store",
+    });
     if (!tree || tree?.ok === false) {
-      explorer.innerHTML = `
-        <div class="world-notice world-notice-warning">
-          <strong>Map unavailable</strong>
-          <span>The selected mirror is offline, still synchronizing, or requires an owner-authorized view token. ForkMesh does not probe private repositories.</span>
-        </div>`;
-      return;
+      throw new Error("repository tree unavailable");
     }
     const commit = String(
       tree.commit ||
         tree.analysis?.commit ||
         tree.latestCommit?.commit ||
         tree.latestCommit?.hash ||
-        "",
+      "",
     ).toLowerCase();
     if (!/^[0-9a-f]{40,64}$/.test(commit)) {
-      explorer.innerHTML = `
-        <div class="world-notice world-notice-warning">
-          <strong>Map unavailable</strong>
-          <span>The mirror did not attest one resolved commit for this tree, so ForkMesh declined to combine potentially mismatched analysis data.</span>
-        </div>`;
-      return;
+      throw new Error("repository tree commit unavailable");
     }
     const ref = `?ref=${encodeURIComponent(commit)}`;
+    const catalogRecord = this.repositories.find(
+      (record) =>
+        record.owner.toLowerCase() === safeOwner.toLowerCase() &&
+        record.name.toLowerCase() === safeRepo.toLowerCase(),
+    );
+    // Resolve the short immutable PR chain before sizes/stats and issue scans
+    // can contend for a one-vCPU mirror. This result is then injected into the
+    // entity loader, so the browser never repeats branches/tree/blobs.
+    const pullResult =
+      catalogRecord?.isPrivate === true
+        ? {
+            status: "rejected",
+            reason: new Error("private pull metadata is not publicly probed"),
+          }
+        : await this.loadRepositoryPullRecords(base).then(
+            (value) => ({ status: "fulfilled", value }),
+            (reason) => ({ status: "rejected", reason }),
+          );
     const [sizeResult, statsResult, mirrorsResult, entityRecordsResult] =
       await Promise.allSettled([
         this.fetchJSON(`${base}/sizes${ref}`, {
-          timeout: 12000,
+          timeout: REPOSITORY_METADATA_TIMEOUT_MS,
           cache: "no-store",
         }),
         this.fetchJSON(`${base}/stats${ref}`, {
-          timeout: 12000,
+          timeout: REPOSITORY_METADATA_TIMEOUT_MS,
           cache: "no-store",
         }),
         this.fetchJSON(`${base}/mirrors`, { auth: false }),
-        this.loadRepositoryEntityRecords(base, commit),
+        this.loadRepositoryEntityRecords(base, commit, {
+          privateRepository: catalogRecord?.isPrivate === true,
+          pullResult,
+        }),
       ]);
-    this.activeRepository = {
+    const sizes =
+      sizeResult.status === "fulfilled" &&
+      sizeResult.value?.ok !== false &&
+      String(sizeResult.value?.commit || "").toLowerCase() === commit
+        ? sizeResult.value
+        : null;
+    const stats =
+      statsResult.status === "fulfilled" &&
+      statsResult.value?.ok !== false &&
+      String(statsResult.value?.commit || "").toLowerCase() === commit
+        ? statsResult.value
+        : null;
+    const entityRecords =
+      entityRecordsResult.status === "fulfilled" &&
+      entityRecordsResult.value?.available === true &&
+      String(entityRecordsResult.value?.commit || "").toLowerCase() === commit
+        ? entityRecordsResult.value
+        : null;
+    const mirrorPayload =
+      mirrorsResult.status === "fulfilled" ? mirrorsResult.value : {};
+    const mirrorPullCounts = (
+      Array.isArray(mirrorPayload?.mirrors) ? mirrorPayload.mirrors : []
+    )
+      .map((mirror) => Number(mirror?.pullCount))
+      .filter(
+        (value) =>
+          Number.isSafeInteger(value) &&
+          value >= 0 &&
+          value <= 10_000_000,
+      );
+    const unanimousMirrorPullCount =
+      mirrorPullCounts.length > 0 &&
+      mirrorPullCounts.length ===
+        (Array.isArray(mirrorPayload?.mirrors)
+          ? mirrorPayload.mirrors.length
+          : 0) &&
+      new Set(mirrorPullCounts).size === 1
+        ? mirrorPullCounts[0]
+        : null;
+    const catalogPullCount = this.repositories.find(
+      (record) =>
+        record.owner.toLowerCase() === safeOwner.toLowerCase() &&
+        record.name.toLowerCase() === safeRepo.toLowerCase(),
+    )?.pullCount;
+    const pullCount =
+      entityRecords?.pullCountExact === true
+        ? entityRecords.pullCount
+        : unanimousMirrorPullCount ?? catalogPullCount ?? null;
+    const pullCountSource =
+      entityRecords?.pullCountExact === true
+        ? "metadata-tree"
+        : pullCount !== null
+          ? "signed-mirror-report"
+          : "unavailable";
+    const snapshot = {
       owner: safeOwner,
       repo: safeRepo,
       path: "",
       commit,
       analysis: tree.analysis || {},
       entries: normalizeTreeEntries(tree),
-      counts: tree?.counts || {},
-      sizes:
-        sizeResult.status === "fulfilled" &&
-        String(sizeResult.value?.commit || "").toLowerCase() === commit
-          ? sizeResult.value
-          : {},
-      stats:
-        statsResult.status === "fulfilled" &&
-        String(statsResult.value?.commit || "").toLowerCase() === commit
-          ? statsResult.value
-          : {},
-      mirrors: mirrorsResult.status === "fulfilled" ? mirrorsResult.value : {},
-      entityRecords:
-        entityRecordsResult.status === "fulfilled"
-          ? entityRecordsResult.value
-          : { commit, available: false, issues: [], pulls: [] },
+      counts: {
+        ...(tree?.counts || {}),
+        pulls: pullCount,
+      },
+      pullCount,
+      pullCountSource,
+      isPrivate: catalogRecord?.isPrivate === true,
+      sizes: sizes || {},
+      stats: stats || {},
+      mirrors: mirrorPayload,
+      entityRecords: entityRecords || {
+        commit,
+        repositoryCommit: commit,
+        available: false,
+        pullMetadataCommit: "",
+        pullsAvailable: false,
+        pullCount: 0,
+        pullCountExact: false,
+        pullTreeTruncated: false,
+        pullMetadataUnavailableCount: 0,
+        issues: [],
+        pulls: [],
+      },
     };
-    this.renderRepositoryExplorer();
+    return {
+      snapshot,
+      complete:
+        snapshot.entries.length > 0 &&
+        Boolean(sizes) &&
+        Boolean(stats) &&
+        Boolean(entityRecords),
+    };
+  }
+
+  async loadRepositoryMap(owner, repo, options = {}) {
+    const safeOwner = sanitizePresenceText(owner, "", 40);
+    const safeRepo = sanitizePresenceText(repo, "", 60);
+    if (!safeOwner || !safeRepo) return false;
+    const key = `${safeOwner.toLowerCase()}/${safeRepo.toLowerCase()}`;
+    const automatic = options.automatic === true;
+    if (automatic && (this.repositoryManualSelection || this.activeRepository)) {
+      return false;
+    }
+    if (!automatic) this.repositoryManualSelection = key;
+    if (
+      this.repositoryMapState === "ready" &&
+      this.activeRepository?.owner.toLowerCase() === safeOwner.toLowerCase() &&
+      this.activeRepository?.repo.toLowerCase() === safeRepo.toLowerCase()
+    ) {
+      this.repositoryView = "map";
+      this.pullReview = null;
+      this.pullReviewSelection += 1;
+      this.clearPullReviewScrollTracking();
+      this.renderRepositoryMapStatus();
+      return true;
+    }
+
+    this.repositoryView = "map";
+    this.pullReview = null;
+    this.pullReviewSelection += 1;
+    this.clearPullReviewScrollTracking();
+    const selection = ++this.repositoryMapSelection;
+    this.repositoryMapState = "loading";
+    this.repositoryMapTarget = `${safeOwner}/${safeRepo}`;
+    this.renderRepositoryMapStatus();
+
+    let request = this.repositoryMapLoads.get(key);
+    if (!request) {
+      request = this.fetchRepositoryMapSnapshot(safeOwner, safeRepo);
+      this.repositoryMapLoads.set(key, request);
+      request.then(
+        () => {
+          if (this.repositoryMapLoads.get(key) === request) {
+            this.repositoryMapLoads.delete(key);
+          }
+        },
+        () => {
+          if (this.repositoryMapLoads.get(key) === request) {
+            this.repositoryMapLoads.delete(key);
+          }
+        },
+      );
+    }
+
+    let result;
+    try {
+      result = await request;
+    } catch (_) {
+      if (selection !== this.repositoryMapSelection || this.destroyed) {
+        return false;
+      }
+      this.repositoryMapState = "unavailable";
+      if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
+      this.renderRepositoryMapStatus();
+      return false;
+    }
+    if (selection !== this.repositoryMapSelection || this.destroyed) {
+      return false;
+    }
+
+    const expectedCommits =
+      options.expectedCommits instanceof Set
+        ? options.expectedCommits
+        : new Set();
+    if (
+      (options.requireComplete === true && !result.complete) ||
+      (expectedCommits.size &&
+        !expectedCommits.has(String(result.snapshot.commit).toLowerCase()))
+    ) {
+      this.repositoryMapState = "unavailable";
+      if (!this.activeRepository) this.world?.updateRepositoryGraph?.([], []);
+      this.renderRepositoryMapStatus();
+      return false;
+    }
+
+    this.activeRepository = result.snapshot;
+    this.repositoryMapState = "ready";
+    this.renderRepositoryMapStatus();
     this.world?.updateRepositoryGraph?.(
       this.activeRepository.entries,
       buildRepositoryGraphEntities(this.activeRepository),
     );
-    this.loadRepositorySecurity(safeOwner, safeRepo, false);
+    void this.loadRepositorySecurity(safeOwner, safeRepo, false);
+    return true;
   }
 
   async loadRepositorySecurity(owner, repo, openPanel = true) {
@@ -6568,7 +8655,1010 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
+  repositoryPullRecords(active = this.activeRepository) {
+    const records =
+      active?.entityRecords && typeof active.entityRecords === "object"
+        ? active.entityRecords
+        : {};
+    const metadataCommit = immutableGitOid(records.pullMetadataCommit);
+    if (
+      active?.isPrivate === true ||
+      records.pullsAvailable !== true ||
+      !metadataCommit ||
+      !Array.isArray(records.pulls)
+    ) {
+      return [];
+    }
+    return records.pulls
+      .map((record) => {
+        const number = safePullNumber(record?.number);
+        if (!number) return null;
+        const state = ["open", "closed", "merged", "unknown"].includes(
+          String(record?.state || "").toLowerCase(),
+        )
+          ? String(record.state).toLowerCase()
+          : "unknown";
+        return {
+          ...record,
+          number,
+          state,
+          title: sanitizePresenceText(
+            record?.title,
+            `Pull request #${number}`,
+            240,
+          ),
+          author: sanitizePresenceText(record?.author, "Unknown", 100),
+          base: sanitizePresenceText(record?.base, "main", 160),
+          head: sanitizePresenceText(record?.head, "", 160),
+          metadataAvailable: record?.metadataAvailable !== false,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.number - left.number)
+      .slice(0, 60);
+  }
+
+  repositoryPullCount(active = this.activeRepository) {
+    const candidates = [
+      active?.pullCount,
+      active?.counts?.pulls,
+      active?.entityRecords?.pullCountExact === true
+        ? active.entityRecords.pullCount
+        : null,
+    ];
+    for (const candidate of candidates) {
+      const value = Number(candidate);
+      if (
+        Number.isSafeInteger(value) &&
+        value >= 0 &&
+        value <= 10_000_000
+      ) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  repositoryPullCountLabel(active = this.activeRepository) {
+    const count = this.repositoryPullCount(active);
+    if (count === null) return "Pull-request count unavailable";
+    const source =
+      active?.pullCountSource === "metadata-tree"
+        ? "exact metadata tree"
+        : active?.pullCountSource === "signed-mirror-report"
+          ? "matching signed mirror reports"
+          : "authorized repository metadata";
+    return `${compactNumber(count)} pull request${
+      count === 1 ? "" : "s"
+    } · ${source}`;
+  }
+
+  repositoryPullListHTML(active) {
+    const records = this.repositoryPullRecords(active);
+    const metadataCommit = immutableGitOid(
+      active?.entityRecords?.pullMetadataCommit,
+    );
+    const available =
+      active?.isPrivate !== true &&
+      active?.entityRecords?.pullsAvailable === true &&
+      Boolean(metadataCommit);
+    const count = this.repositoryPullCount(active);
+    return `
+      <section class="world-pull-list-panel" aria-labelledby="world-pull-list-title">
+        <header class="world-pull-panel-heading">
+          <button type="button" data-world-pull-back="map">← Code map</button>
+          <div>
+            <span>IN-WORLD REVIEW</span>
+            <h3 id="world-pull-list-title">${escapeHTML(
+              active.owner,
+            )}/${escapeHTML(active.repo)} pull requests</h3>
+            <small>${escapeHTML(this.repositoryPullCountLabel(active))}</small>
+          </div>
+        </header>
+        ${
+          available
+            ? `<p class="world-pull-pin">Record index and files are read from immutable <code>${escapeHTML(
+                metadataCommit,
+              )}</code>. ForkMesh never substitutes <code>main</code> or an unpinned ref.</p>`
+            : ""
+        }
+        <div class="world-pull-records" data-world-pull-state="${
+          available ? (records.length ? "ready" : "empty") : "unavailable"
+        }">
+          ${
+            available && records.length
+              ? records
+                  .map((record) => {
+                    const rawTime = Number(record.createdAt || 0);
+                    const timestamp =
+                      rawTime > 0 && rawTime < 1_000_000_000_000
+                        ? rawTime * 1000
+                        : rawTime;
+                    const date = Number.isFinite(timestamp) && timestamp > 0
+                      ? new Date(timestamp).toLocaleDateString()
+                      : "";
+                    const content = `
+                      <span>
+                        <strong>#${record.number} · ${escapeHTML(
+                          record.title,
+                        )}</strong>
+                        <small>${escapeHTML(
+                          [
+                            record.author,
+                            record.base && record.head
+                              ? `${record.base} ← ${record.head}`
+                              : "",
+                            date,
+                          ]
+                            .filter(Boolean)
+                            .join(" · "),
+                        )}</small>
+                      </span>
+                      <em data-pull-state="${escapeHTML(
+                        record.state,
+                      )}">${escapeHTML(record.state)}</em>
+                    `;
+                    return record.metadataAvailable
+                      ? `<button type="button" data-world-pull-open data-world-pull-number="${record.number}">${content}</button>`
+                      : `<div class="world-pull-record-unavailable" aria-label="Pull request #${record.number} metadata unavailable">${content}</div>`;
+                  })
+                  .join("")
+              : available
+                ? `<p class="world-empty-state">The pinned metadata tree contains no pull-request records.</p>`
+                : `<div class="world-notice world-notice-warning">
+                    <strong>Pull-request records unavailable</strong>
+                    <span>${
+                      active?.isPrivate === true
+                        ? "Private repositories are not probed through the public pull-metadata branch. Missing and unauthorized repositories remain indistinguishable."
+                        : `The exact forkmesh/pulls commit could not be verified${
+                            count === null
+                              ? ""
+                              : `, although ${compactNumber(
+                                  count,
+                                )} was reported`
+                          }. No main-branch, guessed-ref, or repository-name probe was attempted.`
+                    }</span>
+                  </div>`
+          }
+        </div>
+        ${
+          active?.entityRecords?.pullTreeTruncated === true
+            ? `<p class="world-panel-footnote">The mirror bounded this metadata listing. Only returned records are shown; ForkMesh does not invent the missing entries.</p>`
+            : records.length >= 60
+              ? `<p class="world-panel-footnote">Showing the newest 60 records from the pinned metadata tree.</p>`
+              : Number(
+                    active?.entityRecords?.pullMetadataUnavailableCount || 0,
+                  ) > 0
+                ? `<p class="world-panel-footnote">${compactNumber(
+                    active.entityRecords.pullMetadataUnavailableCount,
+                  )} pull-request record${
+                    active.entityRecords.pullMetadataUnavailableCount === 1
+                      ? " is"
+                      : "s are"
+                  } listed by the tree but ${
+                    active.entityRecords.pullMetadataUnavailableCount === 1
+                      ? "its metadata is"
+                      : "their metadata are"
+                  } unavailable. ${
+                    active.entityRecords.pullMetadataUnavailableCount === 1
+                      ? "It is"
+                      : "They are"
+                  } not labeled open.</p>`
+              : ""
+        }
+      </section>`;
+  }
+
+  pullViewedSet(active, review) {
+    const key = pullViewedStateKey(
+      active?.owner,
+      active?.repo,
+      review?.metadataCommit,
+      review?.number,
+    );
+    if (!key) return new Set();
+    if (!this.pullViewedFiles.has(key)) {
+      this.pullViewedFiles.set(key, new Set());
+    }
+    return this.pullViewedFiles.get(key);
+  }
+
+  pullFileTreeHTML(nodes, viewed, depth = 0) {
+    if (!Array.isArray(nodes) || !nodes.length) return "";
+    return `<ul>${nodes
+      .map((node) => {
+        if (node.kind === "directory") {
+          return `<li class="world-pull-tree-directory">
+            <span style="--pull-tree-depth:${Math.min(depth, 12)}">▾ ${escapeHTML(
+              node.name,
+            )}</span>
+            ${this.pullFileTreeHTML(node.children, viewed, depth + 1)}
+          </li>`;
+        }
+        const isViewed = viewed.has(node.path);
+        return `<li>
+          <button type="button"
+            style="--pull-tree-depth:${Math.min(depth, 12)}"
+            data-world-pull-file-path="${escapeHTML(node.path)}"
+            data-viewed="${isViewed}"
+            aria-label="${isViewed ? "Viewed" : "Review"} ${escapeHTML(
+              node.path,
+            )}">
+            <span aria-hidden="true">${escapeHTML(
+              node.status === "added"
+                ? "+"
+                : node.status === "deleted"
+                  ? "−"
+                  : node.status === "renamed"
+                    ? "↪"
+                    : "◇",
+            )}</span>
+            <strong>${escapeHTML(node.name)}</strong>
+            <small>+${compactNumber(node.additions)} −${compactNumber(
+              node.deletions,
+            )}</small>
+            <em data-world-pull-viewed aria-label="${
+              isViewed ? "Viewed" : "Not viewed"
+            }">${isViewed ? "✓" : "○"}</em>
+          </button>
+        </li>`;
+      })
+      .join("")}</ul>`;
+  }
+
+  pullDiffRowsHTML(file) {
+    if (file.binary) {
+      return `<p class="world-pull-binary">Binary change · content is not rendered in the World.</p>`;
+    }
+    if (!file.rows.length) {
+      return `<p class="world-empty-state">No textual diff rows were returned for this file.</p>`;
+    }
+    return `<div class="world-pull-diff-table" role="table" aria-label="${escapeHTML(
+      file.path,
+    )} unified diff">${file.rows
+      .map((row) => {
+        if (row.type === "hunk") {
+          return `<div class="world-pull-diff-row is-hunk" role="row">
+            <span role="cell"></span><span role="cell"></span><code role="cell">${escapeHTML(
+              row.text,
+            )}</code>
+          </div>`;
+        }
+        const marker =
+          row.type === "add"
+            ? "+"
+            : row.type === "delete"
+              ? "−"
+              : row.type === "meta"
+                ? "\\"
+                : " ";
+        return `<div class="world-pull-diff-row is-${escapeHTML(
+          row.type,
+        )}" role="row">
+          <span role="cell">${row.oldLine ?? ""}</span>
+          <span role="cell">${row.newLine ?? ""}</span>
+          <code role="cell"><b aria-hidden="true">${marker}</b>${escapeHTML(
+            row.text,
+          )}</code>
+        </div>`;
+      })
+      .join("")}</div>`;
+  }
+
+  repositoryPullMergeHTML(active, review) {
+    const merge = review?.merge || { state: "idle" };
+    const state = String(merge.state || "idle");
+    const context = exactPullMergeContext(active, review);
+    const session = validWorldSession();
+    const terminalCopy = {
+      merged: {
+        title: "Merged and published",
+        body: "The selected mirror confirmed both the merge and publication. The repository map is being refreshed from the published commit.",
+      },
+      conflict: {
+        title: "Merge conflict",
+        body: "The exact reviewed commits do not merge cleanly. No branch or pull-metadata ref was changed.",
+      },
+      stale: {
+        title: "Review is stale",
+        body: "The base, head, or pull-metadata commit changed. ForkMesh refused to substitute a newer ref or merge different code.",
+      },
+      forbidden: {
+        title: "Merge not authorized",
+        body: "This signed-in account is not authorized as the repository owner, node owner, or an organization writer.",
+      },
+      unauthenticated: {
+        title: "Session no longer valid",
+        body: "Sign in again before requesting a merge. No bearer token is placed in the URL or page content.",
+      },
+      pending: {
+        title: "Merge still processing",
+        body: "Bounded automatic polling ended. Checking again reuses the same idempotency request and cannot create a second merge job.",
+      },
+      failed: {
+        title: "Merge status unavailable",
+        body: "ForkMesh could not verify a terminal result. Checking again safely reuses the same idempotency request.",
+      },
+    };
+    if (terminalCopy[state]) {
+      const details = terminalCopy[state];
+      const retry =
+        session &&
+        context &&
+        ["pending", "failed"].includes(state) &&
+        buildPullMergeRequest(context, merge.requestId);
+      return `<section class="world-pull-merge-panel" data-world-pull-merge-state="${escapeHTML(
+        state,
+      )}" aria-live="${state === "merged" ? "polite" : "assertive"}" aria-atomic="true" role="${
+        ["conflict", "stale", "forbidden", "unauthenticated", "failed"].includes(
+          state,
+        )
+          ? "alert"
+          : "status"
+      }">
+        <div>
+          <span>PROTECTED MERGE</span>
+          <strong>${escapeHTML(details.title)}</strong>
+          <small id="world-pull-merge-status">${escapeHTML(details.body)}</small>
+        </div>
+        ${
+          retry
+            ? `<button type="button" data-world-pull-merge aria-describedby="world-pull-merge-status">Check merge status</button>`
+            : ""
+        }
+      </section>`;
+    }
+    if (!session) {
+      return `<p class="world-panel-footnote">Sign in to request a protected in-World merge. Review remains available without opening another tab.</p>`;
+    }
+    if (!context) {
+      return `<div class="world-notice world-notice-warning" data-world-pull-merge-state="unavailable">
+        <strong>Commit-checked merge unavailable</strong>
+        <span>The open pull request must expose matching, immutable base, head, and pull-metadata object IDs before a merge control can appear.</span>
+      </div>`;
+    }
+    const processing = state === "processing";
+    return `<section class="world-pull-merge-panel" data-world-pull-merge-state="${processing ? "processing" : "ready"}" aria-live="polite" aria-atomic="true" aria-busy="${processing}" role="status">
+      <div>
+        <span>PROTECTED MERGE</span>
+        <strong>${processing ? "Merge requested" : "Exact commits verified"}</strong>
+        <small id="world-pull-merge-status">${
+          processing
+            ? "The selected mirror is checking and publishing this idempotent request."
+            : "The request will be pinned to the reviewed base, head, and pull-metadata commits. Authorization is enforced by the protected endpoint."
+        }</small>
+      </div>
+      <button type="button" data-world-pull-merge aria-describedby="world-pull-merge-status" ${
+        processing ? "disabled" : ""
+      }>${processing ? "Merging and publishing…" : `Merge pull request #${context.number}`}</button>
+    </section>`;
+  }
+
+  repositoryPullReviewHTML(active) {
+    const review = this.pullReview || { state: "unavailable" };
+    const back = `
+      <header class="world-pull-panel-heading">
+        <button type="button" data-world-pull-back="list">← Pull requests</button>
+        <div>
+          <span>IN-WORLD REVIEW</span>
+          <h3 id="world-pull-review-title">Pull request #${escapeHTML(
+            safePullNumber(review.number) || "",
+          )}</h3>
+        </div>
+      </header>`;
+    if (review.state === "loading") {
+      return `<section class="world-pull-review" aria-labelledby="world-pull-review-title">
+        ${back}
+        <p class="world-empty-state" role="status">Loading the metadata record and patch from exact commit ${escapeHTML(
+          String(review.metadataCommit || "").slice(0, 12),
+        )}…</p>
+      </section>`;
+    }
+    if (review.state !== "ready") {
+      return `<section class="world-pull-review" aria-labelledby="world-pull-review-title">
+        ${back}
+        <div class="world-notice world-notice-warning" data-world-pull-detail data-world-pull-state="unavailable">
+          <strong>Pull-request review unavailable</strong>
+          <span>${escapeHTML(
+            review.message ||
+              "The exact metadata record and patch could not be verified. No alternate branch or external page was opened.",
+          )}</span>
+        </div>
+      </section>`;
+    }
+    const viewed = this.pullViewedSet(active, review);
+    const files = Array.isArray(review.diff?.files)
+      ? review.diff.files
+      : [];
+    const fileTree = buildPullFileTree(files);
+    const metadata = review.metadata || {};
+    return `
+      <section class="world-pull-review" aria-labelledby="world-pull-review-title" data-world-pull-detail data-world-pull-review-key="${escapeHTML(
+        pullViewedStateKey(
+          active.owner,
+          active.repo,
+          review.metadataCommit,
+          review.number,
+        ),
+      )}">
+        ${back}
+        <div class="world-pull-review-summary">
+          <div>
+            <strong>${escapeHTML(
+              metadata.title || `Pull request #${review.number}`,
+            )}</strong>
+            <span>${escapeHTML(
+              [
+                metadata.status || "unknown",
+                metadata.author,
+                metadata.base && metadata.head
+                  ? `${metadata.base} ← ${metadata.head}`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" · "),
+            )}</span>
+          </div>
+          <div>
+            <span><strong>${compactNumber(files.length)}</strong> files</span>
+            <span><strong>+${compactNumber(
+              review.diff?.additions || 0,
+            )}</strong> additions</span>
+            <span><strong>−${compactNumber(
+              review.diff?.deletions || 0,
+            )}</strong> deletions</span>
+            <span data-world-pull-viewed-summary>${compactNumber(
+              viewed.size,
+            )} of ${compactNumber(files.length)} files viewed</span>
+          </div>
+        </div>
+        ${
+          metadata.body
+            ? `<p class="world-pull-description">${escapeHTML(
+                metadata.body,
+              )}</p>`
+            : ""
+        }
+        <p class="world-pull-pin">Metadata and committed patch pinned to <code>${escapeHTML(
+          review.metadataCommit,
+        )}</code>${
+          review.patchSource === "immutable-compare"
+            ? "; the patch was reconstructed only from the two immutable creation OIDs"
+            : ""
+        }. Viewed checks live only in memory for this page.</p>
+        ${
+          review.diff?.truncated
+            ? `<div class="world-notice world-notice-warning"><strong>Diff bounded for safe display</strong><span>The World rendered a compact subset. Review the full signed change with a trusted Git client before deciding.</span></div>`
+            : ""
+        }
+        ${
+          files.length
+            ? `<div class="world-pull-review-layout">
+                <nav class="world-pull-file-tree" aria-label="Changed files">
+                  ${this.pullFileTreeHTML(fileTree, viewed)}
+                </nav>
+                <div class="world-pull-diff" data-world-pull-diff tabindex="0" aria-label="Unified code diff">
+                  ${files
+                    .map(
+                      (file) => `
+                        <article class="world-pull-diff-file"
+                          id="${escapeHTML(file.id)}"
+                          tabindex="-1"
+                          data-world-pull-diff-file
+                          data-world-pull-file="${escapeHTML(file.path)}"
+                          data-viewed="${viewed.has(file.path)}">
+                          <header>
+                            <strong>${escapeHTML(file.path)}</strong>
+                            <span>${escapeHTML(file.status)} · +${compactNumber(
+                              file.additions,
+                            )} −${compactNumber(file.deletions)}</span>
+                          </header>
+                          ${this.pullDiffRowsHTML(file)}
+                          <span class="world-pull-file-end" data-world-pull-file-end="${escapeHTML(
+                            file.path,
+                          )}" aria-hidden="true"></span>
+                        </article>`,
+                    )
+                    .join("")}
+                </div>
+              </div>`
+            : `<div class="world-notice">
+                <strong>No textual patch is committed for this pull request</strong>
+                <span>The World will not invent a diff or silently read a moving branch. Use a trusted Git client to inspect branch-backed changes.</span>
+              </div>`
+        }
+        ${this.repositoryPullMergeHTML(active, review)}
+      </section>`;
+  }
+
+  updateRepositoryReviewMode() {
+    const detail = this.$("[data-world-detail]");
+    if (!detail) return;
+    detail.dataset.repositoryReview = String(
+      detail.dataset.openLandmark === "repositories" &&
+        this.repositoryView === "review",
+    );
+  }
+
+  clearPullReviewScrollTracking() {
+    if (typeof this.pullReviewScrollCleanup === "function") {
+      this.pullReviewScrollCleanup();
+    }
+    this.pullReviewScrollCleanup = null;
+  }
+
+  setupPullReviewScrollTracking() {
+    this.clearPullReviewScrollTracking();
+    const scroller = this.$("[data-world-pull-diff]");
+    if (!scroller || this.pullReview?.state !== "ready") return;
+    const onScroll = () => this.markVisiblePullFilesViewed();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    this.pullReviewScrollCleanup = () =>
+      scroller.removeEventListener("scroll", onScroll);
+  }
+
+  markVisiblePullFilesViewed() {
+    const scroller = this.$("[data-world-pull-diff]");
+    if (!scroller) return;
+    const rootBounds = scroller.getBoundingClientRect();
+    scroller.querySelectorAll("[data-world-pull-file-end]").forEach((marker) => {
+      const bounds = marker.getBoundingClientRect();
+      if (
+        bounds.top >= rootBounds.top &&
+        bounds.top <= rootBounds.bottom
+      ) {
+        this.markPullFileViewed(marker.dataset.worldPullFileEnd);
+      }
+    });
+  }
+
+  markPullFileViewed(path) {
+    const safePath = safeDiffPath(path);
+    if (!safePath || this.pullReview?.state !== "ready") return;
+    const viewed = this.pullViewedSet(this.activeRepository, this.pullReview);
+    if (viewed.has(safePath)) return;
+    viewed.add(safePath);
+    this.$$("[data-world-pull-file-path]").forEach((button) => {
+      if (button.dataset.worldPullFilePath !== safePath) return;
+      button.dataset.viewed = "true";
+      button.setAttribute("aria-label", `Viewed ${safePath}`);
+      const icon = button.querySelector("[data-world-pull-viewed]");
+      if (icon) {
+        icon.textContent = "✓";
+        icon.setAttribute("aria-label", "Viewed");
+      }
+    });
+    this.$$("[data-world-pull-diff-file]").forEach((section) => {
+      if (section.dataset.worldPullFile === safePath) {
+        section.dataset.viewed = "true";
+      }
+    });
+    const summary = this.$("[data-world-pull-viewed-summary]");
+    const total = this.pullReview.diff?.files?.length || 0;
+    if (summary) {
+      summary.textContent = `${compactNumber(viewed.size)} of ${compactNumber(
+        total,
+      )} files viewed`;
+    }
+  }
+
+  scrollToPullFile(path) {
+    const safePath = safeDiffPath(path);
+    if (!safePath) return;
+    const section = this.$$("[data-world-pull-diff-file]").find(
+      (candidate) => candidate.dataset.worldPullFile === safePath,
+    );
+    if (!section) return;
+    section.scrollIntoView({ behavior: "smooth", block: "start" });
+    section.focus({ preventScroll: true });
+    this.markPullFileViewed(safePath);
+  }
+
+  async requestRepositoryPullMerge(path, body, sessionToken) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${sessionToken}`,
+          "content-type": "application/json",
+        },
+        credentials: "same-origin",
+        cache: "no-store",
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const announced = Number(response.headers.get("content-length") || 0);
+      if (
+        Number.isFinite(announced) &&
+        announced > WORLD_PULL_MERGE_RESPONSE_MAX_BYTES
+      ) {
+        throw new Error("merge response too large");
+      }
+      const raw = await response.text();
+      const size =
+        typeof TextEncoder === "function"
+          ? new TextEncoder().encode(raw).byteLength
+          : raw.length;
+      if (size > WORLD_PULL_MERGE_RESPONSE_MAX_BYTES) {
+        throw new Error("merge response too large");
+      }
+      let payload = {};
+      try {
+        payload = JSON.parse(raw);
+      } catch (_) {}
+      return {
+        httpStatus: response.status,
+        payload:
+          payload && typeof payload === "object" && !Array.isArray(payload)
+            ? payload
+            : {},
+      };
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  classifyRepositoryPullMergeResponse(response, request) {
+    const httpStatus = Number(response?.httpStatus) || 0;
+    const payload =
+      response?.payload && typeof response.payload === "object"
+        ? response.payload
+        : {};
+    const error = String(payload.error || "");
+    if (httpStatus === 401 || error === "invalid_session") {
+      return { state: "unauthenticated" };
+    }
+    if (httpStatus === 403 || error === "forbidden") {
+      return { state: "forbidden" };
+    }
+    if (error === "merge_conflict") return { state: "conflict" };
+    if (
+      [
+        "stale_base",
+        "stale_head",
+        "stale_pull_metadata",
+        "pull_not_found",
+        "pull_not_open",
+        "unsupported_pull",
+      ].includes(error)
+    ) {
+      return { state: "stale" };
+    }
+    if (
+      httpStatus === 202 &&
+      payload.ok === true &&
+      payload.status === "processing" &&
+      payload.requestId === request.requestId
+    ) {
+      return { state: "processing" };
+    }
+    const baseAfter = immutableGitOid(payload.baseAfter);
+    const pullsAfter = immutableGitOid(payload.pullsAfter);
+    if (
+      httpStatus === 200 &&
+      payload.ok === true &&
+      payload.status === "merged" &&
+      payload.published === true &&
+      payload.requestId === request.requestId &&
+      immutableGitOid(payload.baseBefore) === request.expectedBaseOid &&
+      immutableGitOid(payload.head) === request.expectedHeadOid &&
+      immutableGitOid(payload.pullsBefore) === request.expectedPullsOid &&
+      baseAfter &&
+      pullsAfter &&
+      baseAfter.length === request.expectedBaseOid.length &&
+      pullsAfter.length === request.expectedPullsOid.length
+    ) {
+      return {
+        state: "merged",
+        published: true,
+        baseAfter,
+        pullsAfter,
+      };
+    }
+    return { state: "failed" };
+  }
+
+  async reloadRepositoryAfterPublishedPullMerge(active, review, mergeResult) {
+    if (
+      mergeResult?.state !== "merged" ||
+      mergeResult?.published !== true ||
+      !immutableGitOid(mergeResult.baseAfter)
+    ) {
+      return false;
+    }
+    let result;
+    try {
+      result = await this.fetchRepositoryMapSnapshot(active.owner, active.repo);
+    } catch (_) {
+      return false;
+    }
+    if (
+      this.destroyed ||
+      this.pullReview !== review ||
+      this.activeRepository?.owner !== active.owner ||
+      this.activeRepository?.repo !== active.repo ||
+      immutableGitOid(result?.snapshot?.commit) !== mergeResult.baseAfter
+    ) {
+      return false;
+    }
+    this.activeRepository = result.snapshot;
+    this.repositoryMapState = "ready";
+    this.renderRepositoryMapStatus();
+    this.world?.updateRepositoryGraph?.(
+      this.activeRepository.entries,
+      buildRepositoryGraphEntities(this.activeRepository),
+    );
+    void this.loadRepositorySecurity(active.owner, active.repo, false);
+    return true;
+  }
+
+  async mergeRepositoryPull() {
+    const active = this.activeRepository;
+    const review = this.pullReview;
+    const context = exactPullMergeContext(active, review);
+    const session = validWorldSession();
+    if (!active || !review || !context || !session) return;
+    if (
+      ["processing", "merged", "conflict", "stale", "forbidden", "unauthenticated"].includes(
+        String(review.merge?.state || ""),
+      )
+    ) {
+      return;
+    }
+    const existingRequest = buildPullMergeRequest(
+      context,
+      review.merge?.requestId,
+    );
+    const requestId =
+      existingRequest?.requestId || createPullMergeRequestId();
+    const request = buildPullMergeRequest(context, requestId);
+    if (!request) {
+      review.merge = { state: "failed", requestId: "" };
+      this.renderRepositoryExplorer();
+      return;
+    }
+    const endpoint = `/api/repo/${encodeURIComponent(
+      active.owner,
+    )}/${encodeURIComponent(active.repo)}/pulls/${context.number}/merge`;
+    const selection = this.pullReviewSelection;
+    const stillCurrent = () =>
+      !this.destroyed &&
+      selection === this.pullReviewSelection &&
+      this.pullReview === review;
+    review.merge = { state: "processing", requestId };
+    this.renderRepositoryExplorer();
+
+    for (let attempt = 0; attempt < WORLD_PULL_MERGE_MAX_REQUESTS; attempt += 1) {
+      if (!stillCurrent()) return;
+      if (validWorldSession()?.sessionToken !== session.sessionToken) {
+        review.merge = { state: "unauthenticated", requestId };
+        this.renderRepositoryExplorer();
+        return;
+      }
+      let response;
+      try {
+        response = await this.requestRepositoryPullMerge(
+          endpoint,
+          request,
+          session.sessionToken,
+        );
+      } catch (_) {
+        if (!stillCurrent()) return;
+        review.merge = { state: "failed", requestId };
+        this.renderRepositoryExplorer();
+        return;
+      }
+      if (!stillCurrent()) return;
+      const result = this.classifyRepositoryPullMergeResponse(response, request);
+      if (result.state === "processing") {
+        if (attempt + 1 >= WORLD_PULL_MERGE_MAX_REQUESTS) {
+          review.merge = { state: "pending", requestId };
+          this.renderRepositoryExplorer();
+          return;
+        }
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, WORLD_PULL_MERGE_POLL_MS),
+        );
+        continue;
+      }
+      review.merge = { ...result, requestId };
+      this.renderRepositoryExplorer();
+      if (result.state === "merged" && result.published === true) {
+        this.toast("Pull request merged and published.");
+        await this.reloadRepositoryAfterPublishedPullMerge(
+          active,
+          review,
+          result,
+        );
+      }
+      return;
+    }
+  }
+
+  openRepositoryPullList() {
+    if (!this.activeRepository) return;
+    this.repositoryView = "list";
+    this.clearPullReviewScrollTracking();
+    if (
+      this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+    ) {
+      this.openLandmark("repositories");
+      return;
+    }
+    this.renderRepositoryExplorer();
+  }
+
+  async fetchRepositoryPullReview(active, record, metadataCommit) {
+    if (active?.isPrivate === true) {
+      throw new Error(
+        "Private repositories are not probed through the public pull-metadata branch.",
+      );
+    }
+    const number = safePullNumber(record?.number);
+    if (!number || !immutableGitOid(metadataCommit)) {
+      throw new Error("The exact pull metadata commit is unavailable.");
+    }
+    const base = `/api/repo/${encodeURIComponent(
+      active.owner,
+    )}/${encodeURIComponent(active.repo)}`;
+    const metadataPath = `pulls/${number}/pull.md`;
+    const patchPath = `pulls/${number}/changes.patch`;
+    const query = new URLSearchParams();
+    query.append("path", metadataPath);
+    query.append("path", patchPath);
+    query.set("ref", metadataCommit);
+    const payload = await this.fetchJSON(`${base}/blobs?${query.toString()}`, {
+      timeout: 12000,
+      cache: "no-store",
+    });
+    const responseCommit = immutableGitOid(payload?.commit);
+    if (responseCommit !== metadataCommit) {
+      throw new Error("The mirror returned a different metadata commit.");
+    }
+    const blobs =
+      payload?.blobs && typeof payload.blobs === "object"
+        ? payload.blobs
+        : {};
+    const metadataBlob = blobs[metadataPath];
+    if (!metadataBlob || metadataBlob?.ok === false) {
+      throw new Error("The pinned pull-request record is unavailable.");
+    }
+    const metadataText = repositoryBlobText(metadataBlob);
+    if (!metadataText.trim()) {
+      throw new Error("The pinned pull-request metadata is empty.");
+    }
+    const metadata = parsePullFrontMatter(metadataText, number);
+    if (metadata.number !== number) {
+      throw new Error("The pinned pull-request record does not match its path.");
+    }
+    let patch = repositoryBlobText(blobs[patchPath]);
+    let patchSource = "metadata-patch";
+    if (
+      !patch.trim() &&
+      metadata.creationBaseOid &&
+      metadata.creationHeadOid
+    ) {
+      try {
+        const compare = await this.fetchJSON(
+          `${base}/compare?base=${encodeURIComponent(
+            metadata.creationBaseOid,
+          )}&head=${encodeURIComponent(metadata.creationHeadOid)}`,
+          { timeout: 12000, cache: "no-store" },
+        );
+        if (
+          immutableGitOid(compare?.baseOid) === metadata.creationBaseOid &&
+          immutableGitOid(compare?.headOid) === metadata.creationHeadOid
+        ) {
+          patch = String(compare?.patch || "");
+          patchSource = "immutable-compare";
+        }
+      } catch (_) {}
+    }
+    return {
+      state: "ready",
+      number,
+      metadataCommit,
+      metadata,
+      patchSource,
+      diff: parseUnifiedDiff(patch, {
+        maxCharacters: 1_200_000,
+        maxFiles: 120,
+        maxRows: 6_000,
+      }),
+    };
+  }
+
+  async loadRepositoryPullReview(value) {
+    const active = this.activeRepository;
+    const number = safePullNumber(value);
+    const metadataCommit = immutableGitOid(
+      active?.entityRecords?.pullMetadataCommit,
+    );
+    const record = this.repositoryPullRecords(active).find(
+      (candidate) => candidate.number === number,
+    );
+    this.repositoryView = "review";
+    this.clearPullReviewScrollTracking();
+    const selection = ++this.pullReviewSelection;
+    if (
+      !active ||
+      !number ||
+      !metadataCommit ||
+      !record ||
+      record.metadataAvailable === false
+    ) {
+      this.pullReview = {
+        state: "unavailable",
+        number,
+        metadataCommit,
+        message:
+          "That pull request is not present in the exact pinned metadata index. No alternate ref was queried.",
+      };
+      if (
+        this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+      ) {
+        this.openLandmark("repositories");
+      } else {
+        this.renderRepositoryExplorer();
+      }
+      return;
+    }
+    this.pullReview = {
+      state: "loading",
+      number,
+      metadataCommit,
+    };
+    if (
+      this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+    ) {
+      this.openLandmark("repositories");
+    } else {
+      this.renderRepositoryExplorer();
+    }
+    try {
+      const review = await this.fetchRepositoryPullReview(
+        active,
+        record,
+        metadataCommit,
+      );
+      if (
+        selection !== this.pullReviewSelection ||
+        active !== this.activeRepository ||
+        this.destroyed
+      ) {
+        return;
+      }
+      this.pullReview = review;
+    } catch (error) {
+      if (
+        selection !== this.pullReviewSelection ||
+        active !== this.activeRepository ||
+        this.destroyed
+      ) {
+        return;
+      }
+      this.pullReview = {
+        state: "unavailable",
+        number,
+        metadataCommit,
+        message:
+          error?.message ||
+          "The exact metadata record and patch could not be verified.",
+      };
+    }
+    this.renderRepositoryExplorer();
+  }
+
   repositoryExplorerHTML(active) {
+    if (this.repositoryView === "list") {
+      return this.repositoryPullListHTML(active);
+    }
+    if (this.repositoryView === "review") {
+      return this.repositoryPullReviewHTML(active);
+    }
     const languages = [...new Set(active.entries.map((entry) => entry.language))]
       .filter(Boolean)
       .sort();
@@ -6658,6 +9748,14 @@ class ForkMeshWorld extends HTMLElement {
           <span><strong>${formatBytes(totalSize)}</strong> mapped size</span>
           <span><strong>${compactNumber(contributorCount)}</strong> contributors</span>
           <span><strong>${compactNumber(mirrorItems.length)}</strong> reported mirrors</span>
+          <button type="button" data-world-pull-list>
+            <strong>${
+              this.repositoryPullCount(active) === null
+                ? "—"
+                : compactNumber(this.repositoryPullCount(active))
+            }</strong>
+            pull requests
+          </button>
         </div>
         <div class="world-repo-entities" aria-label="Repository entity layers">
           ${entityNodes
@@ -6791,6 +9889,12 @@ class ForkMeshWorld extends HTMLElement {
     const explorer = this.$("[data-world-repo-explorer]");
     if (!explorer || !this.activeRepository) return;
     explorer.innerHTML = this.repositoryExplorerHTML(this.activeRepository);
+    this.updateRepositoryReviewMode();
+    if (this.repositoryView === "review" && this.pullReview?.state === "ready") {
+      window.requestAnimationFrame(() =>
+        this.setupPullReviewScrollTracking(),
+      );
+    }
   }
 
   selectRepositoryGraphNode(candidate) {
@@ -6798,6 +9902,22 @@ class ForkMeshWorld extends HTMLElement {
       this.activeRepository || {},
     ).find((item) => item.id === String(candidate?.id || ""));
     if (!entity) return;
+    if (
+      entity.kind === "pull-request-collection" ||
+      entity.kind === "pull-request"
+    ) {
+      if (
+        this.$("[data-world-detail]")?.dataset.openLandmark !== "repositories"
+      ) {
+        this.openLandmark("repositories");
+      }
+      if (entity.kind === "pull-request-collection") {
+        this.openRepositoryPullList();
+      } else {
+        this.loadRepositoryPullReview(entity.number);
+      }
+      return;
+    }
     const selection = this.$("[data-world-graph-selection]");
     if (selection) {
       selection.innerHTML = `
@@ -7607,25 +10727,32 @@ class ForkMeshWorld extends HTMLElement {
       );
       return;
     }
+    if (!this.soundEnabled) {
+      now.innerHTML = `
+        <span><strong>Sound is off</strong><small>Use the Sound button in the World toolbar first. Audio never starts automatically.</small></span>
+        <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
+      this.toast("Enable World sounds from the toolbar before starting local audio.");
+      return;
+    }
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     if (!AudioContext) {
       now.innerHTML = `<span>Local audio synthesis is unavailable in this browser.</span><button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
       return;
     }
-    const worldOffsetMs =
-      ((Date.now() + this.serverOffset) % WORLD_DAY_MS + WORLD_DAY_MS) %
-      WORLD_DAY_MS;
+    const scoreOffsetMs =
+      ((Date.now() % WORLD_SCORE_LOOP_MS) + WORLD_SCORE_LOOP_MS) %
+      WORLD_SCORE_LOOP_MS;
     const soundtrack = createProceduralWorldSoundtrack(
       AudioContext,
-      worldOffsetMs,
+      scoreOffsetMs,
     );
     this.activeAudio = soundtrack;
     now.innerHTML = `
       <span><strong>${escapeHTML(station.name)}</strong> · ${escapeHTML(
         station.provider,
-      )}<small data-world-track>Original four-hour procedural downtempo score · World-day offset ${escapeHTML(
-        formatMediaPosition(worldOffsetMs),
-      )} · loops with the shared World day · CC0-1.0 · local playback only.</small></span>
+      )}<small data-world-track>Original four-hour procedural downtempo score · Local score offset ${escapeHTML(
+        formatMediaPosition(scoreOffsetMs),
+      )} · loops independently of the UTC display · CC0-1.0 · local playback only.</small></span>
       <button type="button" data-world-radio-stop>Mute / stop</button>`;
     try {
       await soundtrack.context.resume();
@@ -7696,6 +10823,242 @@ class ForkMeshWorld extends HTMLElement {
     this.toast(messages[action] || "This district is being connected to its technical backend.");
   }
 
+  setWorldAccountStatus(message, state = "") {
+    const status = this.$("[data-world-account-status]");
+    if (!status) return;
+    status.textContent = String(message || "");
+    status.dataset.state = ["error", "success"].includes(state) ? state : "";
+  }
+
+  selectWorldAccountMode(mode) {
+    const selected = mode === "signup" ? "signup" : "login";
+    const tabs = this.$(".world-account-tabs");
+    if (tabs) tabs.hidden = false;
+    this.$$("[data-world-account-mode]").forEach((button) => {
+      button.setAttribute(
+        "aria-selected",
+        String(button.dataset.worldAccountMode === selected),
+      );
+    });
+    this.$$("[data-world-account-view]").forEach((view) => {
+      view.hidden = view.dataset.worldAccountView !== selected;
+    });
+    this.$("[data-world-account-verification]")?.setAttribute("hidden", "");
+    this.setWorldAccountStatus("");
+    window.setTimeout(
+      () =>
+        this.$(
+          `[data-world-account-view="${selected}"]:not([hidden]) input`,
+        )?.focus(),
+      0,
+    );
+  }
+
+  toggleWorldAccount(open, mode = "login", returnFocus = null) {
+    const panel = this.$("[data-world-account]");
+    const backdrop = this.$(".world-account-backdrop");
+    if (!panel || !backdrop) return;
+    if (open) {
+      this.accountReturnFocus =
+        returnFocus instanceof HTMLElement ? returnFocus : null;
+      this.closeWorldChat();
+      this.closeLandmark();
+      this.toggleSettings(false);
+      if (this.tourIndex >= 0) this.stopTour();
+      this.selectWorldAccountMode(mode);
+    } else {
+      this.$$(
+        "[data-world-login-form] input[type='password'], " +
+          "[data-world-signup-form] input[type='password'], " +
+          "[data-world-login-form] input[name='totp']",
+      ).forEach((input) => {
+        input.value = "";
+      });
+      this.setWorldAccountStatus("");
+    }
+    panel.dataset.open = String(open);
+    panel.setAttribute("aria-hidden", String(!open));
+    backdrop.dataset.open = String(open);
+    if (open) {
+      window.setTimeout(
+        () =>
+          panel.querySelector(
+            "input:not([hidden]), [data-world-account-close]",
+          )?.focus(),
+        80,
+      );
+    } else {
+      const focus = this.accountReturnFocus;
+      this.accountReturnFocus = null;
+      window.setTimeout(() => focus?.focus?.(), 0);
+    }
+  }
+
+  async submitWorldLogin(form) {
+    if (!(form instanceof HTMLFormElement)) return;
+    const email = String(form.elements.email?.value || "").trim();
+    const password = String(form.elements.password?.value || "");
+    const totp = String(form.elements.totp?.value || "").trim();
+    if (!/.+@.+\..+/.test(email) || !password) {
+      this.setWorldAccountStatus(
+        "Enter a valid email address and password.",
+        "error",
+      );
+      return;
+    }
+    const submit = form.querySelector("[data-world-account-submit]");
+    if (submit) {
+      submit.disabled = true;
+      submit.textContent = "Logging in…";
+    }
+    this.setWorldAccountStatus("Verifying this account…");
+    try {
+      const body = await this.postJSON(
+        "/api/accounts/login",
+        { email, password, totp },
+        { auth: false, timeout: 12_000 },
+      );
+      if (!storeWorldSession(body)) {
+        throw new Error("invalid_session");
+      }
+      form.elements.password.value = "";
+      form.elements.totp.value = "";
+      this.captureWorldPosition(true);
+      this.setWorldAccountStatus(
+        `Logged in as ${String(body.nodeName || "").toLowerCase()}. Reloading the same World position…`,
+        "success",
+      );
+      window.setTimeout(() => location.reload(), 350);
+    } catch (error) {
+      const code = String(error?.message || "");
+      const messages = {
+        invalid_credentials: "Incorrect email or password.",
+        bad_totp: "Enter the current authenticator code.",
+        too_many_attempts:
+          "Too many failed attempts. Wait a few minutes and try again.",
+        account_disabled: "This account has been disabled.",
+      };
+      this.setWorldAccountStatus(
+        messages[code] || "Could not log in. Please try again.",
+        "error",
+      );
+      form.elements.password.value = "";
+      form.elements.totp.value = "";
+      form.elements.password.focus();
+      if (submit) {
+        submit.disabled = false;
+        submit.textContent = "Log in inside the World";
+      }
+    }
+  }
+
+  async submitWorldSignup(form) {
+    if (!(form instanceof HTMLFormElement)) return;
+    const nodeName = String(form.elements.nodeName?.value || "")
+      .trim()
+      .toLowerCase();
+    const email = String(form.elements.email?.value || "").trim();
+    const password = String(form.elements.password?.value || "");
+    const terms = Boolean(form.elements.terms?.checked);
+    form.elements.nodeName.value = nodeName;
+    if (!WORLD_ACCOUNT_NAME_RE.test(nodeName)) {
+      this.setWorldAccountStatus(
+        "Use lowercase letters, numbers, and hyphens; start with a letter and end with a letter or number.",
+        "error",
+      );
+      return;
+    }
+    if (!/.+@.+\..+/.test(email)) {
+      this.setWorldAccountStatus("Enter a valid email address.", "error");
+      return;
+    }
+    if (password.length < 8) {
+      this.setWorldAccountStatus(
+        "Password must contain at least 8 characters.",
+        "error",
+      );
+      return;
+    }
+    if (!terms) {
+      this.setWorldAccountStatus(
+        "Accept the Terms and Privacy Policy to continue.",
+        "error",
+      );
+      return;
+    }
+    const submit = form.querySelector("[data-world-account-submit]");
+    if (submit) {
+      submit.disabled = true;
+      submit.textContent = "Creating…";
+    }
+    this.setWorldAccountStatus("Creating the account securely…");
+    try {
+      await this.postJSON(
+        "/api/accounts/signup",
+        { nodeName, email, password },
+        { auth: false, timeout: 12_000 },
+      );
+      form.elements.password.value = "";
+      this.$$("[data-world-account-view]").forEach((view) => {
+        view.hidden = true;
+      });
+      const tabs = this.$(".world-account-tabs");
+      if (tabs) tabs.hidden = true;
+      const verification = this.$("[data-world-account-verification]");
+      if (verification) verification.hidden = false;
+      const createdName = this.$("[data-world-account-created-name]");
+      const createdEmail = this.$("[data-world-account-created-email]");
+      if (createdName) createdName.textContent = nodeName;
+      if (createdEmail) createdEmail.textContent = email;
+      this.setWorldAccountStatus(
+        "Account created. Verification is required before account permissions appear in the World.",
+        "success",
+      );
+    } catch (error) {
+      const code = String(error?.message || "");
+      const messages = {
+        node_name_taken: "That username is already taken.",
+        email_taken: "That email is already registered.",
+        password_too_short:
+          "Password must contain at least 8 characters.",
+      };
+      this.setWorldAccountStatus(
+        messages[code] || "Could not create the account. Please try again.",
+        "error",
+      );
+      form.elements.password.value = "";
+      form.elements.password.focus();
+      if (submit) {
+        submit.disabled = false;
+        submit.textContent = "Create account inside the World";
+      }
+    }
+  }
+
+  async logoutFromWorld() {
+    const session = readSession();
+    try {
+      await fetch("/api/accounts/logout", {
+        method: "POST",
+        headers: session?.sessionToken
+          ? { Authorization: `Bearer ${session.sessionToken}` }
+          : {},
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+    } catch (_) {
+      // Local logout must still complete if the network is unavailable.
+    }
+    try {
+      localStorage.removeItem("forkmesh.session");
+      document.cookie =
+        "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax" +
+        (location.protocol === "https:" ? "; Secure" : "");
+    } catch (_) {}
+    this.captureWorldPosition(true);
+    location.reload();
+  }
+
   toggleSettings(open) {
     const panel = this.$("[data-world-settings]");
     if (!panel) return;
@@ -7763,7 +11126,95 @@ class ForkMeshWorld extends HTMLElement {
       button.setAttribute("aria-pressed", String(button.dataset.worldTheme === theme));
     });
     const label = THEME_OPTIONS.find((option) => option.id === theme)?.label || theme;
-    this.toast(`${label} is local to this device. Shared world time and events are unchanged.`);
+    this.toast(`${label} is local to this device. UTC is display-only and never changes the lighting.`);
+  }
+
+  setLightLevel(value) {
+    const numeric = Number(value);
+    const next = Math.min(
+      WORLD_LIGHT_LEVEL_MAX,
+      Math.max(
+        WORLD_LIGHT_LEVEL_MIN,
+        Number.isFinite(numeric) ? numeric : WORLD_LIGHT_LEVEL_DEFAULT,
+      ),
+    );
+    this.settings.lightLevel = next;
+    this.saveSettings();
+    this.world?.setLightLevel(next);
+    const input = this.$("[data-world-light-level]");
+    const output = this.$("[data-world-light-level-output]");
+    if (input && Number(input.value) !== next) input.value = String(next);
+    if (output) output.textContent = `${next}%`;
+    return next;
+  }
+
+  async toggleWorldSound() {
+    const button = this.$("[data-world-sound-toggle]");
+    const label = this.$("[data-world-sound-label]");
+    if (this.soundEnabled) {
+      this.soundEnabled = false;
+      const context = this.soundContext;
+      this.soundContext = null;
+      await context?.close?.().catch(() => {});
+      button?.setAttribute("aria-pressed", "false");
+      if (button) button.title = "Enable World sounds";
+      if (label) label.textContent = "Sound";
+      this.toast("World sounds muted.");
+      return;
+    }
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) {
+      this.toast("World sounds are unavailable in this browser.");
+      return;
+    }
+    try {
+      // This is the only path that creates the shared cue context, and it runs
+      // directly from the user's sound-button click.
+      this.soundContext = new AudioContext();
+      await this.soundContext.resume();
+      this.soundEnabled = true;
+      button?.setAttribute("aria-pressed", "true");
+      if (button) button.title = "Mute World sounds";
+      if (label) label.textContent = "Sound on";
+      this.playCountryJoinSound("FM", true);
+      this.toast("World sounds enabled. Join cues use short local tones.");
+    } catch (_) {
+      this.soundEnabled = false;
+      this.soundContext = null;
+      this.toast("World sounds could not be enabled.");
+    }
+  }
+
+  playCountryJoinSound(countryCode, force = false) {
+    const context = this.soundContext;
+    if (!this.soundEnabled || !context || context.state === "closed") return;
+    const now = Date.now();
+    this.joinSoundTimes = this.joinSoundTimes.filter(
+      (timestamp) => now - timestamp < 10000,
+    );
+    if (!force && this.joinSoundTimes.length >= 3) return;
+    this.joinSoundTimes.push(now);
+    const code = /^[A-Z]{2}$/.test(String(countryCode || ""))
+      ? String(countryCode)
+      : "XX";
+    const seed = code.charCodeAt(0) * 37 + code.charCodeAt(1) * 17;
+    const scale = [0, 2, 3, 5, 7, 9, 10];
+    const first = 220 * 2 ** (scale[seed % scale.length] / 12);
+    const second = 220 * 2 ** (scale[(seed >> 3) % scale.length] / 12);
+    [first, second].forEach((frequency, index) => {
+      const start = context.currentTime + index * 0.09;
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(frequency, start);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.035, start + 0.018);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.11);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(start);
+      oscillator.stop(start + 0.12);
+    });
   }
 
   saveSettings() {
@@ -7806,7 +11257,7 @@ class ForkMeshWorld extends HTMLElement {
   renderTourStep() {
     const step = TOUR_STEPS[this.tourIndex];
     if (!step) return;
-    this.world?.focusLandmark(step.landmark, { move: false });
+    this.world?.focusLandmark(step.landmark);
     const title = this.$("[data-world-tour-title]");
     const copy = this.$("[data-world-tour-copy]");
     const progress = this.$("[data-world-tour-progress]");
@@ -7835,9 +11286,198 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.clearFocus();
   }
 
+  startDiagnostics() {
+    window.clearInterval(this.diagnosticsTimer);
+    this.renderDiagnostics();
+    this.diagnosticsTimer = window.setInterval(
+      () => this.renderDiagnostics(),
+      WORLD_DIAGNOSTICS_INTERVAL_MS,
+    );
+  }
+
+  collectDiagnostics(now = performance.now()) {
+    const sampleNow = Number.isFinite(Number(now))
+      ? Number(now)
+      : performance.now();
+    const elapsedMs = Math.max(1, sampleNow - this.diagnosticsSampleAt);
+    const inboundFrames = Math.max(0, Number(this.socketInboundFrames) || 0);
+    const outboundFrames = Math.max(0, Number(this.socketOutboundFrames) || 0);
+    const inboundRate = Math.min(
+      10_000,
+      (Math.max(0, inboundFrames - this.diagnosticsInboundSample) * 1000) /
+        elapsedMs,
+    );
+    const outboundRate = Math.min(
+      10_000,
+      (Math.max(0, outboundFrames - this.diagnosticsOutboundSample) * 1000) /
+        elapsedMs,
+    );
+    this.diagnosticsSampleAt = sampleNow;
+    this.diagnosticsInboundSample = inboundFrames;
+    this.diagnosticsOutboundSample = outboundFrames;
+
+    const readyState = Number(this.socket?.readyState);
+    let socketState = "offline";
+    if (this.presenceConnecting || readyState === 0) {
+      socketState = "connecting";
+    } else if (readyState === 1) {
+      socketState = this.serverPeerId ? "online" : "handshaking";
+    } else if (readyState === 2) {
+      socketState = "closing";
+    } else if (this.socketTimer) {
+      socketState = "reconnecting";
+    }
+    const socketOnline = readyState === 1 && Boolean(this.serverPeerId);
+    const peerCount =
+      1 +
+      this.remotePlayers.size +
+      (socketOnline ? 0 : this.localPeers.size);
+    const scene = this.world?.getDiagnostics?.(sampleNow) || null;
+    const snapshot = {
+      renderer: scene
+        ? {
+            fps: Math.max(0, Math.min(1000, Number(scene.fps) || 0)),
+            frameTimeMs: Math.max(
+              0,
+              Math.min(60_000, Number(scene.frameTimeMs) || 0),
+            ),
+            calls: Math.max(
+              0,
+              Math.min(10_000_000, Number(scene.rendererCalls) || 0),
+            ),
+            triangles: Math.max(
+              0,
+              Math.min(1_000_000_000, Number(scene.rendererTriangles) || 0),
+            ),
+            paused: scene.paused === true,
+          }
+        : null,
+      connection: {
+        state: socketState,
+        peers: Math.max(1, Math.min(10_000, peerCount)),
+        reconnects: Math.max(
+          0,
+          Math.min(
+            WORLD_DIAGNOSTICS_COUNTER_MAX,
+            this.socketConnectionAttempts - 1,
+          ),
+        ),
+        bufferedBytes: Math.max(
+          0,
+          Math.min(
+            64 * 1024 * 1024,
+            Number(this.socket?.bufferedAmount) || 0,
+          ),
+        ),
+      },
+      traffic: {
+        inboundFrames,
+        outboundFrames,
+        inboundRate,
+        outboundRate,
+      },
+      queues: {
+        movement:
+          this.pendingMovement && this.movementSendTimer
+            ? "coalescing"
+            : this.pendingMovement
+              ? "queued"
+              : "idle",
+        profile:
+          this.profilePresencePending && this.profilePresenceTimer
+            ? "coalescing"
+            : this.profilePresencePending
+              ? "queued"
+              : "idle",
+        movementCoalesced: Math.max(
+          0,
+          Math.min(
+            WORLD_DIAGNOSTICS_COUNTER_MAX,
+            Number(this.movementCoalescedFrames) || 0,
+          ),
+        ),
+        profileCoalesced: Math.max(
+          0,
+          Math.min(
+            WORLD_DIAGNOSTICS_COUNTER_MAX,
+            Number(this.profileCoalescedFrames) || 0,
+          ),
+        ),
+        backpressureEvents: Math.max(
+          0,
+          Math.min(
+            WORLD_DIAGNOSTICS_COUNTER_MAX,
+            Number(this.socketBackpressureEvents) || 0,
+          ),
+        ),
+      },
+      build: { ...this.buildDiagnostics },
+    };
+    this.lastDiagnosticsSnapshot = snapshot;
+    return snapshot;
+  }
+
+  renderDiagnostics() {
+    const root = this.$("[data-world-diagnostics]");
+    if (!root) return;
+    const snapshot = this.collectDiagnostics();
+    const { renderer, connection, traffic, queues, build } = snapshot;
+    const formatRate = (value) =>
+      `${Math.max(0, Number(value) || 0).toFixed(1)}/s`;
+    const rendererSummary = renderer
+      ? renderer.paused
+        ? "renderer paused"
+        : `${renderer.fps.toFixed(0)} FPS · ${renderer.frameTimeMs.toFixed(1)} ms`
+      : "renderer unavailable";
+    const version = build.version
+      ? `${/^v/i.test(build.version) ? "" : "v"}${build.version}`
+      : "build pending";
+    const summary = this.$("[data-world-diagnostics-summary]");
+    if (summary) {
+      summary.textContent = `${rendererSummary} · socket ${connection.state} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${version}`;
+    }
+    const light = this.$("[data-world-diagnostics-light]");
+    if (light) {
+      light.dataset.state =
+        connection.state === "online"
+          ? "online"
+          : ["connecting", "handshaking", "reconnecting"].includes(
+                connection.state,
+              )
+            ? "connecting"
+            : "offline";
+    }
+    const rendererDetail = this.$("[data-world-diagnostics-renderer]");
+    if (rendererDetail) {
+      rendererDetail.textContent = renderer
+        ? `${renderer.paused ? "Paused" : `${renderer.fps.toFixed(1)} FPS · ${renderer.frameTimeMs.toFixed(1)} ms/frame`} · ${Math.round(renderer.calls).toLocaleString()} calls · ${Math.round(renderer.triangles).toLocaleString()} triangles`
+        : "WebGL renderer unavailable";
+    }
+    const connectionDetail = this.$(
+      "[data-world-diagnostics-connection]",
+    );
+    if (connectionDetail) {
+      connectionDetail.textContent = `${connection.state} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${connection.reconnects} reconnect attempts · ${Math.round(connection.bufferedBytes).toLocaleString()} buffered bytes`;
+    }
+    const trafficDetail = this.$("[data-world-diagnostics-traffic]");
+    if (trafficDetail) {
+      trafficDetail.textContent = `Inbound ${Math.round(traffic.inboundFrames).toLocaleString()} (${formatRate(traffic.inboundRate)}) · outbound ${Math.round(traffic.outboundFrames).toLocaleString()} (${formatRate(traffic.outboundRate)})`;
+    }
+    const queueDetail = this.$("[data-world-diagnostics-queues]");
+    if (queueDetail) {
+      queueDetail.textContent = `Movement ${queues.movement} (${queues.movementCoalesced} coalesced) · profile ${queues.profile} (${queues.profileCoalesced} coalesced) · ${queues.backpressureEvents} backpressure events`;
+    }
+    const buildDetail = this.$("[data-world-diagnostics-build]");
+    if (buildDetail) {
+      buildDetail.textContent = build.version
+        ? `${version}${build.revision ? ` · ${build.revision.slice(0, 12)}` : " · revision unavailable"}`
+        : "Version endpoint unavailable";
+    }
+  }
+
   startActivityTicker() {
     const messages = () => {
-      const nodes = liveNodeRecords(this.network);
+      const nodes = liveNodeRecords(this.network, this.mirrorCatalogs);
       const repos = this.repositories;
       const output = [
         nodes.length
@@ -7875,12 +11515,128 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   handleMovement(movement) {
+    const space = WORLD_SPACE_IDS.has(String(movement?.space || ""))
+      ? String(movement.space)
+      : this.currentSpace;
     this.lastMovement = {
       ...movement,
+      space,
       activity: this.settings.privacy.activity ? movement.activity : "online",
     };
-    this.sendPresence({ type: "move", ...this.lastMovement, moving: true });
+    this.spawnSelected = true;
+    this.rememberWorldPosition(
+      this.lastMovement,
+      movement?.moving === false,
+    );
+    this.queueMovementPresence({
+      ...this.lastMovement,
+      moving: movement?.moving !== false,
+    });
     this.broadcastLocalPresence();
+  }
+
+  rememberWorldPosition(position, flush = false) {
+    if (!this.positionKey) return;
+    const record = normalizedWorldPosition(
+      {
+        x: position?.x,
+        y: position?.y,
+        z: position?.z,
+        heading: position?.heading ?? position?.yaw,
+        space: WORLD_SPACE_IDS.has(String(position?.space || ""))
+          ? String(position.space)
+          : this.currentSpace,
+        updatedAt: Date.now(),
+      },
+      Date.now(),
+    );
+    if (!record) return;
+    this.pendingPosition = record;
+    if (flush) {
+      this.flushWorldPosition();
+      return;
+    }
+    if (!this.positionWriteTimer) {
+      this.positionWriteTimer = window.setTimeout(
+        () => this.flushWorldPosition(),
+        POSITION_WRITE_INTERVAL_MS,
+      );
+    }
+  }
+
+  captureWorldPosition(flush = false) {
+    const position = this.world?.getPosition?.();
+    if (position) this.rememberWorldPosition(position, flush);
+  }
+
+  flushWorldPosition() {
+    window.clearTimeout(this.positionWriteTimer);
+    this.positionWriteTimer = 0;
+    if (!this.pendingPosition || !this.positionKey) return;
+    const { x, y, z, heading, space, updatedAt } = this.pendingPosition;
+    writeJSON(localStorage, this.positionKey, {
+      x,
+      y,
+      z,
+      heading,
+      space,
+      updatedAt,
+    });
+    this.pendingPosition = null;
+  }
+
+  queueMovementPresence(movement) {
+    if (this.pendingMovement) {
+      this.movementCoalescedFrames = incrementDiagnosticCounter(
+        this.movementCoalescedFrames,
+      );
+    }
+    this.pendingMovement = {
+      ...movement,
+      moving: movement?.moving !== false,
+    };
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    if (!this.pendingMovement.moving) {
+      window.clearTimeout(this.movementSendTimer);
+      this.movementSendTimer = 0;
+      this.flushMovementPresence();
+      return;
+    }
+    const elapsed = performance.now() - this.lastMovementSentAt;
+    if (elapsed >= MOVEMENT_SEND_INTERVAL_MS) {
+      this.flushMovementPresence();
+      return;
+    }
+    if (!this.movementSendTimer) {
+      this.movementSendTimer = window.setTimeout(
+        () => this.flushMovementPresence(),
+        Math.max(0, MOVEMENT_SEND_INTERVAL_MS - elapsed),
+      );
+    }
+  }
+
+  flushMovementPresence() {
+    window.clearTimeout(this.movementSendTimer);
+    this.movementSendTimer = 0;
+    if (!this.pendingMovement) return;
+    const movement = this.pendingMovement;
+    if (
+      this.sendPresenceNow({
+        type: "move",
+        ...movement,
+      })
+    ) {
+      this.pendingMovement = null;
+      this.lastMovementSentAt = performance.now();
+    } else if (
+      this.socket?.readyState === WebSocket.OPEN &&
+      !this.destroyed
+    ) {
+      this.movementSendTimer = window.setTimeout(
+        () => this.flushMovementPresence(),
+        MOVEMENT_SEND_INTERVAL_MS,
+      );
+    }
   }
 
   async refreshWorldTicket() {
@@ -7902,10 +11658,12 @@ class ForkMeshWorld extends HTMLElement {
       ) {
         this.worldTicket = String(ticket.ticket || "");
         this.worldTicketExpires = Number(ticket.expiresAt || 0);
+        this.identity.isAdmin = ticket.isAdmin === true;
         return;
       }
       this.worldTicket = "";
       this.worldTicketExpires = 0;
+      if (this.identity) this.identity.isAdmin = false;
     } catch (_) {
       // Keep a still-valid ticket for reconnect; clear only an expired one.
       if (this.worldTicketExpires <= Date.now()) {
@@ -7922,6 +11680,40 @@ class ForkMeshWorld extends HTMLElement {
         this.refreshWorldTicket();
       }
     }, WORLD_TICKET_REFRESH_MS);
+  }
+
+  schedulePresenceReconnect() {
+    if (this.destroyed || document.hidden) return;
+    window.clearTimeout(this.socketTimer);
+    const jitter = 0.75 + Math.random() * 0.5;
+    const delay = Math.max(250, Math.round(this.socketRetry * jitter));
+    this.socketTimer = window.setTimeout(() => {
+      this.socketTimer = 0;
+      this.connectPresence();
+    }, delay);
+    this.socketRetry = Math.min(
+      SOCKET_RETRY_MAX_MS,
+      Math.round(this.socketRetry * 1.8),
+    );
+  }
+
+  startPeerReconnectGrace() {
+    window.clearTimeout(this.peerGraceTimer);
+    if (!this.remotePlayers.size) {
+      this.peerGraceUntil = 0;
+      this.renderPeers();
+      return;
+    }
+    this.peerGraceUntil = Date.now() + SOCKET_PEER_GRACE_MS;
+    this.renderPeers();
+    this.peerGraceTimer = window.setTimeout(() => {
+      this.peerGraceTimer = 0;
+      this.peerGraceUntil = 0;
+      if (this.socket?.readyState !== WebSocket.OPEN) {
+        this.remotePlayers.clear();
+        this.renderPeers();
+      }
+    }, SOCKET_PEER_GRACE_MS);
   }
 
   async connectPresence() {
@@ -7942,26 +11734,47 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       await this.refreshWorldTicket();
     }
+    if (this.destroyed || document.hidden) {
+      this.presenceConnecting = false;
+      return;
+    }
     const socketURL = new URL(
       `${protocol}//${location.host}/api/world/ws`,
     );
     if (this.worldTicket) socketURL.searchParams.set("ticket", this.worldTicket);
     let socket;
+    this.socketConnectionAttempts = incrementDiagnosticCounter(
+      this.socketConnectionAttempts,
+    );
     try {
       socket = new WebSocket(socketURL.href);
     } catch (_) {
       this.presenceConnecting = false;
       this.setPresenceState("offline", "Local world");
+      this.schedulePresenceReconnect();
       return;
     }
     this.socket = socket;
     this.setPresenceState("connecting", "Joining world");
     socket.addEventListener("open", () => {
+      if (this.destroyed || this.socket !== socket) {
+        try {
+          socket.close(1000, "world closed");
+        } catch (_) {}
+        return;
+      }
       this.presenceConnecting = false;
-      this.socketRetry = 1000;
       this.setPresenceState("online", "World online");
-      this.sendPresence({ type: "presence" });
-      this.sendPresence({ type: "move", ...this.lastMovement, moving: false });
+      window.clearTimeout(this.socketStableTimer);
+      this.socketStableTimer = window.setTimeout(() => {
+        if (this.socket === socket && socket.readyState === WebSocket.OPEN) {
+          this.socketRetry = 1000;
+        }
+      }, SOCKET_STABLE_MS);
+      window.clearTimeout(this.profilePresenceTimer);
+      this.profilePresenceTimer = 0;
+      this.profilePresencePending = false;
+      this.sendPresenceNow({ type: "presence" });
       window.clearInterval(this.pingTimer);
       this.pingTimer = window.setInterval(
         () => this.sendPresence({ type: "ping" }),
@@ -7969,6 +11782,9 @@ class ForkMeshWorld extends HTMLElement {
       );
     });
     socket.addEventListener("message", (event) => {
+      this.socketInboundFrames = incrementDiagnosticCounter(
+        this.socketInboundFrames,
+      );
       let message = null;
       try {
         message = JSON.parse(event.data);
@@ -7978,22 +11794,26 @@ class ForkMeshWorld extends HTMLElement {
       this.receivePresence(message);
     });
     socket.addEventListener("close", () => {
+      if (this.socket !== socket) return;
       this.presenceConnecting = false;
-      if (this.socket === socket) this.socket = null;
+      this.socket = null;
+      window.clearTimeout(this.socketStableTimer);
+      this.socketStableTimer = 0;
       window.clearInterval(this.pingTimer);
       this.serverPeerId = "";
-      this.remotePlayers.clear();
-      this.renderPeers();
+      window.clearTimeout(this.movementSendTimer);
+      this.movementSendTimer = 0;
+      this.pendingMovement = null;
       if (this.destroyed) return;
       this.setPresenceState("offline", "Local world");
-      window.clearTimeout(this.socketTimer);
-      this.socketTimer = window.setTimeout(
-        () => this.connectPresence(),
-        this.socketRetry,
-      );
-      this.socketRetry = Math.min(SOCKET_RETRY_MAX_MS, this.socketRetry * 1.8);
+      this.startPeerReconnectGrace();
+      this.schedulePresenceReconnect();
     });
-    socket.addEventListener("error", () => socket.close());
+    socket.addEventListener("error", () => {
+      try {
+        socket.close();
+      } catch (_) {}
+    });
   }
 
   setPresenceState(state, copy) {
@@ -8004,9 +11824,63 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   sendPresence(message) {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    if (message?.type !== "presence") {
+      return this.sendPresenceNow(message);
+    }
+    if (this.profilePresencePending) {
+      this.profileCoalescedFrames = incrementDiagnosticCounter(
+        this.profileCoalescedFrames,
+      );
+    }
+    this.profilePresencePending = true;
+    window.clearTimeout(this.profilePresenceTimer);
+    this.profilePresenceTimer = window.setTimeout(
+      () => this.flushProfilePresence(),
+      PRESENCE_PROFILE_DEBOUNCE_MS,
+    );
+    return false;
+  }
+
+  flushProfilePresence() {
+    window.clearTimeout(this.profilePresenceTimer);
+    this.profilePresenceTimer = 0;
+    if (!this.profilePresencePending) return;
+    if (this.sendPresenceNow({ type: "presence" })) {
+      this.profilePresencePending = false;
+    } else if (
+      this.socket?.readyState === WebSocket.OPEN &&
+      !this.destroyed
+    ) {
+      this.profilePresenceTimer = window.setTimeout(
+        () => this.flushProfilePresence(),
+        PRESENCE_PROFILE_DEBOUNCE_MS,
+      );
+    }
+  }
+
+  sendPresenceNow(message) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
+    if (
+      ["presence", "move", "ping"].includes(String(message?.type || "")) &&
+      Number(this.socket.bufferedAmount || 0) > SOCKET_BUFFER_HIGH_WATER_BYTES
+    ) {
+      this.socketBackpressureEvents = incrementDiagnosticCounter(
+        this.socketBackpressureEvents,
+      );
+      return false;
+    }
     let safe;
     if (message.type === "presence") {
+      this.identity.firstVisitAge = firstVisitAge(this.firstVisitAt);
+      this.identity.visitCount = this.publicVisitCount;
+      this.identity.activityCategory = presenceActivity(
+        this.settings,
+        this.currentActivityCategory,
+      );
+      const publicStatus = normalizeWorldStatus(
+        this.settings.statusEmoji,
+        this.settings.statusNote,
+      );
       safe = {
         type: "presence",
         name: sanitizePresenceText(this.identity.name, "visitor", 24),
@@ -8021,6 +11895,15 @@ class ForkMeshWorld extends HTMLElement {
           this.settings,
           this.currentActivityCategory,
         ),
+        inputActive:
+          Boolean(this.settings.privacy.activity) &&
+          this.identity.inputActive === true,
+        visitCount: this.settings.privacy.activity
+          ? Math.max(0, Math.min(999, Number(this.publicVisitCount) || 0))
+          : 0,
+        firstVisitAge: this.settings.privacy.activity
+          ? this.identity.firstVisitAge
+          : "hidden",
         publicDoor: ["closed", "knock", "open"].includes(
           this.settings.publicDoor,
         )
@@ -8029,6 +11912,8 @@ class ForkMeshWorld extends HTMLElement {
         space: WORLD_SPACE_IDS.has(this.currentSpace)
           ? this.currentSpace
           : "town-square",
+        statusEmoji: publicStatus.emoji,
+        statusNote: publicStatus.note,
       };
     } else if (message.type === "move") {
       safe = {
@@ -8042,17 +11927,47 @@ class ForkMeshWorld extends HTMLElement {
     } else if (message.type === "ping") {
       safe = { type: "ping" };
     } else {
-      return;
+      return false;
     }
     try {
       this.socket.send(JSON.stringify(safe));
-    } catch (_) {}
+      this.socketOutboundFrames = incrementDiagnosticCounter(
+        this.socketOutboundFrames,
+      );
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   receivePresence(message) {
     if (!message || typeof message !== "object") return;
     if (message.type === "welcome" && Array.isArray(message.peers)) {
       this.serverPeerId = String(message.id || "");
+      const ownPresence = remotePlayer(message.self);
+      if (ownPresence?.id === this.serverPeerId && !this.spawnSelected) {
+        this.currentSpace = ownPresence.space;
+        this.lastMovement = {
+          ...this.lastMovement,
+          x: ownPresence.x,
+          y: ownPresence.y,
+          z: ownPresence.z,
+          heading: ownPresence.heading,
+          space: ownPresence.space,
+        };
+        this.world?.setSpawn?.({
+          x: ownPresence.x,
+          y: ownPresence.y,
+          z: ownPresence.z,
+          heading: ownPresence.heading,
+          space: ownPresence.space,
+        });
+        this.spawnSelected = true;
+        this.rememberWorldPosition(this.lastMovement, true);
+      }
+      window.clearTimeout(this.peerGraceTimer);
+      this.peerGraceTimer = 0;
+      this.peerGraceUntil = 0;
       this.remotePlayers.clear();
       message.peers.forEach((peer) => {
         const player = remotePlayer(peer);
@@ -8060,11 +11975,25 @@ class ForkMeshWorld extends HTMLElement {
           this.remotePlayers.set(player.id, player);
         }
       });
+      // Publishing starts only after the server has assigned this connection's
+      // unique row/column arrival slot.
+      window.clearTimeout(this.movementSendTimer);
+      this.movementSendTimer = 0;
+      this.pendingMovement = null;
+      this.sendPresenceNow({
+        type: "move",
+        ...this.lastMovement,
+        moving: false,
+      });
+      this.lastMovementSentAt = performance.now();
     } else if (["presence", "join"].includes(message.type) && message.peer?.id) {
       const player = remotePlayer(message.peer);
       if (player?.id && player.id !== this.serverPeerId) {
+        const isNewJoin =
+          message.type === "join" && !this.remotePlayers.has(player.id);
         const current = this.remotePlayers.get(player.id) || {};
         this.remotePlayers.set(player.id, { ...current, ...player });
+        if (isNewJoin) this.playCountryJoinSound(player.countryCode);
       }
     } else if (message.type === "move" && message.id) {
       const id = String(message.id);
@@ -8184,20 +12113,32 @@ class ForkMeshWorld extends HTMLElement {
       this.inactivePlayers.map((player) => [player.id, player]),
     );
     this.remotePlayers.forEach((player, id) => combined.set(id, player));
-    this.localPeers.forEach((peer, id) => {
-      combined.set(`local:${id}`, {
-        ...peer,
-        id: `local:${id}`,
-        activity: peer.status === "hidden" ? "online" : peer.status,
+    const socketOnline =
+      this.socket?.readyState === WebSocket.OPEN && Boolean(this.serverPeerId);
+    const reconnectGrace =
+      !socketOnline &&
+      Boolean(this.peerGraceTimer) &&
+      this.peerGraceUntil > 0 &&
+      this.remotePlayers.size > 0;
+    if (!socketOnline && !reconnectGrace) {
+      this.localPeers.forEach((peer, id) => {
+        combined.set(`local:${id}`, {
+          ...peer,
+          id: `local:${id}`,
+          activity: peer.status === "hidden" ? "online" : peer.status,
+        });
       });
-    });
+    }
     this.world?.setRemotePlayers([...combined.values()]);
     this.updatePlayerCount();
+    this.updateDurableObjectMetrics();
   }
 
   destroy() {
     if (this.destroyed) return;
+    if (this.spawnSelected) this.captureWorldPosition(true);
     this.destroyed = true;
+    this.clearPullReviewScrollTracking();
     document.removeEventListener("visibilitychange", this.handleVisibility);
     window.visualViewport?.removeEventListener(
       "resize",
@@ -8205,19 +12146,34 @@ class ForkMeshWorld extends HTMLElement {
     );
     window.removeEventListener("orientationchange", this.syncViewportHeight);
     window.removeEventListener("storage", this.handleStorage);
+    window.removeEventListener("pointerdown", this.handlePublicInputActivity);
+    window.removeEventListener("pointermove", this.handlePublicInputActivity);
+    window.removeEventListener("keydown", this.handlePublicInputActivity);
     window.clearTimeout(this.socketTimer);
+    window.clearTimeout(this.socketStableTimer);
+    window.clearTimeout(this.peerGraceTimer);
+    window.clearTimeout(this.profilePresenceTimer);
+    window.clearTimeout(this.movementSendTimer);
+    window.clearTimeout(this.positionWriteTimer);
     window.clearTimeout(this.toastTimer);
     window.clearTimeout(this.inactiveSyncTimer);
+    window.clearTimeout(this.inputInactiveTimer);
     window.clearInterval(this.activityTimer);
     window.clearInterval(this.clockTimer);
     window.clearInterval(this.distanceTimer);
     window.clearInterval(this.pingTimer);
     window.clearInterval(this.rewardTimer);
+    window.clearInterval(this.mirrorTimer);
     window.clearInterval(this.eventsTimer);
     window.clearInterval(this.notificationsTimer);
     window.clearInterval(this.mediaTimer);
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);
+    window.clearInterval(this.diagnosticsTimer);
+    this.peerGraceTimer = 0;
+    this.profilePresenceTimer = 0;
+    this.movementSendTimer = 0;
+    this.positionWriteTimer = 0;
     try {
       this.broadcast?.postMessage({ type: "leave", id: this.identity?.id });
       this.broadcast?.close();
@@ -8226,6 +12182,10 @@ class ForkMeshWorld extends HTMLElement {
       this.socket?.close(1000, "page closed");
     } catch (_) {}
     this.stopRadio(false);
+    this.soundEnabled = false;
+    const soundContext = this.soundContext;
+    this.soundContext = null;
+    soundContext?.close?.().catch(() => {});
     this.world?.dispose();
     this.world = null;
     if (this.mode === "public") document.body.classList.remove("world-active");

@@ -48,7 +48,9 @@ def _load(*names, extra_globals=None):
 def _row(key, owner, name, *, root="", visibility="public", hosted="", synced="",
          size=0, commit="", branch="", issue_count=None, platform="", version="",
          node_id="", clones_served=None, website_served=None, artifact_count=None,
-         state_hash="", source="local-node", owner_user=""):
+         state_hash="", source="local-node", owner_user="", cpu_percent=None,
+         mem_used=None, mem_total=None, disk_used=None, disk_total=None,
+         actions_enabled=None, actions_state=None):
     data = {
         "owner": owner,
         "name": name,
@@ -78,6 +80,19 @@ def _row(key, owner, name, *, root="", visibility="public", hosted="", synced=""
         data["artifactCount"] = artifact_count
     if owner_user:
         data["ownerUser"] = owner_user
+    if actions_enabled is not None:
+        data["actionsEnabled"] = actions_enabled
+    if actions_state is not None:
+        data["actionsState"] = actions_state
+    for field, value in (
+        ("cpuPercent", cpu_percent),
+        ("memUsedBytes", mem_used),
+        ("memTotalBytes", mem_total),
+        ("diskUsedBytes", disk_used),
+        ("diskTotalBytes", disk_total),
+    ):
+        if value is not None:
+            data[field] = value
     return {
         "key_bi": key,
         "is_private": 1 if visibility == "private" else 0,
@@ -158,6 +173,49 @@ def test_payload_groups_public_root_commit_mirrors_and_sorts_online_first():
     assert payload["mirrors"][1]["cloneAvailable"] is True
 
 
+def test_identical_signed_ref_states_are_not_behind_only_due_to_sync_time():
+    now = 1_000_000
+    exact_state = "a" * 64
+    rows = [
+        _row(
+            "a", "mirror2", "forkmesh", synced="990000",
+            state_hash=exact_state, source="remote-clone",
+        ),
+        _row(
+            "b", "mirror3", "forkmesh", synced="940000",
+            state_hash=exact_state, source="remote-clone",
+        ),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mirror2",
+        "forkmesh",
+        rows,
+        {"a": now - 1_000, "b": now - 2_000},
+        {},
+        now,
+        600_000,
+        5_000,
+    )
+
+    by_node = {mirror["node"]: mirror for mirror in payload["mirrors"]}
+    assert by_node["mirror2"]["behind"] is False
+    assert by_node["mirror3"]["behind"] is False
+
+    rows[1]["data"]["stateHash"] = "b" * 64
+    payload = build_repo_mirrors_payload(
+        "mirror2",
+        "forkmesh",
+        rows,
+        {"a": now - 1_000, "b": now - 2_000},
+        {},
+        now,
+        600_000,
+        5_000,
+    )
+    by_node = {mirror["node"]: mirror for mirror in payload["mirrors"]}
+    assert by_node["mirror3"]["behind"] is True
+
+
 def test_payload_keeps_clone_url_mirror_with_mismatched_legacy_root():
     now = 1_000_000
     rows = [
@@ -228,7 +286,9 @@ def test_payload_carries_node_facts_for_offline_mirrors():
              commit="686d7ebd1ef0", branch="main", issue_count=302,
              platform="linux", version="0.5.22", node_id="7ZMh_2s_IOTPxYz",
              clones_served=42, website_served=118, artifact_count=3,
-             owner_user="alice"),
+             owner_user="alice", cpu_percent=37, mem_used=300,
+             mem_total=1000, disk_used=800, disk_total=2000,
+             actions_enabled=True, actions_state="running"),
         _row("b", "legacy", "forkmesh", root="abc", synced="980000", size=20),
     ]
     payload = build_repo_mirrors_payload(
@@ -247,6 +307,11 @@ def test_payload_carries_node_facts_for_offline_mirrors():
     assert rich["websiteServed"] == 118
     # Release artifacts the node is hosting for download (adhoc #77).
     assert rich["artifactCount"] == 3
+    assert rich["cpuPercent"] == 37
+    assert (rich["memUsedBytes"], rich["memTotalBytes"]) == (300, 1000)
+    assert (rich["diskUsedBytes"], rich["diskTotalBytes"]) == (800, 2000)
+    assert rich["actionsEnabled"] is True
+    assert rich["actionsState"] == "running"
     # Legacy record (no node facts): empty strings and the -1 "unknown" sentinels.
     legacy = payload["mirrors"][1]
     assert legacy["commit"] == ""
@@ -257,6 +322,75 @@ def test_payload_carries_node_facts_for_offline_mirrors():
     assert legacy["clonesServed"] == -1
     assert legacy["websiteServed"] == -1
     assert legacy["artifactCount"] == -1
+    assert legacy["cpuPercent"] is None
+    assert legacy["memUsedBytes"] is None
+    assert legacy["memTotalBytes"] is None
+    assert legacy["diskUsedBytes"] is None
+    assert legacy["diskTotalBytes"] is None
+    assert legacy["actionsEnabled"] is False
+    assert legacy["actionsState"] == "disabled"
+
+
+def test_payload_defensively_bounds_or_hides_invalid_host_telemetry():
+    now = 1_000_000
+    rows = [
+        _row(
+            "a", "mainnode", "forkmesh", root="abc", synced="990000",
+            cpu_percent=1000, mem_used=2000, mem_total=1000,
+            disk_used=5, disk_total=0,
+        ),
+        _row(
+            "b", "bad", "forkmesh", root="abc", synced="980000",
+            cpu_percent=True, mem_used=-1, mem_total=1000,
+        ),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
+    )
+    by_node = {mirror["node"]: mirror for mirror in payload["mirrors"]}
+    assert by_node["mainnode"]["cpuPercent"] == 100
+    assert (
+        by_node["mainnode"]["memUsedBytes"],
+        by_node["mainnode"]["memTotalBytes"],
+    ) == (1000, 1000)
+    assert by_node["mainnode"]["diskUsedBytes"] is None
+    assert by_node["mainnode"]["diskTotalBytes"] is None
+    assert by_node["bad"]["cpuPercent"] is None
+    assert by_node["bad"]["memUsedBytes"] is None
+    assert by_node["bad"]["memTotalBytes"] is None
+
+
+def test_payload_fails_malformed_actions_state_closed_to_disabled():
+    now = 1_000_000
+    rows = [
+        _row(
+            "a", "enabled", "forkmesh", root="abc", synced="990000",
+            actions_enabled=True, actions_state="enabled",
+        ),
+        _row(
+            "b", "running", "forkmesh", root="abc", synced="980000",
+            actions_enabled=True, actions_state="running",
+        ),
+        _row(
+            "c", "tampered", "forkmesh", root="abc", synced="970000",
+            actions_enabled=True, actions_state="queued",
+        ),
+        _row(
+            "d", "legacy", "forkmesh", root="abc", synced="960000",
+        ),
+    ]
+    payload = build_repo_mirrors_payload(
+        "enabled", "forkmesh", rows, {}, {}, now, 600_000, 5_000
+    )
+    by_node = {mirror["node"]: mirror for mirror in payload["mirrors"]}
+    assert (by_node["enabled"]["actionsEnabled"],
+            by_node["enabled"]["actionsState"]) == (True, "enabled")
+    assert (by_node["running"]["actionsEnabled"],
+            by_node["running"]["actionsState"]) == (True, "running")
+    assert (by_node["tampered"]["actionsEnabled"],
+            by_node["tampered"]["actionsState"]) == (False, "disabled")
+    assert (by_node["legacy"]["actionsEnabled"],
+            by_node["legacy"]["actionsState"]) == (False, "disabled")
 
 
 def test_payload_marks_mirrors_the_integrity_gate_rejects():
@@ -327,6 +461,89 @@ def test_payload_downgrades_rejected_to_healing_when_source_online():
     )
     assert {m["node"]: m["integrity"] for m in offline["mirrors"]}["tampered"] \
         == "rejected"
+
+
+def test_payload_uses_explicit_org_backing_node_as_integrity_anchor():
+    # /forkmesh/forkmesh is an organization alias explicitly linked to
+    # mirror2/forkmesh. The direct HTTPS router treats that account-owned,
+    # signed backing record as the organization's canonical attestation. The
+    # mirror-status payload must use the same pin instead of a stale same-name
+    # local-node record, otherwise it contradicts the route it is describing.
+    now = 1_000_000
+    stale = "a" * 64
+    current = "b" * 64
+    rows = [
+        _row("source", "jett", "forkmesh", root="abc", synced="910000",
+             state_hash=stale),
+        _row("canonical", "mirror2", "forkmesh", root="", synced="990000",
+             state_hash=current, source="remote-clone"),
+        _row("peer", "mirror3", "forkmesh", root="", synced="980000",
+             state_hash=current, source="remote-clone"),
+    ]
+    ordinary = build_repo_mirrors_payload(
+        "mirror2", "forkmesh", rows, {}, {}, now, 600_000, 5_000,
+    )
+    assert {
+        m["node"]: m["integrity"] for m in ordinary["mirrors"]
+    } == {
+        "mirror2": "rejected",
+        "mirror3": "rejected",
+        "jett": "ok",
+    }
+
+    linked = build_repo_mirrors_payload(
+        "mirror2", "forkmesh", rows, {}, {}, now, 600_000, 5_000,
+        linked_canonical=True,
+    )
+    assert {
+        m["node"]: m["integrity"] for m in linked["mirrors"]
+    } == {
+        "mirror2": "ok",
+        "mirror3": "ok",
+        "jett": "rejected",
+    }
+
+
+def test_linked_backing_node_presence_marks_mismatched_peer_healing():
+    now = 1_000_000
+    current = "a" * 64
+    old = "b" * 64
+    rows = [
+        _row("canonical", "mirror2", "forkmesh", root="", synced="990000",
+             state_hash=current, source="remote-clone"),
+        _row("peer", "mirror3", "forkmesh", root="", synced="980000",
+             state_hash=old, source="remote-clone"),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mirror2", "forkmesh", rows, {"canonical": now - 1_000}, {},
+        now, 600_000, 5_000, linked_canonical=True,
+    )
+    assert {
+        m["node"]: m["integrity"] for m in payload["mirrors"]
+    } == {
+        "mirror2": "ok",
+        "mirror3": "healing",
+    }
+
+
+def test_linked_backing_node_without_attestation_fails_closed():
+    now = 1_000_000
+    rows = [
+        _row("canonical", "mirror2", "forkmesh", root="", synced="990000",
+             source="remote-clone"),
+        _row("peer", "mirror3", "forkmesh", root="", synced="980000",
+             state_hash="c" * 64, source="remote-clone"),
+    ]
+    payload = build_repo_mirrors_payload(
+        "mirror2", "forkmesh", rows, {}, {}, now, 600_000, 5_000,
+        linked_canonical=True,
+    )
+    assert {
+        m["node"]: m["integrity"] for m in payload["mirrors"]
+    } == {
+        "mirror2": "unknown",
+        "mirror3": "rejected",
+    }
 
 
 def test_payload_integrity_fails_open_without_source_attestation():
@@ -411,7 +628,10 @@ def _response(data, status=200, **_kwargs):
     return {"status": status, "data": data}
 
 
-def _load_handler(*, rows, presence=None, first_hosted=None, live_hosts=None):
+def _load_handler(
+    *, rows, presence=None, first_hosted=None, live_hosts=None,
+    linked_canonical=False,
+):
     calls = []
 
     async def ensure_schema(_env):
@@ -426,6 +646,12 @@ def _load_handler(*, rows, presence=None, first_hosted=None, live_hosts=None):
         if "FROM repo_first_hosted" in sql:
             return first_hosted or []
         return []
+
+    async def d1_first(_env, sql, *args):
+        calls.append(sql)
+        if "FROM org_repos" in sql:
+            return {"linked": 1} if linked_canonical else None
+        raise AssertionError(sql)
 
     async def decrypt_row(_env, data):
         return data
@@ -451,6 +677,7 @@ def _load_handler(*, rows, presence=None, first_hosted=None, live_hosts=None):
         "HYDRATE_PROBE_MAX": 8,
         "ensure_schema": ensure_schema,
         "d1_all": d1_all,
+        "d1_first": d1_first,
         "decrypt_row": decrypt_row,
         "repo_live_host_count": repo_live_host_count,
         "_is_blocked_catalog_identity": lambda _env, _owner, _name: False,
@@ -508,6 +735,50 @@ def test_repo_mirrors_handler_get_returns_public_mirrors_payload():
     # its clone-integrity verdict.
     assert any("FROM repo_state_history" in call for call in calls)
     assert all("integrity" in mirror for mirror in response["data"]["mirrors"])
+
+
+def test_repo_mirrors_handler_applies_linked_org_integrity_anchor():
+    handler, calls = _load_handler(
+        rows=[
+            {
+                "key_bi": "source",
+                "data": _row(
+                    "source", "jett", "forkmesh", root="abc",
+                    state_hash="a" * 64,
+                )["data"],
+            },
+            {
+                "key_bi": "canonical",
+                "data": _row(
+                    "canonical", "mirror2", "forkmesh", root="",
+                    state_hash="c" * 64, source="remote-clone",
+                )["data"],
+            },
+            {
+                "key_bi": "peer",
+                "data": _row(
+                    "peer", "mirror3", "forkmesh", root="",
+                    state_hash="c" * 64, source="remote-clone",
+                )["data"],
+            },
+        ],
+        linked_canonical=True,
+    )
+
+    response = asyncio.run(
+        handler(object(), _Request("GET"), "mirror2", "forkmesh")
+    )
+
+    assert response["status"] == 200
+    assert {
+        item["node"]: item["integrity"]
+        for item in response["data"]["mirrors"]
+    } == {
+        "mirror2": "ok",
+        "mirror3": "ok",
+        "jett": "rejected",
+    }
+    assert any("FROM org_repos" in call for call in calls)
 
 
 def test_repo_mirrors_handler_uses_live_host_probe_for_online_status():

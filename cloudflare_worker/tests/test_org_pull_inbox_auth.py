@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""Organization-alias authorization for pull-inbox drains."""
+
+import ast
+import asyncio
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ENTRY = ROOT / "src" / "entry.py"
+ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+QT_PULLS = (
+    ROOT.parent / "qt_client" / "src" / "MainWindowPulls.cpp"
+).read_text(encoding="utf-8")
+
+
+def _load(name, extra_globals):
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    selected = [
+        node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == name
+    ]
+    assert len(selected) == 1
+    module = ast.fix_missing_locations(
+        ast.Module(body=selected, type_ignores=[]))
+    namespace = dict(extra_globals)
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    return namespace[name]
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+class _Date:
+    @staticmethod
+    def now():
+        return 1_000_000
+
+
+class _Request:
+    url = (
+        "https://forkmesh.test/api/repo/forkmesh/forkmesh/pulls"
+        "?owner=forkmesh&ts=1000000&sig=org-admin-proof"
+    )
+
+
+def _runtime(*, direct=False, private=False, linked=True, members=None):
+    calls = {"verified": [], "links": 0, "members": 0}
+
+    async def authorize_owner(_env, _request, _owner):
+        return direct
+
+    async def repo_is_private(_env, owner, repo):
+        assert (owner, repo) == ("mirror2", "forkmesh")
+        return private
+
+    async def org_row(_env, org):
+        assert org == "forkmesh"
+        return "org-bi", {"name": "forkmesh"}
+
+    async def d1_first(_env, sql, *args):
+        assert "FROM org_repos" in sql
+        assert args == ("org-bi", "forkmesh", "mirror2")
+        calls["links"] += 1
+        return {"ok": 1} if linked else None
+
+    async def d1_all(_env, sql, *args):
+        assert "FROM org_members" in sql
+        assert "role IN ('owner','admin')" in sql
+        assert args == ("org-bi", 200)
+        calls["members"] += 1
+        return list(members or [])
+
+    async def verify_owner(_env, account, sig, canonical):
+        calls["verified"].append(
+            (account, sig, canonical.decode("utf-8")))
+        return account == "jett"
+
+    def safe_segment(value):
+        value = str(value or "")
+        return value if value and "/" not in value else None
+
+    return {
+        "_authorize_owner": authorize_owner,
+        "_repo_is_private": repo_is_private,
+        "_org_row": org_row,
+        "d1_first": d1_first,
+        "d1_all": d1_all,
+        "_verify_owner_signature": verify_owner,
+        "REPO_API_PREFIX_RE": __import__(
+            "re").compile(r"^/api/repo/([^/]+)/([^/]+)(?:/|$)"),
+        "safe_segment": safe_segment,
+        "parse_qs": parse_qs,
+        "urlparse": urlparse,
+        "Date": _Date,
+        "LOGIN_MAX_SKEW_MS": 300_000,
+        "MAX_ORG_MEMBERS": 200,
+        "MAX_NODE_NAME": 63,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+        "valid_node_name": lambda value: bool(value),
+    }, calls
+
+
+def test_current_org_admin_device_can_drain_exact_linked_public_repo():
+    runtime, calls = _runtime(
+        members=[
+            {"name": "plain-member", "role": "member"},
+            {"name": "jett", "role": "admin"},
+        ])
+    authorize = _load("_authorize_repo_inbox_owner", runtime)
+
+    assert _run(authorize(
+        object(), _Request(), "mirror2", "forkmesh")) is True
+    assert calls["links"] == 1
+    assert calls["members"] == 1
+    assert calls["verified"] == [(
+        "jett",
+        "org-admin-proof",
+        "forkmesh-issues-pull-v1\nforkmesh\n1000000",
+    )]
+
+
+def test_plain_org_members_and_unlinked_aliases_are_denied():
+    runtime, calls = _runtime(
+        members=[{"name": "reader", "role": "member"}])
+    authorize = _load("_authorize_repo_inbox_owner", runtime)
+    assert _run(authorize(
+        object(), _Request(), "mirror2", "forkmesh")) is False
+    assert calls["verified"] == []
+
+    runtime, calls = _runtime(
+        linked=False, members=[{"name": "jett", "role": "owner"}])
+    authorize = _load("_authorize_repo_inbox_owner", runtime)
+    assert _run(authorize(
+        object(), _Request(), "mirror2", "forkmesh")) is False
+    assert calls["members"] == 0
+    assert calls["verified"] == []
+
+
+def test_org_role_never_grants_private_inbox_access():
+    runtime, calls = _runtime(
+        private=True, members=[{"name": "jett", "role": "owner"}])
+    authorize = _load("_authorize_repo_inbox_owner", runtime)
+
+    assert _run(authorize(
+        object(), _Request(), "mirror2", "forkmesh")) is False
+    assert calls["links"] == 0
+    assert calls["members"] == 0
+    assert calls["verified"] == []
+
+
+def test_direct_owner_proof_still_authorizes_private_repositories():
+    runtime, calls = _runtime(direct=True, private=True)
+    authorize = _load("_authorize_repo_inbox_owner", runtime)
+
+    assert _run(authorize(
+        object(), _Request(), "mirror2", "forkmesh")) is True
+    assert calls["links"] == 0
+    assert calls["members"] == 0
+
+
+def test_pull_handler_uses_repo_aware_gate_for_read_and_ack():
+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+    handler = next(
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "pulls_handler"
+    )
+    source = ast.get_source_segment(ENTRY_TEXT, handler)
+    assert source.count("_authorize_repo_inbox_owner(") == 2
+    assert source.count("_authorize_owner(env, request, owner)") == 0
+
+
+def test_qt_pull_drain_signs_org_alias_but_keeps_server_authoritative():
+    drain = QT_PULLS.split(
+        "void MainWindow::drainPullsInboxFor", 1)[1].split(
+            "void MainWindow::applyPullsInboxPayload", 1)[0]
+    apply = QT_PULLS.split(
+        "void MainWindow::applyPullsInboxPayload", 1)[1].split(
+            "void MainWindow::pollOwnedInboxes", 1)[0]
+    query = QT_PULLS.split(
+        "QUrlQuery MainWindow::signedInboxQuery", 1)[1].split(
+            "void MainWindow::scheduleRelaySync", 1)[0]
+    assert "hasOwnerSigningCapability()" in drain
+    assert "hasOwnerSigningCapability(repo.owner)" not in drain
+    assert "hasOwnerSigningCapability()" in apply
+    assert "hasOwnerSigningCapability(repo.owner)" not in apply
+    assert "hasOwnerSigningCapability()" in query
+    assert "hasOwnerSigningCapability(owner)" not in query

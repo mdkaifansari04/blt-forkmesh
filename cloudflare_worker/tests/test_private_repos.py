@@ -21,7 +21,8 @@ CATALOG = ENTRY.parent / "catalog.py"
 # Names pulled verbatim from entry.py; the rest of the module (JS imports, async
 # crypto) is never executed.
 _WANT_FUNCS = (
-    "clean_string", "clean_int_series", "clean_logo_metadata", "safe_segment",
+    "clean_string", "clean_int_series", "clean_optional_integer",
+    "clean_optional_usage", "clean_logo_metadata", "safe_segment",
     "safe_catalog_record", "safe_contribution_transport")
 
 
@@ -94,6 +95,118 @@ def test_activity_weeks_are_clamped_and_padded():
     rec = safe_catalog_record(_base(activityWeeks=[1, "2", -5, "bad", 2_000_000]))
     assert rec["activityWeeks"][-5:] == [1, 2, 0, 0, 1_000_000]
     assert len(rec["activityWeeks"]) == 52
+
+
+def test_public_catalog_preserves_signed_pull_count_for_world_consumers():
+    rec = safe_catalog_record(_base(visibility="public", pullCount="42"))
+    assert rec["pullCount"] == "42"
+    assert safe_catalog_record(_base(visibility="public"))["pullCount"] == ""
+
+
+def test_actions_capability_is_strict_and_legacy_records_remain_absent():
+    legacy = safe_catalog_record(_base(visibility="public"))
+    assert "actionsEnabled" not in legacy
+    assert "actionsState" not in legacy
+
+    disabled = safe_catalog_record(_base(
+        visibility="public",
+        actionsEnabled=False,
+        actionsState="disabled",
+    ))
+    assert disabled["actionsEnabled"] is False
+    assert disabled["actionsState"] == "disabled"
+
+    for state in ("enabled", "running"):
+        enabled = safe_catalog_record(_base(
+            visibility="public",
+            actionsEnabled=True,
+            actionsState=state,
+        ))
+        assert enabled["actionsEnabled"] is True
+        assert enabled["actionsState"] == state
+
+
+def test_actions_capability_fails_closed_and_drops_non_status_material():
+    for fields in (
+        {"actionsEnabled": True},
+        {"actionsState": "enabled"},
+        {"actionsEnabled": 1, "actionsState": "enabled"},
+        {"actionsEnabled": False, "actionsState": "running"},
+        {"actionsEnabled": True, "actionsState": "queued"},
+    ):
+        assert safe_catalog_record(_base(visibility="public", **fields)) is None
+
+    record = safe_catalog_record(_base(
+        visibility="public",
+        actionsEnabled=True,
+        actionsState="enabled",
+        actionsVariables={"DEPLOY_TOKEN": "must-not-publish"},
+        actionsCommand="deploy --token must-not-publish",
+        actionsWorkingDirectory="/private/source",
+        actionsLogs="must-not-publish",
+    ))
+    assert record is not None
+    assert record["actionsEnabled"] is True
+    assert record["actionsState"] == "enabled"
+    assert "must-not-publish" not in repr(record)
+    assert "/private/source" not in repr(record)
+    assert not {
+        "actionsVariables",
+        "actionsCommand",
+        "actionsWorkingDirectory",
+        "actionsLogs",
+    }.intersection(record)
+
+
+def test_public_host_telemetry_is_bounded_and_absence_stays_unknown():
+    unknown = safe_catalog_record(_base())
+    assert not {
+        "cpuPercent",
+        "memUsedBytes",
+        "memTotalBytes",
+        "diskUsedBytes",
+        "diskTotalBytes",
+    }.intersection(unknown)
+    assert unknown.get("cpuPercent") is None
+    assert unknown.get("memUsedBytes") is None
+    assert unknown.get("memTotalBytes") is None
+    assert unknown.get("diskUsedBytes") is None
+    assert unknown.get("diskTotalBytes") is None
+
+    reported = safe_catalog_record(_base(
+        cpuPercent=149,
+        memUsedBytes=900,
+        memTotalBytes=800,
+        diskUsedBytes=300,
+        diskTotalBytes=1000,
+    ))
+    assert reported["cpuPercent"] == 100
+    assert (reported["memUsedBytes"], reported["memTotalBytes"]) == (800, 800)
+    assert (reported["diskUsedBytes"], reported["diskTotalBytes"]) == (300, 1000)
+
+
+def test_partial_or_malformed_host_telemetry_stays_unknown():
+    record = safe_catalog_record(_base(
+        cpuPercent=-1,
+        memUsedBytes=100,
+        # no total: an isolated "used" number is not meaningful
+        diskUsedBytes=10,
+        diskTotalBytes=0,
+    ))
+    assert record.get("cpuPercent") is None
+    assert record.get("memUsedBytes") is None
+    assert record.get("memTotalBytes") is None
+    assert record.get("diskUsedBytes") is None
+    assert record.get("diskTotalBytes") is None
+
+    record = safe_catalog_record(_base(
+        cpuPercent=12.5,
+        memUsedBytes=True,
+        memTotalBytes=1024,
+    ))
+    assert record.get("cpuPercent") is None
+    assert record.get("memUsedBytes") is None
+    assert record.get("memTotalBytes") is None
 
 
 def test_native_logo_metadata_is_bounded_and_source_content_is_dropped():

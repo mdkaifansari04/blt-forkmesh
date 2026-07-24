@@ -18,6 +18,9 @@ CHAT = (PUBLIC / "dashboard-chat.js").read_text(encoding="utf-8")
 PUBLIC_CHAT = (PUBLIC / "chat.js").read_text(encoding="utf-8")
 DASHBOARD_HTML = (PUBLIC / "dashboard" / "chat" / "index.html").read_text(encoding="utf-8")
 PUBLIC_CHAT_HTML = (PUBLIC / "chat.html").read_text(encoding="utf-8")
+CHAT_VIEW = (
+    PUBLIC / "dashboard" / "partials" / "views" / "chat.html"
+).read_text(encoding="utf-8")
 STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
 
 
@@ -34,6 +37,21 @@ def test_public_chat_marks_durable_frames_for_relay_retention():
     ]
     assert "envelope.persist = true" in send
     assert "DURABLE_TYPES.has(" in send
+
+
+def test_replayed_self_messages_are_rendered_after_refresh():
+    for source in (CHAT, PUBLIC_CHAT):
+        on_frame = source[
+            source.index("async function onFrame("):
+            source.index("const DURABLE_TYPES", source.index("async function onFrame("))
+        ]
+        assert "plain.senderId === selfId" not in on_frame
+
+        render_entry = source[
+            source.index("function renderChatEntry("):
+            source.index("async function verifyAdminDelete(")
+        ]
+        assert 'entry.senderId === selfId ? "self" : kind' in render_entry
 
 
 def test_durable_type_set_matches_the_node():
@@ -92,9 +110,10 @@ def test_public_chat_splits_guest_general_from_authenticated_channels():
     assert "sender: worldVisitorName(plain.sender)" in PUBLIC_CHAT
     assert "World visitor · ${asserted}" in PUBLIC_CHAT
     assert "PUBLIC_WORLD_ROOM_KEY_ENDPOINT" in PUBLIC_CHAT
-    assert "AUTHENTICATED_ROOM_KEY_ENDPOINT" in PUBLIC_CHAT
+    assert "PRIVATE_CHANNELS_ENDPOINT" in PUBLIC_CHAT
+    assert "fetchRoomAccess" in PUBLIC_CHAT
     assert "PUBLIC_WORLD_CHAT_WS_PATH" in PUBLIC_CHAT
-    assert "AUTHENTICATED_CHAT_WS_PATH" in PUBLIC_CHAT
+    assert "access.webSocketUrl" in PUBLIC_CHAT
     assert "switchChatRoom" in PUBLIC_CHAT
     assert "frameMatchesScope" in PUBLIC_CHAT
     assert "Guests can participate only in public World #general" in PUBLIC_CHAT
@@ -139,11 +158,18 @@ def test_public_chat_has_rooms_conversation_and_people_panes():
     assert 'id="chat-channel-title"' in PUBLIC_CHAT_HTML
     assert ".chat-rooms-pane" in PUBLIC_CHAT_HTML
     assert ".chat-people-pane" in PUBLIC_CHAT_HTML
-    # Sends carry the active channel; #general uses the isolated public room,
-    # while authenticated channels retain the desktop-compatible room.
-    assert "channel: activeChannel" in PUBLIC_CHAT
+    # Sends carry the selected display label while private buffers and room
+    # access stay keyed by the server-provided opaque channel id.
+    assert "channel: channelDisplayLabel(activeChannel)" in PUBLIC_CHAT
     assert "function setActiveChannel(" in PUBLIC_CHAT
-    assert 'DEFAULT_CHANNELS = ["#general", "#welcome", "#random"]' in PUBLIC_CHAT
+    assert 'const PRIVATE_CHANNELS_ENDPOINT = "/api/chat/channels"' in PUBLIC_CHAT
+    assert 'DEFAULT_CHANNELS = ["#general", "#welcome", "#random"]' not in PUBLIC_CHAT
+
+
+def test_dashboard_public_room_links_to_private_channel_directory():
+    assert "function mountPrivateChannelsLink(" in CHAT
+    assert 'link.href = "/chat"' in CHAT
+    assert 'link.textContent = "Open private channels"' in CHAT
 
 
 def test_public_chat_sends_presence_keepalive_at_desktop_cadence():
@@ -238,7 +264,11 @@ def test_dashboard_side_chat_orders_by_ts_with_avatar_and_time():
     assert "avatarLetter(message.who)" in CHAT
     # Call sites hand the epoch timestamp through (formatting happens at
     # render), so ordering never depends on arrival order.
-    assert "appendMessage(kind, who, text, entry.id, entry.senderId,\n                  Number(entry.ts) || Date.now())" in CHAT
+    assert (
+        "appendMessage(kind, who, text, entry.id, entry.senderId,\n"
+        "                  Number(entry.ts) || Date.now(), attachment)"
+        in CHAT
+    )
 
 
 def test_dashboard_side_chat_keeps_its_socket_alive_and_reconnects():
@@ -255,3 +285,43 @@ def test_dashboard_side_chat_keeps_its_socket_alive_and_reconnects():
         CHAT.index('socket.addEventListener("error"')
     ]
     assert "scheduleReconnect();" in close_handler
+
+
+def test_world_embedded_dashboard_chat_removes_redundant_dashboard_chrome():
+    assert 'params.get("worldEmbed") !== "1"' in CHAT_VIEW
+    assert 'document.documentElement.dataset.worldEmbed = "1"' in CHAT_VIEW
+    assert 'html[data-world-embed="1"] [data-app-header]' in CHAT_VIEW
+    assert 'html[data-world-embed="1"] [data-dashboard-sidebar]' in CHAT_VIEW
+    assert 'html[data-world-embed="1"] [data-mobile-sidebar-backdrop]' in CHAT_VIEW
+    assert "display: none !important" in CHAT_VIEW
+    assert "data-dashboard-chat-view" in CHAT_VIEW
+    assert "data-dashboard-chat-composer" in CHAT_VIEW
+
+
+def test_world_embedded_dashboard_chat_tracks_mobile_keyboard_viewport():
+    assert "window.visualViewport?.height || window.innerHeight" in CHAT_VIEW
+    assert '"--forkmesh-chat-viewport-height"' in CHAT_VIEW
+    viewport_listeners = CHAT_VIEW[
+        CHAT_VIEW.index("syncWorldEmbedViewport();"):
+        CHAT_VIEW.index('window.addEventListener("resize"')
+    ]
+    assert viewport_listeners.count(
+        "window.visualViewport?.addEventListener("
+    ) == 2
+    assert '"resize",' in viewport_listeners
+    assert '"scroll",' in viewport_listeners
+    assert "height: 100%;" in CHAT_VIEW
+    assert "min-height: 0 !important;" in CHAT_VIEW
+    assert "overflow-y: auto;" in CHAT_VIEW
+
+
+def test_world_embedded_dashboard_chat_keeps_mobile_composer_usable():
+    assert "font-size: 16px;" in CHAT_VIEW
+    assert "min-height: 2.75rem;" in CHAT_VIEW
+    assert 'meta[name="viewport"]' in CHAT_VIEW
+    assert 'viewportMeta.content += ", viewport-fit=cover"' in CHAT_VIEW
+    assert "env(safe-area-inset-bottom, 0px)" in CHAT_VIEW
+    assert "env(safe-area-inset-left, 0px)" in CHAT_VIEW
+    assert "env(safe-area-inset-right, 0px)" in CHAT_VIEW
+    assert 'aria-label="Message #general"' in CHAT_VIEW
+    assert 'enterkeyhint="send"' in CHAT_VIEW

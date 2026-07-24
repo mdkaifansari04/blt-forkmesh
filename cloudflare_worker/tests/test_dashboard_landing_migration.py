@@ -59,7 +59,11 @@ def test_root_keeps_regular_site_and_embeds_world_for_every_visitor():
 
     assert "Protect the code that matters from a single-host failure" in index
     assert "Code hosting that lives on the network." not in index
-    assert "A living city for code." in world
+    # The World drops visitors straight into the interactive city: the old
+    # "A living city for code." marketing hero is gone, leaving only the
+    # accessible no-JS loading fallback that hydrates into the 3D world.
+    assert "A living city for code." not in world
+    assert "ENTERING THE WORLD" in world
     assert 'data-world-mode="public"' in world
     # The Worker answers / with the same regular site regardless of login state,
     # and the World remains available inside its bounded window and at /world/.
@@ -1504,15 +1508,17 @@ def test_dashboard_pull_detail_reads_committed_patch_for_files_changed():
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
     for marker in (
-        "async function loadRepoPullPatch(repo, number)",
+        'const PULL_METADATA_BRANCH = "forkmesh/pulls";',
+        "async function resolveRepoPullMetadataCommit(repo)",
+        'async function loadRepoPullPatch(repo, number, metadataCommit = "")',
         "function parsePatchStats(patch)",
         "function renderRepoPullFiles(files)",
         "function renderRepoPullPatch(patch, key = \"\")",
         "data-repo-pull-files",
         "data-repo-pull-patch",
         "pulls/${number}/changes.patch",
-        "fetchRepoJson(repoLiveUrl(repo, \"blob\", { path: patchPath, ref: \"\" }))",
-        "const pullPatch = kind === \"pulls\" ? await loadRepoPullPatch(repo, number) : null;",
+        "ref: commit,",
+        "? await loadRepoPullPatch(repo, number, pullMetadataCommit)",
         "renderRepoPullFiles(pullPatch.files)",
         "renderRepoPullPatch(pullPatch.patch, `pull:${repoKey(repo)}:${number}`)",
         "data-show-full-diff",
@@ -1522,6 +1528,49 @@ def test_dashboard_pull_detail_reads_committed_patch_for_files_changed():
 
     assert "pulls/${number}/changes.patch" in dashboard_js
     assert "fetchJson(`${repoApiBase(repo)}/pulls" not in dashboard_js
+
+
+def test_dashboard_pull_metadata_reads_pin_the_dedicated_branch_commit():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    resolver = dashboard_js[
+        dashboard_js.index("const PULL_METADATA_BRANCH")
+        : dashboard_js.index("function isMissingMirrorFolder")
+    ]
+    records = dashboard_js[
+        dashboard_js.index("async function loadRepoRecordsFromMirror")
+        : dashboard_js.index("function renderRepoCollectionPagination")
+    ]
+    detail = dashboard_js[
+        dashboard_js.index("async function loadRepoRecordDetail")
+        : dashboard_js.index("function setRepoTabCount")
+    ]
+    patch = dashboard_js[
+        dashboard_js.index("async function loadRepoPullPatch")
+        : dashboard_js.index("// A pull's conversation")
+    ]
+    conversation = dashboard_js[
+        dashboard_js.index("async function loadRepoPullConversation")
+        : dashboard_js.index("// A discussion's replies")
+    ]
+
+    assert 'const PULL_METADATA_BRANCH = "forkmesh/pulls";' in resolver
+    assert "`${repoApiBase(repo)}/branches`" in resolver
+    assert ".find((candidate) => candidate.name === PULL_METADATA_BRANCH)" in resolver
+    assert "const commit = immutableGitCommit(branch?.commit);" in resolver
+    assert 'throw new Error("pull_metadata_unavailable")' in resolver
+    assert "if (!repo || repo.isPrivate)" in resolver
+
+    assert "{ ref: await resolveRepoPullMetadataCommit(repo) }" in records
+    assert "fetchRepoBlobs(repo, dirs.map(recordPath), refParams)" in records
+    assert "await resolveRepoPullMetadataCommit(repo)" in detail
+    assert "? { ref: pullMetadataCommit }" in detail
+    assert "ref: commit," in patch
+    assert "ref: commit," in conversation
+    assert "{ ref: commit }" in conversation
+
+    # Pull readers must never ask the mirror to guess a mutable/default ref.
+    for source in (records, detail, patch, conversation):
+        assert 'ref: ""' not in source
 
 
 def test_dashboard_commit_history_opens_live_commit_detail_not_inbox_route():

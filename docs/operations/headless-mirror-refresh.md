@@ -6,7 +6,8 @@ node private key, an age identity, a Cloudflare token, or a wallet key. All
 signing and encryption operations go through the bounded protocols in
 `headless_mirror_identity.py`.
 
-The three modes form an intentional deployment sequence:
+The refresh, publication, and renewal modes form an intentional deployment
+sequence:
 
 1. `refresh` checks the exact bare source with `git fsck --full --strict`,
    creates a new age-encrypted snapshot, validates a staged gateway
@@ -15,12 +16,25 @@ The three modes form an intentional deployment sequence:
    configuration.
 3. `register` validates the active source/archive/configuration, registers the
    HTTPS endpoint, and then publishes the node-owner catalog-v2 record.
+4. `renew` re-authenticates the immutable active generation and republishes the
+   signed endpoint/catalog lease without a full Git fsck or a second encrypted
+   repository materialization.
 
-`check` performs the active-state validation from step 3 but makes no network
-request and does not reseal the repository. It is suitable for a gateway
-`ExecStartPre`. It opens the refresh-created advisory lock read-only, so the
-check remains compatible with a `ProtectSystem=strict` service sandbox. A
-missing lock fails closed instead of making the pre-start check mutate state.
+`configure-actions` is a separate owner-local control mode. It accepts one
+bounded, secret-free boolean request on stdin, atomically changes only
+`catalog.actionsEnabled` while preserving all other refresh fields and file
+permissions, then performs the same signed endpoint/catalog publication as a
+renewal. Workflow variables and other secret material are never accepted by
+this mode and must never be placed in the refresh configuration.
+
+`check` performs the full active-state validation from step 3 but makes no
+network request and does not reseal the repository. That operator check
+includes `git fsck --full --strict`, so do not put it on the gateway's
+`ExecStartPre` path. The gateway's own `--check` mode is the bounded startup
+guard: it validates the generated configuration, endpoint manifest,
+materialized public repositories, and exact refs integrity pins without
+repeating the source-repository fsck. Both the precheck and `ExecStart` must
+read the same generated gateway configuration.
 
 This separation prevents the public catalog from advertising new refs before
 the gateway has restarted. If endpoint registration or catalog publication
@@ -77,6 +91,7 @@ was not run.
   "type": "forkmesh.headless-mirror-refresh",
   "sourceRepository": "/srv/git/forkmesh.git",
   "archiveDirectory": "/var/lib/forkmesh-mirror/encrypted",
+  "releaseStore": "/var/lib/forkmesh-mirror/releases",
   "gatewayConfigPath": "/var/lib/forkmesh-mirror/gateway/mirror-gateway.json",
   "identityStateDirectory": "/var/lib/forkmesh-mirror/identity",
   "identityHelperPath": "/opt/forkmesh/tools/headless_mirror_identity.py",
@@ -110,15 +125,50 @@ was not run.
     "search",
     "stats",
     "sizes",
-    "release-blob"
+    "release-blob",
+    "merge-pull",
+    "actions-status"
   ],
   "catalog": {
     "description": "ForkMesh mirror",
     "branch": "main",
-    "platform": "git"
+    "platform": "git",
+    "actionsEnabled": false,
+    "reportCpu": false,
+    "reportMemory": false,
+    "reportDisk": false
   }
 }
 ```
+
+`merge-pull` is an explicit write capability. When present, the generated
+gateway configuration includes a fixed `mergeExecutorCommand` pointing back to
+this refresh controller. The public request supplies only a pull number,
+idempotency id, and exact Git object ids. The node accepts branch-backed open
+pulls whose committed metadata pins those ids, performs a hook-free atomic CAS
+of `main` and `forkmesh/pulls`, reseals the repository, and republishes signed
+health before reporting the merge complete. Omit `merge-pull` to keep a node
+strictly read-only.
+
+All object-producing Git plumbing runs first in a mode-0700, owner-only object
+quarantine outside the bare repository. A conflict drops that quarantine
+without importing an object. A successful candidate is durably journaled,
+installed, and made reachable through hidden
+`refs/forkmesh/merge-staging/<request>/...` refs before the public-ref CAS.
+The same transaction advances both public refs, writes hidden completion
+markers, and removes the staging pair. If the CAS loses a race, the staging refs
+remain to keep every speculative object reachable. Startup/refresh replays a
+valid owner-only journal before `git fsck`, so an interruption cannot strand
+unreachable objects in the source. It never runs a broad prune.
+
+The author's PullStore signature remains intact. The signature-covered title,
+base, head, derived patch/mbox, author, and timestamp are preserved, as are the
+immutable creation OIDs and signature bytes. Only the established owner-applied
+lifecycle fields (`status`, `mergeBase`, and `mergeHead`) change. Idempotency
+results live in bounded, mode-0600 node-owner state rather than a fetchable Git
+object. The Worker keeps its blind-indexed routing record for seven days,
+expires in bounded batches, and enforces both per-repository and global row
+ceilings; in-flight jobs are never evicted merely to admit another merge.
 
 `nodeOwner` must match the node name in the identity helper's `public-info`
 response and must appear in `ownerAliases`. Every alias becomes a separate
@@ -133,6 +183,68 @@ mapping; an alias does not grant organization membership or private access.
 identity must already pin `publicOrigin`. `catalog.solana`, when present, is
 only a public, self-custodial payout address. Never place a seed phrase, private
 key, API token, password, or wallet credential in this file.
+
+Host resource reporting is explicit and off by default. Set
+`catalog.reportCpu`, `catalog.reportMemory`, or `catalog.reportDisk` to `true`
+only when the operator wants that aggregate metric included in the node's
+public, signed catalog record and World mirror display. CPU is a short aggregate
+Linux `/proc/stat` sample; memory uses `MemTotal` and `MemAvailable`; disk uses
+the filesystem containing `sourceRepository`. ForkMesh publishes only bounded
+integer percentages or used/total byte pairs. Disabled, unavailable, partial,
+or malformed readings are omitted and remain “not shared”—they are never
+reported as zero. No process list, path, file name, repository content, or
+per-process activity is collected.
+
+Actions publication is also explicit and off by default.
+`catalog.actionsEnabled` is the owner-approved upper bound; it does not by
+itself claim that a workflow is running. The local executor writes
+`actions-state.json` next to `gatewayConfigPath`, using the exact contract in
+`docs/mirror-actions-state.schema.json`. A same-account deployment uses a
+regular, single-link, producer-owned mode-0600 file. The packaged root control
+daemon instead uses only the fixed
+`/var/lib/forkmesh-mirror/gateway/actions-state.json` handoff: the parent
+remains `forkmesh-mirror:forkmesh-mirror` mode 0700 and the atomically replaced
+file is `root:forkmesh-mirror` mode 0640. The service-account reader requires
+that exact parent owner/group/mode and accepts the group-readable form only at
+that fixed path with root ownership, its own effective group, one link, and no
+symbolic-link traversal. The service account can remove the file (causing a
+safe fallback), but cannot forge a root-owned replacement. The node must match
+`nodeOwner`, the state must be exactly `disabled`, `enabled`, or `running`, and
+the update/expiry timestamps must fit a maximum 15-minute lease horizon. A
+disabled catalog setting can never be elevated by a lease. Missing, unsafe,
+malformed, stale, or implausibly dated leases fall back to the configured
+enabled/disabled state without breaking ordinary mirror renewal. Workflow
+definitions, variables, commands, paths, logs, and secret values are never
+copied into the signed public catalog.
+
+`actions-status` is a separate explicit read operation. When it is present,
+the generated gateway configuration contains one fixed `actionsSummaryPath`
+next to `gatewayConfigPath`; without the operation, that path is omitted. The
+desktop executor atomically maintains `actions-summary.json` following
+`docs/mirror-actions-summary.schema.json`. Same-account deployments retain
+producer-owned mode 0600. The packaged root daemon may cross the account
+boundary only through
+`/var/lib/forkmesh-mirror/gateway/actions-summary.json`, with the same protected
+parent and exact `root:forkmesh-mirror` mode-0640, regular, single-link contract
+as the state lease. The gateway rechecks parent and file metadata on every
+open, uses no-follow descriptors, and fails closed on replacement or spoofed
+ownership. It contains at most the 20 newest runs, exact lifecycle timestamps,
+and at most 16 KiB of valid UTF-8 from each ActionStore log tail. ActionRunner
+redacts configured variable values before the log reaches ActionStore. The
+summary never serializes workflow source, commands, variable maps, workflow
+paths, local paths, or private repository data. Its complete document is
+limited to 256 KiB. Its positive expiry is ten minutes, below the enforced
+15-minute maximum; the desktop refreshes the lease periodically, publishes
+lifecycle changes on the next event-loop turn, and coalesces high-volume
+running output rather than writing once per line.
+
+`releaseStore` is optional. When configured, it must be an existing owner-only
+directory containing the node's content-addressed `sha256/<prefix>/<digest>/data`
+release assets. It is rendered onto every public alias backed by this encrypted
+repository so immutable release downloads can round-robin with clone and browse
+traffic. The refresh never copies assets into that directory and never treats
+it as repository source; operators must replicate a published blob and verify
+its SHA-256 before exposing it.
 
 Install the final configuration with:
 
@@ -171,12 +283,44 @@ Configure the gateway service to read the generated
 `gatewayConfigPath`. A typical start boundary is:
 
 ```ini
-ExecStartPre=/usr/bin/python3 /opt/forkmesh/tools/headless_mirror_refresh.py --config /var/lib/forkmesh-mirror/gateway/mirror-refresh.json check
-ExecStart=/usr/bin/python3 /opt/forkmesh/tools/mirror_gateway.py --config /var/lib/forkmesh-mirror/gateway/mirror-gateway.json
+ExecStartPre=/usr/bin/python3 -I /opt/forkmesh-mirror/mirror_gateway.py --config /var/lib/forkmesh-mirror/gateway/mirror-gateway.json --check
+ExecStart=/usr/bin/python3 /opt/forkmesh-mirror/mirror_gateway.py --config /var/lib/forkmesh-mirror/gateway/mirror-gateway.json
 ```
 
 Keep the gateway listener on loopback. Cloudflare Tunnel is the public TLS
 boundary.
+
+The gateway materializes one authenticated working copy of the encrypted bare
+repository for its process lifetime, and `refresh` materializes a second copy
+before the atomic cutover. On hosts where `/tmp` is a small tmpfs, create an
+owner-only directory on a disk-backed filesystem and set `TMPDIR` for both the
+gateway service and manual refresh process:
+
+```ini
+[Service]
+Environment=TMPDIR=/var/lib/forkmesh-mirror/runtime-tmp
+ReadWritePaths=/var/lib/forkmesh-mirror/identity /var/lib/forkmesh-mirror/encrypted /var/lib/forkmesh-mirror/gateway /var/lib/forkmesh-mirror/runtime-tmp -/var/lib/forkmesh-mirror/source -/srv/forkmesh-git
+```
+
+The directory must already exist, be owned by the mirror service account, and
+have mode `0700`. The refresh subprocess forwards `TMPDIR` only when it is an
+absolute, normalized, real owner-only directory; unsafe values are ignored.
+Size it for at least two expanded copies during validation. This storage is
+ephemeral materialized public-repository data, not a replacement for the
+encrypted archive, and should remain inside the service's protected local
+storage boundary.
+
+The packaged gateway keeps `ProtectSystem=strict` and makes only its identity,
+encrypted-generation, gateway-state, runtime-temporary, and bare-source
+subtrees writable. Release CAS data remains read-only. The leading `-` on each
+alternative bare-source layout tells systemd that an absent alternative is
+acceptable: packaged nodes use `/var/lib/forkmesh-mirror/source`, while some
+existing operators use `/srv/forkmesh-git`. This write boundary is required
+when `merge-pull` is enabled: the fixed executor records a terminal idempotency
+result, updates exact checked refs, reseals the new generation, and renews the
+signed catalog. A deployment using any other source or state location must
+replace these entries with its exact dedicated paths in a systemd drop-in; do
+not grant the gateway a broad filesystem path such as `/`.
 
 ## Register after restart
 
@@ -209,6 +353,60 @@ signed manifest must be publicly reachable, and its node key must already be
 bound to the registered node account. The Worker will reject registration
 otherwise.
 
+## Renew the signed health lease
+
+Healthy endpoints are deliberately short-lived so a dead or disconnected
+mirror falls out of routing. Each mirror therefore renews its own signed lease
+every four minutes:
+
+```bash
+/usr/bin/python3 /opt/forkmesh-mirror/headless_mirror_refresh.py \
+  --config /var/lib/forkmesh-mirror/gateway/mirror-refresh.json \
+  renew
+```
+
+`renew` verifies the owner-local identity, active configuration, complete
+encrypted-archive digest, exact source refs, and signatures before publishing.
+It omits only the expensive full Git fsck and second gateway materialization;
+the Worker still performs a fresh signed repository challenge and leaves the
+endpoint fail-closed if the gateway or Tunnel is unavailable.
+
+Install and enable `forkmesh-mirror-renew.service` and
+`forkmesh-mirror-renew.timer` from `packaging/systemd/`. The timer runs after
+boot and every four minutes. Its cadence, scheduling jitter, and bounded
+five-minute service runtime remain below the ten-minute endpoint-registration
+lease, so independently healthy mirrors stay eligible for round-robin
+selection. A registration lease alone never authorizes repository bytes: the
+Worker still requires a node-signed repository proof matching the canonical
+refs, and caches a successful proof for no more than one minute before
+revalidating it on later use.
+Renewal and repository refresh share the same exclusive owner-only lock, so a
+push refresh completes before a queued renewal can publish.
+
+## Configure the public Actions capability
+
+The desktop controller normally invokes the installed helper through its fixed
+SSH stdin mode after it has prepared an isolated Actions clone and committed
+the device-local configuration. For direct operator use, pass only this
+document:
+
+```bash
+printf '%s\n' \
+  '{"schemaVersion":1,"type":"forkmesh.mirror-actions-catalog-configuration","actionsEnabled":true}' \
+  | /usr/bin/python3 -I \
+      /opt/forkmesh-mirror/headless_mirror_refresh.py \
+      --config /var/lib/forkmesh-mirror/gateway/mirror-refresh.json \
+      configure-actions
+```
+
+The request contract is
+`docs/mirror-actions-catalog-configuration.schema.json`. The mode reads at most
+1 KiB from stdin, rejects duplicate/unknown fields and non-boolean values, and
+never accepts deployment variables. Its output contains only `ok`, the generic
+event name, and the resulting boolean. The refresh configuration remains
+owner-only and the signed publication still contains no workflow or secret
+data.
+
 ## SSH post-receive integration
 
 The SSH forced-command gateway may write the bare source, but it must not
@@ -227,14 +425,21 @@ successful receive-pack
   -> start serialized refresh service
   -> headless_mirror_refresh.py refresh
   -> restart mirror gateway
-  -> wait until the gateway is active
+  -> within one bounded deadline, verify identity-bound signed health
+     over both loopback and the configured public Cloudflare origin
   -> headless_mirror_refresh.py register
 ```
+
+The health clients ignore ambient proxy settings and reject redirects, so a
+different endpoint cannot satisfy either proof. The tracked example allows 180
+seconds for the gateway and Cloudflare Tunnel to become ready. Registration
+fails closed if either signed proof is unavailable or invalid; the independent
+four-minute renewal timer remains the fallback for a later transient outage.
 
 Do not place this sequence behind `sh -c` with user-controlled repository
 arguments. Use fixed command arrays and a fixed config path. A service manager
 should serialize the sequence; the tool also takes an owner-only advisory lock
-so overlapping refresh/check/register invocations cannot interleave.
+so overlapping refresh/check/register/renew invocations cannot interleave.
 
 Concurrent Git ref movement is detected by comparing the refs before sealing,
 the helper's sealed-snapshot digest, and the refs after a second strict fsck.

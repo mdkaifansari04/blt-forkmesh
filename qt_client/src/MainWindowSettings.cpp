@@ -873,8 +873,9 @@ QWidget *MainWindow::buildSettingsSection()
     nodeStatsLabel->setObjectName("sectionLabel");
     auto *nodeStatsHint = new QLabel(
         "Show this machine's resource use to other nodes in the Mirror nodes "
-        "view. Off by default; servers installed from the Hosts tab report all "
-        "three.");
+        "view and in public mirror and World server views. Off by default; "
+        "servers installed from the Hosts tab report all three. Turning a "
+        "metric off leaves it unknown publicly rather than reporting zero.");
     nodeStatsHint->setObjectName("statusLine");
     nodeStatsHint->setWordWrap(true);
     struct NodeStatToggle {
@@ -891,8 +892,18 @@ QWidget *MainWindow::buildSettingsSection()
         auto *check = new QCheckBox(QString::fromUtf8(toggle.label));
         check->setChecked(QSettings().value(toggle.key, false).toBool());
         const QString key = toggle.key;
-        connect(check, &QCheckBox::toggled, this, [key](bool enabled) {
+        connect(check, &QCheckBox::toggled, this, [this, key](bool enabled) {
             QSettings().setValue(key, enabled);
+            if (m_backend)
+                m_backend->advertiseMirrorsNow();
+            // The backend coalesces its freshly sampled self-roster update for
+            // 200 ms. Publish after that value reaches m_homeRoster so enabling
+            // shows a real reading and disabling promptly removes the formerly
+            // public field from each signed catalog record.
+            QTimer::singleShot(500, this, [this] {
+                for (int i = 0; i < m_repositories.size(); ++i)
+                    publishRepository(i, false);
+            });
         });
         nodeStatChecks.append(check);
     }

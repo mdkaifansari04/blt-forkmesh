@@ -3,6 +3,7 @@
 #include "ForkMeshIdentity.h"
 #include "HeadlessConsole.h"
 #include "MainWindow.h"
+#include "MirrorActionsConfiguration.h"
 #include "PlatformLogFilter.h"
 #include "PublicMirrorRuntime.h"
 #include "ServerNode.h"
@@ -14,6 +15,9 @@
 #endif
 #ifndef FORKMESH_VERSION
 #define FORKMESH_VERSION "dev"
+#endif
+#ifndef FORKMESH_BUILD_COMMIT
+#define FORKMESH_BUILD_COMMIT "unknown"
 #endif
 
 #include <QApplication>
@@ -510,6 +514,18 @@ int main(int argc, char *argv[])
         printf("ForkMesh %s\n", FORKMESH_VERSION);
         return 0;
     }
+    // Machine-readable provenance used by the fleet binary installer.  Keep it
+    // separate from --version so existing scripts retain their exact output,
+    // while a same-semver artifact from an older commit can no longer pass the
+    // install verification.
+    if (rawArgs.contains(QStringLiteral("--build-commit"))) {
+        printf("%s\n", FORKMESH_BUILD_COMMIT);
+        static const QRegularExpression exactCommit(
+            QStringLiteral("^(?:[0-9a-f]{40}|[0-9a-f]{64})$"));
+        return exactCommit.match(QStringLiteral(FORKMESH_BUILD_COMMIT)).hasMatch()
+                   ? 0
+                   : 1;
+    }
     if (rawArgs.contains(QStringLiteral("--sign-mirror-manifest")))
         return runMirrorManifestSigner(argc, argv);
     if (rawArgs.contains(QStringLiteral("--verify-mirror-capability")))
@@ -518,6 +534,9 @@ int main(int argc, char *argv[])
         return runMirrorHealthSigner(argc, argv);
     if (rawArgs.contains(QStringLiteral("--materialize-public-mirror")))
         return runPublicMirrorMaterializer(argc, argv);
+    if (rawArgs.contains(
+            QStringLiteral("--configure-mirror-actions-stdin")))
+        return forkmesh::mirror_actions::runConfigurationStdin(argc, argv);
 
     const bool headless = detectHeadless(rawArgs);
     const bool allowRoot = rawArgs.contains(QStringLiteral("--allow-root")) ||

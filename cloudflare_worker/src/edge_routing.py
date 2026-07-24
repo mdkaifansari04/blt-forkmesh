@@ -17,7 +17,13 @@ import re
 from urllib.parse import quote, urlencode, urlparse, urlunparse
 
 
-ENDPOINT_STALE_MS = 2 * 60 * 1000
+# Endpoint registration is a coarse availability lease.  Hosts renew it every
+# four minutes and the bounded renewal unit may spend up to five minutes
+# validating a large encrypted mirror or waiting on the control plane.  Keep
+# that healthy path inside this ten-minute lease.  Repository traffic is still
+# fail-closed: entry.py independently requires a fresh node-signed repository
+# proof and caches it for at most 60 seconds before every routed operation.
+ENDPOINT_STALE_MS = 10 * 60 * 1000
 MAX_FAILOVER_ATTEMPTS = 4
 NODE_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
@@ -25,6 +31,7 @@ OPAQUE_REPLICA_RE = re.compile(r"^[0-9a-f]{64}$")
 PUBLIC_OPERATIONS = frozenset({
     "git-info-refs", "git-upload-pack", "tree", "blobs", "blob", "raw", "history",
     "commit", "compare", "branches", "search", "stats", "sizes", "release-blob",
+    "merge-pull", "actions-status",
 })
 
 

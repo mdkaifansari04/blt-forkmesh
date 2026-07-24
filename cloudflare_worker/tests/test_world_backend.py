@@ -2,7 +2,10 @@
 """Privacy and lifecycle contract for the transient multiplayer world."""
 
 import ast
+import asyncio
 import importlib.util
+import json
+import re
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -87,6 +90,7 @@ def _load_context_handler(now=17_500_000):
         "json_response": json_response,
         "world_protocol": world,
         "Date": SimpleNamespace(now=lambda: now),
+        "MAX_CONNECTIONS": 128,
     }
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace["world_context_handler"]
@@ -108,6 +112,9 @@ def test_context_returns_only_country_and_shared_clock_fields():
         "serverTimeMs": now,
         "worldTimeMs": now % world.WORLD_DAY_LENGTH_MS,
         "worldDayLengthMs": world.WORLD_DAY_LENGTH_MS,
+        "worldConnections": 64,
+        "worldMessagesPerSecond": 4,
+        "chatConnections": 128,
     }
     assert headers.read == ["cf-ipcountry"]
     assert response["cache_control"] == "no-store, max-age=0, must-revalidate"
@@ -282,6 +289,155 @@ def test_activity_is_generalized_allowlisted_and_never_accepts_urls():
         assert hidden["activityCategory"] == "hidden"
 
 
+def test_emoji_status_is_one_bounded_pictograph_and_one_bounded_word():
+    for emoji in (
+        "😀",
+        "🧑🏽‍💻",
+        "👨‍👩‍👧‍👦",
+        "🏳️‍🌈",
+        "🇺🇸",
+        "1️⃣",
+        "❤️",
+    ):
+        assert world.clean_status_emoji(emoji) == emoji
+    for invalid in (
+        "",
+        "hello",
+        "😀😀",
+        "<script>",
+        "https://example.test/",
+        "🇺",
+        "\u200d",
+        "A😀",
+        "😀 private",
+    ):
+        assert world.clean_status_emoji(invalid) == ""
+
+    for note in ("coding", "on-call", "débogage", "コード", "l’équipe"):
+        assert world.clean_status_note(note) == note
+    for invalid in (
+        "two words",
+        "https://example.test",
+        "<script>",
+        "/private",
+        "\u202esecret",
+        "x" * (world.WORLD_STATUS_NOTE_MAX + 1),
+    ):
+        assert world.clean_status_note(invalid) == ""
+
+    current = world.default_presence("peer", 1000)
+    assert current["statusEmoji"] == ""
+    assert current["statusNote"] == ""
+    kind, shared = world.sanitize_message({
+        "type": "presence",
+        "statusEmoji": "🧑🏽‍💻",
+        "statusNote": "coding",
+        "statusDetail": "private repository URL",
+    }, current, 2000)
+    assert kind == "presence"
+    public = world.public_presence(shared)
+    assert public["statusEmoji"] == "🧑🏽‍💻"
+    assert public["statusNote"] == "coding"
+    assert "statusDetail" not in public
+    assert "private repository URL" not in repr(public)
+
+    _, rejected = world.sanitize_message({
+        "type": "presence",
+        "statusEmoji": "😀😀",
+        "statusNote": "two words",
+    }, shared, 3000)
+    assert rejected["statusEmoji"] == ""
+    assert rejected["statusNote"] == ""
+
+    _, restored = world.sanitize_message({
+        "type": "presence",
+        "statusEmoji": "🚀",
+        "statusNote": "shipping",
+    }, rejected, 4000)
+    _, moved = world.sanitize_message({
+        "type": "move",
+        "x": 3,
+        "statusEmoji": "🔐",
+        "statusNote": "secret",
+    }, restored, 5000)
+    assert moved["statusEmoji"] == "🚀"
+    assert moved["statusNote"] == "shipping"
+
+
+def test_coarse_activity_metadata_is_bounded_and_privacy_gated():
+    assert world.WORLD_FIRST_VISIT_AGE_VALUES == {
+        "this-session", "today", "this-week", "this-month", "this-year",
+        "over-a-year", "hidden",
+    }
+    current = world.default_presence("peer", 1000)
+    assert current["inputActive"] is False
+    assert current["visitCount"] == 0
+    assert current["firstVisitAge"] == "hidden"
+
+    _, shared = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "viewing-repository",
+        "inputActive": True,
+        "visitCount": 27,
+        "firstVisitAge": "this-month",
+        "url": "https://example.test/private?q=secret",
+    }, current, 2000)
+    assert shared["inputActive"] is True
+    assert shared["visitCount"] == 27
+    assert shared["firstVisitAge"] == "this-month"
+    assert "url" not in world.public_presence(shared)
+    assert "example.test" not in repr(world.public_presence(shared))
+
+    _, bounded = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "exploring-town-square",
+        "visitCount": 5000,
+        "firstVisitAge": "over-a-year",
+    }, current, 3000)
+    assert bounded["visitCount"] == 999
+    assert bounded["firstVisitAge"] == "over-a-year"
+    _, lower_bounded = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "exploring-town-square",
+        "visitCount": -1,
+    }, current, 3500)
+    assert lower_bounded["visitCount"] == 0
+
+    _, rejected = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "exploring-town-square",
+        "inputActive": "true",
+        "visitCount": "999",
+        "firstVisitAge": "https://example.test/history",
+    }, current, 4000)
+    assert rejected["inputActive"] is False
+    assert rejected["visitCount"] == 0
+    assert rejected["firstVisitAge"] == "hidden"
+
+    _, hidden = world.sanitize_message({
+        "type": "presence",
+        "activityCategory": "hidden",
+        "inputActive": True,
+        "visitCount": 42,
+        "firstVisitAge": "today",
+    }, shared, 5000)
+    assert hidden["inputActive"] is False
+    assert hidden["visitCount"] == 0
+    assert hidden["firstVisitAge"] == "hidden"
+
+
+def test_arrival_slots_fill_unique_forward_facing_rows_of_ten():
+    positions = [world.arrival_position(slot) for slot in range(21)]
+    assert len({(item["x"], item["z"]) for item in positions}) == 21
+    assert [item["z"] for item in positions[:10]] == [30.0] * 10
+    assert [item["z"] for item in positions[10:20]] == [27.9] * 10
+    assert positions[20]["z"] == 25.8
+    assert all(item["yaw"] == 0.0 for item in positions)
+    assert all(item["y"] == 0.38 for item in positions)
+    assert world.first_available_arrival_slot([0, 2, 3]) == 1
+    assert world.first_available_arrival_slot(range(63)) == 63
+
+
 def test_public_door_state_is_explicit_and_allowlisted():
     current = world.default_presence("peer", 1000)
     assert current["publicDoor"] == "closed"
@@ -441,6 +597,11 @@ def test_only_presence_movement_and_heartbeat_frames_are_accepted():
 
 
 def test_rate_window_and_stale_cleanup_are_bounded():
+    assert (
+        world.WORLD_RATE_MAX_PER_WINDOW
+        < world.WORLD_RATE_HARD_MAX_PER_WINDOW
+        <= 16
+    )
     start = 10_000
     count = 0
     for _ in range(world.WORLD_RATE_MAX_PER_WINDOW):
@@ -481,6 +642,150 @@ def test_rate_window_and_stale_cleanup_are_bounded():
     assert world.presence_is_stale(
         now - world.WORLD_CLIENT_STALE_MS - 1, now) is True
     assert world.presence_is_stale(0, now) is True
+
+
+class _WorldSocket:
+    def __init__(self, state, now, rate_count=0):
+        self.attachment = SimpleNamespace(
+            **world.public_presence(state),
+            country_source="",
+            trusted_name="",
+            trusted_node_count=0,
+            is_admin=False,
+            ip_token="",
+            agent_token="",
+            pending_knocks=[],
+            arrival_slot=0,
+            last=now,
+            rl_start=now,
+            rl_count=rate_count,
+            departed=False,
+        )
+        self.sent = []
+        self.closed = []
+
+    def serializeAttachment(self, attachment):
+        self.attachment = SimpleNamespace(**attachment)
+
+    def send(self, message):
+        self.sent.append(message)
+
+    def close(self, code, reason):
+        self.closed.append((code, reason))
+
+
+def _world_socket_runtime(now=50_000):
+    class DurableObject:
+        pass
+
+    def ws_attachment(socket):
+        return socket.attachment
+
+    def ws_attr(socket, key, default=None):
+        return getattr(socket.attachment, key, default)
+
+    namespace = {
+        "DurableObject": DurableObject,
+        "Date": SimpleNamespace(now=lambda: now),
+        "world_protocol": world,
+        "_ws_attachment": ws_attachment,
+        "_ws_attr": ws_attr,
+        "to_js": lambda value: value,
+        "json": json,
+        "re": re,
+    }
+    node = _top_level_node("ForkMeshWorld")
+    module = ast.fix_missing_locations(
+        ast.Module(body=[node], type_ignores=[]))
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    instance = namespace["ForkMeshWorld"]()
+    broadcasts = []
+    instance._live_sockets = lambda cleanup=False: []
+    instance._broadcast = (
+        lambda frame, **_kwargs: broadcasts.append(frame)
+    )
+    return instance, broadcasts
+
+
+def _world_socket_message(instance, socket, payload):
+    asyncio.run(instance.webSocketMessage(
+        socket, json.dumps(payload, separators=(",", ":"))))
+
+
+def test_legitimate_join_presence_and_movement_burst_is_not_disconnected():
+    now = 50_000
+    instance, broadcasts = _world_socket_runtime(now)
+    socket = _WorldSocket(world.default_presence("peer", now), now)
+    frames = [
+        {"type": "presence", "status": "available"},
+        {"type": "move", "x": 1, "z": 1, "moving": False},
+        {"type": "presence", "inputActive": True},
+        {"type": "move", "x": 2, "z": 2, "moving": True},
+        {"type": "move", "x": 3, "z": 3, "moving": True},
+    ]
+    for frame in frames:
+        _world_socket_message(instance, socket, frame)
+
+    assert socket.closed == []
+    assert socket.attachment.rl_count == 5
+    assert socket.attachment.x == 2
+    assert socket.attachment.z == 2
+    assert len(broadcasts) == world.WORLD_RATE_MAX_PER_WINDOW
+
+
+def test_isolated_excess_movement_and_presence_are_dropped_without_disconnect():
+    now = 50_000
+    cases = (
+        (
+            {"type": "move", "x": 40, "z": 50, "moving": True},
+            {"x": 4.0, "z": 5.0},
+        ),
+        (
+            {"type": "presence", "status": "away"},
+            {"status": "hidden"},
+        ),
+    )
+    for payload, expected in cases:
+        state = world.default_presence("peer", now)
+        state.update({"x": 4.0, "z": 5.0})
+        instance, broadcasts = _world_socket_runtime(now)
+        socket = _WorldSocket(
+            state, now, rate_count=world.WORLD_RATE_MAX_PER_WINDOW)
+
+        _world_socket_message(instance, socket, payload)
+
+        assert socket.closed == []
+        assert socket.attachment.rl_count == (
+            world.WORLD_RATE_MAX_PER_WINDOW + 1)
+        for field, value in expected.items():
+            assert getattr(socket.attachment, field) == value
+        assert broadcasts == []
+
+
+def test_sustained_disposable_frame_flood_still_closes_socket():
+    now = 50_000
+    instance, broadcasts = _world_socket_runtime(now)
+    socket = _WorldSocket(
+        world.default_presence("peer", now),
+        now,
+        rate_count=world.WORLD_RATE_MAX_PER_WINDOW,
+    )
+    excess_frames = (
+        world.WORLD_RATE_HARD_MAX_PER_WINDOW
+        - world.WORLD_RATE_MAX_PER_WINDOW
+        + 1
+    )
+    for index in range(excess_frames):
+        _world_socket_message(instance, socket, {
+            "type": "move", "x": index, "moving": True,
+        })
+        if socket.closed:
+            break
+
+    assert socket.attachment.rl_count == (
+        world.WORLD_RATE_HARD_MAX_PER_WINDOW + 1)
+    assert socket.closed == [(1008, "sustained rate limit")]
+    assert broadcasts == []
 
 
 def test_world_durable_object_is_transient_and_hibernating():

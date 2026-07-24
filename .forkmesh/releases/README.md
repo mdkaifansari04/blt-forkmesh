@@ -16,7 +16,7 @@ itself is served — and verified by sha256 on download.
 ```
 .forkmesh/releases/<channel>/
   SHASUMS256.txt   # "<sha256>  <asset-name>" per asset (sha256sum -c compatible)
-  release.json     # manifest: repo, tag, tag_commit, channel, assets[]
+  release.json     # manifest: repo, tag, tag_commit, build_commit, channel, assets[]
 ```
 
 - `<channel>` — `latest` by default. The installer reads `FORKMESH_RELEASE` to
@@ -50,6 +50,25 @@ and writes `.forkmesh/releases/<channel>/SHASUMS256.txt` + `release.json`. Commi
 that metadata** and publish it — the asset goes live immediately. Run it once on a
 node of each OS to publish all three platform builds.
 
+### Refreshing a same-version binary
+
+Do not delete a checksum line or copy a local development executable into the
+CAS. When fixes must ship under the current app version, first commit the exact
+source to publish, then run the explicit refresh from a clean worktree:
+
+```sh
+FORKMESH_RELEASE_CAS=/absolute/path/to/the/served/forkmesh-releases \
+  cloudflare_worker/deploy.sh republish-release-binary
+```
+
+The command refuses a dirty tracked worktree or an unspecified served CAS. It
+rebuilds the current platform in Release mode, pins the version from
+`qt_client/CMakeLists.txt`, verifies the executable's `--version`, replaces the
+content-addressed bytes, and checks that `release.json`, `SHASUMS256.txt`, the
+CAS hash, and the source commit all agree. It then commits the small release
+metadata update. Push that commit and let mirror catalogs refresh before using
+the desktop client's fleet binary-install action.
+
 ## Installing
 
 The installer autodetects the platform, reads `SHASUMS256.txt` over the git
@@ -59,6 +78,37 @@ endpoint, and verifies its sha256 before installing:
 ```sh
 curl -fsSL https://forkmesh.com/install.sh | bash
 ```
+
+The desktop client's **Install from binary (all hosts)** path adds a stricter
+provenance pin: it supplies the source commit embedded in the controller binary,
+requires an identical `release.json/build_commit`, then checks both `--version`
+and `--build-commit` on every installed host. Thus a checksum-valid artifact
+published under the same semver but built from an older commit fails closed.
+Ordinary one-line installs remain unpinned and keep following the selected
+release channel.
+
+Release builds configured from a Git checkout automatically embed the newest
+non-release-metadata source commit. Packagers building from a source archive
+must pass the manifest's exact commit with
+`-DFORKMESH_BUILD_COMMIT_OVERRIDE=<40-or-64-hex-commit>`; without a known
+revision the application still runs, but commit-pinned fleet deployment is
+intentionally unavailable.
+
+The `project(ForkMesh VERSION …)` bump must be committed before creating a
+release tag. Release automation verifies that the tag version and committed
+project version agree and never edits source after building the artifact; this
+ensures a clean controller checkout can request the exact published revision.
+
+Here “source commit” means the newest commit that changes anything outside
+`.forkmesh/releases/`. The small manifest/checksum commit necessarily lands
+after the artifact has been built, so excluding that metadata-only commit keeps
+the controller and artifact on one stable provenance revision without weakening
+the check for later source changes.
+
+`tag_commit` is not repurposed for this: it remains the peeled commit targeted
+by `tag`, preserving release signatures and UI semantics. `build_commit` is the
+separate, signed artifact-build provenance field and may advance during an
+explicit same-version rebuild without moving the release tag.
 
 Force a from-source build instead with `FORKMESH_FROM_SOURCE=1`.
 

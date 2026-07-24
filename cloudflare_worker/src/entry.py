@@ -61,7 +61,20 @@ SENTRY_CRON_MAX_RUNTIME_MINUTES = 5
 # Retained chat history (encrypted) so late-joining nodes see some backlog.
 CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000  # keep the last 7 days
 CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
-CHAT_HISTORY_MAX_BODY = 48 * 1024  # don't retain very large frames (e.g. files)
+# A 1 MiB attachment becomes about 1.87 MB after its file bytes and encrypted
+# envelope are each base64 encoded. Keep the row below D1's 2,000,000-byte hard
+# limit, then bound the aggregate so attachment traffic cannot grow one room
+# without limit.
+CHAT_HISTORY_MAX_BODY = 1_900_000
+CHAT_HISTORY_MAX_BYTES_PER_ROOM = 16 * 1024 * 1024
+CHAT_HISTORY_INGRESS_WINDOW_MS = 10 * 1000
+CHAT_HISTORY_INGRESS_MAX_BYTES = 8 * 1024 * 1024
+CHAT_CHANNEL_TICKET_TTL_MS = 60 * 1000
+CHAT_CHANNEL_DO_RE = re.compile(
+    r"^/api/chat/channels/([0-9a-f]{32})/v([1-9][0-9]*)/(ws|revoke)$")
+LOCAL_DEMO_EMAIL = "demo@forkmesh.local"
+LOCAL_DEMO_NAME = "demo-node"
+LOCAL_DEMO_PASSWORD = "forkmesh-demo"
 MAX_CATALOG_REPOS = 200
 MAX_ERROR_LOG = 500
 # Anonymous installer diagnostics: one row per reported install step. Bounded the
@@ -256,8 +269,14 @@ GENERAL_CHAT_EMAIL_MAX_RECIPIENTS = 200
 from urls import (  # noqa: E402
     ROOM_RE,
     REPO_ROOM_RE,
+    CHAT_CHANNELS_RE,
+    CHAT_CHANNEL_MEMBERS_RE,
+    CHAT_CHANNEL_ROOM_ACCESS_RE,
+    CHAT_CHANNEL_WS_RE,
     REPO_ISSUES_RE,
     REPO_PULLS_RE,
+    REPO_PULL_MERGE_RE,
+    REPO_ACTION_RUNS_RE,
     REPO_COMMITS_RE,
     REPO_DISCUSSIONS_RE,
     REPO_PENDING_RE,
@@ -464,6 +483,9 @@ import world_events_api  # noqa: E402
 # Persisted Code Workshop reports and participant events use the same narrow
 # authenticated/encrypted D1 adapter as the other World collaboration APIs.
 import world_workshops  # noqa: E402
+# Private administrator-created channel policy is kept in a pure module and
+# receives only this Worker's narrow session, crypto, D1, and audit adapter.
+import chat_channels_api  # noqa: E402
 # Pull-request badge (adhoc #44/#83): a pure, js-free generator for the visual
 # "fingerprint" attached to federated PR-opened notes. The federated copy is a
 # square PNG — fediverse clients won't preview an SVG attachment.
@@ -814,6 +836,11 @@ async def edge_cache_delete(cache_key):
 # this TTL is only a backstop that lets a colo re-fetch if a state-hash update is
 # ever missed. See git_advert_cache_key and Default._clone_advert_cache_key.
 GIT_ADVERT_CACHE_TTL = 300
+REPOSITORY_METADATA_CACHE_TTL = 300
+REPOSITORY_METADATA_CACHE_MAX_BYTES = 8 * 1024 * 1024
+REPOSITORY_METADATA_CACHE_PREFIX = (
+    "https://forkmesh.internal/repository-metadata/v1/"
+)
 
 
 async def git_advert_cache_get(cache_key):
@@ -858,6 +885,127 @@ async def git_advert_cache_put(cache_key, response, ttl=GIT_ADVERT_CACHE_TTL):
                 "content-type": ctype
                 or "application/x-git-upload-pack-advertisement",
                 "cache-control": "public, max-age=%d" % ttl,
+            },
+        }))
+        await js_caches.default.put(cache_key, cacheable)
+    except Exception:
+        pass
+
+
+def repository_metadata_cache_key(context, operation, query):
+    """Key a small public metadata read by its attested repository state.
+
+    Only the fixed World/bootstrap surface is admitted. Source blobs, raw
+    files, private routes, moving un-attested refs, and arbitrary path queries
+    never enter the edge cache. The refs digest in ``context["pins"]`` changes
+    the key whenever any published head changes, including forkmesh/pulls.
+    """
+    if not isinstance(context, dict) or not isinstance(query, dict):
+        return ""
+    pins = sorted({
+        str(pin).lower()
+        for pin in context.get("pins", set())
+        if re.fullmatch(r"[0-9a-f]{64}", str(pin).lower())
+    })
+    repo_bi = str(context.get("repoBi") or "")
+    if not pins or not repo_bi:
+        return ""
+    ref = str(query.get("ref") or "").lower()
+    exact_ref = bool(re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", ref))
+    canonical_query = {}
+    if operation == "branches" and not query:
+        pass
+    elif operation == "tree":
+        path = str(query.get("path") or "")
+        if path not in {
+            "", "pulls", ".forkmesh/issues",
+            ".forkmesh/issues/open", ".forkmesh/issues/closed",
+        }:
+            return ""
+        if ref and not exact_ref:
+            return ""
+        canonical_query = {"path": path, "ref": ref}
+    elif operation in {"sizes", "stats"} and exact_ref:
+        canonical_query = {"ref": ref}
+    elif operation == "blobs" and exact_ref:
+        paths = query.get("path")
+        if not isinstance(paths, list) or not 1 <= len(paths) <= MAX_BLOB_BATCH:
+            return ""
+        normalized_paths = sorted(set(str(path) for path in paths))
+        if (
+            len(normalized_paths) != len(paths)
+            or any(
+                not re.fullmatch(
+                    r"pulls/[1-9][0-9]{0,8}/pull\.md", path
+                )
+                for path in normalized_paths
+            )
+        ):
+            return ""
+        canonical_query = {"path": normalized_paths, "ref": ref}
+    else:
+        return ""
+    digest = hashlib.sha256(json.dumps(
+        {
+            "repoBi": repo_bi,
+            "pins": pins,
+            "operation": operation,
+            "query": canonical_query,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    return REPOSITORY_METADATA_CACHE_PREFIX + digest
+
+
+async def repository_metadata_cache_get(cache_key):
+    """Return an edge-held public metadata body with browser no-store policy."""
+    if not cache_key:
+        return None
+    try:
+        hit = await js_caches.default.match(cache_key)
+    except Exception:
+        hit = None
+    if hit is None:
+        return None
+    try:
+        content_type = hit.headers.get("content-type")
+    except Exception:
+        content_type = None
+    return JsResponse.new(hit.body, to_js({
+        "status": 200,
+        "headers": {
+            "content-type": (
+                content_type or "application/json; charset=utf-8"
+            ),
+            "cache-control": "no-store, max-age=0, must-revalidate",
+        },
+    }))
+
+
+async def repository_metadata_cache_put(cache_key, response, status):
+    """Best-effort edge copy of one bounded public metadata response."""
+    if not cache_key or int(status or 0) != 200:
+        return
+    try:
+        js_resp = getattr(response, "js_object", None) or response
+        clone = js_resp.clone()
+        content_type = clone.headers.get("content-type")
+        content_length = int(clone.headers.get("content-length") or 0)
+        if not str(content_type or "").lower().startswith("application/json"):
+            return
+        if (
+            content_length <= 0
+            or content_length > REPOSITORY_METADATA_CACHE_MAX_BYTES
+        ):
+            return
+        cacheable = JsResponse.new(clone.body, to_js({
+            "status": 200,
+            "headers": {
+                "content-type": content_type,
+                "cache-control": (
+                    "public, max-age=%d" % REPOSITORY_METADATA_CACHE_TTL
+                ),
             },
         }))
         await js_caches.default.put(cache_key, cacheable)
@@ -2168,6 +2316,11 @@ async def network_leaderboards(env):
     # branch/platform/version/sync-time from whichever of its repos reported in
     # most recently — so a multi-repo node shows one coherent "latest" state.
     node_details = {}
+    counter_fields = (
+        "issueCount", "commitCount", "branchCount", "pullCount",
+        "discussionCount", "artifactCount", "worktreeCount",
+        "clonesServed", "websiteServed",
+    )
     for row in repo_rows:
         if active_nodes is not None and str(row.get("owner_bi") or "") not in active_nodes:
             continue
@@ -2191,20 +2344,27 @@ async def network_leaderboards(env):
             bytes_by_owner[owner] = bytes_by_owner.get(owner, 0) + size_bytes
         detail = node_details.setdefault(owner.lower(), {
             "name": owner, "sizeBytes": 0,
-            "issueCount": 0, "commitCount": 0, "branchCount": 0,
-            "pullCount": 0, "discussionCount": 0, "artifactCount": 0,
-            "worktreeCount": 0, "clonesServed": 0, "websiteServed": 0,
             "commit": "", "branch": "", "lastSync": "",
             "platform": "", "version": "", "nodeId": "", "_updatedMs": -1,
+            "_recordCount": 0,
+            "_reportedCounterCounts": {},
         })
+        detail["_recordCount"] += 1
         detail["sizeBytes"] += size_bytes
-        for field in ("issueCount", "commitCount", "branchCount", "pullCount",
-                      "discussionCount", "artifactCount", "worktreeCount",
-                      "clonesServed", "websiteServed"):
+        for field in counter_fields:
+            raw_value = rec.get(field)
+            if raw_value is None or raw_value == "" or isinstance(
+                    raw_value, bool):
+                continue
             try:
-                detail[field] += max(0, int(rec.get(field, 0) or 0))
+                counter = int(raw_value)
             except (TypeError, ValueError):
-                pass
+                continue
+            if counter < 0:
+                continue
+            detail[field] = int(detail.get(field) or 0) + counter
+            reported_counts = detail["_reportedCounterCounts"]
+            reported_counts[field] = int(reported_counts.get(field) or 0) + 1
         updated_ms = _catalog_updated_ms(rec)
         if updated_ms > detail["_updatedMs"]:
             detail["_updatedMs"] = updated_ms
@@ -2224,10 +2384,23 @@ async def network_leaderboards(env):
                 hosted_board.append(
                     {"name": owner + "/" + name, "since": ts,
                      "ageMs": max(0, now - ts)})
-    node_board = [
-        {k: v for k, v in detail.items() if k != "_updatedMs"}
-        for detail in node_details.values()
-    ]
+    node_board = []
+    for detail in node_details.values():
+        record_count = int(detail.get("_recordCount") or 0)
+        reported_counts = detail.get("_reportedCounterCounts", {})
+        public_detail = {
+            k: v for k, v in detail.items()
+            if k not in (
+                "_updatedMs", "_recordCount", "_reportedCounterCounts")
+        }
+        # Unknown stays JSON null instead of becoming a misleading aggregate
+        # zero. A total is known only when every included repository reported
+        # that field; otherwise a partial sum would understate the node total.
+        # A real zero reported by every repository remains zero.
+        for field in counter_fields:
+            if int(reported_counts.get(field) or 0) != record_count:
+                public_detail[field] = None
+        node_board.append(public_detail)
     node_board.sort(key=lambda n: (-n["sizeBytes"], n["name"]))
 
     repo_board = [{"name": o, "repos": c} for o, c in counts.items()]
@@ -2535,7 +2708,7 @@ def world_context_handler(request):
         )
     return json_response(
         world_protocol.context_payload(
-            world_request_country(request), int(Date.now())),
+            world_request_country(request), int(Date.now()), MAX_CONNECTIONS),
         cache_control="no-store, max-age=0, must-revalidate",
         extra_headers={"x-content-type-options": "nosniff"},
     )
@@ -2576,7 +2749,8 @@ def world_websocket_origin_allowed(request):
     return origin_key(origin_url) == origin_key(request_url)
 
 
-async def world_durable_object_request(request, trusted_claim=None):
+async def world_durable_object_request(
+        request, trusted_claim=None, moderation_tokens=None):
     """Rebuild the world upgrade with no identifying connection headers.
 
     The general tunnel helper forwards Authorization and User-Agent because Git
@@ -2606,10 +2780,24 @@ async def world_durable_object_request(request, trusted_claim=None):
         public_claim = world_protocol.trusted_presence_claim(
             claim.get("name", ""), claim.get("accountStatus", "Guest"),
             claim.get("nodeCount", 0))
+        private_claim = {
+            **public_claim,
+            # This flag is verified from the signed, short-lived World ticket.
+            # The Durable Object uses it only to tailor moderation handles to
+            # an administrator's socket; it is not public presence metadata.
+            "isAdmin": claim.get("isAdmin") is True,
+        }
         encoded_claim = base64.urlsafe_b64encode(
-            json.dumps(public_claim, separators=(",", ":")).encode()
+            json.dumps(private_claim, separators=(",", ":")).encode()
         ).decode().rstrip("=")
         headers["x-forkmesh-world-claim"] = encoded_claim
+    tokens = moderation_tokens if isinstance(moderation_tokens, dict) else {}
+    for target_type in ("ip", "agent"):
+        token = str(tokens.get(target_type) or "")
+        if re.fullmatch(r"[a-f0-9]{64}", token):
+            # Only keyed opaque tokens cross this boundary. The source address
+            # and raw client fingerprint remain in the outer Worker call frame.
+            headers["x-forkmesh-world-%s-token" % target_type] = token
     source_url = urlparse(request.url)
     # Strip query/fragment data as an additional privacy boundary. The world
     # protocol has no tokens or user-selected URL state.
@@ -2623,6 +2811,11 @@ async def world_durable_object_request(request, trusted_claim=None):
 
 WORLD_TICKET_TTL_MS = 60 * 1000
 WORLD_INACTIVE_RETAIN_MS = 30 * 24 * 60 * 60 * 1000
+WORLD_MANUAL_BLOCK_MIN_MS = 60 * 1000
+WORLD_MANUAL_BLOCK_MAX_MS = 24 * 60 * 60 * 1000
+WORLD_MANUAL_BLOCK_DEFAULT_MS = 15 * 60 * 1000
+WORLD_MANUAL_BLOCK_RETAIN_MS = 30 * 24 * 60 * 60 * 1000
+WORLD_MANUAL_TOKEN_DAY_MS = 24 * 60 * 60 * 1000
 # An opted-in seating card represents somebody who has actually been away, not
 # somebody who selected "Away" while still walking around the world. A fresh
 # authenticated world visit resets this quiet-period clock.
@@ -2676,6 +2869,9 @@ def _world_ticket_decode(env, ticket):
         claim.get("nodeCount", 0))
     if not public["name"] or public["accountStatus"] == "Guest":
         return None
+    # `isAdmin` is accepted only from the HMAC-authenticated ticket body. It is
+    # never accepted from a browser presence frame.
+    public["isAdmin"] = claim.get("isAdmin") is True
     return public
 
 
@@ -2735,8 +2931,11 @@ async def _world_account_claim(env, request, data=None):
         account_status = "Guest"
     if account_status == "Guest":
         return None
-    return world_protocol.trusted_presence_claim(
+    claim = world_protocol.trusted_presence_claim(
         name, account_status, node_count)
+    claim["isAdmin"] = bool(
+        await _has_role(env, name, "platform_administrator"))
+    return claim
 
 
 async def world_ticket_handler(env, request):
@@ -2923,6 +3122,184 @@ async def world_inactive_handler(env, request):
         },
         cache_control="no-store, max-age=0, must-revalidate",
     )
+
+
+async def _chat_channel_passphrase(env, channel_id, key_version):
+    secret = (
+        _require_data_secret(env)
+        + ":private-chat-channel-v1:"
+        + str(channel_id)
+        + ":"
+        + str(int(key_version))
+    )
+    digest = await js_crypto.subtle.digest(
+        "SHA-256", _to_js(secret.encode()))
+    return bytes(Uint8Array.new(digest).to_py()).hex()
+
+
+def _chat_channel_ticket(env, channel_id, key_version, account_bi):
+    expires = int(Date.now()) + CHAT_CHANNEL_TICKET_TTL_MS
+    canonical = ".".join((
+        "v1",
+        str(channel_id),
+        str(int(key_version)),
+        str(account_bi),
+        str(expires),
+    ))
+    signature = hmac.new(
+        (_require_data_secret(env) + ":chat-channel-ticket-v1").encode(),
+        canonical.encode(),
+        "sha256",
+    ).hexdigest()
+    return canonical + "." + signature
+
+
+def _chat_channel_ticket_claims(env, token):
+    parts = str(token or "").split(".")
+    if len(parts) != 6:
+        return None
+    version_tag, channel_id, version_raw, account_bi, expires_raw, signature = (
+        parts
+    )
+    if version_tag != "v1" or not re.fullmatch(r"[0-9a-f]{32}", channel_id):
+        return None
+    if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+        return None
+    try:
+        key_version = int(version_raw)
+        expires = int(expires_raw)
+    except (TypeError, ValueError):
+        return None
+    now = int(Date.now())
+    if (
+        key_version < 1
+        or expires <= now
+        or expires - now > CHAT_CHANNEL_TICKET_TTL_MS
+    ):
+        return None
+    canonical = ".".join(parts[:5])
+    expected = hmac.new(
+        (_require_data_secret(env) + ":chat-channel-ticket-v1").encode(),
+        canonical.encode(),
+        "sha256",
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    return {
+        "channel_id": channel_id,
+        "key_version": key_version,
+        "account_bi": account_bi,
+    }
+
+
+async def _chat_channel_socket_handler(env, request, channel_id):
+    if (
+        method_name(request) != "GET"
+        or (request.headers.get("upgrade") or "").lower() != "websocket"
+    ):
+        return _private_replica_not_found()
+    url = urlparse(request.url)
+    ticket_values = parse_qs(
+        url.query, keep_blank_values=False).get("ticket") or []
+    claims = (
+        _chat_channel_ticket_claims(env, ticket_values[0])
+        if len(ticket_values) == 1 else None
+    )
+    if not claims or claims["channel_id"] != channel_id:
+        return _private_replica_not_found()
+    try:
+        await ensure_schema(env)
+        channel = await d1_first(
+            env,
+            "SELECT data,key_version FROM chat_channels WHERE channel_id=?",
+            channel_id,
+        )
+        if (
+            not channel
+            or int(channel.get("key_version") or 0)
+                != int(claims["key_version"])
+        ):
+            return _private_replica_not_found()
+        channel_record = await decrypt_row(env, channel.get("data"))
+        if not isinstance(channel_record, dict):
+            return _private_replica_not_found()
+        visibility = (
+            "public"
+            if channel_record.get("visibility") == "public"
+            else "private"
+        )
+        account = await d1_first(
+            env,
+            "SELECT data,is_admin FROM users WHERE user_bi=?",
+            claims["account_bi"],
+        )
+        if not account:
+            return _private_replica_not_found()
+        account_record = await decrypt_row(env, account.get("data"))
+        if (
+            not account_record
+            or account_record.get("status") != "active"
+            or _account_kind(account_record) != "user"
+        ):
+            return _private_replica_not_found()
+        is_admin = bool(int(account.get("is_admin") or 0))
+        if not is_admin and visibility != "public":
+            membership = await d1_first(
+                env,
+                "SELECT 1 AS allowed FROM chat_channel_members "
+                "WHERE channel_id=? AND member_bi=?",
+                channel_id,
+                claims["account_bi"],
+            )
+            if not membership:
+                return _private_replica_not_found()
+    except Exception:
+        return _private_replica_not_found()
+
+    room_name = (
+        "chat-channel:" + channel_id + ":v" + str(claims["key_version"])
+    )
+    room_id = env.FORKMESH_MAINNODE_ROOM.idFromName(room_name)
+    target_url = (
+        url.scheme + "://" + url.netloc + "/api/chat/channels/"
+        + channel_id + "/v" + str(claims["key_version"])
+        + "/ws?account=" + quote(claims["account_bi"], safe="")
+    )
+    last_error = None
+    for _attempt in range(2):
+        room_object = env.FORKMESH_MAINNODE_ROOM.get(room_id)
+        try:
+            return await room_object.fetch(
+                await durable_object_request(request, target_url=target_url))
+        except Exception as error:
+            last_error = error
+    await log_durable_object_abort(env, request, url.path, last_error)
+    return json_response({"error": "unavailable"}, status=503)
+
+
+async def _revoke_chat_channel_room(env, channel_id, key_version):
+    room_name = (
+        "chat-channel:" + str(channel_id) + ":v" + str(int(key_version))
+    )
+    room_id = env.FORKMESH_MAINNODE_ROOM.idFromName(room_name)
+    target_url = (
+        "https://forkmesh.internal/api/chat/channels/" + str(channel_id)
+        + "/v" + str(int(key_version)) + "/revoke"
+    )
+    last_error = None
+    for _attempt in range(2):
+        room_object = env.FORKMESH_MAINNODE_ROOM.get(room_id)
+        try:
+            request = JsRequest.new(
+                target_url, to_js({"method": "POST"}))
+            response = await room_object.fetch(request)
+            if int(getattr(response, "status", 200) or 200) < 400:
+                return
+        except Exception as error:
+            last_error = error
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("chat_channel_revoke_failed")
 
 
 class _WorldCommunityRuntime:
@@ -3144,6 +3521,31 @@ class _WorldCommunityRuntime:
     async def d1_run(self, sql, *args):
         return await d1_run(self.env, sql, *args)
 
+    async def batch(self, statements):
+        return await _contribution_run_batch(self.env, statements)
+
+
+class _ChatChannelsRuntime(_WorldCommunityRuntime):
+    async def room_access(self, channel_id, key_version, account_bi):
+        room = (
+            "chat-channel:" + str(channel_id) + ":v" + str(int(key_version))
+        )
+        ticket = _chat_channel_ticket(
+            self.env, channel_id, key_version, account_bi)
+        return {
+            "room": room,
+            "passphrase": await _chat_channel_passphrase(
+                self.env, channel_id, key_version),
+            "webSocketUrl": (
+                "/api/chat/channels/" + str(channel_id) + "/ws?ticket="
+                + quote(ticket, safe="")
+            ),
+        }
+
+    async def revoke_room(self, channel_id, key_version):
+        await _revoke_chat_channel_room(
+            self.env, channel_id, key_version)
+
 
 async def world_fediverse_directory_handler(env, request, path):
     return await world_community_api.handle_fediverse(
@@ -3185,7 +3587,27 @@ async def cleanup_world_media_records(env):
 
 
 
-def room_key_from_path(pathname):
+def room_key_from_path(pathname, account_bi=""):
+    match = CHAT_CHANNEL_DO_RE.match(pathname)
+    if match and match.group(3) == "ws":
+        channel_id = match.group(1)
+        channel_version = int(match.group(2))
+        info = {
+            "key": (
+                "chat-channel:" + channel_id + ":v"
+                + str(channel_version)
+            ),
+            "owner": "",
+            "repo": "",
+            "room": channel_id,
+            "compat": False,
+            "channel_id": channel_id,
+            "channel_version": channel_version,
+        }
+        if re.fullmatch(r"[0-9a-f]{64}", str(account_bi or "")):
+            info["account_bi"] = str(account_bi)
+        return info
+
     match = REPO_ROOM_RE.match(pathname)
     if match:
         owner = safe_segment(match.group(1))
@@ -3577,6 +3999,20 @@ _hmac_key_cache = {"secret": None, "key": None}
 _room_key_cache = {"secret": None, "value": None}
 
 
+# Compatibility columns required by indexes in SCHEMA_STATEMENTS. These run
+# before the CREATE statements so an existing table can be upgraded before an
+# index references its new columns. A fresh database has no table yet, so the
+# failed ALTER is ignored and the current CREATE TABLE supplies the columns.
+SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
+    "ALTER TABLE ap_outbox ADD COLUMN dedupe_bi TEXT",
+    "ALTER TABLE ap_comments ADD COLUMN parent_remote_id_bi TEXT",
+    """ALTER TABLE ap_comments ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active'
+       CHECK (lifecycle IN (
+         'active', 'edited', 'tombstoned', 'moderated',
+         'awaiting-redelivery'
+       ))""",
+]
+
 # Post-CREATE column additions for tables that predate them. Idempotent: a
 # re-run raises "duplicate column name", which the applier swallows.
 SCHEMA_ALTER_STATEMENTS = [
@@ -3594,12 +4030,20 @@ SCHEMA_ALTER_STATEMENTS = [
     # Operator-settable flag granting a user access to the /outreach console
     # without a roster row (migration 0040). Mirrors is_admin.
     "ALTER TABLE users ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0",
+    # Early local builds created membership rows before their encrypted display
+    # payload was added. Existing blind-index grants remain valid; new writes
+    # always provide this ciphertext column.
+    "ALTER TABLE chat_channel_members ADD COLUMN data TEXT",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
 # full apply so later cold isolates can skip the replay with one SELECT.
 _SCHEMA_FINGERPRINT = hashlib.sha256(
-    "\n".join(SCHEMA_STATEMENTS + SCHEMA_ALTER_STATEMENTS).encode("utf-8")
+    "\n".join(
+        SCHEMA_PRE_CREATE_ALTER_STATEMENTS
+        + SCHEMA_STATEMENTS
+        + SCHEMA_ALTER_STATEMENTS
+    ).encode("utf-8")
 ).hexdigest()
 
 
@@ -3677,6 +4121,11 @@ async def _apply_schema(env):
         # the overload into a death spiral.
         if "no such table" not in str(exc).lower():
             raise
+    for sql in SCHEMA_PRE_CREATE_ALTER_STATEMENTS:
+        try:
+            await env.DB.prepare(sql).run()
+        except Exception:
+            pass
     for sql in SCHEMA_STATEMENTS:
         await env.DB.prepare(sql).run()
     for sql in SCHEMA_ALTER_STATEMENTS:
@@ -5502,6 +5951,13 @@ async def catalog_handler(env, request):
             for stale_key, _ in decoded[MAX_CATALOG_REPOS:]:
                 await _delete_repo_scoped_state(env, stale_key)
                 await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", stale_key)
+        # Endpoint registration deliberately resets health to pending. Once this
+        # account-bound publication has durably pinned the public flagship state,
+        # immediately challenge only the publishing node so clone availability
+        # does not depend on a later cron tick. The helper is best-effort: an
+        # unreachable or invalid proof remains fail-closed in endpoint state but
+        # never rolls back an otherwise valid catalog publication.
+        await _https_mirror_refresh_catalog_publisher_health(env, record)
         await purge_catalog_related_caches()
         payload = {
             "ok": True,
@@ -6104,6 +6560,13 @@ async def repo_mirrors_handler(env, request, owner, repo):
         for r in hist_rows:
             history.setdefault(str(r.get("key_bi") or ""), []).append(
                 r.get("state_hash"))
+    linked_row = await d1_first(
+        env,
+        "SELECT 1 AS linked FROM org_repos "
+        "WHERE node_owner=? AND repo=? LIMIT 1",
+        str(owner or "").strip().lower(),
+        str(repo or "").strip().lower(),
+    )
     payload = build_repo_mirrors_payload(
         owner,
         repo,
@@ -6114,6 +6577,7 @@ async def repo_mirrors_handler(env, request, owner, repo):
         HOST_PRESENCE_STALE_MS,
         5 * 1000,
         history,
+        linked_canonical=bool(linked_row),
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
@@ -6716,6 +7180,49 @@ async def _move_chat_history_namespace(env, old_owner, new_owner, repo):
             old_key, row.get("msg_id"))
 
 
+async def _delete_chat_channel_memberships(env, member_bi):
+    rows = await d1_all(
+        env,
+        "SELECT m.channel_id,c.key_version "
+        "FROM chat_channel_members m JOIN chat_channels c "
+        "ON c.channel_id=m.channel_id WHERE m.member_bi=?",
+        member_bi,
+    )
+    if not rows:
+        return
+    await d1_run(
+        env, "DELETE FROM chat_channel_members WHERE member_bi=?", member_bi)
+    for row in rows:
+        await _revoke_chat_channel_room(
+            env,
+            row.get("channel_id", ""),
+            int(row.get("key_version") or 1),
+        )
+
+
+async def _move_chat_channel_memberships(
+        env, old_member_bi, new_member_bi, new_name):
+    if old_member_bi == new_member_bi:
+        return
+    await _delete_chat_channel_memberships(env, new_member_bi)
+    sealed = await encrypt_row(env, {"username": new_name})
+    await d1_run(
+        env,
+        "UPDATE chat_channel_members SET member_bi=?,data=? "
+        "WHERE member_bi=?",
+        new_member_bi,
+        sealed,
+        old_member_bi,
+    )
+    await d1_run(
+        env,
+        "UPDATE chat_channel_members SET invited_by_bi=? "
+        "WHERE invited_by_bi=?",
+        new_member_bi,
+        old_member_bi,
+    )
+
+
 async def _move_repo_namespace(env, old_owner_bi, old_owner, new_owner_bi,
                                new_owner, apply_changes=True):
     rows = await d1_all(
@@ -6849,6 +7356,8 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
         return name_bi, rec, move_error
     await _contribution_retarget_linked_nodes(
         env, name_bi, old_name, new_name_bi, new_name)
+    await _move_chat_channel_memberships(
+        env, name_bi, new_name_bi, new_name)
     await d1_run(
         env, "UPDATE account_presence SET name_bi=? WHERE name_bi=?",
         new_name_bi, name_bi)
@@ -7001,6 +7510,7 @@ async def _delete_account_namespace(env, name_bi, rec):
         env, "DELETE FROM account_devices WHERE account_bi=?", name_bi)
     await d1_run(
         env, "DELETE FROM account_ssh_keys WHERE account_bi=?", name_bi)
+    await _delete_chat_channel_memberships(env, name_bi)
     if email:
         email_bi = await blind_index(env, email)
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
@@ -7489,6 +7999,221 @@ def _generalized_client_category(request):
             "mozilla/", "chrome/", "safari/", "firefox/", "edg/")):
         return "browser"
     return "other-client" if ua else ""
+
+
+async def _world_moderation_tokens(env, request, now=None):
+    """Derive rotating moderation subjects while raw request data is transient."""
+    now = int(Date.now()) if now is None else int(now)
+    day = now // WORLD_MANUAL_TOKEN_DAY_MS
+    address = _transient_client_address(request)
+    try:
+        # The exact value is used only as keyed-HMAC input in this call frame.
+        # Capping it prevents an oversized header from becoming hash work; it is
+        # never returned, forwarded, logged, or persisted.
+        transient_agent = str(
+            request.headers.get("user-agent") or "")[:2048]
+    except Exception:
+        transient_agent = ""
+    tokens = {"ip": "", "agent": ""}
+    if address:
+        tokens["ip"] = await blind_index(
+            env, "world-manual-ip-v1:%d:%s" % (day, address))
+    if transient_agent:
+        tokens["agent"] = await blind_index(
+            env, "world-manual-agent-v1:%d:%s" % (day, transient_agent))
+    # `address` and `transient_agent` die with this call. Only keyed, rotating
+    # tokens may be forwarded or persisted; public badge display continues to
+    # use the existing generalized browser/OS allowlist.
+    return tokens
+
+
+async def _world_active_manual_block(env, tokens, now=None):
+    """Return an active explicit block matching either opaque subject token."""
+    now = int(Date.now()) if now is None else int(now)
+    values = tokens if isinstance(tokens, dict) else {}
+    ip_token = str(values.get("ip") or "")
+    agent_token = str(values.get("agent") or "")
+    if not (
+        re.fullmatch(r"[a-f0-9]{64}", ip_token)
+        or re.fullmatch(r"[a-f0-9]{64}", agent_token)
+    ):
+        return None
+    await ensure_schema(env)
+    row = await d1_first(
+        env,
+        "SELECT target_type,expires_at FROM world_manual_blocks "
+        "WHERE revoked_at=0 AND expires_at>? AND "
+        "((target_type='ip' AND subject_token=?) OR "
+        "(target_type='agent' AND subject_token=?)) "
+        "ORDER BY expires_at ASC LIMIT 1",
+        now, ip_token, agent_token,
+    )
+    if not row:
+        return None
+    return {
+        "targetType": (
+            str(row.get("target_type") or "")
+            if str(row.get("target_type") or "") in ("ip", "agent")
+            else "unknown"),
+        "expiresAt": int(row.get("expires_at") or 0),
+    }
+
+
+def _world_manual_control_signature(env, target_type, subject_token, expires_at):
+    canonical = (
+        "forkmesh-world-manual-block-v1\n%s\n%s\n%d"
+        % (target_type, subject_token, int(expires_at))
+    ).encode()
+    return hmac.new(
+        _account_session_secret(env), canonical, "sha256").hexdigest()
+
+
+async def _world_disconnect_manual_block(
+        env, target_type, subject_token, expires_at):
+    """Ask the World DO to eject matching live sockets after persistence."""
+    world_id = env.FORKMESH_WORLD.idFromName("town-square-v1")
+    world_object = env.FORKMESH_WORLD.get(world_id)
+    payload = {
+        "targetType": target_type,
+        "subjectToken": subject_token,
+        "expiresAt": int(expires_at),
+    }
+    control_request = JsRequest.new(
+        "https://forkmesh.internal/api/world/manual-block",
+        to_js({
+            "method": "POST",
+            "headers": {
+                "content-type": "application/json",
+                "x-forkmesh-world-control": _world_manual_control_signature(
+                    env, target_type, subject_token, expires_at),
+            },
+            "body": json.dumps(payload, separators=(",", ":")),
+        }),
+    )
+    response = await world_object.fetch(control_request)
+    if int(getattr(response, "status", 0) or 0) != 200:
+        return 0
+    try:
+        result = json.loads(await response.text())
+    except Exception:
+        return 0
+    return max(0, min(64, int(result.get("disconnected") or 0)))
+
+
+async def world_moderation_handler(env, request):
+    """Create one explicit, temporary World block as a platform admin."""
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"allow": "POST"})
+    try:
+        data = await request.json()
+    except Exception:
+        return json_response(
+            {"error": "invalid_json"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+    if not isinstance(data, dict):
+        return json_response(
+            {"error": "invalid_json"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+    account_bi, rec = await _account_session_record(env, request, data)
+    actor = clean_string(
+        rec.get("name", "") if rec else "", MAX_NODE_NAME).strip().lower()
+    if not actor:
+        return json_response(
+            {"error": "invalid_session"}, status=401,
+            cache_control="no-store, max-age=0, must-revalidate")
+    if not await _has_role(env, actor, "platform_administrator"):
+        await _audit_sensitive_action(
+            env, actor, "world.manual_block", "world_peer", "", "denied",
+            {"reason": "platform_administrator_required"})
+        return json_response(
+            {"error": "forbidden"}, status=403,
+            cache_control="no-store, max-age=0, must-revalidate")
+
+    target_type = str(data.get("targetType") or "").strip().lower()
+    subject_token = str(data.get("handle") or "").strip().lower()
+    duration = data.get("durationMs", WORLD_MANUAL_BLOCK_DEFAULT_MS)
+    if target_type not in ("ip", "agent"):
+        return json_response(
+            {"error": "invalid_target_type"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+    if not re.fullmatch(r"[a-f0-9]{64}", subject_token):
+        return json_response(
+            {"error": "invalid_handle"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+    if (
+        isinstance(duration, bool)
+        or not isinstance(duration, int)
+        or duration < WORLD_MANUAL_BLOCK_MIN_MS
+        or duration > WORLD_MANUAL_BLOCK_MAX_MS
+    ):
+        return json_response(
+            {"error": "invalid_duration"}, status=400,
+            cache_control="no-store, max-age=0, must-revalidate")
+
+    now = int(Date.now())
+    # Subject tokens rotate daily. Do not pretend a block can outlive the token
+    # it targets, even when the requested bounded duration crosses UTC midnight.
+    token_expires = ((now // WORLD_MANUAL_TOKEN_DAY_MS) + 1
+                     ) * WORLD_MANUAL_TOKEN_DAY_MS
+    expires_at = min(now + duration, token_expires)
+    block_id = new_world_peer_id() + new_world_peer_id()
+    try:
+        await ensure_schema(env)
+        await d1_run(
+            env,
+            "DELETE FROM world_manual_blocks WHERE expires_at<?",
+            now - WORLD_MANUAL_BLOCK_RETAIN_MS,
+        )
+        await d1_run(
+            env,
+            "INSERT INTO world_manual_blocks "
+            "(block_id,target_type,subject_token,created_by_bi,created_at,"
+            "expires_at,revoked_at) VALUES (?,?,?,?,?,?,0)",
+            block_id, target_type, subject_token, account_bi, now, expires_at,
+        )
+    except Exception:
+        await _audit_sensitive_action(
+            env, actor, "world.manual_block", "world_" + target_type,
+            subject_token, "failed",
+            {"reason": "persistence_failed", "durationMs": duration})
+        raise
+
+    disconnected = 0
+    try:
+        disconnected = await _world_disconnect_manual_block(
+            env, target_type, subject_token, expires_at)
+    except Exception:
+        # Admission checks are D1-backed, so a transient DO control failure does
+        # not undo the block. Existing sockets will also disappear on their
+        # normal stale/close boundary.
+        disconnected = 0
+    await _audit_sensitive_action(
+        env, actor, "world.manual_block", "world_" + target_type,
+        subject_token, "success", {
+            "manual": True,
+            "targetType": target_type,
+            "durationMs": duration,
+            "expiresAt": expires_at,
+            "disconnectedCount": disconnected,
+        })
+    return json_response(
+        {
+            "ok": True,
+            "blockId": block_id,
+            "targetType": target_type,
+            "expiresAt": expires_at,
+            "disconnected": disconnected,
+            "notice": (
+                "This is an explicit temporary administrator action. "
+                "ForkMesh automatic abuse detection and quarantine remain off."
+            ),
+        },
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={"x-content-type-options": "nosniff"},
+    )
 
 
 # Simple web signup: create an active account from node name + email + password.
@@ -8803,6 +9528,74 @@ def _with_session_capabilities(payload, *, session_kind, device_kind="", key_mat
     return payload
 
 
+def _is_local_demo_request(request):
+    try:
+        parsed = urlparse(request.url)
+        return (
+            parsed.scheme in ("http", "https")
+            and parsed.hostname in ("localhost", "127.0.0.1", "::1")
+        )
+    except Exception:
+        return False
+
+
+async def _ensure_local_demo_account(
+        env, request, identifier, password):
+    if (
+        not _is_local_demo_request(request)
+        or identifier != LOCAL_DEMO_EMAIL
+        or password != LOCAL_DEMO_PASSWORD
+    ):
+        return
+    email_bi = await blind_index(env, LOCAL_DEMO_EMAIL)
+    name_bi = await blind_index(env, LOCAL_DEMO_NAME)
+    row = await d1_first(
+        env,
+        "SELECT user_bi,data,is_admin FROM users WHERE email_bi=?",
+        email_bi,
+    )
+    if row and row.get("user_bi") != name_bi:
+        return
+    record = await decrypt_row(env, row.get("data")) if row else None
+    valid = bool(
+        record
+        and record.get("name") == LOCAL_DEMO_NAME
+        and record.get("status") == "active"
+        and record.get("pass_hash")
+        and await verify_password(
+            LOCAL_DEMO_PASSWORD,
+            record.get("pass_salt", ""),
+            record.get("pass_hash", ""),
+        )
+    )
+    if valid:
+        if not bool(int(row.get("is_admin") or 0)):
+            await d1_run(
+                env,
+                "UPDATE users SET is_admin=1 WHERE user_bi=?",
+                name_bi,
+            )
+        return
+    salt, password_hash = await hash_password(LOCAL_DEMO_PASSWORD)
+    await _save_account_full(
+        env,
+        name_bi,
+        {
+            "name": LOCAL_DEMO_NAME,
+            "email": LOCAL_DEMO_EMAIL,
+            "kind": "user",
+            "status": "active",
+            "pass_salt": salt,
+            "pass_hash": password_hash,
+            "email_verified": True,
+            "created_at": int(Date.now()),
+        },
+        email_bi=email_bi,
+        ip_bi=to_js(None),
+        is_admin=1,
+    )
+
+
 async def _account_login(env, request):
     try:
         data = await request.json()
@@ -8818,6 +9611,9 @@ async def _account_login(env, request):
     pubkey = clean_string(data.get("pubkey", ""), 120)
     device_ts = clean_string(data.get("deviceTs", ""), 20)
     device_sig = clean_string(data.get("deviceSig", ""), 200)
+
+    await _ensure_local_demo_account(
+        env, request, identifier, password)
 
     # Brute-force throttle, keyed by a blind index of the identifier (no plaintext
     # stored). Checked before any account lookup so it also protects nonexistent
@@ -18007,7 +18803,31 @@ async def repo_card_handler(env, request, owner, repo):
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
     parts = urlparse(request.url)
+    # Organization aliases are rewritten to their backing node before this
+    # handler is dispatched, but the original Request URL deliberately stays
+    # untouched.  Keep that public identity on the rendered card while using
+    # ``owner`` below for every visibility/catalog/media lookup.  Otherwise an
+    # unfurl of /forkmesh/forkmesh would advertise mirror2/forkmesh even though
+    # the page, canonical URL and clone URL all belong to the organization.
+    display_owner = owner
+    display_repo = repo
+    public_match = REPO_CARD_RE.match(parts.path)
+    if public_match:
+        candidate_owner = safe_segment(public_match.group(1))
+        candidate_repo = safe_segment(public_match.group(2))
+        if candidate_owner and candidate_repo == repo:
+            if candidate_owner == owner:
+                display_owner = candidate_owner
+            elif await _org_repo_node(
+                    env, candidate_owner, candidate_repo) == owner:
+                display_owner = candidate_owner
+            display_repo = candidate_repo
+    card_version = parse_qs(parts.query).get("v", [""])[0]
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", card_version):
+        card_version = ""
     cache_key = _ap_origin(env, request) + parts.path
+    if card_version:
+        cache_key += "?v=" + quote(card_version, safe="")
     cached = await edge_cache_match_media(cache_key, "image/png")
     if cached is not None:
         return cached
@@ -18021,7 +18841,8 @@ async def repo_card_handler(env, request, owner, repo):
         env, "SELECT COUNT(*) AS n FROM repo_stars WHERE repo_bi=?", repo_bi)
     followers = 0
     if await _ap_enabled(env):
-        handle = ap.repo_handle(str(owner).lower(), str(repo).lower())
+        handle = ap.repo_handle(
+            str(display_owner).lower(), str(display_repo).lower())
         actor_bi = await _ap_actor_bi(env, AP_ACTOR_REPO, handle)
         follow_row = await d1_first(
             env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
@@ -18039,8 +18860,8 @@ async def repo_card_handler(env, request, owner, repo):
     except Exception:
         mirrors = 0
     info = {
-        "owner": owner,
-        "repo": repo,
+        "owner": display_owner,
+        "repo": display_repo,
         "description": rec.get("description", ""),
         "branch": rec.get("branch", ""),
         "host": urlparse(_ap_origin(env, request)).netloc or "forkmesh.com",
@@ -18564,6 +19385,91 @@ async def _authorize_owner(env, request, owner):
         return False
     canonical = ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).encode()
     return await _verify_owner_signature(env, owner, sig, canonical)
+
+
+async def _authorize_repo_inbox_owner(env, request, owner, repo):
+    """Authorize a repository inbox drain without losing organization context.
+
+    Organization repository URLs are rewritten to their backing node before
+    route matching, while the original Worker Request deliberately retains the
+    public alias URL.  A desktop organization administrator signs that public
+    owner name (the one stored in its RepositoryRecord), not the backing mirror
+    node name.  Accept that proof only when the alias is still linked to this
+    exact public repository and the signer is a current org owner/admin.
+
+    Private repositories deliberately stay on the direct owner-key path:
+    organization membership alone is never a plaintext/private-inbox grant.
+    """
+    if await _authorize_owner(env, request, owner):
+        return True
+    try:
+        original_url = urlparse(request.url)
+        match = REPO_API_PREFIX_RE.match(original_url.path)
+    except Exception:
+        return False
+    if not match:
+        return False
+    alias_owner = (safe_segment(match.group(1)) or "").lower()
+    alias_repo = (safe_segment(match.group(2)) or "").lower()
+    owner_l = str(owner or "").strip().lower()
+    repo_l = str(repo or "").strip().lower()
+    if (
+        not alias_owner
+        or alias_owner == owner_l
+        or alias_repo != repo_l
+        or await _repo_is_private(env, owner_l, repo_l)
+    ):
+        return False
+
+    # Re-check the durable link instead of trusting the short-lived alias memo:
+    # revoking/unlinking an organization must revoke drain authority at once.
+    org_bi, org_row = await _org_row(env, alias_owner)
+    if not org_row:
+        return False
+    linked = await d1_first(
+        env,
+        "SELECT 1 AS ok FROM org_repos "
+        "WHERE org_bi=? AND repo=? AND node_owner=?",
+        org_bi, repo_l, owner_l,
+    )
+    if not linked:
+        return False
+
+    params = parse_qs(original_url.query)
+    ts = params.get("ts", [""])[0]
+    sig = params.get("sig", [""])[0]
+    if not ts or not sig:
+        return False
+    try:
+        skew = abs(int(Date.now()) - int(ts))
+    except (TypeError, ValueError):
+        return False
+    if skew > LOGIN_MAX_SKEW_MS:
+        return False
+    canonical = (
+        "forkmesh-issues-pull-v1\n" + alias_owner + "\n" + ts
+    ).encode()
+    members = await d1_all(
+        env,
+        "SELECT name,role FROM org_members "
+        "WHERE org_bi=? AND role IN ('owner','admin') "
+        "ORDER BY name LIMIT ?",
+        org_bi, MAX_ORG_MEMBERS,
+    )
+    for member in members or []:
+        if str(member.get("role") or "") not in ("owner", "admin"):
+            continue
+        account = clean_string(
+            member.get("name") or "", MAX_NODE_NAME
+        ).strip().lower()
+        if (
+            valid_node_name(account)
+            and await _verify_owner_signature(
+                env, account, sig, canonical
+            )
+        ):
+            return True
+    return False
 
 
 async def _authorize_owner_account(env, owner, data, request=None,
@@ -21104,7 +22010,8 @@ async def pulls_handler(env, request, owner, repo):
         return json_response({"ok": True}, status=201)
 
     if method == "GET":
-        if not await _authorize_owner(env, request, owner):
+        if not await _authorize_repo_inbox_owner(
+                env, request, owner, repo):
             return json_response({"error": "unauthorized"}, status=401)
         rows = await d1_all(
             env, "SELECT data FROM pull_inbox WHERE repo_bi=? ORDER BY id ASC",
@@ -21115,7 +22022,8 @@ async def pulls_handler(env, request, owner, repo):
         return json_response({"ok": True, "pending": pending})
 
     if method == "DELETE":
-        if not await _authorize_owner(env, request, owner):
+        if not await _authorize_repo_inbox_owner(
+                env, request, owner, repo):
             return json_response({"error": "unauthorized"}, status=401)
         await d1_run(env, "DELETE FROM pull_inbox WHERE repo_bi=?", repo_bi)
         return json_response({"ok": True})
@@ -25189,6 +26097,18 @@ HTTPS_MIRROR_MANIFEST_MAX_BYTES = 128 * 1024
 HTTPS_MIRROR_HEALTH_BATCH = 8
 HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS = 20
 HTTPS_MIRROR_BODY_MAX_BYTES = 8 * 1024 * 1024
+HTTPS_MIRROR_MERGE_BODY_MAX_BYTES = 8 * 1024
+HTTPS_MIRROR_MERGE_RESULT_MAX_BYTES = 16 * 1024
+HTTPS_MIRROR_ACTIONS_RESULT_MAX_BYTES = 256 * 1024
+HTTPS_MIRROR_ACTIONS_RUN_LIMIT = 20
+HTTPS_MIRROR_ACTIONS_LOG_TAIL_MAX_BYTES = 16 * 1024
+HTTPS_MIRROR_ACTIONS_LEASE_MAX_MS = 15 * 60 * 1000
+HTTPS_MIRROR_ACTIONS_CLOCK_SKEW_MS = 60 * 1000
+HTTPS_MIRROR_MERGE_REQUEST_RE = re.compile(r"^[A-Za-z0-9_-]{12,80}$")
+HTTPS_MIRROR_MERGE_JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+HTTPS_MIRROR_MERGE_JOB_REPO_LIMIT = 256
+HTTPS_MIRROR_MERGE_JOB_GLOBAL_LIMIT = 10_000
+HTTPS_MIRROR_MERGE_JOB_CLEANUP_BATCH = 512
 HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS = frozenset({
     "git-info-refs", "git-upload-pack", "tree", "blob", "raw",
 })
@@ -25526,6 +26446,16 @@ async def https_mirror_endpoint_handler(env, request):
         await touch_registered_node(env, node_bi, node_rec)
     except Exception:
         pass
+    # Registration resets the endpoint to pending so a replayed registration
+    # can never preserve an old healthy lease. Challenge this exact,
+    # account-bound endpoint immediately after the durable write. This is what
+    # lets every independent mirror renew its own short lease without relying
+    # on the scheduled Worker cron (or pretending to be the organization's
+    # canonical catalog publisher). The verifier still requires Cloudflare
+    # proxied DNS, the registered Ed25519 key, and the canonical repository
+    # state pin, so acceptance here does not grant trust by itself.
+    health_active = await _https_mirror_refresh_registered_health(
+        env, registration["node"])
     return json_response({
         "ok": True,
         "node": registration["node"],
@@ -25533,7 +26463,7 @@ async def https_mirror_endpoint_handler(env, request):
         "routerPublicKey": router_key,
         "organizations": await _https_mirror_node_organizations(
             env, registration["node"]),
-        "health": "pending",
+        "health": "active" if health_active else "pending",
         "repositoryBytesInD1": False,
     }, status=201, cache_control="no-store")
 
@@ -25860,6 +26790,71 @@ async def _https_mirror_expected_forkmesh_refs(env):
         return ""
 
 
+async def _https_mirror_refresh_registered_health(env, node):
+    """Best-effort activation for one exact registered endpoint.
+
+    The endpoint row is already account-bound and signature-verified by the
+    registration handler. Health is nevertheless established only by a fresh
+    node-signed challenge whose repository digest matches the canonical public
+    state pin.
+    """
+    node = clean_string(node, MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(node):
+        return False
+    try:
+        row = await d1_first(
+            env,
+            """SELECT node_bi,node_name,base_url,public_key
+                 FROM mirror_https_endpoints WHERE node_name=?""",
+            node,
+        )
+        if not row:
+            return False
+        expected = await _https_mirror_expected_forkmesh_refs(env)
+        if not expected:
+            return False
+        return bool(await _https_mirror_health_one(env, row, expected))
+    except Exception:
+        # Registration remains safely pending. A transient control-plane fetch
+        # failure must not roll back its authenticated endpoint record.
+        return False
+
+
+async def _https_mirror_refresh_catalog_publisher_health(env, record):
+    """Best-effort activation for one signed public flagship publication.
+
+    Catalog authorization already binds ``record["owner"]`` and its maintainer
+    signature to an active account. This lookup stays scoped to that exact node;
+    ``_https_mirror_health_one`` then independently rechecks its bound signing
+    key, Cloudflare-proxied DNS, and fresh node-signed repository proof.
+    """
+    if (
+        not isinstance(record, dict)
+        or record.get("visibility") != "public"
+        or clean_string(record.get("name", ""), MAX_REPO_SEGMENT).lower()
+        != "forkmesh"
+    ):
+        return False
+    node = clean_string(
+        record.get("owner", ""), MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(node):
+        return False
+    try:
+        canonical_node = clean_string(
+            await _org_repo_node(env, "forkmesh", "forkmesh"),
+            MAX_NODE_NAME,
+        ).strip().lower()
+        canonical_node = canonical_node or "forkmesh"
+        if node != canonical_node:
+            return False
+        return bool(await _https_mirror_refresh_registered_health(env, node))
+    except Exception:
+        # Publication is already authorized and durable. Health remains pending
+        # or is cleared by the verifier; a control-plane fetch/storage failure
+        # must not turn that successful catalog write into an error response.
+        return False
+
+
 async def _https_mirror_mark_failed(env, row, now):
     await d1_run(
         env,
@@ -26002,7 +26997,10 @@ async def _https_mirror_health_one(env, row, expected_forkmesh_refs):
         await d1_run(
             env, "UPDATE nodes SET last_seen=? WHERE node_bi=?",
             now, row.get("node_bi"))
-    return general_healthy
+    # Callers that renew a public routing lease need to know whether this exact
+    # repository is eligible for rotation, not merely whether the node's
+    # generic health endpoint answered.
+    return forkmesh_active
 
 
 async def https_mirror_health_cron(env):
@@ -26553,6 +27551,676 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
     return operation in set(operations)
 
 
+def _https_mirror_merge_body(raw, pull_number):
+    """Validate the small account request before any node sees it."""
+    if not isinstance(raw, str) or not raw or (
+            len(raw.encode("utf-8")) > HTTPS_MIRROR_MERGE_BODY_MAX_BYTES):
+        return None
+
+    def reject_duplicates(pairs):
+        output = {}
+        for key, value in pairs:
+            if key in output:
+                raise ValueError("duplicate")
+            output[key] = value
+        return output
+
+    try:
+        value = json.loads(raw, object_pairs_hook=reject_duplicates)
+    except Exception:
+        return None
+    required = {
+        "schemaVersion", "type", "pullNumber", "requestId",
+        "expectedBaseOid", "expectedHeadOid", "expectedPullsOid",
+    }
+    if (
+        not isinstance(value, dict)
+        or not required.issubset(value)
+        or set(value) - required - {"sessionToken"}
+        or value.get("schemaVersion") != 1
+        or value.get("type") != "forkmesh.pull-merge-v1"
+    ):
+        return None
+    try:
+        number = int(value.get("pullNumber"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    request_id = clean_string(value.get("requestId", ""), 80).strip()
+    oids = {
+        field: clean_string(value.get(field, ""), 64).strip().lower()
+        for field in (
+            "expectedBaseOid", "expectedHeadOid", "expectedPullsOid")
+    }
+    if (
+        number != int(pull_number)
+        or not HTTPS_MIRROR_MERGE_REQUEST_RE.fullmatch(request_id)
+        or any(
+            not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid)
+            for oid in oids.values()
+        )
+        or len({len(oid) for oid in oids.values()}) != 1
+    ):
+        return None
+    return {
+        "schemaVersion": 1,
+        "type": "forkmesh.pull-merge-v1",
+        "pullNumber": number,
+        "requestId": request_id,
+        **oids,
+        **({
+            "sessionToken": clean_string(
+                value.get("sessionToken", ""), 512).strip()
+        } if value.get("sessionToken") else {}),
+    }
+
+
+def _https_mirror_merge_result(value, request):
+    """Return a bounded node result or None; no origin data is projected."""
+    if not isinstance(value, dict):
+        return None
+    request_id = str(value.get("requestId") or "")
+    status = str(value.get("status") or "")
+    if request_id != request["requestId"]:
+        return None
+    if status == "processing":
+        if value.get("ok") is not True:
+            return None
+        return {
+            "ok": True,
+            "status": "processing",
+            "requestId": request_id,
+        }
+    if status == "failed":
+        error = str(value.get("error") or "")
+        if error not in {
+            "merge_conflict", "pull_not_found", "pull_not_open",
+            "stale_base", "stale_head", "stale_pull_metadata",
+            "unsupported_pull",
+        }:
+            return None
+        return {
+            "ok": False,
+            "status": "failed",
+            "requestId": request_id,
+            "error": error,
+        }
+    if (
+        status != "merged"
+        or value.get("ok") is not True
+        or value.get("published") is not True
+    ):
+        return None
+    output = {
+        "ok": True,
+        "status": "merged",
+        "requestId": request_id,
+        "published": True,
+    }
+    expected = {
+        "baseBefore": request["expectedBaseOid"],
+        "head": request["expectedHeadOid"],
+        "pullsBefore": request["expectedPullsOid"],
+    }
+    for field in (
+            "baseBefore", "head", "pullsBefore", "baseAfter", "pullsAfter"):
+        oid = str(value.get(field) or "").strip().lower()
+        if (
+            not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid)
+            or (field in expected and not hmac.compare_digest(
+                oid, expected[field]))
+        ):
+            return None
+        output[field] = oid
+    return output
+
+
+async def _https_mirror_merge_proxy(env, endpoint, context, request):
+    """Submit/poll one job on its permanently selected signed mirror."""
+    if not await _https_mirror_repository_proof(
+            env, endpoint, context, "merge-pull"):
+        return 0, None
+    body = json.dumps(
+        request, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    target = https_routing.masked_target_url(
+        endpoint["baseUrl"], context["owner"], context["repo"], "merge-pull")
+    parsed_target = urlparse(target)
+    signed_path = parsed_target.path
+    request_id = _b64url_encode(_random_bytes(18))
+    issued_at = int(Date.now())
+    body_digest = hashlib.sha256(body).hexdigest()
+    message = https_routing.request_message(
+        endpoint["node"], "POST", signed_path, body_digest, request_id,
+        issued_at)
+    router_public_key = _https_mirror_router_public_key(env)
+    router_seed = _https_mirror_router_seed(env)
+    signature = (
+        await ed25519_sign(
+            router_public_key, router_seed, message.encode("utf-8"))
+        if target and message and router_public_key and router_seed else "")
+    if not signature:
+        return 0, None
+    headers = {
+        "Content-Type": "application/json",
+        "X-ForkMesh-Node": endpoint["node"],
+        "X-ForkMesh-Request-Id": request_id,
+        "X-ForkMesh-Issued-At": str(issued_at),
+        "X-ForkMesh-Body-Sha256": body_digest,
+        "X-ForkMesh-Signature": signature,
+    }
+    try:
+        upstream = await asyncio.wait_for(
+            js_fetch(JsRequest.new(
+                target,
+                to_js({
+                    "method": "POST",
+                    "headers": headers,
+                    "body": Uint8Array.new(_to_js(body)),
+                    "redirect": "manual",
+                }),
+            )),
+            timeout=HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        )
+        status = int(getattr(upstream, "status", 0) or 0)
+        announced = int(upstream.headers.get("content-length") or 0)
+        if announced > HTTPS_MIRROR_MERGE_RESULT_MAX_BYTES:
+            return 0, None
+        raw = str(await upstream.text())
+        if len(raw.encode("utf-8")) > HTTPS_MIRROR_MERGE_RESULT_MAX_BYTES:
+            return 0, None
+        value = json.loads(raw)
+    except Exception:
+        return 0, None
+    checked = _https_mirror_merge_result(value, request)
+    if (
+        checked is None
+        or status not in (200, 202, 404, 409)
+        or (checked["status"] == "processing" and status != 202)
+        or (checked["status"] == "merged" and status != 200)
+        or (checked["status"] == "failed" and status not in (404, 409))
+    ):
+        return 0, None
+    return status, checked
+
+
+def _https_mirror_actions_result(value, expected_node, now):
+    """Validate and reduce one owner-authorized, already-redacted run summary."""
+    required = {"ok", "node", "updatedAt", "expiresAt", "runs"}
+    if (
+        not isinstance(value, dict)
+        or set(value) != required
+        or value.get("ok") is not True
+        or value.get("node") != expected_node
+        or isinstance(value.get("updatedAt"), bool)
+        or isinstance(value.get("expiresAt"), bool)
+    ):
+        return None
+    try:
+        updated_at = int(value.get("updatedAt"))
+        expires_at = int(value.get("expiresAt"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        updated_at < now - HTTPS_MIRROR_ACTIONS_LEASE_MAX_MS
+        or updated_at > now + HTTPS_MIRROR_ACTIONS_CLOCK_SKEW_MS
+        or expires_at <= now
+        or expires_at <= updated_at
+        or expires_at - updated_at > HTTPS_MIRROR_ACTIONS_LEASE_MAX_MS
+    ):
+        return None
+    runs = value.get("runs")
+    if (
+        not isinstance(runs, list)
+        or len(runs) > HTTPS_MIRROR_ACTIONS_RUN_LIMIT
+    ):
+        return None
+    statuses = {
+        "awaiting-approval", "queued", "running", "success", "failed",
+        "rejected", "cancelled", "skipped",
+    }
+    fields = {
+        "id", "workflow", "commit", "ref", "status",
+        "createdAt", "startedAt", "finishedAt", "logTail",
+    }
+    output_runs = []
+    for item in runs:
+        if not isinstance(item, dict) or set(item) != fields:
+            return None
+        if any(
+            isinstance(item.get(field), bool)
+            for field in ("id", "createdAt", "startedAt", "finishedAt")
+        ):
+            return None
+        try:
+            run_id = int(item.get("id"))
+            created_at = int(item.get("createdAt"))
+            started_at = int(item.get("startedAt"))
+            finished_at = int(item.get("finishedAt"))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        workflow = str(item.get("workflow") or "").strip()
+        commit = str(item.get("commit") or "").strip().lower()
+        ref = str(item.get("ref") or "").strip()
+        status_value = str(item.get("status") or "")
+        log_tail = str(item.get("logTail") or "")
+        if (
+            not 1 <= run_id <= 2147483647
+            or not 1 <= len(workflow) <= 160
+            or any(char in workflow for char in ("\x00", "\r", "\n"))
+            or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit)
+            or not 1 <= len(ref) <= 160
+            or any(char in ref for char in ("\x00", "\r", "\n"))
+            or status_value not in statuses
+            or min(created_at, started_at, finished_at) < 0
+            or max(created_at, started_at, finished_at)
+                > now + HTTPS_MIRROR_ACTIONS_CLOCK_SKEW_MS
+            or len(log_tail.encode("utf-8"))
+                > HTTPS_MIRROR_ACTIONS_LOG_TAIL_MAX_BYTES
+            or "\x00" in log_tail
+        ):
+            return None
+        output_runs.append({
+            "id": run_id,
+            "workflow": workflow,
+            "commit": commit,
+            "ref": ref,
+            "status": status_value,
+            "createdAt": created_at,
+            "startedAt": started_at,
+            "finishedAt": finished_at,
+            "logTail": log_tail,
+        })
+    return {
+        "ok": True,
+        "node": expected_node,
+        "updatedAt": updated_at,
+        "expiresAt": expires_at,
+        "runs": output_runs,
+    }
+
+
+async def _https_mirror_actions_proxy(env, endpoint, context):
+    """Read one bounded summary through an attested operation-specific route."""
+    if not await _https_mirror_repository_proof(
+            env, endpoint, context, "actions-status"):
+        return None
+    target = https_routing.masked_target_url(
+        endpoint["baseUrl"], context["owner"], context["repo"],
+        "actions-status")
+    parsed_target = urlparse(target)
+    request_id = _b64url_encode(_random_bytes(18))
+    issued_at = int(Date.now())
+    body_digest = hashlib.sha256(b"").hexdigest()
+    message = https_routing.request_message(
+        endpoint["node"], "GET", parsed_target.path, body_digest, request_id,
+        issued_at)
+    router_public_key = _https_mirror_router_public_key(env)
+    router_seed = _https_mirror_router_seed(env)
+    signature = (
+        await ed25519_sign(
+            router_public_key, router_seed, message.encode("utf-8"))
+        if target and message and router_public_key and router_seed else "")
+    if not signature:
+        return None
+    headers = {
+        "X-ForkMesh-Node": endpoint["node"],
+        "X-ForkMesh-Request-Id": request_id,
+        "X-ForkMesh-Issued-At": str(issued_at),
+        "X-ForkMesh-Body-Sha256": body_digest,
+        "X-ForkMesh-Signature": signature,
+    }
+    try:
+        upstream = await asyncio.wait_for(
+            js_fetch(JsRequest.new(
+                target,
+                to_js({
+                    "method": "GET",
+                    "headers": headers,
+                    "redirect": "manual",
+                }),
+            )),
+            timeout=HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        )
+        if int(getattr(upstream, "status", 0) or 0) != 200:
+            return None
+        announced = int(upstream.headers.get("content-length") or 0)
+        if announced > HTTPS_MIRROR_ACTIONS_RESULT_MAX_BYTES:
+            return None
+        raw = str(await upstream.text())
+        if len(raw.encode("utf-8")) > HTTPS_MIRROR_ACTIONS_RESULT_MAX_BYTES:
+            return None
+        value = json.loads(raw)
+    except Exception:
+        return None
+    return _https_mirror_actions_result(
+        value, endpoint["node"], int(Date.now()))
+
+
+async def repository_actions_status_handler(env, request, owner, repo):
+    """Return private redacted executor state to the owner or org writer."""
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    context = await _https_mirror_public_context(env, owner, repo)
+    if context is None:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    _, actor_record = await _account_session_record(env, request)
+    actor = clean_string(
+        (actor_record or {}).get("name", ""), MAX_NODE_NAME).strip().lower()
+    if not actor:
+        return json_response(
+            {"error": "invalid_session"}, status=401,
+            cache_control="no-store")
+    try:
+        authorized = bool(
+            actor == context["owner"]
+            or await _account_owns_node(env, actor, context["owner"])
+            or await _org_write_allowed(
+                env, context["owner"], context["repo"], actor)
+        )
+    except Exception:
+        authorized = False
+    target = context["owner"] + "/" + context["repo"]
+    if not authorized:
+        await _audit_sensitive_action(
+            env, actor, "repository.actions_status", "repository", target,
+            "denied", {})
+        return json_response(
+            {"error": "forbidden"}, status=403,
+            cache_control="no-store")
+    candidates = await _https_mirror_candidates(
+        env, context, world_request_country(request))
+    for candidate in candidates:
+        result = await _https_mirror_actions_proxy(
+            env, candidate, context)
+        if result is not None:
+            await _audit_sensitive_action(
+                env, actor, "repository.actions_status", "repository",
+                target, "success", {"node": candidate["node"]})
+            return json_response(
+                result,
+                cache_control="private, no-store, max-age=0, must-revalidate")
+    return json_response(
+        {"error": "actions_status_unavailable"}, status=503,
+        cache_control="no-store")
+
+
+def _https_mirror_merge_response(value):
+    status = str((value or {}).get("status") or "")
+    if status == "processing":
+        code = 202
+    elif status == "merged":
+        code = 200
+    elif (value or {}).get("error") == "pull_not_found":
+        code = 404
+    else:
+        code = 409
+    return json_response(
+        value, status=code,
+        cache_control="no-store, max-age=0, must-revalidate")
+
+
+async def _repo_merge_jobs_make_room(env, repo_bi, now):
+    """Expire bounded batches and enforce hard per-repo/global row ceilings.
+
+    Terminal rows are oldest-first eviction candidates when a ceiling is
+    reached. In-flight rows are never evicted merely to admit another request;
+    the caller fails closed with 429 instead.
+    """
+    await d1_run(
+        env,
+        """DELETE FROM repo_merge_jobs WHERE request_id IN (
+               SELECT request_id FROM repo_merge_jobs
+                WHERE expires_at<=?
+                ORDER BY expires_at ASC
+                LIMIT %d)""" % HTTPS_MIRROR_MERGE_JOB_CLEANUP_BATCH,
+        int(now),
+    )
+
+    async def counts():
+        row = await d1_first(
+            env,
+            """SELECT COUNT(*) AS total,
+                      COALESCE(SUM(CASE WHEN repo_bi=? THEN 1 ELSE 0 END),0)
+                        AS repo_count
+                 FROM repo_merge_jobs""",
+            repo_bi,
+        )
+        return (
+            int((row or {}).get("total") or 0),
+            int((row or {}).get("repo_count") or 0),
+        )
+
+    total, repo_count = await counts()
+    if repo_count >= HTTPS_MIRROR_MERGE_JOB_REPO_LIMIT:
+        remove = min(
+            HTTPS_MIRROR_MERGE_JOB_CLEANUP_BATCH,
+            repo_count - HTTPS_MIRROR_MERGE_JOB_REPO_LIMIT + 1,
+        )
+        await d1_run(
+            env,
+            """DELETE FROM repo_merge_jobs WHERE request_id IN (
+                   SELECT request_id FROM repo_merge_jobs
+                    WHERE repo_bi=? AND status IN ('succeeded','failed')
+                    ORDER BY updated_at ASC
+                    LIMIT ?)""",
+            repo_bi, remove,
+        )
+        total, repo_count = await counts()
+    if total >= HTTPS_MIRROR_MERGE_JOB_GLOBAL_LIMIT:
+        remove = min(
+            HTTPS_MIRROR_MERGE_JOB_CLEANUP_BATCH,
+            total - HTTPS_MIRROR_MERGE_JOB_GLOBAL_LIMIT + 1,
+        )
+        await d1_run(
+            env,
+            """DELETE FROM repo_merge_jobs WHERE request_id IN (
+                   SELECT request_id FROM repo_merge_jobs
+                    WHERE status IN ('succeeded','failed')
+                    ORDER BY updated_at ASC
+                    LIMIT ?)""",
+            remove,
+        )
+        total, repo_count = await counts()
+    return (
+        repo_count < HTTPS_MIRROR_MERGE_JOB_REPO_LIMIT
+        and total < HTTPS_MIRROR_MERGE_JOB_GLOBAL_LIMIT
+    )
+
+
+async def repository_pull_merge_handler(
+        env, request, owner, repo, pull_number):
+    """Authorize, pin, dispatch, and durably reconcile one merge job."""
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    context = await _https_mirror_public_context(env, owner, repo)
+    if context is None:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    try:
+        announced = int(request.headers.get("content-length") or 0)
+    except Exception:
+        announced = 0
+    if announced > HTTPS_MIRROR_MERGE_BODY_MAX_BYTES:
+        return json_response({"error": "request_too_large"}, status=413)
+    try:
+        raw = str(await request.text())
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    data = _https_mirror_merge_body(raw, pull_number)
+    if data is None:
+        return json_response({"error": "invalid_request"}, status=400)
+    actor_bi, actor_record = await _account_session_record(env, request, data)
+    actor = clean_string(
+        (actor_record or {}).get("name", ""), MAX_NODE_NAME).strip().lower()
+    if not actor:
+        return json_response({"error": "invalid_session"}, status=401)
+    try:
+        authorized = bool(
+            actor == context["owner"]
+            or await _account_owns_node(env, actor, context["owner"])
+            or await _org_write_allowed(
+                env, context["owner"], context["repo"], actor)
+        )
+    except Exception:
+        authorized = False
+    target = context["owner"] + "/" + context["repo"]
+    if not authorized:
+        await _audit_sensitive_action(
+            env, actor, "repository.pull_merge", "repository", target,
+            "denied", {"pullNumber": int(pull_number)})
+        return json_response({"error": "forbidden"}, status=403)
+
+    node_request = {
+        key: value for key, value in data.items() if key != "sessionToken"
+    }
+    digest_value = {
+        **node_request,
+        "actor": actor,
+        "owner": context["owner"],
+        "repository": context["repo"],
+    }
+    request_digest = hashlib.sha256(json.dumps(
+        digest_value, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()
+    await ensure_schema(env)
+    now = int(Date.now())
+    # Delete this exact expired id first; otherwise its primary key could make
+    # INSERT OR IGNORE look successful while no live job can be read back.
+    await d1_run(
+        env,
+        "DELETE FROM repo_merge_jobs WHERE request_id=? AND expires_at<=?",
+        node_request["requestId"], now,
+    )
+    row = await d1_first(
+        env,
+        """SELECT request_digest,repo_bi,actor_bi,pull_number,selected_node,
+                  status,result,expires_at
+             FROM repo_merge_jobs WHERE request_id=? AND expires_at>?""",
+        node_request["requestId"], now,
+    )
+    job_created = False
+    if row is None:
+        if not await _repo_merge_jobs_make_room(
+                env, context["repoBi"], now):
+            return json_response(
+                {"error": "merge_queue_full"}, status=429,
+                cache_control="no-store")
+        candidates = await _https_mirror_candidates(
+            env, context, world_request_country(request))
+        selected = None
+        for candidate in candidates:
+            if await _https_mirror_repository_proof(
+                    env, candidate, context, "merge-pull"):
+                selected = candidate
+                break
+        if selected is None:
+            return json_response(
+                {"error": "merge_node_unavailable"}, status=503,
+                cache_control="no-store")
+        expires_at = now + HTTPS_MIRROR_MERGE_JOB_RETENTION_MS
+        try:
+            await d1_run(
+                env,
+                """INSERT OR IGNORE INTO repo_merge_jobs
+                     (request_id,request_digest,repo_bi,actor_bi,pull_number,
+                      selected_node,status,result,created_at,updated_at,expires_at)
+                     VALUES (?,?,?,?,?,?,'requested','',?,?,?)""",
+                node_request["requestId"], request_digest, context["repoBi"],
+                actor_bi, int(pull_number), selected["node"], now, now,
+                expires_at,
+            )
+            job_created = True
+        except Exception:
+            # The schema triggers are the final concurrency-safe hard bounds.
+            # Re-read first because an identical request may have won the race;
+            # only a genuinely absent row is a full queue.
+            job_created = False
+        row = await d1_first(
+            env,
+            """SELECT request_digest,repo_bi,actor_bi,pull_number,selected_node,
+                      status,result,expires_at
+                 FROM repo_merge_jobs WHERE request_id=? AND expires_at>?""",
+            node_request["requestId"], now,
+        )
+        if row is None:
+            return json_response(
+                {"error": "merge_queue_full"}, status=429,
+                cache_control="no-store")
+    if (
+        not row
+        or not hmac.compare_digest(
+            str(row.get("request_digest") or ""), request_digest)
+        or not hmac.compare_digest(
+            str(row.get("repo_bi") or ""), context["repoBi"])
+        or not hmac.compare_digest(
+            str(row.get("actor_bi") or ""), actor_bi)
+        or int(row.get("pull_number") or 0) != int(pull_number)
+    ):
+        return json_response(
+            {"error": "request_id_reused"}, status=409,
+            cache_control="no-store")
+    if row.get("status") in ("succeeded", "failed"):
+        try:
+            result = json.loads(str(row.get("result") or ""))
+        except Exception:
+            result = None
+        checked = _https_mirror_merge_result(result, node_request)
+        if checked is None or checked.get("status") == "processing":
+            return json_response(
+                {"error": "merge_state_unavailable"}, status=503,
+                cache_control="no-store")
+        return _https_mirror_merge_response(checked)
+
+    selected_node = clean_string(
+        row.get("selected_node", ""), MAX_NODE_NAME).strip().lower()
+    candidates = await _https_mirror_candidates(
+        env, context, world_request_country(request), sticky=selected_node)
+    endpoint = next(
+        (candidate for candidate in candidates
+         if candidate["node"] == selected_node),
+        None,
+    )
+    if endpoint is None:
+        return json_response(
+            {"error": "merge_node_unavailable"}, status=503,
+            cache_control="no-store")
+    upstream_status, result = await _https_mirror_merge_proxy(
+        env, endpoint, context, node_request)
+    if result is None:
+        # An uncertain transport result never fails over: the selected node may
+        # already have committed the exact idempotent request.
+        return json_response(
+            {"error": "merge_status_pending"}, status=503,
+            cache_control="no-store")
+    if upstream_status == 202:
+        if job_created:
+            await _audit_sensitive_action(
+                env, actor, "repository.pull_merge", "repository", target,
+                "requested", {"pullNumber": int(pull_number)})
+        return _https_mirror_merge_response(result)
+    terminal = "succeeded" if result["status"] == "merged" else "failed"
+    encoded = json.dumps(
+        result, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > HTTPS_MIRROR_MERGE_RESULT_MAX_BYTES:
+        return json_response(
+            {"error": "merge_state_unavailable"}, status=503,
+            cache_control="no-store")
+    await d1_run(
+        env,
+        """UPDATE repo_merge_jobs SET status=?,result=?,updated_at=?,expires_at=?
+             WHERE request_id=? AND status='requested'""",
+        terminal, encoded, int(Date.now()),
+        int(Date.now()) + HTTPS_MIRROR_MERGE_JOB_RETENTION_MS,
+        node_request["requestId"],
+    )
+    await _audit_sensitive_action(
+        env, actor, "repository.pull_merge", "repository", target,
+        "success" if terminal == "succeeded" else "failed",
+        {"pullNumber": int(pull_number),
+         "reason": str(result.get("error") or "")})
+    return _https_mirror_merge_response(result)
+
+
 async def _https_mirror_proxy(
         env, request, owner, repo, operation, release_sha=""):
     """Stream a public read through healthy endpoints under the original URL."""
@@ -26565,6 +28233,15 @@ async def _https_mirror_proxy(
         return json_response({"error": "method_not_allowed"}, status=405)
     if operation != "git-upload-pack" and method not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
+    query = _https_mirror_request_query(
+        urlparse(request.url), operation, release_sha=release_sha)
+    metadata_cache_key = (
+        repository_metadata_cache_key(context, operation, query)
+        if method == "GET" else ""
+    )
+    cached_metadata = await repository_metadata_cache_get(metadata_cache_key)
+    if cached_metadata is not None:
+        return cached_metadata
     body = b""
     if method == "POST":
         try:
@@ -26594,8 +28271,6 @@ async def _https_mirror_proxy(
         return json_response(
             {"error": "mirror_unavailable"}, status=503,
             cache_control="no-store")
-    query = _https_mirror_request_query(
-        urlparse(request.url), operation, release_sha=release_sha)
     from js import fetch as js_fetch
     for endpoint in candidates:
         if not await _https_mirror_repository_proof(
@@ -26690,6 +28365,8 @@ async def _https_mirror_proxy(
         response_headers = https_routing.response_headers(raw_headers)
         await _https_mirror_route_advance(
             env, context, endpoint["node"], operation)
+        await repository_metadata_cache_put(
+            metadata_cache_key, upstream, status)
         # The selected origin and node are deliberately omitted. This streams
         # the body; the Worker does not materialize repository bytes.
         return JsResponse.new(
@@ -27344,6 +29021,10 @@ class Default(WorkerEntrypoint):
             return await world_fediverse_mentions_handler(
                 self.env, request, url.path)
 
+        if url.path in (
+                "/api/world/moderation", "/api/world/moderation/"):
+            return await world_moderation_handler(self.env, request)
+
         if url.path in ("/api/world/ws", "/api/world/ws/"):
             if method_name(request) != "GET":
                 return json_response(
@@ -27359,6 +29040,24 @@ class Default(WorkerEntrypoint):
                 _world_ticket_decode(self.env, ticket_values[0])
                 if len(ticket_values) == 1 else None
             )
+            moderation_tokens = await _world_moderation_tokens(
+                self.env, request)
+            active_block = await _world_active_manual_block(
+                self.env, moderation_tokens)
+            if active_block:
+                return json_response(
+                    {
+                        "error": "world_temporarily_blocked",
+                        "targetType": active_block["targetType"],
+                        "expiresAt": active_block["expiresAt"],
+                        "notice": (
+                            "This is a temporary manual administrator action; "
+                            "it is not an automated abuse or quarantine result."
+                        ),
+                    },
+                    status=403,
+                    cache_control="no-store, max-age=0, must-revalidate",
+                )
             world_id = self.env.FORKMESH_WORLD.idFromName("town-square-v1")
             last_error = None
             for _attempt in range(2):
@@ -27366,7 +29065,7 @@ class Default(WorkerEntrypoint):
                 try:
                     return await world_object.fetch(
                         await world_durable_object_request(
-                            request, trusted_claim))
+                            request, trusted_claim, moderation_tokens))
                 except Exception as error:
                     last_error = error
             await log_durable_object_abort(
@@ -27500,6 +29199,21 @@ class Default(WorkerEntrypoint):
         # unread badge on the shared site header's chat icon.
         if url.path in ("/api/chat/activity", "/api/chat/activity/"):
             return await chat_activity_handler(self.env, request)
+
+        # Private channel API and socket admission are checked before the
+        # generic repository-room router. Authorization and current key-version
+        # validation therefore happen before any Durable Object is selected.
+        chat_channel_socket = CHAT_CHANNEL_WS_RE.match(url.path)
+        if chat_channel_socket:
+            return await _chat_channel_socket_handler(
+                self.env, request, chat_channel_socket.group(1))
+        if (
+            CHAT_CHANNELS_RE.match(url.path)
+            or CHAT_CHANNEL_MEMBERS_RE.match(url.path)
+            or CHAT_CHANNEL_ROOM_ACCESS_RE.match(url.path)
+        ):
+            return await chat_channels_api.handle(
+                _ChatChannelsRuntime(self.env, request), url.path)
 
         # Chat-triggered Cloudflare AI interface. Clients forward explicit
         # "forkbot ..." mentions here; the Worker queues compatible issue-inbox
@@ -27687,6 +29401,28 @@ class Default(WorkerEntrypoint):
                                  self.env, request, owner))):
                 return json_response({"error": "not_found"}, status=404)
             return await issues_handler(self.env, request, owner, repo)
+
+        pull_merge_match = REPO_PULL_MERGE_RE.match(url.path)
+        if pull_merge_match:
+            owner = safe_segment(pull_merge_match.group(1))
+            repo = safe_segment(pull_merge_match.group(2))
+            try:
+                pull_number = int(pull_merge_match.group(3))
+            except (TypeError, ValueError, OverflowError):
+                pull_number = 0
+            if not owner or not repo or pull_number <= 0:
+                return json_response({"error": "not_found"}, status=404)
+            return await repository_pull_merge_handler(
+                self.env, request, owner, repo, pull_number)
+
+        action_runs_match = REPO_ACTION_RUNS_RE.match(url.path)
+        if action_runs_match:
+            owner = safe_segment(action_runs_match.group(1))
+            repo = safe_segment(action_runs_match.group(2))
+            if not owner or not repo:
+                return json_response({"error": "not_found"}, status=404)
+            return await repository_actions_status_handler(
+                self.env, request, owner, repo)
 
         pulls_match = REPO_PULLS_RE.match(url.path)
         if pulls_match:
@@ -28134,14 +29870,22 @@ class Default(WorkerEntrypoint):
         repo = safe_segment(unquote(parts[1])) if len(parts) >= 2 else ""
         cache_key = ""
         explicit_public = False
+        data_owner = owner
         if owner and repo:
             # Only an explicit public catalog row may contribute names,
             # description, actor links, or a shared cache entry. Private and
             # missing paths intentionally receive the same generic app shell;
             # authenticated client APIs decide whether the viewer may render
             # repository data. This keeps URL probing non-disclosing.
+            #
+            # An organization repo URL is a public alias, not the encrypted
+            # catalog key. Resolve its linked node only for privacy/catalog
+            # reads; canonical, actor, card and displayed identity below must
+            # remain the organization URL the visitor actually requested.
+            data_owner = await _org_repo_node(
+                self.env, owner, repo) or owner
             explicit_public = not await _repo_is_private(
-                self.env, owner, repo)
+                self.env, data_owner, repo)
             if explicit_public:
                 cache_key = "%s/%s/%s" % (
                     origin, quote(owner), quote(repo))
@@ -28167,12 +29911,14 @@ class Default(WorkerEntrypoint):
             # (adhoc #46, see repo_card_handler / og_card.py) — instead of a
             # full-bleed logo. og:description carries the catalog description
             # so the unfurl text matches the repo, not the generic shell copy.
-            og_image = "%s/api/repo/%s/%s/card.png" % (
-                origin, quote(owner), quote(repo))
+            og_image = "%s/api/repo/%s/%s/card.png?v=%s" % (
+                origin, quote(owner), quote(repo),
+                quote(_build_rev(self.env), safe=""))
             og_description = ""
             try:
                 await ensure_schema(self.env)
-                repo_bi = await blind_index(self.env, owner + "/" + repo)
+                repo_bi = await blind_index(
+                    self.env, data_owner + "/" + repo)
                 repo_row = await d1_first(
                     self.env,
                     "SELECT data FROM repositories WHERE key_bi=?", repo_bi)
@@ -28187,6 +29933,7 @@ class Default(WorkerEntrypoint):
                                   % (owner, repo))
             title = "%s/%s - ForkMesh" % (owner, repo)
             tags = (
+                "<link rel=\"canonical\" href=\"%s\">"
                 "<link rel=\"me\" href=\"%s\">"
                 "<link rel=\"alternate\" type=\"application/activity+json\" "
                 "href=\"%s/ap/repos/%s/%s\">"
@@ -28202,7 +29949,7 @@ class Default(WorkerEntrypoint):
                 "<meta name=\"twitter:title\" content=\"%s\">"
                 "<meta name=\"twitter:description\" content=\"%s\">"
                 "<meta name=\"twitter:image\" content=\"%s\">"
-                % (fedi_profile,
+                % (canonical, fedi_profile,
                    origin, quote(owner), quote(repo),
                    canonical, title, _html_escape(og_description), og_image,
                    og_card.CARD_W, og_card.CARD_H,
@@ -28407,21 +30154,37 @@ async def chat_history_store(env, room_key, msg_id, ts, body):
         "ON CONFLICT(room_key, msg_id) DO NOTHING",
         room_key, msg_id, ts, body,
     )
+    await _chat_history_prune_bounds(env, room_key)
+
+
+async def _chat_history_prune_bounds(env, room_key):
+    # Enforce count and aggregate-byte limits in one deterministic statement.
+    # The body is an ASCII JSON envelope, so SQLite length(body) equals its UTF-8
+    # storage bytes. Window totals are newest-first; any older overflow rows are
+    # deleted without decrypting their contents.
+    await d1_run(
+        env,
+        "DELETE FROM chat_history WHERE room_key=? AND msg_id IN ("
+        "SELECT msg_id FROM ("
+        "SELECT msg_id,"
+        "ROW_NUMBER() OVER (ORDER BY ts DESC,msg_id DESC) AS row_number,"
+        "SUM(length(body)) OVER (ORDER BY ts DESC,msg_id DESC) AS retained_bytes "
+        "FROM chat_history WHERE room_key=?"
+        ") WHERE row_number>? OR retained_bytes>?)",
+        room_key,
+        room_key,
+        CHAT_HISTORY_MAX_PER_ROOM,
+        CHAT_HISTORY_MAX_BYTES_PER_ROOM,
+    )
 
 
 async def chat_history_prune(env, room_key):
-    # Drop anything past the retention window, then enforce the per-room cap by
-    # keeping only the newest CHAT_HISTORY_MAX_PER_ROOM rows.
+    # Drop anything past the retention window, then enforce count and aggregate
+    # encrypted-byte limits before replaying the room.
     cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
     await d1_run(env, "DELETE FROM chat_history WHERE room_key=? AND ts<?",
                  room_key, cutoff)
-    await d1_run(
-        env,
-        "DELETE FROM chat_history WHERE room_key=? AND msg_id NOT IN ("
-        "SELECT msg_id FROM chat_history WHERE room_key=? "
-        "ORDER BY ts DESC LIMIT ?)",
-        room_key, room_key, CHAT_HISTORY_MAX_PER_ROOM,
-    )
+    await _chat_history_prune_bounds(env, room_key)
 
 
 async def chat_history_prune_expired(env):
@@ -28446,6 +30209,8 @@ class ForkMeshWorld(DurableObject):
 
     async def fetch(self, request):
         path = urlparse(request.url).path
+        if path.rstrip("/") == "/api/world/manual-block":
+            return await self._manual_block(request)
         if path.rstrip("/") != "/api/world/ws":
             return json_response({"error": "not_found"}, status=404)
 
@@ -28475,7 +30240,11 @@ class ForkMeshWorld(DurableObject):
         peer_id = new_world_peer_id()
         country_source = world_protocol.approximate_country_code(raw_country)
         state = world_protocol.default_presence(peer_id, now)
+        arrival_slot = world_protocol.first_available_arrival_slot(
+            _ws_attr(peer, "arrival_slot", -1) for peer in peers)
+        state.update(world_protocol.arrival_position(arrival_slot))
         trusted_claim = {}
+        is_admin = False
         try:
             encoded_claim = (
                 request.headers.get("x-forkmesh-world-claim") or "")
@@ -28490,8 +30259,19 @@ class ForkMeshWorld(DurableObject):
                         candidate.get("name", ""),
                         candidate.get("accountStatus", "Guest"),
                         candidate.get("nodeCount", 0))
+                    is_admin = candidate.get("isAdmin") is True
         except Exception:
             trusted_claim = {}
+            is_admin = False
+        moderation_tokens = {}
+        for target_type in ("ip", "agent"):
+            try:
+                token = str(request.headers.get(
+                    "x-forkmesh-world-%s-token" % target_type) or "")
+            except Exception:
+                token = ""
+            moderation_tokens[target_type] = (
+                token if re.fullmatch(r"[a-f0-9]{64}", token) else "")
         if trusted_claim:
             # The name and operator count remain private attachment fields
             # until the owner's first presence frame opts into each one.
@@ -28503,26 +30283,71 @@ class ForkMeshWorld(DurableObject):
             server, state, last=now, rate_start=now, rate_count=0,
             country_source=country_source,
             trusted_name=trusted_claim.get("name", ""),
-            trusted_node_count=trusted_claim.get("nodeCount", 0))
+            trusted_node_count=trusted_claim.get("nodeCount", 0),
+            arrival_slot=arrival_slot, is_admin=is_admin,
+            ip_token=moderation_tokens["ip"],
+            agent_token=moderation_tokens["agent"])
 
         # The only snapshot is the state of sockets alive right now. It is sent
         # directly from runtime attachments and is never persisted or replayed.
         snapshot = [
-            world_protocol.public_presence(self._socket_state(peer))
+            self._presence_for_viewer(server, peer)
             for peer in peers
         ]
         self._safe_send(server, {
             "type": "welcome",
             "id": peer_id,
+            "self": world_protocol.public_presence(state),
             "peers": snapshot,
         })
         self._broadcast({
             "type": "join",
             "peer": world_protocol.public_presence(state),
-        }, exclude_id=peer_id, budgeted=True)
+        }, exclude_id=peer_id, budgeted=True, moderation_subject=server)
 
         return JsResponse.new(
             None, to_js({"status": 101, "webSocket": client}))
+
+    async def _manual_block(self, request):
+        """Disconnect sockets selected by a signed outer-Worker command."""
+        if method_name(request) != "POST":
+            return json_response({"error": "method_not_allowed"}, status=405)
+        try:
+            data = await request.json()
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        if not isinstance(data, dict):
+            return json_response({"error": "invalid_json"}, status=400)
+        target_type = str(data.get("targetType") or "").strip().lower()
+        subject_token = str(data.get("subjectToken") or "").strip().lower()
+        try:
+            expires_at = int(data.get("expiresAt") or 0)
+        except (TypeError, ValueError):
+            expires_at = 0
+        try:
+            signature = str(
+                request.headers.get("x-forkmesh-world-control") or "")
+        except Exception:
+            signature = ""
+        expected = _world_manual_control_signature(
+            self.env, target_type, subject_token, expires_at)
+        now = int(Date.now())
+        if (
+            target_type not in ("ip", "agent")
+            or not re.fullmatch(r"[a-f0-9]{64}", subject_token)
+            or expires_at <= now
+            or expires_at > now + WORLD_MANUAL_BLOCK_MAX_MS
+            or not hmac.compare_digest(signature, expected)
+        ):
+            return json_response({"error": "unauthorized"}, status=401)
+        disconnected = 0
+        token_field = target_type + "_token"
+        for peer in list(self._live_sockets(cleanup=True)):
+            if _ws_attr(peer, token_field, "") != subject_token:
+                continue
+            disconnected += 1
+            self._depart(peer, 1008, "temporary manual moderation")
+        return json_response({"ok": True, "disconnected": disconnected})
 
     def _socket_state(self, ws):
         attachment = _ws_attachment(ws)
@@ -28536,7 +30361,8 @@ class ForkMeshWorld(DurableObject):
     def _save_attachment(self, ws, state, last, rate_start, rate_count,
                          departed=False, country_source=None,
                          trusted_name=None, trusted_node_count=None,
-                         pending_knocks=None):
+                         pending_knocks=None, arrival_slot=None, is_admin=None,
+                         ip_token=None, agent_token=None):
         if country_source is None:
             country_source = _ws_attr(ws, "country_source", "")
         if trusted_name is None:
@@ -28545,6 +30371,14 @@ class ForkMeshWorld(DurableObject):
             trusted_node_count = _ws_attr(ws, "trusted_node_count", 0)
         if pending_knocks is None:
             pending_knocks = _ws_attr(ws, "pending_knocks", [])
+        if arrival_slot is None:
+            arrival_slot = _ws_attr(ws, "arrival_slot", -1)
+        if is_admin is None:
+            is_admin = bool(_ws_attr(ws, "is_admin", False))
+        if ip_token is None:
+            ip_token = _ws_attr(ws, "ip_token", "")
+        if agent_token is None:
+            agent_token = _ws_attr(ws, "agent_token", "")
         pending_knocks = [
             str(peer_id)
             for peer_id in list(pending_knocks or [])[-8:]
@@ -28563,9 +30397,24 @@ class ForkMeshWorld(DurableObject):
             # into name/operator-belt sharing.
             "trusted_name": trusted_fields["name"] if trusted_name else "",
             "trusted_node_count": trusted_fields["nodeCount"],
+            # These opaque rotating subjects and authorization bit remain
+            # private attachment data. Only `_presence_for_viewer` can project
+            # the handles, and only to a server-verified administrator.
+            "is_admin": bool(is_admin),
+            "ip_token": (
+                str(ip_token)
+                if re.fullmatch(r"[a-f0-9]{64}", str(ip_token or ""))
+                else ""),
+            "agent_token": (
+                str(agent_token)
+                if re.fullmatch(r"[a-f0-9]{64}", str(agent_token or ""))
+                else ""),
             # One-use, live-socket-only consent requests. They are never
             # persisted, broadcast, or exposed in the public presence record.
             "pending_knocks": pending_knocks,
+            # A room-local collision-avoidance index. It is never broadcast,
+            # persisted, or derived from an account/network identifier.
+            "arrival_slot": int(arrival_slot),
             "last": int(last or 0),
             "rl_start": int(rate_start or 0),
             "rl_count": int(rate_count or 0),
@@ -28575,6 +30424,19 @@ class ForkMeshWorld(DurableObject):
             ws.serializeAttachment(to_js(attachment))
         except Exception:
             pass
+
+    def _presence_for_viewer(self, viewer, subject):
+        public = world_protocol.public_presence(self._socket_state(subject))
+        if not bool(_ws_attr(viewer, "is_admin", False)):
+            return public
+        handles = {}
+        for target_type in ("ip", "agent"):
+            token = str(_ws_attr(subject, target_type + "_token", "") or "")
+            if re.fullmatch(r"[a-f0-9]{64}", token):
+                handles[target_type] = token
+        if handles:
+            public["moderationHandles"] = handles
+        return public
 
     def _mark_departed(self, ws):
         self._save_attachment(
@@ -28679,9 +30541,6 @@ class ForkMeshWorld(DurableObject):
             return
         allowed, rate_start, rate_count = self._rate_step(
             ws, state, now)
-        if not allowed:
-            self._safe_close(ws, 1008, "rate limit")
-            return
         # Every frame (including a heartbeat or invalid JSON) is an opportunity
         # to reap peers that vanished without a close event.
         self._live_sockets(cleanup=True)
@@ -28689,6 +30548,27 @@ class ForkMeshWorld(DurableObject):
         try:
             payload = json.loads(message)
         except Exception:
+            if not allowed:
+                self._safe_close(ws, 1008, "rate limit")
+            return
+        if not allowed:
+            kind = (
+                str(payload.get("type") or "").strip().lower()
+                if isinstance(payload, dict) else ""
+            )
+            disposable = kind in ("move", "presence", "ping")
+            hard_limit = world_protocol.WORLD_RATE_HARD_MAX_PER_WINDOW
+            if disposable and rate_count <= hard_limit:
+                # Keep the latest accepted attachment as the coalesced state.
+                # A subsequent frame in a fresh window will carry the browser's
+                # newest position/profile, so a normal connect+movement burst
+                # sheds traffic instead of tearing down the multiplayer socket.
+                return
+            self._safe_close(
+                ws,
+                1008,
+                "sustained rate limit" if disposable else "rate limit",
+            )
             return
         interaction = world_protocol.sanitize_interaction(payload, state)
         if interaction is not None:
@@ -28776,7 +30656,8 @@ class ForkMeshWorld(DurableObject):
         else:
             frame = world_protocol.movement_delta(state)
         self._broadcast(
-            frame, exclude_id=state.get("id"), budgeted=True)
+            frame, exclude_id=state.get("id"), budgeted=True,
+            moderation_subject=ws if kind == "presence" else None)
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._depart(ws, 1000, "")
@@ -28800,7 +30681,8 @@ class ForkMeshWorld(DurableObject):
                 exclude_id=peer_id,
             )
 
-    def _broadcast(self, frame, exclude_id=None, budgeted=False):
+    def _broadcast(self, frame, exclude_id=None, budgeted=False,
+                   moderation_subject=None):
         if budgeted and not self._broadcast_admitted(int(Date.now())):
             # State still updates in the sender's attachment, so the next
             # welcome snapshot is current even when a hot movement delta drops.
@@ -28808,7 +30690,18 @@ class ForkMeshWorld(DurableObject):
         for peer in self._live_sockets(cleanup=True):
             if exclude_id and _ws_attr(peer, "id") == exclude_id:
                 continue
-            self._safe_send(peer, frame)
+            outgoing = frame
+            if (
+                moderation_subject is not None
+                and isinstance(frame.get("peer"), dict)
+                and bool(_ws_attr(peer, "is_admin", False))
+            ):
+                outgoing = {
+                    **frame,
+                    "peer": self._presence_for_viewer(
+                        peer, moderation_subject),
+                }
+            self._safe_send(peer, outgoing)
 
     def _safe_send(self, ws, frame):
         try:
@@ -28832,7 +30725,17 @@ class ForkMeshRoom(DurableObject):
     # survive eviction. The read-only "observer" count socket was retired: the
     # live count is now served over HTTP via the cached /api/network/stats.
     async def fetch(self, request):
-        path = urlparse(request.url).path
+        parsed_url = urlparse(request.url)
+        path = parsed_url.path
+        private_path = CHAT_CHANNEL_DO_RE.match(path)
+        if (
+            private_path
+            and private_path.group(3) == "revoke"
+            and method_name(request) == "POST"
+        ):
+            self._close_all_chat_sockets(1008, "room access revoked")
+            return json_response({"ok": True})
+
         upgrade = request.headers.get("upgrade")
         is_websocket = bool(upgrade) and upgrade.lower() == "websocket"
 
@@ -28848,13 +30751,20 @@ class ForkMeshRoom(DurableObject):
 
         # The room key identifies this room across hibernation; stash it on the
         # socket so webSocketMessage can scope retained history to this room.
-        info = room_key_from_path(path)
+        account_values = parse_qs(
+            parsed_url.query, keep_blank_values=False
+        ).get("account") or []
+        account_bi = account_values[0] if len(account_values) == 1 else ""
+        info = room_key_from_path(path, account_bi)
         room_key = info["key"] if info else None
 
         client, server = WebSocketPair.new().object_values()
         self.ctx.acceptWebSocket(server, to_js(["chat"]))
         server.serializeAttachment(to_js({
             "id": new_socket_id(), "room": room_key,
+            "channel_id": (info or {}).get("channel_id", ""),
+            "channel_version": (info or {}).get("channel_version", 0),
+            "account_bi": (info or {}).get("account_bi", ""),
             "last": int(Date.now()),
         }))
 
@@ -28914,6 +30824,9 @@ class ForkMeshRoom(DurableObject):
         try:
             ws.serializeAttachment(to_js({
                 "id": _ws_attr(ws, "id"), "room": _ws_attr(ws, "room"),
+                "channel_id": _ws_attr(ws, "channel_id", ""),
+                "channel_version": _ws_attr(ws, "channel_version", 0),
+                "account_bi": _ws_attr(ws, "account_bi", ""),
                 "last": now, "rl_start": start, "rl_count": count,
             }))
         except Exception:
@@ -28929,6 +30842,9 @@ class ForkMeshRoom(DurableObject):
             return
         # Drop frames from a socket that is flooding (don't relay or retain them).
         if not self._rate_ok(ws):
+            return
+        if not await self._private_room_current(ws):
+            self._close_all_chat_sockets(1008, "room access revoked")
             return
         sender_id = _ws_attr(ws, "id")
         for peer in self._live_chat_sockets(close_stale=True):
@@ -28946,13 +30862,19 @@ class ForkMeshRoom(DurableObject):
         room_key = _ws_attr(ws, "room")
         if not room_key:
             return
-        if len(message.encode("utf-8")) > CHAT_HISTORY_MAX_BODY:
+        message_bytes = len(message.encode("utf-8"))
+        if message_bytes > CHAT_HISTORY_MAX_BODY:
             return  # don't retain very large frames (e.g. file transfers)
         try:
             envelope = json.loads(message)
         except Exception:
             return
-        if not (isinstance(envelope, dict) and envelope.get("persist")):
+        if not (
+            isinstance(envelope, dict)
+            and envelope.get("persist") is True
+        ):
+            return
+        if not await self._retention_ingress_admitted(message_bytes):
             return
         try:
             # The message id lives inside the ciphertext, so key retention on a
@@ -28962,6 +30884,107 @@ class ForkMeshRoom(DurableObject):
                                      int(Date.now()), message)
         except Exception:
             pass
+
+    async def _private_room_current(self, ws):
+        channel_id = _ws_attr(ws, "channel_id", "")
+        if not channel_id:
+            return True
+        try:
+            channel_version = int(_ws_attr(ws, "channel_version", 0) or 0)
+            account_bi = str(_ws_attr(ws, "account_bi", "") or "")
+            if not re.fullmatch(r"[0-9a-f]{64}", account_bi):
+                return False
+            await ensure_schema(self.env)
+            channel = await d1_first(
+                self.env,
+                "SELECT data,key_version FROM chat_channels WHERE channel_id=?",
+                channel_id,
+            )
+            if (
+                not channel
+                or int(channel.get("key_version") or 0) != channel_version
+            ):
+                return False
+            channel_record = await decrypt_row(
+                self.env, channel.get("data"))
+            if not isinstance(channel_record, dict):
+                return False
+            account = await d1_first(
+                self.env,
+                "SELECT data,is_admin FROM users WHERE user_bi=?",
+                account_bi,
+            )
+            if not account:
+                return False
+            account_record = await decrypt_row(
+                self.env, account.get("data"))
+            if (
+                not account_record
+                or account_record.get("status") != "active"
+                or _account_kind(account_record) != "user"
+            ):
+                return False
+            if bool(int(account.get("is_admin") or 0)):
+                return True
+            if channel_record.get("visibility") == "public":
+                return True
+            membership = await d1_first(
+                self.env,
+                "SELECT 1 AS allowed FROM chat_channel_members "
+                "WHERE channel_id=? AND member_bi=?",
+                channel_id,
+                account_bi,
+            )
+            return bool(membership)
+        except Exception:
+            return False
+
+    async def _retention_ingress_admitted(self, message_bytes):
+        now = int(Date.now())
+        try:
+            state = await self.ctx.storage.get("chat_history_ingress")
+        except Exception:
+            return False
+        if hasattr(state, "to_py"):
+            state = state.to_py()
+        if not isinstance(state, dict):
+            state = {}
+        try:
+            start = int(state.get("start") or 0)
+            used = int(state.get("bytes") or 0)
+        except (TypeError, ValueError):
+            start = 0
+            used = 0
+        if now - start >= CHAT_HISTORY_INGRESS_WINDOW_MS:
+            start = now
+            used = 0
+        if message_bytes < 0 or (
+            used + message_bytes > CHAT_HISTORY_INGRESS_MAX_BYTES
+        ):
+            try:
+                await self.ctx.storage.put(
+                    "chat_history_ingress",
+                    to_js({"start": start, "bytes": used}),
+                )
+            except Exception:
+                pass
+            return False
+        try:
+            await self.ctx.storage.put(
+                "chat_history_ingress",
+                to_js({"start": start, "bytes": used + message_bytes}),
+            )
+        except Exception:
+            return False
+        return True
+
+    def _close_all_chat_sockets(self, code, reason):
+        try:
+            peers = self.ctx.getWebSockets("chat")
+        except Exception:
+            peers = []
+        for peer in peers:
+            self._safe_close(peer, code, reason)
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._safe_close(ws, 1000, "")

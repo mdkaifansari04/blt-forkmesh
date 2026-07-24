@@ -54,6 +54,7 @@ SUPPORTED_KEY_TYPES = frozenset(
     }
 )
 ORIGINAL_COMMAND_RE = re.compile(r"^git-(upload|receive)-pack\s+(.+)$")
+INTERNAL_GIT_REF_NAMESPACE = "refs/forkmesh/"
 
 
 class GatewayError(RuntimeError):
@@ -442,6 +443,18 @@ def _serve(config: Config, key_id: str) -> int:
         "credential.helper=",
         "-c",
         "protocol.ext.allow=never",
+        # Never advertise, fetch, create, update, or delete ForkMesh's
+        # owner-only merge recovery refs through an end-user SSH session.
+        "-c",
+        "uploadpack.hideRefs=" + INTERNAL_GIT_REF_NAMESPACE,
+        "-c",
+        "uploadpack.allowTipSHA1InWant=false",
+        "-c",
+        "uploadpack.allowReachableSHA1InWant=false",
+        "-c",
+        "uploadpack.allowAnySHA1InWant=false",
+        "-c",
+        "receive.hideRefs=" + INTERNAL_GIT_REF_NAMESPACE,
         "-c",
         "receive.fsckObjects=true",
         "-c",

@@ -137,6 +137,9 @@ class QVBoxLayout;
 class QCheckBox;
 class QHBoxLayout;
 class PublicMirrorMaterialization;
+namespace forkmesh::control {
+struct MirrorActionsConfigurationRequest;
+}
 namespace forkmesh::ui { class DiffFileNavigator; } // file-list <-> diff-view sync
 
 // A configured mainnode the user can connect to. The client connects to one at
@@ -186,6 +189,14 @@ struct RepositoryRecord {
     // Enabled by default; can be turned off per repo on the Actions tab. Pushed
     // workflow changes still require explicit approval before they run.
     bool actionsEnabled = true;
+    // A gateway-managed serving repository must keep its own post-receive hook
+    // and object database isolated from workflow-created objects. The remote
+    // Actions helper therefore maintains a separate local bare mirror and this
+    // source/ref pair is polled for bounded branch changes instead of replacing
+    // the serving hook.
+    bool externallyManagedActions = false;
+    QString externalActionsSource;
+    QString externalActionsRef;
     // Workflow paths (relative to the repo root, e.g. ".forkmesh/ci.yml") that
     // the owner has switched off individually. Disabled workflows are skipped on
     // push and can't be triggered manually, but stay listed so past runs remain
@@ -276,6 +287,7 @@ public:
     // (adhoc #15) without needing real scroll-wheel input.
     void testShowSettingsSection() { showSection(1); }
     void testShowLogSection() { showSection(4); }
+    void testShowHostsSection() { showSection(7); }
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
     QTextBrowser *testNetworkLogView() const { return m_settingsLog; }
     void testScrollNetworkLogToTop() { onNetworkLogScrolled(0); }
@@ -454,6 +466,12 @@ public:
     void testSetMirrorNodesOnlineOnly(bool checked);
     QString testMirrorNodeCellText(const QString &nodeName, int column) const;
     QString testMirrorNodeCellToolTip(const QString &nodeName, int column) const;
+    // Build the exact command used by the fleet-wide binary action without
+    // starting SSH. Tests use this to keep that action pinned to the published,
+    // checksum-verified release rather than the currently-running executable.
+    QString testFleetBinaryInstallRemoteCommand(bool reinstall,
+                                                qsizetype *uploadByteCount,
+                                                QString *errorOut);
     // Rebuild the Branches panel, then read back the Worktree column (column 3)
     // for `branch`, so a test can prove the branches list surfaces the worktree a
     // branch is checked out in (issue #172).
@@ -918,6 +936,7 @@ private:
     void maybeUploadDiagnostics();
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
+    void showCloudflareWorkerLogs();
 
     // Mainnode relays (shown in the top-bar relay switcher)
     void loadServers();
@@ -1068,10 +1087,19 @@ private:
     void viewHostLogsForSelection(int row);
     void runHostLogSession(const QString &ip, const QString &user,
                           const QString &pass, const QString &node);
+    // Configure a saved mirror host's Actions executor over its authenticated
+    // SSH channel. Secret values are collected in a one-shot dialog and sent
+    // only in a bounded JSON stdin payload; they are never saved in QSettings
+    // or placed in process arguments/logs.
+    void configureHostActionsForSelection(int row);
+    void runHostActionsConfiguration(
+        forkmesh::control::MirrorActionsConfigurationRequest request,
+        const QString &sshPassword);
     // Fleet-wide deploys (adhoc): each runs against EVERY saved host in
     // parallel, streaming into its own pane of the split live-output grid — a
-    // direct-upload binary install (#257), an uninstall+reinstall (#258), or an
-    // update straight from source. Thin wrappers over runHostDeployAllParallel.
+    // published, checksum-verified binary install (#257), an
+    // uninstall+reinstall (#258), or an update straight from source. Thin
+    // wrappers over runHostDeployAllParallel.
     void runHostInstallAllFromBinary();
     void runHostReinstallAllFromBinary();
     void runHostUpdateAllFromSource();
@@ -1083,6 +1111,13 @@ private:
     // update-from-source; the runHost*All* drivers above are thin wrappers that
     // confirm and then call this.
     enum class FleetDeployMode { InstallBinary, Reinstall, UpdateSource };
+    struct FleetDeployOptions {
+        bool uploadBinary = false;
+        bool reinstall = false;
+        bool fromSource = false;
+        bool requirePublishedBinary = false;
+    };
+    static FleetDeployOptions fleetDeployOptions(FleetDeployMode mode);
     // One host's slice of a parallel fleet deploy: its own SSH process, output
     // pane and its own copy of the ANSI-render + link-detect state that the
     // single-log path keeps in the m_hostInstall* members.
@@ -1102,17 +1137,21 @@ private:
         bool finished = false;
     };
     void runHostDeployAllParallel(FleetDeployMode mode);
-    void startHostDeploySession(HostDeploySession *session, bool uploadBinary,
-                                bool reinstall, bool fromSource);
+    void startHostDeploySession(HostDeploySession *session,
+                                const FleetDeployOptions &options);
     void appendHostDeployLog(HostDeploySession *session, const QString &text);
     void onHostDeploySessionFinished(HostDeploySession *session, bool ok);
     // Shared SSH command builder used by both the single-host runHostInstall and
     // the parallel fleet path. Fills sshArgs/remoteCmd (and, for a binary upload,
     // the bytes to stream on stdin); returns false with a message in *errorOut on
-    // failure (unresolved installer URL, unreadable local binary).
+    // failure (unresolved installer URL, unreadable local binary). When
+    // requirePublishedBinary is true, the remote installer is forced to use the
+    // latest published checksum-verified release and its reported version is
+    // checked before that host is marked successful.
     bool buildHostInstallCommand(const QString &ip, const QString &user,
                                  const QString &node, bool uploadBinary,
                                  bool reinstall, bool fromSource,
+                                 bool requirePublishedBinary,
                                  QStringList *sshArgs, QString *remoteCmd,
                                  QByteArray *uploadBytes, QString *errorOut);
     // Save the host's server info (name/IP/user/password) from the form without running
@@ -1834,6 +1873,17 @@ private:
     void removePushHook(const RepositoryRecord &repo) const;
     void installAllPushHooks() const;
     void scanActionSpool();              // read *.push/*.commit events, enqueue runs
+    // Apply a controller-written generation without restarting the headless
+    // node, then poll gateway-managed sources into their isolated Actions
+    // mirrors. Neither path changes the gateway's serving hook/object store.
+    void syncMirrorActionsConfiguration();
+    void scanExternalActionsSources();
+    void updateMirrorActionsRuntimeState();
+    // Atomically publish a bounded, redacted Actions run summary for the
+    // gateway. Live log lines are coalesced; lifecycle changes publish on the
+    // next event-loop turn and the lease is refreshed periodically.
+    void scheduleMirrorActionsSummary(int delayMs = 0);
+    void writeMirrorActionsSummary();
     void enqueuePushEvent(const QString &owner, const QString &name,
                           const QString &commit, const QString &ref);
     void processActionQueue();
@@ -3478,8 +3528,8 @@ private:
     QCheckBox *m_hostUploadBinaryCheck = nullptr;
     QPushButton *m_hostAddButton = nullptr;
     QPushButton *m_hostInstallButton = nullptr;
-    // Bulk direct-upload install (adhoc #257): runs the upload-binary install
-    // against every saved host, one after another.
+    // Bulk published-binary install (adhoc #257): every saved host downloads
+    // the current checksum-verified release and reports its installed version.
     QPushButton *m_hostInstallAllButton = nullptr;
     // Bulk uninstall + reinstall from binary (adhoc #258).
     QPushButton *m_hostReinstallAllButton = nullptr;
@@ -3497,6 +3547,7 @@ private:
     QTableWidget *m_hostsTable = nullptr;
     QProcess *m_hostInstallProcess = nullptr; // running ssh install session, if any
     QProcess *m_hostLogProcess = nullptr;     // running ssh log-tail session, if any
+    QProcess *m_hostActionsProcess = nullptr; // one-shot stdin-only Actions config
     // Installer link-code detection (adhoc #53): rolling tail of the install
     // output so the "Link code: NNNNNN" line survives chunk splits, and a
     // per-run guard so the link popup opens once.
@@ -4529,6 +4580,12 @@ private:
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
+    QString m_mirrorActionsConfigGeneration;
+    QString m_mirrorActionsRuntimeState;
+    qint64 m_mirrorActionsRuntimeStateWrittenAtMs = 0;
+    QTimer *m_mirrorActionsSummaryTimer = nullptr;
+    qint64 m_mirrorActionsSummaryAttemptedAtMs = 0;
+    qint64 m_lastExternalActionsScanMs = 0;
     QList<AppNotification> m_notifications;
     QPushButton *m_notificationButton = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page

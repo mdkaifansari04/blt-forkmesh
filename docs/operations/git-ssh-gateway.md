@@ -176,10 +176,14 @@ notification never rewrites an already-committed push as failed.
 
 The notifier atomically coalesces pushes into one marker. The tracked systemd
 path/service then runs refresh as `forkmesh-mirror`, restarts only
-`forkmesh-mirror.service`, verifies its loopback health response using the
-pinned Ed25519 node key, and registers the active generation. It never derives
-a command, path, unit, or argument from a pushed ref, push option, repository
-content, or SSH environment. See
+`forkmesh-mirror.service`, and verifies identity-bound signed health over both
+loopback and the gateway configuration's public Cloudflare origin using the
+pinned Ed25519 node key before registering the active generation. Both checks
+share one bounded deadline, ignore ambient proxies, and reject redirects. The
+flow fails closed if either proof is unavailable; the independent renewal timer
+can republish after a later transient outage. It never derives a command, path,
+unit, or argument from a pushed ref, push option, repository content, or SSH
+environment. See
 [`ssh-post-receive-refresh.schema.json`](../ssh-post-receive-refresh.schema.json).
 
 Validate before reloading sshd:

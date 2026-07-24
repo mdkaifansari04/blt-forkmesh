@@ -76,7 +76,7 @@ def test_world_is_an_immediate_accessible_game_shell():
     assert "JavaScript and WebGL enhance this page" in INDEX
 
 
-def test_world_contains_the_initial_city_districts_and_shared_clock():
+def test_world_contains_the_initial_city_districts_and_utc_clock():
     for landmark in (
         "information",
         "fountain",
@@ -89,18 +89,25 @@ def test_world_contains_the_initial_city_districts_and_shared_clock():
         "support",
     ):
         assert f'id: "{landmark}"' in DATA
-    assert "export const WORLD_DAY_MS = 4 * 60 * 60 * 1000" in DATA
+    assert "export function utcClock" in DATA
+    assert "getUTCHours()" in DATA
+    assert "getUTCMinutes()" in DATA
+    assert "getUTCSeconds()" in DATA
+    assert "WORLD_DAY_MS" not in DATA
     for theme in (
         "world",
-        "day",
-        "sunset",
-        "night",
         "rain",
         "snow",
+        "winter",
         "cyberpunk",
         "low-light",
     ):
         assert f'id: "{theme}"' in DATA
+    assert 'class="world-clock"' in APP
+    assert 'aria-label="Current UTC time"' in APP
+    assert 'data-world-clock>--:--:--' in APP
+    assert 'class="world-clock-label">UTC time' in APP
+    assert 'data-world-phase>UTC · 24-hour clock' in APP
 
 
 def test_scene_builds_playable_landmarks_and_badged_avatars():
@@ -150,6 +157,50 @@ def test_scene_builds_playable_landmarks_and_badged_avatars():
     assert "data-world-home-decline" in APP
     assert "data-world-enter-home" in APP
     assert "pendingKnocks" in APP
+    assert 'arrivalBox.name = "world-arrival-box"' in SCENE
+    assert '"10 visitors per row · face the square"' in SCENE
+    assert "function setSpawn(spawn = {})" in SCENE
+    assert '"self": world_protocol.public_presence(state)' in ENTRY
+
+
+def test_user_agent_is_reduced_locally_to_generalized_badge_categories():
+    assert 'Firefox\\/|FxiOS\\/' in DATA
+    assert "/CrOS/i.test(ua)" in DATA
+    assert "/Linux/i.test(platform)" in DATA
+    assert "navigator.userAgent" in DATA
+    assert "userAgent:" not in APP
+    assert "identity.browser" in SCENE
+    assert "identity.os" in SCENE
+    assert "presenceBrowser(" in APP
+    assert "presenceOS(" in APP
+
+
+def test_avatar_chest_activity_country_shirt_and_input_state_are_privacy_safe():
+    for contract in (
+        "FIRST SEEN THIS SESSION",
+        "PUBLIC URL VISITS",
+        "identity.activityCategory",
+        "identity.firstVisitAge",
+        "identity.visitCount",
+        "function countryShirtTexture",
+        "identity.countryCode",
+        'bracelet.name = "mouse-activity-bracelet"',
+        "function syncAvatarActivity",
+        "function animateAvatarActivity",
+        'avatar.userData.accountStatus === "Guest"',
+        "inactiveFor >= 12000",
+        'avatar.userData.accountStatus === "Guest"',
+    ):
+        assert contract in SCENE
+    assert "inputActive:" in APP
+    assert "visitCount:" in APP
+    assert "firstVisitAge:" in APP
+    assert "settings.privacy.activity && identity.inputActive === true" in APP
+    assert "countryCode:" in APP
+    assert "userAgent:" not in APP
+    assert "url:" not in APP[APP.index("  sendPresence(message) {"):APP.index(
+        "\n  receivePresence(message)", APP.index("  sendPresence(message) {")
+    )]
 
 
 def test_avatars_do_not_render_laptop_or_phone_props():
@@ -157,6 +208,55 @@ def test_avatars_do_not_render_laptop_or_phone_props():
     assert 'startsWith("guest")' not in SCENE
     assert "const device = new THREE.Group()" not in SCENE
     assert "const keyboard = new THREE.Mesh(" not in SCENE
+
+
+def test_admin_remote_avatar_back_controls_use_only_opaque_manual_handles():
+    for contract in (
+        "const WORLD_MODERATION_HANDLE_PATTERN = /^[a-f0-9]{64}$/",
+        "function sanitizedModerationHandles(remote, isAdmin)",
+        "isAdmin !== true",
+        'remote?.persistedInactive === true',
+        'remote?.accountStatus === "Verified bot"',
+        "/^(?:inactive|local|node|bot):/",
+        'typeof remote.moderationHandles !== "object"',
+        "function createAvatarModerationControls",
+        '"TEMP BLOCK IP"',
+        '"ROTATING IP TOKEN · 1 HOUR"',
+        '"TEMP BLOCK AGENT"',
+        '"BROWSER AGENT · 1 HOUR"',
+        "control.position.set(0, spec.y, 0.321)",
+        "onModeration = () => {}",
+        "identity?.isAdmin === true",
+        "moderationActions.set(control",
+        "interactive.push(control)",
+        "function removeRemoteModerationControls",
+        "moderationActions.delete(child)",
+        "interactive.splice(interactiveIndex, 1)",
+        "disposeObject3D(controls)",
+        "syncRemoteModerationControls(avatar, remote)",
+        "removeRemoteModerationControls(avatar, id)",
+    ):
+        assert contract in SCENE
+
+    click = SCENE[
+        SCENE.index("const moderationAction = hit?.object"):
+        SCENE.index(
+            "if (hit?.object?.userData?.landmark)",
+            SCENE.index("const moderationAction = hit?.object"),
+        )
+    ]
+    for field in ("targetType", "handle", "peerId", "name"):
+        assert f"{field}: moderationAction.{field}" in click
+    assert "onModeration({" in click
+
+    texture = SCENE[
+        SCENE.index("function moderationControlTexture"):
+        SCENE.index(
+            "\nfunction sanitizedModerationHandles",
+            SCENE.index("function moderationControlTexture"),
+        )
+    ]
+    assert "handle" not in texture.lower()
 
 
 def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
@@ -189,6 +289,81 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert "session?.accountTier" not in APP
 
 
+def test_world_hud_counts_authoritative_connected_visitors_without_duplicates():
+    assert 'data-world-players>1</strong><span>in world</span>' in APP
+    assert "const socketOnline =" in APP
+    assert "1 + this.remotePlayers.size + (socketOnline ? 0 : this.localPeers.size)" in APP
+    render_peers = APP[APP.index("  renderPeers() {"):APP.index(
+        "\n  destroy() {", APP.index("  renderPeers() {")
+    )]
+    assert "if (!socketOnline && !reconnectGrace)" in render_peers
+    assert "this.world?.setRemotePlayers" in render_peers
+
+
+def test_world_position_is_one_fresh_bounded_identity_local_record():
+    for contract in (
+        'const POSITION_KEY_PREFIX = "forkmesh.world.position.v1."',
+        "const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000",
+        "function positionStorageKey(identityId)",
+        "function normalizedWorldPosition(record, now = Date.now())",
+        "Math.abs(x) > POSITION_RADIUS",
+        "Math.abs(z) > POSITION_RADIUS",
+        "Math.abs(y - floor) > POSITION_FLOOR_TOLERANCE",
+        "updatedAt < now - POSITION_MAX_AGE_MS",
+        "this.positionKey = positionStorageKey(this.identity.id)",
+        "this.world.setSpawn?.(this.restoredPosition)",
+        "this.captureWorldPosition(true)",
+    ):
+        assert contract in APP
+    writer = APP[APP.index("  flushWorldPosition() {"):APP.index(
+        "\n  queueMovementPresence(", APP.index("  flushWorldPosition() {")
+    )]
+    for field in ("x", "y", "z", "heading", "space", "updatedAt"):
+        assert f"      {field}," in writer
+    for forbidden in ("activity", "url", "history", "repository"):
+        assert forbidden not in writer.lower()
+    assert "Object.hasOwn(WORLD_SPACE_FLOORS, requestedSpace)" in SCENE
+    assert "currentFloorY = WORLD_SPACE_FLOORS[space]" in SCENE
+
+
+def test_world_client_coalesces_disposable_frames_and_reconnects_with_grace():
+    for contract in (
+        "const MOVEMENT_SEND_INTERVAL_MS = 1000",
+        "const PRESENCE_PROFILE_DEBOUNCE_MS = 300",
+        "const SOCKET_BUFFER_HIGH_WATER_BYTES = 64 * 1024",
+        "this.queueMovementPresence({",
+        "this.sendPresenceNow({",
+        "Number(this.socket.bufferedAmount || 0) > SOCKET_BUFFER_HIGH_WATER_BYTES",
+        "schedulePresenceReconnect()",
+        "const jitter = 0.75 + Math.random() * 0.5",
+        "this.schedulePresenceReconnect();",
+        "const reconnectGrace =",
+        "this.startPeerReconnectGrace();",
+        "this.socketRetry = 1000",
+    ):
+        assert contract in APP
+    assert "this.remotePlayers.clear();" not in APP[
+        APP.index('socket.addEventListener("close"'):APP.index(
+            'socket.addEventListener("error"',
+            APP.index('socket.addEventListener("close"'),
+        )
+    ]
+    assert "if (!walking && wasWalking)" in SCENE
+    assert "moving: true" in SCENE
+    assert "moving: false" in SCENE
+
+
+def test_avatar_faces_keyboard_travel_direction_and_intro_can_stay_dismissed():
+    assert "player.rotation.y = Math.atan2(-movement.x, -movement.z)" in SCENE
+    assert "toTarget" not in SCENE
+    assert "player.rotation.y = 0" in SCENE
+    assert "INTRO_DISMISSED_KEY" in APP
+    assert "data-world-arrival-dismiss" in APP
+    assert 'localStorage.setItem(INTRO_DISMISSED_KEY, "1")' in APP
+    assert 'introDismissed() ? "hidden" : ""' in APP
+    assert ".world-arrival-card[hidden]" in CSS
+
+
 def test_world_has_consent_aware_activity_events_workshops_and_media():
     for landmark in ("events", "neighborhood", "workshops", "broadcast"):
         assert f'id: "{landmark}"' in DATA
@@ -212,8 +387,10 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
     assert "WORLD_REGIONS" in DATA
     assert "travelToRegion" in SCENE
     assert "travelToSpace" in SCENE
-    assert "WORLD_DAY_MS / 24" in SCENE
-    assert "utcOffsetHours" in SCENE
+    assert "utcClock(Date.now() + this.serverOffset)" in APP
+    assert "worldClock" not in SCENE
+    assert "setClockOffset" not in SCENE
+    assert "utcOffsetHours" not in SCENE
     assert 'data-world-travel="sky-campus"' in APP
     assert 'data-world-travel="code-planet"' in APP
     assert 'data-world-travel="space-station"' in APP
@@ -257,6 +434,25 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
     assert "data-world-radio-stop" in APP
     assert "Audio never starts automatically" in APP
     assert "ice5.somafm.com" not in DATA
+    assert "data-world-sound-toggle" in APP
+    assert "this.soundEnabled = false" in APP
+    assert "This is the only path that creates the shared cue context" in APP
+    assert "if (!this.soundEnabled)" in APP
+    assert "Audio never starts automatically" in APP
+
+
+def test_join_cues_are_country_specific_local_opt_in_and_rate_limited():
+    assert "playCountryJoinSound(countryCode, force = false)" in APP
+    assert 'message.type === "join"' in APP
+    assert "this.playCountryJoinSound(player.countryCode)" in APP
+    assert "code.charCodeAt(0) * 37 + code.charCodeAt(1) * 17" in APP
+    assert "this.joinSoundTimes.length >= 3" in APP
+    cue = APP[APP.index("  playCountryJoinSound("):APP.index(
+        "\n  saveSettings()", APP.index("  playCountryJoinSound(")
+    )]
+    assert "if (!this.soundEnabled || !context" in cue
+    assert "countryCode" in cue
+    assert "speechSynthesis" not in cue
 
 
 def test_chat_opens_inside_the_world_without_popup_permission():
@@ -392,6 +588,158 @@ def test_repository_world_uses_authorized_https_metadata_and_size_aware_nodes():
     assert 'data-world-repo-filter="frequency" disabled' not in APP
     assert 'data-world-repo-filter="dependency" disabled' not in APP
     assert 'data-world-repo-filter="coverage" disabled' not in APP
+
+
+def test_world_autoloads_the_live_catalog_attested_flagship_repository_map():
+    assert 'owner: "forkmesh",\n  repo: "forkmesh"' in APP
+    bootstrap = APP[
+        APP.index("  async bootstrap() {"):
+        APP.index("\n  hideLoading()", APP.index("  async bootstrap() {"))
+    ]
+    assert "await Promise.allSettled([contextPromise, dataPromise]);" in bootstrap
+    assert "void this.autoLoadFlagshipRepositoryMap();" in bootstrap
+    assert (
+        bootstrap.index("await Promise.allSettled([contextPromise, dataPromise]);")
+        < bootstrap.index("void this.autoLoadFlagshipRepositoryMap();")
+    )
+    assert "this.world = createWorldScene({" in bootstrap
+    assert (
+        bootstrap.index("this.world = createWorldScene({")
+        < bootstrap.index("void this.autoLoadFlagshipRepositoryMap();")
+    )
+
+    catalog = APP[
+        APP.index("  flagshipCatalogCommits() {"):
+        APP.index(
+            "\n  async autoLoadFlagshipRepositoryMap() {",
+            APP.index("  flagshipCatalogCommits() {"),
+        )
+    ]
+    assert "record?.owner" in catalog
+    assert (
+        '["local-node", "remote-clone", "organization-alias"].includes(source)'
+        in catalog
+    )
+    assert "!record?.isPrivate" in catalog
+    assert "!record?.archived" in catalog
+    assert "record?.commit" in catalog
+    assert "record?.stateHash" in catalog
+
+
+def test_login_and_signup_stay_inside_the_world_and_out_of_presence():
+    assert "data-world-account-open" in APP
+    assert "data-world-login-form" in APP
+    assert "data-world-signup-form" in APP
+    assert '"/api/accounts/login"' in APP
+    assert '"/api/accounts/signup"' in APP
+    assert "storeWorldSession(body)" in APP
+    assert "location.reload()" in APP
+    assert "password, totp" in APP
+    assert "password },\n        { auth: false" in APP
+    assert "Credentials are never placed in URLs" in APP
+    assert ".world-account" in CSS
+
+
+def test_flagship_graph_requires_commit_matched_tree_sizes_stats_and_entities():
+    entity_loader = APP[
+        APP.index("  async loadRepositoryEntityRecords("):
+        APP.index(
+            "\n  flagshipCatalogCommits() {",
+            APP.index("  async loadRepositoryEntityRecords("),
+        )
+    ]
+    assert (
+        entity_loader.index("const pullResult =")
+        < entity_loader.index("const issueResults = [];")
+    )
+    assert "await this.loadRepositoryPullRecords(base)" in entity_loader
+    assert "const issueConcurrency = 2;" in entity_loader
+    assert "timeout: 6000" in entity_loader
+
+    fetch_map = APP[
+        APP.index("  async fetchRepositoryMapSnapshot("):
+        APP.index(
+            "\n  async loadRepositoryMap(",
+            APP.index("  async fetchRepositoryMapSnapshot("),
+        )
+    ]
+    assert "`${base}/tree?path=`" in fetch_map
+    assert "const ref = `?ref=${encodeURIComponent(commit)}`;" in fetch_map
+    assert "`${base}/sizes${ref}`" in fetch_map
+    assert "`${base}/stats${ref}`" in fetch_map
+    assert "this.loadRepositoryEntityRecords(base, commit, {" in fetch_map
+    assert "privateRepository: catalogRecord?.isPrivate === true" in fetch_map
+    assert "pullResult," in fetch_map
+    assert (
+        fetch_map.index("await this.loadRepositoryPullRecords(base)")
+        < fetch_map.index("await Promise.allSettled([")
+    )
+    assert "const REPOSITORY_METADATA_TIMEOUT_MS = 45 * 1000;" in APP
+    assert fetch_map.count(
+        'String(sizeResult.value?.commit || "").toLowerCase() === commit'
+    ) == 1
+    assert fetch_map.count(
+        'String(statsResult.value?.commit || "").toLowerCase() === commit'
+    ) == 1
+    assert (
+        'String(entityRecordsResult.value?.commit || "").toLowerCase() === commit'
+        in fetch_map
+    )
+    assert "snapshot.entries.length > 0" in fetch_map
+    assert "Boolean(sizes)" in fetch_map
+    assert "Boolean(stats)" in fetch_map
+    assert "Boolean(entityRecords)" in fetch_map
+
+    load_map = APP[
+        APP.index("  async loadRepositoryMap("):
+        APP.index(
+            "\n  async loadRepositorySecurity(",
+            APP.index("  async loadRepositoryMap("),
+        )
+    ]
+    gate = load_map[
+        load_map.index("if (\n      (options.requireComplete"):
+        load_map.index("this.activeRepository = result.snapshot;")
+    ]
+    assert "!result.complete" in gate
+    assert "!expectedCommits.has" in gate
+    assert 'this.repositoryMapState = "unavailable"' in gate
+    assert "updateRepositoryGraph?.([], [])" in gate
+    assert "this.activeRepository = result.snapshot;" not in gate
+
+
+def test_repository_map_autoload_is_deduplicated_and_never_overrides_manual_choice():
+    auto = APP[
+        APP.index("  async autoLoadFlagshipRepositoryMap() {"):
+        APP.index(
+            "\n  async fetchRepositoryMapSnapshot(",
+            APP.index("  async autoLoadFlagshipRepositoryMap() {"),
+        )
+    ]
+    assert "this.repositoryManualSelection" in auto
+    assert "this.activeRepository" in auto
+    assert "this.world.updateRepositoryGraph?.([], []);" in auto
+    assert "requireComplete: true" in auto
+    assert "expectedCommits: catalogCommits" in auto
+
+    load_map = APP[
+        APP.index("  async loadRepositoryMap("):
+        APP.index(
+            "\n  async loadRepositorySecurity(",
+            APP.index("  async loadRepositoryMap("),
+        )
+    ]
+    assert "this.repositoryMapLoads.get(key)" in load_map
+    assert "this.repositoryMapLoads.set(key, request)" in load_map
+    assert "if (!automatic) this.repositoryManualSelection = key;" in load_map
+    assert "const selection = ++this.repositoryMapSelection;" in load_map
+    assert "selection !== this.repositoryMapSelection" in load_map
+    assert (
+        'this.loadRepositoryMap(owner, name, { automatic: false });'
+        in APP
+    )
+    assert "data-world-repository-map-state=\"unavailable\"" in APP
+    assert "did not substitute sample files, guessed entries, or stale analysis" in APP
 
 
 def test_repository_graph_uses_commit_produced_edges_coverage_and_scan_state():
@@ -756,6 +1104,144 @@ def test_world_has_responsive_and_reduced_motion_fallbacks():
     assert "BroadcastChannel" in APP
 
 
+def test_world_supports_bounded_pinch_wheel_and_drag_controls():
+    # Pinch and wheel share one explicit near/far camera range rather than
+    # changing page scale or maintaining two controls that can drift apart.
+    for contract in (
+        "CAMERA_ZOOM_MIN",
+        "CAMERA_ZOOM_MAX",
+        "function setCameraZoom",
+        "function beginPinchIfReady",
+        "pinchStartDistance / distance",
+        'addEventListener("pointermove", handlePointerMove',
+        'addEventListener("wheel", handleWheel',
+        "Math.exp(deltaPixels * 0.0015)",
+        "getCameraState",
+    ):
+        assert contract in SCENE
+    assert 'addEventListener("pointermove", handlePointerMove, {' in SCENE
+    assert "passive: false" in SCENE
+    assert 'aria-label="Movement and camera controls"' in APP
+    assert "drag to rotate" in APP
+    assert "click the plaza" not in APP
+    assert "click on the plaza" not in DATA
+
+    # Fine-pointer navigation keeps the cursor visible and rotates only while
+    # the primary pointer is dragged. WASD stays camera-relative, while touch
+    # arrows remain an independent fallback.
+    for contract in (
+        'dataset.cameraControl = "drag"',
+        "function rotateCamera",
+        "pointerLast.copy(pointerStart)",
+        "setPointerCapture(event.pointerId)",
+        "CAMERA_LOOK_SENSITIVITY",
+        "movement.addScaledVector(forward, forwardInput)",
+        "movement.addScaledVector(right, rightInput)",
+        'if (touchKeys.has("KeyW")) movement.z -= 1',
+    ):
+        assert contract in SCENE
+    assert "requestPointerLock" not in SCENE
+    assert "pointerLockElement" not in SCENE
+    assert "raycaster.intersectObject(ground" not in SCENE
+
+    # Keyboard movement accelerates gradually to a named cap and resets as
+    # soon as movement input is released or the browser loses focus.
+    for contract in (
+        "PLAYER_MAX_SPEED",
+        "PLAYER_ACCELERATION",
+        "keyboardMovementSpeed + PLAYER_ACCELERATION * delta",
+        "keyboardMovementSpeed = PLAYER_SPEED",
+        'window.addEventListener("blur", handleWindowBlur)',
+        "getMovementState",
+    ):
+        assert contract in SCENE
+
+    # Every global/canvas listener introduced by these controls has a matching
+    # cleanup path when the custom element is disconnected.
+    for cleanup in (
+        'removeEventListener("pointermove", handlePointerMove)',
+        'removeEventListener("wheel", handleWheel)',
+        'removeEventListener("pointercancel", handlePointerCancel)',
+        'removeEventListener("blur", handleWindowBlur)',
+    ):
+        assert cleanup in SCENE
+
+
+def test_world_uses_nonhuman_infrastructure_a_member_lounge_and_city_grid():
+    assert "const WORLD_RADIUS = 72" in SCENE
+    assert "const WORLD_GROUND_RADIUS = 88" in SCENE
+    assert "electric-mesh-city-block-grid" in SCENE
+    assert "electricMeshConduit" in SCENE
+    assert "electricMeshJunction" in SCENE
+    assert "registered-user-lounge" in SCENE
+    assert "registered contributors · recent activity glows" in SCENE
+    for status in (
+        "Registered",
+        "Supporting member",
+        "Mirror operator",
+        "Organization admin",
+    ):
+        assert status in SCENE
+    assert "useRegisteredLounge" in SCENE
+    assert 'avatar.userData.loungeActivity === "recent"' in SCENE
+
+    nodes = SCENE[
+        SCENE.index("  function updateNetworkNodes"):
+        SCENE.index("  function updateFederatedInstances")
+    ]
+    bots = SCENE[
+        SCENE.index("  function updateBots"):
+        SCENE.index("  function updateDurableObjects")
+    ]
+    assert "createAvatar(" not in nodes
+    assert "createAvatar(" not in bots
+    assert "createMirrorServerCabinet" in nodes
+    assert "createAgentRobot" in bots
+    assert "nodeInfrastructure" in nodes
+    assert "botAgents" in bots
+
+
+def test_durable_object_scene_requires_explicit_current_usage_and_limits():
+    assert "durable-object-infrastructure" in SCENE
+    assert "function durableObjectMetricPairs" in SCENE
+    assert "record?.usage" in SCENE
+    assert "record?.limits" in SCENE
+    assert "Object.prototype.hasOwnProperty.call(limits, key)" in SCENE
+    assert "function updateDurableObjects" in SCENE
+    assert "currentUsage: metric.usage" in SCENE
+    assert "configuredLimit: metric.limit" in SCENE
+    assert "durable-object-metrics-unavailable" in SCENE
+    assert "metricsAvailable" in SCENE
+    assert "updateDurableObjects," in SCENE
+
+
+def test_world_lighting_is_static_daylight_with_a_local_persisted_control():
+    assert "DAYLIGHT_ENVIRONMENT" in SCENE
+    assert "function updateWorldEnvironment" in SCENE
+    assert "function setLightLevel" in SCENE
+    assert "lightLevel / LIGHT_LEVEL_DEFAULT" in SCENE
+    assert "setLightLevel," in SCENE
+    assert "getEnvironmentState" in SCENE
+    assert "updateWorldEnvironment(Date.now())" not in SCENE
+    assert "sharedEnvironmentState" not in SCENE
+    assert "worldClock" not in SCENE
+    assert "setClockOffset" not in SCENE
+    assert "regionalOffset" not in SCENE
+    assert "utcOffsetHours" not in SCENE
+    assert "Math.floor(now / 30000)" not in SCENE
+    assert "LOCAL_ENVIRONMENT_OVERLAYS" in SCENE
+    assert "data-world-light-level" in APP
+    assert "data-world-light-level-output" in APP
+    assert "this.settings.lightLevel = next" in APP
+    assert "this.world?.setLightLevel(next)" in APP
+    assert "writeJSON(localStorage, SETTINGS_KEY, this.settings)" in APP
+    assert "lightLevel" not in APP[
+        APP.index("function publicIdentity"):APP.index("function presenceBrowser")
+    ]
+    for overlay in ("rain", "snow", "winter", "cyberpunk", '"low-light"'):
+        assert overlay in SCENE
+
+
 def test_qt_main_navigation_opens_the_world_root():
     assert 'setToolTip("Open ForkMesh World in your browser")' in QT_CHAT
     assert "[this] { openServerWebsite(m_activeServer); }" in QT_CHAT
@@ -860,12 +1346,13 @@ def test_verified_fediverse_feedback_is_manual_pending_and_owner_confirmed():
 
 def test_generated_world_score_is_opt_in_four_hour_and_redistributable():
     assert "function createProceduralWorldSoundtrack" in APP
-    assert "durationMs: WORLD_DAY_MS" in APP
+    assert "durationMs: WORLD_SCORE_LOOP_MS" in APP
     assert "15 * 60 * 1000" in APP
     assert "CC0-1.0" in APP
-    assert "World-day offset" in APP
+    assert "Local score offset" in APP
+    assert "loops independently of the UTC display" in APP
     assert "Audio never starts automatically" in APP
-    assert "Original four-hour procedural score generated locally" in DATA
+    assert "Original four-hour local procedural score" in DATA
     assert "world-soundtrack-license.md" in DATA
 
 

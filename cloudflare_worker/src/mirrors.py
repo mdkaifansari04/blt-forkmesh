@@ -134,7 +134,7 @@ def repo_clone_online(rec, served_groups):
 
 def build_repo_mirrors_payload(
     owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms,
-    history=None,
+    history=None, linked_canonical=False,
 ):
     def clone_target(rec):
         raw = str((rec or {}).get("cloneUrl") or "").strip()
@@ -211,9 +211,27 @@ def build_repo_mirrors_payload(
         members = [
             r for r in public_rows if repo_mirror_same_group(target["data"], r["data"])
         ]
+
+    def exact_state_hash(rec):
+        value = str((rec or {}).get("stateHash") or "").strip().lower()
+        if (
+            len(value) == 64
+            and all(ch in "0123456789abcdef" for ch in value)
+        ):
+            return value
+        return ""
+
     freshest_sync = 0
     for row in members:
         freshest_sync = max(freshest_sync, _mirror_ms(row["data"].get("lastSync")) or 0)
+    freshest_states = {
+        exact_state_hash(row["data"])
+        for row in members
+        if (
+            (_mirror_ms(row["data"].get("lastSync")) or 0) == freshest_sync
+            and exact_state_hash(row["data"])
+        )
+    }
 
     # Is the logical repo's source of truth (a working-copy holder —
     # "local-node") reachable through a fresh, healthy direct-HTTPS endpoint?
@@ -230,11 +248,59 @@ def build_repo_mirrors_payload(
             source_online = True
             break
 
+    # Organization aliases explicitly appoint one account-owned node as the
+    # canonical backing node for /<org>/<repo>. The HTTPS router therefore
+    # treats a linked remote-clone target's signed state as the organization's
+    # attestation instead of letting an unrelated same-name local-node record
+    # override it. Mirror status must use that same trust anchor or it can label
+    # the node actively serving a verified org route "rejected".
+    #
+    # `linked_canonical` is supplied only after the caller verifies the
+    # org_repos link in D1. It is deliberately ignored for a local-node target,
+    # whose normal source-pin policy is already the stronger/correct one.
+    target_record = target["data"]
+    canonical_link_mode = bool(
+        linked_canonical
+        and str(target_record.get("source") or "").strip().lower()
+        == "remote-clone"
+    )
+    canonical_pins = set()
+    canonical_online = False
+    if canonical_link_mode:
+        target_state = str(target_record.get("stateHash") or "").strip().lower()
+        if (
+            len(target_state) == 64
+            and all(ch in "0123456789abcdef" for ch in target_state)
+        ):
+            canonical_pins.add(target_state)
+        for state in (history or {}).get(str(target.get("key_bi") or ""), []) or []:
+            state = str(state or "").strip().lower()
+            if (
+                len(state) == 64
+                and all(ch in "0123456789abcdef" for ch in state)
+            ):
+                canonical_pins.add(state)
+        target_seen = _mirror_ms((presence or {}).get(target.get("key_bi")))
+        canonical_online = bool(target_seen and now - target_seen <= stale_ms)
+
     def _int_field(rec, name):
         try:
             return int(rec.get(name))
         except (TypeError, ValueError):
             return -1
+
+    def _optional_metric(rec, name, maximum):
+        value = rec.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        return min(value, maximum)
+
+    def _optional_usage(rec, used_name, total_name):
+        used = _optional_metric(rec, used_name, 1 << 50)
+        total = _optional_metric(rec, total_name, 1 << 50)
+        if used is None or total is None or total <= 0:
+            return None, None
+        return min(used, total), total
 
     mirrors = []
     for row in members:
@@ -248,33 +314,69 @@ def build_repo_mirrors_payload(
             size_bytes = max(0, int(rec.get("sizeBytes") or 0))
         except (TypeError, ValueError):
             size_bytes = 0
-        behind = bool(
+        exact_current_state = exact_state_hash(rec)
+        state_hash = str(rec.get("stateHash") or "").strip().lower()
+        sync_timestamp_behind = bool(
             last_sync and freshest_sync and freshest_sync - last_sync > sync_tolerance_ms
+        )
+        # `lastSync` is a publication timestamp, not repository content. Two
+        # independently renewed mirrors can publish the same signed all-refs
+        # state minutes apart; the older timestamp must not label exact,
+        # integrity-equivalent content as behind. Legacy records without a
+        # valid state hash retain the conservative timestamp fallback.
+        behind = bool(
+            sync_timestamp_behind
+            and not (
+                exact_current_state
+                and exact_current_state in freshest_states
+            )
         )
         issue_count = _int_field(rec, "issueCount")
         # Clones / website serves this node has provided; -1 == not advertised
         # (older peer or a record predating the counters), shown as an em-dash.
         clones_served = _int_field(rec, "clonesServed")
         website_served = _int_field(rec, "websiteServed")
+        cpu_percent = _optional_metric(rec, "cpuPercent", 100)
+        mem_used, mem_total = _optional_usage(
+            rec, "memUsedBytes", "memTotalBytes")
+        disk_used, disk_total = _optional_usage(
+            rec, "diskUsedBytes", "diskTotalBytes")
+        actions_enabled = rec.get("actionsEnabled") is True
+        actions_state = str(rec.get("actionsState") or "").strip()
+        if (
+            (not actions_enabled and actions_state != "disabled")
+            or (actions_enabled and actions_state not in {"enabled", "running"})
+        ):
+            actions_enabled = False
+            actions_state = "disabled"
         # Would the clone integrity gate serve this node right now? Its published
         # refs fingerprint (stateHash, the same one it signs on publish) must be
-        # a state some working-copy holder in the group attested — current pin or
-        # recent history — or every clone it serves is rejected with "repository
-        # failed integrity check" (see clone_state_pins). Verdicts: "ok" (matches
-        # a pin, or nothing is pinned and the gate fails open), "rejected" (its
-        # fingerprint matches no attested state AND the source is offline, so the
-        # tamper gate is actively blocking its clones), "healing" (fingerprint
-        # matches nothing yet, but the source of truth is online, so clones are
-        # served from the source and the mirror clears once it re-syncs — not a
-        # failure), "unknown" (legacy record with no fingerprint; the gate checks
-        # its live refs, which we can't see here).
-        state_hash = str(rec.get("stateHash") or "").strip().lower()
-        pins = clone_state_pins(rec, key, public_rows, history)
-        if not pins or state_hash in pins:
+        # a state the group's trust anchor attested: normally a working-copy
+        # holder's current/recent pin, or the explicitly appointed backing
+        # node's pin for an organization alias. Otherwise every clone it serves
+        # is rejected with "repository failed integrity check" (see
+        # clone_state_pins). Verdicts: "ok" (matches a pin, or the legacy
+        # unlinked gate is unpinned), "rejected" (matches no attested state AND
+        # the anchor is offline), "healing" (matches nothing yet, but the anchor
+        # is online, so it can re-sync), "unknown" (no fingerprint published).
+        pins = (
+            canonical_pins
+            if canonical_link_mode
+            else clone_state_pins(rec, key, public_rows, history)
+        )
+        integrity_anchor_online = (
+            canonical_online if canonical_link_mode else source_online
+        )
+        if canonical_link_mode and not pins:
+            # Unlike the legacy unlinked path, an explicit organization route
+            # is fail-closed until its appointed backing node publishes an
+            # authenticated refs digest.
+            integrity = "unknown" if not state_hash else "rejected"
+        elif not pins or state_hash in pins:
             integrity = "ok"
         elif not state_hash:
             integrity = "unknown"
-        elif source_online:
+        elif integrity_anchor_online:
             integrity = "healing"
         else:
             integrity = "rejected"
@@ -305,9 +407,22 @@ def build_repo_mirrors_payload(
             "artifactCount": _int_field(rec, "artifactCount"),
             "platform": str(rec.get("platform") or "").strip(),
             "version": str(rec.get("version") or "").strip(),
+            # Missing and malformed legacy records fail closed to disabled.
+            # Only the bounded status pair signed into catalog-v2 is exposed.
+            "actionsEnabled": actions_enabled,
+            "actionsState": actions_state,
             "id": str(rec.get("nodeId") or "").strip(),
             "clonesServed": clones_served,
             "websiteServed": website_served,
+            # Optional, operator-approved public host telemetry. These values
+            # were bounded and signed as part of catalog-v2; preserve None as
+            # "not shared" rather than inventing a zero for an older/opted-out
+            # node.
+            "cpuPercent": cpu_percent,
+            "memUsedBytes": mem_used,
+            "memTotalBytes": mem_total,
+            "diskUsedBytes": disk_used,
+            "diskTotalBytes": disk_total,
             "integrity": integrity,
         })
 

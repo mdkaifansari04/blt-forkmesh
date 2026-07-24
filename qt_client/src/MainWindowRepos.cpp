@@ -243,7 +243,9 @@ QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
     const bool privateRepository =
         data.value(QStringLiteral("visibility")).toString() !=
         QLatin1String("public");
-    return {
+    const QJsonObject hostTelemetry =
+        forkmesh::control::normalizedCatalogHostTelemetry(data);
+    QJsonObject record{
         {QStringLiteral("owner"),
          cleanCatalogString(data, QStringLiteral("owner"), 80)},
         {QStringLiteral("name"),
@@ -335,6 +337,18 @@ QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
         {QStringLiteral("stateSig"),
          cleanCatalogString(data, QStringLiteral("stateSig"), 220)},
     };
+    // Optional extension fields are omitted when not shared. Besides preserving
+    // a truthful "unknown", this keeps catalog-v2 signatures from older clients
+    // valid after the Worker learns about host telemetry.
+    for (const QString &key :
+         {QStringLiteral("cpuPercent"), QStringLiteral("memUsedBytes"),
+          QStringLiteral("memTotalBytes"), QStringLiteral("diskUsedBytes"),
+          QStringLiteral("diskTotalBytes")}) {
+        const QJsonValue value = hostTelemetry.value(key);
+        if (!value.isNull() && !value.isUndefined())
+            record.insert(key, value);
+    }
+    return record;
 }
 
 QString privateControlPlaneKey(const QUrl &catalogUrl,
@@ -753,6 +767,12 @@ void MainWindow::loadRepositories()
         repo.actionsEnabled =
             settings.value("actionsEnabled", repo.owner == accountOwner())
                 .toBool();
+        repo.externallyManagedActions =
+            settings.value("externallyManagedActions", false).toBool();
+        repo.externalActionsSource =
+            settings.value("externalActionsSource").toString().trimmed();
+        repo.externalActionsRef =
+            settings.value("externalActionsRef").toString().trimmed();
         repo.secretScanningEnabled =
             settings.value("secretScanningEnabled", true).toBool();
         repo.disabledWorkflows = settings.value("disabledWorkflows").toStringList();
@@ -805,6 +825,11 @@ void MainWindow::saveRepositories() const
         settings.setValue("publishToNetwork", repo.publishToNetwork);
         settings.setValue("isPrivate", repo.isPrivate);
         settings.setValue("actionsEnabled", repo.actionsEnabled);
+        settings.setValue("externallyManagedActions",
+                          repo.externallyManagedActions);
+        settings.setValue("externalActionsSource",
+                          repo.externalActionsSource);
+        settings.setValue("externalActionsRef", repo.externalActionsRef);
         settings.setValue("secretScanningEnabled", repo.secretScanningEnabled);
         settings.setValue("disabledWorkflows", repo.disabledWorkflows);
         settings.setValue("hostedSinceMs", repo.hostedSinceMs);
@@ -3912,11 +3937,40 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     const int worktreeCount = mirrorWorktreeCount(repo.localPath);
     const int artifactCount = mirrorArtifactCount(repo.mirrorPath);
     QString selfPlatform, selfVersion, selfNodeId;
+    int selfCpuPercent = -1;
+    qint64 selfMemUsedBytes = 0;
+    qint64 selfMemTotalBytes = 0;
+    qint64 selfDiskUsedBytes = 0;
+    qint64 selfDiskTotalBytes = 0;
+    const QSettings telemetrySettings;
+    const bool shareCpu =
+        telemetrySettings.value(TelemetrySettings::kReportCpu, false).toBool();
+    const bool shareMemory =
+        telemetrySettings.value(TelemetrySettings::kReportMemory, false).toBool();
+    const bool shareDisk =
+        telemetrySettings.value(TelemetrySettings::kReportDisk, false).toBool();
     for (const MemberInfo &member : std::as_const(m_homeRoster)) {
         if (member.self) {
             selfPlatform = member.platform;
             selfVersion = member.version;
             selfNodeId = member.id;
+            if (shareCpu && std::isfinite(member.cpuPercent) &&
+                member.cpuPercent >= 0.0) {
+                selfCpuPercent =
+                    qRound(qBound(0.0, member.cpuPercent, 100.0));
+            }
+            if (shareMemory && member.memTotalBytes > 0) {
+                selfMemTotalBytes = member.memTotalBytes;
+                selfMemUsedBytes =
+                    qBound<qint64>(0, member.memUsedBytes,
+                                   member.memTotalBytes);
+            }
+            if (shareDisk && member.diskTotalBytes > 0) {
+                selfDiskTotalBytes = member.diskTotalBytes;
+                selfDiskUsedBytes =
+                    qBound<qint64>(0, member.diskUsedBytes,
+                                   member.diskTotalBytes);
+            }
             break;
         }
     }
@@ -4023,6 +4077,25 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                                      ? QStringLiteral("remote-clone")
                                      : QStringLiteral("local-node"))},
                          {"maintainer", m_profileIdentity.publicKey()}};
+    // These values come from our self roster entry, which ServerNode populates
+    // only for the per-metric telemetry toggles the operator enabled. Do not
+    // insert disabled/unknown metrics: safe_catalog_record normalizes them to
+    // null, preserving "not shared" through the signed catalog and public
+    // mirror/World views.
+    if (selfCpuPercent >= 0)
+        metadata.insert(QStringLiteral("cpuPercent"), selfCpuPercent);
+    if (selfMemTotalBytes > 0) {
+        metadata.insert(QStringLiteral("memUsedBytes"),
+                        double(selfMemUsedBytes));
+        metadata.insert(QStringLiteral("memTotalBytes"),
+                        double(selfMemTotalBytes));
+    }
+    if (selfDiskTotalBytes > 0) {
+        metadata.insert(QStringLiteral("diskUsedBytes"),
+                        double(selfDiskUsedBytes));
+        metadata.insert(QStringLiteral("diskTotalBytes"),
+                        double(selfDiskTotalBytes));
+    }
     for (auto it = contributionFields.constBegin();
          it != contributionFields.constEnd(); ++it) {
         metadata.insert(it.key(), it.value());

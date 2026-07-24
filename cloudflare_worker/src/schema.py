@@ -198,6 +198,41 @@ SCHEMA_STATEMENTS = [
         repo_bi TEXT PRIMARY KEY,
         cursor INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL)""",
+    # Account-authorized pull merges are pinned to one independently operated
+    # node. D1 stores only blind indexes, the caller's opaque idempotency key,
+    # exact public Git object ids, and a bounded result; repository bytes and
+    # node credentials remain outside the Worker. Expiry/indexes support
+    # bounded cleanup; triggers are the concurrency-safe final row ceilings.
+    """CREATE TABLE IF NOT EXISTS repo_merge_jobs (
+        request_id TEXT PRIMARY KEY,
+        request_digest TEXT NOT NULL,
+        repo_bi TEXT NOT NULL,
+        actor_bi TEXT NOT NULL,
+        pull_number INTEGER NOT NULL,
+        selected_node TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN (
+            'requested','succeeded','failed')),
+        result TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL CHECK (expires_at > created_at))""",
+    "CREATE INDEX IF NOT EXISTS idx_repo_merge_jobs_repo "
+    "ON repo_merge_jobs(repo_bi, status, updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_repo_merge_jobs_expiry "
+    "ON repo_merge_jobs(expires_at)",
+    """CREATE TRIGGER IF NOT EXISTS trg_repo_merge_jobs_repo_bound
+       BEFORE INSERT ON repo_merge_jobs
+       WHEN (SELECT COUNT(*) FROM repo_merge_jobs
+              WHERE repo_bi=NEW.repo_bi) >= 256
+       BEGIN
+         SELECT RAISE(ABORT, 'repo_merge_jobs_repo_limit');
+       END""",
+    """CREATE TRIGGER IF NOT EXISTS trg_repo_merge_jobs_global_bound
+       BEFORE INSERT ON repo_merge_jobs
+       WHEN (SELECT COUNT(*) FROM repo_merge_jobs) >= 10000
+       BEGIN
+         SELECT RAISE(ABORT, 'repo_merge_jobs_global_limit');
+       END""",
     # Private replicas use the same registered HTTPS origins, but only after
     # repository authorization. repo_bi/binding_bi are blind indexes and the
     # random opaque id addresses an owner-sealed ciphertext file; no private
@@ -290,6 +325,38 @@ SCHEMA_STATEMENTS = [
         room_key TEXT NOT NULL, msg_id TEXT NOT NULL, ts INTEGER NOT NULL,
         body TEXT NOT NULL, PRIMARY KEY (room_key, msg_id))""",
     "CREATE INDEX IF NOT EXISTS idx_chat_history_room_ts ON chat_history(room_key, ts)",
+    # Administrator-created private chat channels (migration 0069). Channel
+    # names and creator labels live only in encrypted data; name_bi enforces
+    # uniqueness without exposing the normalized name in plaintext. Every
+    # platform administrator has implicit access, while direct user grants are
+    # recorded in chat_channel_members.
+    """CREATE TABLE IF NOT EXISTS chat_channels (
+        channel_id TEXT PRIMARY KEY,
+        name_bi TEXT NOT NULL UNIQUE,
+        data TEXT NOT NULL,
+        created_by_bi TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        key_version INTEGER NOT NULL DEFAULT 1 CHECK (key_version >= 1))""",
+    """CREATE TABLE IF NOT EXISTS chat_channel_members (
+        channel_id TEXT NOT NULL,
+        member_bi TEXT NOT NULL,
+        data TEXT NOT NULL,
+        invited_by_bi TEXT NOT NULL,
+        joined_at INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, member_bi))""",
+    "CREATE INDEX IF NOT EXISTS idx_chat_channel_members_member "
+    "ON chat_channel_members(member_bi, channel_id)",
+    # Rotate the shared-key namespace atomically whenever a real membership is
+    # removed. An idempotent DELETE that matches no row does not fire it.
+    """CREATE TRIGGER IF NOT EXISTS trg_chat_channel_member_remove_rotate
+        AFTER DELETE ON chat_channel_members
+        BEGIN
+          UPDATE chat_channels
+             SET key_version = key_version + 1,
+                 updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+           WHERE channel_id = OLD.channel_id;
+        END""",
     # --- Relay federation (main relay only) ---------------------------------
     # Allowlist of relays that federate with this (main) relay. A relay is known
     # by its Ed25519 pubkey; only status='approved' relays may custody signups
@@ -1721,6 +1788,22 @@ SCHEMA_STATEMENTS = [
         revoked_at INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_account_ssh_keys_account "
     "ON account_ssh_keys(account_bi, revoked_at, created_at)",
+    # Explicit, administrator-created World moderation blocks. Subjects are
+    # rotating keyed tokens derived transiently at the edge; raw addresses and
+    # user-agent strings never enter D1. This table is intentionally separate
+    # from the retired automated abuse/quarantine tables and has no signal,
+    # scoring, detection, or permanent-ban state.
+    """CREATE TABLE IF NOT EXISTS world_manual_blocks (
+        block_id TEXT PRIMARY KEY,
+        target_type TEXT NOT NULL CHECK (target_type IN ('ip','agent')),
+        subject_token TEXT NOT NULL,
+        created_by_bi TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        revoked_at INTEGER NOT NULL DEFAULT 0)""",
+    "CREATE INDEX IF NOT EXISTS idx_world_manual_blocks_active "
+    "ON world_manual_blocks(target_type, subject_token, expires_at) "
+    "WHERE revoked_at=0",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

@@ -47,6 +47,10 @@ async function prepareWorldPage(
     notifications = [],
     events = [],
     chatPassphrase = "",
+    worldSocketHandler = null,
+    repositoryFixture = null,
+    accountFixture = null,
+    unavailablePaths = [],
   } = {},
 ) {
   let mentionState = "review";
@@ -84,12 +88,124 @@ async function prepareWorldPage(
       contentType: "text/javascript; charset=utf-8",
     }),
   );
-  await page.route("**/api/**", (route) => {
+  await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
+    if (unavailablePaths.includes(url.pathname)) {
+      return route.fulfill({
+        status: 503,
+        contentType: "application/json; charset=utf-8",
+        body: JSON.stringify({ ok: false, error: "fixture_unavailable" }),
+      });
+    }
+    let metadataCapacityRelease = null;
+    if (
+      repositoryFixture &&
+      Number(repositoryFixture.singleCoreDelayMs) > 0 &&
+      url.pathname.startsWith("/api/repo/forkmesh/forkmesh/") &&
+      ["/branches", "/tree", "/blobs", "/sizes", "/stats"].some((suffix) =>
+        url.pathname.endsWith(suffix),
+      )
+    ) {
+      const previous =
+        repositoryFixture.metadataCapacityTail || Promise.resolve();
+      metadataCapacityRelease = null;
+      repositoryFixture.metadataCapacityTail = new Promise((resolve) => {
+        metadataCapacityRelease = resolve;
+      });
+      await previous;
+      repositoryFixture.metadataActive =
+        Number(repositoryFixture.metadataActive || 0) + 1;
+      repositoryFixture.maxMetadataActive = Math.max(
+        Number(repositoryFixture.maxMetadataActive || 0),
+        repositoryFixture.metadataActive,
+      );
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(
+            1,
+            Math.min(
+              1000,
+              Number(repositoryFixture.singleCoreDelayMs) || 0,
+            ),
+          ),
+        ),
+      );
+    }
     let status = 200;
-    const body =
+    let body =
       url.pathname === "/api/world/context"
-        ? { now: FIXED_NOW, countryCode: "" }
+        ? {
+            now: FIXED_NOW,
+            countryCode: "",
+            worldConnections: 64,
+            worldMessagesPerSecond: 4,
+            chatConnections: 128,
+          }
+        : url.pathname === "/api/network/overview"
+          ? {
+              ok: true,
+              stats: {
+                repos: 1,
+                hosts: 2,
+                clients: 0,
+                onlineNodes: ["mirror2", "mirror3"],
+              },
+              leaderboards: {
+                nodes: [
+                  { name: "mirror2", pullCount: 5, issueCount: 7 },
+                  { name: "mirror3", pullCount: 5, issueCount: 7 },
+                ],
+              },
+              history: {},
+            }
+        : url.pathname === "/api/repo/forkmesh/forkmesh/mirrors"
+          ? {
+              ok: true,
+              owner: "forkmesh",
+              repo: "forkmesh",
+              mirrors: [
+                {
+                  node: "mirror2",
+                  status: "online",
+                  integrity: "ok",
+                  cloneAvailable: true,
+                  commit: "a".repeat(40),
+                  branch: "main",
+                  sizeBytes: 75_139_176,
+                  issueCount: 47,
+                  commitCount: 8661,
+                  branchCount: 18,
+                  pullCount: 42,
+                  discussionCount: 2,
+                  artifactCount: 1,
+                  platform: "linux",
+                  version: "0.7.0",
+                  cpuPercent: 25,
+                  memUsedBytes: 536_870_912,
+                  memTotalBytes: 1_073_741_824,
+                  diskUsedBytes: 5_368_709_120,
+                  diskTotalBytes: 10_737_418_240,
+                },
+                {
+                  node: "mirror3",
+                  status: "online",
+                  integrity: "ok",
+                  cloneAvailable: true,
+                  commit: "a".repeat(40),
+                  branch: "main",
+                  sizeBytes: 74_944_512,
+                  issueCount: 47,
+                  commitCount: 8661,
+                  branchCount: 18,
+                  pullCount: 42,
+                  discussionCount: 2,
+                  artifactCount: 1,
+                  platform: "linux",
+                  version: "0.7.0",
+                },
+              ],
+            }
         : url.pathname === "/api/world/instances"
           ? {
               instances: [
@@ -283,9 +399,320 @@ async function prepareWorldPage(
             ? { mastodon: [], lemmy: [], x: [], reddit: [] }
           : url.pathname === "/api/world/media/spaces"
             ? { spaces: [] }
+            : url.pathname === "/api/version"
+              ? {
+                  ok: true,
+                  version: "0.7.0",
+                  rev: "d".repeat(40),
+                  now: FIXED_NOW,
+                }
             : url.pathname === "/api/repositories"
               ? { repositories: [] }
               : {};
+    if (accountFixture && url.pathname === "/api/accounts/signup") {
+      body = {
+        ok: true,
+        nodeName: "world-user",
+        email: "world-user@example.test",
+        emailVerified: false,
+      };
+    } else if (accountFixture && url.pathname === "/api/accounts/login") {
+      body = {
+        ok: true,
+        nodeName: "world-user",
+        email: "world-user@example.test",
+        status: "registered",
+        emailVerified: true,
+        isAdmin: false,
+        sessionToken: "world-session-token",
+        nodes: [],
+      };
+    }
+    if (repositoryFixture) {
+      const codeOid = (
+        repositoryFixture.mergePublished ? "f" : "a"
+      ).repeat(40);
+      const pullOid = (
+        repositoryFixture.mergePublished ? "d" : "b"
+      ).repeat(40);
+      const stateHash = "c".repeat(64);
+      const pullMarkdown = (number, title, head) => `---
+schema: forkmesh-pull-v1
+number: ${number}
+title: "${title}"
+status: ${
+  repositoryFixture.mergePublished && number === 44 ? "merged" : "open"
+}
+authorName: Alice
+base: main
+head: ${head}
+derive: branch
+creationBaseOid: ${"a".repeat(40)}
+creationHeadOid: ${"e".repeat(40)}
+---
+This description came from the exact pull metadata commit.`;
+      const longContext = Array.from(
+        { length: 90 },
+        (_, index) => ` line ${index + 1}`,
+      ).join("\n");
+      const patch = `diff --git a/src/alpha.js b/src/alpha.js
+index 1111111..2222222 100644
+--- a/src/alpha.js
++++ b/src/alpha.js
+@@ -1,90 +1,91 @@
+${longContext}
++const worldReviewMarker = "world-pr-diff-visible";
+diff --git a/src/beta.js b/src/beta.js
+index 3333333..4444444 100644
+--- a/src/beta.js
++++ b/src/beta.js
+@@ -1,90 +1,90 @@
+${longContext}
+-const oldValue = false;
++const oldValue = true;`;
+      const repoBase = "/api/repo/forkmesh/forkmesh";
+      const pullMergeMatch = url.pathname.match(
+        /^\/api\/repo\/forkmesh\/forkmesh\/pulls\/44\/merge$/,
+      );
+      if (pullMergeMatch && route.request().method() === "POST") {
+        let request = {};
+        try {
+          request = route.request().postDataJSON();
+        } catch (_) {}
+        const expectedRequest =
+          request?.schemaVersion === 1 &&
+          request?.type === "forkmesh.pull-merge-v1" &&
+          request?.pullNumber === 44 &&
+          /^[A-Za-z0-9_-]{12,80}$/.test(String(request?.requestId || "")) &&
+          request?.expectedBaseOid === "a".repeat(40) &&
+          request?.expectedHeadOid === "e".repeat(40) &&
+          request?.expectedPullsOid === "b".repeat(40);
+        if (!expectedRequest) {
+          status = 400;
+          body = { error: "invalid_request" };
+        } else if (repositoryFixture.mergeOutcome === "forbidden") {
+          status = 403;
+          body = { error: "forbidden" };
+        } else if (repositoryFixture.mergeOutcome === "conflict") {
+          status = 409;
+          body = {
+            ok: false,
+            status: "failed",
+            requestId: request.requestId,
+            error: "merge_conflict",
+          };
+        } else if (repositoryFixture.mergeOutcome === "stale") {
+          status = 409;
+          body = {
+            ok: false,
+            status: "failed",
+            requestId: request.requestId,
+            error: "stale_base",
+          };
+        } else if (repositoryFixture.mergeOutcome === "retry") {
+          const attempt = Number(repositoryFixture.mergeRequestCount || 0);
+          repositoryFixture.mergeRequestCount = attempt + 1;
+          if (attempt < 6) {
+            status = 202;
+            body = {
+              ok: true,
+              status: "processing",
+              requestId: request.requestId,
+            };
+          } else {
+            status = 409;
+            body = {
+              ok: false,
+              status: "failed",
+              requestId: request.requestId,
+              error: "merge_conflict",
+            };
+          }
+        } else {
+          const attempt = Number(repositoryFixture.mergeRequestCount || 0);
+          repositoryFixture.mergeRequestCount = attempt + 1;
+          if (attempt === 0) {
+            status = 202;
+            body = {
+              ok: true,
+              status: "processing",
+              requestId: request.requestId,
+            };
+          } else {
+            status = 200;
+            body = {
+              ok: true,
+              status: "merged",
+              requestId: request.requestId,
+              published: true,
+              baseBefore: "a".repeat(40),
+              head: "e".repeat(40),
+              pullsBefore: "b".repeat(40),
+              baseAfter: "f".repeat(40),
+              pullsAfter: "d".repeat(40),
+            };
+            repositoryFixture.mergePublished = true;
+          }
+        }
+      } else if (url.pathname === "/api/repositories") {
+        body = {
+          repositories: ["mirror2", "mirror3"].map((owner) => ({
+            owner,
+            name: "forkmesh",
+            source: "remote-clone",
+            liveHost: true,
+            commit: codeOid,
+            stateHash,
+            pullCount: 2,
+            updatedAt: FIXED_NOW,
+          })),
+        };
+      } else if (url.pathname === `${repoBase}/mirrors`) {
+        body = {
+          ok: true,
+          owner: "forkmesh",
+          repo: "forkmesh",
+          mirrors: ["mirror2", "mirror3"].map((node) => ({
+            node,
+            status: "online",
+            integrity: "ok",
+            cloneAvailable: true,
+            commit: codeOid,
+            branch: "main",
+            pullCount: 2,
+            version: "0.7.0",
+          })),
+        };
+      } else if (url.pathname === `${repoBase}/branches`) {
+        if (
+          repositoryFixture.rejectPullMetadataAfterIssueFanout &&
+          repositoryFixture.issueTreeRequestStarted
+        ) {
+          status = 503;
+          body = { ok: false, error: "mirror_capacity_exhausted" };
+        } else {
+          body = {
+            ok: true,
+            branches: repositoryFixture.invalidPullBranch
+              ? [{ name: "main", commit: codeOid }]
+              : [
+                  { name: "main", commit: codeOid },
+                  { name: "forkmesh/pulls", commit: pullOid },
+                ],
+          };
+        }
+      } else if (url.pathname === `${repoBase}/tree`) {
+        const treePath = url.searchParams.get("path") || "";
+        const ref = url.searchParams.get("ref") || "";
+        if (treePath === "") {
+          body = {
+            ok: true,
+            commit: codeOid,
+            entries: [
+              {
+                name: "src",
+                path: "src",
+                type: "tree",
+                size: 4096,
+                author: "Alice",
+              },
+              {
+                name: "README.md",
+                path: "README.md",
+                type: "blob",
+                size: 1200,
+                author: "Alice",
+              },
+            ],
+          };
+        } else if (treePath.startsWith(".forkmesh/issues")) {
+          repositoryFixture.issueTreeRequestStarted = true;
+          const issueDelay = Math.max(
+            0,
+            Math.min(
+              5000,
+              Number(repositoryFixture.issueTreeDelayMs) || 0,
+            ),
+          );
+          if (issueDelay) {
+            await new Promise((resolve) => setTimeout(resolve, issueDelay));
+          }
+          body = { ok: true, commit: codeOid, entries: [] };
+        } else if (
+          treePath === "pulls" &&
+          !repositoryFixture.invalidPullBranch &&
+          ref === pullOid
+        ) {
+          body = {
+            ok: true,
+            commit: pullOid,
+            entries: [
+              { name: "44", path: "pulls/44", type: "tree" },
+              { name: "43", path: "pulls/43", type: "tree" },
+            ],
+          };
+        } else {
+          status = 404;
+          body = { ok: false, error: "not_found" };
+        }
+      } else if (url.pathname === `${repoBase}/sizes`) {
+        body = { ok: true, commit: codeOid, size: 5296, fileCount: 2 };
+      } else if (url.pathname === `${repoBase}/stats`) {
+        body = {
+          ok: true,
+          commit: codeOid,
+          fileCount: 2,
+          contributorCount: 1,
+          contributors: [{ name: "Alice", commits: 4 }],
+        };
+      } else if (url.pathname === `${repoBase}/blobs`) {
+        const paths = url.searchParams.getAll("path");
+        const ref = url.searchParams.get("ref") || "";
+        if (
+          repositoryFixture.invalidPullBranch ||
+          ref !== pullOid ||
+          paths.some((item) => !/^pulls\/(?:43|44)\/(?:pull\.md|changes\.patch)$/.test(item))
+        ) {
+          status = 404;
+          body = { ok: false, error: "not_found" };
+        } else {
+          const blobs = {};
+          paths.forEach((item) => {
+            if (item === "pulls/44/pull.md") {
+              blobs[item] = {
+                ok: true,
+                encoding: "utf8",
+                content: pullMarkdown(44, "Review inside the World", "review-ui"),
+              };
+            } else if (item === "pulls/43/pull.md") {
+              blobs[item] = repositoryFixture.missingPullMetadata
+                ? null
+                : {
+                    ok: true,
+                    encoding: "utf8",
+                    content: pullMarkdown(
+                      43,
+                      "Earlier exact review",
+                      "earlier",
+                    ),
+                  };
+            } else if (item === "pulls/44/changes.patch") {
+              blobs[item] = { ok: true, encoding: "utf8", content: patch };
+            } else {
+              blobs[item] = null;
+            }
+          });
+          body = { ok: true, commit: pullOid, blobs };
+        }
+      }
+    }
+    if (metadataCapacityRelease) {
+      repositoryFixture.metadataActive = Math.max(
+        0,
+        Number(repositoryFixture.metadataActive || 0) - 1,
+      );
+      metadataCapacityRelease();
+    }
     return route.fulfill({
       status,
       contentType: "application/json; charset=utf-8",
@@ -293,6 +720,10 @@ async function prepareWorldPage(
     });
   });
   await page.routeWebSocket("**/api/world/ws*", (socket) => {
+    if (worldSocketHandler) {
+      worldSocketHandler(socket, socketId);
+      return;
+    }
     socket.send(
       JSON.stringify({
         type: "welcome",
@@ -360,6 +791,26 @@ async function waitForWorld(page, url = "/world/") {
         .querySelector("[data-world-loading]")
         ?.getAttribute("aria-hidden") === "true",
   );
+}
+
+async function openWorldPullReview(page, number = 44) {
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready" &&
+      shell?.activeRepository?.owner === "forkmesh" &&
+      shell?.activeRepository?.repo === "forkmesh";
+  });
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("repositories"),
+  );
+  await page.getByRole("button", { name: /^2 pull requests$/i }).click();
+  await page
+    .locator(`[data-world-pull-open][data-world-pull-number='${number}']`)
+    .click();
+  await expect(
+    page.getByRole("heading", { name: `Pull request #${number}` }),
+  ).toBeVisible();
 }
 
 test("signed-in World receives private and global notifications", async ({
@@ -469,6 +920,96 @@ test("signed-in World receives private and global notifications", async ({
   await expect(panel).not.toContainText("Mirror refresh completed");
   await expect(panel).not.toContainText("Issue #17 / forkmesh/forkmesh");
   await expect(panel).toContainText("Sign in to receive");
+});
+
+test("account signup and login complete inside the World without leaking into URLs", async ({
+  page,
+  context,
+}) => {
+  const accountRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/api/accounts/")) {
+      accountRequests.push({
+        path: url.pathname,
+        method: request.method(),
+        body: request.postDataJSON(),
+      });
+    }
+    expect(request.url()).not.toContain("world-user@example.test");
+    expect(request.url()).not.toContain("correct-horse-battery-staple");
+  });
+  await prepareWorldPage(page, "world-account", {
+    accountFixture: true,
+  });
+  await waitForWorld(page);
+  const originalPages = context.pages().length;
+
+  await page.getByRole("button", { name: "Login" }).click();
+  const account = page.locator("[data-world-account]");
+  await expect(account).toBeVisible();
+  await expect(account).toContainText(
+    "form contents never enter multiplayer presence",
+  );
+  await account.getByRole("tab", { name: "Create account" }).click();
+  const signup = account.locator("[data-world-signup-form]");
+  await signup.locator("[name='nodeName']").fill("world-user");
+  await signup.locator("[name='email']").fill("world-user@example.test");
+  await signup
+    .locator("[name='password']")
+    .fill("correct-horse-battery-staple");
+  await signup.locator("[name='terms']").check();
+  await signup.getByRole("button", { name: /Create account inside/ }).click();
+  await expect(account.locator("[data-world-account-verification]")).toBeVisible();
+  await expect(account).toContainText("world-user@example.test");
+  expect(accountRequests.find((item) => item.path.endsWith("/signup"))).toEqual({
+    path: "/api/accounts/signup",
+    method: "POST",
+    body: {
+      nodeName: "world-user",
+      email: "world-user@example.test",
+      password: "correct-horse-battery-staple",
+    },
+  });
+
+  await account.getByRole("button", { name: "Close account panel" }).click();
+  await page.getByRole("button", { name: "Login" }).click();
+  const login = account.locator("[data-world-login-form]");
+  await login.locator("[name='email']").fill("world-user@example.test");
+  await login
+    .locator("[name='password']")
+    .fill("correct-horse-battery-staple");
+  const reloaded = page.waitForNavigation({ waitUntil: "domcontentloaded" });
+  await login.getByRole("button", { name: /Log in inside/ }).click();
+  await reloaded;
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector("forkmesh-world")
+        ?.getAttribute("data-world-ready") === "true",
+  );
+  await expect(
+    page.getByRole("button", { name: "Account" }),
+  ).toBeVisible();
+  const stored = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("forkmesh.session") || "null"),
+  );
+  expect(stored).toMatchObject({
+    nodeName: "world-user",
+    email: "world-user@example.test",
+    sessionToken: "world-session-token",
+  });
+  expect(accountRequests.find((item) => item.path.endsWith("/login"))).toEqual({
+    path: "/api/accounts/login",
+    method: "POST",
+    body: {
+      email: "world-user@example.test",
+      password: "correct-horse-battery-staple",
+      totp: "",
+    },
+  });
+  expect(context.pages()).toHaveLength(originalPages);
+  expect(new URL(page.url()).pathname).toBe("/world/");
 });
 
 test("World chat stays embedded without navigating or opening a tab", async ({
@@ -604,7 +1145,10 @@ test("reward-program links deep-link to the self-custodial fountain controls", a
 
 async function freezeWorld(page) {
   await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.world.setTheme("day");
+    // The default theme is fixed full daylight. UTC remains a display clock
+    // and never participates in scene lighting.
+    shell.world.setTheme("world");
+    shell.world.setLightLevel(100);
   });
   // The camera intentionally eases from its spawn position. Let that bounded
   // interpolation converge before pausing so the WebGL baseline does not
@@ -668,6 +1212,529 @@ test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async
   expect(Math.hypot(after.x - before.x, after.z - before.z)).toBeGreaterThan(
     0.05,
   );
+});
+
+test("desktop camera uses visible-cursor drag look, capped movement acceleration, and wheel zoom", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "desktop-drag-controls");
+  await waitForWorld(page);
+
+  const canvas = page.locator("[data-world-canvas-wrap] canvas");
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  const centre = {
+    x: Math.round(box.x + box.width / 2),
+    y: Math.round(box.y + box.height / 2),
+  };
+
+  const beforeGroundClick = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getPosition(),
+  );
+  await page.mouse.click(centre.x, centre.y);
+  await page.waitForTimeout(160);
+  const afterGroundClick = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getPosition(),
+  );
+  expect(
+    Math.hypot(
+      afterGroundClick.x - beforeGroundClick.x,
+      afterGroundClick.z - beforeGroundClick.z,
+    ),
+  ).toBeLessThan(0.01);
+  await expect(canvas).toHaveCSS("cursor", "grab");
+  expect(await page.evaluate(() => document.pointerLockElement)).toBeNull();
+
+  const beforeLook = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getCameraState(),
+  );
+  await page.mouse.move(centre.x, centre.y);
+  await page.mouse.down({ button: "left" });
+  await expect(canvas).toHaveCSS("cursor", "grabbing");
+  await page.mouse.move(centre.x + 120, centre.y + 35, { steps: 4 });
+  await page.mouse.up({ button: "left" });
+  const afterLook = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getCameraState(),
+  );
+  expect(afterLook.yaw).not.toBeCloseTo(beforeLook.yaw, 4);
+  expect(afterLook.pitch).not.toBeCloseTo(beforeLook.pitch, 4);
+  expect(afterLook.dragging).toBe(false);
+  expect(afterLook.pointerLocked).toBe(false);
+  expect(await page.evaluate(() => document.pointerLockElement)).toBeNull();
+  await expect(canvas).toHaveCSS("cursor", "grab");
+
+  const beforeMove = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getPosition(),
+  );
+  await page.keyboard.down("ArrowUp");
+  await page.waitForTimeout(120);
+  const earlyMovement = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getMovementState(),
+  );
+  await page.waitForTimeout(760);
+  const acceleratedMovement = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getMovementState(),
+  );
+  await page.keyboard.up("ArrowUp");
+  const afterMove = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getPosition(),
+  );
+  expect(acceleratedMovement.speed).toBeGreaterThan(earlyMovement.speed);
+  expect(acceleratedMovement.speed).toBeLessThanOrEqual(
+    acceleratedMovement.maxSpeed,
+  );
+  const releasedMovement = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getMovementState(),
+  );
+  expect(releasedMovement.speed).toBe(releasedMovement.baseSpeed);
+  expect(releasedMovement.keyboardActive).toBe(false);
+  const displacement = {
+    x: afterMove.x - beforeMove.x,
+    z: afterMove.z - beforeMove.z,
+  };
+  const cameraForward = {
+    x: -Math.sin(afterLook.yaw),
+    z: -Math.cos(afterLook.yaw),
+  };
+  expect(
+    displacement.x * cameraForward.x + displacement.z * cameraForward.z,
+  ).toBeGreaterThan(0.05);
+
+  await page.keyboard.down("w");
+  await page.waitForTimeout(180);
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  const blurredMovement = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getMovementState(),
+  );
+  expect(blurredMovement.speed).toBe(blurredMovement.baseSpeed);
+  expect(blurredMovement.keyboardActive).toBe(false);
+  await page.keyboard.up("w");
+
+  await page.mouse.move(centre.x, centre.y);
+  const initialZoom = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getCameraState().zoom,
+  );
+  await page.mouse.wheel(0, 480);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getCameraState().zoom,
+    ),
+  ).toBeGreaterThan(initialZoom);
+  const zoomedOut = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getCameraState().zoom,
+  );
+  await page.mouse.wheel(0, -960);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getCameraState().zoom,
+    ),
+  ).toBeLessThan(zoomedOut);
+});
+
+test("refresh restores one bounded identity-local position without private history", async ({
+  page,
+}) => {
+  const serverArrival = {
+    id: "position-restore",
+    name: "visitor",
+    status: "exploring",
+    x: -8.1,
+    y: 0.38,
+    z: 30,
+    yaw: 0,
+    space: "town-square",
+  };
+  await prepareWorldPage(page, "position-restore", {
+    worldSocketHandler(socket, socketId) {
+      socket.send(JSON.stringify({
+        type: "welcome",
+        id: socketId,
+        self: serverArrival,
+        peers: [],
+      }));
+    },
+  });
+  await waitForWorld(page);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    const position = {
+      x: 21.25,
+      y: 18.45,
+      z: -13.5,
+      heading: 1.2,
+      space: "space-station",
+      moving: false,
+      activity: "private/repository?token=must-not-persist",
+    };
+    shell.currentSpace = position.space;
+    shell.world.setSpawn(position);
+    shell.handleMovement(position);
+  });
+  const storedBeforeRefresh = await page.evaluate(() => {
+    const keys = Object.keys(localStorage).filter((key) =>
+      key.startsWith("forkmesh.world.position.v1."),
+    );
+    return {
+      keys,
+      record: JSON.parse(localStorage.getItem(keys[0]) || "{}"),
+    };
+  });
+  expect(storedBeforeRefresh.keys).toHaveLength(1);
+  expect(Object.keys(storedBeforeRefresh.record).sort()).toEqual(
+    ["heading", "space", "updatedAt", "x", "y", "z"].sort(),
+  );
+  expect(JSON.stringify(storedBeforeRefresh.record)).not.toContain("private");
+  expect(JSON.stringify(storedBeforeRefresh.record)).not.toContain("token");
+
+  await page.reload();
+  await waitForWorld(page);
+  const restored = await page.locator("forkmesh-world").evaluate((shell) => ({
+    position: shell.world.getPosition(),
+    currentSpace: shell.currentSpace,
+    storedRecords: Object.keys(localStorage).filter((key) =>
+      key.startsWith("forkmesh.world.position.v1."),
+    ).length,
+  }));
+  expect(restored.currentSpace).toBe("space-station");
+  expect(restored.position.space).toBe("space-station");
+  expect(restored.position.x).toBeCloseTo(21.25, 3);
+  expect(restored.position.y).toBeCloseTo(18.45, 3);
+  expect(restored.position.z).toBeCloseTo(-13.5, 3);
+  expect(restored.position.heading).toBeCloseTo(1.2, 3);
+  expect(restored.storedRecords).toBe(1);
+});
+
+test("busy walking stays connected while movement frames remain within the soft budget", async ({
+  page,
+}) => {
+  const frames = [];
+  let socketCount = 0;
+  let rateDisconnects = 0;
+  let rateWindowStartedAt = 0;
+  let rateWindowCount = 0;
+  await prepareWorldPage(page, "busy-movement", {
+    worldSocketHandler(socket, socketId) {
+      socketCount += 1;
+      socket.onMessage((raw) => {
+        const now = performance.now();
+        if (!rateWindowStartedAt || now - rateWindowStartedAt >= 1000) {
+          rateWindowStartedAt = now;
+          rateWindowCount = 0;
+        }
+        rateWindowCount += 1;
+        const frame = JSON.parse(String(raw));
+        frames.push({ frame, at: now });
+        if (rateWindowCount > 4) {
+          rateDisconnects += 1;
+          void socket.close({ code: 1008, reason: "soft rate budget" });
+        }
+      });
+      socket.send(JSON.stringify({
+        type: "welcome",
+        id: socketId,
+        self: {
+          id: socketId,
+          name: "visitor",
+          status: "exploring",
+          x: -8.1,
+          y: 0.38,
+          z: 30,
+          yaw: 0,
+          space: "town-square",
+        },
+        peers: [],
+      }));
+    },
+  });
+  await waitForWorld(page);
+
+  await page.keyboard.down("ArrowUp");
+  await page.waitForTimeout(3300);
+  await page.keyboard.up("ArrowUp");
+  await page.waitForTimeout(350);
+
+  const connection = await page.locator("forkmesh-world").evaluate((shell) => ({
+    readyState: shell.socket?.readyState,
+    openState: WebSocket.OPEN,
+    peerId: shell.serverPeerId,
+  }));
+  const movementFrames = frames.filter(({ frame }) => frame.type === "move");
+  const activeFrames = movementFrames.filter(({ frame }) => frame.moving);
+  expect(rateDisconnects).toBe(0);
+  expect(socketCount).toBe(1);
+  expect(connection.readyState).toBe(connection.openState);
+  expect(connection.peerId).toBe("busy-movement");
+  expect(activeFrames.length).toBeGreaterThanOrEqual(2);
+  expect(activeFrames.length).toBeLessThanOrEqual(4);
+  expect(movementFrames.at(-1).frame.moving).toBe(false);
+  expect(movementFrames.length).toBeLessThanOrEqual(6);
+});
+
+test("local diagnostics report renderer and existing socket state without new telemetry", async ({
+  page,
+}) => {
+  let socketCount = 0;
+  await prepareWorldPage(page, "world-diagnostics", {
+    worldSocketHandler(socket, socketId) {
+      socketCount += 1;
+      socket.send(JSON.stringify({
+        type: "welcome",
+        id: socketId,
+        peers: [],
+      }));
+    },
+  });
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.lastMovementSentAt = performance.now();
+    shell.queueMovementPresence({
+      x: 1,
+      y: 0.38,
+      z: 1,
+      heading: 0,
+      moving: true,
+    });
+    shell.queueMovementPresence({
+      x: 2,
+      y: 0.38,
+      z: 2,
+      heading: 0,
+      moving: true,
+    });
+    shell.sendPresence({ type: "presence" });
+    shell.sendPresence({ type: "presence" });
+  });
+  await page.waitForTimeout(1150);
+
+  const diagnostics = page.locator("[data-world-diagnostics]");
+  await expect(diagnostics.locator("summary")).toContainText("FPS");
+  await expect(diagnostics.locator("summary")).toContainText("socket online");
+  await expect(diagnostics.locator("summary")).toContainText("1 peer");
+  await expect(diagnostics.locator("summary")).toContainText("v0.7.0");
+  await diagnostics.locator("summary").click();
+  await expect(diagnostics).toHaveAttribute("open", "");
+  await expect(diagnostics).toContainText("ms/frame");
+  await expect(diagnostics).toContainText("triangles");
+  await expect(diagnostics).toContainText("Socket frames");
+  await expect(diagnostics).toContainText("coalesced");
+  await expect(diagnostics).toContainText("dddddddddddd");
+  await expect(diagnostics).toContainText("No diagnostics are transmitted");
+
+  const snapshot = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.lastDiagnosticsSnapshot,
+  );
+  expect(snapshot.renderer.fps).toBeGreaterThan(0);
+  expect(snapshot.renderer.frameTimeMs).toBeGreaterThan(0);
+  expect(snapshot.renderer.calls).toBeGreaterThan(0);
+  expect(snapshot.renderer.triangles).toBeGreaterThan(0);
+  expect(snapshot.connection).toMatchObject({
+    state: "online",
+    peers: 1,
+    reconnects: 0,
+  });
+  expect(snapshot.traffic.inboundFrames).toBeGreaterThanOrEqual(1);
+  expect(snapshot.traffic.outboundFrames).toBeGreaterThanOrEqual(1);
+  expect(snapshot.queues.movementCoalesced).toBeGreaterThanOrEqual(1);
+  expect(snapshot.queues.profileCoalesced).toBeGreaterThanOrEqual(1);
+  expect(snapshot.build).toEqual({
+    version: "0.7.0",
+    revision: "d".repeat(40),
+  });
+  expect(Object.keys(snapshot).sort()).toEqual(
+    ["build", "connection", "queues", "renderer", "traffic"].sort(),
+  );
+  expect(JSON.stringify(snapshot)).not.toContain("127.0.0.1");
+  expect(JSON.stringify(snapshot)).not.toContain("/world/");
+  expect(socketCount).toBe(1);
+});
+
+test("UTC is display-only and local light level survives movement without becoming presence data", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "local-light-level");
+  await waitForWorld(page);
+
+  await expect(page.locator("[data-world-clock]")).toHaveText("17:20:00");
+  await expect(page.locator("[data-world-phase]")).toHaveText(
+    "UTC · 24-hour clock",
+  );
+  const initial = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getEnvironmentState(),
+  );
+  expect(initial.theme).toBe("world");
+  expect(initial.lightLevel).toBe(100);
+
+  await page.keyboard.down("ArrowRight");
+  await page.waitForTimeout(320);
+  await page.keyboard.up("ArrowRight");
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.travelToRegion("east");
+  });
+  const afterMovement = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.world.getEnvironmentState(),
+  );
+  expect(afterMovement).toEqual(initial);
+
+  await page.locator("[data-world-settings-open]").first().click();
+  const light = page.locator("[data-world-light-level]");
+  await light.fill("65");
+  await expect(page.locator("[data-world-light-level-output]")).toHaveText(
+    "65%",
+  );
+  const adjusted = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.getEnvironmentState(),
+  );
+  expect(adjusted.lightLevel).toBe(65);
+  expect(adjusted.sunIntensity).toBeLessThan(initial.sunIntensity);
+  expect(adjusted.sunPosition).toEqual(initial.sunPosition);
+  const stored = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("forkmesh.world.settings.v1") || "{}"),
+  );
+  expect(stored.lightLevel).toBe(65);
+  const publicIdentityState = await page.locator("forkmesh-world").evaluate(
+    (shell) => shell.identity,
+  );
+  expect(publicIdentityState.lightLevel).toBeUndefined();
+});
+
+test("Unicode emoji status is local-persisted, coalesced, and visible over every avatar", async ({
+  page,
+  context,
+}) => {
+  const frames = [];
+  await prepareWorldPage(page, "emoji-status-owner", {
+    worldSocketHandler(socket, socketId) {
+      socket.onMessage((raw) => frames.push(JSON.parse(String(raw))));
+      socket.send(JSON.stringify({
+        type: "welcome",
+        id: socketId,
+        self: {
+          id: socketId,
+          name: "owner",
+          status: "available",
+          x: -8.1,
+          y: 0.38,
+          z: 30,
+          yaw: 0,
+          space: "town-square",
+        },
+        peers: [
+          {
+            id: "peer-status",
+            name: "Peer",
+            status: "available",
+            statusEmoji: "🚀",
+            statusNote: "shipping",
+            x: 3,
+            y: 0.38,
+            z: 4,
+            yaw: 0,
+            space: "town-square",
+          },
+        ],
+      }));
+    },
+  });
+  await waitForWorld(page);
+  await expect(
+    page.locator('[data-player-label="peer-status"]'),
+  ).toHaveAttribute("aria-label", "Peer, public status 🚀 shipping");
+  const peerStatus = await page.locator("forkmesh-world").evaluate((shell) => {
+    const avatar = shell.world.scene.getObjectByName("avatar:peer-status");
+    const sprite = avatar?.getObjectByName("forkmesh-avatar-emoji-status");
+    return {
+      emoji: avatar?.userData?.statusEmoji,
+      note: avatar?.userData?.statusNote,
+      spriteVisible: Boolean(sprite?.visible),
+    };
+  });
+  expect(peerStatus).toEqual({
+    emoji: "🚀",
+    note: "shipping",
+    spriteVisible: true,
+  });
+
+  const firstChangeFrameIndex = frames.length;
+  const pageCount = context.pages().length;
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator(".world-emoji-picker").evaluate((picker) => {
+    picker.open = true;
+  });
+  await page.locator("[data-world-emoji-category]").selectOption("gestures");
+  await page.getByRole("button", {
+    name: "Use 🧑‍💻 as public status",
+  }).click();
+  const note = page.locator("[data-world-status-note]");
+  await note.fill("coding");
+  await note.dispatchEvent("change");
+  await expect(page.locator("[data-world-status-preview]")).toHaveText(
+    "🧑‍💻 coding",
+  );
+  await expect(page.locator("[data-world-identity-emoji-status]")).toHaveText(
+    "🧑‍💻 coding",
+  );
+  await expect.poll(() =>
+    frames.filter(
+      (frame) =>
+        frame.type === "presence" &&
+        frame.statusEmoji === "🧑‍💻" &&
+        frame.statusNote === "coding",
+    ).length,
+  ).toBe(1);
+  const statusFrames = frames
+    .slice(firstChangeFrameIndex)
+    .filter(
+      (frame) => frame.type === "presence" && Boolean(frame.statusEmoji),
+    );
+  expect(statusFrames.length).toBeLessThanOrEqual(2);
+  expect(
+    frames
+      .filter((frame) => frame.type === "move")
+      .some((frame) => "statusEmoji" in frame || "statusNote" in frame),
+  ).toBe(false);
+
+  const saved = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("forkmesh.world.settings.v1") || "{}"),
+  );
+  expect(saved.statusEmoji).toBe("🧑‍💻");
+  expect(saved.statusNote).toBe("coding");
+  const ownStatus = await page.locator("forkmesh-world").evaluate((shell) => ({
+    emoji: shell.world.player.userData.statusEmoji,
+    note: shell.world.player.userData.statusNote,
+    spriteVisible: Boolean(
+      shell.world.player.getObjectByName("forkmesh-avatar-emoji-status")
+        ?.visible,
+    ),
+  }));
+  expect(ownStatus).toEqual({
+    emoji: "🧑‍💻",
+    note: "coding",
+    spriteVisible: true,
+  });
+
+  const codingFramesBeforeDuplicate = frames.filter(
+    (frame) =>
+      frame.type === "presence" &&
+      frame.statusEmoji === "🧑‍💻" &&
+      frame.statusNote === "coding",
+  ).length;
+  await note.dispatchEvent("change");
+  await page.waitForTimeout(450);
+  expect(frames.filter(
+    (frame) =>
+      frame.type === "presence" &&
+      frame.statusEmoji === "🧑‍💻" &&
+      frame.statusNote === "coding",
+  )).toHaveLength(codingFramesBeforeDuplicate);
+
+  await note.fill("two words");
+  await note.dispatchEvent("change");
+  await expect(note).toHaveValue("coding");
+  await expect(page.locator("[data-world-toast]")).toContainText(
+    "must be one word",
+  );
+  expect(context.pages()).toHaveLength(pageCount);
+  expect(new URL(page.url()).pathname).toBe("/world/");
 });
 
 test("two live clients synchronize movement without leaking disabled badge fields", async ({
@@ -756,6 +1823,145 @@ test("landscape touch controls remain visible and move the avatar", async ({
   await context.close();
 });
 
+test("two-finger pinch traverses the complete bounded mobile camera range", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  const page = await context.newPage();
+  await prepareWorldPage(page, "mobile-full-range-pinch");
+  await waitForWorld(page);
+
+  const canvas = page.locator("[data-world-canvas-wrap] canvas");
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  const centreX = Math.round(box.x + box.width / 2);
+  const centreY = Math.round(box.y + box.height * 0.62);
+  const client = await page.context().newCDPSession(page);
+  const points = (spread) => [
+    { x: centreX - spread, y: centreY, id: 1 },
+    { x: centreX + spread, y: centreY, id: 2 },
+  ];
+
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: points(10),
+  });
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: points(185),
+  });
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getCameraState(),
+    ),
+  ).toMatchObject({ zoom: 0.12, minZoom: 0.12 });
+
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: points(1),
+  });
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getCameraState(),
+    ),
+  ).toMatchObject({ zoom: 3.2, maxZoom: 3.2 });
+
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchEnd",
+    touchPoints: [],
+  });
+  await client.detach();
+  await context.close();
+});
+
+test("construction markers distinguish verified live landmarks from unavailable ones", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "construction-truth");
+  await waitForWorld(page);
+
+  const mapMarker = (id) =>
+    page.locator(
+      `.world-map [data-world-construction-marker="${id}"]`,
+    );
+  await expect(mapMarker("information")).toBeHidden();
+  await expect(mapMarker("routing")).toBeHidden();
+  await expect(mapMarker("repositories")).toBeHidden();
+  await expect(mapMarker("fediverse")).toBeHidden();
+  await expect(mapMarker("events")).toBeHidden();
+  await expect(mapMarker("organizations")).toBeVisible();
+  await expect(mapMarker("security")).toBeVisible();
+  await expect(mapMarker("workshops")).toBeVisible();
+
+  const destinationMarker = (id) =>
+    page.locator(
+      `[data-landmark-label="${id}"] [data-world-construction-marker="${id}"]`,
+    );
+  await expect(destinationMarker("routing")).toHaveAttribute("hidden", "");
+  await expect(destinationMarker("organizations")).not.toHaveAttribute(
+    "hidden",
+    "",
+  );
+  await expect(destinationMarker("organizations")).toHaveAttribute(
+    "aria-label",
+    /Under construction:.*organization directory integration/i,
+  );
+
+  await page
+    .locator('.world-map [data-world-landmark="organizations"]')
+    .click();
+  const detail = page.locator("[data-world-detail]");
+  await expect(detail).toBeVisible();
+  await expect(detail.getByRole("heading", { name: "Organization quarter" }))
+    .toBeVisible();
+  await expect(
+    detail.locator(
+      '[data-world-construction-marker="organizations"]',
+    ),
+  ).toBeVisible();
+});
+
+test("failed live checks fail closed to construction without blocking navigation", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "construction-unavailable", {
+    unavailablePaths: [
+      "/api/repo/forkmesh/forkmesh/mirrors",
+      "/api/repositories",
+      "/api/world/fediverse",
+      "/api/world/events",
+    ],
+  });
+  await waitForWorld(page);
+
+  for (const id of ["routing", "repositories", "fediverse", "events"]) {
+    const marker = page.locator(
+      `.world-map [data-world-construction-marker="${id}"]`,
+    );
+    await expect(marker).toBeVisible();
+    await expect(marker).toHaveAttribute("aria-label", /^Under construction:/);
+  }
+  await expect(
+    page.locator(
+      '.world-map [data-world-construction-marker="support"]',
+    ),
+  ).toBeHidden();
+
+  await page.locator('.world-map [data-world-landmark="routing"]').click();
+  await expect(
+    page.getByRole("heading", { name: "Cloud routing station" }),
+  ).toBeVisible();
+  await expect(
+    page.locator(
+      '[data-world-detail] [data-world-construction-marker="routing"]',
+    ),
+  ).toBeVisible();
+});
+
 test("approved instances, local setup, and project support stay truthful", async ({
   page,
 }) => {
@@ -800,6 +2006,662 @@ test("approved instances, local setup, and project support stay truthful", async
   await expect(page.getByRole("link", { name: "Open Patreon" })).toHaveAttribute(
     "href",
     "https://www.patreon.com/16434219/join",
+  );
+});
+
+test("pull requests open and become viewed entirely inside the repository World", async ({
+  page,
+  context,
+}) => {
+  const repositoryRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/api/repo/forkmesh/forkmesh/")) {
+      repositoryRequests.push(url);
+    }
+  });
+  await prepareWorldPage(page, "world-pull-review", {
+    repositoryFixture: {},
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready" &&
+      shell?.activeRepository?.owner === "forkmesh" &&
+      shell?.activeRepository?.repo === "forkmesh";
+  });
+
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("repositories"),
+  );
+  await expect(
+    page.getByRole("button", { name: /^2 pull requests$/i }),
+  ).toBeVisible();
+  const originalURL = page.url();
+  const originalPages = context.pages().length;
+  await page.getByRole("button", { name: /^2 pull requests$/i }).click();
+  await expect(
+    page.getByRole("heading", { name: "forkmesh/forkmesh pull requests" }),
+  ).toBeVisible();
+  await expect(page.locator("[data-world-pull-open]")).toHaveCount(2);
+  await expect(
+    page.locator("[data-world-pull-open][data-world-pull-number='44']"),
+  ).toContainText("Review inside the World");
+
+  await page
+    .locator("[data-world-pull-open][data-world-pull-number='44']")
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Pull request #44" }),
+  ).toBeVisible();
+  await expect(page.locator(".world-pull-file-tree button")).toHaveCount(2);
+  await expect(page.locator("[data-world-pull-diff-file]")).toHaveCount(2);
+  await expect(page.locator("[data-world-pull-diff]")).toContainText(
+    "world-pr-diff-visible",
+  );
+  await expect(page.locator("[data-world-pull-viewed-summary]")).toHaveText(
+    "0 of 2 files viewed",
+  );
+  expect(page.url()).toBe(originalURL);
+  expect(context.pages()).toHaveLength(originalPages);
+  await expect(
+    page.getByRole("button", { name: /merge pull request/i }),
+  ).toHaveCount(0);
+
+  await page.locator("[data-world-pull-diff]").evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await expect(page.locator("[data-world-pull-viewed-summary]")).toHaveText(
+    "1 of 2 files viewed",
+  );
+  await page
+    .locator("[data-world-pull-file-path='src/alpha.js']")
+    .click();
+  await expect(page.locator("[data-world-pull-viewed-summary]")).toHaveText(
+    "2 of 2 files viewed",
+  );
+  await expect(
+    page.locator("[data-world-pull-file-path][data-viewed='true']"),
+  ).toHaveCount(2);
+
+  const persisted = await page.evaluate(() => JSON.stringify(localStorage));
+  expect(persisted).not.toContain("world-pr-diff-visible");
+  expect(persisted).not.toContain("src/alpha.js");
+  const pullReads = repositoryRequests.filter(
+    (url) =>
+      (url.pathname.endsWith("/tree") &&
+        url.searchParams.get("path") === "pulls") ||
+      (url.pathname.endsWith("/blobs") &&
+        url.searchParams.getAll("path").some((item) => item.startsWith("pulls/"))),
+  );
+  expect(pullReads.length).toBeGreaterThanOrEqual(3);
+  for (const request of pullReads) {
+    expect(request.searchParams.get("ref")).toBe("b".repeat(40));
+    expect(request.searchParams.get("ref")).not.toBe("main");
+    expect(request.searchParams.get("ref")).not.toBe("a".repeat(40));
+  }
+  expect(
+    repositoryRequests.filter((url) => url.pathname.endsWith("/branches")),
+  ).toHaveLength(1);
+});
+
+test("a fresh map resolves exact pull metadata before slow issue scans", async ({
+  page,
+}) => {
+  const repositoryRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/api/repo/forkmesh/forkmesh/")) {
+      repositoryRequests.push(url);
+    }
+  });
+  await prepareWorldPage(page, "world-pull-priority", {
+    repositoryFixture: {
+      issueTreeDelayMs: 900,
+      // Model a small mirror whose pull-metadata read would be rejected once
+      // lower-priority issue fanout has occupied its request capacity.
+      rejectPullMetadataAfterIssueFanout: true,
+    },
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready" &&
+      shell?.activeRepository?.pullCountSource === "metadata-tree";
+  });
+
+  const snapshot = await page.locator("forkmesh-world").evaluate((shell) => ({
+    pullCount: shell.activeRepository?.pullCount,
+    pullCountSource: shell.activeRepository?.pullCountSource,
+    pullMetadataCommit:
+      shell.activeRepository?.entityRecords?.pullMetadataCommit,
+    pullCountExact: shell.activeRepository?.entityRecords?.pullCountExact,
+    pullsAvailable: shell.activeRepository?.entityRecords?.pullsAvailable,
+  }));
+  expect(snapshot).toEqual({
+    pullCount: 2,
+    pullCountSource: "metadata-tree",
+    pullMetadataCommit: "b".repeat(40),
+    pullCountExact: true,
+    pullsAvailable: true,
+  });
+
+  const branchesIndex = repositoryRequests.findIndex((url) =>
+    url.pathname.endsWith("/branches"),
+  );
+  const pullTreeIndex = repositoryRequests.findIndex(
+    (url) =>
+      url.pathname.endsWith("/tree") &&
+      url.searchParams.get("path") === "pulls" &&
+      url.searchParams.get("ref") === "b".repeat(40),
+  );
+  const pullBlobsIndex = repositoryRequests.findIndex(
+    (url) =>
+      url.pathname.endsWith("/blobs") &&
+      url.searchParams.get("ref") === "b".repeat(40) &&
+      url.searchParams
+        .getAll("path")
+        .some((path) => path.startsWith("pulls/")),
+  );
+  const firstIssueIndex = repositoryRequests.findIndex(
+    (url) =>
+      url.pathname.endsWith("/tree") &&
+      String(url.searchParams.get("path") || "").startsWith(
+        ".forkmesh/issues",
+      ),
+  );
+  expect(branchesIndex).toBeGreaterThanOrEqual(0);
+  expect(pullTreeIndex).toBeGreaterThan(branchesIndex);
+  expect(pullBlobsIndex).toBeGreaterThan(pullTreeIndex);
+  expect(firstIssueIndex).toBeGreaterThan(branchesIndex);
+  expect(firstIssueIndex).toBeGreaterThan(pullTreeIndex);
+  expect(firstIssueIndex).toBeGreaterThan(pullBlobsIndex);
+
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("repositories"),
+  );
+  await page.getByRole("button", { name: /^2 pull requests$/i }).click();
+  await page
+    .locator("[data-world-pull-open][data-world-pull-number='44']")
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Pull request #44" }),
+  ).toBeVisible();
+  await expect(page.locator("[data-world-pull-diff]")).toContainText(
+    "world-pr-diff-visible",
+  );
+});
+
+test("four fresh single-core contexts keep exact pull metadata ahead of other reads", async ({
+  browser,
+}) => {
+  for (let iteration = 0; iteration < 4; iteration += 1) {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const repositoryFixture = { singleCoreDelayMs: 60 };
+    const repositoryRequests = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.startsWith("/api/repo/forkmesh/forkmesh/")) {
+        repositoryRequests.push(url);
+      }
+    });
+    await prepareWorldPage(page, `single-core-${iteration}`, {
+      repositoryFixture,
+    });
+    await waitForWorld(page);
+    await page.waitForFunction(() => {
+      const shell = document.querySelector("forkmesh-world");
+      return shell?.repositoryMapState === "ready" &&
+        shell?.activeRepository?.pullCountSource === "metadata-tree";
+    });
+
+    const snapshot = await page.locator("forkmesh-world").evaluate((shell) => ({
+      commit: shell.activeRepository?.commit,
+      pullCount: shell.activeRepository?.pullCount,
+      pullCountSource: shell.activeRepository?.pullCountSource,
+      pullMetadataCommit:
+        shell.activeRepository?.entityRecords?.pullMetadataCommit,
+      pullCountExact: shell.activeRepository?.entityRecords?.pullCountExact,
+    }));
+    expect(snapshot).toEqual({
+      commit: "a".repeat(40),
+      pullCount: 2,
+      pullCountSource: "metadata-tree",
+      pullMetadataCommit: "b".repeat(40),
+      pullCountExact: true,
+    });
+    expect(repositoryFixture.maxMetadataActive).toBe(1);
+
+    const branchesIndex = repositoryRequests.findIndex((url) =>
+      url.pathname.endsWith("/branches"),
+    );
+    const pullTreeIndex = repositoryRequests.findIndex(
+      (url) =>
+        url.pathname.endsWith("/tree") &&
+        url.searchParams.get("path") === "pulls" &&
+        url.searchParams.get("ref") === "b".repeat(40),
+    );
+    const pullBlobsIndex = repositoryRequests.findIndex(
+      (url) =>
+        url.pathname.endsWith("/blobs") &&
+        url.searchParams.get("ref") === "b".repeat(40) &&
+        url.searchParams
+          .getAll("path")
+          .every((path) => /^pulls\/(?:43|44)\/pull\.md$/.test(path)),
+    );
+    const firstCompetingIndex = repositoryRequests.findIndex(
+      (url) =>
+        url.pathname.endsWith("/sizes") ||
+        url.pathname.endsWith("/stats") ||
+        (
+          url.pathname.endsWith("/tree") &&
+          String(url.searchParams.get("path") || "").startsWith(
+            ".forkmesh/issues",
+          )
+        ),
+    );
+    expect(branchesIndex).toBeGreaterThanOrEqual(0);
+    expect(pullTreeIndex).toBeGreaterThan(branchesIndex);
+    expect(pullBlobsIndex).toBeGreaterThan(pullTreeIndex);
+    expect(firstCompetingIndex).toBeGreaterThan(pullBlobsIndex);
+    expect(
+      repositoryRequests.filter((url) => url.pathname.endsWith("/branches")),
+    ).toHaveLength(1);
+    expect(
+      repositoryRequests.filter(
+        (url) =>
+          url.pathname.endsWith("/tree") &&
+          url.searchParams.get("path") === "pulls",
+      ),
+    ).toHaveLength(1);
+
+    await context.close();
+  }
+});
+
+test("an authenticated organization writer merges exact reviewed OIDs in-World", async ({
+  page,
+  context,
+}) => {
+  const fixture = { mergeOutcome: "success" };
+  const mergeRequests = [];
+  const rootTreeRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      url.pathname === "/api/repo/forkmesh/forkmesh/tree" &&
+      (url.searchParams.get("path") || "") === ""
+    ) {
+      rootTreeRequests.push(url);
+    }
+    if (url.pathname.endsWith("/pulls/44/merge")) {
+      mergeRequests.push({
+        method: request.method(),
+        authorization: request.headers().authorization || "",
+        body: request.postDataJSON(),
+      });
+    }
+  });
+  await prepareWorldPage(page, "world-org-writer-merge", {
+    session: {
+      nodeName: "release-writer",
+      sessionToken: "org-writer-session-token",
+    },
+    repositoryFixture: fixture,
+  });
+  await openWorldPullReview(page);
+  const originalPages = context.pages().length;
+  const originalRootReads = rootTreeRequests.length;
+  const mergeButton = page.getByRole("button", {
+    name: "Merge pull request #44",
+  });
+  await expect(mergeButton).toBeVisible();
+  await mergeButton.evaluate((button) => {
+    button.click();
+    document.querySelector("forkmesh-world")?.mergeRepositoryPull();
+  });
+  await expect(
+    page.locator("[data-world-pull-merge-state='merged']"),
+  ).toContainText("Merged and published");
+  await page.waitForFunction(
+    (commit) =>
+      document.querySelector("forkmesh-world")?.activeRepository?.commit ===
+      commit,
+    "f".repeat(40),
+  );
+
+  expect(mergeRequests).toHaveLength(2);
+  expect(mergeRequests.every((request) => request.method === "POST")).toBe(true);
+  expect(
+    mergeRequests.every(
+      (request) =>
+        request.authorization === "Bearer org-writer-session-token",
+    ),
+  ).toBe(true);
+  expect(mergeRequests[0].body).toEqual(mergeRequests[1].body);
+  expect(mergeRequests[0].body).toMatchObject({
+    schemaVersion: 1,
+    type: "forkmesh.pull-merge-v1",
+    pullNumber: 44,
+    expectedBaseOid: "a".repeat(40),
+    expectedHeadOid: "e".repeat(40),
+    expectedPullsOid: "b".repeat(40),
+  });
+  expect(mergeRequests[0].body.requestId).toMatch(
+    /^[A-Za-z0-9_-]{12,80}$/,
+  );
+  expect(rootTreeRequests.length).toBeGreaterThan(originalRootReads);
+  expect(context.pages()).toHaveLength(originalPages);
+  expect(page.url()).toContain("/world/");
+});
+
+test("an unauthenticated reviewer never receives a merge control", async ({
+  page,
+}) => {
+  const mergeRequests = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.endsWith("/pulls/44/merge")) {
+      mergeRequests.push(request);
+    }
+  });
+  await prepareWorldPage(page, "world-unauthenticated-review", {
+    repositoryFixture: {},
+  });
+  await openWorldPullReview(page);
+  await expect(page.locator("[data-world-pull-merge]")).toHaveCount(0);
+  await expect(
+    page.getByText(
+      "Sign in to request a protected in-World merge. Review remains available without opening another tab.",
+    ),
+  ).toBeVisible();
+  expect(mergeRequests).toHaveLength(0);
+});
+
+test("a forbidden merge is rendered safely and never reloads repository data", async ({
+  page,
+}) => {
+  const fixture = { mergeOutcome: "forbidden" };
+  const mergeRequests = [];
+  const rootTreeRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      url.pathname === "/api/repo/forkmesh/forkmesh/tree" &&
+      (url.searchParams.get("path") || "") === ""
+    ) {
+      rootTreeRequests.push(url);
+    }
+    if (url.pathname.endsWith("/pulls/44/merge")) mergeRequests.push(request);
+  });
+  await prepareWorldPage(page, "world-forbidden-merge", {
+    session: {
+      nodeName: "registered-reader",
+      sessionToken: "reader-session-token",
+    },
+    repositoryFixture: fixture,
+  });
+  await openWorldPullReview(page);
+  const rootReadsBeforeMerge = rootTreeRequests.length;
+  await page
+    .getByRole("button", { name: "Merge pull request #44" })
+    .click();
+  const denied = page.locator(
+    "[data-world-pull-merge-state='forbidden']",
+  );
+  await expect(denied).toHaveAttribute("role", "alert");
+  await expect(denied).toContainText("Merge not authorized");
+  await expect(denied).toContainText("organization writer");
+  await expect(page.locator("[data-world-pull-merge]")).toHaveCount(0);
+  expect(mergeRequests).toHaveLength(1);
+  expect(rootTreeRequests).toHaveLength(rootReadsBeforeMerge);
+});
+
+for (const scenario of [
+  {
+    outcome: "conflict",
+    state: "conflict",
+    title: "Merge conflict",
+  },
+  {
+    outcome: "stale",
+    state: "stale",
+    title: "Review is stale",
+  },
+]) {
+  test(`${scenario.outcome} merge result is explicit and does not reload`, async ({
+    page,
+  }) => {
+    const fixture = { mergeOutcome: scenario.outcome };
+    const rootTreeRequests = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (
+        url.pathname === "/api/repo/forkmesh/forkmesh/tree" &&
+        (url.searchParams.get("path") || "") === ""
+      ) {
+        rootTreeRequests.push(url);
+      }
+    });
+    await prepareWorldPage(page, `world-${scenario.outcome}-merge`, {
+      session: {
+        nodeName: "organization-writer",
+        sessionToken: `${scenario.outcome}-session-token`,
+      },
+      repositoryFixture: fixture,
+    });
+    await openWorldPullReview(page);
+    const rootReadsBeforeMerge = rootTreeRequests.length;
+    await page
+      .getByRole("button", { name: "Merge pull request #44" })
+      .click();
+    const result = page.locator(
+      `[data-world-pull-merge-state='${scenario.state}']`,
+    );
+    await expect(result).toHaveAttribute("role", "alert");
+    await expect(result).toContainText(scenario.title);
+    expect(rootTreeRequests).toHaveLength(rootReadsBeforeMerge);
+  });
+}
+
+test("bounded polling and a manual retry reuse one idempotency request", async ({
+  page,
+}) => {
+  const fixture = { mergeOutcome: "retry" };
+  const mergeBodies = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.endsWith("/pulls/44/merge")) {
+      mergeBodies.push(request.postDataJSON());
+    }
+  });
+  await prepareWorldPage(page, "world-bounded-merge-poll", {
+    session: {
+      nodeName: "organization-writer",
+      sessionToken: "bounded-poll-session-token",
+    },
+    repositoryFixture: fixture,
+  });
+  await openWorldPullReview(page);
+  await page
+    .getByRole("button", { name: "Merge pull request #44" })
+    .click();
+  await expect(
+    page.locator("[data-world-pull-merge-state='pending']"),
+  ).toContainText("Bounded automatic polling ended");
+  expect(mergeBodies).toHaveLength(6);
+  await page.getByRole("button", { name: "Check merge status" }).click();
+  await expect(
+    page.locator("[data-world-pull-merge-state='conflict']"),
+  ).toContainText("Merge conflict");
+  expect(mergeBodies).toHaveLength(7);
+  expect(new Set(mergeBodies.map((body) => body.requestId)).size).toBe(1);
+  expect(mergeBodies.every((body) => body.type === "forkmesh.pull-merge-v1")).toBe(
+    true,
+  );
+});
+
+test("the protected merge control is touch-sized and announces state on mobile", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await prepareWorldPage(page, "world-mobile-merge", {
+    session: {
+      nodeName: "mobile-writer",
+      sessionToken: "mobile-writer-session-token",
+    },
+    repositoryFixture: {},
+  });
+  await openWorldPullReview(page);
+  const panel = page.locator("[data-world-pull-merge-state='ready']");
+  const button = panel.getByRole("button", {
+    name: "Merge pull request #44",
+  });
+  await expect(panel).toHaveAttribute("role", "status");
+  await expect(panel).toHaveAttribute("aria-live", "polite");
+  await expect(panel).toHaveAttribute("aria-busy", "false");
+  await expect(button).toBeVisible();
+  const box = await button.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box.height).toBeGreaterThanOrEqual(44);
+  expect(box.width).toBeLessThanOrEqual(390);
+  await button.focus();
+  await expect(button).toBeFocused();
+});
+
+test("missing pull metadata branch fails closed without probing main", async ({
+  page,
+}) => {
+  const repositoryRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/api/repo/forkmesh/forkmesh/")) {
+      repositoryRequests.push(url);
+    }
+  });
+  await prepareWorldPage(page, "world-pull-unavailable", {
+    repositoryFixture: { invalidPullBranch: true },
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready";
+  });
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("repositories"),
+  );
+  await page.getByRole("button", { name: /^2 pull requests$/i }).click();
+  await expect(
+    page.locator("[data-world-pull-state='unavailable']"),
+  ).toContainText("exact forkmesh/pulls commit could not be verified");
+  await expect(
+    page.locator("[data-world-pull-state='unavailable']"),
+  ).toContainText("No main-branch, guessed-ref");
+  expect(
+    repositoryRequests.filter(
+      (url) =>
+        url.pathname.endsWith("/tree") &&
+        url.searchParams.get("path") === "pulls",
+    ),
+  ).toHaveLength(0);
+  expect(
+    repositoryRequests.filter(
+      (url) =>
+        url.pathname.endsWith("/blobs") &&
+        url.searchParams.getAll("path").some((item) => item.startsWith("pulls/")),
+    ),
+  ).toHaveLength(0);
+  await page.locator("[data-world-pull-back='map']").click();
+  await expect(page.locator("[data-world-code-map]")).toBeVisible();
+});
+
+test("a listed pull with unreadable metadata is unknown rather than open", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-pull-record-unreadable", {
+    repositoryFixture: { missingPullMetadata: true },
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.repositoryMapState === "ready";
+  });
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("repositories"),
+  );
+  await page.getByRole("button", { name: /^2 pull requests$/i }).click();
+  const unavailable = page.locator(".world-pull-record-unavailable");
+  await expect(unavailable).toHaveCount(1);
+  await expect(unavailable).toContainText(
+    "#43 · Metadata unavailable",
+  );
+  await expect(unavailable).toContainText("unknown");
+  await expect(page.locator("[data-world-pull-open]")).toHaveCount(1);
+  await expect(page.locator("[data-world-pull-open]")).toHaveAttribute(
+    "data-world-pull-number",
+    "44",
+  );
+  await expect(
+    page.getByText(
+      "1 pull-request record is listed by the tree but its metadata is unavailable.",
+    ),
+  ).toBeVisible();
+});
+
+test("live mirror cabinets expose a readable truthful technical panel", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "mirror-cabinets");
+  await waitForWorld(page);
+
+  const cabinets = await page.locator("forkmesh-world").evaluate((shell) => {
+    const items = [];
+    shell.world.scene.traverse((object) => {
+      if (String(object.name || "").startsWith("mirror-server-cabinet:")) {
+        items.push({
+          name: object.name,
+          x: object.position.x,
+          z: object.position.z,
+        });
+      }
+    });
+    return items;
+  });
+  expect(cabinets).toHaveLength(2);
+  expect(cabinets[0].name).not.toBe(cabinets[1].name);
+  expect(
+    Math.hypot(
+      cabinets[0].x - cabinets[1].x,
+      cabinets[0].z - cabinets[1].z,
+    ),
+  ).toBeGreaterThan(2);
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.focusNetworkNode("mirror2");
+    shell.world.setCameraZoom(0.32);
+  });
+  await page.waitForTimeout(450);
+  await expect(page).toHaveScreenshot("world-mirror-cabinets.png", {
+    animations: "disabled",
+    maxDiffPixelRatio: 0.015,
+  });
+
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.openLandmark("routing"),
+  );
+  await page
+    .getByRole("button", { name: "Inspect live server" })
+    .first()
+    .click();
+  const detail = page.locator("[data-world-mirror-node-detail]");
+  await expect(detail).toBeVisible();
+  await expect(detail).toContainText("mirror2");
+  await expect(detail).toContainText("25.0%");
+  await expect(detail).toContainText("42");
+  await expect(detail).toContainText("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  await expect(detail).toContainText("forkmesh/forkmesh");
+  await expect(detail).toContainText(
+    "operator-reported, bounded values signed into the public catalog",
   );
 });
 
@@ -995,17 +2857,29 @@ test("four-hour procedural soundtrack starts only after consent and stops locall
     shell.openLandmark("broadcast"),
   );
   await page.locator("[data-world-radio='forkmesh-focus']").click();
+  await expect(page.locator("[data-world-media-now]")).toContainText(
+    "Use the Sound button",
+  );
+  expect(
+    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
+  ).toBeNull();
+  await page.locator("[data-world-sound-toggle]").click();
+  await expect(page.locator("[data-world-sound-toggle]")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.locator("[data-world-radio='forkmesh-focus']").click();
   const playback = await page.locator("forkmesh-world").evaluate((shell) => ({
     durationMs: shell.activeAudio?.durationMs,
-    worldOffsetMs: shell.activeAudio?.worldOffsetMs,
+    scoreOffsetMs: shell.activeAudio?.scoreOffsetMs,
     license: shell.activeAudio?.license,
   }));
   expect(playback.durationMs).toBe(4 * 60 * 60 * 1000);
-  expect(playback.worldOffsetMs).toBeGreaterThanOrEqual(0);
-  expect(playback.worldOffsetMs).toBeLessThan(playback.durationMs);
+  expect(playback.scoreOffsetMs).toBeGreaterThanOrEqual(0);
+  expect(playback.scoreOffsetMs).toBeLessThan(playback.durationMs);
   expect(playback.license).toContain("CC0-1.0");
   await expect(page.locator("[data-world-track]")).toContainText(
-    "loops with the shared World day",
+    "loops independently of the UTC display",
   );
   expect(mediaRequests).toEqual([]);
 

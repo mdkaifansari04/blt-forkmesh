@@ -7504,7 +7504,12 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
         if (!probe.canWrite())
             return;
     }
-    if (!hasOwnerSigningCapability(repo.owner))
+    // The relay remains the authority: a desktop-capable account may sign the
+    // public owner in this RepositoryRecord, and the Worker accepts it only for
+    // a directly owned repo or a public linked repo whose organization role is
+    // owner/admin. This is what lets an org admin drain an org-alias inbox
+    // without treating organization membership as a private-repo grant.
+    if (!hasOwnerSigningCapability())
         return;
 
     QUrl url = pullsApiUrl(repo);
@@ -7556,7 +7561,7 @@ void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
                                         const QJsonArray &pending,
                                         bool interactive)
 {
-    if (!hasOwnerSigningCapability(repo.owner))
+    if (!hasOwnerSigningCapability())
         return;
     if (pending.isEmpty()) {
         if (interactive)
@@ -7674,7 +7679,11 @@ void MainWindow::pollOwnedInboxes()
 // drain token — the shared auth for inbox GET/DELETE and GET /api/sync.
 QUrlQuery MainWindow::signedInboxQuery(const QString &owner) const
 {
-    if (!hasOwnerSigningCapability(owner))
+    // `owner` may be a public organization alias. The server resolves the
+    // alias and verifies this device against the linked org's current
+    // owner/admin membership; locally we only require a valid desktop signing
+    // capability and never infer authorization from the alias string.
+    if (!hasOwnerSigningCapability())
         return QUrlQuery();
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
     const QByteArray canonical =

@@ -1,4 +1,4 @@
-const COMMIT_RE = /^[0-9a-f]{40,64}$/;
+const COMMIT_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 function cleanText(value, fallback, limit) {
   const text = String(value ?? "")
@@ -27,7 +27,7 @@ function safeRecord(record, kind) {
     .replace(/^\/+/, "")
     .slice(0, 300);
   if (!path || path.split("/").includes("..")) return null;
-  const state = ["open", "closed"].includes(record?.state)
+  const state = ["open", "closed", "merged"].includes(record?.state)
     ? record.state
     : "";
   return {
@@ -92,8 +92,18 @@ export function buildRepositoryGraphEntities(active = {}) {
     active.entityRecords && typeof active.entityRecords === "object"
       ? active.entityRecords
       : {};
-  const recordsCommit = String(records.commit || "").trim().toLowerCase();
+  const recordsCommit = String(
+    records.repositoryCommit || records.commit || "",
+  )
+    .trim()
+    .toLowerCase();
   const recordsMatch = recordsCommit === commit;
+  const pullMetadataCommit = String(records.pullMetadataCommit || "")
+    .trim()
+    .toLowerCase();
+  const pullRecordsMatch =
+    COMMIT_RE.test(pullMetadataCommit) &&
+    records.pullsAvailable !== false;
   const counts = active.counts && typeof active.counts === "object" ? active.counts : {};
   const ownerPart = encodeURIComponent(owner);
   const repoPart = encodeURIComponent(repo);
@@ -118,27 +128,35 @@ export function buildRepositoryGraphEntities(active = {}) {
     });
   }
 
-  const pulls = recordsMatch && Array.isArray(records.pulls)
+  const pulls = pullRecordsMatch && Array.isArray(records.pulls)
     ? records.pulls
+        .filter((record) => record?.metadataAvailable !== false)
         .map((record) => safeRecord(record, "pull-request"))
         .filter(Boolean)
     : [];
-  pulls.slice(0, 12).forEach((entity) => {
-    entities.push({
-      ...entity,
-      href: `/${ownerPart}/${repoPart}/pulls/${entity.number}`,
-    });
-  });
-  if (!pulls.length && safeCount(counts.pulls)) {
+  const pullCount =
+    (records.pullCountExact === true ? safeCount(records.pullCount) : 0) ||
+    safeCount(counts.pulls) ||
+    safeCount(active.pullCount);
+  if (pullCount) {
     entities.push({
       id: "pull-request-collection",
       kind: "pull-request-collection",
       label: "Pull requests",
-      detail: `${safeCount(counts.pulls)} reported; individual commit-pinned records unavailable`,
-      href: `/${ownerPart}/${repoPart}/pulls`,
+      detail: pullRecordsMatch
+        ? `${pullCount} metadata record${
+            pullCount === 1 ? "" : "s"
+          } pinned at ${pullMetadataCommit.slice(0, 12)}`
+        : `${pullCount} reported; exact pull metadata is unavailable`,
       targetPaths: ["pulls"],
     });
   }
+  pulls.slice(0, 12).forEach((entity) => {
+    entities.push({
+      ...entity,
+      detail: `metadata pinned at ${pullMetadataCommit.slice(0, 12)}`,
+    });
+  });
 
   return entities.slice(0, 32);
 }

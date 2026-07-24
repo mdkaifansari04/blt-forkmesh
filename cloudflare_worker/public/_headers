@@ -1,0 +1,9 @@
+# ForkMesh World is an immediately entered multiplayer application. A browser
+# refresh must never reuse an older module graph after a deployment; Cloudflare
+# still distributes each deployment's content-addressed assets at the edge, but
+# the browser is instructed not to retain the application shell or runtime.
+/world
+  Cache-Control: no-store, max-age=0, must-revalidate
+
+/world/*
+  Cache-Control: no-store, max-age=0, must-revalidate

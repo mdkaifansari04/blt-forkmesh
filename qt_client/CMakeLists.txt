@@ -24,6 +24,26 @@ else()
     set(FORKMESH_VERSION "${PROJECT_VERSION}")
 endif()
 
+# Embed exact code-source provenance independently of semver. Metadata-only
+# commits under .forkmesh/releases are excluded because they land after the
+# artifact exists. The generated header is refreshed before every build, so a
+# dirty tracked OR untracked relevant file produces "dirty" rather than letting
+# a development binary falsely claim the last committed revision.
+set(FORKMESH_BUILD_COMMIT_OVERRIDE "" CACHE STRING
+    "Exact Git commit embedded in the binary; required for archive release builds")
+if(FORKMESH_BUILD_COMMIT_OVERRIDE)
+    string(TOLOWER "${FORKMESH_BUILD_COMMIT_OVERRIDE}"
+           FORKMESH_BUILD_COMMIT_OVERRIDE)
+    string(LENGTH "${FORKMESH_BUILD_COMMIT_OVERRIDE}"
+           FORKMESH_BUILD_COMMIT_OVERRIDE_LENGTH)
+    if(NOT FORKMESH_BUILD_COMMIT_OVERRIDE MATCHES "^[0-9a-f]+$" OR
+       (NOT FORKMESH_BUILD_COMMIT_OVERRIDE_LENGTH EQUAL 40 AND
+        NOT FORKMESH_BUILD_COMMIT_OVERRIDE_LENGTH EQUAL 64))
+        message(FATAL_ERROR
+            "FORKMESH_BUILD_COMMIT_OVERRIDE must be an exact 40- or 64-hex Git commit")
+    endif()
+endif()
+
 # Baked into the binaries: the quick-update button uses the source dir to
 # git pull + rebuild when running from a checkout. Global is fine here — the
 # value never changes between builds of the same checkout, so it never
@@ -42,7 +62,22 @@ add_compile_definitions(
 # into a generated header that only the handful of TUs reading the version
 # include; configure_file rewrites it only when the version actually changes,
 # so a bump recompiles just those files.
-configure_file(src/ForkMeshVersion.h.in ForkMeshVersion.h @ONLY)
+configure_file(
+    cmake/GenerateForkMeshVersion.cmake.in
+    GenerateForkMeshVersion.cmake
+    @ONLY)
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -P
+            "${CMAKE_CURRENT_BINARY_DIR}/GenerateForkMeshVersion.cmake"
+    RESULT_VARIABLE FORKMESH_VERSION_GENERATE_RESULT)
+if(NOT FORKMESH_VERSION_GENERATE_RESULT EQUAL 0)
+    message(FATAL_ERROR "Could not generate ForkMesh build provenance")
+endif()
+add_custom_target(forkmesh-version-header ALL
+    COMMAND "${CMAKE_COMMAND}" -P
+            "${CMAKE_CURRENT_BINARY_DIR}/GenerateForkMeshVersion.cmake"
+    BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/ForkMeshVersion.h"
+    COMMENT "Refreshing ForkMesh source provenance")
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 # Wrap compilation in ccache when available: object files survive build-dir
@@ -103,6 +138,10 @@ set(FORKMESH_APP_SOURCES
     src/BackoffNetworkAccessManager.cpp
     src/ControlNode.h
     src/ControlNode.cpp
+    src/MirrorActionsConfiguration.h
+    src/MirrorActionsConfiguration.cpp
+    src/MirrorActionsSummary.h
+    src/MirrorActionsSummary.cpp
     src/RewardPoolSigner.h
     src/RewardPoolSigner.cpp
     src/RepoHost.h
@@ -218,6 +257,7 @@ qt_add_executable(forkmesh
     ${FORKMESH_APP_SOURCES}
     src/forkmesh_autogen.cpp
 )
+add_dependencies(forkmesh forkmesh-version-header)
 
 # The app compiles its Qt meta-object code through the single, checked-in
 # src/forkmesh_autogen.cpp above rather than AUTOMOC's machine-generated
@@ -462,6 +502,12 @@ if(FORKMESH_BUILD_TESTS)
         tests/test_control_node.cpp
         src/ControlNode.h
         src/ControlNode.cpp
+        src/MirrorActionsConfiguration.h
+        src/MirrorActionsConfiguration.cpp
+        src/MirrorActionsSummary.h
+        src/MirrorActionsSummary.cpp
+        src/ActionStore.h
+        src/ActionStore.cpp
     )
     target_include_directories(forkmesh-control-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -725,4 +771,16 @@ if(FORKMESH_BUILD_TESTS)
         forkmesh-public-mirror-tests
         forkmesh-window-tests forkmesh-perf-tests forkmesh-e2e
         forkmesh-e2e-stub-agent)
+
+    # Generate provenance before any test target can compile a source that
+    # includes ForkMeshVersion.h. Applying this uniformly also makes a
+    # dirty-after-configure regression observable in focused test builds.
+    foreach(_forkmesh_test_target
+            forkmesh-tests forkmesh-ide-tests forkmesh-world-speech-tests
+            forkmesh-codex-tests forkmesh-control-tests
+            forkmesh-private-mirror-tests forkmesh-public-mirror-tests
+            forkmesh-reward-pool-tests forkmesh-e2e-stub-agent forkmesh-e2e
+            forkmesh-window-tests forkmesh-perf-tests)
+        add_dependencies(${_forkmesh_test_target} forkmesh-version-header)
+    endforeach()
 endif()

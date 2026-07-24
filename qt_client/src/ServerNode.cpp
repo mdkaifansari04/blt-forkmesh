@@ -1060,6 +1060,13 @@ void ServerNode::requestMirrorRefresh(const QString &source,
 
 void ServerNode::advertiseMirrorsNow()
 {
+    // This explicit refresh is also used after an operator changes a host
+    // telemetry privacy toggle. Bypass the normal 10-second sampling throttle,
+    // refresh our own roster row, and then advertise exactly the newly enabled
+    // metrics (or omit the newly disabled ones).
+    m_lastStatsSampleMs = 0;
+    sampleSystemStats();
+    updateRosterAndStatus();
     sendHello(true, false);
 }
 

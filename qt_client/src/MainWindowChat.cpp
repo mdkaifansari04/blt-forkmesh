@@ -12,6 +12,7 @@
 #include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
 #include "PrivateMirrorStore.h"
+#include "PublicMirrorRuntime.h"
 #include "RepoSecurity.h"
 #include "RewardPoolSigner.h"
 #include "ScreenCaptureOverlay.h"
@@ -20,8 +21,17 @@
 #include "WorldSpeechBridge.h"
 
 #include <QBrush>
+#include <QDialog>
+#include <QInputDialog>
 #include <QNetworkInformation>
+#include <QPlainTextEdit>
+#include <QPointer>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QSharedPointer>
+#include <QStandardPaths>
 #include <QTabWidget>
+#include <QUuid>
 
 #include <algorithm>
 
@@ -2995,6 +3005,15 @@ QWidget *MainWindow::buildLogSection()
     clearButton->setCursor(Qt::PointingHandCursor);
     clearButton->setToolTip("Clear the network log");
     setOcticon(clearButton, "trash", 14);
+    auto *cloudflareButton = new QPushButton("Cloudflare logs");
+    cloudflareButton->setObjectName(
+        QStringLiteral("cloudflareWorkerLogsButton"));
+    cloudflareButton->setCursor(Qt::PointingHandCursor);
+    cloudflareButton->setToolTip(
+        QStringLiteral("View the deployed Cloudflare Worker's live logs"));
+    setOcticon(cloudflareButton, "cloud", 14);
+    connect(cloudflareButton, &QPushButton::clicked, this,
+            &MainWindow::showCloudflareWorkerLogs);
 
     m_settingsLog = new QTextBrowser;
     m_settingsLog->setReadOnly(true);
@@ -3051,6 +3070,7 @@ QWidget *MainWindow::buildLogSection()
     headerRow->setContentsMargins(0, 0, 0, 0);
     headerRow->addWidget(label);
     headerRow->addStretch();
+    headerRow->addWidget(cloudflareButton);
     headerRow->addWidget(clearButton);
 
     auto *layout = new QVBoxLayout(page);
@@ -3060,6 +3080,179 @@ QWidget *MainWindow::buildLogSection()
     layout->addWidget(filterScroll);
     layout->addWidget(m_settingsLog, 1);
     return page;
+}
+
+void MainWindow::showCloudflareWorkerLogs()
+{
+    QString token =
+        m_cloudflareTokenEdit
+            ? m_cloudflareTokenEdit->text().trimmed()
+            : QString();
+    if (token.isEmpty()) {
+        bool accepted = false;
+        token = QInputDialog::getText(
+                    this, QStringLiteral("Cloudflare Worker logs"),
+                    QStringLiteral(
+                        "Scoped Cloudflare API token (used for this live "
+                        "viewer only):"),
+                    QLineEdit::Password, QString(), &accepted)
+                    .trimmed();
+        if (!accepted || token.isEmpty()) {
+            token.fill(QChar(u'\0'));
+            token.clear();
+            return;
+        }
+    }
+
+    const QString workerDirectory =
+        forkmesh::control::findCloudflareWorkerDirectory(
+            QStringLiteral(FORKMESH_SOURCE_DIR),
+            QCoreApplication::applicationDirPath());
+    const QString npx =
+        QStandardPaths::findExecutable(QStringLiteral("npx"));
+    QString account =
+        m_cloudflareAccountEdit
+            ? m_cloudflareAccountEdit->text().trimmed()
+            : QString();
+    if (account.isEmpty()) {
+        account =
+            QSettings()
+                .value(QStringLiteral("control/cloudflareAccount"))
+                .toString()
+                .trimmed();
+    }
+    const auto command =
+        forkmesh::control::buildCloudflareTailCommand(
+            token, account, npx);
+    if (workerDirectory.isEmpty() || command.program.isEmpty()) {
+        flashMessage(
+            workerDirectory.isEmpty()
+                ? QStringLiteral(
+                      "The installed Cloudflare Worker bundle is incomplete.")
+                : QStringLiteral(
+                      "Cloudflare live logs require Node.js/npx and a valid "
+                      "account ID."),
+            true);
+        token.fill(QChar(u'\0'));
+        token.clear();
+        return;
+    }
+    if (command.arguments.join(QChar(u'\0')).contains(token)) {
+        flashMessage(
+            QStringLiteral(
+                "Refusing an unsafe Worker log command containing a "
+                "credential."),
+            true);
+        token.fill(QChar(u'\0'));
+        token.clear();
+        return;
+    }
+    if (m_cloudflareTokenEdit &&
+        !m_cloudflareTokenEdit->text().isEmpty()) {
+        m_cloudflareTokenEdit->clear();
+        m_cloudflareTokenEdit->setPlaceholderText(
+            QStringLiteral("token is in the live log viewer only"));
+    }
+
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("cloudflareWorkerLogsDialog"));
+    dialog.setWindowTitle(QStringLiteral("Cloudflare Worker live logs"));
+    dialog.resize(900, 560);
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(8);
+
+    auto *notice = new QLabel(
+        QStringLiteral(
+            "Read-only live tail for the configured ForkMesh Worker. The API "
+            "token stays in this process's memory only and is erased when "
+            "this viewer closes."));
+    notice->setObjectName(QStringLiteral("modeHint"));
+    notice->setWordWrap(true);
+    layout->addWidget(notice);
+
+    auto *status = new QLabel(QStringLiteral("Connecting…"));
+    status->setObjectName(QStringLiteral("cloudflareWorkerLogsStatus"));
+    layout->addWidget(status);
+
+    auto *output = new QPlainTextEdit;
+    output->setObjectName(QStringLiteral("cloudflareWorkerLiveLogs"));
+    output->setReadOnly(true);
+    output->setLineWrapMode(QPlainTextEdit::NoWrap);
+    output->document()->setMaximumBlockCount(2500);
+    layout->addWidget(output, 1);
+
+    auto *closeButton = new QPushButton(QStringLiteral("Close"));
+    closeButton->setObjectName(QStringLiteral("primaryButton"));
+    closeButton->setCursor(Qt::PointingHandCursor);
+    connect(closeButton, &QPushButton::clicked, &dialog,
+            &QDialog::accept);
+    auto *buttons = new QHBoxLayout;
+    buttons->addStretch(1);
+    buttons->addWidget(closeButton);
+    layout->addLayout(buttons);
+
+    QProcess process(&dialog);
+    process.setWorkingDirectory(workerDirectory);
+    process.setProcessEnvironment(command.environment);
+    process.setProcessChannelMode(QProcess::MergedChannels);
+    process.setStandardInputFile(QProcess::nullDevice());
+    const auto appendOutput = [&process, output, &token] {
+        const QString chunk =
+            QString::fromUtf8(process.readAllStandardOutput());
+        if (chunk.isEmpty())
+            return;
+        output->moveCursor(QTextCursor::End);
+        output->insertPlainText(
+            forkmesh::control::redactProcessOutput(chunk, {token}));
+        output->moveCursor(QTextCursor::End);
+        output->ensureCursorVisible();
+    };
+    connect(&process, &QProcess::readyReadStandardOutput, &dialog,
+            appendOutput);
+    connect(&process, &QProcess::started, &dialog, [status] {
+        status->setText(
+            QStringLiteral("Connected · waiting for Worker events"));
+    });
+    connect(
+        &process, &QProcess::errorOccurred, &dialog,
+        [status](QProcess::ProcessError error) {
+            if (error == QProcess::FailedToStart) {
+                status->setText(
+                    QStringLiteral(
+                        "Could not start npx. Install Node.js to use live "
+                        "Worker logs."));
+            }
+        });
+    connect(
+        &process, &QProcess::finished, &dialog,
+        [status, appendOutput](int exitCode,
+                               QProcess::ExitStatus exitStatus) {
+            appendOutput();
+            status->setText(
+                exitStatus == QProcess::NormalExit && exitCode == 0
+                    ? QStringLiteral("Log stream ended")
+                    : QStringLiteral("Log stream stopped (exit %1)")
+                          .arg(exitCode));
+        });
+    process.start(command.program, command.arguments);
+    dialog.exec();
+
+    if (process.state() != QProcess::NotRunning) {
+        process.terminate();
+        if (!process.waitForFinished(1500)) {
+            process.kill();
+            process.waitForFinished(1000);
+        }
+    }
+    process.setProcessEnvironment(QProcessEnvironment());
+    token.fill(QChar(u'\0'));
+    token.clear();
+    if (m_cloudflareTokenEdit &&
+        m_cloudflareTokenEdit->text().isEmpty()) {
+        m_cloudflareTokenEdit->setPlaceholderText(
+            QStringLiteral("session-only Cloudflare API token"));
+    }
 }
 
 QWidget *MainWindow::buildBreadcrumb()
@@ -5473,19 +5666,7 @@ void MainWindow::updateRepoPushButton()
 // (the worker rejects every clone whose live refs don't hash to the pin).
 static QString hashForEachRefOutput(const QByteArray &out)
 {
-    QStringList lines;
-    const QStringList rows = QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
-    for (const QString &raw : rows) {
-        const QString line = raw.trimmed();
-        if (line.isEmpty() || line.endsWith(QStringLiteral("^{}")))
-            continue;
-        lines.append(line);
-    }
-    lines.sort();
-    return QString::fromUtf8(
-        QCryptographicHash::hash(lines.join('\n').toUtf8(),
-                                 QCryptographicHash::Sha256)
-            .toHex());
+    return PublicMirrorRuntime::refsSha256FromForEachRef(out);
 }
 
 // sha256 over the canonical heads+tags advertisement of a bare mirror (see
@@ -7270,11 +7451,19 @@ QWidget *MainWindow::buildHostsSection()
     title->setFont(titleFont);
     titleRow->addWidget(title);
     titleRow->addStretch(1);
-    // Bulk one-click install: upload this app's own release binary to every
-    // saved host in turn, instead of clicking Install (binary) on each row.
+    // Bulk one-click install: make every saved host install the current
+    // published, checksum-verified release in parallel. This deliberately does
+    // not upload QCoreApplication::applicationFilePath(): a developer may be
+    // running an un-packaged source build even though it reports the release
+    // version.
     m_hostInstallAllButton = new QPushButton(QStringLiteral("Install from binary (all hosts)"));
     m_hostInstallAllButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_hostInstallAllButton, "upload", 14);
+    m_hostInstallAllButton->setToolTip(QStringLiteral(
+        "Install the published ForkMesh v" FORKMESH_VERSION
+        " binary on every saved host. Each host verifies the release checksum, "
+        "version and exact source commit, keeps its identity, keys and mirrored "
+        "data, and restarts its node."));
+    setOcticon(m_hostInstallAllButton, "download", 14);
     connect(m_hostInstallAllButton, &QPushButton::clicked, this,
             &MainWindow::runHostInstallAllFromBinary);
     titleRow->addWidget(m_hostInstallAllButton);
@@ -7286,8 +7475,8 @@ QWidget *MainWindow::buildHostsSection()
     m_hostReinstallAllButton->setCursor(Qt::PointingHandCursor);
     m_hostReinstallAllButton->setToolTip(QStringLiteral(
         "For every saved host: remove ForkMesh and ALL of its data, then "
-        "install a fresh copy from this app's binary and re-link it to your "
-        "account."));
+        "install the published ForkMesh v" FORKMESH_VERSION
+        " binary and re-link it to your account."));
     setOcticon(m_hostReinstallAllButton, "sync", 14);
     connect(m_hostReinstallAllButton, &QPushButton::clicked, this,
             &MainWindow::runHostReinstallAllFromBinary);
@@ -7314,9 +7503,10 @@ QWidget *MainWindow::buildHostsSection()
         "host saved, click Install ForkMesh and it will SSH in and run the hosted "
         "installer in a plain shell. When it finishes the new node joins the "
         "network and shows up in each repository's Mirror nodes list. Install "
-        "(binary) on a saved host, or Install from binary (all hosts) above, "
-        "uploads this app's own release binary to the host instead of having it "
-        "download the release itself."));
+        "(binary) on one saved host uploads this app's own binary. Install from "
+        "binary (all hosts) instead makes every host download and checksum-verify "
+        "the current published release, then confirms the installed version and "
+        "exact source commit."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
     outer->addWidget(subtitle);
@@ -7450,7 +7640,10 @@ QWidget *MainWindow::buildHostsSection()
         "Click Update on a saved host to re-run the installer and bring it up to "
         "the latest ForkMesh release. Click Uninstall to completely remove "
         "ForkMesh \xE2\x80\x94 binary, launcher and ALL data \xE2\x80\x94 from "
-        "that host. Click Logs to open a live SSH tail for that host. "
+        "that host. Click Actions to enable its executor and optionally replace "
+        "its device-local variables through a one-shot SSH stdin request; secret "
+        "values are never saved by this controller. Click Logs to open a live "
+        "SSH tail for that host. "
         "Double-click a host instead to reload it into the form "
         "above for editing."));
     hostsHint->setObjectName("mutedLabel");
@@ -7577,6 +7770,19 @@ void MainWindow::refreshHostsTable()
             });
         });
         cellRow->addWidget(viewLogsBtn);
+        auto *actionsBtn = new QPushButton(QStringLiteral("Actions"));
+        actionsBtn->setObjectName(QStringLiteral("hostActionsButton"));
+        actionsBtn->setCursor(Qt::PointingHandCursor);
+        actionsBtn->setToolTip(QStringLiteral(
+            "Configure this mirror's Actions state and device-local variables "
+            "over authenticated SSH. Values travel only on stdin."));
+        setOcticon(actionsBtn, "workflow", 12);
+        connect(actionsBtn, &QPushButton::clicked, this, [this, i] {
+            QTimer::singleShot(0, this, [this, i] {
+                configureHostActionsForSelection(i);
+            });
+        });
+        cellRow->addWidget(actionsBtn);
         m_hostsTable->setCellWidget(i, 4, cell);
     }
 
@@ -7584,6 +7790,406 @@ void MainWindow::refreshHostsTable()
         m_hostsNavButton->setText(hosts.isEmpty()
             ? QStringLiteral("Hosts")
             : QStringLiteral("Hosts (%1)").arg(hosts.size()));
+}
+
+void MainWindow::configureHostActionsForSelection(int row)
+{
+    if (m_hostActionsProcess &&
+        m_hostActionsProcess->state() != QProcess::NotRunning) {
+        if (m_hostInstallStatus) {
+            m_hostInstallStatus->setText(
+                QStringLiteral("A mirror Actions configuration is already running."));
+        }
+        return;
+    }
+    if (!m_hostsTable || row < 0 || row >= m_hostsTable->rowCount())
+        return;
+
+    const auto cellText = [this, row](int column) {
+        const QTableWidgetItem *item = m_hostsTable->item(row, column);
+        return item ? item->text().trimmed() : QString();
+    };
+    const QString node = cellText(0);
+    const QString host = cellText(1);
+    const QString user = cellText(2);
+    QString password;
+    const QJsonArray savedHosts =
+        QJsonDocument::fromJson(
+            QSettings().value(kHostsSetting).toString().toUtf8())
+            .array();
+    for (const QJsonValue &value : savedHosts) {
+        const QJsonObject saved = value.toObject();
+        if (saved.value(QStringLiteral("name")).toString() == node) {
+            password = saved.value(QStringLiteral("pass")).toString();
+            break;
+        }
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Mirror Actions — %1").arg(node));
+    dialog.setMinimumSize(640, 470);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *notice = new QLabel(QStringLiteral(
+        "SSH access to <b>%1@%2</b> authorizes this one change. ForkMesh sends "
+        "a bounded configuration document to the node helper on stdin. Variable "
+        "values never enter command arguments, logs, the public mirror catalog, "
+        "or this desktop's saved settings.")
+                                  .arg(user.toHtmlEscaped(),
+                                       host.toHtmlEscaped()));
+    notice->setWordWrap(true);
+    layout->addWidget(notice);
+
+    auto *enabled =
+        new QCheckBox(QStringLiteral("Enable Actions on this mirror node"));
+    enabled->setObjectName(QStringLiteral("hostActionsEnabledCheck"));
+    enabled->setChecked(false);
+    layout->addWidget(enabled);
+    auto *replace = new QCheckBox(
+        QStringLiteral("Replace the node's Actions variables with this list"));
+    replace->setObjectName(QStringLiteral("hostActionsReplaceVariablesCheck"));
+    replace->setChecked(false);
+    layout->addWidget(replace);
+
+    auto *variables = new QTableWidget(0, 2);
+    variables->setObjectName(QStringLiteral("hostActionsVariablesTable"));
+    variables->setHorizontalHeaderLabels(
+        {QStringLiteral("Name"), QStringLiteral("Value")});
+    variables->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::ResizeToContents);
+    variables->horizontalHeader()->setSectionResizeMode(1,
+                                                         QHeaderView::Stretch);
+    variables->verticalHeader()->setVisible(false);
+    variables->setSelectionBehavior(QAbstractItemView::SelectRows);
+    variables->setSelectionMode(QAbstractItemView::SingleSelection);
+    variables->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    variables->setEnabled(false);
+    layout->addWidget(variables, 1);
+
+    auto *variableButtons = new QHBoxLayout;
+    auto *addVariable = new QPushButton(QStringLiteral("Add variable"));
+    addVariable->setObjectName(QStringLiteral("hostActionsAddVariableButton"));
+    auto *removeVariable =
+        new QPushButton(QStringLiteral("Remove selected"));
+    removeVariable->setObjectName(
+        QStringLiteral("hostActionsRemoveVariableButton"));
+    addVariable->setEnabled(false);
+    removeVariable->setEnabled(false);
+    variableButtons->addWidget(addVariable);
+    variableButtons->addWidget(removeVariable);
+    variableButtons->addStretch();
+    layout->addLayout(variableButtons);
+    connect(replace, &QCheckBox::toggled, variables,
+            &QWidget::setEnabled);
+    connect(replace, &QCheckBox::toggled, addVariable,
+            &QWidget::setEnabled);
+    connect(replace, &QCheckBox::toggled, removeVariable,
+            &QWidget::setEnabled);
+
+    connect(addVariable, &QPushButton::clicked, &dialog,
+            [this, variables] {
+                bool ok = false;
+                const QString name = QInputDialog::getText(
+                    this, QStringLiteral("Actions variable"),
+                    QStringLiteral("Variable name:"), QLineEdit::Normal,
+                    QString(), &ok).trimmed();
+                if (!ok || name.isEmpty())
+                    return;
+                const QString value = QInputDialog::getText(
+                    this, QStringLiteral("Actions variable"),
+                    QStringLiteral("Secret value:"), QLineEdit::Password,
+                    QString(), &ok);
+                if (!ok)
+                    return;
+                int rowForName = -1;
+                for (int row = 0; row < variables->rowCount(); ++row) {
+                    const QTableWidgetItem *item = variables->item(row, 0);
+                    if (item && item->text() == name) {
+                        rowForName = row;
+                        break;
+                    }
+                }
+                if (rowForName < 0) {
+                    rowForName = variables->rowCount();
+                    variables->insertRow(rowForName);
+                    variables->setItem(rowForName, 0,
+                                       new QTableWidgetItem(name));
+                    variables->setItem(rowForName, 1,
+                                       new QTableWidgetItem);
+                }
+                QTableWidgetItem *valueItem =
+                    variables->item(rowForName, 1);
+                valueItem->setText(QStringLiteral("••••••••"));
+                valueItem->setData(Qt::UserRole, value);
+                valueItem->setToolTip(
+                    QStringLiteral("Value is hidden and will be discarded after sending."));
+            });
+    connect(removeVariable, &QPushButton::clicked, &dialog,
+            [variables] {
+                const int row = variables->currentRow();
+                if (row < 0)
+                    return;
+                if (QTableWidgetItem *item = variables->item(row, 1)) {
+                    QString secret = item->data(Qt::UserRole).toString();
+                    secret.fill(QChar::Null);
+                    item->setData(Qt::UserRole, QString());
+                }
+                variables->removeRow(row);
+            });
+
+    auto *buttons =
+        new QDialogButtonBox(QDialogButtonBox::Cancel);
+    QPushButton *apply = buttons->addButton(
+        QStringLiteral("Send to mirror"), QDialogButtonBox::AcceptRole);
+    apply->setObjectName(QStringLiteral("hostActionsApplyButton"));
+    apply->setDefault(true);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog,
+            &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog,
+            &QDialog::reject);
+    layout->addWidget(buttons);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        for (int variableRow = 0; variableRow < variables->rowCount();
+             ++variableRow) {
+            if (QTableWidgetItem *item =
+                    variables->item(variableRow, 1)) {
+                QString secret = item->data(Qt::UserRole).toString();
+                secret.fill(QChar::Null);
+                item->setData(Qt::UserRole, QString());
+            }
+        }
+        return;
+    }
+
+    forkmesh::control::MirrorActionsConfigurationRequest request;
+    request.requestId =
+        QUuid::createUuid().toString(QUuid::Id128).toLower();
+    request.host = host;
+    request.sshUser = user;
+    request.nodeName = node;
+    request.actionsEnabled = enabled->isChecked();
+    request.replaceVariables = replace->isChecked();
+    if (request.replaceVariables) {
+        for (int variableRow = 0; variableRow < variables->rowCount();
+             ++variableRow) {
+            const QTableWidgetItem *nameItem =
+                variables->item(variableRow, 0);
+            QTableWidgetItem *valueItem =
+                variables->item(variableRow, 1);
+            if (!nameItem || !valueItem)
+                continue;
+            request.variables.insert(
+                nameItem->text(),
+                valueItem->data(Qt::UserRole).toString());
+            QString secret = valueItem->data(Qt::UserRole).toString();
+            secret.fill(QChar::Null);
+            valueItem->setData(Qt::UserRole, QString());
+            valueItem->setText(QStringLiteral("discarded"));
+        }
+    }
+    runHostActionsConfiguration(std::move(request), password);
+    password.fill(QChar::Null);
+}
+
+void MainWindow::runHostActionsConfiguration(
+    forkmesh::control::MirrorActionsConfigurationRequest request,
+    const QString &sshPassword)
+{
+    QString error;
+    forkmesh::control::MirrorActionsSshCommand command =
+        forkmesh::control::buildMirrorActionsSshCommand(
+            request, sshPassword, &error);
+    if (command.program.isEmpty()) {
+        for (QString &value : request.variables)
+            value.fill(QChar::Null);
+        command.standardInput.fill('\0');
+        if (m_hostInstallStatus)
+            m_hostInstallStatus->setText(error);
+        return;
+    }
+
+    const QString requestId = request.requestId;
+    const QString node = request.nodeName.trimmed();
+    const QString host = request.host.trimmed();
+    const bool enabled = request.actionsEnabled;
+    const bool replaceVariables = request.replaceVariables;
+    const int variableCount = request.variables.size();
+    for (QString &value : request.variables) {
+        value.fill(QChar::Null);
+    }
+    request.variables.clear();
+
+    auto rawOutput = QSharedPointer<QByteArray>::create();
+    auto outputOverflow = QSharedPointer<bool>::create(false);
+    auto completed = QSharedPointer<bool>::create(false);
+    auto *process = new QProcess(this);
+    m_hostActionsProcess = process;
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    process->setProcessEnvironment(command.environment);
+    if (m_hostInstallStatus) {
+        m_hostInstallStatus->setText(
+            QStringLiteral(
+                "Sending Actions state to %1 over authenticated SSH…")
+                .arg(node));
+    }
+    appendHostInstallLog(
+        QStringLiteral(
+            "\n[Actions] Sending %1 state and %2 variable name(s) to %3@%4; "
+            "values are stdin-only and redacted.\n")
+            .arg(enabled ? QStringLiteral("enabled")
+                         : QStringLiteral("disabled"))
+            .arg(replaceVariables ? variableCount : 0)
+            .arg(request.sshUser.trimmed(), host));
+
+    connect(process, &QProcess::readyReadStandardOutput, this,
+            [process, rawOutput, outputOverflow] {
+                QByteArray chunk = process->readAllStandardOutput();
+                constexpr qsizetype kMaximumOutput = 64 * 1024;
+                if (rawOutput->size() + chunk.size() <= kMaximumOutput) {
+                    rawOutput->append(chunk);
+                } else {
+                    *outputOverflow = true;
+                    const qsizetype remaining =
+                        qMax<qsizetype>(0, kMaximumOutput - rawOutput->size());
+                    rawOutput->append(chunk.first(remaining));
+                }
+                // Never render remote output from this secret-bearing request.
+                // A hostile/broken helper could echo stdin verbatim or encode
+                // it, which cannot be made safe by ordinary string redaction.
+                chunk.fill('\0');
+            });
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, rawOutput, completed](
+                QProcess::ProcessError processError) {
+                if (processError == QProcess::FailedToStart) {
+                    if (*completed)
+                        return;
+                    *completed = true;
+                    appendHostInstallLog(
+                        QStringLiteral(
+                            "[Actions] Could not start SSH. Install OpenSSH"
+                            " (and sshpass for password login).\n"));
+                    if (m_hostInstallStatus) {
+                        m_hostInstallStatus->setText(
+                            QStringLiteral(
+                                "Mirror Actions configuration failed: "
+                                "could not start SSH."));
+                    }
+                    rawOutput->fill('\0');
+                    rawOutput->clear();
+                    QProcessEnvironment scrubbed =
+                        QProcessEnvironment::systemEnvironment();
+                    scrubbed.remove(QStringLiteral("SSHPASS"));
+                    process->setProcessEnvironment(scrubbed);
+                    if (m_hostActionsProcess == process)
+                        m_hostActionsProcess = nullptr;
+                    process->deleteLater();
+                }
+            });
+    connect(process, &QProcess::finished, this,
+            [this, process, rawOutput, outputOverflow, completed,
+             requestId, node, enabled, replaceVariables, variableCount](
+                int exitCode, QProcess::ExitStatus exitStatus) {
+                if (*completed)
+                    return;
+                *completed = true;
+                QByteArray finalChunk =
+                    process->readAllStandardOutput();
+                constexpr qsizetype kMaximumOutput = 64 * 1024;
+                if (rawOutput->size() + finalChunk.size() <=
+                    kMaximumOutput) {
+                    rawOutput->append(finalChunk);
+                } else {
+                    *outputOverflow = true;
+                    const qsizetype remaining =
+                        qMax<qsizetype>(
+                            0, kMaximumOutput - rawOutput->size());
+                    rawOutput->append(finalChunk.first(remaining));
+                }
+                finalChunk.fill('\0');
+                QString resultError;
+                const QJsonObject result =
+                    *outputOverflow
+                        ? QJsonObject()
+                        : forkmesh::control::
+                              parseMirrorActionsConfigurationResult(
+                                  *rawOutput, requestId, node, &resultError);
+                const bool confirmed =
+                    exitStatus == QProcess::NormalExit && exitCode == 0 &&
+                    !result.isEmpty() &&
+                    result.value(QStringLiteral("ok")).toBool() &&
+                    result.value(QStringLiteral("actionsEnabled")).toBool() ==
+                        enabled &&
+                    result.value(QStringLiteral("variablesReplaced")).toBool() ==
+                        replaceVariables &&
+                    result.value(QStringLiteral("variableCount")).toInt() ==
+                        (replaceVariables ? variableCount : 0);
+                if (confirmed) {
+                    const QString summary =
+                        QStringLiteral(
+                            "Mirror %1 confirmed Actions %2%3.")
+                            .arg(
+                                node,
+                                enabled ? QStringLiteral("enabled")
+                                        : QStringLiteral("disabled"),
+                                replaceVariables
+                                    ? QStringLiteral(
+                                          " and replaced %1 variable(s)")
+                                          .arg(variableCount)
+                                    : QString());
+                    appendHostInstallLog(
+                        QStringLiteral("[Actions] %1\n").arg(summary));
+                    if (m_hostInstallStatus)
+                        m_hostInstallStatus->setText(summary);
+                } else {
+                    if (*outputOverflow) {
+                        resultError = QStringLiteral(
+                            "The remote helper returned more than 64 KiB.");
+                    } else if (resultError.isEmpty()) {
+                        resultError = QStringLiteral(
+                            "The host did not confirm the requested state.");
+                    }
+                    appendHostInstallLog(
+                        QStringLiteral(
+                            "[Actions] Configuration was not confirmed "
+                            "(exit %1): %2\n")
+                            .arg(exitCode)
+                            .arg(resultError));
+                    if (m_hostInstallStatus) {
+                        m_hostInstallStatus->setText(
+                            QStringLiteral(
+                                "Mirror Actions configuration failed: %1")
+                                .arg(resultError));
+                    }
+                }
+                rawOutput->fill('\0');
+                rawOutput->clear();
+                QProcessEnvironment scrubbed =
+                    QProcessEnvironment::systemEnvironment();
+                scrubbed.remove(QStringLiteral("SSHPASS"));
+                process->setProcessEnvironment(scrubbed);
+                if (m_hostActionsProcess == process)
+                    m_hostActionsProcess = nullptr;
+                process->deleteLater();
+            });
+
+    process->start(command.program, command.arguments);
+    process->write(command.standardInput);
+    process->closeWriteChannel();
+    const QPointer<QProcess> guardedProcess(process);
+    QTimer::singleShot(45 * 1000, this, [this, guardedProcess, completed] {
+        if (!guardedProcess || *completed ||
+            guardedProcess->state() == QProcess::NotRunning) {
+            return;
+        }
+        appendHostInstallLog(
+            QStringLiteral(
+                "[Actions] SSH configuration timed out after 45 seconds.\n"));
+        guardedProcess->kill();
+    });
+    command.standardInput.fill('\0');
+    command.standardInput.clear();
+    command.environment = QProcessEnvironment();
 }
 
 // --- Nodes ------------------------------------------------------------------
@@ -10075,6 +10681,7 @@ const QString kHostUploadMarker = QStringLiteral("__FORKMESH_UPLOAD__");
 bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
                                          const QString &node, bool uploadBinary,
                                          bool reinstall, bool fromSource,
+                                         bool requirePublishedBinary,
                                          QStringList *sshArgs, QString *remoteCmd,
                                          QByteArray *uploadBytes,
                                          QString *errorOut)
@@ -10092,7 +10699,12 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
     // missing binary fails here, before anything touches the remote machine.
     // A source build compiles on the host itself, so there is no binary to
     // upload — fromSource forces the direct-upload path off.
-    const bool doUpload = uploadBinary && !fromSource;
+    // A published-binary fleet deploy and a local-executable upload are
+    // mutually exclusive contracts. The former is deliberately resolved on
+    // each target from the release manifest so a development build can never be
+    // mistaken for the release merely because both report the same version.
+    const bool doUpload =
+        uploadBinary && !fromSource && !requirePublishedBinary;
     QByteArray bytes;
     if (doUpload) {
         QFile self(QCoreApplication::applicationFilePath());
@@ -10117,6 +10729,32 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
         out.replace(QStringLiteral("'"), QStringLiteral("'\\''"));
         return QStringLiteral("'") + out + QStringLiteral("'");
     };
+    QString expectedBuildCommit;
+    if (requirePublishedBinary) {
+        expectedBuildCommit =
+            QStringLiteral(FORKMESH_BUILD_COMMIT).trimmed().toLower();
+#ifdef FORKMESH_WINDOW_TESTS
+        const QString testBuildCommit =
+            qEnvironmentVariable("FORKMESH_TEST_BUILD_COMMIT")
+                .trimmed()
+                .toLower();
+        if (!testBuildCommit.isEmpty())
+            expectedBuildCommit = testBuildCommit;
+#endif
+        static const QRegularExpression exactCommit(
+            QStringLiteral("^(?:[0-9a-f]{40}|[0-9a-f]{64})$"));
+        if (!exactCommit.match(expectedBuildCommit).hasMatch()) {
+            if (errorOut) {
+                *errorOut = QString::fromUtf8(
+                    "This ForkMesh build has no exact source revision, so it "
+                    "cannot prove that a published same-version binary is "
+                    "current. Rebuild from a Git checkout (or configure a "
+                    "release archive with FORKMESH_BUILD_COMMIT_OVERRIDE), "
+                    "then retry.");
+            }
+            return false;
+        }
+    }
     // Pass the chosen name as FORKMESH_NODE_NAME (not FORKMESH_NODE): the
     // installer uses it to name the freshly-deployed node and leaves the
     // clone-source mirror to auto-resolve to a real online one. The headless
@@ -10138,8 +10776,86 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
     // is left untouched, unlike a reinstall).
     if (fromSource)
         envPrefix += QStringLiteral(" FORKMESH_FROM_SOURCE=1 FORKMESH_RESTART=1");
-    QString pipeline =
-        QStringLiteral("curl -fsSL %1 | %2 bash").arg(shq(installUrl), envPrefix);
+    // Fleet binary installs must never silently turn into a source build. Pin
+    // the current release channel, preserve all node data, stop the old daemon
+    // only after the new artifact is installed, and have the target verify the
+    // exact version before its pane can report success.
+    if (requirePublishedBinary) {
+        envPrefix += QStringLiteral(
+            " FORKMESH_RELEASE=latest FORKMESH_NO_SOURCE_FALLBACK=1 "
+            "FORKMESH_EXPECTED_BUILD_COMMIT=%1 "
+            "FORKMESH_EXPECTED_RELEASE_VERSION=%2")
+                         .arg(shq(expectedBuildCommit),
+                              shq(QStringLiteral(FORKMESH_VERSION)));
+        if (!reinstall)
+            envPrefix += QStringLiteral(" FORKMESH_RESTART=1");
+    }
+
+    QString pipeline;
+    if (requirePublishedBinary) {
+        const QString expected =
+            QStringLiteral("ForkMesh " FORKMESH_VERSION);
+        // Download the installer into a temporary file rather than piping it
+        // directly to bash. Without pipefail, `curl | bash` can return success
+        // when curl failed and bash merely received an empty script.
+        pipeline =
+            QStringLiteral(
+                "installer=\"$(mktemp \"${TMPDIR:-/tmp}/"
+                "forkmesh-installer.XXXXXX\")\" || exit 70; "
+                "if ! command -v sha256sum >/dev/null 2>&1 && "
+                "! command -v shasum >/dev/null 2>&1; then "
+                "printf 'A SHA-256 tool is required for a verified ForkMesh "
+                "binary install.\\n' >&2; rm -f \"$installer\"; exit 67; fi; "
+                "if ! curl -fsSL -H 'Cache-Control: no-cache' %1 "
+                "-o \"$installer\"; then "
+                "printf 'ForkMesh installer download failed.\\n' >&2; "
+                "rm -f \"$installer\"; exit 70; fi; "
+                "%2 bash \"$installer\"; st=$?; rm -f \"$installer\"; "
+                "if [ \"$st\" -ne 0 ]; then exit \"$st\"; fi; "
+                "bin=\"$HOME/.local/bin/forkmesh\"; "
+                "if [ ! -x \"$bin\" ]; then "
+                "printf 'ForkMesh binary missing after install: %s\\n' "
+                "\"$bin\" >&2; exit 66; fi; "
+                "actual=\"$(\"$bin\" --version 2>&1)\"; expected=%3; "
+                "if [ \"$actual\" != \"$expected\" ]; then "
+                "printf 'ForkMesh version check failed: expected %s, "
+                "got %s\\n' \"$expected\" \"$actual\" >&2; exit 65; fi; "
+                "commit_output=\"$(mktemp \"${TMPDIR:-/tmp}/"
+                "forkmesh-build-commit.XXXXXX\")\" || exit 63; "
+                "\"$bin\" --build-commit >\"$commit_output\" 2>&1 & "
+                "commit_pid=$!; "
+                "probe_ticks=0; "
+                "while kill -0 \"$commit_pid\" 2>/dev/null && "
+                "[ \"$probe_ticks\" -lt 50 ]; do sleep 0.1; "
+                "probe_ticks=$((probe_ticks + 1)); done; "
+                "commit_timed_out=0; "
+                "if kill -0 \"$commit_pid\" 2>/dev/null; then "
+                "commit_timed_out=1; "
+                "kill \"$commit_pid\" 2>/dev/null || true; "
+                "sleep 0.2; "
+                "kill -KILL \"$commit_pid\" 2>/dev/null || true; fi; "
+                "commit_status=0; "
+                "wait \"$commit_pid\" || commit_status=$?; "
+                "actual_commit=\"$(head -c 128 \"$commit_output\" | "
+                "tr -d '\\r\\n')\"; rm -f \"$commit_output\"; "
+                "expected_commit=%4; "
+                "if [ \"$commit_timed_out\" -ne 0 ] || "
+                "[ \"$commit_status\" -ne 0 ] || "
+                "[ \"$actual_commit\" != \"$expected_commit\" ]; then "
+                "printf 'ForkMesh source-revision check failed: the installed "
+                "artifact did not report expected commit %s.\\n' "
+                "\"$expected_commit\" >&2; "
+                "exit 64; fi; "
+                "printf 'Verified %s from source commit %s using the "
+                "published checksum-verified release.\\n' \"$actual\" "
+                "\"$actual_commit\"")
+                .arg(shq(installUrl), envPrefix, shq(expected),
+                     shq(expectedBuildCommit));
+    } else {
+        pipeline =
+            QStringLiteral("curl -fsSL %1 | %2 bash")
+                .arg(shq(installUrl), envPrefix);
+    }
     const bool needSudo = user != QStringLiteral("root");
     if (doUpload) {
         // The binary follows on the SSH session's stdin. Everything before the
@@ -10241,8 +10957,8 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     QByteArray uploadBytes;
     QString buildErr;
     if (!buildHostInstallCommand(ip, user, node, uploadBinary, reinstall,
-                                 fromSource, &sshArgs, &remoteCmd, &uploadBytes,
-                                 &buildErr)) {
+                                 fromSource, false, &sshArgs, &remoteCmd,
+                                 &uploadBytes, &buildErr)) {
         if (m_hostInstallStatus)
             m_hostInstallStatus->setText(buildErr);
         if (onFinished)
@@ -10394,6 +11110,50 @@ void MainWindow::runHostInstallAllFromBinary()
     runHostDeployAllParallel(FleetDeployMode::InstallBinary);
 }
 
+MainWindow::FleetDeployOptions
+MainWindow::fleetDeployOptions(FleetDeployMode mode)
+{
+    switch (mode) {
+    case FleetDeployMode::InstallBinary:
+        // Download the published artifact on each target. Never upload the
+        // current process: it may be a developer build rather than the packaged
+        // release even when its version string is identical.
+        return {/*uploadBinary=*/false, /*reinstall=*/false,
+                /*fromSource=*/false, /*requirePublishedBinary=*/true};
+    case FleetDeployMode::Reinstall:
+        return {/*uploadBinary=*/false, /*reinstall=*/true,
+                /*fromSource=*/false, /*requirePublishedBinary=*/true};
+    case FleetDeployMode::UpdateSource:
+        return {/*uploadBinary=*/false, /*reinstall=*/false,
+                /*fromSource=*/true, /*requirePublishedBinary=*/false};
+    }
+    return {};
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testFleetBinaryInstallRemoteCommand(
+    bool reinstall, qsizetype *uploadByteCount, QString *errorOut)
+{
+    const FleetDeployOptions options = fleetDeployOptions(
+        reinstall ? FleetDeployMode::Reinstall
+                  : FleetDeployMode::InstallBinary);
+    QStringList sshArgs;
+    QString remoteCommand;
+    QByteArray uploadBytes;
+    QString error;
+    const bool ok = buildHostInstallCommand(
+        QStringLiteral("host.example"), QStringLiteral("root"),
+        QStringLiteral("test-node"), options.uploadBinary, options.reinstall,
+        options.fromSource, options.requirePublishedBinary, &sshArgs,
+        &remoteCommand, &uploadBytes, &error);
+    if (uploadByteCount)
+        *uploadByteCount = uploadBytes.size();
+    if (errorOut)
+        *errorOut = error;
+    return ok ? remoteCommand : QString();
+}
+#endif
+
 void MainWindow::runHostReinstallAllFromBinary()
 {
     if (!m_hostsTable || m_hostsTable->rowCount() == 0) {
@@ -10410,8 +11170,9 @@ void MainWindow::runHostReinstallAllFromBinary()
         QString::fromUtf8(
             "This will REMOVE ForkMesh and ALL of its data (identity key, "
             "mirrors, chat) from every one of your %1 saved host(s), then "
-            "install a fresh copy from this app's binary and re-link each one "
-            "to your account.\n\nThis cannot be undone. Continue?")
+            "install the published ForkMesh v" FORKMESH_VERSION
+            " binary and re-link each one to your account.\n\nThis cannot be "
+            "undone. Continue?")
             .arg(rowCount),
         QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
     if (choice != QMessageBox::Yes)
@@ -10503,9 +11264,7 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
         delete item;
     }
 
-    const bool uploadBinary = mode != FleetDeployMode::UpdateSource;
-    const bool reinstall = mode == FleetDeployMode::Reinstall;
-    const bool fromSource = mode == FleetDeployMode::UpdateSource;
+    const FleetDeployOptions options = fleetDeployOptions(mode);
 
     QFont mono(QStringLiteral("monospace"));
     mono.setStyleHint(QFont::Monospace);
@@ -10582,12 +11341,11 @@ void MainWindow::runHostDeployAllParallel(FleetDeployMode mode)
     // finished callback can fire re-entrantly), so iterate a stable copy.
     const QList<HostDeploySession *> toStart = m_hostDeploySessions;
     for (HostDeploySession *s : toStart)
-        startHostDeploySession(s, uploadBinary, reinstall, fromSource);
+        startHostDeploySession(s, options);
 }
 
 void MainWindow::startHostDeploySession(HostDeploySession *session,
-                                        bool uploadBinary, bool reinstall,
-                                        bool fromSource)
+                                        const FleetDeployOptions &options)
 {
     if (!session)
         return;
@@ -10597,7 +11355,9 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
     QByteArray uploadBytes;
     QString buildErr;
     if (!buildHostInstallCommand(session->ip, session->user, session->node,
-                                 uploadBinary, reinstall, fromSource, &sshArgs,
+                                 options.uploadBinary, options.reinstall,
+                                 options.fromSource,
+                                 options.requirePublishedBinary, &sshArgs,
                                  &remoteCmd, &uploadBytes, &buildErr)) {
         appendHostDeployLog(session,
                             QString::fromUtf8("\n\xE2\x9C\x98 %1\n").arg(buildErr));
@@ -10610,7 +11370,14 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
         session, QString::fromUtf8("$ ssh %1@%2 \xE2\x80\xA6\nConnecting and "
                                    "running the installer\xE2\x80\xA6\n\n")
                      .arg(session->user, session->ip));
-    if (uploadBinary && !fromSource)
+    if (options.requirePublishedBinary)
+        appendHostDeployLog(
+            session,
+            QStringLiteral("Installing the published ForkMesh v"
+                           FORKMESH_VERSION
+                           " binary; the host will verify its release checksum, "
+                           "reported version and exact source commit.\n"));
+    else if (options.uploadBinary && !options.fromSource)
         appendHostDeployLog(
             session, QString::fromUtf8("Uploading this app's release binary "
                                        "(%1 MB) over the SSH session\xE2\x80\xA6\n")
@@ -10693,7 +11460,7 @@ void MainWindow::startHostDeploySession(HostDeploySession *session,
     proc->start(QStringLiteral("sshpass"), sshArgs);
     if (needSudo)
         proc->write((session->pass + QStringLiteral("\n")).toUtf8());
-    if (uploadBinary && !fromSource) {
+    if (options.uploadBinary && !options.fromSource) {
         proc->write((kHostUploadMarker + QStringLiteral("\n")).toUtf8());
         proc->write(uploadBytes);
     }

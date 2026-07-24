@@ -280,7 +280,45 @@
           their bearer session; the passphrase response is never cacheable.
         </p>
 
-        <h3 id="message-envelope">2.2 Message envelope</h3>
+        <h3 id="private-chat-channels">2.2 Administrator-created channels</h3>
+        <p>
+          Platform administrators can create named public or private chat
+          channels. Public channels are available to every active registered
+          user, but not to guests or node-only sessions. Private channels are
+          available to administrators and explicitly selected active registered
+          users. Administrators can select those initial users in the creation
+          request, and D1 writes the channel and every membership in one atomic
+          batch. Channel names, visibility, and member names are encrypted at
+          rest, with blind indexes used for lookup and uniqueness.
+        </p>
+        <p>
+          The encrypted channel record contains a <code>visibility</code> value
+          of <code>public</code> or <code>private</code>. Records created before
+          this field existed default to private, so an upgrade never widens
+          channel access. A public creation request cannot include membership
+          rows. A private creation request can include up to 500 normalized
+          registered usernames, and any invalid user rejects the complete
+          operation without partial channel data.
+        </p>
+        <p>
+          A browser first lists its authorized channels through
+          <code>GET /api/chat/channels</code>, then requests a non-cacheable
+          passphrase and a 60-second signed WebSocket ticket through
+          <code>GET /api/chat/channels/&lt;channel-id&gt;/room-access</code>.
+          The WebSocket upgrade rechecks the active account, channel visibility,
+          administrator or membership status when required, and current key
+          version before reaching the Durable Object. Removing a private member
+          atomically increments the key version, which selects a new passphrase
+          and room namespace so the removed user cannot enter the rotated room.
+        </p>
+        <p>
+          These channels use the same relay-readable AES-GCM model as default
+          rooms. Access control keeps other accounts out, and ciphertext is
+          stored at rest, but the relay derives the passphrase and is not an
+          end-to-end encryption boundary against the relay operator.
+        </p>
+
+        <h3 id="message-envelope">2.3 Message envelope</h3>
         <p>Each frame on the wire is JSON:</p>
         <pre><code>{ "kind": "cipher", "v": 1, "nonce": "&lt;b64 12 bytes&gt;", "tag": "&lt;b64 16 bytes&gt;", "body": "&lt;b64 ciphertext&gt;" }</code></pre>
         <p>
@@ -289,8 +327,15 @@
           uses the 12-byte nonce; the 16-byte tag is stored separately from
           the ciphertext body (the desktop client splits them the same way).
         </p>
+        <p>
+          An encrypted attachment chat object uses <code>fileName</code>,
+          <code>fileMime</code>, and a base64 <code>file</code> value. Browser
+          clients accept clipboard images and selected image or document files
+          up to 1 MiB, then encrypt those fields inside the ordinary room frame;
+          there is no plaintext upload endpoint.
+        </p>
 
-        <h3 id="history-retention">2.3 History retention</h3>
+        <h3 id="history-retention">2.4 History retention</h3>
         <p>
           The relay keeps the last few days of <strong>encrypted</strong>
           frames so a late-joining node sees some backlog when no peer is
@@ -298,10 +343,13 @@
           envelope with <code>persist: true</code> is retained (the desktop
           client sets it for its durable message types). Limits:
           <code>CHAT_HISTORY_RETAIN_MS</code> = 7 days,
-          <code>CHAT_HISTORY_MAX_PER_ROOM</code> = 500 frames, and frames over
-          <code>CHAT_HISTORY_MAX_BODY</code> (48 KiB) are relayed but not
-          retained. History stores ciphertext envelopes, but the relay
-          operator can derive the default room key and decrypt them.
+          <code>CHAT_HISTORY_MAX_PER_ROOM</code> = 500 frames,
+          <code>CHAT_HISTORY_MAX_BODY</code> = 1,900,000 encrypted-frame bytes,
+          and <code>CHAT_HISTORY_MAX_BYTES_PER_ROOM</code> = 16 MiB. Oldest
+          frames are pruned when a room exceeds a time, count, or aggregate
+          byte limit. History stores ciphertext envelopes, but the relay
+          operator can derive the default room key and every private-channel
+          room key, and can therefore decrypt them.
         </p>
 
         <h2 id="catalog-and-state-attestation">3. Catalog and state attestation</h2>
@@ -403,6 +451,10 @@
           <tbody>
             <tr><td><code>GET /api/room/&lt;room&gt;/ws</code> | <code>/clients</code></td><td>bare room WebSocket / live client count</td></tr>
             <tr><td><code>GET /api/repo/&lt;owner&gt;/&lt;repo&gt;/rooms/&lt;room&gt;/ws</code> | <code>/clients</code></td><td>per-repo room WS / count (the mainnode <code>general</code> room lives here)</td></tr>
+            <tr><td><code>GET</code> | <code>POST /api/chat/channels</code></td><td>list authorized public and private channels or atomically create one with its private initial members</td></tr>
+            <tr><td><code>GET</code> | <code>POST</code> | <code>DELETE /api/chat/channels/&lt;id&gt;/members</code></td><td>administrator-only private membership list, invitation, and revocation</td></tr>
+            <tr><td><code>GET /api/chat/channels/&lt;id&gt;/room-access</code></td><td>issue the current channel passphrase and short-lived ticket after visibility-aware authorization</td></tr>
+            <tr><td><code>GET /api/chat/channels/&lt;id&gt;/ws?ticket=…</code></td><td>ticketed channel WebSocket with active-account, visibility, membership, and key-version admission checks</td></tr>
             <tr><td><code>* /api/repo/&lt;owner&gt;/&lt;repo&gt;/host</code></td><td>legacy control channel; repository payload frames fail closed</td></tr>
             <tr><td><code>GET /api/repo/&lt;owner&gt;/&lt;repo&gt;/{tree,blob,blobs,raw,history,commit,branches,search}</code></td><td>website browse — proxied over ordinary HTTPS to a healthy authenticated mirror origin</td></tr>
           </tbody>
@@ -427,6 +479,7 @@
           <tbody>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/issues</code></td><td>signed issue open/comment/edit/status/…</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/pulls</code></td><td>signed pull request</td></tr>
+            <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/pulls/&lt;number&gt;/merge</code></td><td>account-session-authorized asynchronous merge, pinned to one write-enabled mirror and exact base/head/metadata object ids</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/commits</code></td><td>signed per-commit comment</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/discussions</code></td><td>signed discussion open/comment</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/subscribe</code></td><td>signed thread subscribe/unsubscribe</td></tr>
@@ -478,11 +531,28 @@
           two-request read flow.
         </p>
         <p>
-          Write support will require a separate direct-HTTPS protocol with
-          owner authorization, integrity re-attestation, bounded request
-          handling, and no repository payload over the multiplayer socket.
-          The legacy push-token verifier does not make the retired socket
-          transport safe and is not an active write path.
+          General receive-pack write support still requires a separate
+          direct-HTTPS protocol. Pull merging uses a narrower control path:
+          the Worker authorizes repository write permission, pins an
+          idempotent request to one mirror, and signs a bounded request
+          containing exact Git object ids. The node performs an atomic
+          compare-and-swap, reseals the repository, and republishes signed
+          integrity before the Worker reports completion. No repository
+          payload travels through D1 or the multiplayer socket. The legacy
+          push-token verifier does not make the retired socket transport safe
+          and is not an active receive-pack path.
+        </p>
+        <p>
+          Object-producing merge work happens in an owner-only quarantine.
+          Journal recovery anchors candidate objects behind hidden
+          <code>refs/forkmesh/</code> refs before repository fsck; conflicts
+          never import objects, and a lost compare-and-swap leaves reachable
+          staging refs instead of dangling objects. HTTP and SSH upload-pack
+          hide that entire namespace and reject arbitrary object-id wants.
+          Pull author signatures remain unchanged because only PullStore's
+          established owner-applied lifecycle fields are updated. Worker merge
+          jobs expire after seven days and have hard per-repository and global
+          row limits.
         </p>
 
         <h3 id="accounts-and-platform">4.5 Accounts and platform</h3>

@@ -2,6 +2,8 @@
 
 import ast
 import asyncio
+import hashlib
+import json
 import re
 import sqlite3
 import sys
@@ -53,6 +55,115 @@ def _method_source(class_name, method_name):
     raise AssertionError(f"{class_name}.{method_name} not found")
 
 
+def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
+    namespace = {
+        "hashlib": hashlib,
+        "json": json,
+        "re": re,
+        "MAX_BLOB_BATCH": 60,
+        "REPOSITORY_METADATA_CACHE_PREFIX": (
+            "https://forkmesh.internal/repository-metadata/v1/"
+        ),
+    }
+    exec(_function_source("repository_metadata_cache_key"), namespace)
+    key = namespace["repository_metadata_cache_key"]
+    first = {
+        "repoBi": "public-repo-blind-index",
+        "pins": {"b" * 64, "a" * 64},
+    }
+    same = {
+        "repoBi": "public-repo-blind-index",
+        "pins": {"a" * 64, "b" * 64},
+    }
+    pull_ref = "c" * 40
+
+    tree_key = key(first, "tree", {"path": "pulls", "ref": pull_ref})
+    assert tree_key.startswith(namespace["REPOSITORY_METADATA_CACHE_PREFIX"])
+    assert tree_key == key(
+        same, "tree", {"path": "pulls", "ref": pull_ref}
+    )
+    assert tree_key != key(
+        {**first, "pins": {"d" * 64}},
+        "tree",
+        {"path": "pulls", "ref": pull_ref},
+    )
+    assert tree_key != key(
+        first, "tree", {"path": "pulls", "ref": "d" * 40}
+    )
+    assert key(first, "branches", {})
+    assert key(first, "tree", {"path": "", "ref": ""})
+    assert key(first, "sizes", {"ref": "d" * 40})
+    assert key(first, "stats", {"ref": "d" * 40})
+    assert key(
+        first,
+        "blobs",
+        {
+            "path": ["pulls/44/pull.md", "pulls/43/pull.md"],
+            "ref": pull_ref,
+        },
+    )
+
+    # No source contents, arbitrary paths, moving refs, duplicate amplification,
+    # or unattested repository state may enter this narrow cache.
+    assert not key(
+        first,
+        "blobs",
+        {"path": ["src/main.py"], "ref": pull_ref},
+    )
+    assert not key(
+        first,
+        "blobs",
+        {"path": ["pulls/44/changes.patch"], "ref": pull_ref},
+    )
+    assert not key(
+        first,
+        "blobs",
+        {
+            "path": ["pulls/44/pull.md", "pulls/44/pull.md"],
+            "ref": pull_ref,
+        },
+    )
+    assert not key(first, "tree", {"path": "private", "ref": pull_ref})
+    assert not key(first, "tree", {"path": "pulls", "ref": "main"})
+    assert not key(
+        {"repoBi": "public-repo-blind-index", "pins": set()},
+        "branches",
+        {},
+    )
+
+    proxy = _function_source("_https_mirror_proxy")
+    assert (
+        proxy.index("repository_metadata_cache_get(metadata_cache_key)")
+        < proxy.index("_https_mirror_candidates(")
+    )
+    assert (
+        "repository_metadata_cache_put(\n"
+        "            metadata_cache_key, upstream, status)"
+    ) in proxy
+    get_source = _function_source("repository_metadata_cache_get")
+    put_source = _function_source("repository_metadata_cache_put")
+    assert '"no-store, max-age=0, must-revalidate"' in get_source
+    assert '"public, max-age=%d"' in put_source
+    assert "int(status or 0) != 200" in put_source
+    assert "content_length <= 0" in put_source
+    assert "content_length > REPOSITORY_METADATA_CACHE_MAX_BYTES" in put_source
+
+    class MustNotClone:
+        def clone(self):
+            raise AssertionError("a non-200 upstream must never be cached")
+
+    put_namespace = {
+        "REPOSITORY_METADATA_CACHE_MAX_BYTES": 8 * 1024 * 1024,
+        "REPOSITORY_METADATA_CACHE_TTL": 300,
+    }
+    exec(put_source, put_namespace)
+    assert asyncio.run(
+        put_namespace["repository_metadata_cache_put"](
+            "https://cache.invalid/key", MustNotClone(), 503
+        )
+    ) is None
+
+
 def test_registration_is_signed_account_bound_and_manifest_verified():
     handler = _function_source("https_mirror_endpoint_handler")
     assert "_owner_signing_pubkeys" in handler
@@ -62,6 +173,8 @@ def test_registration_is_signed_account_bound_and_manifest_verified():
     assert "cloudflare_proxied_dns_required" in handler
     assert "mirror_https_endpoints" in handler
     assert "stale_registration" in handler
+    assert "_https_mirror_refresh_registered_health" in handler
+    assert '"health": "active" if health_active else "pending"' in handler
     assert "repositoryBytesInD1" in handler
     assert "private" not in handler.lower()
 
@@ -69,6 +182,12 @@ def test_registration_is_signed_account_bound_and_manifest_verified():
     assert "/forkmesh-mirror.json" in manifest
     assert "validate_tunnel_manifest" in manifest
     assert "ed25519_verify" in manifest
+
+    durable_write = handler.index(
+        '"""INSERT INTO mirror_https_endpoints')
+    activation = handler.index(
+        "await _https_mirror_refresh_registered_health")
+    assert durable_write < activation
 
 
 def test_dns_over_https_requests_cloudflare_json_media_type(monkeypatch):
@@ -115,6 +234,7 @@ def test_cron_verifies_fresh_forkmesh_proof_and_clears_failed_state():
     assert "ed25519_verify" in health
     assert "hmac.compare_digest(refs_digest, expected_forkmesh_refs)" in health
     assert "HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS" in health
+    assert "return forkmesh_active" in health
     assert "forkmesh_active=0" in failed
     assert "healthy=0" in failed
 
@@ -195,6 +315,252 @@ def test_flagship_state_pin_falls_back_to_account_namespace_without_org_alias():
     assert looked_up == ["forkmesh/forkmesh"]
 
 
+def test_every_registered_mirror_can_refresh_its_exact_signed_health():
+    events = []
+    endpoint = {
+        "node_bi": "mirror-3-bi",
+        "node_name": "mirror3",
+        "base_url": "https://mirror3.example.test",
+        "public_key": "node-public-key",
+    }
+
+    async def d1_first(env, sql, *params):
+        events.append(("lookup", params))
+        assert "FROM mirror_https_endpoints WHERE node_name=?" in sql
+        assert params == ("mirror3",)
+        return endpoint
+
+    async def expected_refs(env):
+        events.append(("expected",))
+        return "c" * 64
+
+    async def health_one(env, row, expected):
+        events.append(("health", row, expected))
+        return True
+
+    namespace = {
+        "MAX_NODE_NAME": 80,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+        "valid_node_name": lambda value: bool(
+            re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", value)),
+        "d1_first": d1_first,
+        "_https_mirror_expected_forkmesh_refs": expected_refs,
+        "_https_mirror_health_one": health_one,
+    }
+    exec(
+        _function_source("_https_mirror_refresh_registered_health"),
+        namespace,
+    )
+    refreshed = asyncio.run(
+        namespace["_https_mirror_refresh_registered_health"](
+            object(), "Mirror3"))
+    assert refreshed is True
+    assert events == [
+        ("lookup", ("mirror3",)),
+        ("expected",),
+        ("health", endpoint, "c" * 64),
+    ]
+
+
+def test_registered_health_refresh_stays_pending_on_missing_pin_or_failure():
+    rows = []
+    health_calls = []
+    expected = ""
+
+    async def d1_first(env, sql, *params):
+        rows.append(params)
+        return {
+            "node_bi": "mirror-3-bi",
+            "node_name": "mirror3",
+            "base_url": "https://mirror3.example.test",
+            "public_key": "node-public-key",
+        }
+
+    async def expected_refs(env):
+        return expected
+
+    async def health_one(env, row, state_hash):
+        health_calls.append((row, state_hash))
+        raise RuntimeError("bounded health fetch failed")
+
+    namespace = {
+        "MAX_NODE_NAME": 80,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+        "valid_node_name": lambda value: bool(
+            re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", value)),
+        "d1_first": d1_first,
+        "_https_mirror_expected_forkmesh_refs": expected_refs,
+        "_https_mirror_health_one": health_one,
+    }
+    exec(
+        _function_source("_https_mirror_refresh_registered_health"),
+        namespace,
+    )
+    refresh = namespace["_https_mirror_refresh_registered_health"]
+
+    assert asyncio.run(refresh(object(), "not valid")) is False
+    assert rows == []
+    assert asyncio.run(refresh(object(), "mirror3")) is False
+    assert rows == [("mirror3",)]
+    assert health_calls == []
+
+    expected = "d" * 64
+    assert asyncio.run(refresh(object(), "mirror3")) is False
+    assert rows == [("mirror3",), ("mirror3",)]
+    assert len(health_calls) == 1
+
+
+def test_public_flagship_publish_refreshes_only_its_exact_node_health():
+    events = []
+
+    async def org_repo_node(env, owner, repo):
+        events.append(("canonical", owner, repo))
+        return "mirror2"
+
+    async def refresh_registered(env, node):
+        events.append(("health", node))
+        return True
+
+    namespace = {
+        "MAX_REPO_SEGMENT": 128,
+        "MAX_NODE_NAME": 80,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+        "valid_node_name": lambda value: bool(
+            re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", value)),
+        "_org_repo_node": org_repo_node,
+        "_https_mirror_refresh_registered_health": refresh_registered,
+    }
+    exec(
+        _function_source("_https_mirror_refresh_catalog_publisher_health"),
+        namespace,
+    )
+    refreshed = asyncio.run(
+        namespace["_https_mirror_refresh_catalog_publisher_health"](
+            object(),
+            {
+                "owner": "Mirror2",
+                "name": "forkmesh",
+                "visibility": "public",
+            },
+        )
+    )
+    assert refreshed is True
+    assert events == [
+        ("canonical", "forkmesh", "forkmesh"),
+        ("health", "mirror2"),
+    ]
+
+
+def test_catalog_health_activation_is_flagship_public_only_and_best_effort():
+    calls = []
+    endpoint_available = True
+
+    async def org_repo_node(env, owner, repo):
+        return "mirror2"
+
+    async def refresh_registered(env, node):
+        calls.append((node,))
+        if not endpoint_available:
+            return False
+        raise RuntimeError("bounded health fetch failed")
+
+    namespace = {
+        "MAX_REPO_SEGMENT": 128,
+        "MAX_NODE_NAME": 80,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+        "valid_node_name": lambda value: bool(
+            re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", value)),
+        "_org_repo_node": org_repo_node,
+        "_https_mirror_refresh_registered_health": refresh_registered,
+    }
+    exec(
+        _function_source("_https_mirror_refresh_catalog_publisher_health"),
+        namespace,
+    )
+    refresh = namespace["_https_mirror_refresh_catalog_publisher_health"]
+    for record in (
+        {"owner": "mirror2", "name": "forkmesh", "visibility": "private"},
+        {"owner": "mirror2", "name": "another-repo", "visibility": "public"},
+        {"owner": "not valid", "name": "forkmesh", "visibility": "public"},
+        # Same repository name, but this account is not the organization's
+        # current canonical backing node and must not trigger a health fetch.
+        {"owner": "mirror3", "name": "forkmesh", "visibility": "public"},
+    ):
+        assert asyncio.run(refresh(object(), record)) is False
+    assert calls == []
+
+    endpoint_available = False
+    assert asyncio.run(refresh(object(), {
+        "owner": "mirror2",
+        "name": "forkmesh",
+        "visibility": "public",
+    })) is False
+    assert calls == [("mirror2",)]
+
+    # Once the exact endpoint is selected, a fetch/verifier exception is
+    # swallowed so the already accepted catalog publication is not rolled back.
+    endpoint_available = True
+    assert asyncio.run(refresh(object(), {
+        "owner": "mirror2",
+        "name": "forkmesh",
+        "visibility": "public",
+    })) is False
+    assert calls == [("mirror2",), ("mirror2",)]
+
+
+def test_catalog_health_activation_falls_back_only_to_canonical_account():
+    looked_up = []
+
+    async def org_repo_node(env, owner, repo):
+        return ""
+
+    async def refresh_registered(env, node):
+        looked_up.append((node,))
+        return False
+
+    namespace = {
+        "MAX_REPO_SEGMENT": 128,
+        "MAX_NODE_NAME": 80,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
+        "valid_node_name": lambda value: bool(
+            re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", value)),
+        "_org_repo_node": org_repo_node,
+        "_https_mirror_refresh_registered_health": refresh_registered,
+    }
+    exec(
+        _function_source("_https_mirror_refresh_catalog_publisher_health"),
+        namespace,
+    )
+    refresh = namespace["_https_mirror_refresh_catalog_publisher_health"]
+    assert asyncio.run(refresh(object(), {
+        "owner": "mirror2",
+        "name": "forkmesh",
+        "visibility": "public",
+    })) is False
+    assert looked_up == []
+    assert asyncio.run(refresh(object(), {
+        "owner": "forkmesh",
+        "name": "forkmesh",
+        "visibility": "public",
+    })) is False
+    assert looked_up == [("forkmesh",)]
+
+
+def test_catalog_persists_before_exact_node_health_activation_and_cache_purge():
+    handler = _function_source("catalog_handler")
+    durable_write = handler.index(
+        "await _contribution_write_catalog_state")
+    activation = handler.index(
+        "await _https_mirror_refresh_catalog_publisher_health")
+    cache_purge = handler.index("await purge_catalog_related_caches()")
+    assert durable_write < activation < cache_purge
+
+    activation_source = _function_source(
+        "_https_mirror_refresh_catalog_publisher_health")
+    assert '_org_repo_node(env, "forkmesh", "forkmesh")' in activation_source
+    assert "_https_mirror_refresh_registered_health" in activation_source
+
+
 def test_public_browse_clone_and_release_are_intercepted_before_host_tunnel():
     route = _method_source("Default", "_route")
     assert route.index("HTTPS_MIRROR_ENDPOINT_PATH") < route.index(
@@ -204,6 +570,7 @@ def test_public_browse_clone_and_release_are_intercepted_before_host_tunnel():
     assert '"release-blob"' in route
     assert "return await _https_mirror_proxy" in route
     assert '"tree", "blobs", "blob", "raw", "history", "commit"' in route
+    assert '"compare", "branches", "search", "stats", "sizes"' in route
 
     git_block = route.split("git_info = GIT_INFO_RE.match", 1)[1].split(
         'if url.path == "/"', 1)[0]

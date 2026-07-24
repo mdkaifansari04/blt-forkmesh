@@ -27,6 +27,7 @@ import argparse
 import base64
 from contextlib import contextmanager
 from dataclasses import dataclass
+import errno
 import fcntl
 import hashlib
 import http.client
@@ -35,6 +36,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -54,12 +56,36 @@ MAX_HTTP_RESPONSE_BYTES = 256 * 1024
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024 * 1024
 PROCESS_TIMEOUT_SECONDS = 30 * 60
 HTTP_TIMEOUT_SECONDS = 30
+MAX_PUBLIC_REPOSITORY_COUNT = 999_999_999_999
+MAX_REPOSITORY_METADATA_PATHS = 100_000
+MAX_REPOSITORY_METADATA_BYTES = 32 * 1024 * 1024
+MAX_ISSUE_RECORD_BYTES = 1024 * 1024
+MAX_MERGE_REQUEST_BYTES = 8 * 1024
+MAX_PULL_METADATA_BYTES = 256 * 1024
+MAX_ACTIONS_CONFIGURATION_BYTES = 1024
+MAX_ACTIONS_STATE_BYTES = 4096
+MAX_ACTIONS_STATE_LEASE_MS = 15 * 60 * 1000
+MAX_MERGE_QUARANTINE_OBJECTS = 100_000
+MAX_MERGE_QUARANTINE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_LOCAL_MERGE_JOBS = 10_000
+LOCAL_MERGE_JOB_RETENTION_SECONDS = 30 * 24 * 60 * 60
+MAX_SAFE_JSON_INTEGER = (1 << 53) - 1
 AGE_NATIVE_HEADER = b"age-encryption.org/v1\n"
 AGE_ARMORED_HEADER = b"-----BEGIN AGE ENCRYPTED FILE-----\n"
+ACTIONS_CONFIGURATION_TYPE = "forkmesh.mirror-actions-catalog-configuration"
+ACTIONS_STATE_TYPE = "forkmesh.mirror-actions-state"
+ACTIONS_STATE_FILE = "actions-state.json"
+ACTIONS_SUMMARY_FILE = "actions-summary.json"
+SYSTEM_ACTIONS_STATE_PATH = Path(
+    "/var/lib/forkmesh-mirror/gateway/actions-state.json"
+)
 NODE_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+GIT_OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 BASE64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+MERGE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{12,80}$")
+MERGE_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 SOLANA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 KEY_REFERENCE_RE = re.compile(r"^[A-Za-z0-9._:/@+-]{3,240}$")
 SENSITIVE_FIELD_RE = re.compile(
@@ -94,6 +120,8 @@ PUBLIC_OPERATIONS = frozenset(
         "stats",
         "sizes",
         "release-blob",
+        "merge-pull",
+        "actions-status",
     }
 )
 REQUIRED_ROUTING_OPERATIONS = frozenset(
@@ -114,6 +142,10 @@ class CatalogDefaults:
     branch: str
     platform: str
     version: str
+    actions_enabled: bool
+    report_cpu: bool
+    report_memory: bool
+    report_disk: bool
 
 
 @dataclass(frozen=True)
@@ -121,6 +153,7 @@ class RefreshConfig:
     config_path: Path
     source_repository: Path
     archive_directory: Path
+    release_store: Path | None
     gateway_config_path: Path
     identity_state_directory: Path
     identity_helper_path: Path
@@ -239,7 +272,7 @@ def _safe_environment() -> dict[str, str]:
     # Keep the child environment allowlisted.  In particular, do not pass
     # cloud credentials, Python import hooks, dynamic-loader options, Git
     # configuration injection, SSH agents, or wallet-related variables.
-    return {
+    environment = {
         "PATH": os.environ.get(
             "PATH",
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -251,7 +284,33 @@ def _safe_environment() -> dict[str, str]:
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_PROTOCOL_FROM_USER": "0",
         "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_NO_REPLACE_OBJECTS": "1",
     }
+    # A materialized mirror can be several times larger than its encrypted
+    # archive. Small hosts frequently mount /tmp as a bounded tmpfs, so permit
+    # an operator to select disk-backed temporary storage without weakening the
+    # otherwise allowlisted child environment. Only an existing, normalized,
+    # owner-only real directory is trusted; unsafe TMPDIR values are ignored
+    # and Python retains its normal fail-closed temporary-directory behavior.
+    temporary_raw = os.environ.get("TMPDIR", "")
+    if temporary_raw:
+        temporary = Path(temporary_raw)
+        try:
+            info = temporary.lstat()
+        except OSError:
+            info = None
+        if (
+            temporary.is_absolute()
+            and temporary == Path(os.path.normpath(str(temporary)))
+            and info is not None
+            and stat.S_ISDIR(info.st_mode)
+            and not stat.S_ISLNK(info.st_mode)
+            and info.st_uid == os.geteuid()
+            and not stat.S_IMODE(info.st_mode)
+            & (stat.S_IRWXG | stat.S_IRWXO)
+        ):
+            environment["TMPDIR"] = str(temporary)
+    return environment
 
 
 def _absolute_path(value: Any, label: str) -> Path:
@@ -401,6 +460,135 @@ def _read_secure_json(
     )
 
 
+def _actions_state_metadata_allowed(
+    path: Path,
+    info: os.stat_result,
+    *,
+    effective_uid: int,
+    effective_gid: int,
+) -> bool:
+    """Accept only same-account 0600 or the fixed root-to-service lease."""
+
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or not 0 < info.st_size <= MAX_ACTIONS_STATE_BYTES
+    ):
+        return False
+    mode = stat.S_IMODE(info.st_mode)
+    if info.st_uid == effective_uid:
+        return mode == 0o600
+    return (
+        effective_uid != 0
+        and path == SYSTEM_ACTIONS_STATE_PATH
+        and info.st_uid == 0
+        and info.st_gid == effective_gid
+        and mode == 0o640
+    )
+
+
+def _read_actions_state_json(path: Path) -> dict[str, Any]:
+    """Read the local lease through its exact protected ownership boundary."""
+
+    if (
+        not path.is_absolute()
+        or path != Path(os.path.normpath(str(path)))
+        or path.name != ACTIONS_STATE_FILE
+    ):
+        raise RefreshError("Actions state lease path is unsafe")
+    _reject_symlink_components(path, "Actions state lease")
+    parent = path.parent
+    parent_descriptor = -1
+    descriptor = -1
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        parent_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        parent_descriptor = os.open(parent, parent_flags)
+        parent_info = os.fstat(parent_descriptor)
+        if (
+            not stat.S_ISDIR(parent_info.st_mode)
+            or parent_info.st_uid != os.geteuid()
+            or parent_info.st_gid != os.getegid()
+            or stat.S_IMODE(parent_info.st_mode) != 0o700
+        ):
+            raise RefreshError(
+                "Actions state lease parent permissions or ownership are unsafe"
+            )
+        expected = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if not _actions_state_metadata_allowed(
+            path,
+            expected,
+            effective_uid=os.geteuid(),
+            effective_gid=os.getegid(),
+        ):
+            raise RefreshError(
+                "Actions state lease permissions or ownership are unsafe"
+            )
+        descriptor = os.open(
+            path.name, flags, dir_fd=parent_descriptor)
+    except (OSError, RefreshError) as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+        if isinstance(exc, RefreshError):
+            raise
+        raise RefreshError(
+            "Actions state lease cannot be opened safely") from exc
+    try:
+        actual = os.fstat(descriptor)
+        if (
+            actual.st_dev != expected.st_dev
+            or actual.st_ino != expected.st_ino
+            or not _actions_state_metadata_allowed(
+                path,
+                actual,
+                effective_uid=os.geteuid(),
+                effective_gid=os.getegid(),
+            )
+        ):
+            raise RefreshError(
+                "Actions state lease changed while opening")
+        chunks = bytearray()
+        while len(chunks) <= MAX_ACTIONS_STATE_BYTES:
+            chunk = os.read(
+                descriptor,
+                min(
+                    4096,
+                    MAX_ACTIONS_STATE_BYTES + 1 - len(chunks),
+                ),
+            )
+            if not chunk:
+                break
+            chunks.extend(chunk)
+        if (
+            len(chunks) != actual.st_size
+            or len(chunks) > MAX_ACTIONS_STATE_BYTES
+        ):
+            raise RefreshError(
+                "Actions state lease changed while reading")
+        return _parse_json(
+            bytes(chunks),
+            maximum=MAX_ACTIONS_STATE_BYTES,
+            label="Actions state lease",
+        )
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+
+
 def _require_safe_program(path: Path, label: str) -> Path:
     try:
         resolved = path.resolve(strict=True)
@@ -480,6 +668,10 @@ def _parse_catalog(value: Any) -> CatalogDefaults:
             "branch",
             "platform",
             "version",
+            "actionsEnabled",
+            "reportCpu",
+            "reportMemory",
+            "reportDisk",
         },
         label="catalog",
     )
@@ -508,14 +700,24 @@ def _parse_catalog(value: Any) -> CatalogDefaults:
     version = _clean_public_text(
         value.get("version", ""), maximum=32, label="catalog.version"
     )
+    actions_enabled = value.get("actionsEnabled", False)
+    if not isinstance(actions_enabled, bool):
+        raise RefreshError("catalog.actionsEnabled must be a boolean")
+    for field in ("reportCpu", "reportMemory", "reportDisk"):
+        if field in value and not isinstance(value[field], bool):
+            raise RefreshError(f"catalog.{field} must be a boolean")
     return CatalogDefaults(
-        description,
-        solana,
-        channel,
-        hosted_since,
-        branch,
-        platform,
-        version,
+        description=description,
+        solana=solana,
+        channel=channel,
+        hosted_since=hosted_since,
+        branch=branch,
+        platform=platform,
+        version=version,
+        actions_enabled=actions_enabled,
+        report_cpu=value.get("reportCpu", False),
+        report_memory=value.get("reportMemory", False),
+        report_disk=value.get("reportDisk", False),
     )
 
 
@@ -551,7 +753,7 @@ def load_config(path: Path) -> RefreshConfig:
             "listen",
             "operations",
         },
-        optional={"catalog"},
+        optional={"catalog", "releaseStore"},
         label="configuration",
     )
     if (
@@ -565,6 +767,12 @@ def load_config(path: Path) -> RefreshConfig:
     )
     archive_directory = _absolute_path(
         source.get("archiveDirectory"), "archive directory"
+    )
+    release_store_value = source.get("releaseStore")
+    release_store = (
+        _absolute_path(release_store_value, "release store")
+        if release_store_value is not None
+        else None
     )
     gateway_config_path = _absolute_path(
         source.get("gatewayConfigPath"), "gateway configuration"
@@ -583,6 +791,8 @@ def load_config(path: Path) -> RefreshConfig:
     manifest_path = _absolute_path(source.get("manifestPath"), "mirror manifest")
 
     _require_owner_directory(archive_directory, "archive directory")
+    if release_store is not None:
+        _require_owner_directory(release_store, "release store")
     _require_owner_directory(identity_state_directory, "identity state directory")
     _require_secure_parent(gateway_config_path, "gateway configuration")
     _reject_symlink_components(source_repository, "source repository")
@@ -661,6 +871,7 @@ def load_config(path: Path) -> RefreshConfig:
         config_path=path,
         source_repository=source_repository,
         archive_directory=archive_directory,
+        release_store=release_store,
         gateway_config_path=gateway_config_path,
         identity_state_directory=identity_state_directory,
         identity_helper_path=identity_helper_path,
@@ -823,6 +1034,8 @@ def _git_prefix(config: RefreshConfig) -> list[str]:
         "-c",
         "credential.helper=",
         "-c",
+        "merge.default=text",
+        "-c",
         "protocol.ext.allow=never",
         f"--git-dir={config.source_repository}",
     ]
@@ -846,6 +1059,10 @@ def _require_bare_source(config: RefreshConfig) -> None:
 
 def _fsck_source(config: RefreshConfig) -> None:
     _require_bare_source(config)
+    # A power loss may interrupt the narrow interval between installing
+    # transaction-owned loose objects and anchoring them. Replay only the
+    # owner-only, digest-named merge journals before fsck sees the object store.
+    _recover_merge_quarantines(config)
     _run_bounded(
         _git_prefix(config)
         + [
@@ -879,6 +1096,447 @@ def _source_refs_sha256(config: RefreshConfig) -> str:
     if len(canonical.encode("utf-8")) > 16 * 1024 * 1024:
         raise RefreshError("source repository has too many public refs")
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _source_branch_commit(config: RefreshConfig) -> str:
+    revision = (
+        "refs/heads/" + config.catalog.branch
+        if config.catalog.branch
+        else "HEAD"
+    )
+    raw = _run_bounded(
+        _git_prefix(config)
+        + [
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            revision + "^{commit}",
+        ],
+        maximum_output=256,
+        timeout=60,
+    )
+    try:
+        commit = raw.decode("ascii").strip().lower()
+    except UnicodeDecodeError as exc:
+        raise RefreshError("source repository commit is invalid") from exc
+    if not GIT_OBJECT_ID_RE.fullmatch(commit):
+        raise RefreshError("source repository commit is invalid")
+    return commit
+
+
+def _source_revision(config: RefreshConfig) -> str:
+    return (
+        "refs/heads/" + config.catalog.branch
+        if config.catalog.branch
+        else "HEAD"
+    )
+
+
+def _bounded_repository_count(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if number < 0 or number > MAX_PUBLIC_REPOSITORY_COUNT:
+        return None
+    return number
+
+
+def _source_commit_count(config: RefreshConfig) -> int | None:
+    try:
+        raw = _run_bounded(
+            _git_prefix(config)
+            + ["rev-list", "--count", _source_revision(config), "--"],
+            maximum_output=64,
+            timeout=60,
+        )
+        return _bounded_repository_count(raw.decode("ascii").strip())
+    except (RefreshError, UnicodeDecodeError):
+        return None
+
+
+def _source_branch_count(config: RefreshConfig) -> int | None:
+    try:
+        raw = _run_bounded(
+            _git_prefix(config)
+            + [
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/",
+            ],
+            maximum_output=MAX_REPOSITORY_METADATA_BYTES,
+            timeout=60,
+        )
+    except RefreshError:
+        return None
+    lines = [line for line in raw.splitlines() if line]
+    if len(lines) > MAX_REPOSITORY_METADATA_PATHS:
+        return None
+    return _bounded_repository_count(len(lines))
+
+
+def _source_revision_exists(config: RefreshConfig, revision: str) -> bool:
+    try:
+        _run_bounded(
+            _git_prefix(config)
+            + [
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                revision + "^{commit}",
+            ],
+            maximum_output=128,
+            timeout=60,
+        )
+        return True
+    except RefreshError:
+        return False
+
+
+def _source_tree_paths(
+    config: RefreshConfig,
+    revision: str,
+    path: str,
+) -> tuple[bytes, ...] | None:
+    """Return bounded raw paths below one repository metadata directory.
+
+    ``git ls-tree`` exits successfully with no output when the path does not
+    exist, which lets a genuine empty count stay distinct from a failed read.
+    Paths remain bytes: Git permits non-UTF-8 names, while the metadata records
+    selected below have strict ASCII names.
+    """
+    try:
+        raw = _run_bounded(
+            _git_prefix(config)
+            + [
+                "ls-tree",
+                "-r",
+                "-z",
+                "--name-only",
+                revision,
+                "--",
+                path,
+            ],
+            maximum_output=MAX_REPOSITORY_METADATA_BYTES,
+            timeout=60,
+        )
+    except RefreshError:
+        return None
+    paths = tuple(item for item in raw.split(b"\0") if item)
+    if len(paths) > MAX_REPOSITORY_METADATA_PATHS:
+        return None
+    return paths
+
+
+def _numbered_metadata_count(
+    paths: tuple[bytes, ...] | None,
+    prefix: bytes,
+) -> int | None:
+    if paths is None:
+        return None
+    pattern = re.compile(
+        rb"^" + re.escape(prefix) + rb"/([1-9][0-9]*)/"
+    )
+    numbers: set[int] = set()
+    for path in paths:
+        match = pattern.match(path)
+        if match:
+            number = _bounded_repository_count(match.group(1))
+            if number is None:
+                return None
+            numbers.add(number)
+    return _bounded_repository_count(len(numbers))
+
+
+def _source_blob_batch(
+    config: RefreshConfig,
+    revision: str,
+    paths: tuple[bytes, ...],
+) -> dict[bytes, bytes] | None:
+    if not paths:
+        return {}
+    requests = b"".join(
+        revision.encode("ascii") + b":" + path + b"\n" for path in paths
+    )
+    try:
+        raw = _run_bounded(
+            _git_prefix(config) + ["cat-file", "--batch"],
+            input_bytes=requests,
+            maximum_output=MAX_REPOSITORY_METADATA_BYTES,
+            timeout=60,
+        )
+    except (RefreshError, UnicodeEncodeError):
+        return None
+    result: dict[bytes, bytes] = {}
+    position = 0
+    for path in paths:
+        line_end = raw.find(b"\n", position)
+        if line_end < 0:
+            return None
+        header = raw[position:line_end].split()
+        position = line_end + 1
+        if len(header) != 3 or header[1] != b"blob":
+            return None
+        try:
+            size = int(header[2])
+        except ValueError:
+            return None
+        if size < 0 or size > MAX_ISSUE_RECORD_BYTES:
+            return None
+        content_end = position + size
+        if content_end >= len(raw) or raw[content_end:content_end + 1] != b"\n":
+            return None
+        result[path] = raw[position:content_end]
+        position = content_end + 1
+    if position != len(raw):
+        return None
+    return result
+
+
+def _issue_record_is_tombstoned(record: Mapping[str, Any]) -> bool | None:
+    events = record.get("events", [])
+    if not isinstance(events, list):
+        return None
+    creator = ""
+    for value in events:
+        if not isinstance(value, dict):
+            return None
+        if value.get("type") == "open" and not creator:
+            author = value.get("author")
+            if isinstance(author, str):
+                creator = author
+    if not creator:
+        return False
+    return any(
+        value.get("type") == "delete"
+        and value.get("target") == "self"
+        and value.get("author") == creator
+        for value in events
+    )
+
+
+def _source_issue_counts(
+    config: RefreshConfig,
+) -> tuple[int | None, int | None] | None:
+    revision = _source_revision(config)
+    paths = _source_tree_paths(
+        config, revision, ".forkmesh/issues"
+    )
+    if paths is None:
+        return None
+    # Qt derives the allocation high-water mark from numeric directories, not
+    # only from a canonical issue-N.json blob. Do the same so a damaged or
+    # partially migrated issue directory can never make ForkBot reuse an
+    # already occupied number. Recursive ls-tree does not report directories,
+    # so any descendant path proves that the corresponding tree exists.
+    directory_pattern = re.compile(
+        rb"^\.forkmesh/issues/(?:(open|closed)/)?([0-9]+)/"
+    )
+    directories: dict[str, set[bytes]] = {
+        "open": set(),
+        "closed": set(),
+        "legacy": set(),
+    }
+    max_number = 0
+    for path in paths:
+        match = directory_pattern.match(path)
+        if not match:
+            continue
+        state = (
+            match.group(1).decode("ascii")
+            if match.group(1)
+            else "legacy"
+        )
+        name = match.group(2)
+        number = _bounded_repository_count(name)
+        if number is None:
+            return None
+        directories[state].add(name)
+        max_number = max(max_number, number)
+    bounded_max = _bounded_repository_count(max_number)
+    if bounded_max is None:
+        return None
+
+    # Match the desktop reader's precedence: an open/<name> tree is examined
+    # first, closed/<name> reserves the same legacy name, and only a remaining
+    # pre-split root tree is read. A missing or malformed canonical record is
+    # conservatively live, just as the Qt issue list does.
+    records: list[tuple[str, bytes]] = []
+    counted_names = set(directories["open"])
+    for name in sorted(directories["open"]):
+        records.append(
+            (
+                "open",
+                b".forkmesh/issues/open/"
+                + name
+                + b"/issue-"
+                + name
+                + b".json",
+            )
+        )
+    counted_names.update(directories["closed"])
+    for name in sorted(directories["legacy"] - counted_names):
+        records.append(
+            (
+                "legacy",
+                b".forkmesh/issues/"
+                + name
+                + b"/issue-"
+                + name
+                + b".json",
+            )
+        )
+
+    available_paths = set(paths)
+    readable_paths = tuple(
+        path for _state, path in records if path in available_paths
+    )
+    blobs = _source_blob_batch(config, revision, readable_paths)
+    if blobs is None:
+        return None, bounded_max
+    open_count = 0
+    for state, path in records:
+        if path not in blobs:
+            open_count += 1
+            continue
+        try:
+            record = json.loads(blobs[path].decode("utf-8"))
+        except Exception:
+            # JSON recursion limits and malformed/unreadable issue records must
+            # not take down catalog renewal. Treat them as live, matching the
+            # desktop's conservative default, without trusting any tombstone.
+            open_count += 1
+            continue
+        if not isinstance(record, dict):
+            open_count += 1
+            continue
+        if state == "open":
+            tombstoned = _issue_record_is_tombstoned(record)
+            if tombstoned is not True:
+                open_count += 1
+        elif record.get("status") != "closed":
+            open_count += 1
+    bounded_open = _bounded_repository_count(open_count)
+    if bounded_open is None:
+        return None, bounded_max
+    return bounded_open, bounded_max
+
+
+def _source_pull_count(config: RefreshConfig) -> int | None:
+    revision = (
+        "refs/heads/forkmesh/pulls"
+        if _source_revision_exists(config, "refs/heads/forkmesh/pulls")
+        else _source_revision(config)
+    )
+    return _numbered_metadata_count(
+        _source_tree_paths(config, revision, "pulls"),
+        b"pulls",
+    )
+
+
+def _source_discussion_count(config: RefreshConfig) -> int | None:
+    return _numbered_metadata_count(
+        _source_tree_paths(
+            config,
+            _source_revision(config),
+            ".forkmesh/discussions",
+        ),
+        b".forkmesh/discussions",
+    )
+
+
+def _source_artifact_count(config: RefreshConfig) -> int | None:
+    """Count real release blobs in the configured mirror gateway CAS."""
+    if config.release_store is None:
+        return None
+    root = config.release_store / "sha256"
+    try:
+        root_info = root.lstat()
+    except FileNotFoundError:
+        return 0
+    except OSError:
+        return None
+    if (
+        not stat.S_ISDIR(root_info.st_mode)
+        or root_info.st_uid != os.geteuid()
+    ):
+        return None
+    count = 0
+    visited = 0
+    try:
+        with os.scandir(root) as shards:
+            for shard in shards:
+                visited += 1
+                if visited > MAX_REPOSITORY_METADATA_PATHS:
+                    return None
+                if (
+                    not re.fullmatch(r"[0-9a-f]{2}", shard.name)
+                    or not shard.is_dir(follow_symlinks=False)
+                ):
+                    continue
+                with os.scandir(shard.path) as hashes:
+                    for digest in hashes:
+                        visited += 1
+                        if visited > MAX_REPOSITORY_METADATA_PATHS:
+                            return None
+                        if (
+                            not SHA256_RE.fullmatch(digest.name)
+                            or not digest.name.startswith(shard.name)
+                            or not digest.is_dir(follow_symlinks=False)
+                        ):
+                            continue
+                        data = Path(digest.path) / "data"
+                        try:
+                            if data.is_file() and not data.is_symlink():
+                                count += 1
+                        except OSError:
+                            return None
+    except OSError:
+        return None
+    return _bounded_repository_count(count)
+
+
+def _sample_repository_statistics(
+    config: RefreshConfig,
+) -> dict[str, str]:
+    """Read public, repository-scoped facts from the validated bare source.
+
+    Each fact fails independently. Headless mirrors have no controller working
+    copy and the gateway currently has no durable per-repository request
+    counters, so worktree/clones/website fields intentionally remain absent
+    instead of being published as misleading zeroes.
+    """
+    result: dict[str, str] = {}
+
+    def include(field: str, value: int | None) -> None:
+        if value is not None:
+            result[field] = str(value)
+
+    def sample(field: str, sampler: Callable[[], int | None]) -> None:
+        try:
+            include(field, sampler())
+        except Exception:
+            # Repository metadata is untrusted input. One malformed or unusually
+            # deep fact must remain unknown without suppressing all other
+            # independently readable statistics or breaking lease renewal.
+            return
+
+    sample("commitCount", lambda: _source_commit_count(config))
+    sample("branchCount", lambda: _source_branch_count(config))
+    try:
+        issue_counts = _source_issue_counts(config)
+    except Exception:
+        issue_counts = None
+    if issue_counts is not None:
+        include("issueCount", issue_counts[0])
+        include("issueMaxNumber", issue_counts[1])
+    sample("pullCount", lambda: _source_pull_count(config))
+    sample("discussionCount", lambda: _source_discussion_count(config))
+    sample("artifactCount", lambda: _source_artifact_count(config))
+    return result
 
 
 def _validate_seal_response(value: Mapping[str, Any]) -> SealMetadata:
@@ -985,19 +1643,20 @@ def _render_gateway_config(
     }
     repositories = []
     for owner in config.owner_aliases:
-        repositories.append(
-            {
-                "owner": owner,
-                "name": config.repository_name,
-                "visibility": "public",
-                "enabled": True,
-                "encryptedArchive": dict(encrypted_archive),
-                "integrity": {
-                    "expectedRefsSha256": metadata.expected_refs_sha256
-                },
-                "operations": list(config.operations),
-            }
-        )
+        repository = {
+            "owner": owner,
+            "name": config.repository_name,
+            "visibility": "public",
+            "enabled": True,
+            "encryptedArchive": dict(encrypted_archive),
+            "integrity": {
+                "expectedRefsSha256": metadata.expected_refs_sha256
+            },
+            "operations": list(config.operations),
+        }
+        if config.release_store is not None:
+            repository["releaseStore"] = str(config.release_store)
+        repositories.append(repository)
     return {
         "schemaVersion": 1,
         "node": {
@@ -1013,6 +1672,20 @@ def _render_gateway_config(
         "manifestPath": str(config.manifest_path),
         "requestVerifierCommand": helper_base + ["capability-verify"],
         "healthSignerCommand": helper_base + ["health-sign"],
+        **({
+            "mergeExecutorCommand": [
+                str(config.python_program),
+                str(Path(__file__).resolve()),
+                "--config",
+                str(config.config_path),
+                "merge-execute",
+            ],
+        } if "merge-pull" in config.operations else {}),
+        **({
+            "actionsSummaryPath": str(
+                config.gateway_config_path.parent / ACTIONS_SUMMARY_FILE
+            ),
+        } if "actions-status" in config.operations else {}),
         "repositories": repositories,
     }
 
@@ -1058,6 +1731,115 @@ def _fsync_directory(path: Path) -> None:
             os.close(descriptor)
     except OSError as exc:
         raise RefreshError("durable state update failed") from exc
+
+
+def _same_regular_file(
+    left: os.stat_result,
+    right: os.stat_result,
+) -> bool:
+    return (
+        stat.S_ISREG(left.st_mode)
+        and stat.S_ISREG(right.st_mode)
+        and left.st_dev == right.st_dev
+        and left.st_ino == right.st_ino
+        and left.st_uid == right.st_uid
+        and left.st_gid == right.st_gid
+        and left.st_nlink == right.st_nlink == 1
+        and stat.S_IMODE(left.st_mode) == stat.S_IMODE(right.st_mode)
+        and left.st_size == right.st_size
+        and left.st_mtime_ns == right.st_mtime_ns
+    )
+
+
+def _replace_catalog_actions_enabled(
+    config: RefreshConfig,
+    enabled: bool,
+) -> RefreshConfig:
+    """Atomically change only catalog.actionsEnabled in the refresh config."""
+    path = config.config_path
+    before = _lstat_no_symlink(path, "configuration")
+    source = _read_secure_json(
+        path,
+        label="configuration",
+        maximum=MAX_CONFIG_BYTES,
+        owner_only=True,
+    )
+    _assert_no_secret_fields(source)
+    # Re-run the complete configuration validator before preserving and
+    # rewriting any owner-controlled fields.
+    validated = load_config(path)
+    after_read = _lstat_no_symlink(path, "configuration")
+    if (
+        not _same_regular_file(before, after_read)
+        or validated.node_owner != config.node_owner
+        or validated.repository_name != config.repository_name
+        or validated.identity_state_directory
+        != config.identity_state_directory
+    ):
+        raise RefreshError("configuration changed during Actions update")
+
+    catalog = source.get("catalog", {})
+    if not isinstance(catalog, dict):
+        # load_config() already rejects this, but retain a fixed local failure
+        # if the implementation is changed independently later.
+        raise RefreshError("catalog must be an object")
+    updated = dict(source)
+    updated_catalog = dict(catalog)
+    updated_catalog["actionsEnabled"] = enabled
+    updated["catalog"] = updated_catalog
+
+    staged: Path | None = None
+    try:
+        staged = _write_staged_json(path.parent, path.name, updated)
+        try:
+            os.chmod(
+                staged,
+                stat.S_IMODE(before.st_mode),
+                follow_symlinks=False,
+            )
+            staged_descriptor, staged_info = _open_bounded_file(
+                staged,
+                label="staged Actions configuration",
+                maximum=MAX_CONFIG_BYTES,
+                owner_only=True,
+            )
+            try:
+                if (
+                    stat.S_IMODE(staged_info.st_mode)
+                    != stat.S_IMODE(before.st_mode)
+                ):
+                    raise RefreshError(
+                        "configuration permissions could not be preserved"
+                    )
+                os.fsync(staged_descriptor)
+            finally:
+                os.close(staged_descriptor)
+            current = _lstat_no_symlink(path, "configuration")
+        except OSError as exc:
+            raise RefreshError(
+                "configuration permissions could not be preserved"
+            ) from exc
+        if not _same_regular_file(before, current):
+            raise RefreshError("configuration changed during Actions update")
+        _fsync_directory(path.parent)
+        os.replace(staged, path)
+        staged = None
+        try:
+            _fsync_directory(path.parent)
+        except RefreshError:
+            # The atomic rename already committed a complete owner-only file.
+            # As with refresh(), do not misreport that committed state as a
+            # rollback-safe failure.
+            pass
+    except OSError as exc:
+        raise RefreshError("Actions configuration update failed") from exc
+    finally:
+        if staged is not None:
+            try:
+                staged.unlink()
+            except FileNotFoundError:
+                pass
+    return load_config(path)
 
 
 def _install_content_addressed_archive(
@@ -1176,6 +1958,29 @@ def _validate_active(
     ):
         raise RefreshError("active archive does not match the exact source refs")
     _invoke_gateway_check(config, config.gateway_config_path)
+    return identity, metadata, archive_path
+
+
+def _validate_active_renewal(
+    config: RefreshConfig,
+) -> tuple[PublicIdentity, SealMetadata, Path]:
+    """Validate the immutable active generation without materializing it.
+
+    A health-lease renewal runs every few minutes, so repeating a full Git fsck
+    and encrypted gateway materialization would consume most of a small mirror
+    host.  The active configuration and ciphertext are still authenticated
+    here, and the exact source refs must still match the sealed state.  The
+    Worker then performs its normal fresh signed repository challenge before it
+    marks the renewed endpoint healthy.
+    """
+    identity = _load_public_identity(config)
+    _require_bare_source(config)
+    metadata, archive_path = _active_metadata(config, identity)
+    if not secrets.compare_digest(
+        _source_refs_sha256(config),
+        metadata.expected_refs_sha256,
+    ):
+        raise RefreshError("active archive does not match the exact source refs")
     return identity, metadata, archive_path
 
 
@@ -1356,11 +2161,270 @@ def _sign_endpoint(
     return response
 
 
+MAX_PUBLIC_TELEMETRY_BYTES = 1 << 50
+MAX_PROC_METRIC_BYTES = 64 * 1024
+
+
+def _read_proc_metric(path: Path) -> bytes | None:
+    """Read one fixed Linux proc metric without following a replacement link."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        data = os.read(descriptor, MAX_PROC_METRIC_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    if not data or len(data) > MAX_PROC_METRIC_BYTES:
+        return None
+    return data
+
+
+def _proc_cpu_snapshot(raw: bytes | None) -> tuple[int, int] | None:
+    """Return Linux aggregate (idle ticks, total ticks) from /proc/stat."""
+    if not raw:
+        return None
+    try:
+        first = raw.decode("ascii", "strict").splitlines()[0].split()
+    except (UnicodeDecodeError, IndexError):
+        return None
+    if not first or first[0] != "cpu" or len(first) < 5:
+        return None
+    values = []
+    for item in first[1:9]:
+        if not re.fullmatch(r"[0-9]{1,20}", item):
+            return None
+        number = int(item)
+        if number > (1 << 63) - 1:
+            return None
+        values.append(number)
+    if len(values) < 4:
+        return None
+    total = sum(values)
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    return (idle, total) if total > 0 and idle <= total else None
+
+
+def _sample_linux_cpu(
+    *,
+    read_metric: Callable[[Path], bytes | None] = _read_proc_metric,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> int | None:
+    first = _proc_cpu_snapshot(read_metric(Path("/proc/stat")))
+    if first is None:
+        return None
+    sleeper(0.1)
+    second = _proc_cpu_snapshot(read_metric(Path("/proc/stat")))
+    if second is None:
+        return None
+    idle_delta = second[0] - first[0]
+    total_delta = second[1] - first[1]
+    if total_delta <= 0 or idle_delta < 0 or idle_delta > total_delta:
+        return None
+    busy_delta = total_delta - idle_delta
+    return max(0, min(100, (busy_delta * 100 + total_delta // 2) // total_delta))
+
+
+def _parse_linux_memory(raw: bytes | None) -> tuple[int, int] | None:
+    """Return used/total bytes from bounded MemTotal and MemAvailable values."""
+    if not raw:
+        return None
+    values: dict[str, int] = {}
+    try:
+        lines = raw.decode("ascii", "strict").splitlines()
+    except UnicodeDecodeError:
+        return None
+    for line in lines:
+        match = re.fullmatch(
+            r"(MemTotal|MemAvailable):[ \t]+([0-9]{1,20})[ \t]+kB[ \t]*",
+            line,
+        )
+        if not match:
+            continue
+        kibibytes = int(match.group(2))
+        if kibibytes > MAX_PUBLIC_TELEMETRY_BYTES // 1024:
+            return None
+        values[match.group(1)] = kibibytes * 1024
+    total = values.get("MemTotal")
+    available = values.get("MemAvailable")
+    if (
+        total is None
+        or available is None
+        or total <= 0
+        or available < 0
+        or available > total
+    ):
+        return None
+    return total - available, total
+
+
+def _sample_linux_memory(
+    *,
+    read_metric: Callable[[Path], bytes | None] = _read_proc_metric,
+) -> tuple[int, int] | None:
+    return _parse_linux_memory(read_metric(Path("/proc/meminfo")))
+
+
+def _sample_linux_disk(
+    path: Path,
+    *,
+    statvfs: Callable[[Path], Any] = os.statvfs,
+) -> tuple[int, int] | None:
+    try:
+        info = statvfs(path)
+        block_size = int(info.f_frsize or info.f_bsize)
+        blocks = int(info.f_blocks)
+        available_blocks = int(info.f_bavail)
+    except (AttributeError, OSError, TypeError, ValueError, OverflowError):
+        return None
+    if (
+        block_size <= 0
+        or blocks <= 0
+        or available_blocks < 0
+        or available_blocks > blocks
+    ):
+        return None
+    total_raw = blocks * block_size
+    used_raw = total_raw - available_blocks * block_size
+    total = min(total_raw, MAX_PUBLIC_TELEMETRY_BYTES)
+    return min(max(0, used_raw), total), total
+
+
+def _bounded_optional_metric(value: Any, maximum: int) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return min(value, maximum)
+
+
+def _bounded_optional_usage(value: Any) -> tuple[int, int] | None:
+    if not isinstance(value, tuple) or len(value) != 2:
+        return None
+    used = _bounded_optional_metric(value[0], MAX_PUBLIC_TELEMETRY_BYTES)
+    total = _bounded_optional_metric(value[1], MAX_PUBLIC_TELEMETRY_BYTES)
+    if used is None or total is None or total <= 0:
+        return None
+    return min(used, total), total
+
+
+def _sample_host_telemetry(
+    config: RefreshConfig,
+    *,
+    cpu_sampler: Callable[[], int | None] = _sample_linux_cpu,
+    memory_sampler: Callable[[], tuple[int, int] | None] = _sample_linux_memory,
+    disk_sampler: Callable[[Path], tuple[int, int] | None] = _sample_linux_disk,
+    platform: str = sys.platform,
+) -> dict[str, int]:
+    """Collect only explicitly enabled public host metrics.
+
+    Sampling is best-effort and content-free. A disabled, unsupported, or
+    malformed reading is omitted, which the catalog/World represents as
+    unknown rather than zero.
+    """
+    if not platform.startswith("linux"):
+        return {}
+    result: dict[str, int] = {}
+    if config.catalog.report_cpu:
+        try:
+            cpu = _bounded_optional_metric(cpu_sampler(), 100)
+        except Exception:
+            cpu = None
+        if cpu is not None:
+            result["cpuPercent"] = cpu
+    if config.catalog.report_memory:
+        try:
+            memory = _bounded_optional_usage(memory_sampler())
+        except Exception:
+            memory = None
+        if memory is not None:
+            result["memUsedBytes"], result["memTotalBytes"] = memory
+    if config.catalog.report_disk:
+        try:
+            disk = _bounded_optional_usage(
+                disk_sampler(config.source_repository))
+        except Exception:
+            disk = None
+        if disk is not None:
+            result["diskUsedBytes"], result["diskTotalBytes"] = disk
+    return result
+
+
+def _actions_catalog_state(
+    config: RefreshConfig,
+    now_ms: int,
+) -> tuple[bool, str]:
+    """Return the bounded public Actions capability and live state.
+
+    ``catalog.actionsEnabled`` is the owner-controlled upper bound. A local
+    executor lease can narrow that capability to disabled or report enabled /
+    running, but it can never elevate a statically disabled node. Missing,
+    malformed, unsafe, stale, or implausibly future-dated leases fall back to
+    the truthful static enabled/disabled state and never interrupt catalog
+    renewal.
+    """
+    fallback = (
+        config.catalog.actions_enabled,
+        "enabled" if config.catalog.actions_enabled else "disabled",
+    )
+    if not config.catalog.actions_enabled:
+        return fallback
+    path = config.gateway_config_path.parent / ACTIONS_STATE_FILE
+    try:
+        value = _read_actions_state_json(path)
+        _expect_fields(
+            value,
+            {
+                "schemaVersion",
+                "type",
+                "node",
+                "state",
+                "updatedAt",
+                "expiresAt",
+            },
+            label="Actions state lease",
+        )
+    except (OSError, RefreshError):
+        return fallback
+
+    state = value.get("state")
+    updated_at = value.get("updatedAt")
+    expires_at = value.get("expiresAt")
+    if (
+        value.get("schemaVersion") != SCHEMA_VERSION
+        or value.get("type") != ACTIONS_STATE_TYPE
+        or value.get("node") != config.node_owner
+        or state not in {"disabled", "enabled", "running"}
+        or isinstance(updated_at, bool)
+        or not isinstance(updated_at, int)
+        or isinstance(expires_at, bool)
+        or not isinstance(expires_at, int)
+        or not 0 <= updated_at <= MAX_SAFE_JSON_INTEGER
+        or not 0 <= expires_at <= MAX_SAFE_JSON_INTEGER
+        or updated_at < now_ms - MAX_ACTIONS_STATE_LEASE_MS
+        or updated_at > now_ms + MAX_ACTIONS_STATE_LEASE_MS
+        or expires_at <= now_ms
+        or expires_at > now_ms + MAX_ACTIONS_STATE_LEASE_MS
+        or expires_at <= updated_at
+        or expires_at - updated_at > MAX_ACTIONS_STATE_LEASE_MS
+    ):
+        return fallback
+    if state == "disabled":
+        # The public catalog contract keeps actionsEnabled/actionsState
+        # internally consistent: a live disabled executor advertises no current
+        # capability even though the owner configuration permits re-enabling it.
+        return False, "disabled"
+    return True, state
+
+
 def _catalog_unsigned(
     config: RefreshConfig,
     metadata: SealMetadata,
     now_ms: int,
 ) -> dict[str, Any]:
+    actions_enabled, actions_state = _actions_catalog_state(config, now_ms)
     record: dict[str, Any] = {
         "owner": config.node_owner,
         "name": config.repository_name,
@@ -1384,13 +2448,22 @@ def _catalog_unsigned(
         "branch": config.catalog.branch,
         "platform": config.catalog.platform,
         "version": config.catalog.version,
+        # The owner configuration caps this capability; the live state comes
+        # only from a strict, short owner-local executor lease. Workflow
+        # definitions, variables, commands, paths, and logs never enter this
+        # signed catalog publication.
+        "actionsEnabled": actions_enabled,
+        "actionsState": actions_state,
         "nodeId": config.node_owner,
         "stateHash": metadata.expected_refs_sha256,
+        "commit": _source_branch_commit(config),
     }
     if config.catalog.solana:
         record["solana"] = config.catalog.solana
     if config.catalog.hosted_since:
         record["hostedSince"] = config.catalog.hosted_since
+    record.update(_sample_repository_statistics(config))
+    record.update(_sample_host_telemetry(config))
     return record
 
 
@@ -1431,17 +2504,50 @@ def _sign_catalog(
     return response
 
 
-def register(
+def _publish_registration(
     config: RefreshConfig,
+    identity: PublicIdentity,
+    metadata: SealMetadata,
     *,
     post_json: Callable[
         [str, Mapping[str, Any]], tuple[int, dict[str, Any]]
     ] = _post_json,
 ) -> dict[str, Any]:
-    with _refresh_lock(config, shared=False):
-        identity, metadata, _archive_path = _validate_active(config)
+    endpoint = _sign_endpoint(config, identity)
+    endpoint_status, endpoint_response = post_json(
+        config.worker_origin + "/api/mirrors/https",
+        endpoint,
+    )
+    if (
+        endpoint_status not in {200, 201}
+        or endpoint_response.get("ok") is not True
+        or endpoint_response.get("node") != config.node_owner
+        or endpoint_response.get("baseUrl") != config.public_origin
+    ):
+        raise RefreshError("endpoint registration was not accepted")
 
-        endpoint = _sign_endpoint(config, identity)
+    catalog = _sign_catalog(config, identity, metadata)
+    catalog_status, catalog_response = post_json(
+        config.worker_origin + "/api/repositories",
+        catalog,
+    )
+    repository = catalog_response.get("repository")
+    if (
+        catalog_status not in {200, 201}
+        or catalog_response.get("ok") is not True
+        or not isinstance(repository, dict)
+        or repository.get("owner") != config.node_owner
+        or repository.get("name") != config.repository_name
+        or repository.get("stateHash") != metadata.expected_refs_sha256
+    ):
+        raise RefreshError("catalog publication was not accepted")
+
+    # A new canonical state can legitimately leave the first endpoint
+    # challenge pending: the endpoint is registered before its catalog write
+    # advances the public state pin. Re-register once after that durable write
+    # and require the Worker to confirm a fresh signed proof against the final
+    # pin. Normal renewals already return active and avoid this extra request.
+    if endpoint_response.get("health") != "active":
         endpoint_status, endpoint_response = post_json(
             config.worker_origin + "/api/mirrors/https",
             endpoint,
@@ -1451,29 +2557,82 @@ def register(
             or endpoint_response.get("ok") is not True
             or endpoint_response.get("node") != config.node_owner
             or endpoint_response.get("baseUrl") != config.public_origin
+            or endpoint_response.get("health") != "active"
         ):
-            raise RefreshError("endpoint registration was not accepted")
+            raise RefreshError(
+                "endpoint registration did not activate signed health")
+    return {
+        "ok": True,
+        "aliasCount": len(config.owner_aliases),
+    }
 
-        catalog = _sign_catalog(config, identity, metadata)
-        catalog_status, catalog_response = post_json(
-            config.worker_origin + "/api/repositories",
-            catalog,
+
+def register(
+    config: RefreshConfig,
+    *,
+    post_json: Callable[
+        [str, Mapping[str, Any]], tuple[int, dict[str, Any]]
+    ] = _post_json,
+) -> dict[str, Any]:
+    with _refresh_lock(config, shared=False):
+        identity, metadata, _archive_path = _validate_active(config)
+        result = _publish_registration(
+            config, identity, metadata, post_json=post_json)
+        result["event"] = "registration_complete"
+        return result
+
+
+def renew(
+    config: RefreshConfig,
+    *,
+    post_json: Callable[
+        [str, Mapping[str, Any]], tuple[int, dict[str, Any]]
+    ] = _post_json,
+) -> dict[str, Any]:
+    with _refresh_lock(config, shared=False):
+        identity, metadata, _archive_path = _validate_active_renewal(config)
+        result = _publish_registration(
+            config, identity, metadata, post_json=post_json)
+        result["event"] = "renewal_complete"
+        return result
+
+
+def configure_actions(
+    config: RefreshConfig,
+    value: Mapping[str, Any],
+    *,
+    post_json: Callable[
+        [str, Mapping[str, Any]], tuple[int, dict[str, Any]]
+    ] = _post_json,
+) -> dict[str, Any]:
+    """Apply one secret-free Actions toggle and republish signed state."""
+    _expect_fields(
+        value,
+        {"schemaVersion", "type", "actionsEnabled"},
+        label="Actions configuration request",
+    )
+    enabled = value.get("actionsEnabled")
+    if (
+        value.get("schemaVersion") != SCHEMA_VERSION
+        or value.get("type") != ACTIONS_CONFIGURATION_TYPE
+        or not isinstance(enabled, bool)
+    ):
+        raise RefreshError("Actions configuration request is invalid")
+
+    with _refresh_lock(config, shared=False):
+        updated = _replace_catalog_actions_enabled(config, enabled)
+        identity, metadata, _archive_path = _validate_active_renewal(updated)
+        _publish_registration(
+            updated,
+            identity,
+            metadata,
+            post_json=post_json,
         )
-        repository = catalog_response.get("repository")
-        if (
-            catalog_status not in {200, 201}
-            or catalog_response.get("ok") is not True
-            or not isinstance(repository, dict)
-            or repository.get("owner") != config.node_owner
-            or repository.get("name") != config.repository_name
-            or repository.get("stateHash") != metadata.expected_refs_sha256
-        ):
-            raise RefreshError("catalog publication was not accepted")
-        return {
-            "ok": True,
-            "event": "registration_complete",
-            "aliasCount": len(config.owner_aliases),
-        }
+    return {
+        "ok": True,
+        "event": "actions_configuration_complete",
+        "actionsEnabled": enabled,
+    }
 
 
 def check(config: RefreshConfig) -> dict[str, Any]:
@@ -1485,6 +2644,1372 @@ def check(config: RefreshConfig) -> dict[str, Any]:
             "aliasCount": len(config.owner_aliases),
             "networkRequests": 0,
         }
+
+
+# --- Authenticated pull-merge executor --------------------------------------
+#
+# The edge Worker authenticates the account and signs the complete request.
+# This node-side executor still treats every body field as hostile: repository
+# paths come only from the owner-controlled refresh configuration, branch names
+# come from committed pull metadata, and Git receives fixed argument vectors
+# with hooks, credentials, external protocols, and ambient configuration
+# disabled.  A request id is recorded as an out-of-band Git ref so retries are
+# durable without changing the public refs digest.
+
+MERGE_JOB_TYPE = "forkmesh.pull-merge-job-v1"
+MERGE_EXECUTOR_TYPE = "forkmesh.pull-merge-executor-v1"
+MERGE_QUARANTINE_TYPE = "forkmesh.pull-merge-quarantine-v1"
+MERGE_STAGING_REF_PREFIX = "refs/forkmesh/merge-staging/"
+MERGE_COMPLETED_REF_PREFIX = "refs/forkmesh/merge-completed/"
+MERGE_FAILURES = frozenset({
+    "merge_conflict",
+    "pull_not_found",
+    "pull_not_open",
+    "stale_base",
+    "stale_head",
+    "stale_pull_metadata",
+    "unsupported_pull",
+})
+
+
+def _valid_merge_branch(value: Any) -> str:
+    branch = str(value or "").strip()
+    if (
+        not MERGE_BRANCH_RE.fullmatch(branch)
+        or branch.startswith(("-", ".", "/"))
+        or branch.endswith((".", "/", ".lock"))
+        or ".." in branch
+        or "//" in branch
+        or "@{" in branch
+        or "\\" in branch
+    ):
+        return ""
+    return branch
+
+
+def _merge_request(
+    config: RefreshConfig, value: Mapping[str, Any]
+) -> dict[str, Any]:
+    _expect_fields(
+        value,
+        {
+            "schemaVersion",
+            "type",
+            "action",
+            "owner",
+            "repository",
+            "pullNumber",
+            "requestId",
+            "expectedBaseOid",
+            "expectedHeadOid",
+            "expectedPullsOid",
+        },
+        label="merge executor request",
+    )
+    if (
+        value.get("schemaVersion") != 1
+        or value.get("type") != MERGE_EXECUTOR_TYPE
+        or value.get("action") not in {"execute", "status", "register"}
+    ):
+        raise RefreshError("merge executor request protocol is unsupported")
+    owner = str(value.get("owner") or "").strip().lower()
+    repository = str(value.get("repository") or "").strip()
+    request_id = str(value.get("requestId") or "").strip()
+    try:
+        pull_number = int(value.get("pullNumber"))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RefreshError("merge executor request is invalid") from exc
+    oids = {
+        field: str(value.get(field) or "").strip().lower()
+        for field in (
+            "expectedBaseOid", "expectedHeadOid", "expectedPullsOid")
+    }
+    if (
+        owner not in config.owner_aliases
+        or repository.lower() != config.repository_name.lower()
+        or not 1 <= pull_number <= 999_999_999
+        or not MERGE_REQUEST_ID_RE.fullmatch(request_id)
+        or any(not GIT_OBJECT_ID_RE.fullmatch(oid) for oid in oids.values())
+        or len({len(oid) for oid in oids.values()}) != 1
+    ):
+        raise RefreshError("merge executor request is invalid")
+    request = {
+        "owner": owner,
+        "repository": config.repository_name,
+        "pullNumber": pull_number,
+        "requestId": request_id,
+        **oids,
+    }
+    request["requestDigest"] = hashlib.sha256(
+        _canonical_json(request)
+    ).hexdigest()
+    request["action"] = str(value["action"])
+    return request
+
+
+def _merge_request_token(request: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        str(request["requestId"]).encode("ascii")
+    ).hexdigest()
+
+
+def _merge_state_directory(config: RefreshConfig, name: str) -> Path:
+    root = _require_owner_directory(
+        config.identity_state_directory, "identity state directory")
+    path = root / name
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise RefreshError("merge state directory cannot be created") from exc
+    return _require_owner_directory(path, "merge state directory")
+
+
+def _merge_jobs_directory(config: RefreshConfig) -> Path:
+    return _merge_state_directory(config, "merge-jobs")
+
+
+def _merge_job_path(
+    config: RefreshConfig, request: Mapping[str, Any]
+) -> Path:
+    return _merge_jobs_directory(config) / (
+        _merge_request_token(request) + ".json")
+
+
+def _validate_merge_job_record(
+    record: Mapping[str, Any], request: Mapping[str, Any]
+) -> dict[str, Any]:
+    expected = {
+        "schemaVersion", "type", "requestDigest", "requestId", "status",
+        "error", "baseBefore", "head", "pullsBefore", "baseAfter",
+        "pullsAfter",
+    }
+    if (
+        set(record) != expected
+        or record.get("schemaVersion") != 1
+        or record.get("type") != MERGE_JOB_TYPE
+        or record.get("requestId") != request["requestId"]
+        or record.get("requestDigest") != request["requestDigest"]
+        or record.get("status") not in {"merged", "failed"}
+        or (
+            record.get("status") == "failed"
+            and record.get("error") not in MERGE_FAILURES
+        )
+        or any(
+            value and not GIT_OBJECT_ID_RE.fullmatch(str(value))
+            for value in (
+                record.get("baseBefore"), record.get("head"),
+                record.get("pullsBefore"), record.get("baseAfter"),
+                record.get("pullsAfter"),
+            )
+        )
+    ):
+        raise RefreshError("merge request id was already used")
+    return dict(record)
+
+
+def _merge_git(
+    config: RefreshConfig,
+    arguments: Iterable[str],
+    *,
+    input_bytes: bytes | None = None,
+    index_file: Path | None = None,
+    object_directory: Path | None = None,
+    commit_identity: bool = False,
+    maximum_output: int = MAX_JSON_OUTPUT_BYTES,
+    allowed_codes: frozenset[int] = frozenset({0}),
+) -> tuple[int, bytes]:
+    environment = _safe_environment()
+    if index_file is not None:
+        environment["GIT_INDEX_FILE"] = str(index_file)
+    if object_directory is not None:
+        environment["GIT_OBJECT_DIRECTORY"] = str(object_directory)
+    if commit_identity:
+        environment.update({
+            "GIT_AUTHOR_NAME": "ForkMesh merge node",
+            "GIT_AUTHOR_EMAIL": "merge@forkmesh.invalid",
+            "GIT_COMMITTER_NAME": "ForkMesh merge node",
+            "GIT_COMMITTER_EMAIL": "merge@forkmesh.invalid",
+        })
+    with tempfile.TemporaryFile(mode="w+b") as output:
+        try:
+            completed = subprocess.run(
+                _git_prefix(config) + list(arguments),
+                input=input_bytes,
+                stdout=output,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+                timeout=PROCESS_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RefreshError("merge Git operation failed") from exc
+        if completed.returncode not in allowed_codes:
+            raise RefreshError("merge Git operation failed")
+        size = output.tell()
+        if size > maximum_output:
+            raise RefreshError("merge Git operation returned too much data")
+        output.seek(0)
+        return completed.returncode, output.read(maximum_output + 1)
+
+
+def _merge_oid(
+    config: RefreshConfig, ref: str, *, object_type: str = "commit"
+) -> str:
+    _code, raw = _merge_git(
+        config,
+        ["rev-parse", "--verify", "--quiet", "--end-of-options",
+         ref + "^{" + object_type + "}"],
+        maximum_output=256,
+    )
+    oid = raw.decode("ascii", "ignore").strip().lower()
+    if not GIT_OBJECT_ID_RE.fullmatch(oid):
+        raise RefreshError("merge Git object is invalid")
+    return oid
+
+
+def _merge_job_record(
+    config: RefreshConfig, request: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    path = _merge_job_path(config, request)
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RefreshError("merge job record cannot be inspected") from exc
+    try:
+        record = _read_secure_json(
+            path,
+            label="merge job record",
+            maximum=MAX_MERGE_REQUEST_BYTES,
+            owner_only=True,
+        )
+    except RefreshError:
+        raise
+    return _validate_merge_job_record(record, request)
+
+
+def _merge_cleanup_job_records(
+    config: RefreshConfig, *, keep: Path | None = None
+) -> None:
+    """Apply a hard local bound without ever rewriting a surviving record."""
+    directory = _merge_jobs_directory(config)
+    now = time.time()
+    entries: list[tuple[float, Path]] = []
+    for path in directory.iterdir():
+        if path == keep or not re.fullmatch(r"[0-9a-f]{64}\.json", path.name):
+            continue
+        info = _lstat_no_symlink(path, "merge job record")
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) & 0o077
+        ):
+            raise RefreshError("merge job record permissions are unsafe")
+        entries.append((info.st_mtime, path))
+    entries.sort(key=lambda item: (item[0], item[1].name))
+    expired = [
+        path for modified, path in entries
+        if now - modified > LOCAL_MERGE_JOB_RETENTION_SECONDS
+    ]
+    survivors = len(entries) - len(expired) + (1 if keep is not None else 0)
+    excess = max(0, survivors - MAX_LOCAL_MERGE_JOBS)
+    victims = expired + [
+        path for _modified, path in entries
+        if path not in expired
+    ][:excess]
+    changed = False
+    for path in dict.fromkeys(victims):
+        try:
+            path.unlink()
+            changed = True
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise RefreshError("merge job retention cleanup failed") from exc
+    if changed:
+        _fsync_directory(directory)
+
+
+def _merge_store_record(
+    config: RefreshConfig,
+    request: Mapping[str, Any],
+    record: Mapping[str, Any],
+) -> dict[str, Any]:
+    checked = _validate_merge_job_record(record, request)
+    existing = _merge_job_record(config, request)
+    if existing is not None:
+        return existing
+    final = _merge_job_path(config, request)
+    _merge_cleanup_job_records(config, keep=final)
+    staged = _write_staged_json(final.parent, final.name, checked)
+    try:
+        try:
+            os.link(staged, final, follow_symlinks=False)
+        except FileExistsError:
+            pass
+        staged.unlink()
+        _fsync_directory(final.parent)
+    except OSError as exc:
+        try:
+            staged.unlink()
+        except OSError:
+            pass
+        raise RefreshError("merge job record write failed") from exc
+    stored = _merge_job_record(config, request)
+    if stored is None:
+        raise RefreshError("merge job record write failed")
+    return stored
+
+
+def _merge_record_value(
+    request: Mapping[str, Any],
+    *,
+    status: str,
+    error: str = "",
+    base_after: str = "",
+    pulls_after: str = "",
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "type": MERGE_JOB_TYPE,
+        "requestDigest": request["requestDigest"],
+        "requestId": request["requestId"],
+        "status": status,
+        "error": error,
+        "baseBefore": request["expectedBaseOid"],
+        "head": request["expectedHeadOid"],
+        "pullsBefore": request["expectedPullsOid"],
+        "baseAfter": base_after,
+        "pullsAfter": pulls_after,
+    }
+
+
+def _merge_store_failure(
+    config: RefreshConfig,
+    request: Mapping[str, Any],
+    error: str,
+) -> dict[str, Any]:
+    if error not in MERGE_FAILURES:
+        raise RefreshError("merge failure code is invalid")
+    existing = _merge_job_record(config, request)
+    if existing is not None:
+        return existing
+    record = _merge_record_value(request, status="failed", error=error)
+    return _merge_store_record(config, request, record)
+
+
+def _merge_pull_metadata(
+    raw: bytes,
+    request: Mapping[str, Any],
+    default_branch: str,
+) -> tuple[bytes, str, str] | None:
+    if (
+        not raw
+        or len(raw) > MAX_PULL_METADATA_BYTES
+        or b"\x00" in raw
+        or b"\r" in raw
+    ):
+        return None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    lines = text.split("\n")
+    if not lines or lines[0] != "---":
+        return None
+    try:
+        close = lines.index("---", 1)
+    except ValueError:
+        return None
+    fields: list[tuple[str, str]] = []
+    values: dict[str, str] = {}
+    for line in lines[1:close]:
+        if ": " not in line:
+            return None
+        key, value = line.split(": ", 1)
+        if (
+            not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", key)
+            or key in values
+            or "\n" in value
+        ):
+            return None
+        fields.append((key, value))
+        values[key] = value
+    base = _valid_merge_branch(values.get("base"))
+    head = _valid_merge_branch(values.get("head"))
+    try:
+        number = int(values.get("number", "0"))
+    except ValueError:
+        return None
+    if (
+        values.get("schema") != "forkmesh-pull-v1"
+        or number != request["pullNumber"]
+        or values.get("status") != "open"
+        or values.get("derive") != "branch"
+        or not base
+        or not head
+        or base == head
+        or base != default_branch
+        or values.get("creationBaseOid", "").lower()
+        != request["expectedBaseOid"]
+        or values.get("creationHeadOid", "").lower()
+        != request["expectedHeadOid"]
+    ):
+        return None
+    # PullStore's established author signature binds title/base/head and the
+    # immutable patch/mbox reconstructed from creationBaseOid/creationHeadOid.
+    # It deliberately does not bind owner-applied lifecycle fields. Preserve
+    # every signed input and the signature byte-for-byte; change only status and
+    # the merge snapshot, exactly like PullStore::setStatus/merge.
+    replacements = {
+        "status": "merged",
+        "mergeBase": request["expectedBaseOid"],
+        "mergeHead": request["expectedHeadOid"],
+    }
+    output_fields = []
+    seen = set()
+    for key, value in fields:
+        if key in replacements:
+            value = replacements[key]
+            seen.add(key)
+        output_fields.append((key, value))
+    for key in ("mergeBase", "mergeHead"):
+        if key not in seen:
+            output_fields.append((key, replacements[key]))
+    encoded = (
+        "---\n"
+        + "\n".join(key + ": " + value for key, value in output_fields)
+        + "\n---\n"
+        + "\n".join(lines[close + 1:])
+    ).encode("utf-8")
+    if len(encoded) > MAX_PULL_METADATA_BYTES:
+        return None
+    return encoded, base, head
+
+
+def _merge_metadata_blob(
+    config: RefreshConfig,
+    request: Mapping[str, Any],
+) -> tuple[bytes, str] | None:
+    path = "pulls/%d/pull.md" % request["pullNumber"]
+    try:
+        _code, entry = _merge_git(
+            config,
+            ["ls-tree", "-z", request["expectedPullsOid"], "--", path],
+            maximum_output=1024,
+        )
+        _code, raw = _merge_git(
+            config,
+            ["show", request["expectedPullsOid"] + ":" + path],
+            maximum_output=MAX_PULL_METADATA_BYTES,
+        )
+    except RefreshError:
+        return None
+    match = re.fullmatch(
+        rb"(100644|100755) blob ([0-9a-f]{40}|[0-9a-f]{64})\t"
+        + re.escape(path.encode("utf-8"))
+        + rb"\x00",
+        entry,
+    )
+    if not match:
+        return None
+    return raw, match.group(1).decode("ascii")
+
+
+def _merge_commit_tree(
+    config: RefreshConfig,
+    tree: str,
+    parents: list[str],
+    message: str,
+    *,
+    object_directory: Path,
+) -> str:
+    arguments = ["commit-tree", tree]
+    for parent in parents:
+        arguments.extend(["-p", parent])
+    _code, raw = _merge_git(
+        config,
+        arguments,
+        input_bytes=(message.strip() + "\n").encode("utf-8"),
+        object_directory=object_directory,
+        commit_identity=True,
+        maximum_output=256,
+    )
+    oid = raw.decode("ascii", "ignore").strip().lower()
+    if not GIT_OBJECT_ID_RE.fullmatch(oid):
+        raise RefreshError("merge commit object is invalid")
+    return oid
+
+
+def _merge_code_commit(
+    config: RefreshConfig,
+    request: Mapping[str, Any],
+    *,
+    object_directory: Path,
+) -> str | None:
+    base = request["expectedBaseOid"]
+    head = request["expectedHeadOid"]
+    code, _raw = _merge_git(
+        config,
+        ["merge-base", "--is-ancestor", base, head],
+        object_directory=object_directory,
+        maximum_output=64,
+        allowed_codes=frozenset({0, 1}),
+    )
+    if code == 0:
+        return head
+    code, _raw = _merge_git(
+        config,
+        ["merge-base", "--is-ancestor", head, base],
+        object_directory=object_directory,
+        maximum_output=64,
+        allowed_codes=frozenset({0, 1}),
+    )
+    if code == 0:
+        return base
+    code, raw = _merge_git(
+        config,
+        ["merge-tree", "--write-tree", base, head],
+        object_directory=object_directory,
+        maximum_output=256 * 1024,
+        allowed_codes=frozenset({0, 1}),
+    )
+    if code != 0:
+        return None
+    first = raw.splitlines()[0].decode("ascii", "ignore").strip().lower()
+    if not GIT_OBJECT_ID_RE.fullmatch(first):
+        raise RefreshError("merge tree object is invalid")
+    return _merge_commit_tree(
+        config,
+        first,
+        [base, head],
+        "Merge pull request #%d" % request["pullNumber"],
+        object_directory=object_directory,
+    )
+
+
+def _merge_attributes_safe(
+    config: RefreshConfig, base: str, head: str
+) -> bool:
+    """Reject repository-configured external low-level merge drivers.
+
+    ``merge-tree`` does not run hooks or check out files, but Git attributes
+    can select a named driver whose command is read from local repository
+    configuration. Online merges support only Git's built-in text, binary, and
+    union drivers; a custom driver requires an operator-side review instead.
+    """
+    info_attributes = config.source_repository / "info" / "attributes"
+    try:
+        info = info_attributes.lstat()
+    except FileNotFoundError:
+        info = None
+    except OSError:
+        return False
+    if info is not None and info.st_size:
+        return False
+    blobs = set()
+    for commit in (base, head):
+        try:
+            _code, raw = _merge_git(
+                config,
+                ["ls-tree", "-r", "-z", commit],
+                maximum_output=MAX_REPOSITORY_METADATA_BYTES,
+            )
+        except RefreshError:
+            return False
+        for entry in raw.split(b"\x00"):
+            if not entry:
+                continue
+            match = re.fullmatch(
+                rb"[0-9]{6} blob ([0-9a-f]{40}|[0-9a-f]{64})\t(.*)",
+                entry,
+            )
+            if not match:
+                continue
+            path = match.group(2)
+            if not (
+                path == b".gitattributes"
+                or path.endswith(b"/.gitattributes")
+            ):
+                continue
+            oid = match.group(1).decode("ascii")
+            if len(blobs) >= 256:
+                return False
+            blobs.add(oid)
+    allowed = {b"text", b"binary", b"union"}
+    total = 0
+    for blob in blobs:
+        try:
+            _code, raw = _merge_git(
+                config, ["cat-file", "blob", blob],
+                maximum_output=256 * 1024)
+        except RefreshError:
+            return False
+        total += len(raw)
+        if total > 1024 * 1024:
+            return False
+        for match in re.finditer(
+                rb"(?:^|[ \t])merge=([^ \t\r\n#]+)", raw, re.MULTILINE):
+            if match.group(1).lower() not in allowed:
+                return False
+    return True
+
+
+def _merge_metadata_commit(
+    config: RefreshConfig,
+    request: Mapping[str, Any],
+    updated: bytes,
+    mode: str,
+    *,
+    object_directory: Path,
+) -> str:
+    path = "pulls/%d/pull.md" % request["pullNumber"]
+    # Pull metadata is a committed UTF-8 document, so hash its exact bytes
+    # rather than the canonical-JSON encoding used for job records.
+    _code, raw = _merge_git(
+        config,
+        ["hash-object", "-w", "--stdin"],
+        input_bytes=updated,
+        object_directory=object_directory,
+        maximum_output=256,
+    )
+    blob = raw.decode("ascii", "ignore").strip().lower()
+    if not GIT_OBJECT_ID_RE.fullmatch(blob):
+        raise RefreshError("pull metadata object is invalid")
+    with tempfile.TemporaryDirectory(
+        prefix=".merge-index-", dir=config.identity_state_directory
+    ) as temporary:
+        index = Path(temporary) / "index"
+        _merge_git(
+            config, ["read-tree", request["expectedPullsOid"]],
+            index_file=index, object_directory=object_directory,
+            maximum_output=256)
+        _merge_git(
+            config,
+            ["update-index", "--add", "--cacheinfo", mode, blob, path],
+            index_file=index,
+            object_directory=object_directory,
+            maximum_output=256,
+        )
+        _code, tree_raw = _merge_git(
+            config, ["write-tree"], index_file=index,
+            object_directory=object_directory, maximum_output=256)
+    tree = tree_raw.decode("ascii", "ignore").strip().lower()
+    if not GIT_OBJECT_ID_RE.fullmatch(tree):
+        raise RefreshError("pull metadata tree is invalid")
+    return _merge_commit_tree(
+        config,
+        tree,
+        [request["expectedPullsOid"]],
+        "pull #%d: merged" % request["pullNumber"],
+        object_directory=object_directory,
+    )
+
+
+def _merge_quarantine_root(config: RefreshConfig) -> Path:
+    return _merge_state_directory(config, "merge-quarantine")
+
+
+def _merge_quarantine_path(
+    config: RefreshConfig, request: Mapping[str, Any]
+) -> Path:
+    return _merge_quarantine_root(config) / _merge_request_token(request)
+
+
+def _merge_staging_refs(
+    request: Mapping[str, Any],
+) -> tuple[str, str]:
+    prefix = MERGE_STAGING_REF_PREFIX + _merge_request_token(request) + "/"
+    return prefix + "base", prefix + "pulls"
+
+
+def _merge_completed_refs(
+    request: Mapping[str, Any],
+) -> tuple[str, str]:
+    prefix = MERGE_COMPLETED_REF_PREFIX + _merge_request_token(request) + "/"
+    return prefix + "base", prefix + "pulls"
+
+
+def _merge_ref_pair(
+    config: RefreshConfig, refs: tuple[str, str]
+) -> tuple[str, str] | None:
+    values: list[str | None] = []
+    for ref in refs:
+        try:
+            values.append(_merge_oid(config, ref))
+        except RefreshError:
+            values.append(None)
+    if values == [None, None]:
+        return None
+    if values[0] is None or values[1] is None:
+        raise RefreshError("merge transaction refs are incomplete")
+    return str(values[0]), str(values[1])
+
+
+def _merge_write_owner_file(path: Path, content: bytes) -> None:
+    if not content or len(content) > MAX_CONFIG_BYTES:
+        raise RefreshError("merge transaction state is invalid")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+        try:
+            _write_all(descriptor, content)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise RefreshError("merge transaction state write failed") from exc
+
+
+def _merge_create_quarantine(
+    config: RefreshConfig, request: Mapping[str, Any]
+) -> tuple[Path, Path]:
+    path = _merge_quarantine_path(config, request)
+    try:
+        path.mkdir(mode=0o700)
+        objects = path / "objects"
+        objects.mkdir(mode=0o700)
+        info = objects / "info"
+        info.mkdir(mode=0o700)
+    except OSError as exc:
+        raise RefreshError("merge object quarantine cannot be created") from exc
+    source_objects = config.source_repository / "objects"
+    source_info = _lstat_no_symlink(
+        source_objects, "source repository object directory")
+    if (
+        not stat.S_ISDIR(source_info.st_mode)
+        or source_info.st_uid != os.geteuid()
+        or stat.S_IMODE(source_info.st_mode) & stat.S_IWOTH
+        or "\n" in str(source_objects)
+    ):
+        raise RefreshError("source repository object directory is unsafe")
+    _merge_write_owner_file(
+        info / "alternates", (str(source_objects) + "\n").encode("utf-8"))
+    _fsync_directory(info)
+    _fsync_directory(objects)
+    _fsync_directory(path)
+    _fsync_directory(path.parent)
+    return path, objects
+
+
+def _merge_remove_quarantine(
+    config: RefreshConfig, path: Path
+) -> None:
+    root = _merge_quarantine_root(config)
+    if (
+        path.parent != root
+        or not re.fullmatch(r"[0-9a-f]{64}", path.name)
+    ):
+        raise RefreshError("merge object quarantine path is invalid")
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise RefreshError("merge object quarantine cannot be inspected") from exc
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) & 0o077
+    ):
+        raise RefreshError("merge object quarantine permissions are unsafe")
+    try:
+        shutil.rmtree(path)
+        _fsync_directory(root)
+    except OSError as exc:
+        raise RefreshError("merge object quarantine cleanup failed") from exc
+
+
+def _merge_quarantine_record(
+    value: Mapping[str, Any],
+    request: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    expected = {
+        "schemaVersion", "type", "requestDigest", "requestId", "pullNumber",
+        "expectedBaseOid", "expectedHeadOid", "expectedPullsOid",
+        "baseBranch", "headBranch", "baseAfter", "pullsAfter",
+    }
+    branches = (
+        _valid_merge_branch(value.get("baseBranch")),
+        _valid_merge_branch(value.get("headBranch")),
+    )
+    oids = [
+        str(value.get(field) or "")
+        for field in (
+            "expectedBaseOid", "expectedHeadOid", "expectedPullsOid",
+            "baseAfter", "pullsAfter",
+        )
+    ]
+    try:
+        number = int(value.get("pullNumber"))
+    except (TypeError, ValueError, OverflowError):
+        number = 0
+    if (
+        set(value) != expected
+        or value.get("schemaVersion") != 1
+        or value.get("type") != MERGE_QUARANTINE_TYPE
+        or not SHA256_RE.fullmatch(str(value.get("requestDigest") or ""))
+        or not MERGE_REQUEST_ID_RE.fullmatch(str(value.get("requestId") or ""))
+        or not 1 <= number <= 999_999_999
+        or not all(branches)
+        or branches[0] == branches[1]
+        or any(not GIT_OBJECT_ID_RE.fullmatch(oid) for oid in oids)
+        or len({len(oid) for oid in oids}) != 1
+    ):
+        raise RefreshError("merge transaction journal is invalid")
+    if request is not None and (
+        value.get("requestId") != request["requestId"]
+        or value.get("requestDigest") != request["requestDigest"]
+        or number != request["pullNumber"]
+        or any(
+            value.get(field) != request[field]
+            for field in (
+                "expectedBaseOid", "expectedHeadOid", "expectedPullsOid")
+        )
+    ):
+        raise RefreshError("merge request id was already used")
+    return dict(value)
+
+
+def _merge_load_quarantine(
+    config: RefreshConfig,
+    path: Path,
+    request: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    journal = _read_secure_json(
+        path / "journal.json",
+        label="merge transaction journal",
+        maximum=MAX_MERGE_REQUEST_BYTES,
+        owner_only=True,
+    )
+    checked = _merge_quarantine_record(journal, request)
+    if _merge_request_token(checked) != path.name:
+        raise RefreshError("merge transaction journal identity is invalid")
+    return checked
+
+
+def _merge_write_quarantine(
+    path: Path, journal: Mapping[str, Any]
+) -> None:
+    checked = _merge_quarantine_record(journal)
+    staged = _write_staged_json(path, "journal.json", checked)
+    final = path / "journal.json"
+    try:
+        os.link(staged, final, follow_symlinks=False)
+        staged.unlink()
+        _fsync_directory(path)
+    except OSError as exc:
+        try:
+            staged.unlink()
+        except OSError:
+            pass
+        raise RefreshError("merge transaction journal write failed") from exc
+
+
+def _merge_copy_object_cross_device(
+    source: Path, destination: Path, size: int
+) -> None:
+    temporary = destination.parent / (
+        ".forkmesh-merge-" + secrets.token_hex(12) + ".tmp")
+    source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    source_flags |= getattr(os, "O_NOFOLLOW", 0)
+    output_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    output_flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    source_fd = -1
+    output_fd = -1
+    try:
+        source_fd = os.open(source, source_flags)
+        output_fd = os.open(temporary, output_flags, 0o444)
+        copied = 0
+        while copied < size:
+            chunk = os.read(source_fd, min(1024 * 1024, size - copied))
+            if not chunk:
+                break
+            _write_all(output_fd, chunk)
+            copied += len(chunk)
+        if copied != size or os.read(source_fd, 1):
+            raise RefreshError("merge quarantine object changed while copying")
+        os.fsync(output_fd)
+        try:
+            os.link(temporary, destination, follow_symlinks=False)
+        except FileExistsError:
+            pass
+    except (OSError, RefreshError) as exc:
+        if isinstance(exc, RefreshError):
+            raise
+        raise RefreshError("merge quarantine object installation failed") from exc
+    finally:
+        if source_fd >= 0:
+            os.close(source_fd)
+        if output_fd >= 0:
+            os.close(output_fd)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _merge_install_quarantine_objects(
+    config: RefreshConfig,
+    path: Path,
+    journal: Mapping[str, Any],
+) -> None:
+    objects = _require_owner_directory(
+        path / "objects", "merge quarantine object directory")
+    alternates = _read_bounded_file(
+        objects / "info" / "alternates",
+        label="merge quarantine alternate",
+        maximum=4096,
+        owner_only=True,
+    )
+    expected_alternate = (
+        str(config.source_repository / "objects") + "\n").encode("utf-8")
+    if not secrets.compare_digest(alternates, expected_alternate):
+        raise RefreshError("merge quarantine alternate is invalid")
+    object_id_length = len(str(journal["expectedBaseOid"]))
+    source_objects = config.source_repository / "objects"
+    destination_info = _lstat_no_symlink(
+        source_objects, "source repository object directory")
+    if (
+        not stat.S_ISDIR(destination_info.st_mode)
+        or destination_info.st_uid != os.geteuid()
+        or stat.S_IMODE(destination_info.st_mode) & stat.S_IWOTH
+    ):
+        raise RefreshError("source repository object directory is unsafe")
+    count = 0
+    total = 0
+    changed_directories: set[Path] = set()
+    for shard in objects.iterdir():
+        if shard.name == "info":
+            continue
+        if not re.fullmatch(r"[0-9a-f]{2}", shard.name):
+            raise RefreshError("merge quarantine contains unexpected data")
+        shard_info = _lstat_no_symlink(
+            shard, "merge quarantine object shard")
+        if (
+            not stat.S_ISDIR(shard_info.st_mode)
+            or shard_info.st_uid != os.geteuid()
+        ):
+            raise RefreshError("merge quarantine object shard is unsafe")
+        try:
+            os.chmod(shard, 0o700, follow_symlinks=False)
+        except OSError as exc:
+            raise RefreshError("merge quarantine object shard is unsafe") from exc
+        destination_shard = source_objects / shard.name
+        try:
+            destination_shard.mkdir(mode=0o755)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise RefreshError(
+                "source repository object shard cannot be created") from exc
+        installed_shard = _lstat_no_symlink(
+            destination_shard, "source repository object shard")
+        if (
+            not stat.S_ISDIR(installed_shard.st_mode)
+            or installed_shard.st_uid != os.geteuid()
+            or stat.S_IMODE(installed_shard.st_mode) & stat.S_IWOTH
+        ):
+            raise RefreshError("source repository object shard is unsafe")
+        for source in shard.iterdir():
+            if not re.fullmatch(
+                    r"[0-9a-f]{%d}" % (object_id_length - 2), source.name):
+                raise RefreshError("merge quarantine object name is invalid")
+            info = _lstat_no_symlink(source, "merge quarantine object")
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o022
+                or info.st_size <= 0
+            ):
+                raise RefreshError("merge quarantine object is unsafe")
+            count += 1
+            total += info.st_size
+            if (
+                count > MAX_MERGE_QUARANTINE_OBJECTS
+                or total > MAX_MERGE_QUARANTINE_BYTES
+            ):
+                raise RefreshError("merge quarantine is too large")
+            destination = destination_shard / source.name
+            try:
+                os.link(source, destination, follow_symlinks=False)
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                if exc.errno != errno.EXDEV:
+                    raise RefreshError(
+                        "merge quarantine object installation failed") from exc
+                _merge_copy_object_cross_device(
+                    source, destination, info.st_size)
+            changed_directories.add(destination_shard)
+    for directory in changed_directories:
+        _fsync_directory(directory)
+    if changed_directories:
+        _fsync_directory(source_objects)
+    for oid in (journal["baseAfter"], journal["pullsAfter"]):
+        if _merge_oid(config, str(oid)) != oid:
+            raise RefreshError("installed merge object is invalid")
+
+
+def _merge_ensure_staging_refs(
+    config: RefreshConfig,
+    request: Mapping[str, Any],
+    journal: Mapping[str, Any],
+) -> None:
+    refs = _merge_staging_refs(request)
+    expected = (str(journal["baseAfter"]), str(journal["pullsAfter"]))
+    current = _merge_ref_pair(config, refs)
+    if current is not None:
+        if current != expected:
+            raise RefreshError("merge staging refs do not match the journal")
+        return
+    lines = [
+        "start",
+        "create %s %s" % (refs[0], expected[0]),
+        "create %s %s" % (refs[1], expected[1]),
+        "prepare",
+        "commit",
+        "",
+    ]
+    try:
+        _merge_git(
+            config,
+            ["update-ref", "--stdin"],
+            input_bytes="\n".join(lines).encode("ascii"),
+            maximum_output=1024,
+        )
+    except RefreshError:
+        current = _merge_ref_pair(config, refs)
+        if current != expected:
+            raise
+
+
+def _merge_recover_quarantine(
+    config: RefreshConfig,
+    path: Path,
+    request: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    journal = _merge_load_quarantine(config, path, request)
+    _merge_install_quarantine_objects(config, path, journal)
+    derived_request = request or {
+        "requestId": journal["requestId"],
+    }
+    _merge_ensure_staging_refs(config, derived_request, journal)
+    return journal
+
+
+def _recover_merge_quarantines(config: RefreshConfig) -> None:
+    root = _merge_quarantine_root(config)
+    paths = list(root.iterdir())
+    if len(paths) > 128:
+        raise RefreshError("too many pending merge quarantines")
+    for path in paths:
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", path.name)
+            or stat.S_ISLNK(path.lstat().st_mode)
+        ):
+            raise RefreshError("merge quarantine entry is invalid")
+        journal = path / "journal.json"
+        try:
+            journal.lstat()
+        except FileNotFoundError:
+            # Object writes cannot enter the source repository until the
+            # durable journal exists, so an incomplete build is safe to drop.
+            _merge_remove_quarantine(config, path)
+            continue
+        _merge_recover_quarantine(config, path)
+
+
+def _merge_prepare_quarantine(
+    config: RefreshConfig,
+    request: Mapping[str, Any],
+    *,
+    base_branch: str,
+    head_branch: str,
+    updated_metadata: bytes,
+    metadata_mode: str,
+) -> dict[str, Any] | None:
+    path = _merge_quarantine_path(config, request)
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        path, objects = _merge_create_quarantine(config, request)
+    else:
+        return _merge_recover_quarantine(config, path, request)
+    journal_written = False
+    try:
+        base_after = _merge_code_commit(
+            config, request, object_directory=objects)
+        if base_after is None:
+            _merge_remove_quarantine(config, path)
+            return None
+        pulls_after = _merge_metadata_commit(
+            config,
+            request,
+            updated_metadata,
+            metadata_mode,
+            object_directory=objects,
+        )
+        journal = {
+            "schemaVersion": 1,
+            "type": MERGE_QUARANTINE_TYPE,
+            "requestDigest": request["requestDigest"],
+            "requestId": request["requestId"],
+            "pullNumber": request["pullNumber"],
+            "expectedBaseOid": request["expectedBaseOid"],
+            "expectedHeadOid": request["expectedHeadOid"],
+            "expectedPullsOid": request["expectedPullsOid"],
+            "baseBranch": base_branch,
+            "headBranch": head_branch,
+            "baseAfter": base_after,
+            "pullsAfter": pulls_after,
+        }
+        _merge_write_quarantine(path, journal)
+        journal_written = True
+        return _merge_recover_quarantine(config, path, request)
+    except Exception:
+        if not journal_written:
+            _merge_remove_quarantine(config, path)
+        raise
+
+
+def _merge_atomic_update(
+    config: RefreshConfig,
+    request: Mapping[str, Any],
+    journal: Mapping[str, Any],
+) -> None:
+    staging = _merge_staging_refs(request)
+    completed = _merge_completed_refs(request)
+    lines = [
+        "start",
+        "verify refs/heads/%s %s" % (
+            journal["headBranch"], request["expectedHeadOid"]),
+        "update refs/heads/%s %s %s" % (
+            journal["baseBranch"], journal["baseAfter"],
+            request["expectedBaseOid"]),
+        "update refs/heads/forkmesh/pulls %s %s" % (
+            journal["pullsAfter"], request["expectedPullsOid"]),
+        "create %s %s" % (completed[0], journal["baseAfter"]),
+        "create %s %s" % (completed[1], journal["pullsAfter"]),
+        "delete %s %s" % (staging[0], journal["baseAfter"]),
+        "delete %s %s" % (staging[1], journal["pullsAfter"]),
+        "prepare",
+        "commit",
+        "",
+    ]
+    _merge_git(
+        config,
+        ["update-ref", "--stdin"],
+        input_bytes="\n".join(lines).encode("ascii"),
+        maximum_output=1024,
+    )
+
+
+def _merge_finalize_quarantine(
+    config: RefreshConfig,
+    request: Mapping[str, Any],
+    journal: Mapping[str, Any],
+) -> dict[str, Any]:
+    expected = (str(journal["baseAfter"]), str(journal["pullsAfter"]))
+    completed = _merge_ref_pair(config, _merge_completed_refs(request))
+    if completed is not None:
+        if completed != expected:
+            raise RefreshError("merge completion refs do not match the journal")
+        record = _merge_record_value(
+            request,
+            status="merged",
+            base_after=expected[0],
+            pulls_after=expected[1],
+        )
+        stored = _merge_store_record(config, request, record)
+        _merge_remove_quarantine(
+            config, _merge_quarantine_path(config, request))
+        return stored
+    try:
+        _merge_atomic_update(config, request, journal)
+    except RefreshError:
+        completed = _merge_ref_pair(config, _merge_completed_refs(request))
+        if completed is not None:
+            if completed != expected:
+                raise RefreshError(
+                    "merge completion refs do not match the journal")
+            record = _merge_record_value(
+                request,
+                status="merged",
+                base_after=expected[0],
+                pulls_after=expected[1],
+            )
+            stored = _merge_store_record(config, request, record)
+        else:
+            # Exact refs moved after validation. The hidden staging pair remains
+            # reachable, so speculative objects cannot become dangling.
+            stored = _merge_store_failure(
+                config, request, "stale_pull_metadata")
+        _merge_remove_quarantine(
+            config, _merge_quarantine_path(config, request))
+        return stored
+    record = _merge_record_value(
+        request,
+        status="merged",
+        base_after=expected[0],
+        pulls_after=expected[1],
+    )
+    stored = _merge_store_record(config, request, record)
+    _merge_remove_quarantine(
+        config, _merge_quarantine_path(config, request))
+    return stored
+
+
+def _merge_execute_locked(
+    config: RefreshConfig, request: Mapping[str, Any]
+) -> dict[str, Any]:
+    existing = _merge_job_record(config, request)
+    if existing is not None:
+        return existing
+    _recover_merge_quarantines(config)
+    quarantine = _merge_quarantine_path(config, request)
+    try:
+        quarantine.lstat()
+    except FileNotFoundError:
+        quarantine_exists = False
+    else:
+        quarantine_exists = True
+    if quarantine_exists:
+        journal = _merge_recover_quarantine(config, quarantine, request)
+        return _merge_finalize_quarantine(config, request, journal)
+    # A completion marker without its owner-only journal/record is a consumed
+    # idempotency id (for example, after bounded record expiry), never authority
+    # to reinterpret an old merge as a new request.
+    if _merge_ref_pair(config, _merge_completed_refs(request)) is not None:
+        raise RefreshError("merge request id was already used")
+    if not config.catalog.branch:
+        return _merge_store_failure(
+            config, request, "unsupported_pull")
+    base_branch = _valid_merge_branch(config.catalog.branch)
+    if not base_branch:
+        raise RefreshError("configured merge base branch is invalid")
+    try:
+        current_base = _merge_oid(
+            config, "refs/heads/" + base_branch)
+        current_pulls = _merge_oid(
+            config, "refs/heads/forkmesh/pulls")
+    except RefreshError:
+        return _merge_store_failure(
+            config, request, "stale_pull_metadata")
+    if current_base != request["expectedBaseOid"]:
+        return _merge_store_failure(config, request, "stale_base")
+    if current_pulls != request["expectedPullsOid"]:
+        return _merge_store_failure(
+            config, request, "stale_pull_metadata")
+    metadata = _merge_metadata_blob(config, request)
+    if metadata is None:
+        return _merge_store_failure(config, request, "pull_not_found")
+    raw_metadata, mode = metadata
+    parsed = _merge_pull_metadata(raw_metadata, request, base_branch)
+    if parsed is None:
+        # Deliberately one error for closed, malformed, legacy-patch, and
+        # creation-OID-mismatched records: none are safe to merge online.
+        return _merge_store_failure(config, request, "unsupported_pull")
+    updated, _base, head_branch = parsed
+    try:
+        current_head = _merge_oid(
+            config, "refs/heads/" + head_branch)
+    except RefreshError:
+        return _merge_store_failure(config, request, "stale_head")
+    if current_head != request["expectedHeadOid"]:
+        return _merge_store_failure(config, request, "stale_head")
+    if not _merge_attributes_safe(
+            config, request["expectedBaseOid"], request["expectedHeadOid"]):
+        return _merge_store_failure(config, request, "unsupported_pull")
+    journal = _merge_prepare_quarantine(
+        config,
+        request,
+        base_branch=base_branch,
+        head_branch=head_branch,
+        updated_metadata=updated,
+        metadata_mode=mode,
+    )
+    if journal is None:
+        return _merge_store_failure(config, request, "merge_conflict")
+    return _merge_finalize_quarantine(config, request, journal)
+
+
+def _merge_generation_ready(config: RefreshConfig) -> bool:
+    try:
+        identity = _load_public_identity(config)
+        metadata, _archive = _active_metadata(config, identity)
+        return secrets.compare_digest(
+            _source_refs_sha256(config),
+            metadata.expected_refs_sha256,
+        )
+    except RefreshError:
+        return False
+
+
+def _merge_public_result(
+    config: RefreshConfig,
+    request: Mapping[str, Any],
+    record: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if record is None:
+        return {
+            "ok": True,
+            "status": "missing",
+            "requestId": request["requestId"],
+            "generationReady": False,
+        }
+    if record.get("status") == "failed":
+        return {
+            "ok": False,
+            "status": "failed",
+            "requestId": request["requestId"],
+            "error": record["error"],
+            "generationReady": False,
+        }
+    return {
+        "ok": True,
+        "status": "merged",
+        "requestId": request["requestId"],
+        "baseBefore": record["baseBefore"],
+        "head": record["head"],
+        "pullsBefore": record["pullsBefore"],
+        "baseAfter": record["baseAfter"],
+        "pullsAfter": record["pullsAfter"],
+        "generationReady": _merge_generation_ready(config),
+    }
+
+
+def merge_executor(
+    config: RefreshConfig, value: Mapping[str, Any]
+) -> dict[str, Any]:
+    if "merge-pull" not in config.operations:
+        raise RefreshError("pull merge capability is disabled")
+    request = _merge_request(config, value)
+    action = request.pop("action")
+    if action == "register":
+        register(config)
+        return {
+            "ok": True,
+            "status": "registered",
+            "requestId": request["requestId"],
+        }
+    if action == "status":
+        with _refresh_lock(config, shared=True):
+            record = _merge_job_record(config, request)
+        return _merge_public_result(config, request, record)
+    with _refresh_lock(config, shared=False):
+        record = _merge_execute_locked(config, request)
+    if record.get("status") == "merged" and not _merge_generation_ready(config):
+        # Resealing is deliberately outside the Git transaction lock. refresh()
+        # acquires the same exclusive lock, validates the exact post-merge refs,
+        # and atomically swaps only a complete encrypted generation.
+        refresh(config)
+    return _merge_public_result(config, request, record)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1500,7 +4025,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="absolute owner-only refresh JSON configuration",
     )
-    parser.add_argument("mode", choices=("refresh", "check", "register"))
+    parser.add_argument(
+        "mode",
+        choices=(
+            "refresh",
+            "check",
+            "register",
+            "renew",
+            "configure-actions",
+            "merge-execute",
+        ),
+    )
     return parser
 
 
@@ -1508,11 +4043,34 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         config = load_config(args.config)
-        result = {
-            "refresh": refresh,
-            "check": check,
-            "register": register,
-        }[args.mode](config)
+        if args.mode in {"merge-execute", "configure-actions"}:
+            maximum = (
+                MAX_MERGE_REQUEST_BYTES
+                if args.mode == "merge-execute"
+                else MAX_ACTIONS_CONFIGURATION_BYTES
+            )
+            raw = sys.stdin.buffer.read(maximum + 1)
+            request = _parse_json(
+                raw,
+                maximum=maximum,
+                label=(
+                    "merge executor request"
+                    if args.mode == "merge-execute"
+                    else "Actions configuration request"
+                ),
+            )
+            result = (
+                merge_executor(config, request)
+                if args.mode == "merge-execute"
+                else configure_actions(config, request)
+            )
+        else:
+            result = {
+                "refresh": refresh,
+                "check": check,
+                "register": register,
+                "renew": renew,
+            }[args.mode](config)
         print(_canonical_json(result).decode("utf-8"), flush=True)
         return 0
     except RefreshError as exc:

@@ -20,34 +20,6 @@ on: [release, workflow_dispatch]
 jobs:
   release:
     steps:
-      # Sync the in-repo version header to the release tag. The committed
-      # source-of-truth version — project(ForkMesh VERSION X.Y.Z ...) in
-      # qt_client/CMakeLists.txt — is otherwise bumped by hand and drifts behind
-      # the published releases, so a release cut from tag vX.Y.Z should leave the
-      # header reading X.Y.Z. This rewrites only the version token on that one
-      # line; ForkMesh harvests the edit back into the working copy alongside the
-      # release metadata (see ActionRunner::landReleaseMetadata), so it lands as
-      # part of the release commit even though the worktree itself is discarded.
-      # Only runs for a tagged release (FORKMESH_TAG set) with a clean
-      # MAJOR.MINOR.PATCH version; a pre-release/dispatch build leaves it alone.
-      - name: Sync the version header to the release tag
-        run: |
-          set -e
-          version="${FORKMESH_TAG#v}"
-          version="${version%%-*}"   # drop any -rc1/-beta pre-release suffix
-          case "$version" in
-            [0-9]*.[0-9]*.[0-9]*)
-              sed -i.bak -E \
-                "s/^(project\(ForkMesh VERSION )[0-9]+\.[0-9]+\.[0-9]+/\1${version}/" \
-                qt_client/CMakeLists.txt
-              rm -f qt_client/CMakeLists.txt.bak
-              echo "Version header set to ${version}"
-              ;;
-            *)
-              echo "FORKMESH_TAG='${FORKMESH_TAG}' is not a clean semver tag; leaving the version header unchanged"
-              ;;
-          esac
-
       # Build the optimized desktop client, name the binary forkmesh-<os>-<arch>
       # [.exe] (the exact scheme install.sh resolves from `uname`), then publish
       # it: tools/forkmesh-release-publish.sh hashes the binary, copies the bytes
@@ -66,6 +38,16 @@ jobs:
           # to cut a named/pre-release channel instead of overwriting "latest".
           channel="${RELEASE_CHANNEL:-latest}"
 
+          # Provenance is meaningful only for committed inputs. Ignore the
+          # release metadata directory (it is output of this job), but reject
+          # every tracked or untracked source change before building bytes.
+          dirty="$(git status --porcelain=v1 --untracked-files=all -- . \
+            ':(exclude).forkmesh/releases/**')"
+          if [ -n "$dirty" ]; then
+            echo "ERROR: release artifact build requires a clean source worktree." >&2
+            exit 1
+          fi
+
           # Map this host's uname to the asset name install.sh autodetects.
           os="$(uname -s)"
           arch="$(uname -m)"
@@ -83,17 +65,50 @@ jobs:
           [ "$os" = "windows" ] && asset="${asset}.exe"
           echo "Building release asset: $asset (channel: $channel)"
 
-          # Stamp the release tag into the client version so the published
-          # artifact reports the version it was cut from (strip a leading "v":
-          # tag v0.6.0 -> version 0.6.0). With no tag (e.g. a manual
-          # workflow_dispatch) the build keeps the project() version.
-          version="${FORKMESH_TAG#v}"
+          # The release tag and committed project version must already agree.
+          # Mutating CMakeLists.txt during/after this job would create a source
+          # revision for which no just-built artifact exists, defeating exact
+          # fleet provenance. Version bumps therefore land before the tag.
+          project_version="$(
+            sed -nE \
+              's/^project\(ForkMesh VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' \
+              qt_client/CMakeLists.txt | head -n1
+          )"
+          # A manual workflow resolves the immutable tag for the committed
+          # project version instead of letting the publisher guess a possibly
+          # older nearest tag. Same-version rebuilds may have a newer
+          # build_commit while this tag target remains immutable.
+          release_tag="${FORKMESH_TAG:-v${project_version}}"
+          version="${release_tag#v}"
+          version_base="${version%%-*}"
+          version_base="${version_base%%+*}"
+          if [ -z "$project_version" ] ||
+             [ "$version_base" != "$project_version" ]; then
+            echo "ERROR: release version '$version' does not match committed project version '$project_version'." >&2
+            echo "       Commit the version bump before creating the release tag." >&2
+            exit 1
+          fi
+          if ! git rev-parse --verify \
+               "refs/tags/${release_tag}^{commit}" >/dev/null 2>&1; then
+            echo "ERROR: release tag '$release_tag' does not exist or does not target a commit." >&2
+            exit 1
+          fi
+
+          # Stamp the exact checkout commit separately: the fleet installer
+          # compares this embedded revision with release.json/build_commit, so a
+          # stale artifact cannot pass merely because it has the same semver.
+          # release.json is committed after this artifact is built.  Use the
+          # newest non-release-metadata commit as the code provenance on both
+          # sides, avoiding an impossible artifact<->metadata commit cycle.
+          revision="$(git log -1 --format=%H -- . \
+            ':(exclude).forkmesh/releases/**')"
 
           # Configure + build the client (Release, tests off — this is a release
           # artifact build, the CI workflow already runs the test suite).
           jobs="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )"
           cmake -S qt_client -B qt_client/build-release \
             -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=OFF \
+            -DFORKMESH_BUILD_COMMIT_OVERRIDE="$revision" \
             ${version:+-DFORKMESH_VERSION_OVERRIDE="$version"}
           cmake --build qt_client/build-release -j"$jobs"
           install_root="qt_client/build-release/install"
@@ -112,6 +127,22 @@ jobs:
           done
           if [ -z "$built" ]; then
             echo "ERROR: build did not produce an executable in qt_client/build-release" >&2
+            exit 1
+          fi
+          reported_version="$("$built" --version 2>&1)" || {
+            echo "ERROR: built release did not report its version." >&2
+            exit 1
+          }
+          if [ "$reported_version" != "ForkMesh $version" ]; then
+            echo "ERROR: built release reports '$reported_version' (expected 'ForkMesh $version')." >&2
+            exit 1
+          fi
+          reported_commit="$("$built" --build-commit 2>&1)" || {
+            echo "ERROR: built release did not report an exact source commit." >&2
+            exit 1
+          }
+          if [ "$reported_commit" != "$revision" ]; then
+            echo "ERROR: built release reports source commit '$reported_commit' (expected '$revision')." >&2
             exit 1
           fi
 
@@ -141,7 +172,7 @@ jobs:
             --binary "$package_input" \
             --install-root "$install_root" \
             --channel "$channel" \
-            --tag "${FORKMESH_TAG:-}" \
+            --tag "$release_tag" \
             --outdir . | tail -n1 || true)"
           if [ -n "$installer" ] && [ -f "$installer" ]; then
             echo "Built installer: $installer"
@@ -155,7 +186,8 @@ jobs:
           cas="${FORKMESH_RELEASE_CAS:-.forkmesh/release-blobs}"
           tools/forkmesh-release-publish.sh \
             --channel "$channel" \
-            --tag "${FORKMESH_TAG:-}" \
+            --tag "$release_tag" \
+            --build-commit "$revision" \
             --cas-dir "$cas" \
             ${FORKMESH_REPO:+--repo "$FORKMESH_REPO"} \
             "${publish_assets[@]}"

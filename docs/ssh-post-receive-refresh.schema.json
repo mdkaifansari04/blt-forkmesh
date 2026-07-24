@@ -46,7 +46,8 @@
     "healthTimeoutSeconds": {
       "type": "integer",
       "minimum": 5,
-      "maximum": 300
+      "maximum": 300,
+      "default": 180
     }
   }
 }

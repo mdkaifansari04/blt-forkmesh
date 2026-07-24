@@ -18,10 +18,29 @@ import re
 # (/clients); the Durable Object picks behavior from the upgrade header.
 ROOM_RE = re.compile(r"^/api/room/([^/]+)/(?:ws|clients)$")
 REPO_ROOM_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/rooms/([^/]+)/(?:ws|clients)$")
+# Platform-administrator-created private chat channels. Public paths use only
+# opaque 128-bit identifiers; human-readable channel names stay encrypted.
+CHAT_CHANNELS_RE = re.compile(r"^/api/chat/channels/?$")
+CHAT_CHANNEL_MEMBERS_RE = re.compile(
+    r"^/api/chat/channels/([0-9a-f]{32})/members/?$")
+CHAT_CHANNEL_ROOM_ACCESS_RE = re.compile(
+    r"^/api/chat/channels/([0-9a-f]{32})/room-access/?$")
+CHAT_CHANNEL_WS_RE = re.compile(
+    r"^/api/chat/channels/([0-9a-f]{32})/ws/?$")
 # Issue inbox: signed submissions from people without write access to the repo.
 REPO_ISSUES_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/issues$")
 # Pull-request inbox: signed PR submissions from any node.
 REPO_PULLS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pulls$")
+# Authenticated, asynchronous merge of one exact open pull request.  The
+# repository alias rewrite runs before this route, so the handler always
+# authorizes and dispatches against the canonical backing-node namespace.
+REPO_PULL_MERGE_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/pulls/([1-9][0-9]{0,8})/merge$")
+# Owner/write-authorized, bounded redacted run summaries from an attested
+# mirror Actions executor. No workflow variables or public catalog data use
+# this endpoint.
+REPO_ACTION_RUNS_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/actions/runs$")
 # Commit-comment inbox: signed per-commit comments from any node.
 REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")
 # Discussion inbox: signed discussion open/comment submissions from any node.

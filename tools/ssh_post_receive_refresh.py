@@ -20,6 +20,7 @@ import argparse
 import base64
 from dataclasses import dataclass
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -32,8 +33,8 @@ import sys
 import time
 from typing import Any, BinaryIO, Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.parse import urlencode, urlsplit
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 try:
     from cryptography.exceptions import InvalidSignature
@@ -52,8 +53,18 @@ MAX_HOOK_INPUT_BYTES = 4 * 1024 * 1024
 MAX_HEALTH_BYTES = 64 * 1024
 REFRESH_TIMEOUT_SECONDS = 30 * 60
 SERVICE_TIMEOUT_SECONDS = 2 * 60
+DEFAULT_HEALTH_TIMEOUT_SECONDS = 180
+HEALTH_REQUEST_TIMEOUT_SECONDS = 3.0
+HEALTH_RETRY_SECONDS = 0.5
+HEALTH_USER_AGENT = "ForkMesh-ssh-refresh-health/1.0"
 NAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,62}$")
 SERVICE_RE = re.compile(r"^[A-Za-z0-9@_.:-]{1,200}\.service$")
+PUBLIC_HOST_RE = re.compile(
+    r"^(?=.{1,253}$)"
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+    re.IGNORECASE,
+)
 PUBLIC_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 SIGNATURE_RE = re.compile(r"^[A-Za-z0-9_-]{86}$")
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
@@ -87,7 +98,7 @@ class BridgeConfig:
     refresh_config_path: Path
     gateway_config_path: Path
     mirror_service: str
-    health_timeout_seconds: int
+    health_timeout_seconds: int = DEFAULT_HEALTH_TIMEOUT_SECONDS
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -387,7 +398,35 @@ def _restart_gateway(
     )
 
 
-def _parse_gateway_identity(path: Path) -> tuple[str, str, str]:
+def _normalize_public_origin(value: Any) -> str:
+    try:
+        parsed = urlsplit(str(value or "").strip())
+        port = parsed.port
+    except ValueError as exc:
+        raise RefreshBridgeError("gateway public origin is invalid") from exc
+    hostname = str(parsed.hostname or "").lower()
+    try:
+        ipaddress.ip_address(hostname)
+        hostname_is_ip = True
+    except ValueError:
+        hostname_is_ip = False
+    if (
+        parsed.scheme != "https"
+        or not PUBLIC_HOST_RE.fullmatch(hostname)
+        or hostname == "localhost"
+        or hostname_is_ip
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in ("", "/")
+        or port not in (None, 443)
+    ):
+        raise RefreshBridgeError("gateway public origin is invalid")
+    return "https://" + hostname
+
+
+def _parse_gateway_identity(path: Path) -> tuple[str, str, str, str]:
     try:
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(path, flags)
@@ -427,6 +466,11 @@ def _parse_gateway_identity(path: Path) -> tuple[str, str, str]:
         raise RefreshBridgeError("gateway configuration is invalid") from exc
     node = value.get("node") if isinstance(value, dict) else None
     listen = value.get("listen") if isinstance(value, dict) else None
+    public_origin = (
+        _normalize_public_origin(value.get("publicOrigin"))
+        if isinstance(value, dict)
+        else ""
+    )
     if (
         not isinstance(node, dict)
         or set(node) != {"name", "publicKey"}
@@ -444,7 +488,12 @@ def _parse_gateway_identity(path: Path) -> tuple[str, str, str]:
     if not 1 <= port <= 65535:
         raise RefreshBridgeError("gateway health listener is invalid")
     host = "[::1]" if listen["host"] == "::1" else listen["host"]
-    return str(node["name"]), str(node["publicKey"]), f"http://{host}:{port}"
+    return (
+        str(node["name"]),
+        str(node["publicKey"]),
+        f"http://{host}:{port}",
+        public_origin,
+    )
 
 
 def _b64url_decode(value: str, size: int) -> bytes:
@@ -469,17 +518,23 @@ def _signed_health_once(
     *,
     opener: Any,
     clock_ms: Callable[[], int],
+    timeout_seconds: float,
 ) -> bool:
+    if timeout_seconds <= 0:
+        return False
     nonce = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
     issued_at = clock_ms()
     query = urlencode({"nonce": nonce, "issuedAt": str(issued_at)})
     request = Request(
         origin + "/health?" + query,
         method="GET",
-        headers={"accept": "application/json"},
+        headers={
+            "Accept": "application/json",
+            "User-Agent": HEALTH_USER_AGENT,
+        },
     )
     try:
-        with opener.open(request, timeout=3) as response:
+        with opener.open(request, timeout=timeout_seconds) as response:
             if int(response.status) != 200:
                 return False
             raw = response.read(MAX_HEALTH_BYTES + 1)
@@ -522,34 +577,71 @@ def _signed_health_once(
     return True
 
 
+class _NoRedirectHandler(HTTPRedirectHandler):
+    """Reject redirects so health is proved only at the configured origin."""
+
+    def redirect_request(
+        self,
+        req: Any,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        return None
+
+
+def _direct_opener() -> Any:
+    return build_opener(ProxyHandler({}), _NoRedirectHandler())
+
+
 def wait_for_signed_health(
     config: BridgeConfig,
     *,
     clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+    monotonic: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
     opener: Any | None = None,
 ) -> None:
-    direct_opener = opener or build_opener(ProxyHandler({}))
-    deadline = time.monotonic() + config.health_timeout_seconds
-    while time.monotonic() < deadline:
+    direct_opener = opener or _direct_opener()
+    deadline = monotonic() + config.health_timeout_seconds
+    while monotonic() < deadline:
         try:
-            node, public_key, origin = _parse_gateway_identity(
-                config.gateway_config_path
+            node, public_key, loopback_origin, public_origin = (
+                _parse_gateway_identity(config.gateway_config_path)
             )
         except RefreshBridgeError:
             # A validated generation is installed by atomic replacement. Treat
             # that tiny replacement window as startup-not-ready and retry.
-            sleeper(0.5)
+            remaining = deadline - monotonic()
+            if remaining > 0:
+                sleeper(min(HEALTH_RETRY_SECONDS, remaining))
             continue
-        if _signed_health_once(
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            break
+        loopback_ready = _signed_health_once(
             node,
             public_key,
-            origin,
+            loopback_origin,
             opener=direct_opener,
             clock_ms=clock_ms,
+            timeout_seconds=min(HEALTH_REQUEST_TIMEOUT_SECONDS, remaining),
+        )
+        remaining = deadline - monotonic()
+        if loopback_ready and remaining > 0 and _signed_health_once(
+            node,
+            public_key,
+            public_origin,
+            opener=direct_opener,
+            clock_ms=clock_ms,
+            timeout_seconds=min(HEALTH_REQUEST_TIMEOUT_SECONDS, remaining),
         ):
             return
-        sleeper(0.5)
+        remaining = deadline - monotonic()
+        if remaining > 0:
+            sleeper(min(HEALTH_RETRY_SECONDS, remaining))
     raise RefreshBridgeError("signed gateway health did not become ready")
 
 
