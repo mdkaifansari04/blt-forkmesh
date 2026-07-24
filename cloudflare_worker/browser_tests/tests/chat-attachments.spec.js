@@ -136,6 +136,8 @@ test("dashboard chat shares clipboard images and documents", async ({ page }) =>
   );
 
   await page.goto("/dashboard/chat/index.html");
+  await expect(page.getByRole("link", { name: "Open private channels" }))
+    .toHaveAttribute("href", "/chat");
   await expect(page.locator("[data-dashboard-chat-status]").first()).toContainText(
     "Connected",
   );

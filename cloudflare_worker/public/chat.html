@@ -10,7 +10,6 @@
     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
     <meta name="theme-color" content="#090909" />
     <meta name="color-scheme" content="light dark" />
-    <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
@@ -32,6 +31,7 @@
     </script>
     <style>
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      [hidden] { display: none !important; }
 
       :root {
         --bg: #090909;
@@ -131,6 +131,137 @@
         color: var(--muted);
       }
 
+      .chat-pane-title-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .chat-admin-action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 26px;
+        height: 26px;
+        padding: 0 8px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--surface2);
+        color: var(--muted);
+        font: inherit;
+        cursor: pointer;
+        text-transform: none;
+      }
+
+      .chat-admin-action:hover,
+      .chat-admin-action:focus-visible {
+        border-color: var(--accent);
+        color: var(--fg);
+        outline: none;
+      }
+
+      #chat-channel-manage { font-size: 12px; }
+
+      #chat-channel-dialog {
+        width: min(520px, calc(100vw - 32px));
+        max-height: min(720px, calc(100vh - 32px));
+        margin: auto;
+        padding: 0;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+        color: var(--fg);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+      }
+
+      #chat-channel-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
+
+      .chat-channel-dialog-body {
+        display: grid;
+        max-height: inherit;
+        gap: 16px;
+        padding: 18px;
+        overflow-y: auto;
+      }
+
+      .chat-channel-dialog-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .chat-channel-dialog-head h2 { margin: 0; font-size: 18px; }
+      .chat-channel-dialog-head button {
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        font-size: 22px;
+        cursor: pointer;
+      }
+
+      .chat-channel-section {
+        display: grid;
+        gap: 10px;
+        padding-top: 14px;
+        border-top: 1px solid var(--border);
+      }
+
+      .chat-channel-section h3 { margin: 0; font-size: 14px; }
+      .chat-channel-form { display: flex; gap: 8px; }
+      .chat-channel-form input {
+        flex: 1;
+        min-width: 0;
+        height: 38px;
+        padding: 0 11px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface2);
+        color: var(--fg);
+        outline: none;
+      }
+      .chat-channel-form input:focus { border-color: var(--accent); }
+      .chat-channel-form button,
+      .chat-member-remove {
+        min-height: 36px;
+        padding: 0 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--accent);
+        color: #06120a;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      #chat-channel-error {
+        min-height: 17px;
+        margin: 0;
+        color: #f85149;
+        font-size: 12px;
+      }
+
+      #chat-channel-members { display: grid; gap: 6px; }
+      .chat-channel-member {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface2);
+        font-size: 13px;
+      }
+      .chat-member-remove {
+        min-height: 28px;
+        padding: 0 9px;
+        background: transparent;
+        color: #f85149;
+        font-size: 11px;
+      }
+
       #chat-rooms {
         flex: 1;
         min-height: 0;
@@ -204,6 +335,13 @@
         padding: 10px 16px;
         border-bottom: 1px solid var(--border);
         background: var(--surface);
+      }
+
+      .chat-main-controls {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
       }
 
       #chat-channel-title {
@@ -772,6 +910,15 @@
         #chat-rooms { flex-direction: row; overflow-x: auto; overflow-y: hidden; padding: 6px 8px; }
         .chat-room { width: auto; white-space: nowrap; }
         .chat-name-wrap { display: none; }
+        .chat-main-head { gap: 8px; padding: 8px 12px; }
+        #chat-channel-title {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .chat-main-controls { flex-shrink: 0; gap: 6px; }
+        #chat-status { display: none; }
       }
     </style>
   </head>
@@ -787,7 +934,10 @@
 
         <!-- left: rooms -->
         <aside class="chat-rooms-pane" aria-label="Rooms">
-          <div class="chat-pane-title">Rooms</div>
+          <div class="chat-pane-title chat-pane-title-row">
+            <span>Rooms</span>
+            <button id="chat-channel-create" class="chat-admin-action" type="button" aria-label="Create private channel" title="Create private channel" hidden>+</button>
+          </div>
           <div id="chat-rooms"></div>
         </aside>
 
@@ -795,7 +945,8 @@
         <main class="chat-main-pane">
           <div class="chat-main-head">
             <span id="chat-channel-title">#general</span>
-            <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+            <div class="chat-main-controls">
+              <button id="chat-channel-manage" class="chat-admin-action" type="button" hidden>Members</button>
               <span id="chat-status">Waiting to connect…</span>
               <div class="chat-name-wrap">
                 <label class="chat-name-label" for="chat-name">Name</label>
@@ -850,7 +1001,7 @@
           </div>
 
           <div class="chat-e2e-note">
-            Default rooms use AES-256-GCM authenticated shared-key transport. The relay derives the shared passphrase, so its operator can decrypt messages; it retains at most 500 persisted frames per room for 7 days. Clients that support an out-of-band participant passphrase can use one for a key the relay cannot derive. <a href="/docs">Learn more</a>
+            Public and private browser channels use AES-256-GCM authenticated shared-key transport. Private channels are invitation-gated and isolated, but the relay derives their passphrases and its operator can decrypt messages. The relay retains at most 500 persisted frames per room for 7 days. <a href="/docs">Learn more</a>
           </div>
         </main>
 
@@ -861,6 +1012,31 @@
         </aside>
 
       </div>
+
+      <dialog id="chat-channel-dialog" aria-labelledby="chat-channel-dialog-title">
+        <div class="chat-channel-dialog-body">
+          <div class="chat-channel-dialog-head">
+            <h2 id="chat-channel-dialog-title">Manage private channels</h2>
+            <button id="chat-channel-dialog-close" type="button" aria-label="Close channel manager">×</button>
+          </div>
+          <p id="chat-channel-error" role="alert" aria-live="polite"></p>
+          <section class="chat-channel-section" aria-labelledby="chat-channel-create-title">
+            <h3 id="chat-channel-create-title">Create a channel</h3>
+            <form id="chat-channel-create-form" class="chat-channel-form">
+              <input id="chat-channel-name" name="channel" maxlength="40" pattern="[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?" placeholder="release-team" aria-label="Private channel name" required />
+              <button type="submit">Create</button>
+            </form>
+          </section>
+          <section id="chat-channel-members-section" class="chat-channel-section" aria-labelledby="chat-channel-members-title" hidden>
+            <h3 id="chat-channel-members-title">Members</h3>
+            <form id="chat-channel-invite-form" class="chat-channel-form">
+              <input id="chat-channel-username" name="username" maxlength="63" placeholder="username" aria-label="Registered username" required />
+              <button type="submit">Invite</button>
+            </form>
+            <div id="chat-channel-members" aria-live="polite"></div>
+          </section>
+        </div>
+      </dialog>
     </div>
     <script src="/chat.js"></script>
   </body>

@@ -1238,6 +1238,19 @@
     });
   }
 
+  function mountPrivateChannelsLink() {
+    if (!PUBLIC_WORLD_GENERAL || !fullLog) return;
+    const notice = fullLog.previousElementSibling;
+    const copy = notice?.querySelector("p");
+    if (!copy || copy.querySelector("[data-private-channels-link]")) return;
+    const link = document.createElement("a");
+    link.href = "/chat";
+    link.textContent = "Open private channels";
+    link.dataset.privateChannelsLink = "";
+    link.className = "ml-1 font-semibold text-primary underline underline-offset-2 hover:text-foreground";
+    copy.append(document.createTextNode(" "), link);
+  }
+
   async function initChat() {
     if (ACTIVE_SPACE) {
       document.title = `${CHANNEL_LABEL} collaboration · ForkMesh`;
@@ -1249,6 +1262,7 @@
     }
     await hydrateUserSession();
     ensureEmptyState();
+    mountPrivateChannelsLink();
     wireInput(fullInput, fullSend);
     wireInput(sideInput, sideSend);
     // Connect right away so the room's message history (replayed by the relay
