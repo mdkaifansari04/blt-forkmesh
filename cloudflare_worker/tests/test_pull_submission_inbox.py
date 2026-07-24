@@ -3,12 +3,15 @@
 
 import ast
 import asyncio
+import hashlib
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+EVENTS = ROOT / "src" / "events.py"
+EVENTS_TEXT = EVENTS.read_text(encoding="utf-8")
 
 
 def _load_pulls_handler(extra_globals):
@@ -23,6 +26,20 @@ def _load_pulls_handler(extra_globals):
     namespace = dict(extra_globals)
     exec(compile(module, str(ENTRY), "exec"), namespace)
     return namespace["pulls_handler"]
+
+
+def _load_pull_verifier(extra_globals):
+    tree = ast.parse(EVENTS_TEXT, filename=str(EVENTS))
+    selected = [
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "verify_pull_event"
+    ]
+    assert len(selected) == 1
+    module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
+    namespace = dict(extra_globals)
+    exec(compile(module, str(EVENTS), "exec"), namespace)
+    return namespace["verify_pull_event"]
 
 
 class _Request:
@@ -168,3 +185,63 @@ def test_pull_post_rejects_an_unbounded_description_before_storage():
         "data": {"error": "description_too_large"},
     }
     assert inserted == []
+
+
+def test_legacy_pull_signature_cannot_authenticate_an_appended_commit_series():
+    calls = []
+
+    async def sha256_hex(value):
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    async def accept_only_legacy(_author, _signature, canonical):
+        calls.append(canonical)
+        # The deliberately permissive fake makes the old four-field fallback
+        # succeed. The verifier must never reach it while commits are present.
+        return len(calls) == 2
+
+    verify = _load_pull_verifier({
+        "sha256_hex": sha256_hex,
+        "ed25519_verify": accept_only_legacy,
+    })
+    pull = {
+        "title": "Signed patch",
+        "base": "main",
+        "head": "feature",
+        "patch": "signed patch bytes",
+        "commits": "unsigned appended mbox",
+        "author": "author",
+        "sig": "signature",
+        "ts": 123,
+    }
+
+    assert asyncio.run(verify(pull)) is False
+    assert len(calls) == 1
+
+
+def test_legacy_four_field_signature_remains_valid_without_commits():
+    calls = []
+
+    async def sha256_hex(value):
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    async def accept_legacy(_author, _signature, canonical):
+        calls.append(canonical)
+        return len(calls) == 2
+
+    verify = _load_pull_verifier({
+        "sha256_hex": sha256_hex,
+        "ed25519_verify": accept_legacy,
+    })
+    pull = {
+        "title": "Legacy patch",
+        "base": "main",
+        "head": "feature",
+        "patch": "legacy signed patch",
+        "commits": "",
+        "author": "author",
+        "sig": "signature",
+        "ts": 123,
+    }
+
+    assert asyncio.run(verify(pull)) is True
+    assert len(calls) == 2

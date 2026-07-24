@@ -216,8 +216,15 @@ async def verify_pull_event(pr):
         return False
     fields = [pr.get("title", ""), pr.get("base", ""), pr.get("head", ""),
               pr.get("patch", "")]
-    for content in ("\x00".join(fields + [pr.get("commits", "")]),
-                    "\x00".join(fields)):
+    commits = pr.get("commits", "")
+    # A legacy signature never authenticated a commit mbox. Only try that
+    # four-field form when the submission carries no commits; otherwise an
+    # attacker could append unsigned commits that Qt would replay in preference
+    # to the signed flat patch.
+    contents = ["\x00".join(fields + [commits])]
+    if not commits:
+        contents.append("\x00".join(fields))
+    for content in contents:
         content_hash = await sha256_hex(content)
         canonical = (
             "forkmesh-pull-event-v1\n" + author + "\n" + str(ts) + "\n" + content_hash
