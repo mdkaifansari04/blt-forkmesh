@@ -4,6 +4,7 @@ import base64
 import gzip
 import hashlib
 import http.client
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import shutil
@@ -1077,6 +1078,10 @@ def test_raw_release_and_git_upload_pack_are_stream_specs(application):
         for item in upload.stream.command
     )
     assert "core.alternateRefsCommand=/usr/bin/true" in upload.stream.command
+    assert "uploadpack.hideRefs=refs/forkmesh/" in upload.stream.command
+    assert "uploadpack.allowTipSHA1InWant=false" in upload.stream.command
+    assert "uploadpack.allowReachableSHA1InWant=false" in upload.stream.command
+    assert "uploadpack.allowAnySHA1InWant=false" in upload.stream.command
     completed = subprocess.run(
         upload.stream.command,
         input=upload.stream.input_bytes,
@@ -1087,6 +1092,124 @@ def test_raw_release_and_git_upload_pack_are_stream_specs(application):
     )
     assert completed.returncode == 0
     assert b"PACK" in completed.stdout
+
+
+def test_real_git_clone_cannot_advertise_or_fetch_internal_merge_objects(
+    application, tmp_path
+):
+    app, _commit, _release_hash, _logs = application
+    repository = next(iter(app.repositories.values()))
+    secret = subprocess.run(
+        [
+            "git", "--git-dir", str(repository.git_dir),
+            "hash-object", "-w", "--stdin",
+        ],
+        input=b"owner-only merge job",
+        check=True,
+        capture_output=True,
+    ).stdout.decode("ascii").strip()
+    run([
+        "git", "--git-dir", str(repository.git_dir), "update-ref",
+        "refs/forkmesh/merge-jobs/test-job", secret,
+    ], tmp_path)
+    run([
+        "git", "--git-dir", str(repository.git_dir), "update-ref",
+        "refs/forkmesh/merge-staging/test-job/base", secret,
+    ], tmp_path)
+    # Repository-local settings are hostile input at this boundary. Explicit
+    # command-line policy must override attempts to expose arbitrary objects.
+    run([
+        "git", "--git-dir", str(repository.git_dir), "config",
+        "uploadpack.allowAnySHA1InWant", "true",
+    ], tmp_path)
+    run([
+        "git", "--git-dir", str(repository.git_dir), "config", "--add",
+        "uploadpack.hideRefs", "!refs/forkmesh/",
+    ], tmp_path)
+
+    advertisement = repository.git_advertisement()
+    assert b"refs/forkmesh/" not in advertisement
+    assert secret.encode("ascii") not in advertisement
+
+    class GitHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            if self.path != "/repo/info/refs?service=git-upload-pack":
+                self.send_error(404)
+                return
+            body = repository.git_advertisement()
+            self.send_response(200)
+            self.send_header(
+                "Content-Type",
+                "application/x-git-upload-pack-advertisement",
+            )
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            if self.path != "/repo/git-upload-pack":
+                self.send_error(404)
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            request_body = self.rfile.read(length)
+            stream = repository.upload_pack_spec(request_body)
+            completed = subprocess.run(
+                stream.command,
+                input=stream.input_bytes,
+                capture_output=True,
+                env=gateway._git_environment(),
+                timeout=10,
+                check=False,
+            )
+            body = completed.stdout
+            self.send_response(200 if completed.returncode == 0 else 500)
+            self.send_header(
+                "Content-Type", "application/x-git-upload-pack-result")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), GitHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    origin = "http://127.0.0.1:%d/repo" % server.server_address[1]
+    clone = tmp_path / "clone-with-hidden-refs"
+    try:
+        cloned = subprocess.run(
+            ["git", "clone", "--no-tags", origin, str(clone)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+            env={**gateway._git_environment(), "GIT_PROTOCOL": "version=0"},
+        )
+        assert cloned.returncode == 0, cloned.stderr
+        refs = run(["git", "-C", str(clone), "show-ref"], tmp_path)
+        assert "refs/forkmesh/" not in refs
+        assert (clone / "README.md").exists()
+        assert subprocess.run(
+            ["git", "-C", str(clone), "cat-file", "-e", secret],
+            capture_output=True,
+            check=False,
+        ).returncode != 0
+        exact_fetch = subprocess.run(
+            ["git", "-C", str(clone), "fetch", origin, secret],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+            env={**gateway._git_environment(), "GIT_PROTOCOL": "version=0"},
+        )
+        assert exact_fetch.returncode != 0
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_git_upload_pack_decodes_gzip_after_verifying_transport_digest(application):

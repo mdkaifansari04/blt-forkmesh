@@ -15,9 +15,11 @@ This is separate from the multiplayer socket:
 - Repository updates are discovered through bounded HTTPS sync. Persistent
   sockets remain limited to chat, avatar movement, emotes, and world presence.
 
-The gateway is read-only. It implements Git `upload-pack`; it does not implement
-`receive-pack`, pushes, issue writes, administration, or arbitrary Git service
-selection. The main Worker returns
+The gateway's Git data plane is read-only. It implements Git `upload-pack`; it
+does not implement `receive-pack`, general pushes, issue writes, administration,
+or arbitrary Git service selection. An operator may separately opt one
+repository into the typed exact-OID `merge-pull` control operation described
+below. The main Worker returns
 `501 direct_https_receive_pack_required` for receive-pack advertisement and
 POST requests before reading a body. Push remains disabled until it has a
 direct-HTTPS write protocol; there is no repository-byte socket fallback.
@@ -42,6 +44,12 @@ The local process enforces all of these properties:
   prompts, optional locks, external protocol helpers, credential helpers,
   fsmonitor commands, alternate-ref commands, and upload-pack pack hooks are
   disabled at the serving boundary.
+- `refs/forkmesh/` is internal node state. Upload-pack hides the entire
+  namespace and rejects arbitrary tip/reachable-object wants, so merge recovery
+  refs and their otherwise-unreachable objects cannot be advertised or fetched.
+  The SSH gateway applies the same upload rule and also uses
+  `receive.hideRefs` so a push cannot inspect, create, update, or delete those
+  refs.
 - Release files are content addressed and re-hashed before any bytes are sent.
 - Default HTTP logging is disabled because it would expose client addresses and
   raw query paths. Operational logs contain only time, a bounded request ID,
@@ -698,6 +706,7 @@ external verifier.
 | Operation | Method | Allowed query | Response |
 | --- | --- | --- | --- |
 | `git-info-refs` | GET/HEAD | `service=git-upload-pack` | Git upload-pack advertisement |
+| `merge-pull` | POST | none; bounded typed JSON body | Asynchronous exact-OID pull merge through an explicitly configured node executor |
 | `git-upload-pack` | POST | none | streamed Git upload-pack result |
 | `tree` | GET/HEAD | `path`, `ref` | bounded JSON tree with sizes/commit activity |
 | `blobs` | GET/HEAD | repeated `path`, optional `ref` | bounded compatibility batch for the web UI |
@@ -721,6 +730,12 @@ An upload-pack request may use `Content-Encoding: gzip`. The capability body
 digest covers the transported compressed bytes; the gateway verifies that
 digest first, then expands gzip with the same 8 MiB bound before invoking Git.
 Other content encodings fail closed.
+
+Upload-pack explicitly leaves `allowTipSHA1InWant`,
+`allowReachableSHA1InWant`, and `allowAnySHA1InWant` disabled. This is required
+in addition to hiding `refs/forkmesh/`: enabling an object-id escape hatch can
+make a guessed internal ref tip fetchable even when its name is absent from the
+advertisement.
 
 Do not forward client cookies, authorization headers, Cloudflare credentials,
 raw client IP headers, or arbitrary query fields to the mirror. Do not expose

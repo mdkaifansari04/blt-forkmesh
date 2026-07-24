@@ -60,6 +60,9 @@ MAX_COVERAGE_ARTIFACT_BYTES = 2 * 1024 * 1024
 MAX_DEPENDENCY_EDGES = 4_000
 PROCESS_TIMEOUT_SECONDS = 30
 STREAM_TIMEOUT_SECONDS = 10 * 60
+MERGE_EXECUTOR_TIMEOUT_SECONDS = 10 * 60
+MAX_MERGE_REQUEST_BODY = 8 * 1024
+MAX_MERGE_JOB_CACHE = 10_000
 PUBLIC_OPERATIONS = frozenset(
     {
         "git-info-refs",
@@ -76,8 +79,11 @@ PUBLIC_OPERATIONS = frozenset(
         "stats",
         "sizes",
         "release-blob",
+        "merge-pull",
     }
 )
+DEFAULT_PUBLIC_OPERATIONS = PUBLIC_OPERATIONS - {"merge-pull"}
+INTERNAL_GIT_REF_NAMESPACE = "refs/forkmesh/"
 LOG_OPERATIONS = PUBLIC_OPERATIONS | {"private-replica"}
 NODE_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
@@ -187,6 +193,37 @@ def _safe_external_environment() -> dict[str, str]:
             "CF_TOKEN",
         }
     }
+
+
+def _safe_merge_environment() -> dict[str, str]:
+    """Minimal environment for the fixed refresh/merge controller."""
+    environment = {
+        "PATH": os.environ.get(
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        ),
+        "LANG": "C",
+        "LC_ALL": "C",
+    }
+    temporary_raw = os.environ.get("TMPDIR", "")
+    if temporary_raw:
+        temporary = Path(temporary_raw)
+        try:
+            info = temporary.lstat()
+        except OSError:
+            info = None
+        if (
+            temporary.is_absolute()
+            and temporary == Path(os.path.normpath(str(temporary)))
+            and info is not None
+            and stat.S_ISDIR(info.st_mode)
+            and not stat.S_ISLNK(info.st_mode)
+            and info.st_uid == os.geteuid()
+            and not stat.S_IMODE(info.st_mode)
+            & (stat.S_IRWXG | stat.S_IRWXO)
+        ):
+            environment["TMPDIR"] = str(temporary)
+    return environment
 
 
 def _validate_command(value: Any, label: str) -> tuple[str, ...]:
@@ -504,6 +541,47 @@ class ExternalHealthSigner:
         return signature
 
 
+class ExternalMergeExecutor:
+    """Fixed, operator-owned merge command; repository input stays typed JSON."""
+
+    def __init__(
+        self,
+        command: Iterable[str],
+        *,
+        runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    ) -> None:
+        self.command = tuple(command)
+        if not self.command:
+            raise GatewayError("merge executor is not configured")
+        self._runner = runner
+
+    def call(
+        self, request: dict[str, Any], *, timeout: int = 20
+    ) -> dict[str, Any]:
+        try:
+            completed = self._runner(
+                list(self.command),
+                input=_canonical_json(request) + "\n",
+                text=True,
+                capture_output=True,
+                env=_safe_merge_environment(),
+                timeout=timeout,
+                check=True,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise GatewayError("merge executor failed") from exc
+        if len(completed.stdout.encode("utf-8", "replace")) > 16 * 1024:
+            raise GatewayError("merge executor returned too much data")
+        try:
+            response = json.loads(completed.stdout)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise GatewayError("merge executor returned invalid JSON") from exc
+        if not isinstance(response, dict):
+            raise GatewayError("merge executor returned a non-object")
+        _assert_no_secret_fields(response, "merge executor response")
+        return response
+
+
 @dataclass(frozen=True)
 class EncryptedArchive:
     scheme: str
@@ -528,6 +606,7 @@ class RepositoryConfig:
 
 @dataclass(frozen=True)
 class GatewayConfig:
+    config_path: Path
     node: str
     public_key: str
     router_public_key: str
@@ -537,6 +616,7 @@ class GatewayConfig:
     manifest_path: Path
     verifier_command: tuple[str, ...]
     health_signer_command: tuple[str, ...]
+    merge_executor_command: tuple[str, ...]
     repositories: tuple[RepositoryConfig, ...]
     max_release_bytes: int = 2 * 1024 * 1024 * 1024
     private_replica_store: Path | None = None
@@ -603,6 +683,7 @@ def load_config(path: Path) -> GatewayConfig:
         "manifestPath",
         "requestVerifierCommand",
         "healthSignerCommand",
+        "mergeExecutorCommand",
         "repositories",
         "privateReplicaStore",
         "limits",
@@ -656,6 +737,12 @@ def load_config(path: Path) -> GatewayConfig:
     )
     signer = _validate_command(
         source.get("healthSignerCommand"), "healthSignerCommand"
+    )
+    merge_executor_raw = source.get("mergeExecutorCommand")
+    merge_executor = (
+        _validate_command(merge_executor_raw, "mergeExecutorCommand")
+        if merge_executor_raw is not None
+        else ()
     )
     limits = source.get("limits", {})
     if not isinstance(limits, dict) or set(limits) - {
@@ -774,7 +861,11 @@ def load_config(path: Path) -> GatewayConfig:
             raise GatewayError(
                 "enabled public repository requires integrity.expectedRefsSha256"
             )
-        operations_raw = item.get("operations", sorted(PUBLIC_OPERATIONS))
+        # A missing capability list keeps the historical read-only surface.
+        # Write operations are never enabled implicitly.
+        operations_raw = item.get(
+            "operations", sorted(DEFAULT_PUBLIC_OPERATIONS)
+        )
         if (
             not isinstance(operations_raw, list)
             or not operations_raw
@@ -782,6 +873,10 @@ def load_config(path: Path) -> GatewayConfig:
         ):
             raise GatewayError("repository operations contain an unsupported value")
         operations = frozenset(operations_raw)
+        if "merge-pull" in operations and not merge_executor:
+            raise GatewayError(
+                "merge-pull requires an operator-owned mergeExecutorCommand"
+            )
 
         git_dir: Path | None = None
         encrypted_archive: EncryptedArchive | None = None
@@ -867,6 +962,7 @@ def load_config(path: Path) -> GatewayConfig:
         )
 
     return GatewayConfig(
+        config_path=path.resolve(),
         node=node,
         public_key=public_key,
         router_public_key=router_public_key,
@@ -876,6 +972,7 @@ def load_config(path: Path) -> GatewayConfig:
         manifest_path=manifest_path,
         verifier_command=verifier,
         health_signer_command=signer,
+        merge_executor_command=merge_executor,
         repositories=tuple(repositories),
         max_release_bytes=max_release,
         private_replica_store=private_replica_store,
@@ -977,6 +1074,11 @@ def _git_prefix(git_dir: Path) -> list[str]:
         "credential.helper=",
         "-c",
         "protocol.ext.allow=never",
+        # Merge transaction refs are owner-only recovery/idempotency state.
+        # Hide the whole internal namespace from both advertisements and
+        # unadvertised object wants, including future internal ref families.
+        "-c",
+        "uploadpack.hideRefs=" + INTERNAL_GIT_REF_NAMESPACE,
         f"--git-dir={git_dir}",
     ]
 
@@ -1577,7 +1679,7 @@ class GitRepository:
             except GitError:
                 continue
             commit = output.decode("ascii", "ignore").strip().lower()
-            if re.fullmatch(r"[0-9a-f]{40,64}", commit):
+            if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit):
                 return commit
         raise GitError("repository ref was not found")
 
@@ -2094,7 +2196,9 @@ class GitRepository:
             allow_exit_one=True,
         )
         merge_base = merge_base_raw.decode("ascii", "ignore").strip().lower()
-        if not re.fullmatch(r"[0-9a-f]{40,64}", merge_base):
+        if not re.fullmatch(
+            r"(?:[0-9a-f]{40}|[0-9a-f]{64})", merge_base
+        ):
             raise GatewayError("repository refs do not share a merge base")
 
         count_raw = _run_git(
@@ -2392,9 +2496,11 @@ class GitRepository:
             self.git_dir,
             [
                 "-c",
-                "uploadpack.allowTipSHA1InWant=true",
+                "uploadpack.allowTipSHA1InWant=false",
                 "-c",
-                "uploadpack.allowReachableSHA1InWant=true",
+                "uploadpack.allowReachableSHA1InWant=false",
+                "-c",
+                "uploadpack.allowAnySHA1InWant=false",
                 "upload-pack",
                 "--stateless-rpc",
                 "--advertise-refs",
@@ -2414,9 +2520,11 @@ class GitRepository:
                 _git_prefix(self.git_dir)
                 + [
                     "-c",
-                    "uploadpack.allowTipSHA1InWant=true",
+                    "uploadpack.allowTipSHA1InWant=false",
                     "-c",
-                    "uploadpack.allowReachableSHA1InWant=true",
+                    "uploadpack.allowReachableSHA1InWant=false",
+                    "-c",
+                    "uploadpack.allowAnySHA1InWant=false",
                     "upload-pack",
                     "--stateless-rpc",
                     str(self.git_dir),
@@ -2483,6 +2591,7 @@ class GatewayApplication:
         verifier: Any | None = None,
         health_signer: Any | None = None,
         materializer: ArchiveMaterializer | None = None,
+        merge_executor: Any | None = None,
         clock_ms: Callable[[], int] = lambda: int(time.time() * 1000),
         log: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
@@ -2495,12 +2604,23 @@ class GatewayApplication:
         self.health_signer = health_signer or ExternalHealthSigner(
             config.health_signer_command, config.public_key
         )
+        self.merge_executor = merge_executor or (
+            ExternalMergeExecutor(config.merge_executor_command)
+            if config.merge_executor_command
+            else None
+        )
+        self._materializer = materializer or ArchiveMaterializer()
         self.replays = ReplayCache()
+        self._merge_lock = threading.Lock()
+        self._merge_threads: dict[str, threading.Thread] = {}
+        self._merge_results: dict[str, dict[str, Any]] = {}
+        self._merge_payload_digests: dict[str, str] = {}
+        self._retired_roots: list[tempfile.TemporaryDirectory[str]] = []
         self._temporary_root = tempfile.TemporaryDirectory(
             prefix="forkmesh-mirror-runtime-"
         )
         os.chmod(self._temporary_root.name, 0o700)
-        materializer = materializer or ArchiveMaterializer()
+        materializer = self._materializer
         self.repositories: dict[tuple[str, str], GitRepository] = {}
         self.quarantined_count = 0
         materialized_archives: dict[EncryptedArchive, Path | None] = {}
@@ -2543,6 +2663,239 @@ class GatewayApplication:
 
     def close(self) -> None:
         self._temporary_root.cleanup()
+        for root in self._retired_roots:
+            root.cleanup()
+        self._retired_roots.clear()
+
+    @staticmethod
+    def _merge_request(
+        owner: str, repository: str, body: bytes
+    ) -> dict[str, Any]:
+        if not body or len(body) > MAX_MERGE_REQUEST_BODY:
+            raise GatewayError("merge request is invalid")
+
+        def reject_duplicates(
+            pairs: list[tuple[str, Any]],
+        ) -> dict[str, Any]:
+            output: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in output:
+                    raise GatewayError("merge request is invalid")
+                output[key] = value
+            return output
+
+        try:
+            value = json.loads(
+                body.decode("utf-8"),
+                object_pairs_hook=reject_duplicates,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise GatewayError("merge request is invalid")
+        expected = {
+            "schemaVersion",
+            "type",
+            "pullNumber",
+            "requestId",
+            "expectedBaseOid",
+            "expectedHeadOid",
+            "expectedPullsOid",
+        }
+        if not isinstance(value, dict) or set(value) != expected:
+            raise GatewayError("merge request is invalid")
+        try:
+            pull_number = int(value.get("pullNumber"))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise GatewayError("merge request is invalid") from exc
+        request_id = str(value.get("requestId") or "").strip()
+        oids = {
+            field: str(value.get(field) or "").strip().lower()
+            for field in (
+                "expectedBaseOid", "expectedHeadOid", "expectedPullsOid")
+        }
+        if (
+            value.get("schemaVersion") != 1
+            or value.get("type") != "forkmesh.pull-merge-v1"
+            or not 1 <= pull_number <= 999_999_999
+            or not REQUEST_ID_RE.fullmatch(request_id)
+            or any(
+                not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid)
+                for oid in oids.values()
+            )
+            or len({len(oid) for oid in oids.values()}) != 1
+        ):
+            raise GatewayError("merge request is invalid")
+        return {
+            "schemaVersion": 1,
+            "type": "forkmesh.pull-merge-executor-v1",
+            "owner": owner,
+            "repository": repository,
+            "pullNumber": pull_number,
+            "requestId": request_id,
+            **oids,
+        }
+
+    def _reload_after_merge(self) -> None:
+        new_config = load_config(self.config.config_path)
+        if (
+            new_config.node != self.config.node
+            or new_config.public_key != self.config.public_key
+            or new_config.router_public_key != self.config.router_public_key
+            or new_config.public_origin != self.config.public_origin
+            or new_config.merge_executor_command
+            != self.config.merge_executor_command
+        ):
+            raise GatewayError("merge refresh changed the gateway identity")
+        replacement = GatewayApplication(
+            new_config,
+            verifier=self.verifier,
+            health_signer=self.health_signer,
+            materializer=self._materializer,
+            merge_executor=self.merge_executor,
+            clock_ms=self.clock_ms,
+            log=self.log,
+        )
+        if replacement.quarantined_count or not replacement.repositories:
+            replacement.close()
+            raise GatewayError("merged repository generation is unavailable")
+        old_root = self._temporary_root
+        self.config = replacement.config
+        self.repositories = replacement.repositories
+        self.quarantined_count = replacement.quarantined_count
+        self._manifest = replacement._manifest
+        self._temporary_root = replacement._temporary_root
+        self._retired_roots.append(old_root)
+
+    @staticmethod
+    def _merge_response(value: Mapping[str, Any]) -> GatewayResponse:
+        request_id = str(value.get("requestId") or "")
+        status = str(value.get("status") or "")
+        if not REQUEST_ID_RE.fullmatch(request_id):
+            raise GatewayError("merge executor result is invalid")
+        if status == "failed":
+            error = str(value.get("error") or "")
+            allowed = {
+                "merge_conflict", "pull_not_found", "pull_not_open",
+                "stale_base", "stale_head", "stale_pull_metadata",
+                "unsupported_pull",
+            }
+            if error not in allowed:
+                raise GatewayError("merge executor result is invalid")
+            code = 404 if error == "pull_not_found" else 409
+            return json_response({
+                "ok": False,
+                "status": "failed",
+                "requestId": request_id,
+                "error": error,
+            }, code)
+        if status != "merged" or value.get("published") is not True:
+            return json_response({
+                "ok": True,
+                "status": "processing",
+                "requestId": request_id,
+            }, 202)
+        output = {
+            "ok": True,
+            "status": "merged",
+            "requestId": request_id,
+            "published": True,
+        }
+        for field in (
+            "baseBefore", "head", "pullsBefore", "baseAfter", "pullsAfter"
+        ):
+            oid = str(value.get(field) or "").lower()
+            if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid):
+                raise GatewayError("merge executor result is invalid")
+            output[field] = oid
+        return json_response(output, 200)
+
+    def _run_merge_job(
+        self, request_id: str, payload: dict[str, Any]
+    ) -> None:
+        result: dict[str, Any] = {
+            "ok": True, "status": "processing", "requestId": request_id}
+        try:
+            status_payload = dict(payload, action="status")
+            status = self.merge_executor.call(status_payload, timeout=30)
+            if status.get("status") == "failed":
+                result = status
+            else:
+                if not (
+                    status.get("status") == "merged"
+                    and status.get("generationReady") is True
+                ):
+                    status = self.merge_executor.call(
+                        dict(payload, action="execute"),
+                        timeout=MERGE_EXECUTOR_TIMEOUT_SECONDS,
+                    )
+                if (
+                    status.get("status") == "merged"
+                    and status.get("generationReady") is True
+                ):
+                    self._reload_after_merge()
+                    registered = self.merge_executor.call(
+                        dict(payload, action="register"),
+                        timeout=MERGE_EXECUTOR_TIMEOUT_SECONDS,
+                    )
+                    if registered.get("status") == "registered":
+                        result = dict(status)
+                        result["published"] = True
+        except GatewayError:
+            pass
+        finally:
+            with self._merge_lock:
+                self._merge_results[request_id] = result
+                self._merge_threads.pop(request_id, None)
+
+    def _dispatch_merge_pull(
+        self, owner: str, repository: str, body: bytes
+    ) -> GatewayResponse:
+        if self.merge_executor is None:
+            raise GatewayError("repository route was not found")
+        payload = self._merge_request(owner, repository, body)
+        request_id = payload["requestId"]
+        payload_digest = hashlib.sha256(
+            _canonical_json(payload).encode("utf-8")
+        ).hexdigest()
+        with self._merge_lock:
+            if (
+                request_id not in self._merge_payload_digests
+                and len(self._merge_payload_digests) >= MAX_MERGE_JOB_CACHE
+            ):
+                for old_id in tuple(self._merge_payload_digests):
+                    if old_id not in self._merge_threads:
+                        self._merge_payload_digests.pop(old_id, None)
+                        self._merge_results.pop(old_id, None)
+                        break
+                if len(self._merge_payload_digests) >= MAX_MERGE_JOB_CACHE:
+                    raise GatewayError("merge job capacity is exhausted")
+            previous_digest = self._merge_payload_digests.get(request_id)
+            if (
+                previous_digest
+                and not hmac.compare_digest(previous_digest, payload_digest)
+            ):
+                raise GatewayError("merge request id was already used")
+            self._merge_payload_digests[request_id] = payload_digest
+            result = self._merge_results.get(request_id)
+            running = request_id in self._merge_threads
+            if result and (
+                result.get("status") == "failed"
+                or result.get("published") is True
+            ):
+                return self._merge_response(result)
+            if not running:
+                thread = threading.Thread(
+                    target=self._run_merge_job,
+                    args=(request_id, dict(payload)),
+                    name="forkmesh-pull-merge",
+                    daemon=True,
+                )
+                self._merge_threads[request_id] = thread
+                thread.start()
+        return self._merge_response({
+            "ok": True,
+            "status": "processing",
+            "requestId": request_id,
+        })
 
     @staticmethod
     def _default_log(event: dict[str, Any]) -> None:
@@ -2820,6 +3173,7 @@ class GatewayApplication:
                 "stats": frozenset({"ref"}),
                 "sizes": frozenset({"ref"}),
                 "release-blob": frozenset({"sha256", "path"}),
+                "merge-pull": frozenset(),
             }
             if operation == "blobs":
                 try:
@@ -2848,6 +3202,10 @@ class GatewayApplication:
             else:
                 query = self._parse_query(
                     parsed.query, query_fields[operation])
+            if operation == "merge-pull":
+                if method != "POST" or query:
+                    raise GatewayError("merge request is invalid")
+                return self._dispatch_merge_pull(owner, name, body)
             if operation == "git-info-refs":
                 if method not in ("GET", "HEAD") or query != {
                     "service": "git-upload-pack"

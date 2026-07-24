@@ -114,7 +114,8 @@ was not run.
     "search",
     "stats",
     "sizes",
-    "release-blob"
+    "release-blob",
+    "merge-pull"
   ],
   "catalog": {
     "description": "ForkMesh mirror",
@@ -126,6 +127,35 @@ was not run.
   }
 }
 ```
+
+`merge-pull` is an explicit write capability. When present, the generated
+gateway configuration includes a fixed `mergeExecutorCommand` pointing back to
+this refresh controller. The public request supplies only a pull number,
+idempotency id, and exact Git object ids. The node accepts branch-backed open
+pulls whose committed metadata pins those ids, performs a hook-free atomic CAS
+of `main` and `forkmesh/pulls`, reseals the repository, and republishes signed
+health before reporting the merge complete. Omit `merge-pull` to keep a node
+strictly read-only.
+
+All object-producing Git plumbing runs first in a mode-0700, owner-only object
+quarantine outside the bare repository. A conflict drops that quarantine
+without importing an object. A successful candidate is durably journaled,
+installed, and made reachable through hidden
+`refs/forkmesh/merge-staging/<request>/...` refs before the public-ref CAS.
+The same transaction advances both public refs, writes hidden completion
+markers, and removes the staging pair. If the CAS loses a race, the staging refs
+remain to keep every speculative object reachable. Startup/refresh replays a
+valid owner-only journal before `git fsck`, so an interruption cannot strand
+unreachable objects in the source. It never runs a broad prune.
+
+The author's PullStore signature remains intact. The signature-covered title,
+base, head, derived patch/mbox, author, and timestamp are preserved, as are the
+immutable creation OIDs and signature bytes. Only the established owner-applied
+lifecycle fields (`status`, `mergeBase`, and `mergeHead`) change. Idempotency
+results live in bounded, mode-0600 node-owner state rather than a fetchable Git
+object. The Worker keeps its blind-indexed routing record for seven days,
+expires in bounded batches, and enforces both per-repository and global row
+ceilings; in-flight jobs are never evicted merely to admit another merge.
 
 `nodeOwner` must match the node name in the identity helper's `public-info`
 response and must appear in `ownerAliases`. Every alias becomes a separate

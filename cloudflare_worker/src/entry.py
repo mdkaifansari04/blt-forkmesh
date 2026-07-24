@@ -275,6 +275,7 @@ from urls import (  # noqa: E402
     CHAT_CHANNEL_WS_RE,
     REPO_ISSUES_RE,
     REPO_PULLS_RE,
+    REPO_PULL_MERGE_RE,
     REPO_COMMITS_RE,
     REPO_DISCUSSIONS_RE,
     REPO_PENDING_RE,
@@ -25969,6 +25970,13 @@ HTTPS_MIRROR_MANIFEST_MAX_BYTES = 128 * 1024
 HTTPS_MIRROR_HEALTH_BATCH = 8
 HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS = 20
 HTTPS_MIRROR_BODY_MAX_BYTES = 8 * 1024 * 1024
+HTTPS_MIRROR_MERGE_BODY_MAX_BYTES = 8 * 1024
+HTTPS_MIRROR_MERGE_RESULT_MAX_BYTES = 16 * 1024
+HTTPS_MIRROR_MERGE_REQUEST_RE = re.compile(r"^[A-Za-z0-9_-]{12,80}$")
+HTTPS_MIRROR_MERGE_JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+HTTPS_MIRROR_MERGE_JOB_REPO_LIMIT = 256
+HTTPS_MIRROR_MERGE_JOB_GLOBAL_LIMIT = 10_000
+HTTPS_MIRROR_MERGE_JOB_CLEANUP_BATCH = 512
 HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS = frozenset({
     "git-info-refs", "git-upload-pack", "tree", "blob", "raw",
 })
@@ -27411,6 +27419,474 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
     return operation in set(operations)
 
 
+def _https_mirror_merge_body(raw, pull_number):
+    """Validate the small account request before any node sees it."""
+    if not isinstance(raw, str) or not raw or (
+            len(raw.encode("utf-8")) > HTTPS_MIRROR_MERGE_BODY_MAX_BYTES):
+        return None
+
+    def reject_duplicates(pairs):
+        output = {}
+        for key, value in pairs:
+            if key in output:
+                raise ValueError("duplicate")
+            output[key] = value
+        return output
+
+    try:
+        value = json.loads(raw, object_pairs_hook=reject_duplicates)
+    except Exception:
+        return None
+    required = {
+        "schemaVersion", "type", "pullNumber", "requestId",
+        "expectedBaseOid", "expectedHeadOid", "expectedPullsOid",
+    }
+    if (
+        not isinstance(value, dict)
+        or not required.issubset(value)
+        or set(value) - required - {"sessionToken"}
+        or value.get("schemaVersion") != 1
+        or value.get("type") != "forkmesh.pull-merge-v1"
+    ):
+        return None
+    try:
+        number = int(value.get("pullNumber"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    request_id = clean_string(value.get("requestId", ""), 80).strip()
+    oids = {
+        field: clean_string(value.get(field, ""), 64).strip().lower()
+        for field in (
+            "expectedBaseOid", "expectedHeadOid", "expectedPullsOid")
+    }
+    if (
+        number != int(pull_number)
+        or not HTTPS_MIRROR_MERGE_REQUEST_RE.fullmatch(request_id)
+        or any(
+            not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid)
+            for oid in oids.values()
+        )
+        or len({len(oid) for oid in oids.values()}) != 1
+    ):
+        return None
+    return {
+        "schemaVersion": 1,
+        "type": "forkmesh.pull-merge-v1",
+        "pullNumber": number,
+        "requestId": request_id,
+        **oids,
+        **({
+            "sessionToken": clean_string(
+                value.get("sessionToken", ""), 512).strip()
+        } if value.get("sessionToken") else {}),
+    }
+
+
+def _https_mirror_merge_result(value, request):
+    """Return a bounded node result or None; no origin data is projected."""
+    if not isinstance(value, dict):
+        return None
+    request_id = str(value.get("requestId") or "")
+    status = str(value.get("status") or "")
+    if request_id != request["requestId"]:
+        return None
+    if status == "processing":
+        if value.get("ok") is not True:
+            return None
+        return {
+            "ok": True,
+            "status": "processing",
+            "requestId": request_id,
+        }
+    if status == "failed":
+        error = str(value.get("error") or "")
+        if error not in {
+            "merge_conflict", "pull_not_found", "pull_not_open",
+            "stale_base", "stale_head", "stale_pull_metadata",
+            "unsupported_pull",
+        }:
+            return None
+        return {
+            "ok": False,
+            "status": "failed",
+            "requestId": request_id,
+            "error": error,
+        }
+    if (
+        status != "merged"
+        or value.get("ok") is not True
+        or value.get("published") is not True
+    ):
+        return None
+    output = {
+        "ok": True,
+        "status": "merged",
+        "requestId": request_id,
+        "published": True,
+    }
+    expected = {
+        "baseBefore": request["expectedBaseOid"],
+        "head": request["expectedHeadOid"],
+        "pullsBefore": request["expectedPullsOid"],
+    }
+    for field in (
+            "baseBefore", "head", "pullsBefore", "baseAfter", "pullsAfter"):
+        oid = str(value.get(field) or "").strip().lower()
+        if (
+            not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid)
+            or (field in expected and not hmac.compare_digest(
+                oid, expected[field]))
+        ):
+            return None
+        output[field] = oid
+    return output
+
+
+async def _https_mirror_merge_proxy(env, endpoint, context, request):
+    """Submit/poll one job on its permanently selected signed mirror."""
+    if not await _https_mirror_repository_proof(
+            env, endpoint, context, "merge-pull"):
+        return 0, None
+    body = json.dumps(
+        request, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    target = https_routing.masked_target_url(
+        endpoint["baseUrl"], context["owner"], context["repo"], "merge-pull")
+    parsed_target = urlparse(target)
+    signed_path = parsed_target.path
+    request_id = _b64url_encode(_random_bytes(18))
+    issued_at = int(Date.now())
+    body_digest = hashlib.sha256(body).hexdigest()
+    message = https_routing.request_message(
+        endpoint["node"], "POST", signed_path, body_digest, request_id,
+        issued_at)
+    router_public_key = _https_mirror_router_public_key(env)
+    router_seed = _https_mirror_router_seed(env)
+    signature = (
+        await ed25519_sign(
+            router_public_key, router_seed, message.encode("utf-8"))
+        if target and message and router_public_key and router_seed else "")
+    if not signature:
+        return 0, None
+    headers = {
+        "Content-Type": "application/json",
+        "X-ForkMesh-Node": endpoint["node"],
+        "X-ForkMesh-Request-Id": request_id,
+        "X-ForkMesh-Issued-At": str(issued_at),
+        "X-ForkMesh-Body-Sha256": body_digest,
+        "X-ForkMesh-Signature": signature,
+    }
+    try:
+        upstream = await asyncio.wait_for(
+            js_fetch(JsRequest.new(
+                target,
+                to_js({
+                    "method": "POST",
+                    "headers": headers,
+                    "body": Uint8Array.new(_to_js(body)),
+                    "redirect": "manual",
+                }),
+            )),
+            timeout=HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        )
+        status = int(getattr(upstream, "status", 0) or 0)
+        announced = int(upstream.headers.get("content-length") or 0)
+        if announced > HTTPS_MIRROR_MERGE_RESULT_MAX_BYTES:
+            return 0, None
+        raw = str(await upstream.text())
+        if len(raw.encode("utf-8")) > HTTPS_MIRROR_MERGE_RESULT_MAX_BYTES:
+            return 0, None
+        value = json.loads(raw)
+    except Exception:
+        return 0, None
+    checked = _https_mirror_merge_result(value, request)
+    if (
+        checked is None
+        or status not in (200, 202, 404, 409)
+        or (checked["status"] == "processing" and status != 202)
+        or (checked["status"] == "merged" and status != 200)
+        or (checked["status"] == "failed" and status not in (404, 409))
+    ):
+        return 0, None
+    return status, checked
+
+
+def _https_mirror_merge_response(value):
+    status = str((value or {}).get("status") or "")
+    if status == "processing":
+        code = 202
+    elif status == "merged":
+        code = 200
+    elif (value or {}).get("error") == "pull_not_found":
+        code = 404
+    else:
+        code = 409
+    return json_response(
+        value, status=code,
+        cache_control="no-store, max-age=0, must-revalidate")
+
+
+async def _repo_merge_jobs_make_room(env, repo_bi, now):
+    """Expire bounded batches and enforce hard per-repo/global row ceilings.
+
+    Terminal rows are oldest-first eviction candidates when a ceiling is
+    reached. In-flight rows are never evicted merely to admit another request;
+    the caller fails closed with 429 instead.
+    """
+    await d1_run(
+        env,
+        """DELETE FROM repo_merge_jobs WHERE request_id IN (
+               SELECT request_id FROM repo_merge_jobs
+                WHERE expires_at<=?
+                ORDER BY expires_at ASC
+                LIMIT %d)""" % HTTPS_MIRROR_MERGE_JOB_CLEANUP_BATCH,
+        int(now),
+    )
+
+    async def counts():
+        row = await d1_first(
+            env,
+            """SELECT COUNT(*) AS total,
+                      COALESCE(SUM(CASE WHEN repo_bi=? THEN 1 ELSE 0 END),0)
+                        AS repo_count
+                 FROM repo_merge_jobs""",
+            repo_bi,
+        )
+        return (
+            int((row or {}).get("total") or 0),
+            int((row or {}).get("repo_count") or 0),
+        )
+
+    total, repo_count = await counts()
+    if repo_count >= HTTPS_MIRROR_MERGE_JOB_REPO_LIMIT:
+        remove = min(
+            HTTPS_MIRROR_MERGE_JOB_CLEANUP_BATCH,
+            repo_count - HTTPS_MIRROR_MERGE_JOB_REPO_LIMIT + 1,
+        )
+        await d1_run(
+            env,
+            """DELETE FROM repo_merge_jobs WHERE request_id IN (
+                   SELECT request_id FROM repo_merge_jobs
+                    WHERE repo_bi=? AND status IN ('succeeded','failed')
+                    ORDER BY updated_at ASC
+                    LIMIT ?)""",
+            repo_bi, remove,
+        )
+        total, repo_count = await counts()
+    if total >= HTTPS_MIRROR_MERGE_JOB_GLOBAL_LIMIT:
+        remove = min(
+            HTTPS_MIRROR_MERGE_JOB_CLEANUP_BATCH,
+            total - HTTPS_MIRROR_MERGE_JOB_GLOBAL_LIMIT + 1,
+        )
+        await d1_run(
+            env,
+            """DELETE FROM repo_merge_jobs WHERE request_id IN (
+                   SELECT request_id FROM repo_merge_jobs
+                    WHERE status IN ('succeeded','failed')
+                    ORDER BY updated_at ASC
+                    LIMIT ?)""",
+            remove,
+        )
+        total, repo_count = await counts()
+    return (
+        repo_count < HTTPS_MIRROR_MERGE_JOB_REPO_LIMIT
+        and total < HTTPS_MIRROR_MERGE_JOB_GLOBAL_LIMIT
+    )
+
+
+async def repository_pull_merge_handler(
+        env, request, owner, repo, pull_number):
+    """Authorize, pin, dispatch, and durably reconcile one merge job."""
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    context = await _https_mirror_public_context(env, owner, repo)
+    if context is None:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    try:
+        announced = int(request.headers.get("content-length") or 0)
+    except Exception:
+        announced = 0
+    if announced > HTTPS_MIRROR_MERGE_BODY_MAX_BYTES:
+        return json_response({"error": "request_too_large"}, status=413)
+    try:
+        raw = str(await request.text())
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    data = _https_mirror_merge_body(raw, pull_number)
+    if data is None:
+        return json_response({"error": "invalid_request"}, status=400)
+    actor_bi, actor_record = await _account_session_record(env, request, data)
+    actor = clean_string(
+        (actor_record or {}).get("name", ""), MAX_NODE_NAME).strip().lower()
+    if not actor:
+        return json_response({"error": "invalid_session"}, status=401)
+    try:
+        authorized = bool(
+            actor == context["owner"]
+            or await _account_owns_node(env, actor, context["owner"])
+            or await _org_write_allowed(
+                env, context["owner"], context["repo"], actor)
+        )
+    except Exception:
+        authorized = False
+    target = context["owner"] + "/" + context["repo"]
+    if not authorized:
+        await _audit_sensitive_action(
+            env, actor, "repository.pull_merge", "repository", target,
+            "denied", {"pullNumber": int(pull_number)})
+        return json_response({"error": "forbidden"}, status=403)
+
+    node_request = {
+        key: value for key, value in data.items() if key != "sessionToken"
+    }
+    digest_value = {
+        **node_request,
+        "actor": actor,
+        "owner": context["owner"],
+        "repository": context["repo"],
+    }
+    request_digest = hashlib.sha256(json.dumps(
+        digest_value, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()
+    await ensure_schema(env)
+    now = int(Date.now())
+    # Delete this exact expired id first; otherwise its primary key could make
+    # INSERT OR IGNORE look successful while no live job can be read back.
+    await d1_run(
+        env,
+        "DELETE FROM repo_merge_jobs WHERE request_id=? AND expires_at<=?",
+        node_request["requestId"], now,
+    )
+    row = await d1_first(
+        env,
+        """SELECT request_digest,repo_bi,actor_bi,pull_number,selected_node,
+                  status,result,expires_at
+             FROM repo_merge_jobs WHERE request_id=? AND expires_at>?""",
+        node_request["requestId"], now,
+    )
+    job_created = False
+    if row is None:
+        if not await _repo_merge_jobs_make_room(
+                env, context["repoBi"], now):
+            return json_response(
+                {"error": "merge_queue_full"}, status=429,
+                cache_control="no-store")
+        candidates = await _https_mirror_candidates(
+            env, context, world_request_country(request))
+        selected = None
+        for candidate in candidates:
+            if await _https_mirror_repository_proof(
+                    env, candidate, context, "merge-pull"):
+                selected = candidate
+                break
+        if selected is None:
+            return json_response(
+                {"error": "merge_node_unavailable"}, status=503,
+                cache_control="no-store")
+        expires_at = now + HTTPS_MIRROR_MERGE_JOB_RETENTION_MS
+        try:
+            await d1_run(
+                env,
+                """INSERT OR IGNORE INTO repo_merge_jobs
+                     (request_id,request_digest,repo_bi,actor_bi,pull_number,
+                      selected_node,status,result,created_at,updated_at,expires_at)
+                     VALUES (?,?,?,?,?,?,'requested','',?,?,?)""",
+                node_request["requestId"], request_digest, context["repoBi"],
+                actor_bi, int(pull_number), selected["node"], now, now,
+                expires_at,
+            )
+            job_created = True
+        except Exception:
+            # The schema triggers are the final concurrency-safe hard bounds.
+            # Re-read first because an identical request may have won the race;
+            # only a genuinely absent row is a full queue.
+            job_created = False
+        row = await d1_first(
+            env,
+            """SELECT request_digest,repo_bi,actor_bi,pull_number,selected_node,
+                      status,result,expires_at
+                 FROM repo_merge_jobs WHERE request_id=? AND expires_at>?""",
+            node_request["requestId"], now,
+        )
+        if row is None:
+            return json_response(
+                {"error": "merge_queue_full"}, status=429,
+                cache_control="no-store")
+    if (
+        not row
+        or not hmac.compare_digest(
+            str(row.get("request_digest") or ""), request_digest)
+        or not hmac.compare_digest(
+            str(row.get("repo_bi") or ""), context["repoBi"])
+        or not hmac.compare_digest(
+            str(row.get("actor_bi") or ""), actor_bi)
+        or int(row.get("pull_number") or 0) != int(pull_number)
+    ):
+        return json_response(
+            {"error": "request_id_reused"}, status=409,
+            cache_control="no-store")
+    if row.get("status") in ("succeeded", "failed"):
+        try:
+            result = json.loads(str(row.get("result") or ""))
+        except Exception:
+            result = None
+        checked = _https_mirror_merge_result(result, node_request)
+        if checked is None or checked.get("status") == "processing":
+            return json_response(
+                {"error": "merge_state_unavailable"}, status=503,
+                cache_control="no-store")
+        return _https_mirror_merge_response(checked)
+
+    selected_node = clean_string(
+        row.get("selected_node", ""), MAX_NODE_NAME).strip().lower()
+    candidates = await _https_mirror_candidates(
+        env, context, world_request_country(request), sticky=selected_node)
+    endpoint = next(
+        (candidate for candidate in candidates
+         if candidate["node"] == selected_node),
+        None,
+    )
+    if endpoint is None:
+        return json_response(
+            {"error": "merge_node_unavailable"}, status=503,
+            cache_control="no-store")
+    upstream_status, result = await _https_mirror_merge_proxy(
+        env, endpoint, context, node_request)
+    if result is None:
+        # An uncertain transport result never fails over: the selected node may
+        # already have committed the exact idempotent request.
+        return json_response(
+            {"error": "merge_status_pending"}, status=503,
+            cache_control="no-store")
+    if upstream_status == 202:
+        if job_created:
+            await _audit_sensitive_action(
+                env, actor, "repository.pull_merge", "repository", target,
+                "requested", {"pullNumber": int(pull_number)})
+        return _https_mirror_merge_response(result)
+    terminal = "succeeded" if result["status"] == "merged" else "failed"
+    encoded = json.dumps(
+        result, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > HTTPS_MIRROR_MERGE_RESULT_MAX_BYTES:
+        return json_response(
+            {"error": "merge_state_unavailable"}, status=503,
+            cache_control="no-store")
+    await d1_run(
+        env,
+        """UPDATE repo_merge_jobs SET status=?,result=?,updated_at=?,expires_at=?
+             WHERE request_id=? AND status='requested'""",
+        terminal, encoded, int(Date.now()),
+        int(Date.now()) + HTTPS_MIRROR_MERGE_JOB_RETENTION_MS,
+        node_request["requestId"],
+    )
+    await _audit_sensitive_action(
+        env, actor, "repository.pull_merge", "repository", target,
+        "success" if terminal == "succeeded" else "failed",
+        {"pullNumber": int(pull_number),
+         "reason": str(result.get("error") or "")})
+    return _https_mirror_merge_response(result)
+
+
 async def _https_mirror_proxy(
         env, request, owner, repo, operation, release_sha=""):
     """Stream a public read through healthy endpoints under the original URL."""
@@ -28582,6 +29058,19 @@ class Default(WorkerEntrypoint):
                                  self.env, request, owner))):
                 return json_response({"error": "not_found"}, status=404)
             return await issues_handler(self.env, request, owner, repo)
+
+        pull_merge_match = REPO_PULL_MERGE_RE.match(url.path)
+        if pull_merge_match:
+            owner = safe_segment(pull_merge_match.group(1))
+            repo = safe_segment(pull_merge_match.group(2))
+            try:
+                pull_number = int(pull_merge_match.group(3))
+            except (TypeError, ValueError, OverflowError):
+                pull_number = 0
+            if not owner or not repo or pull_number <= 0:
+                return json_response({"error": "not_found"}, status=404)
+            return await repository_pull_merge_handler(
+                self.env, request, owner, repo, pull_number)
 
         pulls_match = REPO_PULLS_RE.match(url.path)
         if pulls_match:

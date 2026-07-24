@@ -479,6 +479,7 @@
           <tbody>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/issues</code></td><td>signed issue open/comment/edit/status/…</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/pulls</code></td><td>signed pull request</td></tr>
+            <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/pulls/&lt;number&gt;/merge</code></td><td>account-session-authorized asynchronous merge, pinned to one write-enabled mirror and exact base/head/metadata object ids</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/commits</code></td><td>signed per-commit comment</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/discussions</code></td><td>signed discussion open/comment</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/subscribe</code></td><td>signed thread subscribe/unsubscribe</td></tr>
@@ -530,11 +531,28 @@
           two-request read flow.
         </p>
         <p>
-          Write support will require a separate direct-HTTPS protocol with
-          owner authorization, integrity re-attestation, bounded request
-          handling, and no repository payload over the multiplayer socket.
-          The legacy push-token verifier does not make the retired socket
-          transport safe and is not an active write path.
+          General receive-pack write support still requires a separate
+          direct-HTTPS protocol. Pull merging uses a narrower control path:
+          the Worker authorizes repository write permission, pins an
+          idempotent request to one mirror, and signs a bounded request
+          containing exact Git object ids. The node performs an atomic
+          compare-and-swap, reseals the repository, and republishes signed
+          integrity before the Worker reports completion. No repository
+          payload travels through D1 or the multiplayer socket. The legacy
+          push-token verifier does not make the retired socket transport safe
+          and is not an active receive-pack path.
+        </p>
+        <p>
+          Object-producing merge work happens in an owner-only quarantine.
+          Journal recovery anchors candidate objects behind hidden
+          <code>refs/forkmesh/</code> refs before repository fsck; conflicts
+          never import objects, and a lost compare-and-swap leaves reachable
+          staging refs instead of dangling objects. HTTP and SSH upload-pack
+          hide that entire namespace and reject arbitrary object-id wants.
+          Pull author signatures remain unchanged because only PullStore's
+          established owner-applied lifecycle fields are updated. Worker merge
+          jobs expire after seven days and have hard per-repository and global
+          row limits.
         </p>
 
         <h3 id="accounts-and-platform">4.5 Accounts and platform</h3>
