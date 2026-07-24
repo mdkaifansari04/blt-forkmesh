@@ -6,10 +6,15 @@ import {
   THEME_OPTIONS,
   TOUR_STEPS,
   WORKSHOP_TYPES,
+  WORLD_EMOJI_CATEGORIES,
   WORLD_REGIONS,
+  WORLD_STATUS_NOTE_MAX,
   detectClient,
   flagEmoji,
   landmarkById,
+  normalizeWorldEmoji,
+  normalizeWorldStatus,
+  normalizeWorldStatusNote,
   sanitizePresenceText,
   utcClock,
 } from "./world-data.js";
@@ -367,6 +372,8 @@ function defaultSettings() {
     activityCategory: "automatic",
     publicDoor: "knock",
     displayName: "",
+    statusEmoji: "",
+    statusNote: "",
     privacy: {
       name: true,
       country: true,
@@ -388,6 +395,10 @@ function mergeSettings(stored) {
   const theme = THEME_OPTIONS.some((option) => option.id === requestedTheme)
     ? requestedTheme
     : defaults.theme;
+  const publicStatus = normalizeWorldStatus(
+    stored?.statusEmoji,
+    stored?.statusNote,
+  );
   return {
     ...defaults,
     ...(stored || {}),
@@ -401,6 +412,8 @@ function mergeSettings(stored) {
           : WORLD_LIGHT_LEVEL_DEFAULT,
       ),
     ),
+    statusEmoji: publicStatus.emoji,
+    statusNote: publicStatus.note,
     privacy: {
       ...defaults.privacy,
       ...(stored?.privacy || {}),
@@ -413,6 +426,10 @@ function publicIdentity(identity, settings) {
     identity.accountStatus === "Guest" ? settings.displayName : identity.name,
     identity.name,
     24,
+  );
+  const publicStatus = normalizeWorldStatus(
+    settings.statusEmoji,
+    settings.statusNote,
   );
   return {
     id: identity.id,
@@ -460,6 +477,8 @@ function publicIdentity(identity, settings) {
     firstVisitAge: settings.privacy.activity
       ? String(identity.firstVisitAge || "this-session")
       : "hidden",
+    statusEmoji: publicStatus.emoji,
+    statusNote: publicStatus.note,
   };
 }
 
@@ -551,6 +570,10 @@ function presenceLabel(value, hidden, fallback) {
 function remotePlayer(peer) {
   if (!peer?.id) return null;
   const status = String(peer.status || "hidden");
+  const publicStatus = normalizeWorldStatus(
+    peer.statusEmoji,
+    peer.statusNote,
+  );
   const moderationHandles = {};
   if (peer.moderationHandles && typeof peer.moderationHandles === "object") {
     for (const targetType of ["ip", "agent"]) {
@@ -607,6 +630,8 @@ function remotePlayer(peer) {
     ].includes(String(peer.firstVisitAge || ""))
       ? String(peer.firstVisitAge)
       : "hidden",
+    statusEmoji: publicStatus.emoji,
+    statusNote: publicStatus.note,
     moderationHandles,
     updatedAt: Math.max(0, Number(peer.updatedAt) || 0),
   };
@@ -2183,6 +2208,36 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         settings.activityCategory === option.id ? "selected" : ""
       }>${escapeHTML(option.label)}</option>`,
   ).join("");
+  const publicStatus = normalizeWorldStatus(
+    settings.statusEmoji,
+    settings.statusNote,
+  );
+  const emojiCategoryOptions = WORLD_EMOJI_CATEGORIES.map(
+    (category, index) => `
+      <option value="${escapeHTML(category.id)}" ${index === 0 ? "selected" : ""}>
+        ${escapeHTML(category.label)}
+      </option>`,
+  ).join("");
+  const emojiCategoryPanels = WORLD_EMOJI_CATEGORIES.map(
+    (category, index) => `
+      <div
+        class="world-emoji-grid"
+        data-world-emoji-category-panel="${escapeHTML(category.id)}"
+        ${index === 0 ? "" : "hidden"}
+      >
+        ${category.emoji
+          .map(
+            (emoji) => `
+              <button
+                type="button"
+                data-world-status-emoji-choice="${escapeHTML(emoji)}"
+                aria-label="Use ${escapeHTML(emoji)} as public status"
+                title="Use ${escapeHTML(emoji)}"
+              >${escapeHTML(emoji)}</button>`,
+          )
+          .join("")}
+      </div>`,
+  ).join("");
 
   return `
     <div class="fm-world ${mode === "dashboard" ? "world-dashboard-embed" : ""}" data-world-root>
@@ -2358,6 +2413,13 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <div class="world-identity-copy">
             <strong data-world-identity-name>${escapeHTML(identity.name)}</strong>
             <span data-world-identity-status>${escapeHTML(accountBadgeCopy(identity, settings))}</span>
+            <span
+              class="world-identity-emoji-status"
+              data-world-identity-emoji-status
+              ${publicStatus.emoji ? "" : "hidden"}
+            >${escapeHTML(
+              [publicStatus.emoji, publicStatus.note].filter(Boolean).join(" "),
+            )}</span>
           </div>
           <button class="world-identity-edit" type="button" data-world-settings-open aria-label="Edit public badge">✎</button>
         </section>
@@ -2555,6 +2617,64 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span>Generalized public activity</span>
               <select data-world-activity-category>${activityOptions}</select>
             </label>
+            <div class="world-status-editor">
+              <div class="world-status-fields">
+                <label class="world-field">
+                  <span>Emoji status</span>
+                  <input
+                    type="text"
+                    inputmode="text"
+                    maxlength="48"
+                    autocomplete="off"
+                    spellcheck="false"
+                    value="${escapeHTML(publicStatus.emoji)}"
+                    data-world-status-emoji
+                    aria-describedby="world-status-privacy-note"
+                    placeholder="🧑‍💻"
+                  />
+                </label>
+                <label class="world-field">
+                  <span>One-word note <small>optional</small></span>
+                  <input
+                    type="text"
+                    maxlength="${WORLD_STATUS_NOTE_MAX}"
+                    autocomplete="off"
+                    spellcheck="false"
+                    value="${escapeHTML(publicStatus.note)}"
+                    data-world-status-note
+                    placeholder="coding"
+                  />
+                </label>
+              </div>
+              <details class="world-emoji-picker">
+                <summary>Choose from the Unicode emoji picker</summary>
+                <label class="world-field world-emoji-category">
+                  <span>Category</span>
+                  <select data-world-emoji-category>${emojiCategoryOptions}</select>
+                </label>
+                ${emojiCategoryPanels}
+              </details>
+              <div class="world-status-preview" aria-live="polite">
+                <span>Public overhead status</span>
+                <strong data-world-status-preview>${
+                  publicStatus.emoji
+                    ? escapeHTML(
+                        [publicStatus.emoji, publicStatus.note]
+                          .filter(Boolean)
+                          .join(" "),
+                      )
+                    : "Off"
+                }</strong>
+                <button type="button" data-world-status-clear ${
+                  publicStatus.emoji ? "" : "disabled"
+                }>Clear</button>
+              </div>
+              <small id="world-status-privacy-note">
+                Any single Unicode emoji sequence is accepted. The optional
+                note must be one word. Only those two bounded values are public;
+                no URL, activity detail, or form text is included.
+              </small>
+            </div>
             <label class="world-field">
               <span>Home / office door</span>
               <select data-world-public-door>
@@ -4028,6 +4148,20 @@ class ForkMeshWorld extends HTMLElement {
         this.toggleSettings(false);
         return;
       }
+      const emojiChoice = event.target.closest(
+        "[data-world-status-emoji-choice]",
+      );
+      if (emojiChoice) {
+        this.commitWorldStatus(
+          emojiChoice.dataset.worldStatusEmojiChoice,
+          this.$("[data-world-status-note]")?.value,
+        );
+        return;
+      }
+      if (event.target.closest("[data-world-status-clear]")) {
+        this.commitWorldStatus("", "");
+        return;
+      }
       const fediverseReview = event.target.closest(
         "[data-world-fediverse-review]",
       );
@@ -4367,6 +4501,29 @@ class ForkMeshWorld extends HTMLElement {
         }
         return;
       }
+      const emojiCategory = event.target.closest(
+        "[data-world-emoji-category]",
+      );
+      if (emojiCategory) {
+        this.selectWorldEmojiCategory(emojiCategory.value);
+        return;
+      }
+      const statusEmoji = event.target.closest("[data-world-status-emoji]");
+      if (statusEmoji) {
+        this.commitWorldStatus(
+          statusEmoji.value,
+          this.$("[data-world-status-note]")?.value,
+        );
+        return;
+      }
+      const statusNote = event.target.closest("[data-world-status-note]");
+      if (statusNote) {
+        this.commitWorldStatus(
+          this.$("[data-world-status-emoji]")?.value,
+          statusNote.value,
+        );
+        return;
+      }
       const door = event.target.closest("[data-world-public-door]");
       if (door) {
         if (["knock", "open", "closed"].includes(door.value)) {
@@ -4461,6 +4618,75 @@ class ForkMeshWorld extends HTMLElement {
     this.sendPresence({ type: "presence" });
     this.broadcastLocalPresence();
     this.syncInactivePresence();
+  }
+
+  selectWorldEmojiCategory(categoryId) {
+    const selected = WORLD_EMOJI_CATEGORIES.some(
+      (category) => category.id === categoryId,
+    )
+      ? categoryId
+      : WORLD_EMOJI_CATEGORIES[0]?.id;
+    this.$$("[data-world-emoji-category-panel]").forEach((panel) => {
+      panel.hidden = panel.dataset.worldEmojiCategoryPanel !== selected;
+    });
+  }
+
+  commitWorldStatus(emojiValue, noteValue) {
+    const rawEmoji = String(emojiValue || "").trim();
+    const rawNote = String(noteValue || "").trim();
+    const next = normalizeWorldStatus(rawEmoji, rawNote);
+    const emojiInput = this.$("[data-world-status-emoji]");
+    const noteInput = this.$("[data-world-status-note]");
+    if (rawEmoji && !normalizeWorldEmoji(rawEmoji)) {
+      if (emojiInput) emojiInput.value = this.settings.statusEmoji;
+      if (noteInput) noteInput.value = this.settings.statusNote;
+      this.toast("Choose or paste one valid Unicode emoji.");
+      return false;
+    }
+    if (rawNote && !normalizeWorldStatusNote(rawNote)) {
+      if (emojiInput) emojiInput.value = this.settings.statusEmoji;
+      if (noteInput) noteInput.value = this.settings.statusNote;
+      this.toast(
+        `The public note must be one word, up to ${WORLD_STATUS_NOTE_MAX} characters.`,
+      );
+      return false;
+    }
+    if (rawNote && !next.emoji) {
+      if (emojiInput) emojiInput.value = this.settings.statusEmoji;
+      if (noteInput) noteInput.value = this.settings.statusNote;
+      this.toast("Choose an emoji before adding a public note.");
+      return false;
+    }
+    const changed =
+      next.emoji !== this.settings.statusEmoji ||
+      next.note !== this.settings.statusNote;
+    this.settings.statusEmoji = next.emoji;
+    this.settings.statusNote = next.note;
+    if (emojiInput) emojiInput.value = next.emoji;
+    if (noteInput) noteInput.value = next.note;
+    this.updateWorldStatusUI();
+    if (!changed) return false;
+    // Profile presence is already coalesced. Status values are deliberately
+    // absent from movement frames, so walking cannot repeatedly republish them.
+    this.commitPublicSettings();
+    return true;
+  }
+
+  updateWorldStatusUI() {
+    const status = normalizeWorldStatus(
+      this.settings?.statusEmoji,
+      this.settings?.statusNote,
+    );
+    const copy = [status.emoji, status.note].filter(Boolean).join(" ");
+    const preview = this.$("[data-world-status-preview]");
+    const clear = this.$("[data-world-status-clear]");
+    const identityStatus = this.$("[data-world-identity-emoji-status]");
+    if (preview) preview.textContent = copy || "Off";
+    if (clear) clear.disabled = !status.emoji;
+    if (identityStatus) {
+      identityStatus.textContent = copy;
+      identityStatus.hidden = !status.emoji;
+    }
   }
 
   syncInactivePresence() {
@@ -4593,6 +4819,7 @@ class ForkMeshWorld extends HTMLElement {
     if (shirtName) shirtName.textContent = visible.name;
     if (name) name.textContent = visible.name;
     if (status) status.textContent = accountBadgeCopy(this.identity, this.settings);
+    this.updateWorldStatusUI();
   }
 
   updateMetrics() {
@@ -10997,6 +11224,10 @@ class ForkMeshWorld extends HTMLElement {
         this.settings,
         this.currentActivityCategory,
       );
+      const publicStatus = normalizeWorldStatus(
+        this.settings.statusEmoji,
+        this.settings.statusNote,
+      );
       safe = {
         type: "presence",
         name: sanitizePresenceText(this.identity.name, "visitor", 24),
@@ -11028,6 +11259,8 @@ class ForkMeshWorld extends HTMLElement {
         space: WORLD_SPACE_IDS.has(this.currentSpace)
           ? this.currentSpace
           : "town-square",
+        statusEmoji: publicStatus.emoji,
+        statusNote: publicStatus.note,
       };
     } else if (message.type === "move") {
       safe = {

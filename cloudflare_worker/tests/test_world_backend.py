@@ -289,6 +289,81 @@ def test_activity_is_generalized_allowlisted_and_never_accepts_urls():
         assert hidden["activityCategory"] == "hidden"
 
 
+def test_emoji_status_is_one_bounded_pictograph_and_one_bounded_word():
+    for emoji in (
+        "😀",
+        "🧑🏽‍💻",
+        "👨‍👩‍👧‍👦",
+        "🏳️‍🌈",
+        "🇺🇸",
+        "1️⃣",
+        "❤️",
+    ):
+        assert world.clean_status_emoji(emoji) == emoji
+    for invalid in (
+        "",
+        "hello",
+        "😀😀",
+        "<script>",
+        "https://example.test/",
+        "🇺",
+        "\u200d",
+        "A😀",
+        "😀 private",
+    ):
+        assert world.clean_status_emoji(invalid) == ""
+
+    for note in ("coding", "on-call", "débogage", "コード", "l’équipe"):
+        assert world.clean_status_note(note) == note
+    for invalid in (
+        "two words",
+        "https://example.test",
+        "<script>",
+        "/private",
+        "\u202esecret",
+        "x" * (world.WORLD_STATUS_NOTE_MAX + 1),
+    ):
+        assert world.clean_status_note(invalid) == ""
+
+    current = world.default_presence("peer", 1000)
+    assert current["statusEmoji"] == ""
+    assert current["statusNote"] == ""
+    kind, shared = world.sanitize_message({
+        "type": "presence",
+        "statusEmoji": "🧑🏽‍💻",
+        "statusNote": "coding",
+        "statusDetail": "private repository URL",
+    }, current, 2000)
+    assert kind == "presence"
+    public = world.public_presence(shared)
+    assert public["statusEmoji"] == "🧑🏽‍💻"
+    assert public["statusNote"] == "coding"
+    assert "statusDetail" not in public
+    assert "private repository URL" not in repr(public)
+
+    _, rejected = world.sanitize_message({
+        "type": "presence",
+        "statusEmoji": "😀😀",
+        "statusNote": "two words",
+    }, shared, 3000)
+    assert rejected["statusEmoji"] == ""
+    assert rejected["statusNote"] == ""
+
+    _, restored = world.sanitize_message({
+        "type": "presence",
+        "statusEmoji": "🚀",
+        "statusNote": "shipping",
+    }, rejected, 4000)
+    _, moved = world.sanitize_message({
+        "type": "move",
+        "x": 3,
+        "statusEmoji": "🔐",
+        "statusNote": "secret",
+    }, restored, 5000)
+    assert moved["statusEmoji"] == "🚀"
+    assert moved["statusNote"] == "shipping"
+
+
 def test_coarse_activity_metadata_is_bounded_and_privacy_gated():
     assert world.WORLD_FIRST_VISIT_AGE_VALUES == {
         "this-session", "today", "this-week", "this-month", "this-year",

@@ -1340,6 +1340,146 @@ test("UTC is display-only and local light level survives movement without becomi
   expect(publicIdentityState.lightLevel).toBeUndefined();
 });
 
+test("Unicode emoji status is local-persisted, coalesced, and visible over every avatar", async ({
+  page,
+  context,
+}) => {
+  const frames = [];
+  await prepareWorldPage(page, "emoji-status-owner", {
+    worldSocketHandler(socket, socketId) {
+      socket.onMessage((raw) => frames.push(JSON.parse(String(raw))));
+      socket.send(JSON.stringify({
+        type: "welcome",
+        id: socketId,
+        self: {
+          id: socketId,
+          name: "owner",
+          status: "available",
+          x: -8.1,
+          y: 0.38,
+          z: 30,
+          yaw: 0,
+          space: "town-square",
+        },
+        peers: [
+          {
+            id: "peer-status",
+            name: "Peer",
+            status: "available",
+            statusEmoji: "🚀",
+            statusNote: "shipping",
+            x: 3,
+            y: 0.38,
+            z: 4,
+            yaw: 0,
+            space: "town-square",
+          },
+        ],
+      }));
+    },
+  });
+  await waitForWorld(page);
+  await expect(
+    page.locator('[data-player-label="peer-status"]'),
+  ).toHaveAttribute("aria-label", "Peer, public status 🚀 shipping");
+  const peerStatus = await page.locator("forkmesh-world").evaluate((shell) => {
+    const avatar = shell.world.scene.getObjectByName("avatar:peer-status");
+    const sprite = avatar?.getObjectByName("forkmesh-avatar-emoji-status");
+    return {
+      emoji: avatar?.userData?.statusEmoji,
+      note: avatar?.userData?.statusNote,
+      spriteVisible: Boolean(sprite?.visible),
+    };
+  });
+  expect(peerStatus).toEqual({
+    emoji: "🚀",
+    note: "shipping",
+    spriteVisible: true,
+  });
+
+  const firstChangeFrameIndex = frames.length;
+  const pageCount = context.pages().length;
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator(".world-emoji-picker").evaluate((picker) => {
+    picker.open = true;
+  });
+  await page.locator("[data-world-emoji-category]").selectOption("gestures");
+  await page.getByRole("button", {
+    name: "Use 🧑‍💻 as public status",
+  }).click();
+  const note = page.locator("[data-world-status-note]");
+  await note.fill("coding");
+  await note.dispatchEvent("change");
+  await expect(page.locator("[data-world-status-preview]")).toHaveText(
+    "🧑‍💻 coding",
+  );
+  await expect(page.locator("[data-world-identity-emoji-status]")).toHaveText(
+    "🧑‍💻 coding",
+  );
+  await expect.poll(() =>
+    frames.filter(
+      (frame) =>
+        frame.type === "presence" &&
+        frame.statusEmoji === "🧑‍💻" &&
+        frame.statusNote === "coding",
+    ).length,
+  ).toBe(1);
+  const statusFrames = frames
+    .slice(firstChangeFrameIndex)
+    .filter(
+      (frame) => frame.type === "presence" && Boolean(frame.statusEmoji),
+    );
+  expect(statusFrames.length).toBeLessThanOrEqual(2);
+  expect(
+    frames
+      .filter((frame) => frame.type === "move")
+      .some((frame) => "statusEmoji" in frame || "statusNote" in frame),
+  ).toBe(false);
+
+  const saved = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("forkmesh.world.settings.v1") || "{}"),
+  );
+  expect(saved.statusEmoji).toBe("🧑‍💻");
+  expect(saved.statusNote).toBe("coding");
+  const ownStatus = await page.locator("forkmesh-world").evaluate((shell) => ({
+    emoji: shell.world.player.userData.statusEmoji,
+    note: shell.world.player.userData.statusNote,
+    spriteVisible: Boolean(
+      shell.world.player.getObjectByName("forkmesh-avatar-emoji-status")
+        ?.visible,
+    ),
+  }));
+  expect(ownStatus).toEqual({
+    emoji: "🧑‍💻",
+    note: "coding",
+    spriteVisible: true,
+  });
+
+  const codingFramesBeforeDuplicate = frames.filter(
+    (frame) =>
+      frame.type === "presence" &&
+      frame.statusEmoji === "🧑‍💻" &&
+      frame.statusNote === "coding",
+  ).length;
+  await note.dispatchEvent("change");
+  await page.waitForTimeout(450);
+  expect(frames.filter(
+    (frame) =>
+      frame.type === "presence" &&
+      frame.statusEmoji === "🧑‍💻" &&
+      frame.statusNote === "coding",
+  )).toHaveLength(codingFramesBeforeDuplicate);
+
+  await note.fill("two words");
+  await note.dispatchEvent("change");
+  await expect(note).toHaveValue("coding");
+  await expect(page.locator("[data-world-toast]")).toContainText(
+    "must be one word",
+  );
+  expect(context.pages()).toHaveLength(pageCount);
+  expect(new URL(page.url()).pathname).toBe("/world/");
+});
+
 test("two live clients synchronize movement without leaking disabled badge fields", async ({
   context,
 }) => {
